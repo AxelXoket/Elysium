@@ -2,6 +2,11 @@ import { useRef, useEffect, useState, useCallback } from "react";
 import { useUiStore } from "@/lib/store/uiStore";
 import { useMessages } from "@/lib/query/chats";
 import { useSendMessage } from "@/lib/query/completions";
+import { usePersonas } from "@/lib/query/personas";
+import { useModels } from "@/lib/query/models";
+import { getSelectedPersonaId, safePersonaId } from "@/lib/personas";
+import { findModelById } from "@/lib/models";
+import { useGenerationSettings } from "@/components/generation/GenerationSettingsContext";
 import { useReducedMotion } from "@/components/motion/ReducedMotion";
 import { MessageList } from "./MessageList";
 import { EmptyState } from "./EmptyState";
@@ -13,6 +18,9 @@ export function ChatCanvas() {
   const selectedModelId = useUiStore((s) => s.selectedModelId);
   const send = useSendMessage();
   const { data: messages } = useMessages(selectedChatId);
+  const { data: personas } = usePersonas();
+  const { data: models } = useModels();
+  const generationSettings = useGenerationSettings();
   const scrollRef = useRef<HTMLDivElement>(null);
   const reduced = useReducedMotion();
 
@@ -33,12 +41,20 @@ export function ChatCanvas() {
   const handleSend = useCallback(
     (messageText: string) => {
       if (selectedChatId == null || selectedModelId == null) return;
+      const personaId = safePersonaId(getSelectedPersonaId(personas));
+      const selectedModel = findModelById(models?.models, selectedModelId);
+      const { generationParams, contextBudgetTokens } =
+        generationSettings.getRequestSettings();
       setRestoredDraft(null);
       send.mutate(
         {
           chatId: selectedChatId,
           message: messageText,
           modelId: selectedModelId,
+          generationParams,
+          personaId,
+          contextBudgetTokens,
+          model: selectedModel,
         },
         {
           onError: () => {
@@ -48,7 +64,7 @@ export function ChatCanvas() {
         },
       );
     },
-    [selectedChatId, selectedModelId, send],
+    [selectedChatId, selectedModelId, personas, models?.models, generationSettings, send],
   );
 
   return (

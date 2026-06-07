@@ -2,7 +2,9 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { keys } from "./keys";
 import { completeChat, regenerateMessage } from "../api/completions";
 import { useErrorStore } from "../errors";
+import { buildCompletionPayload } from "../generation";
 import type { GenerationParams } from "../schemas/completions";
+import type { Model } from "../schemas/models";
 import type { Message } from "../schemas/chats";
 
 interface CompletionMutationVars {
@@ -12,6 +14,10 @@ interface CompletionMutationVars {
   generationParams?: GenerationParams;
   personaId?: number | null;
   contextBudgetTokens?: number | null;
+  model?: Pick<
+    Model,
+    "supported_parameters" | "max_completion_tokens" | "context_length"
+  > | null;
 }
 
 interface RegenerateMutationVars {
@@ -37,13 +43,14 @@ export function useSendMessage() {
 
   return useMutation({
     mutationFn: (vars: CompletionMutationVars) =>
-      completeChat(vars.chatId, {
+      completeChat(vars.chatId, buildCompletionPayload({
         message: vars.message,
-        model_id: vars.modelId,
-        generation_params: vars.generationParams,
-        persona_id: vars.personaId,
-        context_budget_tokens: vars.contextBudgetTokens,
-      }),
+        modelId: vars.modelId,
+        generationParams: vars.generationParams,
+        personaId: vars.personaId,
+        contextBudgetTokens: vars.contextBudgetTokens,
+        model: vars.model,
+      }) as Parameters<typeof completeChat>[1]),
 
     onMutate: async (vars) => {
       // 1. Cancel in-flight refetches so they don't overwrite our optimistic update

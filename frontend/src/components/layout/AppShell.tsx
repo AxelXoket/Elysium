@@ -2,6 +2,7 @@ import { Sidebar } from "./Sidebar";
 import { RightPanel } from "./RightPanel";
 import { ChatCanvas } from "@/components/chat/ChatCanvas";
 import { FadeIn } from "@/components/motion/FadeIn";
+import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
 
 /**
  * AppShell — Phase 6E-A seasonal canvas layout.
@@ -15,11 +16,13 @@ export function AppShell() {
     <FadeIn duration={0.3}>
       <div className="elysium-shell elysium-page">
         <div className="elysium-stage">
-          <div className="elysium-frame">
-            <Sidebar />
-            <ChatCanvas />
-            <RightPanel />
-          </div>
+          <GenerationSettingsProvider>
+            <div className="elysium-frame">
+              <Sidebar />
+              <ChatCanvas />
+              <RightPanel />
+            </div>
+          </GenerationSettingsProvider>
         </div>
       </div>
     </FadeIn>

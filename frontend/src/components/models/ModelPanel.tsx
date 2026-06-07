@@ -9,6 +9,7 @@ import { AnimatedList, AnimatedListItem } from "@/components/motion/AnimatedList
 import { RefreshCw, AlertCircle, Search, X } from "lucide-react";
 import { isApiError } from "@/lib/api/client";
 import { useUiStore } from "@/lib/store/uiStore";
+import { GenerationSettingsDialog } from "@/components/generation/GenerationSettingsDialog";
 
 export function ModelPanel() {
   const { data, isLoading, error } = useModels();
@@ -166,6 +167,8 @@ export function ModelPanel() {
                 </div>
               </div>
             </section>
+
+            <GenerationSettingsDialog selectedModel={selectedModel} />
 
             <section className="space-y-2">
               <h4

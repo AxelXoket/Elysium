@@ -6,6 +6,7 @@ import { mockFetch } from "@/test/mocks/api";
 import { modelListFixture, modelListFallbackFixture } from "@/test/mocks/fixtures";
 import { ModelPanel } from "@/components/models/ModelPanel";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
 
 function wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({
@@ -13,7 +14,9 @@ function wrapper({ children }: { children: React.ReactNode }) {
   });
   return (
     <QueryClientProvider client={qc}>
-      <TooltipProvider>{children}</TooltipProvider>
+      <TooltipProvider>
+        <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
+      </TooltipProvider>
     </QueryClientProvider>
   );
 }
