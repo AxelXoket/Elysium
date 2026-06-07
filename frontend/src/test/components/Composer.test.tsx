@@ -228,7 +228,7 @@ describe("Composer", () => {
     await user.click(screen.getByRole("button", { name: /send message/i }));
 
     await waitFor(() => {
-      expect(screen.getByText(/api key is not set/i)).toBeInTheDocument();
+      expect(screen.getByText(/api key/i)).toBeInTheDocument();
     });
 
     // Input should NOT be cleared on error

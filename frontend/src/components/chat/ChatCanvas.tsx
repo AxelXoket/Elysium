@@ -1,4 +1,4 @@
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useState, useCallback } from "react";
 import { useUiStore } from "@/lib/store/uiStore";
 import { useMessages } from "@/lib/query/chats";
 import { useSendMessage } from "@/lib/query/completions";
@@ -6,17 +6,18 @@ import { useReducedMotion } from "@/components/motion/ReducedMotion";
 import { MessageList } from "./MessageList";
 import { EmptyState } from "./EmptyState";
 import { Composer } from "./Composer";
+import { ErrorToastStack } from "@/components/errors/ErrorToastStack";
 
 export function ChatCanvas() {
   const selectedChatId = useUiStore((s) => s.selectedChatId);
   const selectedModelId = useUiStore((s) => s.selectedModelId);
   const send = useSendMessage();
   const { data: messages } = useMessages(selectedChatId);
-  // resetKey: changes each time a send succeeds (new user_message.id), signaling Composer to clear
-  const resetKey = send.data ? send.data.user_message.id : 0;
   const scrollRef = useRef<HTMLDivElement>(null);
   const reduced = useReducedMotion();
 
+  // Draft restoration: if send fails, this holds the text to restore
+  const [restoredDraft, setRestoredDraft] = useState<string | null>(null);
 
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -29,17 +30,31 @@ export function ChatCanvas() {
     }
   }, [messages?.length, reduced]);
 
-  const handleSend = (messageText: string) => {
-    if (selectedChatId == null || selectedModelId == null) return;
-    send.mutate({
-      chatId: selectedChatId,
-      message: messageText,
-      modelId: selectedModelId,
-    });
-  };
+  const handleSend = useCallback(
+    (messageText: string) => {
+      if (selectedChatId == null || selectedModelId == null) return;
+      setRestoredDraft(null);
+      send.mutate(
+        {
+          chatId: selectedChatId,
+          message: messageText,
+          modelId: selectedModelId,
+        },
+        {
+          onError: () => {
+            // Restore draft on failure so user can retry
+            setRestoredDraft(messageText);
+          },
+        },
+      );
+    },
+    [selectedChatId, selectedModelId, send],
+  );
 
   return (
     <main className="warm-canvas flex flex-1 flex-col overflow-hidden">
+      <ErrorToastStack />
+
       {/* Message area */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
         {selectedChatId != null ? (
@@ -54,7 +69,8 @@ export function ChatCanvas() {
         onSend={handleSend}
         isPending={send.isPending}
         sendError={send.error}
-        resetKey={resetKey}
+        clearOnSend={true}
+        restoredDraft={restoredDraft}
       />
     </main>
   );

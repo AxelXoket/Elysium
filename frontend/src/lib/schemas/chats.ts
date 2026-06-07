@@ -23,5 +23,10 @@ export const MessageSchema = z.object({
 
 export const ChatListSchema = z.array(ChatSchema);
 export const MessageListSchema = z.array(MessageSchema);
+export const DeletedCountResponseSchema = z.object({
+  ok: z.literal(true),
+  deleted_count: z.number(),
+});
 export type Chat = z.infer<typeof ChatSchema>;
 export type Message = z.infer<typeof MessageSchema>;
+export type DeletedCountResponse = z.infer<typeof DeletedCountResponseSchema>;

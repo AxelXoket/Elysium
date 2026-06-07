@@ -261,4 +261,20 @@ describe("Static safety tests", () => {
       }
     }
   });
+
+  // S-20: No frontend provider privacy fields in API/query request code
+  it("S-20: no provider privacy fields in frontend request code", () => {
+    const forbidden = ["zdr", "data_collection", "allow_fallbacks"];
+    const requestFiles = getSourceFiles("src/lib/{api,query}/**/*.ts");
+
+    for (const file of requestFiles) {
+      const content = readFile(file);
+      for (const pattern of forbidden) {
+        expect(
+          content.includes(pattern),
+          `Found "${pattern}" in ${path.relative(SRC_DIR, file)}`,
+        ).toBe(false);
+      }
+    }
+  });
 });

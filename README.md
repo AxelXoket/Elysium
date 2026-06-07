@@ -8,7 +8,8 @@
     <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License">
     <img src="https://img.shields.io/badge/version-0.1.5-orange?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/privacy-ZDR_enforced-brightgreen?style=flat-square" alt="Privacy">
-    <img src="https://img.shields.io/badge/tests-261_passed-success?style=flat-square" alt="Tests">
+    <img src="https://img.shields.io/badge/backend_tests-261_passed-success?style=flat-square" alt="Backend Tests">
+    <img src="https://img.shields.io/badge/frontend_tests-417_passed-success?style=flat-square" alt="Frontend Tests">
     <img src="https://img.shields.io/badge/frontend-React_19-61DAFB?style=flat-square&logo=react&logoColor=white" alt="React">
   </p>
 </p>
@@ -21,9 +22,11 @@ Elysium is a privacy-first AI character chat client that routes **all model traf
 
 - **Character System** — Create, import (Character Card V2 JSON), and manage characters with full field support (system prompt, description, personality, scenario, example dialogue, post-history instruction)
 - **Persona System** — Create and switch AI personas that are injected as a system block into every completion request
-- **OpenRouter Integration** — Browse and select from the full OpenRouter model catalogue; generation parameters (temperature, top\_p, top\_k, max\_tokens, stop, seed, etc.) are validated and forwarded
-- **Context Budget** — App-level `context_budget_tokens` controls history trimming; oldest messages are dropped to fit the budget — never forwarded to OpenRouter
-- **Message Lifecycle** — Send, regenerate (latest assistant message), delete (target + all following), and clear chat
+- **OpenRouter Integration** — Browse and select from the full OpenRouter model catalogue; generation parameters (temperature, top\_p, top\_k, max\_tokens, seed, repetition\_penalty) are validated, model-filtered, and forwarded
+- **Context Budget** — App-level `context_budget_tokens` controls history trimming; oldest messages are dropped to fit the budget — never forwarded to OpenRouter as a provider field
+- **Message Lifecycle** — Send (with optimistic UI), regenerate (latest assistant message), delete (target + all following), and clear chat
+- **Error Toast System** — Centralized safe error notifications over the chat canvas; auto-dismiss after 4.5 s, max 5 visible, extras queued
+- **Active Context Preview** — Local-only preview of what will be included in the next request (model, persona, character, message count, generation params, context budget); approximate, never the exact provider payload
 - **Privacy by Design** — ZDR, data\_collection=deny, allow\_fallbacks=false are hardcoded in the backend and cannot be overridden
 - **OS Keyring** — API key and proxy URL live in the OS keyring (Windows Credential Manager / macOS Keychain / libsecret) — never in the database, never sent to the frontend
 - **Strict CORS** — Backend accepts requests from `http://127.0.0.1:5173` only; no wildcard origins
@@ -81,8 +84,9 @@ Additional guarantees:
 - `context_budget_tokens` is **never** forwarded to OpenRouter — app-level history trimming only
 - `raw_json`, `avatar_path`, `image_url`, `tools`, `tool_choice`, `response_format`, streaming — **never** sent
 - API key lives in the OS keyring; never stored in the database, never returned by any endpoint, never logged
-- Raw upstream OpenRouter error bodies are never forwarded to the client
-- Browser storage holds only UI preferences — never messages, API keys, or proxy URLs
+- Raw upstream OpenRouter error bodies are never forwarded to the client — safe mapped messages only
+- Browser storage holds only UI preferences — never messages, personas, characters, API keys, or proxy URLs
+- Frontend never emits an `Authorization` header — all provider auth happens backend-side
 
 > **Note on `proxy_required`:** If set to `false` (default), the app connects to OpenRouter directly. Your IP may be visible to OpenRouter. Set `proxy_required=true` to enforce proxy-only traffic.
 
@@ -136,7 +140,8 @@ npm run dev          # starts at http://127.0.0.1:5173
 | Database | SQLite (WAL mode, raw `sqlite3`) |
 | HTTP client | httpx with SOCKS proxy support (`trust_env=False`) |
 | Secrets | OS keyring (Windows Credential Manager / macOS Keychain / libsecret) |
-| Frontend | React 19 · Vite · TypeScript · TanStack Query · Zustand · Zod |
+| Frontend | React 19 · Vite · TypeScript · TanStack Query v5 · Zustand · Zod v4 |
+| Frontend UI | Radix UI primitives · Lucide icons · Tailwind CSS v4 |
 
 ## Repository Layout
 
@@ -156,8 +161,39 @@ elysium/
 │   ├── openrouter.py         OpenRouter API client + model cache
 │   ├── proxy_health.py       Proxy health check with TTL cache
 │   ├── main.py               FastAPI app + CORS + router wiring
-│   └── verify_*.py           Automated regression tests (261 checks)
-├── frontend/                 React + Vite frontend
+│   └── verify_*.py           Backend regression suites (261 checks)
+├── frontend/
+│   └── src/
+│       ├── app/              App entry, providers, routing
+│       ├── components/
+│       │   ├── chat/         ChatCanvas, Composer, MessageList, ThinkingBubble
+│       │   ├── characters/   Character list, create/import dialogs
+│       │   ├── chats/        Chat list
+│       │   ├── errors/       ErrorToastStack (FE-1B)
+│       │   ├── models/       Model panel
+│       │   ├── persona/      Persona panel area
+│       │   ├── settings/     ApiKeySection, ProxySection
+│       │   └── sidebar/      Sidebar layout
+│       ├── lib/
+│       │   ├── api/          REST API client functions
+│       │   ├── characters/   Character helpers (FE-6A)
+│       │   ├── chat/         Chat action helpers (FE-5A)
+│       │   ├── errors/       Error parser, mapper, store (FE-1A)
+│       │   ├── generation/   Generation params helpers + payload builders (FE-4A)
+│       │   ├── models/       Model metadata + modality helpers (FE-7A)
+│       │   ├── personas/     Persona active/id helpers (FE-3A)
+│       │   ├── preview/      Active context preview builder (FE-8A)
+│       │   ├── query/        TanStack Query hooks (all resources)
+│       │   ├── schemas/      Zod schemas + inferred types
+│       │   └── store/        Zustand UI store
+│       └── test/
+│           ├── components/   20 focused test suites (417 tests total)
+│           ├── static-safety.test.ts   20 static privacy checks
+│           └── fe0-contract.test.ts    API contract shape tests
+├── docs/
+│   ├── frontend_contract.md              Frontend ↔ backend API contract
+│   ├── elysium_frontend_implementation_roadmap.md
+│   └── backend_implementation_plan_opus.md
 ├── start_backend.bat         Windows quick-start script
 ├── .gitignore
 └── README.md
@@ -181,7 +217,7 @@ All endpoints are under `/api/v1`.
 | `POST` | `/characters/import` | Import JSON character card |
 | `GET` | `/characters/{id}` | Get single character |
 | `PATCH` | `/characters/{id}` | Edit character (partial update) |
-| `DELETE` | `/characters/{id}` | Delete character + cascade |
+| `DELETE` | `/characters/{id}` | Delete character + cascade chats/messages |
 | `GET` | `/chats` | List all chats |
 | `POST` | `/chats` | Create chat session |
 | `GET` | `/chats/{id}` | Get single chat |
@@ -189,33 +225,61 @@ All endpoints are under `/api/v1`.
 | `POST` | `/chats/{id}/complete` | Send message, get completion |
 | `DELETE` | `/chats/{id}` | Delete chat + messages |
 | `POST` | `/chats/{id}/clear` | Clear messages, keep chat |
-| `DELETE` | `/chats/{id}/messages/{msg_id}` | Delete target + following |
-| `POST` | `/chats/{id}/messages/{msg_id}/regenerate` | Regenerate assistant message |
+| `DELETE` | `/chats/{id}/messages/{msg_id}` | Delete target + all following messages |
+| `POST` | `/chats/{id}/messages/{msg_id}/regenerate` | Regenerate latest assistant message |
 | `GET` | `/personas` | List personas (includes `is_active`) |
 | `POST` | `/personas` | Create persona |
 | `PATCH` | `/personas/{id}` | Edit persona |
 | `DELETE` | `/personas/{id}` | Delete persona |
 | `POST` | `/personas/{id}/select` | Set active persona |
-| `GET` | `/models/openrouter` | List OpenRouter models |
+| `GET` | `/models/openrouter` | List OpenRouter models (cached) |
+
+## Frontend Logic Foundation (v0.1.5)
+
+The frontend logic layer is complete and cleared for UI implementation. All slices are pure helpers — no UI components, no browser storage, no direct OpenRouter calls.
+
+| Slice | Module | Description |
+|-------|--------|-------------|
+| FE-0 | `lib/api/`, `lib/schemas/`, `lib/query/` | API clients, Zod schemas, TanStack Query hooks |
+| FE-1A | `lib/errors/` | Safe error parser, code→message mapper, Zustand error store |
+| FE-1B | `components/errors/ErrorToastStack` | Global toast UI: glass pill, auto-dismiss, queue, accessibility |
+| FE-2 | `lib/query/completions` | Optimistic send, thinking bubble, error rollback, draft restore |
+| FE-3A | `lib/personas/` | Active persona helpers, safe persona ID extraction |
+| FE-4A | `lib/generation/` | Generation param filtering, model compatibility, payload builders |
+| FE-5A | `lib/chat/` | Chat action helpers: delete/clear/regenerate eligibility, cache transforms |
+| FE-6A | `lib/characters/` | Character lookup, safe start-chat builder, cascade warning |
+| FE-7A | `lib/models/` | Model metadata, modality detection, context budget bounds |
+| FE-8A | `lib/preview/` | Active context preview builder (local-only, approximate, privacy-safe) |
 
 ## Verification
+
+### Backend (261 checks)
 
 ```powershell
 cd backend
 
-# Full regression suite (261 checks + 20 privacy grep checks)
+# Full regression suite
 .venv\Scripts\python verify_elysium_full.py
 
-# Individual verify scripts
-.venv\Scripts\python verify_part_a.py     #  8/8   baseline, contract, error format
-.venv\Scripts\python verify_part_b.py     # 17/17  API key validation, context_budget
-.venv\Scripts\python verify_part_c.py     # 32/32  personas lifecycle, is_active
-.venv\Scripts\python verify_part_d.py     # 14/14  character PATCH, DELETE cascade
-.venv\Scripts\python verify_part_e.py     # 40/40  message delete, clear, regenerate
+# Individual suites
+.venv\Scripts\python verify_part_a.py     #   8/8   baseline, contract, error format
+.venv\Scripts\python verify_part_b.py     #  17/17  API key validation, context_budget
+.venv\Scripts\python verify_part_c.py     #  32/32  personas lifecycle, is_active
+.venv\Scripts\python verify_part_d.py     #  14/14  character PATCH, DELETE cascade
+.venv\Scripts\python verify_part_e.py     #  40/40  message delete, clear, regenerate
 .venv\Scripts\python verify_phase5b.py    # 150/150 completion, gen params, privacy
 ```
 
-## Known Limitations (MVP v0.1)
+### Frontend (417 tests)
+
+```powershell
+cd frontend
+npm test                          # full suite — 417 tests, 21 files
+npm test -- src/test/static-safety.test.ts   # 20 static privacy checks
+npm run typecheck                 # TypeScript strict mode
+```
+
+## Known Limitations (v0.1.5)
 
 - **No streaming** — full response appears after OpenRouter returns it
 - **No local/offline models** — OpenRouter only
@@ -223,6 +287,7 @@ cd backend
 - **No Compatibility Mode** — strict ZDR privacy routing always enforced
 - **No ZDR toggle** — privacy settings cannot be relaxed in the UI
 - **No multi-branch chat** — linear conversation only; delete-forward to rewind
+- **UI panels pending** — Persona Panel, Generation Params Panel, Character Library, Model Panel, and Active Context Preview UI are logic-complete and awaiting Codex UI implementation (FE-3B through FE-8B)
 
 ## Troubleshooting
 
@@ -234,3 +299,4 @@ cd backend
 | Authentication failed | API key is invalid or expired — update in Settings |
 | Proxy required but not configured | Set proxy URL in Settings, or disable `proxy_required` |
 | Model unavailable / ZDR error | Model doesn't support zero-data-retention — try a different model |
+| Frontend tests fail | Run `npm install` then `npm test` from the `frontend/` directory |

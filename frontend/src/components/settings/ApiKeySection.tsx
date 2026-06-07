@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useSettings, useSetApiKey, useDeleteApiKey } from "@/lib/query/settings";
-import { isApiError } from "@/lib/api/client";
+import { parseApiError } from "@/lib/errors";
 import { Key, Trash2, Check, AlertCircle, Loader2 } from "lucide-react";
 
 export function ApiKeySection() {
@@ -16,12 +16,18 @@ export function ApiKeySection() {
     if (!keyInput.trim()) return;
     setFeedback(null);
     try {
-      await setApiKey.mutateAsync(keyInput.trim());
-      setKeyInput(""); // Clear on success — write-only
-      setFeedback({ type: "success", text: "API key saved" });
+      const result = await setApiKey.mutateAsync(keyInput.trim());
+      if (result.ok) {
+        setKeyInput(""); // Clear on success — write-only
+        setFeedback({ type: "success", text: "API key saved" });
+      } else {
+        setFeedback({
+          type: "error",
+          text: "API key validation unavailable; key was not saved",
+        });
+      }
     } catch (err) {
-      const msg = isApiError(err) ? err.detail : "Failed to save API key";
-      setFeedback({ type: "error", text: msg });
+      setFeedback({ type: "error", text: parseApiError(err).message });
     }
   };
 
@@ -31,8 +37,7 @@ export function ApiKeySection() {
       await deleteApiKey.mutateAsync();
       setFeedback({ type: "success", text: "API key removed" });
     } catch (err) {
-      const msg = isApiError(err) ? err.detail : "Failed to remove API key";
-      setFeedback({ type: "error", text: msg });
+      setFeedback({ type: "error", text: parseApiError(err).message });
     }
   };
 

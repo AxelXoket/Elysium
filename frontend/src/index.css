@@ -545,6 +545,90 @@
   pointer-events: none;
 }
 
+/* FE-1B: central error toast stack over the warm chat canvas */
+.error-toast-stack {
+  top: clamp(20px, 4vh, 42px);
+  z-index: 35;
+}
+
+.error-toast {
+  min-height: 38px;
+  color: rgba(245, 244, 239, 0.95);
+  background:
+    linear-gradient(90deg, rgba(30, 31, 31, 0.78), rgba(43, 43, 41, 0.66));
+  border: 1px solid rgba(242, 232, 216, 0.14);
+  box-shadow:
+    0 14px 34px rgba(17, 18, 18, 0.26),
+    inset 0 1px 0 rgba(255, 255, 255, 0.09);
+  backdrop-filter: blur(18px) saturate(118%);
+  -webkit-backdrop-filter: blur(18px) saturate(118%);
+  animation: error-toast-enter 220ms var(--ease-smooth) both;
+  transition:
+    opacity 180ms var(--ease-smooth),
+    transform 180ms var(--ease-smooth),
+    border-color 180ms var(--ease-smooth),
+    background-color 180ms var(--ease-smooth);
+}
+
+.error-toast:hover,
+.error-toast:focus-visible {
+  border-color: rgba(242, 232, 216, 0.24);
+  background:
+    linear-gradient(90deg, rgba(35, 36, 36, 0.84), rgba(50, 49, 47, 0.72));
+  transform: translateY(1px);
+}
+
+.error-toast.is-exiting {
+  opacity: 0;
+  transform: translateY(-6px) scale(0.985);
+}
+
+.error-toast-accent {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  color: rgba(229, 137, 119, 0.95);
+  background: rgba(201, 110, 91, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(201, 110, 91, 0.14);
+}
+
+@keyframes error-toast-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .error-toast {
+    animation: error-toast-fade 160ms ease-out both;
+    transition: opacity 120ms ease-out;
+  }
+
+  .error-toast:hover,
+  .error-toast:focus-visible,
+  .error-toast.is-exiting {
+    transform: none;
+  }
+
+  .error-toast.is-exiting {
+    opacity: 0;
+  }
+
+  @keyframes error-toast-fade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+}
+
 /* Glass dialog surface */
 .glass-dialog {
   background: var(--color-es-glass-dialog) !important;

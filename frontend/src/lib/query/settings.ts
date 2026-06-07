@@ -29,9 +29,11 @@ export function useSetApiKey() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (apiKey: string) => setApiKey(apiKey),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: keys.settings() });
-      qc.invalidateQueries({ queryKey: keys.models() });
+    onSuccess: (data) => {
+      if (data.ok) {
+        qc.invalidateQueries({ queryKey: keys.settings() });
+        qc.invalidateQueries({ queryKey: keys.models() });
+      }
     },
   });
 }

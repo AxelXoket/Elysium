@@ -54,7 +54,7 @@ describe("Settings Panel Tests", () => {
 
     // Mock the POST response
     fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ ok: true }), {
+      new Response(JSON.stringify({ ok: true, key_status: "valid" }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       }),
@@ -87,7 +87,7 @@ describe("Settings Panel Tests", () => {
     await user.type(input, "sk-test-key-123");
 
     fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ ok: true }), {
+      new Response(JSON.stringify({ ok: true, key_status: "valid" }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       }),
@@ -114,7 +114,7 @@ describe("Settings Panel Tests", () => {
     await user.type(input, "sk-test-key-123");
 
     fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ ok: true }), {
+      new Response(JSON.stringify({ ok: true, key_status: "valid" }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       }),

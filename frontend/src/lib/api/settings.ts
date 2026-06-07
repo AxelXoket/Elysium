@@ -3,15 +3,21 @@ import {
   SettingsSchema,
   ProxyHealthSchema,
   OkResponseSchema,
+  ApiKeySaveResponseSchema,
 } from "../schemas/settings";
-import type { Settings, ProxyHealth, OkResponse } from "../schemas/settings";
+import type {
+  Settings,
+  ProxyHealth,
+  OkResponse,
+  ApiKeySaveResponse,
+} from "../schemas/settings";
 
 export function getSettings(): Promise<Settings> {
   return request("/settings", SettingsSchema);
 }
 
-export function setApiKey(apiKey: string): Promise<OkResponse> {
-  return request("/settings/api-key", OkResponseSchema, {
+export function setApiKey(apiKey: string): Promise<ApiKeySaveResponse> {
+  return request("/settings/api-key", ApiKeySaveResponseSchema, {
     method: "POST",
     body: JSON.stringify({ api_key: apiKey }),
   });

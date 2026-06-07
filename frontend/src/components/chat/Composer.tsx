@@ -1,54 +1,26 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useSettings } from "@/lib/query/settings";
 import { useUiStore } from "@/lib/store/uiStore";
-import { isApiError } from "@/lib/api/client";
+import { parseApiError } from "@/lib/errors";
 import { Send, Loader2, AlertCircle, X, Settings } from "lucide-react";
 
-// ── Error map ────────────────────────────────────────────────────
-const ERROR_MAP: Record<string, { text: string; cta?: "secrets" }> = {
-  api_key_missing: {
-    text: "API key is not set. Configure it in Secrets.",
-    cta: "secrets",
-  },
-  auth_failed: {
-    text: "Authentication failed. Check your API key in Secrets.",
-    cta: "secrets",
-  },
-  proxy_missing: {
-    text: "Proxy required but not configured. Set it up in Secrets.",
-    cta: "secrets",
-  },
-  proxy_unreachable: {
-    text: "Proxy is unreachable. Check your proxy configuration.",
-    cta: "secrets",
-  },
-  openrouter_timeout: { text: "Request timed out. Try again." },
-  openrouter_rate_limited: {
-    text: "Rate limit reached. Wait a moment and try again.",
-  },
-  openrouter_completion_error: {
-    text: "OpenRouter returned an error. This may be because the model is unavailable under Elysium\u2019s strict privacy routing (ZDR). Try a different model or retry.",
-  },
-  context_too_large: {
-    text: "Chat history is too long for this model\u2019s context limit. Try a model with a larger context window.",
-  },
-  invalid_openrouter_completion_response: {
-    text: "Received an unexpected response. Please retry.",
-  },
-  chat_not_found: { text: "This chat no longer exists. Please refresh." },
-  invalid_response_shape: {
-    text: "Received an unexpected response format. Please retry.",
-  },
-  invalid_gen_params: {
-    text: "Invalid generation parameters. Check your settings and try again.",
-  },
-};
+// ── CTA-aware error mapping ─────────────────────────────────────
+// Uses FE-1A parseApiError for safe message, adds CTA hint for secrets-related errors
+const SECRETS_CTA_CODES = new Set([
+  "api_key_missing",
+  "api_key_invalid",
+  "auth_failed",
+  "proxy_missing",
+  "proxy_unreachable",
+  "proxy_auth_failed",
+]);
 
-function getErrorMessage(err: unknown): { text: string; cta?: "secrets" } {
-  if (!isApiError(err)) {
-    return { text: "Cannot reach the server. Is the backend running?" };
-  }
-  return ERROR_MAP[err.detail] ?? { text: "Something went wrong. Please try again." };
+function getErrorDisplay(err: unknown): { text: string; cta?: "secrets" } {
+  const parsed = parseApiError(err);
+  return {
+    text: parsed.message,
+    cta: SECRETS_CTA_CODES.has(parsed.detail) ? "secrets" : undefined,
+  };
 }
 
 // ── Props ────────────────────────────────────────────────────────
@@ -56,30 +28,36 @@ interface ComposerProps {
   onSend: (messageText: string) => void;
   isPending: boolean;
   sendError: unknown;
-  /** Changes to a new number on successful send — triggers input clear. */
-  resetKey: number;
+  /** If true, input clears immediately when onSend is called (optimistic). */
+  clearOnSend?: boolean;
+  /** If set, restores this text into the input (e.g. after error rollback). */
+  restoredDraft?: string | null;
 }
 
-export function Composer({ onSend, isPending, sendError, resetKey }: ComposerProps) {
+export function Composer({
+  onSend,
+  isPending,
+  sendError,
+  clearOnSend,
+  restoredDraft,
+}: ComposerProps) {
   const [message, setMessage] = useState("");
   const [dismissed, setDismissed] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const prevResetKey = useRef(resetKey);
   const selectedChatId = useUiStore((s) => s.selectedChatId);
   const selectedModelId = useUiStore((s) => s.selectedModelId);
   // CTA routes to "secrets" tab (renamed from "settings" in Phase 6E-A)
   const setActiveTab = useUiStore((s) => s.setActiveRightPanelTab);
   const { data: settings, isLoading: settingsLoading, error: settingsError } = useSettings();
 
-  // Clear input when resetKey changes (i.e., on success)
+  // Restore draft text on error rollback
+  const prevDraft = useRef(restoredDraft);
   useEffect(() => {
-    if (resetKey !== prevResetKey.current) {
-      prevResetKey.current = resetKey;
-      setMessage("");
-      const ta = textareaRef.current;
-      if (ta) ta.style.height = "auto";
+    if (restoredDraft != null && restoredDraft !== prevDraft.current) {
+      setMessage(restoredDraft);
     }
-  }, [resetKey]);
+    prevDraft.current = restoredDraft;
+  }, [restoredDraft]);
 
   // Reset dismiss flag when a new error arrives
   const prevErrorRef = useRef<unknown>(null);
@@ -109,8 +87,14 @@ export function Composer({ onSend, isPending, sendError, resetKey }: ComposerPro
   // ── Handlers ──
   const handleSend = useCallback(() => {
     if (!canSend) return;
-    onSend(message.trim());
-  }, [canSend, message, onSend]);
+    const text = message.trim();
+    if (clearOnSend) {
+      setMessage("");
+      const ta = textareaRef.current;
+      if (ta) ta.style.height = "auto";
+    }
+    onSend(text);
+  }, [canSend, message, onSend, clearOnSend]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -143,7 +127,7 @@ export function Composer({ onSend, isPending, sendError, resetKey }: ComposerPro
 
   // ── Error display ──
   const showError = sendError != null && !dismissed;
-  const errorInfo = sendError ? getErrorMessage(sendError) : null;
+  const errorInfo = sendError ? getErrorDisplay(sendError) : null;
 
   return (
     <div

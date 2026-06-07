@@ -8,4 +8,6 @@ export const keys = {
   chat: (id: number) => ["chat", id] as const,
   messages: (chatId: number) => ["messages", chatId] as const,
   models: () => ["models", "openrouter"] as const,
+  personas: () => ["personas"] as const,
+  persona: (id: number) => ["persona", id] as const,
 };

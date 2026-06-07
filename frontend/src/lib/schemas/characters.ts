@@ -17,4 +17,9 @@ export const CharacterSchema = z.object({
 });
 
 export const CharacterListSchema = z.array(CharacterSchema);
+export const CharacterPatchSchema = CharacterSchema.omit({
+  id: true,
+  created_at: true,
+}).partial();
 export type Character = z.infer<typeof CharacterSchema>;
+export type CharacterPatch = z.infer<typeof CharacterPatchSchema>;

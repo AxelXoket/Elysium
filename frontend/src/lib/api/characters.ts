@@ -3,7 +3,9 @@ import {
   CharacterSchema,
   CharacterListSchema,
 } from "../schemas/characters";
-import type { Character } from "../schemas/characters";
+import { OkResponseSchema } from "../schemas/settings";
+import type { Character, CharacterPatch } from "../schemas/characters";
+import type { OkResponse } from "../schemas/settings";
 
 export function listCharacters(): Promise<Character[]> {
   return request("/characters", CharacterListSchema);
@@ -32,5 +34,21 @@ export function importCharacter(rawJsonText: string): Promise<Character> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: rawJsonText, // raw string as-is
+  });
+}
+
+export function patchCharacter(
+  id: number,
+  payload: CharacterPatch,
+): Promise<Character> {
+  return request(`/characters/${id}`, CharacterSchema, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteCharacter(id: number): Promise<OkResponse> {
+  return request(`/characters/${id}`, OkResponseSchema, {
+    method: "DELETE",
   });
 }

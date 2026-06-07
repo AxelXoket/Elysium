@@ -3,12 +3,14 @@ import type { Character } from "@/lib/schemas/characters";
 import type { Chat, Message } from "@/lib/schemas/chats";
 import type { Model, ModelList } from "@/lib/schemas/models";
 import type { CompletionResponse } from "@/lib/schemas/completions";
+import type { Persona } from "@/lib/schemas/personas";
 
 export const settingsFixture: Settings = {
   api_key_set: true,
   proxy_required: false,
   proxy_configured: false,
   proxy_alias: null,
+  selected_persona_id: null,
 };
 
 export const proxyHealthFixture: ProxyHealth = {
@@ -98,4 +100,13 @@ export const completionFixture: CompletionResponse = {
     content: "Hi! How can I help you?",
     created_at: "2026-01-01T00:01:01",
   },
+};
+
+export const personaFixture: Persona = {
+  id: 1,
+  display_name: "Test Persona",
+  description: "A test persona.",
+  is_active: true,
+  created_at: "2026-01-01T00:00:00",
+  updated_at: "2026-01-01T00:00:00",
 };

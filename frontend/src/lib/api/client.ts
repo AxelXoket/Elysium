@@ -20,15 +20,29 @@ export async function request<T>(
   schema: ZodType<T>,
   init?: RequestInit,
 ): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...init?.headers },
-    ...init,
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      headers: { "Content-Type": "application/json", ...init?.headers },
+      ...init,
+    });
+  } catch {
+    // Network failure (offline, DNS, CORS preflight, etc.)
+    const err: ApiError = {
+      status: 0,
+      detail: "network_error",
+      message: "Could not reach the server. Please check your connection.",
+    };
+    throw err;
+  }
   const json = await res.json().catch(() => ({}));
   if (!res.ok) {
+    const detail = res.status === 422 && Array.isArray((json as Record<string, unknown>)?.detail)
+      ? "invalid_generation_params"
+      : (json as Record<string, unknown>)?.detail as string ?? "unknown_error";
     const err: ApiError = {
       status: res.status,
-      detail: (json as Record<string, unknown>)?.detail as string ?? "unknown_error",
+      detail,
       message: `Request failed: ${res.status}`,
     };
     throw err;
@@ -46,6 +60,7 @@ export async function request<T>(
   }
 }
 
+
 /**
  * Raw fetch for endpoints where the body must be sent as-is (e.g. character import).
  * Does not go through the generic request() helper.
@@ -55,12 +70,25 @@ export async function rawRequest<T>(
   schema: ZodType<T>,
   init: RequestInit,
 ): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, init);
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, init);
+  } catch {
+    const err: ApiError = {
+      status: 0,
+      detail: "network_error",
+      message: "Could not reach the server. Please check your connection.",
+    };
+    throw err;
+  }
   const json = await res.json().catch(() => ({}));
   if (!res.ok) {
+    const detail = res.status === 422 && Array.isArray((json as Record<string, unknown>)?.detail)
+      ? "invalid_generation_params"
+      : (json as Record<string, unknown>)?.detail as string ?? "unknown_error";
     const err: ApiError = {
       status: res.status,
-      detail: (json as Record<string, unknown>)?.detail as string ?? "unknown_error",
+      detail,
       message: `Request failed: ${res.status}`,
     };
     throw err;
@@ -76,3 +104,4 @@ export async function rawRequest<T>(
     throw err;
   }
 }
+
