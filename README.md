@@ -16,7 +16,24 @@
   <p align="center">
     <img src="assets/elysium_banner.png" alt="Elysium" width="820">
   </p>
+  <p align="center">
+    <a href="https://github.com/AxelXoket/Elysium/releases/latest">
+      <img src="https://img.shields.io/badge/⬇_Download-Elysium_for_Windows-2D5C8F?style=for-the-badge" alt="Download Elysium for Windows">
+    </a>
+  </p>
 </p>
+
+---
+
+## Download & Run (Windows)
+
+No build tools needed:
+
+1. Grab `Elysium-v1.0.0-win64.zip` from the [latest release](https://github.com/AxelXoket/Elysium/releases/latest)
+2. Extract it anywhere and run `Elysium\Elysium.exe`
+3. First run: create your vault passphrase (there is no recovery - it IS the key), add your OpenRouter API key in Settings, and start chatting
+
+Requires the WebView2 runtime (preinstalled on Windows 10/11; the app links the installer if it is missing). Your data lives encrypted in `%LOCALAPPDATA%\Elysium`.
 
 ---
 
