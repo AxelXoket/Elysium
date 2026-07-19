@@ -9,7 +9,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { useImportCharacter } from "@/lib/query/characters";
-import { isApiError } from "@/lib/api/client";
+import { parseApiError } from "@/lib/errors";
 import { FileJson, Loader2, AlertCircle } from "lucide-react";
 import type { ReactElement } from "react";
 
@@ -36,8 +36,7 @@ export function CharacterImportDialog({ trigger }: CharacterImportDialogProps) {
       resetForm();
       setOpen(false);
     } catch (err) {
-      const msg = isApiError(err) ? err.detail : "Failed to import character";
-      setError(msg);
+      setError(parseApiError(err).message);
     }
   };
 
@@ -56,7 +55,7 @@ export function CharacterImportDialog({ trigger }: CharacterImportDialogProps) {
             className="flex items-center gap-2 text-base font-semibold"
             style={{ color: "var(--color-es-text-light)" }}
           >
-            <FileJson size={15} style={{ color: "rgba(237, 227, 211, 0.86)" }} />
+            <FileJson size={15} style={{ color: "rgba(200, 216, 236, 0.86)" }} />
             Import Character (JSON)
           </DialogTitle>
         </DialogHeader>
@@ -84,9 +83,9 @@ export function CharacterImportDialog({ trigger }: CharacterImportDialogProps) {
               className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs"
               role="alert"
               style={{
-                backgroundColor: "rgba(201, 110, 91, 0.10)",
+                backgroundColor: "rgba(195, 106, 114, 0.10)",
                 color: "var(--color-es-danger)",
-                border: "1px solid rgba(201, 110, 91, 0.18)",
+                border: "1px solid rgba(195, 106, 114, 0.18)",
               }}
             >
               <AlertCircle size={12} />

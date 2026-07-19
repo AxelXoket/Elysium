@@ -1,10 +1,10 @@
 """routers/characters.py -- Character management endpoints (Phase 3).
 
 Routes:
-    GET    /characters              — list all characters
-    POST   /characters              — create a character manually
-    POST   /characters/import       — import from JSON character card
-    GET    /characters/{id}         — get a single character by ID
+    GET    /characters              - list all characters
+    POST   /characters              - create a character manually
+    POST   /characters/import       - import from JSON character card
+    GET    /characters/{id}         - get a single character by ID
 
 Privacy invariants:
     - raw_json is NEVER returned in any API response.
@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
 from database import get_db
+from attachments_service import delete_for_messages
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +133,7 @@ async def create_character(body: CharacterCreate) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# POST /characters/import  — declared BEFORE /{character_id}
+# POST /characters/import  - declared BEFORE /{character_id}
 # ---------------------------------------------------------------------------
 
 @router.post("/import", status_code=201)
@@ -164,7 +165,7 @@ async def import_character(request: Request) -> dict:
         or _text(data, "post_history_instructions")
     )
 
-    # Tags: lenient — non-list → [], non-str items dropped
+    # Tags: lenient - non-list → [], non-str items dropped
     raw_tags = data.get("tags")
     tags: list[str] = (
         [t for t in raw_tags if isinstance(t, str)]
@@ -287,6 +288,12 @@ async def patch_character(character_id: int, body: CharacterPatch) -> dict:
 async def delete_character(character_id: int) -> dict:
     """Delete a character and cascade-delete all associated chats + messages."""
     with get_db() as con:
+        # Write lock up front (parity with delete_chat/clear_chat): without
+        # it the msg_ids SELECT runs in autocommit, and a concurrent send
+        # could link a new attachment between that SELECT and the DELETE -
+        # its row would escape delete_for_messages and the DELETE would then
+        # hit a FOREIGN KEY error.
+        con.execute("BEGIN IMMEDIATE")
         existing = con.execute(
             "SELECT id FROM characters WHERE id = ?", (character_id,)
         ).fetchone()
@@ -300,6 +307,13 @@ async def delete_character(character_id: int) -> dict:
 
         if chat_ids:
             placeholders = ",".join("?" * len(chat_ids))
+            msg_ids = [r["id"] for r in con.execute(
+                f"SELECT id FROM messages WHERE chat_id IN ({placeholders})",
+                chat_ids,
+            ).fetchall()]
+            # Rows + orphaned blobs in this same transaction (E6) - no
+            # post-commit file phase anymore.
+            delete_for_messages(con, msg_ids)
             con.execute(
                 f"DELETE FROM messages WHERE chat_id IN ({placeholders})",
                 chat_ids,

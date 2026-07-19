@@ -12,6 +12,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   CONTEXT_BUDGET_MIN,
+  MAX_STOP_SEQUENCES,
+  SEED_MAX,
+  SEED_MIN,
   clampNumber,
   getContextBudgetUiMax,
   getMaxTokensUiMax,
@@ -19,8 +22,9 @@ import {
   useGenerationSettings,
   type GenerationSettingsValues,
 } from "./GenerationSettingsContext";
+import { isParamSupportedByModel } from "@/lib/generation";
 import type { Model } from "@/lib/schemas/models";
-import { SlidersHorizontal } from "lucide-react";
+import { SlidersHorizontal, X } from "lucide-react";
 
 type NumericSettingKey = Exclude<keyof GenerationSettingsValues, "seed">;
 type SupportedGenerationKey =
@@ -29,7 +33,8 @@ type SupportedGenerationKey =
   | "top_k"
   | "repetition_penalty"
   | "max_tokens"
-  | "seed";
+  | "seed"
+  | "stop";
 
 interface GenerationSettingsDialogProps {
   selectedModel: Model | undefined;
@@ -42,13 +47,15 @@ const SUPPORT_KEYS: SupportedGenerationKey[] = [
   "repetition_penalty",
   "max_tokens",
   "seed",
+  "stop",
 ];
 
 export function GenerationSettingsDialog({
   selectedModel,
 }: GenerationSettingsDialogProps) {
   const [open, setOpen] = useState(false);
-  const { settings, setSetting, resetAll } = useGenerationSettings();
+  const { settings, setSetting, stopSequences, setStopSequences, resetAll } =
+    useGenerationSettings();
   const maxTokensMax = getMaxTokensUiMax(selectedModel);
   const contextBudgetMax = getContextBudgetUiMax(selectedModel);
   const supportKnown = (selectedModel?.supported_parameters.length ?? 0) > 0;
@@ -78,10 +85,12 @@ export function GenerationSettingsDialog({
     displayedSettings.repetition_penalty !== defaults.repetition_penalty ||
     displayedSettings.max_tokens !== defaults.max_tokens ||
     displayedSettings.context_budget_tokens !== defaults.context_budget_tokens ||
-    displayedSettings.seed.trim().length > 0;
+    displayedSettings.seed.trim().length > 0 ||
+    stopSequences.length > 0;
 
   const supportedCount = supportKnown
-    ? SUPPORT_KEYS.filter((key) => isSupported(key, selectedModel)).length
+    ? SUPPORT_KEYS.filter((key) => isParamSupportedByModel(key, selectedModel))
+        .length
     : null;
 
   const setNumeric = (key: NumericSettingKey, value: number) => {
@@ -168,7 +177,7 @@ export function GenerationSettingsDialog({
               max={2}
               step={0.05}
               helper="Controls randomness. Lower is more focused, higher is more creative."
-              disabled={!isSupported("temperature", selectedModel)}
+              disabled={!isParamSupportedByModel("temperature", selectedModel)}
               onChange={(value) => setNumeric("temperature", value)}
             />
             <RangeSetting
@@ -178,7 +187,7 @@ export function GenerationSettingsDialog({
               max={1}
               step={0.01}
               helper="Limits sampling to tokens whose probabilities add up to this value."
-              disabled={!isSupported("top_p", selectedModel)}
+              disabled={!isParamSupportedByModel("top_p", selectedModel)}
               onChange={(value) => setNumeric("top_p", value)}
             />
             <RangeSetting
@@ -189,7 +198,7 @@ export function GenerationSettingsDialog({
               step={1}
               integer
               helper="Limits sampling to the top K candidate tokens. Lower values are more focused."
-              disabled={!isSupported("top_k", selectedModel)}
+              disabled={!isParamSupportedByModel("top_k", selectedModel)}
               onChange={(value) => setNumeric("top_k", value)}
             />
           </GenerationSection>
@@ -202,7 +211,7 @@ export function GenerationSettingsDialog({
               max={1.5}
               step={0.01}
               helper="1.0 is neutral. Higher values reduce repetition."
-              disabled={!isSupported("repetition_penalty", selectedModel)}
+              disabled={!isParamSupportedByModel("repetition_penalty", selectedModel)}
               onChange={(value) => setNumeric("repetition_penalty", value)}
             />
           </GenerationSection>
@@ -216,12 +225,12 @@ export function GenerationSettingsDialog({
               step={1}
               integer
               helper="Maximum tokens the model can generate in the response."
-              disabled={!isSupported("max_tokens", selectedModel)}
+              disabled={!isParamSupportedByModel("max_tokens", selectedModel)}
               onChange={(value) => setNumeric("max_tokens", value)}
             />
             <SeedSetting
               value={settings.seed}
-              disabled={!isSupported("seed", selectedModel)}
+              disabled={!isParamSupportedByModel("seed", selectedModel)}
               onChange={setSeed}
             />
             <RangeSetting
@@ -233,6 +242,14 @@ export function GenerationSettingsDialog({
               integer
               helper="Controls how much chat history Elysium includes in the next request. This is not sent as an OpenRouter parameter."
               onChange={(value) => setNumeric("context_budget_tokens", value)}
+            />
+          </GenerationSection>
+
+          <GenerationSection title="Stop sequences">
+            <StopSequencesSetting
+              sequences={stopSequences}
+              disabled={!isParamSupportedByModel("stop", selectedModel)}
+              onChange={setStopSequences}
             />
           </GenerationSection>
         </div>
@@ -254,16 +271,6 @@ export function GenerationSettingsDialog({
       </DialogContent>
     </Dialog>
   );
-}
-
-function isSupported(
-  key: SupportedGenerationKey,
-  model: Model | undefined,
-): boolean {
-  if (!model?.supported_parameters || model.supported_parameters.length === 0) {
-    return true;
-  }
-  return model.supported_parameters.includes(key);
 }
 
 function formatTokens(value: number): string {
@@ -326,16 +333,14 @@ function RangeSetting({
     <div className={`generation-control ${disabled ? "is-disabled" : ""}`}>
       <div className="flex items-center justify-between gap-3">
         <label className="text-xs font-semibold">{label}</label>
-        <Input
-          type="number"
-          aria-label={`${label} value`}
+        <DraftNumberInput
+          ariaLabel={`${label} value`}
           min={min}
           max={max}
           step={step}
-          value={normalizedValue}
+          committedValue={normalizedValue}
           disabled={disabled}
-          className="sidebar-dialog-field generation-number-input"
-          onChange={(event) => commitValue(Number(event.currentTarget.value))}
+          onCommit={commitValue}
         />
       </div>
       <input
@@ -350,6 +355,188 @@ function RangeSetting({
         onChange={(event) => commitValue(Number(event.currentTarget.value))}
       />
       <p className="generation-helper">{helper}</p>
+      {disabled && (
+        <p className="generation-support-note">
+          Not supported by selected model.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Number input that keeps the raw text while the user is typing and only
+ * parses/clamps on blur or Enter. Empty or invalid input reverts to the
+ * last committed value, so clearing the field never snaps to the minimum
+ * mid-keystroke. The paired slider stays synced to committed values.
+ */
+function DraftNumberInput({
+  ariaLabel,
+  min,
+  max,
+  step,
+  committedValue,
+  disabled,
+  onCommit,
+}: {
+  ariaLabel: string;
+  min: number;
+  max: number;
+  step: number;
+  committedValue: number;
+  disabled: boolean;
+  onCommit: (value: number) => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+
+  const commitDraft = (raw: string) => {
+    setDraft(null);
+    const parsed = Number(raw);
+    if (raw.trim() === "" || !Number.isFinite(parsed)) return;
+    onCommit(parsed);
+  };
+
+  return (
+    <Input
+      type="number"
+      aria-label={ariaLabel}
+      min={min}
+      max={max}
+      step={step}
+      value={draft ?? committedValue}
+      disabled={disabled}
+      className="sidebar-dialog-field generation-number-input"
+      onChange={(event) => setDraft(event.currentTarget.value)}
+      onBlur={(event) => commitDraft(event.currentTarget.value)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          commitDraft(event.currentTarget.value);
+        }
+      }}
+    />
+  );
+}
+
+/** Display form of a stop sequence: real newlines render as the literal "\n". */
+function displayStopSequence(sequence: string): string {
+  return sequence.replaceAll("\n", "\\n");
+}
+
+/**
+ * Per-sequence character cap for the stop-sequence input. Prevents a single
+ * pasted value from overflowing the dialog at the source; chips additionally
+ * truncate the displayed text and expose the full value via `title`.
+ */
+const STOP_SEQUENCE_MAX_LENGTH = 100;
+
+/**
+ * Chip editor for stop sequences. Committing converts a typed literal "\n"
+ * into a real newline; chips render it back as "\n". Capped at
+ * MAX_STOP_SEQUENCES; duplicates are ignored quietly.
+ */
+function StopSequencesSetting({
+  sequences,
+  disabled,
+  onChange,
+}: {
+  sequences: string[];
+  disabled: boolean;
+  onChange: (sequences: string[]) => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const atCap = sequences.length >= MAX_STOP_SEQUENCES;
+
+  const commitDraft = () => {
+    if (disabled || atCap) return;
+    // Typed literal "\n" becomes a real newline in the committed sequence.
+    const converted = draft.replaceAll("\\n", "\n");
+    if (converted.length === 0) return;
+    if (!sequences.includes(converted)) {
+      onChange([...sequences, converted]);
+    }
+    setDraft("");
+  };
+
+  const removeSequence = (sequence: string) => {
+    onChange(sequences.filter((s) => s !== sequence));
+  };
+
+  return (
+    <div className={`generation-control ${disabled ? "is-disabled" : ""}`}>
+      <div className="flex items-center justify-between gap-3">
+        <label className="text-xs font-semibold">Stop sequences</label>
+        <span
+          className="text-[11px]"
+          style={{ color: "rgba(202, 212, 224, 0.72)" }}
+          data-testid="stop-sequence-count"
+        >
+          {sequences.length}/{MAX_STOP_SEQUENCES}
+        </span>
+      </div>
+      {sequences.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {sequences.map((sequence, index) => {
+            const display = displayStopSequence(sequence);
+            return (
+              <span
+                key={sequence}
+                className="inline-flex max-w-[12rem] items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[11px]"
+                style={{
+                  borderColor: "rgba(200, 216, 236, 0.16)",
+                  backgroundColor: "rgba(200, 216, 236, 0.08)",
+                  color: "rgba(238, 243, 249, 0.88)",
+                }}
+                data-testid="stop-sequence-chip"
+                title={display}
+              >
+                <span className="truncate">{display}</span>
+                {/* Remove stays enabled even when the model lacks stop support:
+                    a user who switches to a model without stop support must
+                    still be able to clear stale chips (stop is filtered out of
+                    unsupported-model requests anyway, so removal is always safe). */}
+                <button
+                  type="button"
+                  aria-label={`Remove stop sequence ${index + 1}`}
+                  className="shrink-0 opacity-60 transition-opacity hover:opacity-100"
+                  onClick={() => removeSequence(sequence)}
+                >
+                  <X size={10} />
+                </button>
+              </span>
+            );
+          })}
+        </div>
+      )}
+      <div className="mt-2 flex items-center gap-2">
+        <Input
+          type="text"
+          aria-label="Stop sequence"
+          value={draft}
+          disabled={disabled || atCap}
+          maxLength={STOP_SEQUENCE_MAX_LENGTH}
+          placeholder={atCap ? "Limit reached" : "Add a sequence"}
+          className="sidebar-dialog-field h-8 flex-1 text-xs"
+          onChange={(event) => setDraft(event.currentTarget.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              commitDraft();
+            }
+          }}
+        />
+        <Button
+          type="button"
+          size="sm"
+          className="sidebar-dialog-action text-xs"
+          disabled={disabled || atCap}
+          onClick={commitDraft}
+        >
+          Add
+        </Button>
+      </div>
+      <p className="generation-helper">
+        {"Generation stops when the model outputs one of these. Type \\n for a newline. Max 4 sequences."}
+      </p>
       {disabled && (
         <p className="generation-support-note">
           Not supported by selected model.
@@ -385,6 +572,7 @@ function SeedSetting({
       </div>
       <p className="generation-helper">
         May improve repeatability, but determinism depends on model/provider.
+        Values outside {SEED_MIN} to {SEED_MAX} are clamped.
       </p>
       {disabled && (
         <p className="generation-support-note">

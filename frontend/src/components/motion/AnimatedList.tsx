@@ -1,4 +1,4 @@
-import { type ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import { motion as m, type Variants } from "motion/react";
 import { useReducedMotion } from "./ReducedMotion";
 
@@ -7,15 +7,6 @@ interface AnimatedListProps {
   className?: string;
   stagger?: number;
 }
-
-const containerVariants: Variants = {
-  hidden: {},
-  visible: {
-    transition: {
-      staggerChildren: 0.04,
-    },
-  },
-};
 
 const itemVariants: Variants = {
   hidden: { opacity: 0, y: 8 },
@@ -27,6 +18,11 @@ const reducedItemVariants: Variants = {
   visible: { opacity: 1 },
 };
 
+/* Hoisted/memoized objects: these components sit on streaming-hot paths
+   (MessageList re-renders per flush) - fresh variants/transition literals
+   per render would make motion re-diff every item every frame. */
+const ITEM_TRANSITION = { duration: 0.18, ease: [0.4, 0, 0.2, 1] } as const;
+
 export function AnimatedList({
   children,
   className,
@@ -34,14 +30,17 @@ export function AnimatedList({
 }: AnimatedListProps) {
   const reduced = useReducedMotion();
 
-  const container: Variants = {
-    ...containerVariants,
-    visible: {
-      transition: {
-        staggerChildren: reduced ? 0 : stagger,
+  const container: Variants = useMemo(
+    () => ({
+      hidden: {},
+      visible: {
+        transition: {
+          staggerChildren: reduced ? 0 : stagger,
+        },
       },
-    },
-  };
+    }),
+    [reduced, stagger],
+  );
 
   return (
     <m.div
@@ -66,7 +65,7 @@ export function AnimatedListItem({
   return (
     <m.div
       variants={reduced ? reducedItemVariants : itemVariants}
-      transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
+      transition={ITEM_TRANSITION}
       className={className}
     >
       {children}

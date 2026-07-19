@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { ModalityBadge } from "./ModalityBadge";
 import type { Model } from "@/lib/schemas/models";
 import { useUiStore } from "@/lib/store/uiStore";
@@ -7,10 +8,14 @@ interface ModelCardProps {
   model: Model;
 }
 
-export function ModelCard({ model }: ModelCardProps) {
-  const selectedModelId = useUiStore((s) => s.selectedModelId);
+/* memo + boolean selector: with 237 cards mounted, every parent re-render
+   (each search keystroke) and every selection change used to re-render the
+   whole list in one burst - visible as an ambient-fog hiccup. The boolean
+   selector re-renders exactly two cards on selection (old + new); memo
+   skips the rest entirely (model objects are stable query-cache refs). */
+export const ModelCard = memo(function ModelCard({ model }: ModelCardProps) {
+  const isSelected = useUiStore((s) => s.selectedModelId === model.id);
   const selectModel = useUiStore((s) => s.selectModel);
-  const isSelected = selectedModelId === model.id;
 
   return (
     <button
@@ -82,4 +87,4 @@ export function ModelCard({ model }: ModelCardProps) {
       </div>
     </button>
   );
-}
+});

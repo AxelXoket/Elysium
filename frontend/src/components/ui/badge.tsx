@@ -49,4 +49,5 @@ function Badge({
   })
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- shadcn ui module intentionally co-locates its cva variants with the component; fast-refresh boundary accepted
 export { Badge, badgeVariants }

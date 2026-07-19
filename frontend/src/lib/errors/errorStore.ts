@@ -1,11 +1,14 @@
 /**
- * errorStore.ts — Lightweight Zustand store for error events.
+ * errorStore.ts - Lightweight Zustand store for error events.
  *
  * Provides a centralized, non-persistent error event queue for the app.
  * ErrorToastStack consumes the visible queue and promotes pending events.
  *
  * Rules:
  *  - Max 5 errors visible; extra events wait in-memory until a slot opens
+ *  - Queue is capped at 20 events; oldest queued events are dropped first
+ *  - Duplicate suppression: an event whose code+message matches a currently
+ *    visible toast is skipped entirely (prevents identical toast spam)
  *  - No localStorage/sessionStorage/IndexedDB/cookies
  *  - No sensitive data in error events (messages use safe mapped text)
  *  - Events have stable shape for future UI: id, message, code, createdAt, severity
@@ -45,6 +48,7 @@ interface ErrorState {
 }
 
 const MAX_ERRORS = 5;
+const MAX_QUEUED_ERRORS = 20;
 
 let _counter = 0;
 function nextId(): string {
@@ -91,6 +95,17 @@ export const useErrorStore = create<ErrorState>()((set) => ({
 }));
 
 function enqueueError(state: ErrorState, event: ErrorEvent): Pick<ErrorState, "errors" | "queuedErrors"> {
+  // Dedupe: skip if an identical code+message toast is already visible.
+  const isDuplicate = state.errors.some(
+    (e) => e.code === event.code && e.message === event.message,
+  );
+  if (isDuplicate) {
+    return {
+      errors: state.errors,
+      queuedErrors: state.queuedErrors,
+    };
+  }
+
   if (state.errors.length < MAX_ERRORS) {
     return {
       errors: [...state.errors, event],
@@ -98,9 +113,10 @@ function enqueueError(state: ErrorState, event: ErrorEvent): Pick<ErrorState, "e
     };
   }
 
+  // Cap the queue at MAX_QUEUED_ERRORS - drop the oldest queued events first.
   return {
     errors: state.errors,
-    queuedErrors: [...state.queuedErrors, event],
+    queuedErrors: [...state.queuedErrors, event].slice(-MAX_QUEUED_ERRORS),
   };
 }
 

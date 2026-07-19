@@ -1,5 +1,5 @@
 /**
- * CharacterLibrary.test.ts — FE-6A: Character library logic and data-flow tests.
+ * CharacterLibrary.test.ts - FE-6A: Character library logic and data-flow tests.
  *
  * Covers:
  *  - findCharacterById (lookup from list)
@@ -126,7 +126,7 @@ describe("safeCharacterId", () => {
 });
 
 // ═════════════════════════════════════════════════════════════════
-// buildStartChatInput — explicit start-chat, never auto-create
+// buildStartChatInput - explicit start-chat, never auto-create
 // ═════════════════════════════════════════════════════════════════
 
 describe("buildStartChatInput", () => {
@@ -206,7 +206,7 @@ describe("buildStartChatInput", () => {
 // ═════════════════════════════════════════════════════════════════
 
 describe("Character detail vs start-chat separation", () => {
-  it("findCharacterById is a pure lookup — does not create a chat", () => {
+  it("findCharacterById is a pure lookup - does not create a chat", () => {
     // findCharacterById returns a Character, not a Chat
     const result = findCharacterById(characters, 1);
     expect(result).toBe(character1);
@@ -214,8 +214,8 @@ describe("Character detail vs start-chat separation", () => {
     expect(result).not.toHaveProperty("messages");
   });
 
-  it("buildStartChatInput is a pure helper — does not call API", () => {
-    // Returns a plain object, not a Promise — no API call
+  it("buildStartChatInput is a pure helper - does not call API", () => {
+    // Returns a plain object, not a Promise - no API call
     const input = buildStartChatInput(1);
     expect(input).toEqual({ character_id: 1 });
     // It's not a Promise
@@ -331,7 +331,7 @@ describe("Character error store integration", () => {
 // ═════════════════════════════════════════════════════════════════
 
 describe("Character privacy checks", () => {
-  it("characterHelpers module is pure — no browser storage", async () => {
+  it("characterHelpers module is pure - no browser storage", async () => {
     const mod = await import("@/lib/characters/characterHelpers");
     expect(typeof mod.findCharacterById).toBe("function");
     expect(typeof mod.safeCharacterId).toBe("function");

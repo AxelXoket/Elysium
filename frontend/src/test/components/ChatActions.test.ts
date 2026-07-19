@@ -1,5 +1,5 @@
 /**
- * ChatActions.test.ts — FE-5A: Chat/message action logic and cache behavior tests.
+ * ChatActions.test.ts - FE-5A: Chat/message action logic and cache behavior tests.
  *
  * Covers:
  *  - canRegenerateMessage (eligibility for latest assistant only)
@@ -78,9 +78,17 @@ describe("canRegenerateMessage", () => {
     expect(canRegenerateMessage(endsWithAssistant, undefined)).toBe(false);
   });
 
-  it("returns true for single-assistant list", () => {
+  it("returns false for a lone assistant greeting (no preceding user turn)", () => {
+    // A first_mes greeting has no user turn before it - the backend rejects
+    // regenerating it (no_preceding_user_message), so the affordance is
+    // hidden too.
     const single = [msg(10, "assistant")];
-    expect(canRegenerateMessage(single, single[0])).toBe(true);
+    expect(canRegenerateMessage(single, single[0])).toBe(false);
+  });
+
+  it("returns true once a user turn precedes the last assistant group", () => {
+    const list = [msg(1, "user"), msg(2, "assistant")];
+    expect(canRegenerateMessage(list, list[1])).toBe(true);
   });
 
   it("returns false for a user message that is the only message", () => {
@@ -365,14 +373,14 @@ describe("Chat/message action hook exports", () => {
 // ═════════════════════════════════════════════════════════════════
 
 describe("Chat action privacy checks", () => {
-  it("chatActions module is pure — no browser storage imports", async () => {
+  it("chatActions module is pure - no browser storage imports", async () => {
     const mod = await import("@/lib/chat/chatActions");
     expect(typeof mod.canRegenerateMessage).toBe("function");
     expect(typeof mod.removeMessageAndFollowingFromCache).toBe("function");
   });
 
   it("deleteMessageAndFollowing API function does not send body", async () => {
-    // The API function uses DELETE with no body — verify the function exists
+    // The API function uses DELETE with no body - verify the function exists
     const mod = await import("@/lib/api/chats");
     expect(typeof mod.deleteMessageAndFollowing).toBe("function");
   });

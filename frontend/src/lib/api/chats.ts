@@ -4,9 +4,15 @@ import {
   ChatListSchema,
   MessageListSchema,
   DeletedCountResponseSchema,
+  ActivateVariantResponseSchema,
 } from "../schemas/chats";
 import { OkResponseSchema } from "../schemas/settings";
-import type { Chat, Message, DeletedCountResponse } from "../schemas/chats";
+import type {
+  Chat,
+  Message,
+  DeletedCountResponse,
+  ActivateVariantResponse,
+} from "../schemas/chats";
 import type { OkResponse } from "../schemas/settings";
 
 export function listChats(): Promise<Chat[]> {
@@ -25,6 +31,13 @@ export function createChat(payload: {
   return request("/chats", ChatSchema, {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+}
+
+export function renameChat(chatId: number, title: string): Promise<Chat> {
+  return request(`/chats/${chatId}`, ChatSchema, {
+    method: "PATCH",
+    body: JSON.stringify({ title }),
   });
 }
 
@@ -53,6 +66,20 @@ export function deleteMessageAndFollowing(
     DeletedCountResponseSchema,
     {
       method: "DELETE",
+    },
+  );
+}
+
+/** Make one variant of the chat's last assistant group the active row. */
+export function activateVariant(
+  chatId: number,
+  messageId: number,
+): Promise<ActivateVariantResponse> {
+  return request(
+    `/chats/${chatId}/messages/${messageId}/activate`,
+    ActivateVariantResponseSchema,
+    {
+      method: "POST",
     },
   );
 }

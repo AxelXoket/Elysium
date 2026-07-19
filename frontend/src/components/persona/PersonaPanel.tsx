@@ -453,7 +453,7 @@ function PersonaForm({
               error: null,
             }))
           }
-          placeholder="How should Elysium know you?"
+          placeholder="How should your character know you?"
           className="persona-field"
           disabled={pending}
         />
@@ -513,7 +513,7 @@ function PersonaLoading() {
         <Skeleton
           key={index}
           className="h-24 rounded-xl"
-          style={{ backgroundColor: "rgba(47,49,45,0.08)" }}
+          style={{ backgroundColor: "rgba(28, 38, 50,0.08)" }}
         />
       ))}
     </div>

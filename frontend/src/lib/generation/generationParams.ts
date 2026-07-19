@@ -1,12 +1,12 @@
 /**
- * generationParams.ts — Generation parameter utilities for FE-4A.
+ * generationParams.ts - Generation parameter utilities for FE-4A.
  *
  * Provides:
  *  - Known allowed parameter names (backend allowlist)
  *  - Pruning of undefined/null values while preserving valid falsy (e.g., 0)
  *  - Model-aware filtering using `supported_parameters` from model metadata
- *  - max_tokens clamping against `max_completion_tokens`
- *  - context_budget_tokens clamping (min 512, max model context_length)
+ *  - max_tokens clamping (contract range 1-131072, capped by `max_completion_tokens`)
+ *  - context_budget_tokens clamping (contract range 512-2,000,000, capped by model context_length)
  *  - Completion/regenerate payload construction with privacy guarantees
  *
  * Privacy: No provider fields (zdr, data_collection, allow_fallbacks, provider)
@@ -15,6 +15,7 @@
 
 import type { GenerationParams } from "../schemas/completions";
 import type { Model } from "../schemas/models";
+import { getContextBudgetBounds } from "../models";
 
 // ── Known allowed generation parameter names ─────────────────────
 
@@ -26,6 +27,7 @@ export const ALLOWED_GEN_PARAM_KEYS: ReadonlySet<string> = new Set([
   "repetition_penalty",
   "max_tokens",
   "seed",
+  "stop",
 ]);
 
 /** Fields that must NEVER appear in any outgoing request. */
@@ -39,9 +41,31 @@ const FORBIDDEN_FIELDS = new Set([
 // ── Pruning ──────────────────────────────────────────────────────
 
 /**
+ * Sanitize a `stop` value: keep a non-empty string, or an array reduced to
+ * its non-empty string items. Empty strings, empty arrays, arrays whose
+ * items are all empty, and non-string shapes are pruned (not rejected) -
+ * the backend 422s on empty stop values, so the frontend drops upfront
+ * what the backend would refuse.
+ */
+function sanitizeStop(value: unknown): string | string[] | undefined {
+  if (typeof value === "string") {
+    return value.length > 0 ? value : undefined;
+  }
+  if (Array.isArray(value)) {
+    const items = value.filter(
+      (item): item is string => typeof item === "string" && item.length > 0,
+    );
+    return items.length > 0 ? items : undefined;
+  }
+  return undefined;
+}
+
+/**
  * Remove keys whose values are `undefined` or `null` from generation params.
  * Preserves valid falsy values like `0`.
  * Removes any key not in the allowed set.
+ * `stop` gets shape sanitation on top: empty strings/arrays and empty-string
+ * items are dropped instead of forwarded (see sanitizeStop).
  * Returns `undefined` if result would be empty (no keys with values).
  */
 export function pruneGenerationParams(
@@ -59,6 +83,13 @@ export function pruneGenerationParams(
     if (FORBIDDEN_FIELDS.has(key)) continue;
     // Skip undefined and null
     if (value === undefined || value === null) continue;
+    if (key === "stop") {
+      const sanitized = sanitizeStop(value);
+      if (sanitized === undefined) continue;
+      result[key] = sanitized;
+      hasKeys = true;
+      continue;
+    }
     result[key] = value;
     hasKeys = true;
   }
@@ -78,6 +109,9 @@ export function pruneGenerationParams(
  *
  * When `model.supported_parameters` is populated:
  *   - Only params present in both the allowed set AND the model's supported list are kept.
+ *   - Exception: `stop` always passes through - the backend keeps `stop`
+ *     regardless of supported_parameters (`k in supported or k == "stop"`),
+ *     so filtering it here would silently diverge from what is sent.
  */
 export function filterParamsByModel(
   params: GenerationParams | undefined | null,
@@ -96,7 +130,9 @@ export function filterParamsByModel(
   let hasKeys = false;
 
   for (const [key, value] of Object.entries(pruned)) {
-    if (supported.has(key)) {
+    // Mirror the backend allowlist rule `k in supported or k == "stop"`:
+    // stop is kept even when the model does not advertise it.
+    if (supported.has(key) || key === "stop") {
       result[key] = value;
       hasKeys = true;
     }
@@ -121,29 +157,41 @@ export function isParamSupportedByModel(
 
 // ── max_tokens clamping ──────────────────────────────────────────
 
+/** Contract bounds for max_tokens (from frontend_contract.md). */
+const MAX_TOKENS_MIN = 1;
+const MAX_TOKENS_MAX = 131072;
+
 /**
- * Clamp `max_tokens` to the model's `max_completion_tokens` if known.
- * Returns the original value if model metadata is unavailable.
+ * Clamp `max_tokens` to the contract range [1, 131072], further capped
+ * by the model's `max_completion_tokens` when known.
+ * Returns `undefined` if input is `undefined` or `null`.
  */
 export function clampMaxTokens(
   maxTokens: number | undefined | null,
   model: Pick<Model, "max_completion_tokens"> | null | undefined,
 ): number | undefined {
   if (maxTokens == null) return undefined;
+
+  let max = MAX_TOKENS_MAX;
   if (model?.max_completion_tokens != null && model.max_completion_tokens > 0) {
-    return Math.min(maxTokens, model.max_completion_tokens);
+    max = Math.min(model.max_completion_tokens, MAX_TOKENS_MAX);
   }
-  return maxTokens;
+
+  return Math.min(Math.max(maxTokens, MAX_TOKENS_MIN), max);
 }
 
 // ── Context budget ───────────────────────────────────────────────
 
-const CONTEXT_BUDGET_MIN = 512;
+/** Contract maximum for context_budget_tokens (from frontend_contract.md). */
+const CONTEXT_BUDGET_MAX = 2_000_000;
 
 /**
- * Clamp `context_budget_tokens` to valid range.
- * - Minimum: 512
- * - Maximum: model's `context_length` if known, otherwise no upper clamp
+ * Clamp `context_budget_tokens` to a schema-valid range.
+ * - Bounds come from `getContextBudgetBounds` (single source in lib/models):
+ *   minimum is always 512; a model context below 512 clamps the maximum
+ *   up to 512 so the result never drops below the schema minimum.
+ * - Maximum is capped at the contract limit 2,000,000, which also applies
+ *   when the model context length is unknown.
  * - Returns `undefined` if input is `undefined` or `null`
  */
 export function clampContextBudget(
@@ -152,13 +200,10 @@ export function clampContextBudget(
 ): number | undefined {
   if (budget == null) return undefined;
 
-  let clamped = Math.max(budget, CONTEXT_BUDGET_MIN);
+  const bounds = getContextBudgetBounds(model);
+  const max = Math.min(bounds.max ?? CONTEXT_BUDGET_MAX, CONTEXT_BUDGET_MAX);
 
-  if (model?.context_length != null && model.context_length > 0) {
-    clamped = Math.min(clamped, model.context_length);
-  }
-
-  return clamped;
+  return Math.min(Math.max(budget, bounds.min), max);
 }
 
 // ── Payload construction ─────────────────────────────────────────

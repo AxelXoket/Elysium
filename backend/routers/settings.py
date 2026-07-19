@@ -1,12 +1,12 @@
 """routers/settings.py -- Settings endpoints (Phase 2).
 
 Routes:
-    GET    /settings              — current config state (no secrets)
-    POST   /settings/api-key      — store API key in keyring
-    DELETE /settings/api-key      — remove API key from keyring
-    POST   /settings/proxy        — store proxy config
-    DELETE /settings/proxy        — remove proxy config
-    GET    /settings/proxy/health — proxy health probe result
+    GET    /settings              - current config state (no secrets)
+    POST   /settings/api-key      - store API key in keyring
+    DELETE /settings/api-key      - remove API key from keyring
+    POST   /settings/proxy        - store proxy config
+    DELETE /settings/proxy        - remove proxy config
+    GET    /settings/proxy/health - proxy health probe result
 
 Privacy invariants:
     - API key is NEVER logged, returned, or stored in SQLite.
@@ -21,9 +21,10 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, field_validator
 
-from config import KEYRING_API_KEY, KEYRING_PROXY_URL
+import keyring_service
+from config import SECRET_API_KEY, SECRET_PROXY_URL
 from database import get_db, get_setting, set_setting
-from keyring_service import get_secret, set_secret, delete_secret
+from secrets_service import get_secret, set_secret, delete_secret
 from network_client import reset_client
 from proxy_health import check_proxy_health, invalidate_health_cache
 from openrouter import invalidate_model_cache
@@ -31,6 +32,15 @@ from openrouter import invalidate_model_cache
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/settings", tags=["settings"])
+
+
+def _set_setting_on(con, key: str, value: str) -> None:
+    """set_setting joined to the caller's transaction (same upsert SQL)."""
+    con.execute(
+        "INSERT INTO settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
 
 # ---------------------------------------------------------------------------
 # Request models
@@ -64,9 +74,9 @@ def _validate_proxy_url(url: str) -> None:
     """Raise HTTPException if the proxy URL is invalid.
 
     Error codes:
-        proxy_url_required   — empty or whitespace-only
-        invalid_proxy_scheme — scheme not in allowed set
-        proxy_url_invalid    — valid scheme but missing host
+        proxy_url_required   - empty or whitespace-only
+        invalid_proxy_scheme - scheme not in allowed set
+        proxy_url_invalid    - valid scheme but missing host
     """
     if not url.strip():
         raise HTTPException(400, "proxy_url_required")
@@ -95,12 +105,23 @@ async def get_settings() -> dict:
 
     proxy_alias_raw = rows.get("proxy_alias", "").strip()
     persona_id_raw = rows.get("selected_persona_id")
-    selected_persona_id = int(persona_id_raw) if persona_id_raw else None
+    try:
+        selected_persona_id = int(persona_id_raw) if persona_id_raw else None
+    except ValueError:
+        # Corrupted setting must not break GET /settings; report as unset.
+        logger.warning("Ignoring non-integer selected_persona_id setting.")
+        selected_persona_id = None
+
+    # Secrets presence read in the SAME connection as the settings rows -
+    # one transaction, one snapshot (E5: they are DB rows now).
+    with get_db() as con:
+        api_key_set = get_secret(SECRET_API_KEY, conn=con) is not None
+        proxy_configured = get_secret(SECRET_PROXY_URL, conn=con) is not None
 
     return {
-        "api_key_set": get_secret(KEYRING_API_KEY) is not None,
+        "api_key_set": api_key_set,
         "proxy_required": rows.get("proxy_required") == "1",
-        "proxy_configured": get_secret(KEYRING_PROXY_URL) is not None,
+        "proxy_configured": proxy_configured,
         "proxy_alias": proxy_alias_raw if proxy_alias_raw else None,
         "selected_persona_id": selected_persona_id,
     }
@@ -123,7 +144,11 @@ async def save_api_key(body: ApiKeyBody) -> dict:
     status = await validate_api_key(body.api_key)
 
     if status == "valid":
-        set_secret(KEYRING_API_KEY, body.api_key)
+        set_secret(SECRET_API_KEY, body.api_key)
+        # Saving through the app is the user's resolution path for any stale
+        # or conflicting LEGACY keyring copy: best-effort delete it now (the
+        # unlock migration warns about conflicts but never auto-deletes).
+        keyring_service.delete_legacy(SECRET_API_KEY)
         invalidate_model_cache()
         logger.info("API key validated and saved.")
         return {"ok": True, "key_status": "valid"}
@@ -131,7 +156,7 @@ async def save_api_key(body: ApiKeyBody) -> dict:
     if status == "invalid":
         raise HTTPException(422, "api_key_invalid")
 
-    # validation_unavailable — do NOT store
+    # validation_unavailable - do NOT store
     logger.info("API key validation unavailable; key not stored.")
     return {"ok": False, "key_status": "validation_unavailable"}
 
@@ -143,7 +168,7 @@ async def save_api_key(body: ApiKeyBody) -> dict:
 @router.delete("/api-key")
 async def delete_api_key() -> dict:
     """Remove API key from keyring. Silent if already absent."""
-    delete_secret(KEYRING_API_KEY)
+    delete_secret(SECRET_API_KEY)
     invalidate_model_cache()
     logger.info("API key deleted.")
     return {"ok": True}
@@ -155,17 +180,18 @@ async def delete_api_key() -> dict:
 
 @router.post("/proxy")
 async def save_proxy(body: ProxyBody) -> dict:
-    """Store proxy config. URL goes to keyring; flags go to SQLite."""
+    """Store proxy config atomically: secret + flags in ONE transaction (E5 -
+    everything is DB rows now, so the old two-store split is gone)."""
     _validate_proxy_url(body.proxy_url)
 
-    # 1. Keyring
-    set_secret(KEYRING_PROXY_URL, body.proxy_url.strip())
+    with get_db() as con:
+        set_secret(SECRET_PROXY_URL, body.proxy_url.strip(), conn=con)
+        _set_setting_on(con, "proxy_required", "1" if body.proxy_required else "0")
+        _set_setting_on(con, "proxy_alias", (body.proxy_alias or "").strip())
+    # Same resolution path as the API key: clear any stale legacy copy.
+    keyring_service.delete_legacy(SECRET_PROXY_URL)
 
-    # 2. SQLite
-    set_setting("proxy_required", "1" if body.proxy_required else "0")
-    set_setting("proxy_alias", (body.proxy_alias or "").strip())
-
-    # 3. Side effects
+    # Side effects only after the commit above.
     await reset_client()
     invalidate_health_cache()
     invalidate_model_cache()
@@ -180,15 +206,13 @@ async def save_proxy(body: ProxyBody) -> dict:
 
 @router.delete("/proxy")
 async def delete_proxy() -> dict:
-    """Remove proxy config. URL from keyring; flags reset in SQLite."""
-    # 1. Keyring
-    delete_secret(KEYRING_PROXY_URL)
+    """Remove proxy config atomically (secret + flags, one transaction)."""
+    with get_db() as con:
+        delete_secret(SECRET_PROXY_URL, conn=con)
+        _set_setting_on(con, "proxy_required", "0")
+        _set_setting_on(con, "proxy_alias", "")
 
-    # 2. SQLite
-    set_setting("proxy_required", "0")
-    set_setting("proxy_alias", "")
-
-    # 3. Side effects
+    # Side effects only after the commit above.
     await reset_client()
     invalidate_health_cache()
     invalidate_model_cache()

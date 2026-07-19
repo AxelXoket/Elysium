@@ -1,5 +1,5 @@
 /**
- * GenerationParams.test.ts — FE-4A: Generation parameter utility tests.
+ * GenerationParams.test.ts - FE-4A: Generation parameter utility tests.
  *
  * Covers:
  *  - pruneGenerationParams (known/unknown params, null/undefined pruning, falsy preservation)
@@ -22,6 +22,12 @@ import {
   buildCompletionPayload,
   buildRegeneratePayload,
 } from "@/lib/generation";
+import {
+  GenerationParamsSchema,
+  CompletionRequestSchema,
+  RegenerateRequestSchema,
+  type GenerationParams,
+} from "@/lib/schemas/completions";
 
 // ── Helper: minimal model metadata ──────────────────────────────
 
@@ -36,6 +42,19 @@ function makeModel(overrides: {
     max_completion_tokens: overrides.max_completion_tokens ?? null,
   };
 }
+
+/**
+ * Generation params deliberately contaminated with forbidden provider fields
+ * and unknown keys, as a misbehaving caller might pass them. The intersection
+ * keeps such objects assignable to GenerationParams without `any`.
+ */
+type ContaminatedGenerationParams = GenerationParams & {
+  provider?: unknown;
+  zdr?: unknown;
+  data_collection?: unknown;
+  allow_fallbacks?: unknown;
+  unknown_field?: unknown;
+};
 
 // ═════════════════════════════════════════════════════════════════
 // pruneGenerationParams
@@ -107,19 +126,19 @@ describe("pruneGenerationParams", () => {
   });
 
   it("removes unknown/forbidden keys", () => {
-    const input = {
+    const input: ContaminatedGenerationParams = {
       temperature: 0.8,
       provider: { order: ["openai"] },
       zdr: true,
       data_collection: "deny",
       allow_fallbacks: false,
       unknown_field: 42,
-    } as Record<string, unknown>;
-    const result = pruneGenerationParams(input as any);
+    };
+    const result = pruneGenerationParams(input);
     expect(result).toEqual({ temperature: 0.8 });
   });
 
-  it("all six allowed keys are accepted", () => {
+  it("all seven allowed keys are accepted", () => {
     const result = pruneGenerationParams({
       temperature: 1.0,
       top_p: 0.9,
@@ -127,6 +146,7 @@ describe("pruneGenerationParams", () => {
       repetition_penalty: 1.1,
       max_tokens: 2048,
       seed: 42,
+      stop: ["User:"],
     });
     expect(result).toEqual({
       temperature: 1.0,
@@ -135,6 +155,52 @@ describe("pruneGenerationParams", () => {
       repetition_penalty: 1.1,
       max_tokens: 2048,
       seed: 42,
+      stop: ["User:"],
+    });
+  });
+
+  // ── stop shape sanitation ──────────────────────────────────────
+
+  it("keeps a non-empty stop string", () => {
+    expect(pruneGenerationParams({ stop: "User:" })).toEqual({ stop: "User:" });
+  });
+
+  it("keeps a non-empty stop array", () => {
+    expect(pruneGenerationParams({ stop: ["User:", "\n\n"] })).toEqual({
+      stop: ["User:", "\n\n"],
+    });
+  });
+
+  it("drops an empty stop string", () => {
+    expect(pruneGenerationParams({ stop: "" })).toBeUndefined();
+  });
+
+  it("drops an empty stop array", () => {
+    expect(pruneGenerationParams({ stop: [] })).toBeUndefined();
+  });
+
+  it("drops empty-string items from a stop array", () => {
+    expect(pruneGenerationParams({ stop: ["User:", ""] })).toEqual({
+      stop: ["User:"],
+    });
+  });
+
+  it("drops stop entirely when all array items are empty strings", () => {
+    expect(pruneGenerationParams({ stop: ["", ""] })).toBeUndefined();
+  });
+
+  it("drops non-string stop shapes", () => {
+    expect(
+      pruneGenerationParams({ stop: 42 } as unknown as GenerationParams),
+    ).toBeUndefined();
+    expect(
+      pruneGenerationParams({ stop: [42] } as unknown as GenerationParams),
+    ).toBeUndefined();
+  });
+
+  it("keeps other params when stop is dropped", () => {
+    expect(pruneGenerationParams({ temperature: 0.7, stop: "" })).toEqual({
+      temperature: 0.7,
     });
   });
 });
@@ -183,6 +249,32 @@ describe("filterParamsByModel", () => {
       makeModel({ supported_parameters: ["temperature", "top_k"] }),
     );
     expect(result).toEqual({ temperature: 0, top_k: 0 });
+  });
+
+  // Backend keeps stop regardless of supported_parameters
+  // (`k in supported or k == "stop"`) - the frontend must mirror that.
+  it("always passes stop through even when the model does not list it", () => {
+    const result = filterParamsByModel(
+      { temperature: 0.8, stop: ["User:"] },
+      makeModel({ supported_parameters: ["temperature"] }),
+    );
+    expect(result).toEqual({ temperature: 0.8, stop: ["User:"] });
+  });
+
+  it("passes stop through even when it is the only surviving param", () => {
+    const result = filterParamsByModel(
+      { seed: 42, stop: "\n\n" },
+      makeModel({ supported_parameters: ["temperature"] }),
+    );
+    expect(result).toEqual({ stop: "\n\n" });
+  });
+
+  it("still sanitizes stop shape before pass-through", () => {
+    const result = filterParamsByModel(
+      { temperature: 0.8, stop: ["", ""] },
+      makeModel({ supported_parameters: ["temperature"] }),
+    );
+    expect(result).toEqual({ temperature: 0.8 });
   });
 });
 
@@ -252,6 +344,23 @@ describe("clampMaxTokens", () => {
   it("preserves value when equal to max_completion_tokens", () => {
     expect(clampMaxTokens(4096, makeModel({ max_completion_tokens: 4096 }))).toBe(4096);
   });
+
+  it("caps at contract max 131072 when model is null", () => {
+    expect(clampMaxTokens(999999, null)).toBe(131072);
+  });
+
+  it("caps at contract max 131072 when max_completion_tokens is null", () => {
+    expect(clampMaxTokens(999999, makeModel({ max_completion_tokens: null }))).toBe(131072);
+  });
+
+  it("caps at contract max 131072 even when max_completion_tokens is larger", () => {
+    expect(clampMaxTokens(500000, makeModel({ max_completion_tokens: 200000 }))).toBe(131072);
+  });
+
+  it("floors at contract min 1", () => {
+    expect(clampMaxTokens(0, null)).toBe(1);
+    expect(clampMaxTokens(-10, makeModel({ max_completion_tokens: 4096 }))).toBe(1);
+  });
 });
 
 // ═════════════════════════════════════════════════════════════════
@@ -292,18 +401,41 @@ describe("clampContextBudget", () => {
   });
 
   it("clamps to 512 when model context_length is smaller than 512", () => {
-    // Edge case: if model reports very small context, min wins
+    // Edge case: a sub-512-context model must never produce a budget below
+    // the schema minimum (backend rejects context_budget_tokens < 512).
     expect(
       clampContextBudget(100, makeModel({ context_length: 256 })),
-    ).toBe(256);
-    // But if value is between 256 and 512, max(value, 512) then min(512, 256) = 256
+    ).toBe(512);
     expect(
       clampContextBudget(400, makeModel({ context_length: 256 })),
-    ).toBe(256);
+    ).toBe(512);
+    expect(
+      clampContextBudget(100000, makeModel({ context_length: 256 })),
+    ).toBe(512);
+  });
+
+  it("caps at contract max 2,000,000 when model context is unknown", () => {
+    expect(clampContextBudget(5_000_000, null)).toBe(2_000_000);
+    expect(
+      clampContextBudget(5_000_000, makeModel({ context_length: null })),
+    ).toBe(2_000_000);
+  });
+
+  it("caps at contract max 2,000,000 even when model context is larger", () => {
+    expect(
+      clampContextBudget(5_000_000, makeModel({ context_length: 3_000_000 })),
+    ).toBe(2_000_000);
+  });
+
+  it("never returns a value below 512 for any model context", () => {
+    for (const contextLength of [1, 256, 511, 512, 513, 4096, null]) {
+      const clamped = clampContextBudget(1, makeModel({ context_length: contextLength }));
+      expect(clamped).toBeGreaterThanOrEqual(512);
+    }
   });
 
   it("does not place context_budget_tokens inside generation_params", () => {
-    // This is a structural test — buildCompletionPayload must put it top-level
+    // This is a structural test - buildCompletionPayload must put it top-level
     const payload = buildCompletionPayload({
       message: "test",
       modelId: "test-model",
@@ -386,7 +518,7 @@ describe("buildCompletionPayload", () => {
       generationParams: { max_tokens: 10000 },
       model: makeModel({ max_completion_tokens: 4096, supported_parameters: ["max_tokens"] }),
     });
-    expect((payload.generation_params as any).max_tokens).toBe(4096);
+    expect((payload.generation_params as GenerationParams).max_tokens).toBe(4096);
   });
 
   it("filters unsupported params by model", () => {
@@ -409,7 +541,7 @@ describe("buildCompletionPayload", () => {
         zdr: true,
         data_collection: "deny",
         allow_fallbacks: false,
-      } as any,
+      } as ContaminatedGenerationParams,
     });
     expect(payload).not.toHaveProperty("provider");
     expect(payload).not.toHaveProperty("zdr");
@@ -486,7 +618,7 @@ describe("buildRegeneratePayload", () => {
         zdr: true,
         data_collection: "deny",
         allow_fallbacks: false,
-      } as any,
+      } as ContaminatedGenerationParams,
     });
     expect(payload).not.toHaveProperty("provider");
     expect(payload).not.toHaveProperty("zdr");
@@ -503,7 +635,7 @@ describe("buildRegeneratePayload", () => {
         supported_parameters: ["max_tokens"],
       }),
     });
-    expect((payload.generation_params as any).max_tokens).toBe(16384);
+    expect((payload.generation_params as GenerationParams).max_tokens).toBe(16384);
   });
 });
 
@@ -512,14 +644,15 @@ describe("buildRegeneratePayload", () => {
 // ═════════════════════════════════════════════════════════════════
 
 describe("ALLOWED_GEN_PARAM_KEYS", () => {
-  it("contains exactly the 6 allowed keys", () => {
-    expect(ALLOWED_GEN_PARAM_KEYS.size).toBe(6);
+  it("contains exactly the 7 allowed keys", () => {
+    expect(ALLOWED_GEN_PARAM_KEYS.size).toBe(7);
     expect(ALLOWED_GEN_PARAM_KEYS.has("temperature")).toBe(true);
     expect(ALLOWED_GEN_PARAM_KEYS.has("top_p")).toBe(true);
     expect(ALLOWED_GEN_PARAM_KEYS.has("top_k")).toBe(true);
     expect(ALLOWED_GEN_PARAM_KEYS.has("repetition_penalty")).toBe(true);
     expect(ALLOWED_GEN_PARAM_KEYS.has("max_tokens")).toBe(true);
     expect(ALLOWED_GEN_PARAM_KEYS.has("seed")).toBe(true);
+    expect(ALLOWED_GEN_PARAM_KEYS.has("stop")).toBe(true);
   });
 
   it("does not contain forbidden fields", () => {
@@ -531,5 +664,130 @@ describe("ALLOWED_GEN_PARAM_KEYS", () => {
 
   it("does not contain context_budget_tokens (it's a top-level field)", () => {
     expect(ALLOWED_GEN_PARAM_KEYS.has("context_budget_tokens")).toBe(false);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════
+// stop - payload builder integration
+// ═════════════════════════════════════════════════════════════════
+
+describe("stop in payload builders", () => {
+  it("buildCompletionPayload keeps stop untouched by the model filter", () => {
+    const payload = buildCompletionPayload({
+      message: "Hello",
+      modelId: "openai/gpt-4",
+      generationParams: { temperature: 0.8, stop: ["User:", "\n\n"] },
+      model: makeModel({ supported_parameters: ["temperature"] }),
+    });
+    expect(payload.generation_params).toEqual({
+      temperature: 0.8,
+      stop: ["User:", "\n\n"],
+    });
+  });
+
+  it("buildCompletionPayload preserves string-form stop", () => {
+    const payload = buildCompletionPayload({
+      message: "Hello",
+      modelId: "openai/gpt-4",
+      generationParams: { stop: "User:" },
+      model: makeModel({ supported_parameters: ["temperature"] }),
+    });
+    expect(payload.generation_params).toEqual({ stop: "User:" });
+  });
+
+  it("buildCompletionPayload omits generation_params when stop is empty", () => {
+    const payload = buildCompletionPayload({
+      message: "Hello",
+      modelId: "openai/gpt-4",
+      generationParams: { stop: [] },
+    });
+    expect(payload).not.toHaveProperty("generation_params");
+  });
+
+  it("buildRegeneratePayload keeps stop untouched by the model filter", () => {
+    const payload = buildRegeneratePayload({
+      modelId: "openai/gpt-4",
+      generationParams: { max_tokens: 512, stop: ["END"] },
+      model: makeModel({
+        supported_parameters: ["max_tokens"],
+        max_completion_tokens: 4096,
+      }),
+    });
+    expect(payload.generation_params).toEqual({
+      max_tokens: 512,
+      stop: ["END"],
+    });
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════
+// stop - schema shapes
+// ═════════════════════════════════════════════════════════════════
+
+describe("GenerationParamsSchema stop field", () => {
+  it("accepts a non-empty string", () => {
+    expect(GenerationParamsSchema.safeParse({ stop: "User:" }).success).toBe(true);
+  });
+
+  it("accepts a non-empty array of non-empty strings", () => {
+    expect(
+      GenerationParamsSchema.safeParse({ stop: ["User:", "\n\n"] }).success,
+    ).toBe(true);
+  });
+
+  it("accepts null and omitted", () => {
+    expect(GenerationParamsSchema.safeParse({ stop: null }).success).toBe(true);
+    expect(GenerationParamsSchema.safeParse({}).success).toBe(true);
+  });
+
+  it("rejects an empty string", () => {
+    expect(GenerationParamsSchema.safeParse({ stop: "" }).success).toBe(false);
+  });
+
+  it("rejects an empty array", () => {
+    expect(GenerationParamsSchema.safeParse({ stop: [] }).success).toBe(false);
+  });
+
+  it("rejects arrays containing empty strings", () => {
+    expect(
+      GenerationParamsSchema.safeParse({ stop: ["User:", ""] }).success,
+    ).toBe(false);
+  });
+
+  it("rejects non-string shapes", () => {
+    expect(GenerationParamsSchema.safeParse({ stop: 42 }).success).toBe(false);
+    expect(GenerationParamsSchema.safeParse({ stop: [42] }).success).toBe(false);
+  });
+
+  it("is inherited by CompletionRequestSchema", () => {
+    expect(
+      CompletionRequestSchema.safeParse({
+        message: "Hello",
+        model_id: "openai/gpt-4",
+        generation_params: { stop: ["User:"] },
+      }).success,
+    ).toBe(true);
+    expect(
+      CompletionRequestSchema.safeParse({
+        message: "Hello",
+        model_id: "openai/gpt-4",
+        generation_params: { stop: "" },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("is inherited by RegenerateRequestSchema", () => {
+    expect(
+      RegenerateRequestSchema.safeParse({
+        model_id: "openai/gpt-4",
+        generation_params: { stop: "User:" },
+      }).success,
+    ).toBe(true);
+    expect(
+      RegenerateRequestSchema.safeParse({
+        model_id: "openai/gpt-4",
+        generation_params: { stop: [] },
+      }).success,
+    ).toBe(false);
   });
 });

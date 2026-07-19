@@ -13,7 +13,7 @@ export const CharacterSchema = z.object({
   post_history_instruction: z.string(),
   tags: z.array(z.string()),
   created_at: z.string(),
-  // raw_json: intentionally absent — backend _row_to_dict() excludes it
+  // raw_json: intentionally absent - backend _row_to_dict() excludes it
 });
 
 export const CharacterListSchema = z.array(CharacterSchema);

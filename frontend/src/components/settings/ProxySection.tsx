@@ -9,7 +9,7 @@ import {
   useProxyHealth,
   useRefreshProxyHealth,
 } from "@/lib/query/settings";
-import { isApiError } from "@/lib/api/client";
+import { parseApiError } from "@/lib/errors";
 import { Shield, Trash2, RefreshCw, Check, AlertCircle, Loader2 } from "lucide-react";
 
 export function ProxySection() {
@@ -22,7 +22,27 @@ export function ProxySection() {
   const [urlInput, setUrlInput] = useState("");
   const [aliasInput, setAliasInput] = useState("");
   const [requiredToggle, setRequiredToggle] = useState(false);
+  // Tracks whether the user touched the toggle since the last save. While NOT
+  // dirty, the toggle mirrors the server value - this prevents a save that only
+  // changes the URL from silently flipping proxy_required back to false.
+  const [requiredDirty, setRequiredDirty] = useState(false);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  // Render-time state adjustment (react.dev "you might not need an effect"):
+  // whenever the server value changes and the toggle is not dirty, mirror it.
+  const serverRequired = settings?.proxy_required ?? null;
+  const [syncedServerRequired, setSyncedServerRequired] = useState<boolean | null>(null);
+  if (serverRequired !== syncedServerRequired) {
+    setSyncedServerRequired(serverRequired);
+    if (!requiredDirty && serverRequired != null) {
+      setRequiredToggle(serverRequired);
+    }
+  }
+
+  const handleRequiredChange = (checked: boolean) => {
+    setRequiredDirty(true);
+    setRequiredToggle(checked);
+  };
 
   const handleSave = async () => {
     if (!urlInput.trim()) return;
@@ -33,12 +53,12 @@ export function ProxySection() {
         proxyRequired: requiredToggle,
         proxyAlias: aliasInput.trim() || null,
       });
-      setUrlInput(""); // Clear URL on success — write-only
+      setUrlInput(""); // Clear URL on success - write-only
       setAliasInput("");
+      setRequiredDirty(false); // Saved value is now the server value - resume syncing
       setFeedback({ type: "success", text: "Proxy configured" });
     } catch (err) {
-      const msg = isApiError(err) ? err.detail : "Failed to save proxy";
-      setFeedback({ type: "error", text: msg });
+      setFeedback({ type: "error", text: parseApiError(err).message });
     }
   };
 
@@ -46,10 +66,10 @@ export function ProxySection() {
     setFeedback(null);
     try {
       await deleteProxy.mutateAsync();
+      setRequiredDirty(false);
       setFeedback({ type: "success", text: "Proxy removed" });
     } catch (err) {
-      const msg = isApiError(err) ? err.detail : "Failed to remove proxy";
-      setFeedback({ type: "error", text: msg });
+      setFeedback({ type: "error", text: parseApiError(err).message });
     }
   };
 
@@ -156,7 +176,7 @@ export function ProxySection() {
         <div className="flex items-center gap-2">
           <Switch
             checked={requiredToggle}
-            onCheckedChange={setRequiredToggle}
+            onCheckedChange={handleRequiredChange}
             disabled={busy}
             aria-label="Proxy required toggle"
           />

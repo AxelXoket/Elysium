@@ -1,5 +1,13 @@
 fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
 httpx[socks]>=0.27.0
-keyring>=25.2.0
+keyring>=25.2.0  # legacy-migration reader ONLY (E5 moved secrets into the vault DB)
 pydantic>=2.7.0
+pillow>=10.0
+python-multipart>=0.0.9
+# Capped below 0.6: this wheel bundles the SQLCipher native lib, and a major
+# cipher-default bump could stop opening existing raw-key vaults on pip -U.
+sqlcipher3-wheels>=0.5.7,<0.6
+# Desktop packaging: native window (run_app.py) + one-file exe.
+pywebview>=5.0
+pyinstaller>=6.0

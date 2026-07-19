@@ -1,5 +1,5 @@
 /**
- * activeContextPreview.ts — Active Context Preview data foundation for FE-8A.
+ * activeContextPreview.ts - Active Context Preview data foundation for FE-8A.
  *
  * Produces a safe, approximate, display-only data structure describing what
  * Elysium plans to include in the next completion request.
@@ -102,7 +102,7 @@ export const PREVIEW_DISCLAIMER =
 export interface BuildPreviewInput {
   /** Selected model, or null if none selected. */
   model?: Model | null;
-  /** Full persona list — helper extracts active only. */
+  /** Full persona list - helper extracts active only. */
   personas?: readonly Persona[] | null;
   /** Current chat's character, or null if no chat selected. */
   character?: Character | null;

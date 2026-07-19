@@ -1,5 +1,5 @@
 /**
- * FE-1A tests — Error handling logic foundation.
+ * FE-1A tests - Error handling logic foundation.
  *
  * Tests:
  *  - errorMessages: known codes → safe messages, unknown → fallback
@@ -24,11 +24,18 @@ describe("errorMessages", () => {
     "proxy_missing",
     "proxy_unreachable",
     "proxy_auth_failed",
+    "proxy_unhealthy",
+    "proxy_url_required",
+    "invalid_proxy_scheme",
+    "proxy_url_invalid",
     "openrouter_timeout",
     "openrouter_rate_limited",
     "openrouter_insufficient_credits",
     "openrouter_no_provider_meets_privacy",
     "openrouter_completion_error",
+    "api_key_required_by_openrouter",
+    "invalid_openrouter_models_response",
+    "openrouter_models_error",
     "context_too_large",
     "invalid_generation_params",
     "invalid_gen_params",
@@ -39,9 +46,23 @@ describe("errorMessages", () => {
     "message_not_found",
     "not_last_assistant_message",
     "no_preceding_user_message",
+    "regenerate_conflict",
+    "title_required",
+    "title_too_long",
+    "attachment_invalid",
+    "attachment_too_large",
+    "attachment_not_found",
+    "attachment_unavailable",
+    "too_many_attachments",
+    "model_no_image_input",
     "invalid_response_shape",
     "invalid_openrouter_completion_response",
     "network_error",
+    "timeout",
+    "character_json_too_large",
+    "invalid_character_json",
+    "character_name_required",
+    "internal_error",
     "unknown_error",
   ];
 
@@ -108,6 +129,98 @@ describe("errorMessages", () => {
     expect(getErrorMessage("chat_not_found")).toBe(
       "This chat no longer exists.",
     );
+    expect(getErrorMessage("regenerate_conflict")).toBe(
+      "The chat changed while regenerating. Please refresh and try again.",
+    );
+    expect(getErrorMessage("title_required")).toBe(
+      "Chat title cannot be empty.",
+    );
+    expect(getErrorMessage("title_too_long")).toBe(
+      "Chat title is too long. Please use at most 200 characters.",
+    );
+    expect(getErrorMessage("internal_error")).toBe(
+      "Something went wrong on the server. Please try again.",
+    );
+    expect(getErrorMessage("attachment_too_large")).toBe(
+      "This image is too large. Please use an image under 10 MB.",
+    );
+    expect(getErrorMessage("attachment_unavailable")).toBe(
+      "An attached image was already used by another message. Please attach it again.",
+    );
+    expect(getErrorMessage("model_no_image_input")).toBe(
+      "The selected model does not support image input. Remove the images or choose another model.",
+    );
+    expect(getErrorMessage("too_many_attachments")).toBe(
+      "Too many images attached. Please use at most 4 images per message.",
+    );
+  });
+
+  // Contract audit: proxy-gate + generic-fallback codes now have friendly copy
+  // (previously hit the generic fallback). Cross-checked against backend source:
+  // proxy_health.py, routers/settings.py, routers/characters.py, openrouter.py,
+  // routers/models_router.py, routers/completions.py.
+  it("maps newly added backend codes to their specific messages", () => {
+    // A2 - proxy gate reasons (503) + probe reasons
+    expect(getErrorMessage("proxy_unhealthy")).toBe(
+      "The configured proxy is not responding. Please check your proxy configuration.",
+    );
+    expect(getErrorMessage("timeout")).toBe(
+      "The request timed out. Please try again.",
+    );
+    // A3 - proxy URL validation (settings.py, 400)
+    expect(getErrorMessage("proxy_url_required")).toBe(
+      "A proxy URL is required. Please enter one in Settings.",
+    );
+    expect(getErrorMessage("invalid_proxy_scheme")).toBe(
+      "The proxy URL scheme is not supported. Use http, https, socks5, or socks5h.",
+    );
+    expect(getErrorMessage("proxy_url_invalid")).toBe(
+      "The proxy URL is not valid. Please check it and try again.",
+    );
+    // A3 - OpenRouter models listing (openrouter.py, models_router.py)
+    expect(getErrorMessage("api_key_required_by_openrouter")).toBe(
+      "The provider requires an API key. Please add your OpenRouter API key in Settings.",
+    );
+    expect(getErrorMessage("invalid_openrouter_models_response")).toBe(
+      "Received an unexpected response while loading models. Please try again.",
+    );
+    expect(getErrorMessage("openrouter_models_error")).toBe(
+      "Could not load models. Please try again.",
+    );
+    // A3 - character import (characters.py, 400)
+    expect(getErrorMessage("character_json_too_large")).toBe(
+      "This character file is too large. Please use a smaller file.",
+    );
+    expect(getErrorMessage("invalid_character_json")).toBe(
+      "This character file is not valid JSON. Please check the file and try again.",
+    );
+    expect(getErrorMessage("character_name_required")).toBe(
+      "This character needs a name. Please add one and try again.",
+    );
+  });
+
+  // Every newly added code must be recognized as a known contract code and
+  // must NOT fall through to the generic fallback message.
+  it("recognizes newly added codes as known (not generic fallback)", () => {
+    const newCodes = [
+      "proxy_unhealthy",
+      "timeout",
+      "proxy_url_required",
+      "invalid_proxy_scheme",
+      "proxy_url_invalid",
+      "api_key_required_by_openrouter",
+      "invalid_openrouter_models_response",
+      "openrouter_models_error",
+      "character_json_too_large",
+      "invalid_character_json",
+      "character_name_required",
+    ];
+    for (const code of newCodes) {
+      expect(isKnownErrorCode(code), `${code} should be known`).toBe(true);
+      expect(getErrorMessage(code)).not.toBe(
+        "Something went wrong. Please try again.",
+      );
+    }
   });
 });
 
@@ -266,15 +379,52 @@ describe("errorStore", () => {
   });
 
   it("keeps max 5 visible errors and queues overflow", () => {
+    // Distinct code+message pairs - identical events are deduped (see below)
     for (let i = 0; i < 8; i++) {
-      useErrorStore.getState().pushError(new TypeError(`fail ${i}`));
+      useErrorStore.getState().pushErrorDirect(`code_${i}`, `Message ${i}`);
     }
     const errors = useErrorStore.getState().errors;
     const queuedErrors = useErrorStore.getState().queuedErrors;
     expect(errors).toHaveLength(5);
     expect(queuedErrors).toHaveLength(3);
-    expect(errors[4].code).toBe("network_error");
-    expect(queuedErrors[2].code).toBe("network_error");
+    expect(errors[4].code).toBe("code_4");
+    expect(queuedErrors[2].code).toBe("code_7");
+  });
+
+  it("skips a push when an identical code+message toast is visible", () => {
+    useErrorStore.getState().pushError(new TypeError("fail A"));
+    useErrorStore.getState().pushError(new TypeError("fail B")); // same code+message after mapping
+    const state = useErrorStore.getState();
+    expect(state.errors).toHaveLength(1);
+    expect(state.errors[0].code).toBe("network_error");
+    expect(state.queuedErrors).toHaveLength(0);
+  });
+
+  it("does not dedupe when the message differs for the same code", () => {
+    useErrorStore.getState().pushErrorDirect("same_code", "Message one");
+    useErrorStore.getState().pushErrorDirect("same_code", "Message two");
+    expect(useErrorStore.getState().errors).toHaveLength(2);
+  });
+
+  it("allows the same error again after the visible copy is dismissed", () => {
+    useErrorStore.getState().pushError(new TypeError("fail"));
+    const id = useErrorStore.getState().errors[0].id;
+    useErrorStore.getState().dismiss(id);
+    useErrorStore.getState().pushError(new TypeError("fail"));
+    expect(useErrorStore.getState().errors).toHaveLength(1);
+  });
+
+  it("caps the queue at 20 and drops the oldest queued events", () => {
+    // Fill 5 visible + 25 queued candidates (all distinct)
+    for (let i = 0; i < 30; i++) {
+      useErrorStore.getState().pushErrorDirect(`code_${i}`, `Message ${i}`);
+    }
+    const state = useErrorStore.getState();
+    expect(state.errors).toHaveLength(5);
+    expect(state.queuedErrors).toHaveLength(20);
+    // codes 5..9 were dropped (oldest queued); the queue starts at code_10
+    expect(state.queuedErrors[0].code).toBe("code_10");
+    expect(state.queuedErrors[19].code).toBe("code_29");
   });
 
   it("dismiss promotes the next queued error", () => {
@@ -292,8 +442,8 @@ describe("errorStore", () => {
   });
 
   it("clearAll empties the store", () => {
-    useErrorStore.getState().pushError(new TypeError("fail1"));
-    useErrorStore.getState().pushError(new TypeError("fail2"));
+    useErrorStore.getState().pushErrorDirect("code_a", "Message A");
+    useErrorStore.getState().pushErrorDirect("code_b", "Message B");
     expect(useErrorStore.getState().errors).toHaveLength(2);
     useErrorStore.getState().clearAll();
     expect(useErrorStore.getState().errors).toHaveLength(0);
@@ -301,8 +451,8 @@ describe("errorStore", () => {
   });
 
   it("each error has a unique id", () => {
-    useErrorStore.getState().pushError(new TypeError("a"));
-    useErrorStore.getState().pushError(new TypeError("b"));
+    useErrorStore.getState().pushErrorDirect("code_a", "Message A");
+    useErrorStore.getState().pushErrorDirect("code_b", "Message B");
     const [e1, e2] = useErrorStore.getState().errors;
     expect(e1.id).not.toBe(e2.id);
   });

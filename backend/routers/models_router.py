@@ -1,7 +1,7 @@
 """routers/models_router.py -- OpenRouter model listing endpoint (Phase 5A).
 
 Routes:
-    GET /models/openrouter   — list available OpenRouter models
+    GET /models/openrouter   - list available OpenRouter models
 
 Privacy invariants:
     - API key is NEVER logged, returned, or forwarded.

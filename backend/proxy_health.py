@@ -1,4 +1,4 @@
-"""proxy_health.py — Proxy health probe with 30-second TTL cache.
+"""proxy_health.py - Proxy health probe with 30-second TTL cache.
 
 Semantics (μ1, μ2):
 - proxy_required=false AND no proxy URL  →  healthy=True (direct is intentional; no probe).
@@ -10,15 +10,17 @@ The kill-switch enforcement (block vs allow) lives in the completions router.
 This module only reports the current health state.
 
 Probe target: GET https://openrouter.ai/api/v1/models (public, no auth required).
-Any non-5xx response is considered a live proxy.
+Any 2xx/3xx response is considered a live proxy; any 4xx/5xx is reported as
+unhealthy with reason "proxy_auth_failed" (a 4xx from a public endpoint usually
+means the proxy itself rejected or mangled the request).
 
 Reason codes:
-  null              — healthy
-  proxy_missing     — proxy_required=true but no URL in keyring
-  proxy_unreachable — connection / DNS failure
-  auth_failed       — HTTP 4xx from probe target
-  timeout           — exceeded HEALTH_PROBE_TIMEOUT
-  unknown_error     — other exception
+  null              - healthy
+  proxy_missing     - proxy_required=true but no URL in keyring
+  proxy_unreachable - connection / DNS failure
+  proxy_auth_failed - HTTP 4xx from probe target
+  timeout           - exceeded HEALTH_PROBE_TIMEOUT
+  unknown_error     - other exception
 
 Privacy: response body is never read or logged.
 """
@@ -27,9 +29,9 @@ import time
 import logging
 import httpx
 
-from config import OPENROUTER_BASE_URL, PROXY_HEALTH_TTL, HEALTH_PROBE_TIMEOUT, KEYRING_PROXY_URL
+from config import OPENROUTER_BASE_URL, PROXY_HEALTH_TTL, HEALTH_PROBE_TIMEOUT, SECRET_PROXY_URL
 from network_client import get_client
-from keyring_service import get_secret
+from secrets_service import get_secret
 
 logger = logging.getLogger(__name__)
 
@@ -63,18 +65,18 @@ def invalidate_health_cache() -> None:
 
 async def _evaluate() -> dict:
     """Determine health state based on proxy_required and proxy URL presence."""
-    proxy_url = get_secret(KEYRING_PROXY_URL)
+    proxy_url = get_secret(SECRET_PROXY_URL)
     proxy_required = _read_proxy_required()
 
     if not proxy_url:
         if proxy_required:
-            # Required but not configured — always unhealthy.
+            # Required but not configured - always unhealthy.
             return {"healthy": False, "latency_ms": None, "reason": "proxy_missing"}
         else:
-            # Optional and not configured — direct connection is intentional.
+            # Optional and not configured - direct connection is intentional.
             return {"healthy": True, "latency_ms": None, "reason": None}
 
-    # Proxy URL is configured — probe regardless of proxy_required.
+    # Proxy URL is configured - probe regardless of proxy_required.
     return await _probe()
 
 
@@ -95,9 +97,12 @@ async def _probe() -> dict:
                         response.status_code, latency_ms)
             return {"healthy": True, "latency_ms": latency_ms, "reason": None}
 
-        # 4xx from the public endpoint is unexpected but treated as auth_failed.
+        # 4xx from the public endpoint is unexpected; report it as a PROXY auth
+        # failure. A distinct code (not OpenRouter's "auth_failed") keeps the
+        # frontend from telling the user to check their API key for a proxy
+        # problem.
         logger.warning("Proxy health probe 4xx: status=%d", response.status_code)
-        return {"healthy": False, "latency_ms": latency_ms, "reason": "auth_failed"}
+        return {"healthy": False, "latency_ms": latency_ms, "reason": "proxy_auth_failed"}
 
     except httpx.TimeoutException:
         logger.warning("Proxy health probe timed out after %.1f s", HEALTH_PROBE_TIMEOUT)

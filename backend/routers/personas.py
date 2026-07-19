@@ -1,11 +1,11 @@
 """routers/personas.py -- Persona management endpoints (Part C).
 
 Routes:
-    GET    /personas             — list all personas
-    POST   /personas             — create a persona
-    PATCH  /personas/{id}        — edit a persona
-    DELETE /personas/{id}        — delete a persona
-    POST   /personas/{id}/select — set as active persona
+    GET    /personas             - list all personas
+    POST   /personas             - create a persona
+    PATCH  /personas/{id}        - edit a persona
+    DELETE /personas/{id}        - delete a persona
+    POST   /personas/{id}/select - set as active persona
 
 Privacy invariants:
     - Persona description is NEVER logged.
@@ -73,6 +73,18 @@ def _row_to_dict(row, is_active: bool = False) -> dict:
 _SETTINGS_KEY = "selected_persona_id"
 
 
+def _read_selected_id() -> int | None:
+    """Read selected_persona_id defensively; a corrupted value means None."""
+    raw = get_setting(_SETTINGS_KEY)
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Ignoring non-integer selected_persona_id setting.")
+        return None
+
+
 # ---------------------------------------------------------------------------
 # GET /personas
 # ---------------------------------------------------------------------------
@@ -85,8 +97,7 @@ async def list_personas() -> list[dict]:
             "SELECT id, display_name, description, created_at, updated_at "
             "FROM personas ORDER BY id ASC"
         ).fetchall()
-    selected_raw = get_setting(_SETTINGS_KEY)
-    selected_id = int(selected_raw) if selected_raw else None
+    selected_id = _read_selected_id()
     return [_row_to_dict(r, is_active=(r["id"] == selected_id)) for r in rows]
 
 
@@ -148,8 +159,7 @@ async def patch_persona(persona_id: int, body: PersonaPatch) -> dict:
             "FROM personas WHERE id = ?",
             (persona_id,),
         ).fetchone()
-    selected_raw = get_setting(_SETTINGS_KEY)
-    selected_id = int(selected_raw) if selected_raw else None
+    selected_id = _read_selected_id()
     logger.info("Persona updated: id=%d", persona_id)
     return _row_to_dict(row, is_active=(row["id"] == selected_id))
 

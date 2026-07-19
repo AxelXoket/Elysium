@@ -9,9 +9,10 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
+import { Collapse } from "@/components/motion/Collapse";
 import { useCreateCharacter } from "@/lib/query/characters";
 import { useUiStore } from "@/lib/store/uiStore";
-import { isApiError } from "@/lib/api/client";
+import { parseApiError } from "@/lib/errors";
 import { Plus, Loader2, AlertCircle, ChevronDown } from "lucide-react";
 import type { ReactElement, ReactNode } from "react";
 
@@ -21,6 +22,7 @@ interface CharacterCreateDialogProps {
 
 export function CharacterCreateDialog({ trigger }: CharacterCreateDialogProps) {
   const [open, setOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const create = useCreateCharacter();
   const selectCharacter = useUiStore((s) => s.selectCharacter);
   const [error, setError] = useState<string | null>(null);
@@ -45,6 +47,7 @@ export function CharacterCreateDialog({ trigger }: CharacterCreateDialogProps) {
     setSystemPrompt("");
     setPostHistoryInstruction("");
     setTagsInput("");
+    setAdvancedOpen(false);
     setError(null);
   };
 
@@ -71,8 +74,7 @@ export function CharacterCreateDialog({ trigger }: CharacterCreateDialogProps) {
       resetForm();
       setOpen(false);
     } catch (err) {
-      const msg = isApiError(err) ? err.detail : "Failed to create character";
-      setError(msg);
+      setError(parseApiError(err).message);
     }
   };
 
@@ -93,7 +95,7 @@ export function CharacterCreateDialog({ trigger }: CharacterCreateDialogProps) {
             className="flex items-center gap-2 text-base font-semibold"
             style={{ color: "var(--color-es-text-light)" }}
           >
-            <Plus size={15} style={{ color: "rgba(237, 227, 211, 0.86)" }} />
+            <Plus size={15} style={{ color: "rgba(200, 216, 236, 0.86)" }} />
             Create Character
           </DialogTitle>
         </DialogHeader>
@@ -178,49 +180,54 @@ export function CharacterCreateDialog({ trigger }: CharacterCreateDialogProps) {
           </section>
 
           {/* ── Section: Advanced (collapsible) ── */}
-          <details className="group">
-            <summary
-              className="flex cursor-pointer list-none items-center gap-1.5 text-xs font-medium select-none"
+          <div>
+            <button
+              type="button"
+              onClick={() => setAdvancedOpen((o) => !o)}
+              aria-expanded={advancedOpen}
+              className="flex w-full cursor-pointer items-center gap-1.5 text-xs font-medium select-none"
               style={{ color: "var(--color-es-text-muted)" }}
             >
               <ChevronDown
                 size={12}
-                className="transition-transform group-open:rotate-180"
+                className={`transition-transform ${advancedOpen ? "rotate-180" : ""}`}
               />
               Advanced (System Prompt, Post-History Instruction)
-            </summary>
-            <div className="mt-3 space-y-3">
-              <Field label="System Prompt">
-                <Textarea
-                  value={systemPrompt}
-                  onChange={(e) => setSystemPrompt(e.target.value)}
-                  placeholder="System-level instructions…"
-                  disabled={create.isPending}
-                  rows={3}
-                  className="sidebar-dialog-field resize-none text-sm"
-                />
-              </Field>
-              <Field label="Post-History Instruction">
-                <Textarea
-                  value={postHistoryInstruction}
-                  onChange={(e) => setPostHistoryInstruction(e.target.value)}
-                  placeholder="Instruction after chat history…"
-                  disabled={create.isPending}
-                  rows={2}
-                  className="sidebar-dialog-field resize-none text-sm"
-                />
-              </Field>
-            </div>
-          </details>
+            </button>
+            <Collapse open={advancedOpen}>
+              <div className="mt-3 space-y-3">
+                <Field label="System Prompt">
+                  <Textarea
+                    value={systemPrompt}
+                    onChange={(e) => setSystemPrompt(e.target.value)}
+                    placeholder="System-level instructions…"
+                    disabled={create.isPending}
+                    rows={3}
+                    className="sidebar-dialog-field resize-none text-sm"
+                  />
+                </Field>
+                <Field label="Post-History Instruction">
+                  <Textarea
+                    value={postHistoryInstruction}
+                    onChange={(e) => setPostHistoryInstruction(e.target.value)}
+                    placeholder="Instruction after chat history…"
+                    disabled={create.isPending}
+                    rows={2}
+                    className="sidebar-dialog-field resize-none text-sm"
+                  />
+                </Field>
+              </div>
+            </Collapse>
+          </div>
 
           {error && (
             <div
               className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs"
               role="alert"
               style={{
-                backgroundColor: "rgba(201, 110, 91, 0.10)",
+                backgroundColor: "rgba(195, 106, 114, 0.10)",
                 color: "var(--color-es-danger)",
-                border: "1px solid rgba(201, 110, 91, 0.18)",
+                border: "1px solid rgba(195, 106, 114, 0.18)",
               }}
             >
               <AlertCircle size={12} />

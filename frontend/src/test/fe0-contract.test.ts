@@ -25,7 +25,11 @@ import {
   SettingsSchema,
 } from "@/lib/schemas/settings";
 import { PersonaSchema } from "@/lib/schemas/personas";
-import { DeletedCountResponseSchema } from "@/lib/schemas/chats";
+import { DeletedCountResponseSchema, MessageSchema } from "@/lib/schemas/chats";
+import {
+  CompletionRequestSchema,
+  RegenerateRequestSchema,
+} from "@/lib/schemas/completions";
 import { completionFixture, personaFixture } from "./mocks/fixtures";
 import { mockFetch } from "./mocks/api";
 
@@ -170,6 +174,56 @@ describe("FE-0 contract foundation", () => {
     expect(body).not.toHaveProperty("zdr");
     expect(body).not.toHaveProperty("data_collection");
     expect(body).not.toHaveProperty("allow_fallbacks");
+  });
+
+  it("message rows parse attachments with an empty-array default", () => {
+    const base = {
+      id: 1,
+      chat_id: 1,
+      role: "user",
+      content: "hi",
+      created_at: "2026-01-01T00:00:00",
+    };
+
+    // Rows without the key (older payloads, optimistic entries) default to []
+    expect(MessageSchema.parse(base).attachments).toEqual([]);
+
+    // Rows with attachment metadata round-trip
+    const withImages = MessageSchema.parse({
+      ...base,
+      attachments: [{ id: 9, mime: "image/png", width: 640, height: 480 }],
+    });
+    expect(withImages.attachments).toEqual([
+      { id: 9, mime: "image/png", width: 640, height: 480 },
+    ]);
+  });
+
+  it("completion request accepts at most 4 positive attachment ids", () => {
+    const base = { message: "hi", model_id: "m" };
+
+    expect(
+      CompletionRequestSchema.parse({ ...base, attachments: [1, 2, 3, 4] })
+        .attachments,
+    ).toEqual([1, 2, 3, 4]);
+    // Omitted key stays omitted (never an empty array)
+    expect(CompletionRequestSchema.parse(base).attachments).toBeUndefined();
+    expect(
+      CompletionRequestSchema.safeParse({ ...base, attachments: [1, 2, 3, 4, 5] })
+        .success,
+    ).toBe(false);
+    expect(
+      CompletionRequestSchema.safeParse({ ...base, attachments: [0] }).success,
+    ).toBe(false);
+    expect(
+      CompletionRequestSchema.safeParse({ ...base, attachments: [1.5] }).success,
+    ).toBe(false);
+
+    // Regenerate carries no attachments field - unknown keys are stripped
+    const regen = RegenerateRequestSchema.parse({
+      model_id: "m",
+      attachments: [1],
+    });
+    expect(regen).not.toHaveProperty("attachments");
   });
 
   it("clear and message delete parse deleted_count", async () => {

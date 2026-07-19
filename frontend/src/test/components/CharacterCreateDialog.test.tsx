@@ -97,4 +97,40 @@ describe("Character Create Dialog Tests", () => {
     // raw_json should never appear
     expect(screen.queryByText("raw_json")).not.toBeInTheDocument();
   });
+
+  // FIX-3: create failure renders a safe mapped message, never raw detail
+  it("FIX-3: create error shows mapped message instead of raw detail", async () => {
+    const fetchMock = mockFetch({});
+
+    const user = userEvent.setup();
+    render(
+      <CharacterCreateDialog trigger={<Button>Create</Button>} />,
+      { wrapper },
+    );
+
+    await user.click(screen.getByRole("button", { name: /create/i }));
+    await waitFor(() => {
+      expect(screen.getByText("Create Character")).toBeInTheDocument();
+    });
+
+    await user.type(
+      screen.getByPlaceholderText("Character name"),
+      "Broken Char",
+    );
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ detail: "RAW_UPSTREAM_DETAIL" }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    const createBtns = screen.getAllByRole("button", { name: /create/i });
+    await user.click(createBtns[createBtns.length - 1]);
+
+    expect(
+      await screen.findByText("Something went wrong. Please try again."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("RAW_UPSTREAM_DETAIL")).not.toBeInTheDocument();
+  });
 });

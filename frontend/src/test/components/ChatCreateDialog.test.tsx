@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ChatCreateDialog } from "@/components/chats/ChatCreateDialog";
@@ -113,5 +113,70 @@ describe("ChatCreateDialog", () => {
         screen.getByText("Select a character first to start a chat."),
       ).toBeInTheDocument(),
     );
+  });
+
+  // FE-6B: payload is built via buildStartChatInput - trimmed title included
+  it("FE-6B: includes trimmed title in POST body when provided", async () => {
+    const user = userEvent.setup();
+    const mock = mockFetch({
+      "/chats": { body: chatFixture },
+    });
+
+    render(
+      <ChatCreateDialog
+        trigger={<Button>Open</Button>}
+      />,
+      { wrapper },
+    );
+
+    await user.click(screen.getByText("Open"));
+    await waitFor(() =>
+      expect(screen.getByText("New Chat")).toBeInTheDocument(),
+    );
+
+    await user.type(
+      screen.getByPlaceholderText("Chat title..."),
+      "  My Story  ",
+    );
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => {
+      const postCalls = mock.mock.calls.filter(
+        (call: unknown[]) =>
+          typeof call[0] === "string" &&
+          call[0].includes("/chats") &&
+          (call[1] as RequestInit)?.method === "POST",
+      );
+      expect(postCalls.length).toBeGreaterThanOrEqual(1);
+      const body = JSON.parse((postCalls[0][1] as RequestInit).body as string);
+      expect(body).toEqual({ character_id: 1, title: "My Story" });
+    });
+  });
+
+  // FIX-3: create failure renders a safe mapped message, never raw detail
+  it("FIX-3: create error shows mapped message instead of raw detail", async () => {
+    const user = userEvent.setup();
+    mockFetch({
+      "/chats": { status: 500, body: { detail: "RAW_UPSTREAM_DETAIL" } },
+    });
+
+    render(
+      <ChatCreateDialog
+        trigger={<Button>Open</Button>}
+      />,
+      { wrapper },
+    );
+
+    await user.click(screen.getByText("Open"));
+    await waitFor(() =>
+      expect(screen.getByText("New Chat")).toBeInTheDocument(),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    expect(
+      await screen.findByText("Something went wrong. Please try again."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("RAW_UPSTREAM_DETAIL")).not.toBeInTheDocument();
   });
 });

@@ -1,5 +1,5 @@
 /**
- * personaHelpers.ts — Persona selection/data-flow utilities for FE-3A.
+ * personaHelpers.ts - Persona selection/data-flow utilities for FE-3A.
  *
  * Provides:
  *  - Find the active persona from a list
@@ -9,7 +9,7 @@
  * Privacy:
  *  - Never stores personas in browser storage
  *  - Never includes persona description in completion payloads
- *  - Never sends full persona objects — only persona_id
+ *  - Never sends full persona objects - only persona_id
  *  - Only the active/selected persona may be used for generation
  */
 
@@ -34,7 +34,7 @@ export function findActivePersona(
  * Returns `undefined` if no persona is active.
  *
  * Use this when building completion/regenerate payloads to include only the
- * selected persona's ID — never the full object or description.
+ * selected persona's ID - never the full object or description.
  */
 export function getSelectedPersonaId(
   personas: readonly Persona[] | null | undefined,
@@ -46,7 +46,7 @@ export function getSelectedPersonaId(
  * Check whether a persona ID is present and valid for payload inclusion.
  * Returns the ID if it's a positive integer, otherwise `undefined`.
  *
- * This is a safety helper — prevents sending `0`, negative IDs, or non-numeric
+ * This is a safety helper - prevents sending `0`, negative IDs, or non-numeric
  * values in the `persona_id` field. Backend persona IDs are always positive integers.
  */
 export function safePersonaId(

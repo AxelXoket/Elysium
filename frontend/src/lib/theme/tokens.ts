@@ -1,5 +1,5 @@
 /**
- * Elysium Seasonal token names — TS reference for consistency.
+ * Elysium Seasonal token names - TS reference for consistency.
  * Actual CSS variables are defined in index.css @theme block.
  * This file is read-only reference; import for autocomplete convenience.
  */

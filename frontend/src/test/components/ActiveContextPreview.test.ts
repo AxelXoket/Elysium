@@ -1,5 +1,5 @@
 /**
- * ActiveContextPreview.test.ts — FE-8A: Active Context Preview logic tests.
+ * ActiveContextPreview.test.ts - FE-8A: Active Context Preview logic tests.
  *
  * Covers:
  *  - buildActiveContextPreview: full preview data shape
@@ -19,10 +19,6 @@ import {
   buildActiveContextPreview,
   NOT_INCLUDED_ITEMS,
   PREVIEW_DISCLAIMER,
-} from "@/lib/preview";
-import type {
-  ActiveContextPreview,
-  BuildPreviewInput,
 } from "@/lib/preview";
 import type { Model } from "@/lib/schemas/models";
 import type { Persona } from "@/lib/schemas/personas";
@@ -139,9 +135,9 @@ describe("Model preview", () => {
     expect(preview.included.model?.contextLength).toBeNull();
   });
 
-  it("shows text-only note for vision model", () => {
+  it("does not show text-only note for vision model (images are sent)", () => {
     const preview = buildActiveContextPreview({ model: visionModel });
-    expect(preview.included.model?.showTextOnlyNote).toBe(true);
+    expect(preview.included.model?.showTextOnlyNote).toBe(false);
   });
 
   it("does not show text-only note for text model", () => {
@@ -324,7 +320,7 @@ describe("Generation params preview", () => {
 
   it("omits forbidden provider fields", () => {
     const preview = buildActiveContextPreview({
-      generationParams: { temperature: 0.7 } as any,
+      generationParams: { temperature: 0.7 },
     });
     expect(preview.included.generationParams).not.toHaveProperty("provider");
     expect(preview.included.generationParams).not.toHaveProperty("zdr");

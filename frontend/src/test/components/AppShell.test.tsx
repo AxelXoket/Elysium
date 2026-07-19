@@ -1,32 +1,61 @@
-import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+﻿import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
 import { Providers } from "@/app/providers";
-import { App } from "@/app/App";
+import { AppShell } from "@/components/layout/AppShell";
+import { queryClient } from "@/lib/query/queryClient";
+import { useUiStore } from "@/lib/store/uiStore";
+import { mockFetch } from "@/test/mocks/api";
+import {
+  settingsFixture,
+  proxyHealthFixture,
+  characterFixture,
+  chatFixture,
+  modelListFixture,
+} from "@/test/mocks/fixtures";
 
 describe("T-01: App shell renders without crash", () => {
+  // Mock fetch so these synchronous render assertions neither hit a live dev
+  // backend nor leak unhandled rejections into the shared singleton client.
+  beforeEach(() => {
+    mockFetch({
+      "/settings/proxy/health": { body: proxyHealthFixture },
+      "/settings": { body: settingsFixture },
+      "/characters": { body: [characterFixture] },
+      "/models/openrouter": { body: modelListFixture },
+      "/personas": { body: [] },
+      "/chats": { body: [chatFixture] },
+    });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    queryClient.clear();
+  });
+
   it("renders the Elysium heading", () => {
     render(
       <Providers>
-        <App />
+        <AppShell />
       </Providers>,
     );
-    expect(screen.getByText("Elysium")).toBeInTheDocument();
+    // "Elysium" now renders as the brand wordmark in more than one place
+    // (sidebar header + empty-state welcome), so assert presence, not unique.
+    expect(screen.getAllByText("Elysium").length).toBeGreaterThan(0);
   });
 
   it("renders the sidebar with Characters section", () => {
     render(
       <Providers>
-        <App />
+        <AppShell />
       </Providers>,
     );
     expect(screen.getByText("Characters")).toBeInTheDocument();
   });
 
-  // Updated from "Settings" → "Secrets" (Phase 6E-A tab rename)
+  // Updated from "Settings" â†’ "Secrets" (Phase 6E-A tab rename)
   it("renders the right panel with Secrets tab", () => {
     render(
       <Providers>
-        <App />
+        <AppShell />
       </Providers>,
     );
     expect(screen.getByRole("tab", { name: /secrets/i })).toBeInTheDocument();
@@ -35,7 +64,7 @@ describe("T-01: App shell renders without crash", () => {
   it("renders the composer", () => {
     render(
       <Providers>
-        <App />
+        <AppShell />
       </Providers>,
     );
     const textarea = screen.getByLabelText("Message");
@@ -46,7 +75,7 @@ describe("T-01: App shell renders without crash", () => {
   it("T-72: renders Models tab", () => {
     render(
       <Providers>
-        <App />
+        <AppShell />
       </Providers>,
     );
     expect(screen.getByRole("tab", { name: /models/i })).toBeInTheDocument();
@@ -56,7 +85,7 @@ describe("T-01: App shell renders without crash", () => {
   it("T-73: renders Secrets tab", () => {
     render(
       <Providers>
-        <App />
+        <AppShell />
       </Providers>,
     );
     expect(screen.getByRole("tab", { name: /secrets/i })).toBeInTheDocument();
@@ -66,19 +95,61 @@ describe("T-01: App shell renders without crash", () => {
   it("T-74: renders Persona tab", () => {
     render(
       <Providers>
-        <App />
+        <AppShell />
       </Providers>,
     );
     expect(screen.getByRole("tab", { name: /persona/i })).toBeInTheDocument();
   });
 
-  // T-75: Sidebar footer shows v0.1
-  it("T-75: sidebar footer shows v0.1", () => {
+  // T-75: Sidebar footer shows the app version (injected from package.json)
+  it("T-75: sidebar footer shows the app version", () => {
     render(
       <Providers>
-        <App />
+        <AppShell />
       </Providers>,
     );
-    expect(screen.getByText(/v0\.1/i)).toBeInTheDocument();
+    expect(screen.getByText(/^v\d+\.\d+/i)).toBeInTheDocument();
+  });
+});
+
+describe("AppShell stale selection reconciliation", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    queryClient.clear();
+    useUiStore.setState({
+      selectedChatId: null,
+      selectedCharacterId: null,
+      selectedModelId: null,
+    });
+  });
+
+  it("clears a stale persisted chat selection once server data loads", async () => {
+    queryClient.clear();
+    mockFetch({
+      "/settings/proxy/health": { body: proxyHealthFixture },
+      "/settings": { body: settingsFixture },
+      "/characters": { body: [characterFixture] },
+      "/models/openrouter": { body: modelListFixture },
+      "/personas": { body: [] },
+      "/chats": { body: [chatFixture] },
+    });
+    useUiStore.setState({
+      selectedChatId: 999, // persisted id that no longer exists server-side
+      selectedCharacterId: characterFixture.id,
+      selectedModelId: "openai/gpt-4o",
+    });
+
+    render(
+      <Providers>
+        <AppShell />
+      </Providers>,
+    );
+
+    await waitFor(() => {
+      expect(useUiStore.getState().selectedChatId).toBeNull();
+    });
+    // Valid selections survive
+    expect(useUiStore.getState().selectedCharacterId).toBe(characterFixture.id);
+    expect(useUiStore.getState().selectedModelId).toBe("openai/gpt-4o");
   });
 });

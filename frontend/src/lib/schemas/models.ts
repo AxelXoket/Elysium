@@ -1,6 +1,6 @@
 import { z } from "zod/v4";
 
-// Exact match of openrouter.py _normalise_model() — 12 fields
+// Exact match of openrouter.py _normalise_model() - 12 fields
 export const ModelSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -10,7 +10,11 @@ export const ModelSchema = z.object({
   supported_parameters: z.array(z.string()),
   input_modalities: z.array(z.string()),
   output_modalities: z.array(z.string()),
-  pricing: z.record(z.string(), z.string()),
+  // Pricing values are USUALLY strings ("0.000003") but OpenRouter also nests
+  // structured entries like `overrides: [{…}]` - display-only, so accept any
+  // value. A strict string record rejected the whole list (one bad model fails
+  // the z.array parse → the entire fetch returns no models).
+  pricing: z.record(z.string(), z.unknown()),
   top_provider: z.record(z.string(), z.unknown()),
   created: z.number().nullable(),
   canonical_slug: z.string(),

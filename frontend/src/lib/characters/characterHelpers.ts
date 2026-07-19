@@ -1,5 +1,5 @@
 /**
- * characterHelpers.ts — Character library logic helpers for FE-6A.
+ * characterHelpers.ts - Character library logic helpers for FE-6A.
  *
  * Provides:
  *  - findCharacterById: lookup from list
@@ -48,13 +48,13 @@ export function safeCharacterId(
 /**
  * Build the minimal input for creating a new chat with a character.
  *
- * This is a pure helper — it does NOT call the API or create a chat.
+ * This is a pure helper - it does NOT call the API or create a chat.
  * It prepares the payload shape expected by `useCreateChat` / `createChat`.
  *
  * Rules:
  *  - Requires a valid character ID (positive integer)
  *  - Returns `undefined` if ID is invalid
- *  - Only includes `character_id` — no description, personality, raw_json, avatar
+ *  - Only includes `character_id` - no description, personality, raw_json, avatar
  *  - Optional `title` for user-provided chat name
  */
 export function buildStartChatInput(

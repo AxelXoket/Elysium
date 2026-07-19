@@ -67,7 +67,7 @@ describe("Character Import Dialog Tests", () => {
       );
       expect(postCalls.length).toBeGreaterThanOrEqual(1);
 
-      // Verify body is raw JSON — not wrapped
+      // Verify body is raw JSON - not wrapped
       if (postCalls.length > 0) {
         const body = postCalls[0][1]?.body as string;
         // Body should be raw JSON, not double-stringified
@@ -77,5 +77,39 @@ describe("Character Import Dialog Tests", () => {
         expect(headers?.["Content-Type"]).toBe("application/json");
       }
     });
+  });
+
+  // FIX-3: import failure renders a safe mapped message, never raw detail
+  it("FIX-3: import error shows mapped message instead of raw detail", async () => {
+    const fetchMock = mockFetch({});
+
+    const user = userEvent.setup();
+    render(
+      <CharacterImportDialog trigger={<Button>Import</Button>} />,
+      { wrapper },
+    );
+
+    await user.click(screen.getByRole("button", { name: /import/i }));
+    await waitFor(() => {
+      expect(screen.getByText("Import Character (JSON)")).toBeInTheDocument();
+    });
+
+    const textarea = screen.getByLabelText("Character JSON input");
+    fireEvent.change(textarea, { target: { value: '{"name":"X"}' } });
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ detail: "RAW_UPSTREAM_DETAIL" }), {
+        status: 422,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    const importBtns = screen.getAllByRole("button", { name: /import/i });
+    await user.click(importBtns[importBtns.length - 1]);
+
+    expect(
+      await screen.findByText("Something went wrong. Please try again."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("RAW_UPSTREAM_DETAIL")).not.toBeInTheDocument();
   });
 });

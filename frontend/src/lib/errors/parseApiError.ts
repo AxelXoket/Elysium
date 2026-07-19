@@ -1,5 +1,5 @@
 /**
- * parseApiError.ts — Safe parser for any thrown value into a normalized ApiError.
+ * parseApiError.ts - Safe parser for any thrown value into a normalized ApiError.
  *
  * Handles:
  *  - ApiError objects (from client.ts request/rawRequest)

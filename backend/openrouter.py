@@ -1,15 +1,15 @@
-"""openrouter.py — OpenRouter API calls and generation parameter validation.
+"""openrouter.py - OpenRouter API calls and generation parameter validation.
 
 Public API:
-    OpenRouterError                    — raised on API failure; carries sanitized reason.
-    validate_and_filter_gen_params()   — whitelist + range check; raises ValueError on bad range.
-    async fetch_models()               — 5-min cached model list.
-    invalidate_model_cache()           — clears model cache (called on settings change).
-    async complete()                   — non-streaming chat completion.
+    OpenRouterError                    - raised on API failure; carries sanitized reason.
+    validate_and_filter_gen_params()   - whitelist + range check; raises ValueError on bad range.
+    async fetch_models()               - 5-min cached model list.
+    invalidate_model_cache()           - clears model cache (called on settings change).
+    async complete()                   - non-streaming chat completion.
 
 Proxy semantics:
     All calls use get_client() which already applies the configured proxy.
-    This module does not check proxy_required — that is the completions router's job.
+    This module does not check proxy_required - that is the completions router's job.
 
 Privacy rules:
     - API key read at call time; never stored in a module-level variable.
@@ -17,19 +17,20 @@ Privacy rules:
     - Response body content is NEVER logged or forwarded on error.
     - Only model_id, HTTP status, and latency are logged.
 
-μ3 — /models/user fallback:
+μ3 - /models/user fallback:
     - No API key → skip /models/user, use public /models.
     - /models/user 401/403 → raise OpenRouterError("api_key_invalid"). No public fallback.
     - /models/user timeout or non-auth failure → fall back to public /models.
 
-μ8 — Sanitized errors:
+μ8 - Sanitized errors:
     complete() raises OpenRouterError with a sanitized reason code.
     The raw response body is never included.
 """
 
+import json
 import time
 import logging
-from typing import Any
+from typing import Any, AsyncIterator
 
 import httpx
 
@@ -38,10 +39,12 @@ from config import (
     MODEL_LIST_TTL,
     MODELS_FETCH_TIMEOUT,
     COMPLETION_TIMEOUT,
-    KEYRING_API_KEY,
+    STREAM_CONNECT_TIMEOUT,
+    STREAM_READ_TIMEOUT,
+    SECRET_API_KEY,
 )
 from network_client import get_client
-from keyring_service import get_secret
+from secrets_service import get_secret
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +150,7 @@ async def fetch_models(refresh: bool = False) -> dict:
         - 401/403 → raise api_key_invalid, no fallback.
         - Other failure → fallback to public /models (no Authorization header).
     """
-    api_key = get_secret(KEYRING_API_KEY)
+    api_key = get_secret(SECRET_API_KEY)
     timeout = httpx.Timeout(MODELS_FETCH_TIMEOUT)
     client = get_client()
     now = time.monotonic()
@@ -282,7 +285,7 @@ def invalidate_model_cache() -> None:
 def get_cached_model_metadata(model_id: str) -> dict | None:
     """Return the normalised model dict from the in-process cache, or None.
 
-    Pure read — no network calls, no async. Returns None if the model
+    Pure read - no network calls, no async. Returns None if the model
     has not been fetched or is not in any cached source.
     """
     for entry in _model_cache.values():
@@ -300,10 +303,10 @@ async def validate_api_key(candidate_key: str) -> str:
     """Validate a candidate API key via GET /api/v1/key.
 
     Returns:
-        "valid"                   — 200 from /key, or server reachable but
+        "valid"                   - 200 from /key, or server reachable but
                                     endpoint unknown (e.g. 404, 500).
-        "invalid"                 — 401 or 403 from /key.
-        "validation_unavailable"  — timeout, network error, or connection failure.
+        "invalid"                 - 401 or 403 from /key.
+        "validation_unavailable"  - timeout, network error, or connection failure.
     """
     client = get_client()
     timeout = httpx.Timeout(MODELS_FETCH_TIMEOUT)
@@ -343,7 +346,7 @@ async def complete(
     provider dict is passed through as-is under the "provider" key.
     Raises OpenRouterError with a sanitized reason on any failure (μ8).
     """
-    api_key = get_secret(KEYRING_API_KEY)
+    api_key = get_secret(SECRET_API_KEY)
     if not api_key:
         raise OpenRouterError("api_key_not_set")
 
@@ -398,4 +401,137 @@ async def complete(
         raise OpenRouterError("openrouter_timeout")
     except Exception as exc:
         logger.warning("Completion request failed: %s", type(exc).__name__)
+        raise OpenRouterError("openrouter_error") from exc
+
+
+# ---------------------------------------------------------------------------
+# Streaming chat completion
+# ---------------------------------------------------------------------------
+
+def _status_to_reason(status_code: int) -> str:
+    """Map an HTTP status to the sanitized OpenRouterError reason codes."""
+    if status_code in (401, 403):
+        return "openrouter_auth_failed"
+    if status_code == 402:
+        return "openrouter_insufficient_credits"
+    if status_code == 429:
+        return "openrouter_rate_limited"
+    if status_code >= 500:
+        return "openrouter_server_error"
+    return "openrouter_error"
+
+
+async def complete_stream(
+    messages: list[dict],
+    model_id: str,
+    gen_params: dict,
+    provider: dict,
+) -> AsyncIterator[str]:
+    """Send a streaming completion request; yield content deltas as they arrive.
+
+    SSE handling per the OpenRouter spec:
+      - lines starting with ':' are keepalive comments and are skipped,
+      - 'data: [DONE]' terminates the stream,
+      - a chunk carrying an "error" object (or finish_reason == "error") maps
+        to a sanitized OpenRouterError; the upstream message is never
+        forwarded (μ8).
+
+    Privacy rules match complete(): request/response bodies are never logged;
+    only model_id, HTTP status, and latency are logged.
+    """
+    api_key = get_secret(SECRET_API_KEY)
+    if not api_key:
+        raise OpenRouterError("api_key_not_set")
+
+    payload: dict = {
+        "model": model_id,
+        "messages": messages,
+        "provider": provider,
+        "stream": True,
+        **gen_params,
+    }
+
+    timeout = httpx.Timeout(
+        connect=STREAM_CONNECT_TIMEOUT,
+        read=STREAM_READ_TIMEOUT,
+        write=STREAM_CONNECT_TIMEOUT,
+        pool=STREAM_CONNECT_TIMEOUT,
+    )
+    client = get_client()
+
+    logger.info("Streaming completion request: model=%s", model_id)
+    start = time.monotonic()
+
+    try:
+        async with client.stream(
+            "POST",
+            f"{OPENROUTER_BASE_URL}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=timeout,
+        ) as response:
+            if response.status_code != 200:
+                # Error body is never read or forwarded (μ8).
+                logger.warning(
+                    "Streaming completion HTTP error: model=%s status=%d",
+                    model_id, response.status_code,
+                )
+                raise OpenRouterError(_status_to_reason(response.status_code))
+
+            async for line in response.aiter_lines():
+                line = line.strip()
+                if not line or line.startswith(":"):
+                    continue  # blank or keepalive comment
+                if not line.startswith("data:"):
+                    continue
+                data = line[len("data:"):].strip()
+                if data == "[DONE]":
+                    break
+
+                try:
+                    chunk = json.loads(data)
+                except json.JSONDecodeError:
+                    logger.warning("Skipping malformed stream chunk: model=%s", model_id)
+                    continue
+
+                error_obj = chunk.get("error")
+                choices = chunk.get("choices") or []
+                choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+
+                if error_obj is not None or choice.get("finish_reason") == "error":
+                    code = error_obj.get("code") if isinstance(error_obj, dict) else None
+                    reason = (
+                        _status_to_reason(code)
+                        if isinstance(code, int)
+                        else "openrouter_error"
+                    )
+                    logger.warning(
+                        "Mid-stream provider error: model=%s reason=%s",
+                        model_id, reason,
+                    )
+                    raise OpenRouterError(reason)
+
+                delta = choice.get("delta") or {}
+                content = delta.get("content")
+                if isinstance(content, str) and content:
+                    yield content
+
+        latency_ms = int((time.monotonic() - start) * 1000)
+        logger.info(
+            "Streaming completion finished: model=%s latency_ms=%d",
+            model_id, latency_ms,
+        )
+
+    except OpenRouterError:
+        raise
+    except httpx.TimeoutException:
+        logger.warning("Streaming completion timed out: model=%s", model_id)
+        raise OpenRouterError("openrouter_timeout")
+    except Exception as exc:
+        # CancelledError/GeneratorExit are BaseException subclasses and pass
+        # through untouched, preserving client-abort semantics.
+        logger.warning("Streaming completion failed: %s", type(exc).__name__)
         raise OpenRouterError("openrouter_error") from exc

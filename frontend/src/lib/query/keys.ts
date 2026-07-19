@@ -1,4 +1,4 @@
-/** Canonical query keys — consistent across all hooks. */
+/** Canonical query keys - consistent across all hooks. */
 export const keys = {
   settings: () => ["settings"] as const,
   proxyHealth: () => ["proxyHealth"] as const,
@@ -10,4 +10,5 @@ export const keys = {
   models: () => ["models", "openrouter"] as const,
   personas: () => ["personas"] as const,
   persona: (id: number) => ["persona", id] as const,
+  vault: () => ["vault"] as const,
 };

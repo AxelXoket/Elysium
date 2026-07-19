@@ -9,6 +9,16 @@ __pycache__/
 *.db-wal
 *.db-shm
 
+# Vault identity + migration/rekey artifacts - never commit any of these.
+# salt.bin/verifier.bin are the vault's key-derivation identity; *.plain.bak-*
+# is the plaintext DB backup the one-time migration leaves; *.bak/*.new are
+# crash-safe rekey temporaries (salt.bin.new, verifier.bin.bak, ...).
+salt.bin
+verifier.bin
+*.plain.bak-*
+*.bak
+*.new
+
 # Environment
 .env
 .env.*
@@ -30,16 +40,27 @@ frontend/dist/
 .vite/
 *.local
 
-# Backend debug tools (dumps DB content — never commit)
+# PyInstaller work dir + build logs
+build/
+build_log*.txt
+.pytest_cache/
+
+# Backend debug tools (dumps DB content - never commit)
 backend/_show_db.py
 
-# Secrets — must never be committed
+# Secrets - must never be committed
 keyring*
 *.key
 *.pem
 
 # Avatars (user-uploaded binary data)
 backend/avatars/
+
+# Image attachments (user-uploaded binary data)
+backend/uploads/
+
+# Desktop launcher's WebView2 profile (dev runs of run_app.py put it here)
+backend/webview/
 
 # Internal planning / implementation docs
 docs/

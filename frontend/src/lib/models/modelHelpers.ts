@@ -1,5 +1,5 @@
 /**
- * modelHelpers.ts — Model metadata helpers for FE-7A.
+ * modelHelpers.ts - Model metadata helpers for FE-7A.
  *
  * Provides:
  *  - findModelById: lookup from model list
@@ -146,15 +146,15 @@ export function hasOutputModality(
 // ── Text-only note ───────────────────────────────────────────────
 
 /**
- * Determine whether the text-only limitation note should be shown.
+ * Determine whether the "unsent input modality" note should be shown.
  *
- * Returns `true` when the model advertises any non-"text" input modality
- * (e.g., "image", "audio", "video"). This tells the user that while the
- * model could accept other inputs, Elysium only sends text.
+ * Elysium sends both text and images, so this fires only when the model
+ * advertises some OTHER input modality it will not send (e.g. "audio",
+ * "video"). "image" no longer triggers it - images ARE sent to vision models.
  *
  * Returns `false` when:
  *  - model is null/undefined (don't show note when metadata unknown)
- *  - model only has "text" input modality
+ *  - model only accepts text and/or image input
  *  - model has empty input modalities
  */
 export function shouldShowTextOnlyNote(
@@ -163,7 +163,7 @@ export function shouldShowTextOnlyNote(
   if (!model?.input_modalities || model.input_modalities.length === 0) {
     return false;
   }
-  return model.input_modalities.some((m) => m !== "text");
+  return model.input_modalities.some((m) => m !== "text" && m !== "image");
 }
 
 // ── Context budget bounds ────────────────────────────────────────

@@ -1,5 +1,5 @@
 /**
- * PersonaLogic.test.ts — FE-3A: Persona logic and data-flow tests.
+ * PersonaLogic.test.ts - FE-3A: Persona logic and data-flow tests.
  *
  * Covers:
  *  - findActivePersona (active persona lookup)
@@ -20,7 +20,20 @@ import {
   buildCompletionPayload,
   buildRegeneratePayload,
 } from "@/lib/generation";
+import type { GenerationParams } from "@/lib/schemas/completions";
 import type { Persona } from "@/lib/schemas/personas";
+
+/**
+ * Generation params deliberately contaminated with forbidden provider fields,
+ * as a misbehaving caller might pass them. The intersection keeps such objects
+ * assignable to GenerationParams without `any`.
+ */
+type ContaminatedGenerationParams = GenerationParams & {
+  provider?: unknown;
+  zdr?: unknown;
+  data_collection?: unknown;
+  allow_fallbacks?: unknown;
+};
 
 // ── Fixtures ─────────────────────────────────────────────────────
 
@@ -82,7 +95,7 @@ describe("findActivePersona", () => {
   it("returns the first active if multiple are active (backend should prevent this)", () => {
     const anotherActive = { ...inactivePersona2, is_active: true };
     const result = findActivePersona([activePersona, anotherActive]);
-    // First match wins — consistent behavior
+    // First match wins - consistent behavior
     expect(result?.id).toBe(1);
   });
 });
@@ -182,7 +195,7 @@ describe("Payload persona integration", () => {
     expect(payload).not.toHaveProperty("persona_id");
   });
 
-  it("only persona_id appears — no description, no full persona object", () => {
+  it("only persona_id appears - no description, no full persona object", () => {
     const payload = buildCompletionPayload({
       message: "Hello",
       modelId: "openai/gpt-4",
@@ -200,7 +213,7 @@ describe("Payload persona integration", () => {
   });
 
   it("inactive persona id is not included via getSelectedPersonaId", () => {
-    // Only inactive personas in the list — no active one
+    // Only inactive personas in the list - no active one
     const personaId = getSelectedPersonaId([inactivePersona, inactivePersona2]);
     expect(personaId).toBeUndefined();
     const payload = buildCompletionPayload({
@@ -232,7 +245,7 @@ describe("Payload persona integration", () => {
         zdr: true,
         data_collection: "deny",
         allow_fallbacks: false,
-      } as any,
+      } as ContaminatedGenerationParams,
     });
     expect(payload.persona_id).toBe(1);
     expect(payload).not.toHaveProperty("provider");
@@ -243,7 +256,7 @@ describe("Payload persona integration", () => {
 });
 
 // ═════════════════════════════════════════════════════════════════
-// Mutation hook cache invalidation (structural — no render needed)
+// Mutation hook cache invalidation (structural - no render needed)
 // ═════════════════════════════════════════════════════════════════
 
 describe("Persona mutation hook cache behavior (structural)", () => {

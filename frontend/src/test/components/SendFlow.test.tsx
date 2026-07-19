@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useEffect } from "react";
@@ -10,6 +10,13 @@ import { useErrorStore } from "@/lib/errors";
 import { useModels } from "@/lib/query/models";
 import { mockFetch } from "../mocks/api";
 import {
+  mockFetchWithStreams,
+  sseEventsFor,
+  sseResponse,
+  jsonResponse,
+  controlledSseResponse,
+} from "../helpers/streamMocks";
+import {
   settingsFixture,
   messageFixture,
   completionFixture,
@@ -17,6 +24,7 @@ import {
   modelFixture,
 } from "../mocks/fixtures";
 import type { ReactNode } from "react";
+import type { Message } from "@/lib/schemas/chats";
 import type { ModelList } from "@/lib/schemas/models";
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -98,14 +106,14 @@ describe("SendFlow", () => {
     vi.restoreAllMocks();
   });
 
-  // T-44: POST body is correct
-  it("T-44: POST /chats/{id}/complete called with correct body", async () => {
+  // T-44: POST body is correct (production send targets the stream endpoint)
+  it("T-44: POST /chats/{id}/complete/stream called with correct body", async () => {
     const user = userEvent.setup();
     setupReadyState();
-    const mock = mockFetch({
+    const mock = mockFetchWithStreams({
       "/settings": { body: settingsFixture },
       "/chats/1/messages": { body: [messageFixture] },
-      "/chats/1/complete": { body: completionFixture },
+      "/chats/1/complete/stream": { sse: sseEventsFor(completionFixture) },
       "/chats": { body: [] },
     });
     render(<ChatCanvas />, { wrapper });
@@ -137,10 +145,10 @@ describe("SendFlow", () => {
   it("T-45: POST body includes safe generation defaults", async () => {
     const user = userEvent.setup();
     setupReadyState();
-    const mock = mockFetch({
+    const mock = mockFetchWithStreams({
       "/settings": { body: settingsFixture },
       "/chats/1/messages": { body: [messageFixture] },
-      "/chats/1/complete": { body: completionFixture },
+      "/chats/1/complete/stream": { sse: sseEventsFor(completionFixture) },
       "/chats": { body: [] },
     });
     render(<ChatCanvas />, { wrapper });
@@ -189,11 +197,11 @@ describe("SendFlow", () => {
       description: "Inactive description must not leak.",
       is_active: false,
     };
-    const mock = mockFetch({
+    const mock = mockFetchWithStreams({
       "/settings": { body: settingsFixture },
       "/personas": { body: [inactivePersona, personaFixture] },
       "/chats/1/messages": { body: [messageFixture] },
-      "/chats/1/complete": { body: completionFixture },
+      "/chats/1/complete/stream": { sse: sseEventsFor(completionFixture) },
       "/chats": { body: [] },
     });
     render(<ChatCanvas />, { wrapper });
@@ -230,7 +238,7 @@ describe("SendFlow", () => {
   it("FE-4B: send includes generation params and top-level context budget", async () => {
     const user = userEvent.setup();
     setupReadyState();
-    const mock = mockFetch({
+    const mock = mockFetchWithStreams({
       "/settings": { body: settingsFixture },
       "/models/openrouter": { body: modelList([
         "temperature",
@@ -241,7 +249,7 @@ describe("SendFlow", () => {
         "seed",
       ]) },
       "/chats/1/messages": { body: [messageFixture] },
-      "/chats/1/complete": { body: completionFixture },
+      "/chats/1/complete/stream": { sse: sseEventsFor(completionFixture) },
       "/chats": { body: [] },
     });
 
@@ -291,12 +299,12 @@ describe("SendFlow", () => {
   it("FE-4B: unsupported generation params are omitted while active persona_id remains", async () => {
     const user = userEvent.setup();
     setupReadyState();
-    const mock = mockFetch({
+    const mock = mockFetchWithStreams({
       "/settings": { body: settingsFixture },
       "/personas": { body: [personaFixture] },
       "/models/openrouter": { body: modelList(["temperature", "max_tokens"]) },
       "/chats/1/messages": { body: [messageFixture] },
-      "/chats/1/complete": { body: completionFixture },
+      "/chats/1/complete/stream": { sse: sseEventsFor(completionFixture) },
       "/chats": { body: [] },
     });
 
@@ -347,10 +355,10 @@ describe("SendFlow", () => {
   it("T-46: success displays returned user_message", async () => {
     const user = userEvent.setup();
     setupReadyState();
-    mockFetch({
+    mockFetchWithStreams({
       "/settings": { body: settingsFixture },
       "/chats/1/messages": { body: [messageFixture] },
-      "/chats/1/complete": { body: completionFixture },
+      "/chats/1/complete/stream": { sse: sseEventsFor(completionFixture) },
       "/chats": { body: [] },
     });
     render(<ChatCanvas />, { wrapper });
@@ -369,10 +377,10 @@ describe("SendFlow", () => {
   it("T-47: success displays returned assistant_message", async () => {
     const user = userEvent.setup();
     setupReadyState();
-    mockFetch({
+    mockFetchWithStreams({
       "/settings": { body: settingsFixture },
       "/chats/1/messages": { body: [messageFixture] },
-      "/chats/1/complete": { body: completionFixture },
+      "/chats/1/complete/stream": { sse: sseEventsFor(completionFixture) },
       "/chats": { body: [] },
     });
     render(<ChatCanvas />, { wrapper });
@@ -540,7 +548,7 @@ describe("SendFlow", () => {
     expect(screen.queryByText("UPSTREAM_LEAK_DATA")).not.toBeInTheDocument();
   });
 
-  // T-54: openrouter_completion_error shows safe message (not ZDR — that's a different code)
+  // T-54: openrouter_completion_error shows safe message (not ZDR - that's a different code)
   it("T-54: openrouter_completion_error shows safe provider error message", async () => {
     const user = userEvent.setup();
     setupReadyState();
@@ -611,7 +619,7 @@ describe("SendFlow", () => {
       screen.queryByText("UPSTREAM_RAW_SECRET_MARKER_DO_NOT_SHOW"),
     ).not.toBeInTheDocument();
 
-    // No user/assistant messages appended — error alert visible instead
+    // No user/assistant messages appended - error alert visible instead
     expect(screen.getAllByRole("alert").length).toBeGreaterThan(0);
   });
 
@@ -622,29 +630,23 @@ describe("SendFlow", () => {
     const user = userEvent.setup();
     setupReadyState();
 
-    // Use a delayed completion response to catch the optimistic state
-    let resolveCompletion: (v: unknown) => void;
-    const completionPromise = new Promise((resolve) => {
-      resolveCompletion = resolve;
+    // Hold the stream response to catch the optimistic state
+    let releaseCompletion: () => void;
+    const completionGate = new Promise<void>((resolve) => {
+      releaseCompletion = resolve;
     });
 
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-      const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("/settings")) {
-        return new Response(JSON.stringify(settingsFixture), { status: 200, headers: { "Content-Type": "application/json" } });
-      }
-      if (url.includes("/chats/1/messages")) {
-        return new Response(JSON.stringify([messageFixture]), { status: 200, headers: { "Content-Type": "application/json" } });
-      }
-      if (url.includes("/chats/1/complete")) {
-        await completionPromise;
-        return new Response(JSON.stringify(completionFixture), { status: 200, headers: { "Content-Type": "application/json" } });
-      }
-      if (url.includes("/chats")) {
-        return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
-      }
-      return new Response("{}", { status: 404 });
-    }));
+    mockFetchWithStreams({
+      "/settings": { body: settingsFixture },
+      "/chats/1/messages": { body: [messageFixture] },
+      "/chats/1/complete/stream": {
+        response: async () => {
+          await completionGate;
+          return sseResponse(sseEventsFor(completionFixture));
+        },
+      },
+      "/chats": { body: [] },
+    });
 
     render(<ChatCanvas />, { wrapper });
 
@@ -661,8 +663,8 @@ describe("SendFlow", () => {
     // Thinking bubble should be visible
     expect(screen.getByRole("status")).toBeInTheDocument();
 
-    // Resolve completion
-    resolveCompletion!(undefined);
+    // Release the stream
+    releaseCompletion!();
 
     // After success, assistant message appears
     expect(
@@ -673,8 +675,9 @@ describe("SendFlow", () => {
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
-  // T-57: error removes optimistic message and pushes to error store
-  it("T-57: error rolls back optimistic message and pushes to error store", async () => {
+  // T-57: error removes optimistic message; the Composer banner is the single
+  // error surface for send - no toast is pushed to the error store.
+  it("T-57: error rolls back optimistic message without pushing a toast", async () => {
     const user = userEvent.setup();
     setupReadyState();
     mockFetch({
@@ -691,15 +694,13 @@ describe("SendFlow", () => {
     await user.type(screen.getByLabelText("Message"), "Fail message");
     await user.click(screen.getByRole("button", { name: /send message/i }));
 
-    // Wait for error
+    // Wait for error (Composer banner)
     await waitFor(() => {
       expect(screen.getAllByRole("alert").length).toBeGreaterThan(0);
     });
 
-    // Optimistic message should be rolled back (not visible as a message bubble)
-    // The error store should have an entry
-    expect(useErrorStore.getState().errors.length).toBeGreaterThanOrEqual(1);
-    expect(useErrorStore.getState().errors[0].code).toBe("openrouter_completion_error");
+    // Single surface: send errors show ONLY in the Composer banner - no toast
+    expect(useErrorStore.getState().errors).toHaveLength(0);
 
     // Thinking bubble should be gone
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
@@ -713,10 +714,10 @@ describe("SendFlow", () => {
   it("T-58: thinking bubble not visible after success", async () => {
     const user = userEvent.setup();
     setupReadyState();
-    mockFetch({
+    mockFetchWithStreams({
       "/settings": { body: settingsFixture },
       "/chats/1/messages": { body: [messageFixture] },
-      "/chats/1/complete": { body: completionFixture },
+      "/chats/1/complete/stream": { sse: sseEventsFor(completionFixture) },
       "/chats": { body: [] },
     });
     render(<ChatCanvas />, { wrapper });
@@ -740,29 +741,23 @@ describe("SendFlow", () => {
     const user = userEvent.setup();
     setupReadyState();
 
-    // Use delayed completion to check the cleared state during pending
-    let resolveCompletion: (v: unknown) => void;
-    const completionPromise = new Promise((resolve) => {
-      resolveCompletion = resolve;
+    // Hold the stream to check the cleared state during pending
+    let releaseCompletion: () => void;
+    const completionGate = new Promise<void>((resolve) => {
+      releaseCompletion = resolve;
     });
 
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-      const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("/settings")) {
-        return new Response(JSON.stringify(settingsFixture), { status: 200, headers: { "Content-Type": "application/json" } });
-      }
-      if (url.includes("/chats/1/messages")) {
-        return new Response(JSON.stringify([messageFixture]), { status: 200, headers: { "Content-Type": "application/json" } });
-      }
-      if (url.includes("/chats/1/complete")) {
-        await completionPromise;
-        return new Response(JSON.stringify(completionFixture), { status: 200, headers: { "Content-Type": "application/json" } });
-      }
-      if (url.includes("/chats")) {
-        return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
-      }
-      return new Response("{}", { status: 404 });
-    }));
+    mockFetchWithStreams({
+      "/settings": { body: settingsFixture },
+      "/chats/1/messages": { body: [messageFixture] },
+      "/chats/1/complete/stream": {
+        response: async () => {
+          await completionGate;
+          return sseResponse(sseEventsFor(completionFixture));
+        },
+      },
+      "/chats": { body: [] },
+    });
 
     render(<ChatCanvas />, { wrapper });
 
@@ -779,8 +774,319 @@ describe("SendFlow", () => {
       expect(textarea.value).toBe("");
     });
 
-    // Resolve to clean up
-    resolveCompletion!(undefined);
+    // Release to clean up
+    releaseCompletion!();
     await screen.findByText("Hi! How can I help you?");
+  });
+
+  // ── Per-chat pending + draft scoping ───────────────────────────
+
+  it("pending indicators do not leak into another chat", async () => {
+    const user = userEvent.setup();
+    setupReadyState();
+
+    let releaseCompletion: () => void;
+    const completionGate = new Promise<void>((resolve) => {
+      releaseCompletion = resolve;
+    });
+
+    mockFetchWithStreams({
+      "/settings": { body: settingsFixture },
+      "/chats/1/messages": { body: [messageFixture] },
+      "/chats/2/messages": { body: [] },
+      "/chats/1/complete/stream": {
+        response: async () => {
+          await completionGate;
+          return sseResponse(sseEventsFor(completionFixture));
+        },
+      },
+      "/chats": { body: [] },
+    });
+
+    render(<ChatCanvas />, { wrapper });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Message")).not.toBeDisabled();
+    });
+
+    await user.type(screen.getByLabelText("Message"), "Slow send");
+    await user.click(screen.getByRole("button", { name: /send message/i }));
+
+    // Pending indicators visible in the chat that owns the request
+    expect(await screen.findByRole("status")).toBeInTheDocument();
+    expect(screen.getByLabelText("Message")).toBeDisabled();
+
+    // Switch to another chat mid-request
+    act(() => {
+      useUiStore.setState({ selectedChatId: 2 });
+    });
+
+    // Chat 2 must not show chat 1's pending state
+    await waitFor(() => {
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Message")).not.toBeDisabled();
+    });
+
+    // Switch back - chat 1 is still pending
+    act(() => {
+      useUiStore.setState({ selectedChatId: 1 });
+    });
+    expect(await screen.findByRole("status")).toBeInTheDocument();
+    expect(screen.getByLabelText("Message")).toBeDisabled();
+
+    // Release to clean up
+    releaseCompletion!();
+    expect(
+      await screen.findByText("Hi! How can I help you?"),
+    ).toBeInTheDocument();
+  });
+
+  it("failed send restores its draft and error only in the chat that owns it", async () => {
+    const user = userEvent.setup();
+    setupReadyState();
+
+    let failCompletion: () => void;
+    const completionGate = new Promise<void>((resolve) => {
+      failCompletion = resolve;
+    });
+
+    mockFetchWithStreams({
+      "/settings": { body: settingsFixture },
+      "/chats/1/messages": { body: [messageFixture] },
+      "/chats/2/messages": { body: [] },
+      "/chats/1/complete/stream": {
+        response: async () => {
+          await completionGate;
+          return jsonResponse({ detail: "openrouter_completion_error" }, 502);
+        },
+      },
+      "/chats": { body: [] },
+    });
+
+    render(<ChatCanvas />, { wrapper });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Message")).not.toBeDisabled();
+    });
+
+    const textarea = screen.getByLabelText("Message") as HTMLTextAreaElement;
+    await user.type(textarea, "Doomed draft");
+    await user.click(screen.getByRole("button", { name: /send message/i }));
+
+    // Input cleared optimistically; switch to another chat while pending
+    await waitFor(() => {
+      expect(textarea.value).toBe("");
+    });
+    act(() => {
+      useUiStore.setState({ selectedChatId: 2 });
+    });
+    await waitFor(() => {
+      expect(screen.getByLabelText("Message")).not.toBeDisabled();
+    });
+    await user.type(textarea, "Chat two text");
+
+    // Now let chat 1's send fail and settle
+    failCompletion!();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    // Chat 2 is untouched: no clobbered draft, no foreign error banner
+    expect(textarea.value).toBe("Chat two text");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    // Switching back to chat 1 restores its failed draft AND its error banner
+    act(() => {
+      useUiStore.setState({ selectedChatId: 1 });
+    });
+    await waitFor(() => {
+      expect(textarea.value).toBe("Doomed draft");
+      expect(screen.getAllByRole("alert").length).toBeGreaterThan(0);
+    });
+  });
+
+  it("dismissed send error stays gone across chat switches until a new error", async () => {
+    const user = userEvent.setup();
+    setupReadyState();
+    mockFetch({
+      "/settings": { body: settingsFixture },
+      "/chats/1/messages": { body: [messageFixture] },
+      "/chats/2/messages": { body: [] },
+      "/chats/1/complete": {
+        status: 502,
+        body: { detail: "openrouter_completion_error" },
+      },
+    });
+    render(<ChatCanvas />, { wrapper });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Message")).not.toBeDisabled();
+    });
+
+    const textarea = screen.getByLabelText("Message") as HTMLTextAreaElement;
+    await user.type(textarea, "Fail me");
+    await user.click(screen.getByRole("button", { name: /send message/i }));
+
+    await waitFor(() => {
+      expect(screen.getAllByRole("alert").length).toBeGreaterThan(0);
+    });
+
+    // Dismiss deletes the chat's error entry - not just hides the banner
+    await user.click(screen.getByRole("button", { name: /dismiss error/i }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    // Switch away and back - the dismissed error must not resurface
+    act(() => {
+      useUiStore.setState({ selectedChatId: 2 });
+    });
+    await waitFor(() => {
+      expect(screen.getByLabelText("Message")).not.toBeDisabled();
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    act(() => {
+      useUiStore.setState({ selectedChatId: 1 });
+    });
+    await waitFor(() => {
+      expect(screen.getByLabelText("Message")).not.toBeDisabled();
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    // A NEW error for the same chat shows the banner again
+    await user.clear(textarea);
+    await user.type(textarea, "Fail me again");
+    await user.click(screen.getByRole("button", { name: /send message/i }));
+    await waitFor(() => {
+      expect(screen.getAllByRole("alert").length).toBeGreaterThan(0);
+    });
+  });
+
+  // ── Streaming UI: progressive text + Stop button ───────────────
+
+  it("streams text progressively and Stop keeps the persisted partial", async () => {
+    const user = userEvent.setup();
+    setupReadyState();
+
+    const stream = controlledSseResponse();
+    // The messages route is dynamic: after the abort the backend "persists"
+    // the partial, and the invalidate-triggered refetch swaps it in.
+    let messagesBody: Message[] = [messageFixture];
+    mockFetchWithStreams({
+      "/settings": { body: settingsFixture },
+      "/chats/1/messages": {
+        response: () => jsonResponse(messagesBody),
+      },
+      "/chats/1/complete/stream": { response: () => stream.response },
+      "/chats": { body: [] },
+    });
+
+    render(<ChatCanvas />, { wrapper });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Message")).not.toBeDisabled();
+    });
+
+    await user.type(screen.getByLabelText("Message"), "Stream me");
+    await user.click(screen.getByRole("button", { name: /send message/i }));
+
+    // Send button becomes a Stop button while streaming
+    const stopButton = await screen.findByRole("button", {
+      name: /stop generating/i,
+    });
+    expect(
+      screen.queryByRole("button", { name: /send message/i }),
+    ).not.toBeInTheDocument();
+
+    // Before the first delta: thinking bubble
+    expect(screen.getByRole("status")).toBeInTheDocument();
+
+    stream.emit({
+      type: "user_message",
+      message: {
+        id: 5,
+        chat_id: 1,
+        role: "user",
+        content: "Stream me",
+        created_at: "2026-01-01T00:02:00",
+      },
+    });
+    stream.emit({ type: "delta", content: "Partial ans" });
+
+    // Streaming bubble renders the accumulating text; thinking bubble gone
+    expect(await screen.findByText(/Partial ans/)).toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+
+    // Backend will persist the partial on abort - refetch returns it
+    messagesBody = [
+      messageFixture,
+      {
+        id: 5,
+        chat_id: 1,
+        role: "user",
+        content: "Stream me",
+        created_at: "2026-01-01T00:02:00",
+      },
+      {
+        id: 6,
+        chat_id: 1,
+        role: "assistant",
+        content: "Partial ans",
+        created_at: "2026-01-01T00:02:01",
+      },
+    ];
+    await user.click(stopButton);
+
+    // Send button returns; the persisted partial is shown as a real message
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /send message/i }),
+      ).toBeInTheDocument();
+    });
+    expect(await screen.findByText("Partial ans")).toBeInTheDocument();
+    // Streaming cursor gone, no error surfaces for a user-initiated stop
+    expect(screen.queryByText("▍")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(useErrorStore.getState().errors).toHaveLength(0);
+  });
+
+  it("Stop before any streamed text restores the draft silently", async () => {
+    const user = userEvent.setup();
+    setupReadyState();
+
+    const stream = controlledSseResponse(); // never emits anything
+    mockFetchWithStreams({
+      "/settings": { body: settingsFixture },
+      "/chats/1/messages": { body: [messageFixture] },
+      "/chats/1/complete/stream": { response: () => stream.response },
+      "/chats": { body: [] },
+    });
+
+    render(<ChatCanvas />, { wrapper });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Message")).not.toBeDisabled();
+    });
+
+    const textarea = screen.getByLabelText("Message") as HTMLTextAreaElement;
+    await user.type(textarea, "Abort me early");
+    await user.click(screen.getByRole("button", { name: /send message/i }));
+
+    const stopButton = await screen.findByRole("button", {
+      name: /stop generating/i,
+    });
+    await user.click(stopButton);
+
+    // Draft restored, optimistic message gone, no error surfaces
+    await waitFor(() => {
+      expect(textarea.value).toBe("Abort me early");
+      expect(
+        screen.getByRole("button", { name: /send message/i }),
+      ).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByText("Abort me early", { selector: "p" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(useErrorStore.getState().errors).toHaveLength(0);
   });
 });

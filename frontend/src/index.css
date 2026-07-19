@@ -1,8 +1,8 @@
 /*
- * index.css — shadcn/ui CLI-generated Tailwind v4 setup
+ * index.css - shadcn/ui CLI-generated Tailwind v4 setup
  * + Elysium Seasonal design tokens (Phase 6E-A: visual fidelity overhaul).
  *
- * Lines 8-10 are from shadcn CLI init (Geist font import removed — system fonts only).
+ * Lines 8-10 are from shadcn CLI init (Geist font import removed - system fonts only).
  * @theme inline block extends Elysium Seasonal custom tokens.
  *
  * NO remote fonts, images, or external assets are referenced anywhere in this file.
@@ -57,72 +57,81 @@
     --radius-3xl: calc(var(--radius) * 2.2);
     --radius-4xl: calc(var(--radius) * 2.6);
 
-    /* ── Elysium Seasonal: Core palette (unchanged) ── */
-    --color-es-background:       #0F1113;
-    --color-es-sidebar:          #111713;
-    --color-es-surface:          #161A1D;
-    --color-es-surface-elevated: #1F2427;
-    --color-es-border-dark:      #343A3A;
+    /* ── Elysium Azure: Core palette (blue + neutral; NO green/amber/orange).
+       Token NAMES kept (sage/amber/warm…) so every var() reference recolours
+       at once - only the VALUES move to the blue/neutral family. ── */
+    --color-es-background:       #0E141B;
+    --color-es-sidebar:          #1A2634;
+    --color-es-surface:          #141C26;
+    --color-es-surface-elevated: #1F2C3A;
+    --color-es-border-dark:      #33414F;
 
-    --color-es-warm-canvas:      #EDE3D3;
-    --color-es-warm-canvas-soft: #F5EBD9;
-    --color-es-border-warm:      #D8C9B5;
+    --color-es-warm-canvas:      #F5F8FC;
+    --color-es-warm-canvas-soft: #FBFCFE;
+    --color-es-border-warm:      #D3DDE7;
 
-    --color-es-primary-sage:      #A7C8A1;
-    --color-es-primary-sage-deep: #6F8A66;
-    --color-es-accent-amber:      #D7A86E;
-    --color-es-mist-blue:         #7FA1B3;
+    --color-es-primary-sage:      #3E72B0;
+    --color-es-primary-sage-deep: #2B5384;
+    --color-es-accent-amber:      #5E82AE;
+    --color-es-mist-blue:         #6E93C4;
 
-    --color-es-text-light: #E7E9E6;
-    --color-es-text-muted: #9AA19A;
-    --color-es-text-dark:  #252723;
+    --color-es-text-light: #EAEEF3;
+    --color-es-text-muted: #93A0AE;
+    --color-es-text-dark:  #1C2632;
 
-    --color-es-success: #7EAD84;
-    --color-es-warning: #D7A86E;
-    --color-es-danger:  #C96E5B;
+    --color-es-success: #4A86C5;
+    --color-es-warning: #5E82AE;
+    --color-es-danger:  #C36A72;
 
-    /* ── Elysium Seasonal: Glass surfaces (Phase 6E-A) ── */
-    --color-es-glass-sidebar:      rgba(18, 22, 19, 0.90);
-    --color-es-glass-right:        rgba(22, 27, 24, 0.72);
-    --color-es-glass-border-dark:  rgba(255, 255, 255, 0.07);
-    --color-es-glass-border-warm:  rgba(200, 185, 160, 0.20);
-    --color-es-glass-dialog:       rgba(20, 24, 21, 0.98);
+    /* ── Glass surfaces ── */
+    --color-es-glass-sidebar:      rgba(26, 38, 52, 0.90);
+    --color-es-glass-right:        rgba(255, 255, 255, 0.72);
+    --color-es-glass-border-dark:  rgba(255, 255, 255, 0.08);
+    --color-es-glass-border-warm:  rgba(120, 145, 175, 0.20);
+    --color-es-glass-dialog:       rgba(22, 31, 42, 0.98);
 
-    /* ── Elysium Seasonal: Chat canvas ── */
-    --color-es-canvas-from:        #EDE3D3;
-    --color-es-canvas-to:          #F5EBD9;
+    /* ── Chat canvas ── */
+    --color-es-canvas-from:        #F5F8FC;
+    --color-es-canvas-to:          #FBFCFE;
 
-    /* ── Elysium Seasonal: Message bubbles ── */
-    --color-es-user-bubble:        #2C3228;
-    --color-es-user-bubble-text:   #E2E6DF;
-    --color-es-asst-bubble:        #F0E8D8;
-    --color-es-asst-bubble-text:   #2F312D;
+    /* ── Message bubbles ── */
+    --color-es-user-bubble:        #294056;
+    --color-es-user-bubble-text:   #E8EEF4;
+    --color-es-asst-bubble:        #FFFFFF;
+    --color-es-asst-bubble-text:   #1C2632;
 
-    /* ── Elysium Seasonal: Shadows ── */
+    /* ── Shadows ── */
     --shadow-card:     0 1px 3px rgba(0,0,0,0.20), 0 1px 2px rgba(0,0,0,0.14);
-    --shadow-panel:    0 4px 24px rgba(0,0,0,0.32);
-    --shadow-bubble:   0 1px 4px rgba(0,0,0,0.12);
-    --shadow-composer: 0 -2px 20px rgba(0,0,0,0.16);
-    --shadow-sage-btn: 0 0 0 3px rgba(167, 200, 161, 0.22);
+    --shadow-panel:    0 4px 24px rgba(10, 20, 32, 0.30);
+    --shadow-bubble:   0 1px 4px rgba(20, 35, 55, 0.14);
+    --shadow-composer: 0 -2px 20px rgba(10, 20, 32, 0.14);
+    --shadow-sage-btn: 0 0 0 3px rgba(62, 114, 176, 0.22);
     --shadow-app-frame: 0 30px 90px rgba(0,0,0,0.48), 0 10px 34px rgba(0,0,0,0.30);
-    --color-es-frame-border: rgba(238, 226, 210, 0.30);
+    --color-es-frame-border: rgba(150, 175, 205, 0.28);
 
     /* ── Elysium Seasonal: Typography ── */
     --font-serif: Georgia, Cambria, "Times New Roman", serif;
 
-    /* ── Elysium Seasonal: Radius scale ── */
-    --radius-shell:    24px;
-    --radius-panel:    20px;
-    --radius-canvas:   18px;
-    --radius-card:     14px;
-    --radius-input:    12px;
-    --radius-icon-btn: 10px;
-    --radius-badge:    999px;
-    --radius-app-frame: 22px;
+    /* ── Elysium Seasonal: Radius scale (SHARP - crisp modern edges) ──
+       One place to tune the whole app's sharpness. Lower = sharper. */
+    --radius-shell:    8px;
+    --radius-panel:    5px;
+    --radius-canvas:   5px;
+    --radius-card:     4px;
+    --radius-input:    3px;
+    --radius-icon-btn: 3px;
+    --radius-badge:    999px;   /* tiny status chips stay pill-shaped */
+    --radius-app-frame: 8px;
 
     /* ── Elysium Seasonal: Layout ── */
-    --sidebar-width:      320px;
-    --right-panel-width:  386px;
+    /* Both side panels use width == minWidth, so the chat (flex-1) is the only
+       column that gives - which meant it collapsed on a narrow window (at a
+       ~1000px viewport the composer squeezed to ~57px). clamp() ties each
+       panel to the viewport: pinned at the full 320/386 from ~1185px up (the
+       default 1200px window keeps the designed proportions), then easing down
+       to a floor as the window narrows so the chat always stays usable. */
+    --sidebar-width:      clamp(264px, 27vw, 320px);
+    --right-panel-width:  clamp(300px, 32.5vw, 386px);
     --app-frame-max-w:    1968px;
     --app-frame-max-h:    880px;
 
@@ -135,40 +144,41 @@
     --ease-smooth:      cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* ── Elysium Seasonal dark theme (applied as :root — always dark) ── */
+/* ── Elysium Seasonal dark theme (applied as :root - always dark) ── */
 :root {
-    --background: #0F1113;
-    --foreground: #E7E9E6;
-    --card: #1B1F1E;
-    --card-foreground: #E7E9E6;
-    --popover: #1B1F1E;
-    --popover-foreground: #E7E9E6;
-    --primary: #A7C8A1;
-    --primary-foreground: #252723;
-    --secondary: #242A27;
-    --secondary-foreground: #E7E9E6;
-    --muted: #242A27;
-    --muted-foreground: #9AA19A;
-    --accent: #D7A86E;
-    --accent-foreground: #252723;
-    --destructive: #C96E5B;
-    --border: #343A3A;
-    --input: #343A3A;
-    --ring: #6F8A66;
-    --chart-1: #A7C8A1;
-    --chart-2: #D7A86E;
-    --chart-3: #7FA1B3;
-    --chart-4: #7EAD84;
-    --chart-5: #C96E5B;
-    --radius: 0.75rem;
-    --sidebar: #151817;
-    --sidebar-foreground: #E7E9E6;
-    --sidebar-primary: #A7C8A1;
-    --sidebar-primary-foreground: #252723;
-    --sidebar-accent: #242A27;
-    --sidebar-accent-foreground: #E7E9E6;
-    --sidebar-border: #343A3A;
-    --sidebar-ring: #6F8A66;
+    --background: #0E141B;
+    --foreground: #EAEEF3;
+    --card: #1B2634;
+    --card-foreground: #EAEEF3;
+    --popover: #1B2634;
+    --popover-foreground: #EAEEF3;
+    --primary: #3E72B0;
+    --primary-foreground: #FFFFFF;
+    --secondary: #22303F;
+    --secondary-foreground: #EAEEF3;
+    --muted: #22303F;
+    --muted-foreground: #93A0AE;
+    --accent: #5E82AE;
+    --accent-foreground: #FFFFFF;
+    --destructive: #C36A72;
+    --border: #33414F;
+    --input: #33414F;
+    --ring: #3E72B0;
+    --chart-1: #3E72B0;
+    --chart-2: #5E82AE;
+    --chart-3: #6E93C4;
+    --chart-4: #4A86C5;
+    --chart-5: #C36A72;
+    /* Sharp base radius - cascades to every Tailwind rounded-* utility. */
+    --radius: 0.25rem;
+    --sidebar: #16212E;
+    --sidebar-foreground: #EAEEF3;
+    --sidebar-primary: #3E72B0;
+    --sidebar-primary-foreground: #FFFFFF;
+    --sidebar-accent: #22303F;
+    --sidebar-accent-foreground: #EAEEF3;
+    --sidebar-border: #33414F;
+    --sidebar-ring: #3E72B0;
 }
 
 @layer base {
@@ -187,7 +197,7 @@
     @apply font-sans;
   }
 
-  /* Scrollbar — dark, thin, unobtrusive */
+  /* Scrollbar - dark, thin, unobtrusive */
   ::-webkit-scrollbar { width: 5px; height: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb {
@@ -200,7 +210,7 @@
     background: var(--color-es-border-warm);
   }
 
-  /* Focus ring — visible, accessible (sage green) */
+  /* Focus ring - visible, accessible (sage green) */
   :focus-visible {
     outline: 2px solid var(--color-es-primary-sage);
     outline-offset: 2px;
@@ -209,33 +219,54 @@
 
 /* ─────────────────────────────────────────────────────────
    PHASE 6E-A: Elysium Seasonal glass utilities
-   All CSS-only — no remote assets, no images, no remote fonts.
+   All CSS-only - no remote assets, no images, no remote fonts.
    ───────────────────────────────────────────────────────── */
 
-/* App shell seasonal canvas — CSS gradient only.
+/* App shell seasonal canvas - CSS gradient only.
    Used on the root shell wrapper via .elysium-shell class.
    The ::before pseudo adds a faint warm radial haze at center. */
 .elysium-shell {
+  /* Light travels BOTH ways: left→right AND bottom→top - darkest corner is
+     bottom-left, brightest is the top-right radiance. The left side opens
+     with SCATTERED patches (diffuse, not one clean linear). */
   background:
-    radial-gradient(ellipse 70% 54% at 58% -5%, rgba(215, 168, 110, 0.42) 0%, rgba(215, 168, 110, 0.12) 36%, transparent 68%),
-    radial-gradient(ellipse 42% 44% at 85% 28%, rgba(230, 216, 200, 0.30) 0%, transparent 62%),
-    radial-gradient(ellipse 54% 50% at 10% 62%, rgba(36, 54, 42, 0.82) 0%, transparent 70%),
-    linear-gradient(90deg, #080D0B 0%, #101811 22%, #4A4F3E 46%, #C9B79E 72%, #D7C8BC 100%);
+    radial-gradient(ellipse 52% 58% at 84% -6%, rgba(240, 247, 253, 0.85) 0%, rgba(196, 218, 240, 0.35) 42%, transparent 70%),
+    radial-gradient(ellipse 70% 54% at 58% -5%, rgba(130, 168, 214, 0.4) 0%, rgba(130, 168, 214, 0.12) 36%, transparent 68%),
+    radial-gradient(ellipse 26% 20% at 7% 18%, rgba(124, 158, 200, 0.42) 0%, transparent 62%),
+    radial-gradient(ellipse 20% 16% at 22% 40%, rgba(104, 138, 180, 0.34) 0%, transparent 60%),
+    radial-gradient(ellipse 24% 18% at 10% 64%, rgba(84, 116, 156, 0.3) 0%, transparent 58%),
+    linear-gradient(to top, rgba(30, 46, 66, 0.5) 0%, rgba(30, 46, 66, 0.16) 34%, transparent 60%),
+    linear-gradient(to top right, #2C4259 0%, #3C5878 26%, #5C80A6 50%, #C8DAEC 74%, #F4F8FC 100%);
   position: relative;
 }
 .elysium-shell::before {
   content: "";
   position: fixed;
   inset: 0;
-  /* Warm radial haze — editorial seasonal feel, purely CSS */
+  /* Warm radial haze - editorial seasonal feel, purely CSS.
+     No filter: blur() here. A fixed full-viewport blurred layer is re-composited
+     every time an overlay (e.g. a dialog backdrop) appears/disappears, which
+     read as a "page refresh" flicker. Softness now comes from wider gradient
+     falloff instead - same look, no persistent GPU blur layer. */
   background:
-    linear-gradient(90deg, rgba(5, 9, 8, 0.82) 0%, rgba(10, 17, 13, 0.36) 26%, rgba(240, 225, 202, 0.12) 64%, rgba(238, 222, 212, 0.18) 100%),
-    radial-gradient(circle at 40% 8%, rgba(245, 195, 112, 0.24), transparent 16%),
-    radial-gradient(circle at 67% 9%, rgba(255, 232, 185, 0.22), transparent 18%);
-  filter: blur(18px);
-  transform: scale(1.04);
+    linear-gradient(to top right, rgba(36, 54, 76, 0.5) 0%, rgba(54, 78, 104, 0.2) 30%, rgba(226, 236, 247, 0.14) 64%, rgba(238, 245, 251, 0.24) 100%),
+    radial-gradient(circle at 78% 4%, rgba(214, 232, 248, 0.4), transparent 34%),
+    radial-gradient(circle at 46% 9%, rgba(150, 190, 232, 0.22), transparent 30%);
   pointer-events: none;
   z-index: 0;
+}
+
+/* Living mist backdrop canvas (MistCanvas). Paints above the shell's static
+   gradient, below the ::before haze and the stage. RULE for future glass:
+   any backdrop-filter surface that overlaps the page padding band samples
+   LIVE fog and re-blurs per fog frame - keep portaled glass inside the
+   opaque app frame, or accept that cost knowingly. */
+.mist-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  width: 100%;
+  height: 100%;
 }
 
 .elysium-page {
@@ -291,68 +322,93 @@
 .sidebar-brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   min-width: 0;
-  border-radius: 16px;
-  padding: 7px 9px;
-  background:
-    linear-gradient(90deg, rgba(237, 227, 211, 0.05) 0%, rgba(237, 227, 211, 0.10) 100%);
-  border: 1px solid rgba(237, 227, 211, 0.06);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: rgba(200, 216, 236, 0.07);
+  border: 1px solid rgba(200, 216, 236, 0.06);
 }
 
-.elysium-leafmark {
-  position: relative;
-  width: 36px;
-  height: 34px;
+/* App icon holder in the sidebar header (ElysiumMark rendered inside).
+   Enlarged ~43% (42 -> 60) with the v3 brighter/sharper master - the brand
+   is the room's anchor, it must read instantly. */
+.sidebar-brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 60px;
+  height: 60px;
   flex-shrink: 0;
-  border-radius: 14px;
+  color: #CFE0F2;
+}
+
+/* ── Lock-closing overlay (vault snapping shut OVER the live app) ─────
+   Fixed, above everything; swallows pointer events so nothing is clickable
+   mid-lock. Two veils (no backdrop-filter - the living-mist law):
+   .lock-overlay-dim  = phase 1, light - the app stays clearly visible while
+                        the lock draws and snaps on top of it;
+   .lock-overlay-ink  = phase 2, full ink - "the world closes" after the
+                        click, hiding the gate flip beneath. */
+.lock-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lock-overlay-dim,
+.lock-overlay-ink {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.lock-overlay-dim {
   background:
-    radial-gradient(circle at 54% 38%, rgba(237, 227, 211, 0.10), transparent 58%),
-    linear-gradient(135deg, rgba(237, 227, 211, 0.06), rgba(237, 227, 211, 0.02));
+    radial-gradient(ellipse 70% 58% at 50% 46%, rgba(18, 27, 39, 0.34) 0%, rgba(18, 27, 39, 0.5) 100%);
 }
 
-.elysium-leafmark span {
-  position: absolute;
-  width: 13px;
-  height: 21px;
-  border-radius: 14px 14px 3px 14px;
-  transform-origin: 50% 100%;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.26),
-    0 2px 8px rgba(0,0,0,0.16);
+.lock-overlay-ink {
+  /* SOLID base on purpose: at 0.96/0.98 alpha the app->lock-screen swap
+     bled through a few percent and read as "the lock screen is waiting
+     behind the veil". Full ink = the swap is truly invisible. */
+  background:
+    radial-gradient(ellipse 62% 52% at 50% 42%, rgba(56, 80, 108, 0.5) 0%, transparent 72%),
+    linear-gradient(180deg, #0F1721 0%, #141E2B 100%);
 }
 
-.elysium-leafmark i {
-  position: absolute;
-  left: 17px;
-  top: 12px;
-  width: 2px;
-  height: 17px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, rgba(237, 227, 211, 0.42), rgba(237, 227, 211, 0.04));
-  transform: rotate(26deg);
+.lock-overlay-glyph {
+  position: relative;
+  filter:
+    drop-shadow(0 0 26px rgba(150, 190, 235, 0.30))
+    drop-shadow(0 18px 46px rgba(0, 0, 0, 0.55));
 }
 
-.elysium-leafmark span:nth-of-type(1) {
-  left: 4px;
-  top: 11px;
-  background: linear-gradient(155deg, #E2B277 0%, #D4865D 100%);
-  transform: rotate(-44deg);
+/* ── Wordmark ("Elysium") ─────────────────────────────────────────────
+   Real text in an elegant high-contrast serif, tinted with an Azure
+   gradient via background-clip (no gold). Georgia is the guaranteed Windows
+   fallback for the delicate serif look. Letters pulled in slightly. */
+.elysium-wordmark {
+  font-family: "Cormorant Garamond", "Cormorant", Georgia, "Times New Roman", serif;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1;
+  white-space: nowrap;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
 }
 
-.elysium-leafmark span:nth-of-type(2) {
-  left: 13px;
-  top: 3px;
-  background: linear-gradient(160deg, #B9D4B0 0%, #7FA279 100%);
-  transform: rotate(9deg);
+.elysium-wordmark-onDark {
+  background-image: linear-gradient(100deg, #CBDCEF 0%, #EAF1F8 52%, #A6C2E4 100%);
 }
 
-.elysium-leafmark span:nth-of-type(3) {
-  left: 20px;
-  top: 12px;
-  background: linear-gradient(155deg, #D9AA70 0%, #C56D58 100%);
-  transform: rotate(43deg);
+.elysium-wordmark-onLight {
+  background-image: linear-gradient(100deg, #2B5384 0%, #3E72B0 54%, #5E82AE 100%);
 }
 
 @media (max-width: 900px) {
@@ -382,11 +438,11 @@
   position: relative;
   overflow: hidden;
   background:
-    linear-gradient(90deg, rgba(9, 15, 12, 0.97) 0%, rgba(13, 20, 16, 0.94) 52%, rgba(38, 49, 38, 0.78) 100%);
+    linear-gradient(to top right, rgba(40, 58, 80, 0.95) 0%, rgba(54, 78, 104, 0.92) 48%, rgba(84, 112, 146, 0.84) 100%);
   backdrop-filter: blur(18px) saturate(112%);
   -webkit-backdrop-filter: blur(18px) saturate(112%);
-  --color-es-text-light: #EEF1EA;
-  --color-es-text-muted: #A6AEA3;
+  --color-es-text-light: #EAEEF3;
+  --color-es-text-muted: #9DAAB8;
 }
 
 .glass-dark::before,
@@ -399,16 +455,18 @@
 
 .glass-dark::before {
   background:
-    radial-gradient(ellipse 80% 46% at 100% 8%, rgba(215, 168, 110, 0.12) 0%, transparent 64%),
-    radial-gradient(ellipse 70% 42% at 88% 56%, rgba(167, 200, 161, 0.11) 0%, transparent 62%),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.00) 0%, rgba(246, 235, 214, 0.08) 100%);
+    radial-gradient(ellipse 60% 34% at 82% 6%, rgba(160, 195, 235, 0.22) 0%, transparent 64%),
+    radial-gradient(ellipse 34% 22% at 12% 24%, rgba(130, 165, 208, 0.16) 0%, transparent 60%),
+    radial-gradient(ellipse 40% 26% at 70% 52%, rgba(96, 132, 174, 0.12) 0%, transparent 62%),
+    linear-gradient(to top, rgba(28, 44, 64, 0.28) 0%, transparent 46%),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.00) 0%, rgba(200, 216, 236, 0.08) 100%);
   opacity: 0.9;
 }
 
 .glass-dark::after {
   left: auto;
   width: 46px;
-  background: linear-gradient(90deg, rgba(237, 227, 211, 0.00), rgba(237, 227, 211, 0.15));
+  background: linear-gradient(90deg, rgba(200, 216, 236, 0.00), rgba(200, 216, 236, 0.15));
   mix-blend-mode: screen;
 }
 
@@ -417,52 +475,318 @@
   z-index: 1;
 }
 
+/* Flat control language: solid fill + hairline border, no inset sheen, no
+   pillow gradient, no drop glow - controls sit flush with their panel.
+   Motion (hover lift / press scale) stays; depth cues do not. */
 .sidebar-primary-action {
-  background:
-    linear-gradient(90deg, rgba(237, 227, 211, 0.13) 0%, rgba(237, 227, 211, 0.23) 100%) !important;
-  border: 1px solid rgba(237, 227, 211, 0.18);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.12),
-    inset 0 -1px 0 rgba(5, 9, 7, 0.18),
-    0 8px 20px rgba(5, 9, 7, 0.16);
+  background: rgba(150, 180, 215, 0.19) !important;
+  border: 1px solid rgba(160, 190, 220, 0.22);
   transition:
     transform var(--duration-fast) var(--ease-smooth),
     background-color var(--duration-fast) var(--ease-smooth),
-    box-shadow var(--duration-fast) var(--ease-smooth),
-    filter var(--duration-fast) var(--ease-smooth);
+    border-color var(--duration-fast) var(--ease-smooth);
 }
 
 .sidebar-primary-action:hover:not(:disabled) {
   transform: translateY(-1px);
-  filter: brightness(1.08);
-  background:
-    linear-gradient(90deg, rgba(237, 227, 211, 0.18) 0%, rgba(237, 227, 211, 0.30) 100%) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.18),
-    inset 0 -1px 0 rgba(5, 9, 7, 0.12),
-    0 12px 24px rgba(5, 9, 7, 0.22);
+  background: rgba(150, 180, 215, 0.28) !important;
+  border-color: rgba(170, 198, 226, 0.30);
 }
 
 .sidebar-primary-action:active:not(:disabled) {
   transform: translateY(0) scale(0.985);
 }
 
+/* Secondary sidebar action (e.g. import next to New Character). */
+.sidebar-secondary-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-icon-btn);
+  color: var(--color-es-text-muted) !important;
+  background: rgba(200, 216, 236, 0.05) !important;
+  border: 1px solid rgba(200, 216, 236, 0.12);
+  transition:
+    transform var(--duration-fast) var(--ease-smooth),
+    color var(--duration-fast) var(--ease-smooth),
+    background-color var(--duration-fast) var(--ease-smooth);
+}
+
+.sidebar-secondary-action:hover:not(:disabled) {
+  color: var(--color-es-text-light) !important;
+  background: rgba(200, 216, 236, 0.1) !important;
+  transform: translateY(-1px);
+}
+
+.sidebar-secondary-action:active:not(:disabled) {
+  transform: translateY(0) scale(0.94);
+}
+
+/* ── Persona strip (top-of-sidebar identity anchor) ───────────────── */
+.persona-strip {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  border-radius: var(--radius-card);
+  border: 1px solid rgba(200, 216, 236, 0.1);
+  background: rgba(200, 216, 236, 0.05);
+  transition:
+    transform var(--duration-fast) var(--ease-smooth),
+    background-color var(--duration-fast) var(--ease-smooth),
+    border-color var(--duration-fast) var(--ease-smooth);
+}
+
+.persona-strip:hover {
+  background: rgba(200, 216, 236, 0.09);
+  border-color: rgba(200, 216, 236, 0.16);
+}
+
+.persona-strip:active {
+  transform: scale(0.99);
+}
+
+.persona-strip-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #EAF1F8;
+  background: rgba(94, 130, 174, 0.92);
+}
+
+.persona-strip-label {
+  display: block;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-es-text-muted);
+  opacity: 0.85;
+}
+
+.persona-strip-name {
+  display: block;
+  margin-top: 1px;
+  overflow: hidden;
+  font-size: 12.5px;
+  font-weight: 600;
+  /* Roomy line box so descenders and Turkish diacritics (ğ, ç, ı) are not
+     clipped by the ellipsis overflow:hidden. */
+  line-height: 1.45;
+  color: var(--color-es-text-light);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.persona-strip-chevron {
+  flex-shrink: 0;
+  color: var(--color-es-text-muted);
+  opacity: 0.6;
+}
+
+/* Persona switcher dropdown (portaled to body, fixed coords). */
+/* Sibling of .chat-action-menu - same Azure family: blue-dark horizontal
+   gradient, hairline border, one soft elevation shadow, shared entrance. */
+.persona-menu {
+  z-index: 60;
+  padding: 0.4rem;
+  border-radius: 5px;
+  background: linear-gradient(90deg, rgba(17, 24, 33, 0.96), rgba(40, 52, 66, 0.92));
+  border: 1px solid rgba(200, 216, 236, 0.13);
+  box-shadow: 0 18px 36px rgba(2, 5, 8, 0.32);
+  backdrop-filter: blur(16px) saturate(112%);
+  -webkit-backdrop-filter: blur(16px) saturate(112%);
+  animation: inline-action-enter 180ms var(--ease-smooth) both;
+}
+
+.persona-menu-scroll {
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.persona-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.45rem 0.5rem;
+  border-radius: 3px;
+  font-size: 12.5px;
+  color: rgba(228, 235, 243, 0.85);
+  transition:
+    background-color var(--duration-fast) var(--ease-smooth),
+    color var(--duration-fast) var(--ease-smooth),
+    transform var(--duration-fast) var(--ease-smooth);
+}
+
+.persona-menu-item:hover:not(:disabled),
+.persona-menu-item:focus-visible {
+  color: rgba(241, 245, 250, 0.98);
+  background: rgba(200, 216, 236, 0.09);
+  transform: translateY(-1px);
+}
+
+.persona-menu-item[aria-checked="true"] {
+  color: rgba(159, 192, 232, 0.98);
+  background: rgba(94, 130, 174, 0.10);
+}
+
+.persona-menu-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #EAF1F8;
+  background: rgba(94, 130, 174, 0.75);
+}
+
+/* Footer action row ("Manage personas" / "Create one") - a real row with
+   its own hover ground, separated by a hairline. */
+.persona-menu-manage {
+  width: 100%;
+  margin-top: 0.3rem;
+  padding: 0.45rem 0.5rem;
+  border-top: 1px solid rgba(200, 216, 236, 0.10);
+  border-radius: 0 0 3px 3px;
+  font-size: 11.5px;
+  text-align: left;
+  color: var(--color-es-text-muted);
+  transition:
+    color var(--duration-fast) var(--ease-smooth),
+    background-color var(--duration-fast) var(--ease-smooth);
+}
+
+.persona-menu-manage:hover,
+.persona-menu-manage:focus-visible {
+  color: rgba(241, 245, 250, 0.98);
+  background: rgba(200, 216, 236, 0.07);
+}
+
+.persona-menu-empty {
+  padding: 0.55rem 0.5rem 0.3rem;
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgba(202, 212, 224, 0.72);
+}
+
+/* ── Sidebar search field ─────────────────────────────────────────── */
+.sidebar-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.sidebar-search-icon {
+  position: absolute;
+  left: 0.55rem;
+  color: var(--color-es-text-muted);
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.sidebar-search-input {
+  width: 100%;
+  padding: 0.45rem 1.8rem 0.45rem 1.7rem;
+  border-radius: var(--radius-input);
+  background: rgba(200, 216, 236, 0.06);
+  border: 1px solid rgba(200, 216, 236, 0.12);
+  color: var(--color-es-text-light);
+  font-size: 12.5px;
+  transition:
+    border-color var(--duration-fast) var(--ease-smooth),
+    background-color var(--duration-fast) var(--ease-smooth);
+}
+
+.sidebar-search-input::placeholder {
+  color: var(--color-es-text-muted);
+  opacity: 0.6;
+}
+
+.sidebar-search-input:focus {
+  outline: none;
+  border-color: rgba(110, 147, 196, 0.55);
+  background: rgba(200, 216, 236, 0.09);
+}
+
+.sidebar-search-clear {
+  position: absolute;
+  right: 0.5rem;
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 999px;
+  color: var(--color-es-text-muted);
+  opacity: 0.6;
+  transition: opacity var(--duration-fast) var(--ease-smooth);
+}
+
+.sidebar-search-clear:hover {
+  opacity: 1;
+}
+
+/* New Chat dock - flows after the chat list, then sticks to the bottom of
+   the scroll area once the list overflows so it is always reachable. The
+   frosted fade dissolves the scrolling list under it (no hard cut against
+   the button's top edge); on a short list it is invisible over the sidebar. */
+.chat-newchat-dock {
+  position: sticky; /* also establishes the stacking context for ::before */
+  bottom: 0;
+  padding-top: 0.55rem;
+}
+
+/* Scrim lives on a pseudo so the fade mask never touches the button. It
+   follows the sidebar's own diagonal (darker left → lighter right) and
+   dissolves upward - a continuation of the surface, not a gray box; a
+   single-color fade read as a dark block against the sidebar's lighter
+   right side. Hidden until the list actually overflows (.is-stuck, set by
+   a ResizeObserver in ChatList): with a short list there is nothing to
+   dissolve, and the tint would make New Chat sit on visibly different
+   ground than New Character. */
+.chat-newchat-dock::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(to top right, rgba(30, 45, 63, 0.88), rgba(58, 80, 106, 0.72));
+  -webkit-mask-image: linear-gradient(to top, black 42%, transparent 100%);
+  mask-image: linear-gradient(to top, black 42%, transparent 100%);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  opacity: 0;
+  transition: opacity 200ms var(--ease-smooth);
+}
+
+.chat-newchat-dock.is-stuck::before {
+  opacity: 1;
+}
+
 /* Glass right panel surface */
 .glass-right {
-  background: linear-gradient(180deg, rgba(240, 231, 220, 0.96), rgba(219, 208, 196, 0.93));
+  background: linear-gradient(180deg, rgba(252, 253, 255, 0.97), rgba(238, 244, 250, 0.94));
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
-  --foreground: #181B16;
-  --muted-foreground: #3F463C;
-  --background: rgba(250, 244, 235, 0.84);
-  --muted: rgba(47, 49, 45, 0.12);
-  --border: rgba(47, 49, 45, 0.18);
-  --input: rgba(47, 49, 45, 0.16);
-  --color-es-text-light: #181B16;
-  --color-es-text-muted: #42483E;
-  --color-es-surface-elevated: rgba(255, 255, 255, 0.42);
-  --color-es-glass-border-dark: rgba(47, 49, 45, 0.16);
-  --color-es-glass-border-warm: rgba(47, 49, 45, 0.14);
+  --foreground: #1C2632;
+  --muted-foreground: #5E6B7A;
+  --background: rgba(250, 252, 255, 0.86);
+  --muted: rgba(30, 45, 62, 0.10);
+  --border: rgba(30, 45, 62, 0.16);
+  --input: rgba(30, 45, 62, 0.14);
+  --color-es-text-light: #1C2632;
+  --color-es-text-muted: #5E6B7A;
+  --color-es-surface-elevated: rgba(255, 255, 255, 0.55);
+  --color-es-glass-border-dark: rgba(30, 45, 62, 0.14);
+  --color-es-glass-border-warm: rgba(30, 45, 62, 0.12);
 }
 
 .glass-right [data-slot="tabs-list"] {
@@ -482,9 +806,16 @@
   line-height: 1;
 }
 
+/* Flat control law: kill the shadcn default active-pill drop shadow - but
+   NOT the keyboard focus ring (Tailwind's focus-visible:ring is itself a
+   box-shadow, so an unconditional none would erase it). */
+.glass-right [data-slot="tabs-trigger"]:not(:focus-visible) {
+  box-shadow: none !important;
+}
+
 .glass-right .model-panel .sidebar-item {
-  border: 1px solid rgba(47, 49, 45, 0.10);
-  border-left-color: rgba(47, 49, 45, 0.10);
+  border: 1px solid rgba(28, 38, 50, 0.10);
+  border-left-color: rgba(28, 38, 50, 0.10);
   background: rgba(255, 255, 255, 0.08);
   transition:
     transform var(--duration-fast) var(--ease-smooth),
@@ -496,8 +827,7 @@
 .glass-right .model-panel .sidebar-item:hover {
   transform: translateY(-1px);
   background: rgba(255, 255, 255, 0.20);
-  border-color: rgba(47, 49, 45, 0.16);
-  box-shadow: 0 8px 18px rgba(47, 49, 45, 0.08);
+  border-color: rgba(28, 38, 50, 0.16);
 }
 
 .glass-right .model-panel .sidebar-item:active {
@@ -505,12 +835,9 @@
 }
 
 .glass-right .model-panel .sidebar-item-selected {
-  border-color: rgba(96, 116, 87, 0.28);
-  border-left-color: rgba(96, 116, 87, 0.28);
-  background: linear-gradient(90deg, rgba(255, 255, 255, 0.26), rgba(236, 228, 216, 0.20));
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.30),
-    0 10px 22px rgba(47, 49, 45, 0.09);
+  border-color: rgba(58, 88, 122, 0.28);
+  border-left-color: rgba(58, 88, 122, 0.28);
+  background: rgba(255, 255, 255, 0.24);
 }
 
 .persona-panel {
@@ -524,24 +851,18 @@
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  border-radius: 14px;
-  color: #607457;
-  background:
-    linear-gradient(135deg, rgba(255,255,255,0.34), rgba(236,228,216,0.16));
-  border: 1px solid rgba(47, 49, 45, 0.12);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.28);
+  border-radius: 4px;
+  color: #3A587A;
+  background: rgba(255, 255, 255, 0.26);
+  border: 1px solid rgba(28, 38, 50, 0.12);
 }
 
 .persona-card {
   position: relative;
   overflow: hidden;
-  border-radius: 14px;
-  border: 1px solid rgba(47, 49, 45, 0.12);
-  background:
-    linear-gradient(135deg, rgba(255,255,255,0.24), rgba(236,228,216,0.14));
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.26),
-    0 10px 22px rgba(47, 49, 45, 0.07);
+  border-radius: 4px;
+  border: 1px solid rgba(28, 38, 50, 0.12);
+  background: rgba(255, 255, 255, 0.20);
   padding: 12px;
   transition:
     transform var(--duration-fast) var(--ease-smooth),
@@ -553,23 +874,15 @@
 
 .persona-card:hover {
   transform: translateY(-1px);
-  border-color: rgba(47, 49, 45, 0.18);
-  background:
-    linear-gradient(135deg, rgba(255,255,255,0.34), rgba(236,228,216,0.20));
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.34),
-    0 12px 24px rgba(47, 49, 45, 0.09);
+  border-color: rgba(28, 38, 50, 0.18);
+  background: rgba(255, 255, 255, 0.28);
 }
 
 .persona-card-active,
 .persona-list-item.is-active {
-  border-color: rgba(96, 116, 87, 0.30);
-  background:
-    linear-gradient(135deg, rgba(255,255,255,0.34), rgba(221,232,216,0.24));
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.34),
-    0 0 0 1px rgba(167, 200, 161, 0.10),
-    0 12px 26px rgba(47, 49, 45, 0.08);
+  border-color: rgba(58, 88, 122, 0.30);
+  background: rgba(255, 255, 255, 0.30);
+  box-shadow: 0 0 0 1px rgba(62, 114, 176, 0.12);
 }
 
 .persona-privacy-note,
@@ -578,8 +891,8 @@
 .persona-error {
   display: flex;
   gap: 8px;
-  border-radius: 13px;
-  border: 1px solid rgba(47, 49, 45, 0.10);
+  border-radius: 4px;
+  border: 1px solid rgba(28, 38, 50, 0.10);
   background: rgba(255, 255, 255, 0.16);
   padding: 10px;
   font-size: 12px;
@@ -594,31 +907,31 @@
 }
 
 .persona-privacy-note svg {
-  color: #607457;
+  color: #3A587A;
 }
 
 .persona-error,
 .persona-local-error {
   color: var(--color-es-danger);
-  background: rgba(201, 110, 91, 0.08);
-  border-color: rgba(201, 110, 91, 0.16);
+  background: rgba(195, 106, 114, 0.08);
+  border-color: rgba(195, 106, 114, 0.16);
 }
 
 .persona-local-error {
-  border-radius: 10px;
+  border-radius: 3px;
   padding: 7px 9px;
   font-size: 12px;
 }
 
 .persona-active-badge {
   height: 20px;
-  border-color: rgba(96, 116, 87, 0.30) !important;
-  color: #607457 !important;
-  background: rgba(167, 200, 161, 0.14);
+  border-color: rgba(58, 88, 122, 0.30) !important;
+  color: #3A587A !important;
+  background: rgba(62, 114, 176, 0.14);
 }
 
 .persona-field {
-  border-color: rgba(47, 49, 45, 0.14) !important;
+  border-color: rgba(28, 38, 50, 0.14) !important;
   background: rgba(255, 255, 255, 0.24) !important;
   color: var(--color-es-text-light) !important;
   transition:
@@ -628,14 +941,14 @@
 }
 
 .persona-field:focus {
-  border-color: rgba(96, 116, 87, 0.32) !important;
-  box-shadow: 0 0 0 3px rgba(167, 200, 161, 0.14);
+  border-color: rgba(58, 88, 122, 0.32) !important;
+  box-shadow: 0 0 0 3px rgba(62, 114, 176, 0.14);
 }
 
 .persona-select-action {
-  border: 1px solid rgba(96, 116, 87, 0.22) !important;
-  background: rgba(167, 200, 161, 0.18) !important;
-  color: #26301f !important;
+  border: 1px solid rgba(58, 88, 122, 0.22) !important;
+  background: rgba(62, 114, 176, 0.18) !important;
+  color: #1B2A3C !important;
   transition:
     transform var(--duration-fast) var(--ease-smooth),
     filter var(--duration-fast) var(--ease-smooth),
@@ -644,7 +957,7 @@
 
 .persona-ghost-action,
 .persona-danger-action {
-  border: 1px solid rgba(47, 49, 45, 0.10) !important;
+  border: 1px solid rgba(28, 38, 50, 0.10) !important;
   background: rgba(255, 255, 255, 0.12) !important;
   color: var(--color-es-text-muted) !important;
   transition:
@@ -654,7 +967,7 @@
 }
 
 .persona-danger-action {
-  color: #8b4538 !important;
+  color: #96424E !important;
 }
 
 .persona-select-action:hover:not(:disabled),
@@ -694,7 +1007,7 @@
   position: relative;
   isolation: isolate;
   background:
-    linear-gradient(90deg, rgba(240, 232, 216, 0.98) 0%, rgba(246, 235, 214, 0.88) 46%, rgba(233, 218, 198, 0.80) 100%);
+    linear-gradient(90deg, rgba(250, 252, 254, 0.98) 0%, rgba(244, 248, 253, 0.9) 46%, rgba(235, 242, 250, 0.82) 100%);
 }
 
 .warm-canvas::before {
@@ -703,22 +1016,276 @@
   inset: 0;
   z-index: -2;
   background:
-    radial-gradient(ellipse 46% 30% at 71% 10%, rgba(255, 214, 132, 0.60) 0%, transparent 64%),
-    radial-gradient(ellipse 38% 36% at 82% 30%, rgba(204, 180, 110, 0.28) 0%, transparent 68%),
-    radial-gradient(ellipse 36% 18% at 58% 65%, rgba(126, 161, 179, 0.26) 0%, transparent 66%),
-    linear-gradient(176deg, rgba(245, 232, 205, 0.70) 0%, rgba(244, 235, 216, 0.58) 42%, rgba(211, 211, 188, 0.38) 70%, rgba(151, 168, 145, 0.32) 100%);
+    radial-gradient(ellipse 46% 30% at 71% 10%, rgba(150, 188, 232, 0.34) 0%, transparent 64%),
+    radial-gradient(ellipse 38% 36% at 82% 30%, rgba(120, 160, 210, 0.18) 0%, transparent 68%),
+    radial-gradient(ellipse 36% 18% at 58% 65%, rgba(110, 147, 196, 0.14) 0%, transparent 66%),
+    linear-gradient(176deg, rgba(248, 251, 254, 0.72) 0%, rgba(244, 248, 253, 0.6) 42%, rgba(233, 240, 248, 0.4) 70%, rgba(219, 230, 243, 0.34) 100%);
 }
 
-.warm-canvas::after {
-  content: "";
+/* Clear-frosted-glass chat backdrop: a SECOND fog instance (CanvasMist)
+   lives inside the canvas under a milky - deliberately blur-free - veil,
+   so the living mist reads through the paper. Localized on purpose: making
+   the app frame itself transparent would put live pixels behind the
+   sidebar/right-panel backdrop-filter glass and re-blur them every fog
+   frame. z:-1 keeps it above the ::before glows (the static fallback look)
+   and below all in-flow content; warm-canvas isolates. */
+.canvas-mist {
   position: absolute;
   inset: 0;
   z-index: -1;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.20) 0%, transparent 36%, rgba(255,255,255,0.16) 100%),
-    repeating-radial-gradient(circle at 75% 11%, rgba(210, 156, 62, 0.14) 0 2px, transparent 3px 18px);
-  opacity: 0.72;
   pointer-events: none;
+}
+
+.canvas-mist-gl {
+  width: 100%;
+  height: 100%;
+}
+
+/* The "clear frosted" milk: translucent white, NO backdrop-filter. Slightly
+   clearer at the top (fog most present), milkier toward the composer. */
+.canvas-mist-milk {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    176deg,
+    rgba(248, 251, 254, 0.78) 0%,
+    rgba(246, 250, 253, 0.83) 46%,
+    rgba(242, 247, 252, 0.88) 100%
+  );
+}
+
+/* Side-panel frosted glass (PanelMist) - same architecture as .canvas-mist
+   but MILKIER: panels carry solid readable chrome. z:-1 is contained because
+   both glass surfaces own a stacking context (backdrop-filter); the veil
+   replicates each panel's surface gradient slightly translucent, so the
+   color theme holds and fog-off falls back to the exact static look. */
+.panel-mist {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+
+/* Outranks the `.glass-dark > *` content lift (which would pin it to z:1). */
+.glass-dark > .panel-mist {
+  position: absolute;
+  z-index: -1;
+}
+
+.panel-mist-gl {
+  width: 100%;
+  height: 100%;
+}
+
+.panel-mist-veil {
+  position: absolute;
+  inset: 0;
+}
+
+.panel-mist-left .panel-mist-veil {
+  background:
+    linear-gradient(to top right, rgba(40, 58, 80, 0.86) 0%, rgba(54, 78, 104, 0.81) 48%, rgba(84, 112, 146, 0.72) 100%);
+}
+
+.panel-mist-right .panel-mist-veil {
+  background:
+    linear-gradient(180deg, rgba(252, 253, 255, 0.88), rgba(238, 244, 250, 0.84));
+}
+
+/* Below-the-fold model rows: skip layout/paint until scrolled near view.
+   Keeps the Models tab mount cheap; 'auto' remembers the real row height
+   after first paint so the scrollbar stays honest. */
+.model-row-lazy {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 78px;
+}
+
+/* ── Vault screens (create / unlock) ──────────────────────────────────
+   Same design law as every panel: the card is the sidebar-dialog recipe
+   (blue-dark gradient, hairline border, panel radius, field/action button
+   classes) floating on the living shell + mist. No new visual language. */
+.vault-stage {
+  position: relative;
+  z-index: 1;
+  width: min(400px, 92vw);
+}
+
+.vault-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding: 1.35rem 1.35rem 1.15rem;
+  border-radius: var(--radius-panel);
+  border: 1px solid rgba(200, 216, 236, 0.18);
+  background:
+    radial-gradient(ellipse 76% 42% at 100% 4%, rgba(94, 130, 174, 0.14) 0%, transparent 64%),
+    linear-gradient(90deg, rgba(15, 23, 33, 0.97) 0%, rgba(22, 32, 45, 0.95) 52%, rgba(44, 62, 84, 0.90) 100%);
+  box-shadow: 0 26px 80px rgba(0, 0, 0, 0.44);
+  color: #EAEEF3;
+  --color-es-text-light: #EAEEF3;
+  --color-es-text-muted: #9DAAB8;
+}
+
+/* Centered brand lockup + heading at the top of the auth card. The card
+   itself is already centered in the viewport by .elysium-page; this centers
+   the CONTENT (icon, wordmark, title, note) so the screen reads as a poised,
+   on-brand gateway. The form below keeps its normal left-aligned labels. */
+.vault-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+}
+
+.vault-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  color: #CFE0F2;
+}
+
+.vault-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-es-text-light);
+}
+
+.vault-note {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--color-es-text-muted);
+}
+
+.vault-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-top: 0.35rem;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--color-es-text-muted);
+}
+
+.vault-input {
+  width: 100%;
+  height: 34px;
+  padding: 0 2.3rem 0 0.6rem;
+  border-radius: var(--radius-input);
+  border-width: 1px;
+  border-style: solid;
+  font-size: 13px;
+  outline: none;
+}
+
+/* Passphrase field + reveal (show/hide) toggle. */
+.vault-input-wrap {
+  position: relative;
+  display: block;
+}
+
+.vault-eye {
+  position: absolute;
+  right: 0.35rem;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.7rem;
+  height: 1.7rem;
+  border-radius: var(--radius-input);
+  color: rgba(200, 216, 236, 0.6);
+  transition:
+    color var(--duration-fast) var(--ease-smooth),
+    background-color var(--duration-fast) var(--ease-smooth);
+}
+
+.vault-eye:hover:not(:disabled),
+.vault-eye:focus-visible {
+  color: rgba(232, 238, 245, 0.96);
+  background: rgba(200, 216, 236, 0.1);
+}
+
+.vault-eye:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Perceptible focus on the near-black card: a solid ring, not an 8%-alpha
+   hairline. The .vault-card descendant selector raises specificity so this
+   wins over the later-defined, fainter .sidebar-dialog-field:focus the same
+   input also carries. Plain :focus (not :focus-visible) - a password field
+   should show its ring on any focus, independent of the keyboard heuristic. */
+.vault-card .vault-input:focus {
+  border-color: rgba(200, 216, 236, 0.34) !important;
+  box-shadow: 0 0 0 3px rgba(110, 147, 196, 0.34);
+}
+
+/* Secrets-tab passphrase fields (VaultSection): a visible focus ring on the
+   light panel - the inline `outline-none` otherwise leaves keyboard users
+   with no indication across three identical fields. */
+.vault-secrets-input:focus {
+  outline: none;
+  border-color: rgba(58, 88, 122, 0.45) !important;
+  box-shadow: 0 0 0 3px rgba(62, 114, 176, 0.18);
+}
+
+.vault-error {
+  font-size: 12px;
+  color: var(--color-es-danger);
+}
+
+.vault-warning {
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(206, 146, 154, 0.92);
+}
+
+.vault-submit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  margin-top: 0.3rem;
+  border-radius: var(--radius-input);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.vault-submit:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.vault-splash {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.9rem;
+  color: rgba(234, 238, 243, 0.72);
+}
+
+@keyframes vault-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-7px); }
+  40% { transform: translateX(7px); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(3px); }
+}
+
+.vault-card-shake {
+  animation: vault-shake 340ms var(--ease-smooth);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vault-card-shake {
+    animation: none;
+  }
 }
 
 /* FE-1B: central error toast stack over the warm chat canvas */
@@ -729,15 +1296,14 @@
 
 .error-toast {
   min-height: 38px;
-  color: rgba(245, 244, 239, 0.95);
+  color: rgba(243, 246, 250, 0.95);
+  /* No backdrop-filter: toasts float over the LIVE chat fog, and a blurred
+     backdrop there re-blurs on every fog frame for as long as the toast is
+     visible. The near-opaque glass reads the same without it. */
   background:
-    linear-gradient(90deg, rgba(30, 31, 31, 0.78), rgba(43, 43, 41, 0.66));
-  border: 1px solid rgba(242, 232, 216, 0.14);
-  box-shadow:
-    0 14px 34px rgba(17, 18, 18, 0.26),
-    inset 0 1px 0 rgba(255, 255, 255, 0.09);
-  backdrop-filter: blur(18px) saturate(118%);
-  -webkit-backdrop-filter: blur(18px) saturate(118%);
+    linear-gradient(90deg, rgba(26, 32, 40, 0.90), rgba(38, 46, 56, 0.84));
+  border: 1px solid rgba(238, 244, 251, 0.14);
+  box-shadow: 0 14px 34px rgba(12, 17, 23, 0.26);
   animation: error-toast-enter 220ms var(--ease-smooth) both;
   transition:
     opacity 180ms var(--ease-smooth),
@@ -748,9 +1314,9 @@
 
 .error-toast:hover,
 .error-toast:focus-visible {
-  border-color: rgba(242, 232, 216, 0.24);
+  border-color: rgba(238, 244, 251, 0.24);
   background:
-    linear-gradient(90deg, rgba(35, 36, 36, 0.84), rgba(50, 49, 47, 0.72));
+    linear-gradient(90deg, rgba(30, 37, 46, 0.84), rgba(44, 53, 64, 0.72));
   transform: translateY(1px);
 }
 
@@ -767,9 +1333,9 @@
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  color: rgba(229, 137, 119, 0.95);
-  background: rgba(201, 110, 91, 0.12);
-  box-shadow: inset 0 0 0 1px rgba(201, 110, 91, 0.14);
+  color: rgba(214, 120, 130, 0.95);
+  background: rgba(195, 106, 114, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(195, 106, 114, 0.14);
 }
 
 @keyframes error-toast-enter {
@@ -813,16 +1379,14 @@
 
 .sidebar-dialog {
   isolation: isolate;
-  border-color: rgba(237, 227, 211, 0.18) !important;
+  border-color: rgba(200, 216, 236, 0.18) !important;
   background:
-    radial-gradient(ellipse 76% 42% at 100% 4%, rgba(215, 168, 110, 0.14) 0%, transparent 64%),
-    radial-gradient(ellipse 72% 48% at 95% 78%, rgba(167, 200, 161, 0.10) 0%, transparent 62%),
-    linear-gradient(90deg, rgba(10, 16, 13, 0.98) 0%, rgba(17, 25, 20, 0.96) 52%, rgba(46, 55, 43, 0.92) 100%) !important;
-  box-shadow:
-    0 26px 80px rgba(0, 0, 0, 0.44),
-    inset 0 1px 0 rgba(255,255,255,0.08);
-  --color-es-text-light: #EEF1EA;
-  --color-es-text-muted: #A8AEA4;
+    radial-gradient(ellipse 76% 42% at 100% 4%, rgba(94, 130, 174, 0.14) 0%, transparent 64%),
+    radial-gradient(ellipse 72% 48% at 95% 78%, rgba(62, 114, 176, 0.10) 0%, transparent 62%),
+    linear-gradient(90deg, rgba(15, 23, 33, 0.98) 0%, rgba(22, 32, 45, 0.96) 52%, rgba(44, 62, 84, 0.92) 100%) !important;
+  box-shadow: 0 26px 80px rgba(0, 0, 0, 0.44);
+  --color-es-text-light: #EAEEF3;
+  --color-es-text-muted: #9DAAB8;
 }
 
 .sidebar-dialog::before {
@@ -830,7 +1394,7 @@
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: linear-gradient(90deg, rgba(255,255,255,0.00) 0%, rgba(237, 227, 211, 0.07) 100%);
+  background: linear-gradient(90deg, rgba(255,255,255,0.00) 0%, rgba(200, 216, 236, 0.07) 100%);
 }
 
 .sidebar-dialog > :not([data-slot="dialog-close"]) {
@@ -838,34 +1402,33 @@
   z-index: 1;
 }
 
-.sidebar-dialog [data-slot="dialog-close"] {
+/* Direct child ONLY: this styles the DialogContent's own top-right X.
+   A descendant selector here also catches footer Close buttons (they carry
+   the same data-slot) and pins them over their siblings. */
+.sidebar-dialog > [data-slot="dialog-close"] {
   position: absolute !important;
   top: 0.5rem !important;
   right: 0.5rem !important;
   z-index: 2;
-  color: rgba(232, 237, 229, 0.72);
-  background: rgba(237, 227, 211, 0.06);
-  border: 1px solid rgba(237, 227, 211, 0.10);
+  color: rgba(230, 236, 243, 0.72);
+  background: rgba(200, 216, 236, 0.06);
+  border: 1px solid rgba(200, 216, 236, 0.10);
   transition:
     transform var(--duration-fast) var(--ease-smooth),
     background-color var(--duration-fast) var(--ease-smooth),
     color var(--duration-fast) var(--ease-smooth);
 }
 
-.sidebar-dialog [data-slot="dialog-close"]:hover {
+.sidebar-dialog > [data-slot="dialog-close"]:hover {
   transform: translateY(-1px);
-  color: rgba(238, 242, 235, 0.96);
-  background: rgba(237, 227, 211, 0.12);
+  color: rgba(234, 240, 247, 0.96);
+  background: rgba(200, 216, 236, 0.12);
 }
 
 .sidebar-dialog-field {
-  background:
-    linear-gradient(90deg, rgba(237, 227, 211, 0.08) 0%, rgba(237, 227, 211, 0.13) 100%) !important;
-  border-color: rgba(237, 227, 211, 0.14) !important;
+  background: rgba(200, 216, 236, 0.10) !important;
+  border-color: rgba(200, 216, 236, 0.14) !important;
   color: var(--color-es-text-light) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.05),
-    inset 0 -1px 0 rgba(0,0,0,0.14);
   transition:
     border-color var(--duration-fast) var(--ease-smooth),
     background-color var(--duration-fast) var(--ease-smooth),
@@ -873,19 +1436,17 @@
 }
 
 .sidebar-dialog-field::placeholder {
-  color: rgba(210, 216, 205, 0.46);
+  color: rgba(206, 214, 224, 0.46);
 }
 
 .sidebar-dialog-field:focus {
-  border-color: rgba(237, 227, 211, 0.26) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.08),
-    0 0 0 3px rgba(237, 227, 211, 0.08);
+  border-color: rgba(200, 216, 236, 0.26) !important;
+  box-shadow: 0 0 0 3px rgba(200, 216, 236, 0.08);
 }
 
 .sidebar-dialog-action,
 .sidebar-dialog-cancel {
-  border: 1px solid rgba(237, 227, 211, 0.16) !important;
+  border: 1px solid rgba(200, 216, 236, 0.16) !important;
   transition:
     transform var(--duration-fast) var(--ease-smooth),
     filter var(--duration-fast) var(--ease-smooth),
@@ -894,16 +1455,12 @@
 }
 
 .sidebar-dialog-action {
-  background:
-    linear-gradient(90deg, rgba(237, 227, 211, 0.18) 0%, rgba(237, 227, 211, 0.30) 100%) !important;
+  background: rgba(200, 216, 236, 0.24) !important;
   color: var(--color-es-text-light) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.14),
-    0 10px 24px rgba(4, 8, 6, 0.20);
 }
 
 .sidebar-dialog-cancel {
-  background: rgba(237, 227, 211, 0.06) !important;
+  background: rgba(200, 216, 236, 0.06) !important;
   color: var(--color-es-text-muted) !important;
 }
 
@@ -921,53 +1478,30 @@
 .generation-trigger {
   position: relative;
   overflow: hidden;
-  color: rgba(34, 38, 32, 0.88);
-  border: 1px solid rgba(47, 49, 45, 0.13);
-  background:
-    radial-gradient(ellipse 80% 120% at 100% 0%, rgba(255,255,255,0.30) 0%, transparent 58%),
-    linear-gradient(90deg, rgba(255,255,255,0.24) 0%, rgba(236, 228, 216, 0.30) 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.36),
-    0 10px 24px rgba(47,49,45,0.08);
+  color: rgba(30, 38, 48, 0.88);
+  border: 1px solid rgba(28, 38, 50, 0.13);
+  background: rgba(255, 255, 255, 0.30);
   transition:
     transform 180ms var(--ease-smooth),
     border-color 180ms var(--ease-smooth),
-    box-shadow 180ms var(--ease-smooth),
-    filter 180ms var(--ease-smooth);
+    background-color 180ms var(--ease-smooth);
 }
 
-.generation-trigger::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(90deg, rgba(96,116,87,0.10) 0%, rgba(255,255,255,0.00) 72%);
-  opacity: 0.72;
-}
-
-.generation-trigger > * {
-  position: relative;
-  z-index: 1;
-}
-
-.generation-trigger:hover {
+.generation-trigger:hover:not(:disabled) {
   transform: translateY(-1px);
-  border-color: rgba(47, 49, 45, 0.20);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.42),
-    0 14px 30px rgba(47,49,45,0.12);
-  filter: brightness(1.03);
+  border-color: rgba(28, 38, 50, 0.20);
+  background: rgba(255, 255, 255, 0.44);
 }
 
-.generation-trigger:active {
+.generation-trigger:active:not(:disabled) {
   transform: translateY(0) scale(0.99);
 }
 
 .generation-trigger-pill {
   border-radius: 999px;
-  border: 1px solid rgba(47,49,45,0.13);
+  border: 1px solid rgba(28, 38, 50,0.13);
   background: rgba(255,255,255,0.22);
-  color: rgba(34,38,32,0.62);
+  color: rgba(30, 38, 48,0.62);
   padding: 0.15rem 0.45rem;
   font-size: 10px;
   line-height: 1;
@@ -977,11 +1511,23 @@
 .generation-dialog {
   width: min(42rem, calc(100vw - 2rem));
   gap: 1rem;
-  contain: layout paint;
   scrollbar-gutter: stable;
-  backface-visibility: hidden;
-  will-change: opacity, transform;
-  animation-duration: 180ms;
+}
+
+/* Every Base UI popup opens AND closes fast. tw-animate-css defaults the
+   data-closed exit animation long enough (~300ms) that a full-viewport overlay
+   un-dim reads as a "page refresh" flash on close; the same slow exit on any
+   popup looks sluggish. Cap them ALL to one snappy duration - covers dialogs
+   (used) plus select/tooltip/popover/menu (same classes, whether used now or
+   added later). Transitions (e.g. .es-collapse) are unaffected - this only
+   caps keyframe animations. */
+[data-slot="dialog-overlay"],
+[data-slot="dialog-content"],
+[data-slot="select-content"],
+[data-slot="tooltip-content"],
+[data-slot="popover-content"],
+[data-slot="menu-content"] {
+  animation-duration: 90ms !important;
 }
 
 .generation-summary-grid {
@@ -991,15 +1537,15 @@
 }
 
 .generation-summary-tile {
-  border-radius: 0.75rem;
-  border: 1px solid rgba(237, 227, 211, 0.11);
-  background: rgba(237, 227, 211, 0.07);
+  border-radius: 4px;
+  border: 1px solid rgba(200, 216, 236, 0.11);
+  background: rgba(200, 216, 236, 0.07);
   padding: 0.6rem 0.7rem;
 }
 
 .generation-summary-tile span {
   display: block;
-  color: rgba(214, 220, 209, 0.58);
+  color: rgba(202, 212, 224, 0.58);
   font-size: 10px;
   line-height: 1.1;
 }
@@ -1007,22 +1553,22 @@
 .generation-summary-tile strong {
   display: block;
   margin-top: 0.25rem;
-  color: rgba(240, 244, 237, 0.92);
+  color: rgba(238, 243, 249, 0.92);
   font-size: 12px;
   font-weight: 650;
   line-height: 1.15;
 }
 
 .generation-section {
-  border-radius: 1rem;
-  border: 1px solid rgba(237, 227, 211, 0.10);
-  background: rgba(237, 227, 211, 0.045);
+  border-radius: 5px;
+  border: 1px solid rgba(200, 216, 236, 0.10);
+  background: rgba(200, 216, 236, 0.045);
   padding: 0.85rem;
 }
 
 .generation-section h3 {
   margin-bottom: 0.65rem;
-  color: rgba(215, 168, 110, 0.88);
+  color: rgba(94, 130, 174, 0.88);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -1031,9 +1577,9 @@
 }
 
 .generation-control {
-  border-radius: 0.85rem;
-  border: 1px solid rgba(237, 227, 211, 0.08);
-  background: rgba(237, 227, 211, 0.045);
+  border-radius: 4px;
+  border: 1px solid rgba(200, 216, 236, 0.08);
+  background: rgba(200, 216, 236, 0.045);
   padding: 0.75rem;
   transition:
     opacity 180ms var(--ease-smooth),
@@ -1042,10 +1588,18 @@
 }
 
 .generation-control label {
-  color: rgba(239, 243, 236, 0.88);
+  color: rgba(236, 242, 248, 0.88);
 }
 
 .generation-control.is-disabled {
+  opacity: 0.58;
+  filter: saturate(0.65);
+}
+
+/* Dim-only variant for wrapping ALREADY-boxed children (e.g. the chat-bg
+   contrast/tint block): no padding/border/background of its own, so toggling
+   it on/off never reflows the page. */
+.settings-section-disabled {
   opacity: 0.58;
   filter: saturate(0.65);
 }
@@ -1068,7 +1622,7 @@
   width: 100%;
   height: 1.5rem;
   margin-top: 0.45rem;
-  accent-color: rgba(167, 200, 161, 0.86);
+  accent-color: rgba(62, 114, 176, 0.86);
   cursor: pointer;
 }
 
@@ -1079,7 +1633,7 @@
 .generation-range::-webkit-slider-runnable-track {
   height: 0.34rem;
   border-radius: 999px;
-  background: linear-gradient(90deg, rgba(167,200,161,0.56), rgba(237,227,211,0.22));
+  background: linear-gradient(90deg, rgba(62, 114, 176,0.56), rgba(200, 216, 236,0.22));
 }
 
 .generation-range::-webkit-slider-thumb {
@@ -1087,33 +1641,33 @@
   height: 1rem;
   margin-top: -0.33rem;
   border-radius: 999px;
-  border: 1px solid rgba(237, 227, 211, 0.42);
-  background: rgba(233, 238, 229, 0.92);
+  border: 1px solid rgba(200, 216, 236, 0.42);
+  background: rgba(233, 238, 245, 0.92);
   box-shadow: 0 5px 14px rgba(0,0,0,0.26);
 }
 
 .generation-helper {
   margin-top: 0.35rem;
-  color: rgba(213, 219, 209, 0.58);
+  color: rgba(202, 212, 224, 0.72);
   font-size: 11px;
   line-height: 1.45;
 }
 
 .generation-support-note {
-  color: rgba(35, 39, 33, 0.58);
+  color: rgba(31, 39, 49, 0.58);
   font-size: 11px;
   line-height: 1.35;
 }
 
 .generation-dialog .generation-support-note {
   margin-top: 0.35rem;
-  color: rgba(217, 224, 214, 0.58);
+  color: rgba(214, 224, 236, 0.58);
 }
 
 .elysium-page .overflow-y-auto,
 .elysium-page [data-slot="scroll-area-viewport"],
 .generation-dialog {
-  scrollbar-color: rgba(74, 84, 70, 0.58) transparent;
+  scrollbar-color: rgba(66, 82, 100, 0.58) transparent;
   scrollbar-width: thin;
   scrollbar-gutter: stable;
 }
@@ -1136,18 +1690,14 @@
 .generation-dialog::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
   border-radius: 999px;
-  background:
-    linear-gradient(rgba(93, 104, 86, 0.62), rgba(59, 68, 56, 0.58))
-    border-box;
+  background: rgba(70, 86, 106, 0.60) border-box;
   background-clip: padding-box;
 }
 
 .elysium-page .overflow-y-auto::-webkit-scrollbar-thumb:hover,
 .elysium-page [data-slot="scroll-area-viewport"]::-webkit-scrollbar-thumb:hover,
 .generation-dialog::-webkit-scrollbar-thumb:hover {
-  background:
-    linear-gradient(rgba(119, 135, 108, 0.74), rgba(79, 90, 72, 0.70))
-    border-box;
+  background: rgba(88, 106, 128, 0.72) border-box;
   background-clip: padding-box;
 }
 
@@ -1159,17 +1709,12 @@
 
 .elysium-page [data-slot="scroll-area-thumb"] {
   border: 2px solid transparent;
-  background:
-    linear-gradient(rgba(88, 100, 82, 0.58), rgba(54, 63, 51, 0.54))
-    border-box !important;
+  background: rgba(66, 82, 102, 0.56) border-box !important;
   background-clip: padding-box !important;
-  box-shadow: inset 0 1px 0 rgba(237, 227, 211, 0.10);
 }
 
 .elysium-page [data-slot="scroll-area-scrollbar"]:hover [data-slot="scroll-area-thumb"] {
-  background:
-    linear-gradient(rgba(108, 123, 98, 0.68), rgba(66, 76, 61, 0.64))
-    border-box !important;
+  background: rgba(82, 100, 122, 0.66) border-box !important;
   background-clip: padding-box !important;
 }
 
@@ -1185,7 +1730,7 @@
 
 /* ─────────────────────────────────────────────────────────
    PHASE 6E-A: Thinking bubble animation
-   Staggered sinusoidal bounce — smooth, calm, premium feel.
+   Staggered sinusoidal bounce - smooth, calm, premium feel.
    Reduced-motion: dots visible but static (accessibility).
    ───────────────────────────────────────────────────────── */
 
@@ -1223,11 +1768,11 @@
               border-color var(--duration-hover) var(--ease-smooth);
 }
 .sidebar-item:hover {
-  background-color: rgba(167, 200, 161, 0.07);
+  background-color: rgba(62, 114, 176, 0.07);
 }
 .sidebar-item-selected {
   border-left: 2px solid var(--color-es-primary-sage);
-  background-color: rgba(167, 200, 161, 0.11);
+  background-color: rgba(62, 114, 176, 0.11);
 }
 .sidebar-item-unselected {
   border-left: 2px solid transparent;
@@ -1236,7 +1781,7 @@
 .glass-dark .sidebar-item {
   position: relative;
   overflow: hidden;
-  border-radius: 14px;
+  border-radius: 4px;
   border: 1px solid transparent;
   border-left: 1px solid transparent;
   transition:
@@ -1249,10 +1794,8 @@
 
 .glass-dark .sidebar-item:hover {
   transform: translateX(2px);
-  background:
-    linear-gradient(90deg, rgba(237, 227, 211, 0.07) 0%, rgba(237, 227, 211, 0.14) 100%);
-  border-color: rgba(237, 227, 211, 0.10);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
+  background: rgba(200, 216, 236, 0.10);
+  border-color: rgba(200, 216, 236, 0.10);
 }
 
 .glass-dark .sidebar-item:active {
@@ -1260,14 +1803,9 @@
 }
 
 .glass-dark .sidebar-item-selected {
-  border-color: rgba(237, 227, 211, 0.14);
-  border-left-color: rgba(237, 227, 211, 0.14);
-  background:
-    linear-gradient(90deg, rgba(237, 227, 211, 0.10) 0%, rgba(237, 227, 211, 0.18) 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.07),
-    inset 0 -1px 0 rgba(5, 9, 7, 0.10),
-    0 8px 22px rgba(3, 7, 5, 0.16);
+  border-color: rgba(200, 216, 236, 0.14);
+  border-left-color: rgba(200, 216, 236, 0.14);
+  background: rgba(200, 216, 236, 0.13);
 }
 
 .glass-dark .sidebar-item-unselected {
@@ -1286,8 +1824,8 @@
 }
 
 .glass-dark .sidebar-item-selected .char-avatar {
-  background-color: rgba(237, 227, 211, 0.14) !important;
-  color: rgba(232, 237, 229, 0.88) !important;
+  background-color: rgba(200, 216, 236, 0.14) !important;
+  color: rgba(230, 236, 243, 0.88) !important;
 }
 
 .glass-dark .elysium-leafmark {
@@ -1300,4 +1838,670 @@
    ───────────────────────────────────────────────────────── */
 .btn-sage-glow:hover:not(:disabled) {
   box-shadow: var(--shadow-sage-btn);
+}
+
+/* Composer icon buttons (attach + send/stop): one shared motion language.
+   Hover lifts and brightens, press compresses. brightness() instead of a
+   background override so it composes with each button's inline background. */
+.composer-icon-button {
+  transition:
+    transform var(--duration-fast) var(--ease-smooth),
+    filter var(--duration-fast) var(--ease-smooth),
+    box-shadow var(--duration-fast) var(--ease-smooth),
+    opacity var(--duration-fast) var(--ease-smooth);
+}
+
+.composer-icon-button:hover:not(:disabled) {
+  transform: translateY(-1px) scale(1.05);
+  filter: brightness(1.07);
+}
+
+.composer-icon-button:active:not(:disabled) {
+  transform: translateY(0) scale(0.92);
+}
+
+/* Variant navigation chevrons - side-edge page-flip arrows on the last
+   assistant bubble. Persistently visible at low idle opacity (side
+   affordances that only appear on hover are undiscoverable and dead on
+   touch), full on hover/focus. */
+.variant-nav-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border-radius: var(--radius-icon-btn);
+  color: var(--color-es-text-dark);
+  background: rgba(28, 38, 50, 0.06);
+  border: 1px solid rgba(28, 38, 50, 0.10);
+  opacity: 0.4;
+  transition:
+    opacity var(--duration-fast) var(--ease-smooth),
+    transform var(--duration-fast) var(--ease-smooth),
+    background-color var(--duration-fast) var(--ease-smooth);
+}
+
+.variant-nav-button:hover:not(:disabled),
+.variant-nav-button:focus-visible {
+  opacity: 1;
+  background: rgba(28, 38, 50, 0.10);
+  transform: translateY(-1px);
+}
+
+.variant-nav-button:active:not(:disabled) {
+  transform: translateY(0) scale(0.92);
+}
+
+.variant-nav-button:disabled {
+  opacity: 0.22;
+  cursor: not-allowed;
+}
+
+/* Tiny n/m position indicator beside the bubble timestamp. */
+.variant-counter {
+  font-size: 9px;
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+
+/* ─────────────────────────────────────────────────────────
+   Settings panel (AppSettingsDialog) + reader preferences.
+   Dark-glass dialog recipes; sliders reuse .generation-*.
+   ───────────────────────────────────────────────────────── */
+
+/* Message BODY text - driven by the Text & readability settings. The
+   variables are set on the chat scroll container (and preview blocks);
+   defaults reproduce the pre-settings look exactly. */
+.message-text {
+  font-size: var(--msg-fs, 0.875rem);
+  line-height: var(--msg-lh, 1.625);
+}
+
+.settings-category-row,
+.settings-toggle-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.6rem 0.7rem;
+  border-radius: var(--radius-card);
+  color: var(--color-es-text-light);
+  background: rgba(200, 216, 236, 0.05);
+  border: 1px solid rgba(200, 216, 236, 0.10);
+  transition:
+    transform var(--duration-fast) var(--ease-smooth),
+    background-color var(--duration-fast) var(--ease-smooth),
+    border-color var(--duration-fast) var(--ease-smooth);
+}
+
+.settings-category-row:hover,
+.settings-toggle-row:hover {
+  background: rgba(200, 216, 236, 0.09);
+  border-color: rgba(200, 216, 236, 0.16);
+  transform: translateY(-1px);
+}
+
+.settings-category-row:active,
+.settings-toggle-row:active {
+  transform: translateY(0) scale(0.99);
+}
+
+.settings-category-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: var(--radius-input);
+  color: var(--color-es-mist-blue, #6E93C4);
+  background: rgba(94, 130, 174, 0.10);
+  border: 1px solid rgba(94, 130, 174, 0.16);
+}
+
+.settings-category-desc {
+  display: block;
+  margin-top: 1px;
+  font-size: 11px;
+  color: rgba(202, 212, 224, 0.72);
+}
+
+.settings-back-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border-radius: var(--radius-icon-btn);
+  color: rgba(230, 236, 243, 0.72);
+  background: rgba(200, 216, 236, 0.06);
+  border: 1px solid rgba(200, 216, 236, 0.10);
+  transition:
+    transform var(--duration-fast) var(--ease-smooth),
+    background-color var(--duration-fast) var(--ease-smooth),
+    color var(--duration-fast) var(--ease-smooth);
+}
+
+.settings-back-button:hover {
+  transform: translateY(-1px);
+  color: rgba(234, 240, 247, 0.96);
+  background: rgba(200, 216, 236, 0.12);
+}
+
+.settings-back-button:active {
+  transform: translateY(0) scale(0.92);
+}
+
+/* Light preview card inside the dark dialog - approximates the warm canvas
+   so text-size/narration previews are judged against chat-like colors. */
+.settings-preview {
+  padding: 0.75rem 0.85rem;
+  border-radius: var(--radius-card);
+  background: rgba(238, 244, 250, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  color: var(--color-es-asst-bubble-text, #1C2632);
+}
+
+/* Sliding pill switch (settings toggles) - sharp-scale, sage when on. */
+.settings-switch {
+  position: relative;
+  display: inline-flex;
+  width: 34px;
+  height: 19px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: rgba(200, 216, 236, 0.14);
+  border: 1px solid rgba(200, 216, 236, 0.20);
+  transition: background-color var(--duration-fast) var(--ease-smooth);
+}
+
+.settings-switch[data-on="true"] {
+  background: rgba(62, 114, 176, 0.75);
+  border-color: rgba(62, 114, 176, 0.9);
+}
+
+.settings-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  border-radius: 999px;
+  background: rgba(238, 243, 249, 0.95);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+  transition: transform var(--duration-fast) var(--ease-smooth);
+}
+
+.settings-switch[data-on="true"] .settings-switch-thumb {
+  transform: translateX(15px);
+}
+
+/* Roleplay inline styling - *narration* and "quoted speech" spans.
+   Per-role color variables (alpha colors, NOT opacity: opacity would dim a
+   nested quote tint). Narration stays in the ink family (the genre's
+   muted-italic recipe); quotes take the theme amber - deep bronze on the
+   cream bubble for AA contrast, the accent amber as-is on the dark bubble. */
+.message-bubble-shell.is-assistant,
+.settings-preview {
+  --narration-color: rgba(28, 38, 50, 0.72);
+  --quote-color: #3A5C86;
+}
+
+.message-bubble-shell.is-user {
+  --narration-color: rgba(222, 230, 239, 0.72);
+  --quote-color: var(--color-es-accent-amber, #8FB2D9);
+}
+
+.narration-span {
+  font-style: italic;
+  color: var(--narration-color, inherit);
+}
+
+.strong-span {
+  font-weight: 600;
+}
+
+.quote-span {
+  color: var(--quote-color, inherit);
+}
+
+.quote-span.narration-span {
+  color: var(--quote-color, inherit);
+  font-style: italic;
+}
+
+/* Tint swatch chips (Chat background page). Sharp scale, halo when picked. */
+.settings-tint-chip {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border-radius: var(--radius-input);
+  border: 1px solid rgba(200, 216, 236, 0.28);
+  transition:
+    transform var(--duration-fast) var(--ease-smooth),
+    box-shadow var(--duration-fast) var(--ease-smooth),
+    border-color var(--duration-fast) var(--ease-smooth);
+}
+
+.settings-tint-chip:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.settings-tint-chip[data-selected="true"] {
+  border-color: rgba(62, 114, 176, 0.95);
+  box-shadow: 0 0 0 2px rgba(62, 114, 176, 0.25);
+}
+
+.settings-tint-chip:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* Adaptive chrome over a DARK wallpaper: only elements sitting bare on the
+   canvas flip - bubbles are opaque and keep their own colors by design. */
+.chat-bg-dark .variant-nav-button {
+  color: #E6EAEF;
+  background: rgba(230, 234, 239, 0.10);
+  border-color: rgba(230, 234, 239, 0.18);
+}
+
+.chat-bg-dark .variant-nav-button:hover:not(:disabled),
+.chat-bg-dark .variant-nav-button:focus-visible {
+  background: rgba(230, 234, 239, 0.16);
+}
+
+.chat-bg-dark::-webkit-scrollbar-thumb {
+  background: rgba(230, 234, 239, 0.35);
+}
+
+.chat-bg-dark .message-bubble-shell {
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
+}
+
+/* FE-5B: compact chat/message action controls */
+.chat-list-item {
+  position: relative;
+  display: flex;
+  min-height: 46px;
+  align-items: stretch;
+  padding: 0;
+}
+
+.glass-dark .chat-list-item {
+  overflow: visible;
+}
+
+.chat-list-select {
+  min-width: 0;
+  flex: 1;
+  border-radius: inherit;
+  padding: 0.5rem 0.25rem 0.5rem 0.75rem;
+  text-align: left;
+}
+
+.chat-action-trigger {
+  display: inline-flex;
+  width: 1.7rem;
+  height: 1.7rem;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  margin-right: 0.42rem;
+  border-radius: 3px;
+  color: rgba(230, 236, 243, 0.70);
+  background: rgba(200, 216, 236, 0.045);
+  border: 1px solid rgba(200, 216, 236, 0.08);
+  opacity: 0;
+  transform: translateX(3px) scale(0.98);
+  transition:
+    opacity var(--duration-fast) var(--ease-smooth),
+    transform var(--duration-fast) var(--ease-smooth),
+    background-color var(--duration-fast) var(--ease-smooth),
+    border-color var(--duration-fast) var(--ease-smooth),
+    color var(--duration-fast) var(--ease-smooth);
+}
+
+.chat-list-item:hover .chat-action-trigger,
+.chat-list-item:focus-within .chat-action-trigger,
+.chat-action-trigger[aria-expanded="true"] {
+  opacity: 1;
+  transform: translateX(0) scale(1);
+}
+
+.chat-action-trigger:hover:not(:disabled),
+.chat-action-trigger:focus-visible {
+  color: rgba(238, 242, 248, 0.96);
+  background: rgba(200, 216, 236, 0.10);
+  border-color: rgba(200, 216, 236, 0.15);
+}
+
+.chat-action-menu,
+.chat-action-confirm {
+  position: absolute;
+  right: 0.35rem;
+  top: calc(100% + 0.32rem);
+  z-index: 25;
+  width: min(13rem, calc(100% - 0.7rem));
+  border-radius: 5px;
+  border: 1px solid rgba(200, 216, 236, 0.13);
+  background: linear-gradient(90deg, rgba(17, 24, 33, 0.96), rgba(40, 52, 66, 0.92));
+  box-shadow: 0 18px 36px rgba(2, 5, 8, 0.32);
+  backdrop-filter: blur(16px) saturate(112%);
+  -webkit-backdrop-filter: blur(16px) saturate(112%);
+  animation: inline-action-enter 180ms var(--ease-smooth) both;
+}
+
+.chat-action-menu {
+  padding: 0.28rem;
+}
+
+.chat-action-confirm {
+  padding: 0.6rem;
+  color: rgba(232, 238, 245, 0.90);
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+
+.chat-action-menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 0.45rem;
+  border-radius: 3px;
+  padding: 0.44rem 0.5rem;
+  color: rgba(228, 235, 243, 0.82);
+  font-size: 0.76rem;
+  transition:
+    background-color var(--duration-fast) var(--ease-smooth),
+    color var(--duration-fast) var(--ease-smooth),
+    transform var(--duration-fast) var(--ease-smooth);
+}
+
+.chat-action-menu-item:hover,
+.chat-action-menu-item:focus-visible {
+  color: rgba(241, 245, 250, 0.98);
+  background: rgba(200, 216, 236, 0.09);
+  transform: translateY(-1px);
+}
+
+.chat-action-menu-item.is-danger,
+.inline-confirm-button.is-danger {
+  color: rgba(216, 124, 134, 0.96);
+}
+
+.message-bubble-shell {
+  position: relative;
+  transition:
+    filter var(--duration-fast) var(--ease-smooth),
+    box-shadow var(--duration-fast) var(--ease-smooth);
+}
+
+.message-bubble-shell.has-actions {
+  padding-right: 4.35rem;
+}
+
+.message-actions {
+  position: absolute;
+  top: 0.42rem;
+  right: 0.46rem;
+  z-index: 4;
+  display: flex;
+  gap: 0.22rem;
+  opacity: 0.16;
+  transform: translateY(-2px) scale(0.98);
+  transition:
+    opacity var(--duration-fast) var(--ease-smooth),
+    transform var(--duration-fast) var(--ease-smooth);
+}
+
+.message-bubble-shell:hover .message-actions,
+.message-bubble-shell:focus-within .message-actions {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+/* Blur only while the actions are actually shown: idling at opacity 0.16,
+   every bubble otherwise keeps a live backdrop-filter surface that must be
+   re-evaluated on each scrolled frame (incl. the per-flush follow-scroll). */
+.message-bubble-shell:hover .message-action-button,
+.message-bubble-shell:focus-within .message-action-button {
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.message-action-button {
+  display: inline-flex;
+  width: 1.55rem;
+  height: 1.45rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  border: 1px solid rgba(200, 216, 236, 0.11);
+  color: rgba(230, 236, 243, 0.78);
+  background: rgba(25, 33, 43, 0.30);
+  transition:
+    transform var(--duration-fast) var(--ease-smooth),
+    background-color var(--duration-fast) var(--ease-smooth),
+    border-color var(--duration-fast) var(--ease-smooth),
+    color var(--duration-fast) var(--ease-smooth),
+    opacity var(--duration-fast) var(--ease-smooth);
+}
+
+.message-bubble-shell.is-assistant .message-action-button {
+  color: rgba(36, 44, 54, 0.74);
+  background: rgba(255, 255, 255, 0.42);
+  border-color: rgba(28, 38, 50, 0.12);
+}
+
+.message-action-button:hover:not(:disabled),
+.message-action-button:focus-visible {
+  transform: translateY(-1px);
+  color: rgba(241, 245, 250, 0.98);
+  background: rgba(42, 52, 64, 0.54);
+  border-color: rgba(200, 216, 236, 0.18);
+}
+
+.message-bubble-shell.is-assistant .message-action-button:hover:not(:disabled),
+.message-bubble-shell.is-assistant .message-action-button:focus-visible {
+  color: rgba(24, 32, 42, 0.94);
+  background: rgba(255, 255, 255, 0.70);
+  border-color: rgba(28, 38, 50, 0.18);
+}
+
+.message-action-button.is-danger {
+  color: rgba(206, 112, 122, 0.94);
+}
+
+.message-action-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.message-action-confirm {
+  position: absolute;
+  top: 2.25rem;
+  right: 0.5rem;
+  z-index: 6;
+  width: min(17rem, calc(100% - 1rem));
+  border-radius: 5px;
+  border: 1px solid rgba(200, 216, 236, 0.14);
+  background: linear-gradient(90deg, rgba(20, 27, 36, 0.96), rgba(42, 52, 64, 0.92));
+  color: rgba(236, 242, 248, 0.92);
+  padding: 0.62rem;
+  font-size: 0.74rem;
+  line-height: 1.4;
+  box-shadow: 0 18px 34px rgba(4, 7, 10, 0.30);
+  backdrop-filter: blur(16px) saturate(112%);
+  -webkit-backdrop-filter: blur(16px) saturate(112%);
+  animation: inline-action-enter 180ms var(--ease-smooth) both;
+}
+
+.inline-confirm-button {
+  min-width: 3.2rem;
+  border-radius: var(--radius-input);
+  border: 1px solid rgba(200, 216, 236, 0.12);
+  background: rgba(200, 216, 236, 0.07);
+  padding: 0.3rem 0.52rem;
+  color: rgba(230, 236, 243, 0.84);
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1;
+  transition:
+    transform var(--duration-fast) var(--ease-smooth),
+    background-color var(--duration-fast) var(--ease-smooth),
+    border-color var(--duration-fast) var(--ease-smooth),
+    color var(--duration-fast) var(--ease-smooth),
+    opacity var(--duration-fast) var(--ease-smooth);
+}
+
+.inline-confirm-button:hover:not(:disabled),
+.inline-confirm-button:focus-visible {
+  transform: translateY(-1px);
+  background: rgba(200, 216, 236, 0.13);
+  border-color: rgba(200, 216, 236, 0.20);
+  color: rgba(246, 248, 251, 0.98);
+}
+
+.inline-confirm-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+@keyframes inline-action-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-0.3rem) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-action-trigger,
+  .chat-action-menu-item,
+  .chat-action-menu,
+  .chat-action-confirm,
+  .message-bubble-shell,
+  .message-actions,
+  .message-action-button,
+  .message-action-confirm,
+  .inline-confirm-button,
+  .variant-nav-button,
+  .composer-icon-button {
+    animation-duration: 1ms !important;
+    transition: opacity 120ms ease-out !important;
+  }
+
+  .chat-action-trigger,
+  .chat-action-menu-item:hover,
+  .message-actions,
+  .message-action-button:hover:not(:disabled),
+  .inline-confirm-button:hover:not(:disabled),
+  .variant-nav-button:hover:not(:disabled),
+  .variant-nav-button:active:not(:disabled),
+  .composer-icon-button:hover:not(:disabled),
+  .composer-icon-button:active:not(:disabled) {
+    transform: none !important;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────
+   Shared collapsible: smooth height via grid-template-rows.
+   Used by every open/close panel so shapes AND motion match.
+   ───────────────────────────────────────────────────────── */
+.es-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--duration-normal) var(--ease-smooth);
+}
+.es-collapse[data-open="true"] {
+  grid-template-rows: 1fr;
+}
+.es-collapse-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .es-collapse {
+    transition: none;
+  }
+}
+
+/* ── Error boundary fallback ─────────────────────────────────────────────
+   Last-resort crash card (see components/errors/ErrorBoundary.tsx). Same
+   dark Azure card language as the vault screens; flat controls. */
+.error-fallback {
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: linear-gradient(to top right, #2C4259 0%, #3C5878 40%, #5C80A6 100%);
+}
+
+.error-fallback-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  max-width: 380px;
+  padding: 1.6rem 1.7rem 1.4rem;
+  text-align: center;
+  border-radius: var(--radius-panel);
+  border: 1px solid rgba(200, 216, 236, 0.18);
+  background: linear-gradient(90deg, rgba(15, 23, 33, 0.97) 0%, rgba(22, 32, 45, 0.95) 52%, rgba(44, 62, 84, 0.90) 100%);
+  box-shadow: 0 26px 80px rgba(0, 0, 0, 0.44);
+  color: #EAEEF3;
+}
+
+.error-fallback-title {
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.error-fallback-text {
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: #9DAAB8;
+}
+
+.error-fallback-button {
+  margin-top: 0.35rem;
+  padding: 0.45rem 1.6rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+  border-radius: 6px;
+  border: 1px solid rgba(160, 190, 220, 0.28);
+  background: rgba(150, 180, 215, 0.19);
+  color: #EAEEF3;
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-smooth),
+    transform var(--duration-fast) var(--ease-smooth);
+}
+
+.error-fallback-button:hover {
+  background: rgba(150, 180, 215, 0.30);
+  transform: translateY(-1px);
+}
+
+.error-fallback-button:active {
+  transform: translateY(0) scale(0.98);
+}
+
+/* WebView2/Edge injects its own password-reveal eye into type="password"
+   inputs (appears on focus, vanishes on blur) - doubling up next to our own
+   toggle in the packaged app. Kill the native one everywhere; reveal is our
+   PassphraseField's job, and the API key field is write-only by design. */
+input::-ms-reveal,
+input::-ms-clear {
+  display: none;
 }

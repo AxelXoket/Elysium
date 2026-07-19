@@ -1,6 +1,6 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+﻿import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App } from "@/app/App";
+import { AppShell } from "@/components/layout/AppShell";
 import { Providers } from "@/app/providers";
 import { ErrorToastStack } from "@/components/errors/ErrorToastStack";
 import { useErrorStore } from "@/lib/errors";
@@ -87,7 +87,7 @@ describe("FE-1B ErrorToastStack", () => {
 
     render(<ErrorToastStack />);
 
-    expect(screen.getAllByRole("alert")).toHaveLength(5);
+    expect(screen.getAllByRole("status")).toHaveLength(5);
     expect(useErrorStore.getState().queuedErrors).toHaveLength(2);
     expect(screen.queryByText("Queued toast 6")).not.toBeInTheDocument();
     expect(screen.queryByText("Queued toast 7")).not.toBeInTheDocument();
@@ -107,8 +107,40 @@ describe("FE-1B ErrorToastStack", () => {
 
     expect(screen.queryByText("Queued toast 1")).not.toBeInTheDocument();
     expect(screen.getByText("Queued toast 6")).toBeInTheDocument();
-    expect(screen.getAllByRole("alert")).toHaveLength(5);
+    expect(screen.getAllByRole("status")).toHaveLength(5);
     expect(useErrorStore.getState().queuedErrors).toHaveLength(0);
+  });
+
+  it("uses a polite live region and non-button toasts with a dismiss button", () => {
+    useErrorStore
+      .getState()
+      .pushErrorDirect("a11y_code", "Accessible toast message.");
+    render(<ErrorToastStack />);
+
+    const stack = screen.getByTestId("error-toast-stack");
+    expect(stack).toHaveAttribute("aria-live", "polite");
+
+    const toast = screen.getByRole("status");
+    expect(toast.tagName).not.toBe("BUTTON");
+    expect(toast).toHaveTextContent("Accessible toast message.");
+
+    // Dedicated dismiss control inside the toast
+    const dismissBtn = screen.getByRole("button", { name: "Dismiss" });
+    expect(toast.contains(dismissBtn)).toBe(true);
+  });
+
+  it("dismiss button removes the toast", () => {
+    useErrorStore
+      .getState()
+      .pushErrorDirect("a11y_code", "Dismiss via button.");
+    render(<ErrorToastStack />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    act(() => {
+      vi.advanceTimersByTime(EXIT_ANIMATION_MS);
+    });
+
+    expect(screen.queryByText("Dismiss via button.")).not.toBeInTheDocument();
   });
 
   it("mounts over the app shell without requiring backend data", () => {
@@ -118,7 +150,7 @@ describe("FE-1B ErrorToastStack", () => {
 
     render(
       <Providers>
-        <App />
+        <AppShell />
       </Providers>,
     );
 

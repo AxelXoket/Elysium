@@ -131,4 +131,71 @@ describe("Settings Panel Tests", () => {
     expect(screen.queryByText("sk-test-key-123")).not.toBeInTheDocument();
     expect(screen.queryByDisplayValue("sk-test-key-123")).not.toBeInTheDocument();
   });
+
+  // FIX-2: validation_unavailable means the key was NOT saved - the message
+  // must say so and the input must be kept so the user can retry.
+  it("FIX-2: validation_unavailable says key not saved and keeps input", async () => {
+    const user = userEvent.setup();
+    render(<ApiKeySection />, { wrapper });
+
+    await waitFor(() => {
+      expect(screen.getByText("API key is set")).toBeInTheDocument();
+    });
+
+    const input = screen.getByLabelText("API key input") as HTMLInputElement;
+    await user.type(input, "sk-test-key-123");
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ ok: false, key_status: "validation_unavailable" }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await user.click(screen.getByRole("button", { name: /save/i }));
+
+    expect(
+      await screen.findByText(
+        "Couldn't reach OpenRouter to validate the key, so it was not saved. Check your connection or proxy and try again.",
+      ),
+    ).toBeInTheDocument();
+    // Input NOT cleared - user can retry without retyping
+    expect(input.value).toBe("sk-test-key-123");
+  });
+
+  // FIX-2: settings/models are invalidated (refetched) even when ok=false
+  it("FIX-2: invalidates settings even on validation_unavailable", async () => {
+    const user = userEvent.setup();
+    render(<ApiKeySection />, { wrapper });
+
+    await waitFor(() => {
+      expect(screen.getByText("API key is set")).toBeInTheDocument();
+    });
+
+    const settingsGetCalls = () =>
+      fetchMock.mock.calls.filter(
+        (call) =>
+          typeof call[0] === "string" &&
+          call[0].endsWith("/settings") &&
+          (call[1]?.method ?? "GET") === "GET",
+      ).length;
+    const before = settingsGetCalls();
+
+    const input = screen.getByLabelText("API key input");
+    await user.type(input, "sk-test-key-123");
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ ok: false, key_status: "validation_unavailable" }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await user.click(screen.getByRole("button", { name: /save/i }));
+
+    // Invalidation refetches the active settings query despite ok=false
+    await waitFor(() => {
+      expect(settingsGetCalls()).toBeGreaterThan(before);
+    });
+  });
 });

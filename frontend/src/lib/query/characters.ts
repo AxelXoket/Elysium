@@ -1,6 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { keys } from "./keys";
-import { useErrorStore } from "../errors";
 import {
   listCharacters,
   createCharacter,
@@ -9,6 +8,10 @@ import {
   deleteCharacter,
 } from "../api/characters";
 import type { Character, CharacterPatch } from "../schemas/characters";
+
+// One-surface rule: all character mutations are consumed by dialogs
+// (CharacterCreateDialog, CharacterImportDialog, CharacterEditDialog) that
+// render errors inline - so no onError toasts here.
 
 export function useCharacters() {
   return useQuery({
@@ -20,36 +23,27 @@ export function useCharacters() {
 
 export function useCreateCharacter() {
   const qc = useQueryClient();
-  const pushError = useErrorStore((s) => s.pushError);
   return useMutation({
     mutationFn: (payload: Omit<Character, "id" | "created_at">) =>
       createCharacter(payload),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.characters() });
     },
-    onError: (err) => {
-      pushError(err);
-    },
   });
 }
 
 export function useImportCharacter() {
   const qc = useQueryClient();
-  const pushError = useErrorStore((s) => s.pushError);
   return useMutation({
     mutationFn: (rawJsonText: string) => importCharacter(rawJsonText),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.characters() });
-    },
-    onError: (err) => {
-      pushError(err);
     },
   });
 }
 
 export function usePatchCharacter() {
   const qc = useQueryClient();
-  const pushError = useErrorStore((s) => s.pushError);
   return useMutation({
     mutationFn: (vars: { id: number; payload: CharacterPatch }) =>
       patchCharacter(vars.id, vars.payload),
@@ -58,24 +52,18 @@ export function usePatchCharacter() {
       qc.invalidateQueries({ queryKey: keys.characters() });
       qc.invalidateQueries({ queryKey: keys.chats() });
     },
-    onError: (err) => {
-      pushError(err);
-    },
   });
 }
 
 export function useDeleteCharacter() {
   const qc = useQueryClient();
-  const pushError = useErrorStore((s) => s.pushError);
   return useMutation({
     mutationFn: (id: number) => deleteCharacter(id),
-    onSuccess: () => {
+    onSuccess: (_data, id) => {
       qc.invalidateQueries({ queryKey: keys.characters() });
+      // Backend cascades: all chats/messages of the character are deleted.
       qc.invalidateQueries({ queryKey: keys.chats() });
-    },
-    onError: (err) => {
-      pushError(err);
+      qc.removeQueries({ queryKey: keys.character(id) });
     },
   });
 }
-

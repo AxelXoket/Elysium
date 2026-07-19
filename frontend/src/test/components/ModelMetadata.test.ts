@@ -1,5 +1,5 @@
 /**
- * ModelMetadata.test.ts — FE-7A: Model metadata / context / modality logic tests.
+ * ModelMetadata.test.ts - FE-7A: Model metadata / context / modality logic tests.
  *
  * Covers:
  *  - findModelById (lookup from model list)
@@ -299,8 +299,8 @@ describe("shouldShowTextOnlyNote", () => {
     expect(shouldShowTextOnlyNote(gpt4)).toBe(false);
   });
 
-  it("returns true for vision model (has image input)", () => {
-    expect(shouldShowTextOnlyNote(gpt4Vision)).toBe(true);
+  it("returns false for vision model (images ARE sent, not text-only)", () => {
+    expect(shouldShowTextOnlyNote(gpt4Vision)).toBe(false);
   });
 
   it("returns true for audio model (has audio input)", () => {
@@ -414,7 +414,7 @@ describe("FE-4A compatibility", () => {
 
   it("FE-4A clampContextBudget uses same min as CONTEXT_BUDGET_MIN", async () => {
     const { clampContextBudget } = await import("@/lib/generation");
-    // Clamp a value below min — FE-4A should clamp to 512
+    // Clamp a value below min - FE-4A should clamp to 512
     const result = clampContextBudget(100, null);
     expect(result).toBe(512);
     expect(result).toBe(CONTEXT_BUDGET_MIN);
@@ -427,6 +427,24 @@ describe("FE-4A compatibility", () => {
     const clamped = clampContextBudget(999999, gpt4);
     expect(clamped).toBe(bounds.max);
   });
+
+  it("clampContextBudget agrees with bounds for sub-512-context models", async () => {
+    const { clampContextBudget } = await import("@/lib/generation");
+    const bounds = getContextBudgetBounds({ context_length: 256 });
+    // Bounds clamp max up to the 512 minimum; clampContextBudget must never
+    // return below the schema minimum for such models.
+    expect(bounds.max).toBe(512);
+    expect(clampContextBudget(100, { context_length: 256 })).toBe(bounds.max);
+    expect(clampContextBudget(100000, { context_length: 256 })).toBe(bounds.max);
+  });
+
+  it("clampContextBudget caps at contract max when bounds max is unknown", async () => {
+    const { clampContextBudget } = await import("@/lib/generation");
+    const bounds = getContextBudgetBounds(unknownModel);
+    expect(bounds.max).toBeNull();
+    // Unknown model context: contract max 2,000,000 applies
+    expect(clampContextBudget(5_000_000, unknownModel)).toBe(2_000_000);
+  });
 });
 
 // ═════════════════════════════════════════════════════════════════
@@ -434,7 +452,7 @@ describe("FE-4A compatibility", () => {
 // ═════════════════════════════════════════════════════════════════
 
 describe("Model helper privacy checks", () => {
-  it("modelHelpers module is pure — no browser storage", async () => {
+  it("modelHelpers module is pure - no browser storage", async () => {
     const mod = await import("@/lib/models/modelHelpers");
     expect(typeof mod.findModelById).toBe("function");
     expect(typeof mod.getModelDisplayName).toBe("function");
@@ -449,7 +467,7 @@ describe("Model helper privacy checks", () => {
 
   it("no image_url concept in helpers", () => {
     const modalities = getModelModalities(gpt4Vision);
-    // Modalities are display-only — no sending mechanism
+    // Modalities are display-only - no sending mechanism
     expect(modalities).not.toHaveProperty("image_url");
   });
 

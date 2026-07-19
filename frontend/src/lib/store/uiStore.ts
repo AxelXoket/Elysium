@@ -6,6 +6,16 @@ import { persist } from "zustand/middleware";
 // persist config below. Any stale localStorage is normalized on first load.
 type RightPanelTab = "models" | "secrets" | "persona";
 
+// ── Appearance defaults ────────────────────────────────────────────────────
+// Chosen to exactly match the pre-settings look (bubble text was text-sm +
+// leading-relaxed), so a user who never opens the panel sees zero change.
+export const MSG_FONT_DEFAULT = 14;
+export const MSG_FONT_MIN = 13;
+export const MSG_FONT_MAX = 19;
+export const MSG_LINE_DEFAULT = 1.625;
+export const MSG_LINE_MIN = 1.3;
+export const MSG_LINE_MAX = 1.95;
+
 interface UiState {
   selectedCharacterId: number | null;
   selectedChatId: number | null;
@@ -13,11 +23,48 @@ interface UiState {
   activeRightPanelTab: RightPanelTab;
   sidebarCollapsed: boolean;
 
+  // Appearance preferences (Settings panel). Message BODIES only - labels,
+  // timestamps, and controls never scale with these.
+  msgFontPx: number;
+  msgLineHeight: number;
+  /** Style *asterisk* narration spans in message text. */
+  narrationEnabled: boolean;
+  /** Tint "quoted speech" spans in message text. */
+  quoteTintEnabled: boolean;
+
+  // Chat background (image blob lives in the appearance blob store, NOT
+  // here - persisting only flat scalars keeps localStorage writes tiny).
+  chatBgOn: boolean;
+  /** 0..1 average luminance of the stored image, written at image-set time. */
+  chatBgLum: number;
+  /** Scrim opacity AND blend weight, 0..0.85. */
+  chatBgContrast: number;
+  /** 'auto' or a '#rrggbb' tint. */
+  chatBgTint: string;
+  /** Session-only refresh signal: bumped when the image blob is replaced so
+   * the object-URL hook reloads. Deliberately NOT persisted. */
+  chatBgRev: number;
+
+  /** Animated mist backdrop behind the app frame (WebGL; falls back to the
+   * static gradient wherever it cannot or should not run). */
+  ambientFogOn: boolean;
+
   selectCharacter: (id: number | null) => void;
   selectChat: (id: number | null) => void;
   selectModel: (id: string | null) => void;
   setActiveRightPanelTab: (tab: RightPanelTab) => void;
   toggleSidebar: () => void;
+  setMsgFontPx: (px: number) => void;
+  setMsgLineHeight: (lh: number) => void;
+  setNarrationEnabled: (on: boolean) => void;
+  setQuoteTintEnabled: (on: boolean) => void;
+  /** Image stored → mark on + record its luminance (contrast/tint kept). */
+  setChatBgMeta: (meta: { lum: number }) => void;
+  /** Image removed → mark off (contrast/tint kept for the next image). */
+  clearChatBg: () => void;
+  setChatBgContrast: (contrast: number) => void;
+  setChatBgTint: (tint: string) => void;
+  setAmbientFogOn: (on: boolean) => void;
 }
 
 // Normalize old persisted tab values to new names.
@@ -42,6 +89,16 @@ export const useUiStore = create<UiState>()(
       selectedModelId: null,
       activeRightPanelTab: "models",  // default changed from "settings"
       sidebarCollapsed: false,
+      msgFontPx: MSG_FONT_DEFAULT,
+      msgLineHeight: MSG_LINE_DEFAULT,
+      narrationEnabled: true,
+      quoteTintEnabled: true,
+      chatBgOn: false,
+      chatBgLum: 0.5,
+      chatBgContrast: 0.35,
+      chatBgTint: "auto",
+      chatBgRev: 0,
+      ambientFogOn: true,
 
       selectCharacter: (id) =>
         set({ selectedCharacterId: id, selectedChatId: null }),
@@ -50,6 +107,36 @@ export const useUiStore = create<UiState>()(
       setActiveRightPanelTab: (tab) => set({ activeRightPanelTab: tab }),
       toggleSidebar: () =>
         set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
+      setMsgFontPx: (px) =>
+        set({
+          msgFontPx: Math.min(MSG_FONT_MAX, Math.max(MSG_FONT_MIN, px)),
+        }),
+      setMsgLineHeight: (lh) =>
+        set({
+          msgLineHeight: Math.min(MSG_LINE_MAX, Math.max(MSG_LINE_MIN, lh)),
+        }),
+      setNarrationEnabled: (on) => set({ narrationEnabled: on }),
+      setQuoteTintEnabled: (on) => set({ quoteTintEnabled: on }),
+      setChatBgMeta: ({ lum }) =>
+        set((s) => ({
+          chatBgOn: true,
+          chatBgLum: Number.isFinite(lum) ? Math.min(1, Math.max(0, lum)) : 0.5,
+          chatBgRev: s.chatBgRev + 1,
+        })),
+      clearChatBg: () => set({ chatBgOn: false }),
+      setChatBgContrast: (contrast) =>
+        set({
+          chatBgContrast: Number.isFinite(contrast)
+            ? Math.min(0.85, Math.max(0, contrast))
+            : 0.35,
+        }),
+      setChatBgTint: (tint) =>
+        set({
+          // 'auto' or #rrggbb only - state-level port of Wisteria's CSS
+          // url-injection guard.
+          chatBgTint: /^auto$|^#[0-9a-f]{6}$/i.test(tint) ? tint : "auto",
+        }),
+      setAmbientFogOn: (on) => set({ ambientFogOn: on }),
     }),
     {
       name: "elysium-ui-state",
@@ -68,14 +155,23 @@ export const useUiStore = create<UiState>()(
         }
         return state;
       },
-      // Only harmless UI preferences are persisted — never secrets, content, or API data.
-      // Persona fields are NOT persisted here (Phase 6E-A — persona persistence deferred to 6E-B).
+      // Only harmless UI preferences are persisted - never secrets, content, or API data.
+      // Persona fields are NOT persisted here (Phase 6E-A - persona persistence deferred to 6E-B).
       partialize: (state) => ({
         selectedCharacterId: state.selectedCharacterId,
         selectedChatId: state.selectedChatId,
         selectedModelId: state.selectedModelId,
         activeRightPanelTab: state.activeRightPanelTab,
         sidebarCollapsed: state.sidebarCollapsed,
+        msgFontPx: state.msgFontPx,
+        msgLineHeight: state.msgLineHeight,
+        narrationEnabled: state.narrationEnabled,
+        quoteTintEnabled: state.quoteTintEnabled,
+        chatBgOn: state.chatBgOn,
+        chatBgLum: state.chatBgLum,
+        chatBgContrast: state.chatBgContrast,
+        chatBgTint: state.chatBgTint,
+        ambientFogOn: state.ambientFogOn,
       }),
     },
   ),

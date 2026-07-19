@@ -26,7 +26,7 @@ export function createCharacter(
 
 /**
  * Import a character from raw JSON text.
- * Sends textarea content directly as body — no wrapping, no double-stringify.
+ * Sends textarea content directly as body - no wrapping, no double-stringify.
  * Backend expects raw JSON body and calls json.loads(raw) directly.
  */
 export function importCharacter(rawJsonText: string): Promise<Character> {

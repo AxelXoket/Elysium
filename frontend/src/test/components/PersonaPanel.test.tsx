@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RightPanel } from "@/components/layout/RightPanel";
 import { PersonaPanel } from "@/components/persona/PersonaPanel";
+import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
 import { useUiStore } from "@/lib/store/uiStore";
 import { useErrorStore } from "@/lib/errors";
 import type { Persona } from "@/lib/schemas/personas";
@@ -31,7 +32,14 @@ function wrapper({ children }: { children: ReactNode }) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
+  // GenerationSettingsProvider mirrors production (AppShell provides it):
+  // RightPanel keeps every tab mounted, so the Models panel's settings
+  // consumers run even when the Persona tab is active.
+  return (
+    <QueryClientProvider client={qc}>
+      <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
+    </QueryClientProvider>
+  );
 }
 
 function mockPersonaApi(initialPersonas: Persona[]) {

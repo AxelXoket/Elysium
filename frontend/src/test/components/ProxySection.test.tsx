@@ -147,4 +147,149 @@ describe("Proxy Section Tests", () => {
       expect(screen.getByText(/42ms/)).toBeInTheDocument();
     });
   });
+
+  // FIX-1: "Require proxy" toggle reflects server state on mount
+  it("FIX-1: toggle renders on when settings.proxy_required=true", async () => {
+    mockFetch({
+      "/settings/proxy/health": { body: proxyHealthFixture },
+      "/settings": {
+        body: {
+          ...settingsFixture,
+          proxy_configured: true,
+          proxy_required: true,
+        },
+      },
+    });
+
+    render(<ProxySection />, { wrapper });
+
+    const toggle = screen.getByLabelText("Proxy required toggle");
+    await waitFor(() => {
+      expect(toggle).toBeChecked();
+    });
+  });
+
+  // FIX-1: saving with only the URL changed must NOT silently disable
+  // proxy_required - the untouched toggle mirrors the server value (true).
+  it("FIX-1: URL-only save keeps proxyRequired true from server state", async () => {
+    const user = userEvent.setup();
+    const mock = mockFetch({
+      "/settings/proxy/health": { body: proxyHealthFixture },
+      "/settings": {
+        body: {
+          ...settingsFixture,
+          proxy_configured: true,
+          proxy_required: true,
+        },
+      },
+    });
+
+    render(<ProxySection />, { wrapper });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Proxy required toggle")).toBeChecked();
+    });
+
+    // Change ONLY the URL; do not touch the toggle
+    await user.type(
+      screen.getByLabelText("Proxy URL input"),
+      "https://proxy.test.com",
+    );
+
+    mock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: /save proxy/i }));
+
+    await waitFor(() => {
+      const postCalls = mock.mock.calls.filter(
+        (call) =>
+          typeof call[0] === "string" &&
+          call[0].includes("/settings/proxy") &&
+          !call[0].includes("/health") &&
+          call[1]?.method === "POST",
+      );
+      expect(postCalls.length).toBeGreaterThanOrEqual(1);
+      const body = JSON.parse(postCalls[0][1]?.body as string);
+      expect(body.proxy_required).toBe(true);
+    });
+  });
+
+  // FIX-1: a user-toggled value is preserved (dirty flag blocks server re-sync)
+  it("FIX-1: user-toggled value is sent even before settings refetch", async () => {
+    const user = userEvent.setup();
+    // Server says proxy_required=false; user switches it on before saving.
+    const mock = fetchMock;
+
+    render(<ProxySection />, { wrapper });
+
+    const toggle = screen.getByLabelText("Proxy required toggle");
+    await waitFor(() => {
+      expect(toggle).not.toBeChecked();
+    });
+
+    await user.click(toggle);
+    expect(toggle).toBeChecked();
+
+    await user.type(
+      screen.getByLabelText("Proxy URL input"),
+      "https://proxy.test.com",
+    );
+
+    mock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: /save proxy/i }));
+
+    await waitFor(() => {
+      const postCalls = mock.mock.calls.filter(
+        (call) =>
+          typeof call[0] === "string" &&
+          call[0].includes("/settings/proxy") &&
+          !call[0].includes("/health") &&
+          call[1]?.method === "POST",
+      );
+      expect(postCalls.length).toBeGreaterThanOrEqual(1);
+      const body = JSON.parse(postCalls[0][1]?.body as string);
+      expect(body.proxy_required).toBe(true);
+    });
+  });
+
+  // FIX-3: proxy save failure shows a safe mapped message, never raw detail
+  it("FIX-3: save error shows mapped message instead of raw detail", async () => {
+    const user = userEvent.setup();
+
+    render(<ProxySection />, { wrapper });
+
+    await waitFor(() => {
+      expect(screen.getByText("Proxy configured")).toBeInTheDocument();
+    });
+
+    await user.type(
+      screen.getByLabelText("Proxy URL input"),
+      "https://proxy.test.com",
+    );
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ detail: "RAW_UPSTREAM_DETAIL" }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: /save proxy/i }));
+
+    expect(
+      await screen.findByText("Something went wrong. Please try again."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("RAW_UPSTREAM_DETAIL")).not.toBeInTheDocument();
+  });
 });

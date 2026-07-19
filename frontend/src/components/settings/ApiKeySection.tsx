@@ -18,12 +18,14 @@ export function ApiKeySection() {
     try {
       const result = await setApiKey.mutateAsync(keyInput.trim());
       if (result.ok) {
-        setKeyInput(""); // Clear on success — write-only
+        setKeyInput(""); // Clear on success - write-only
         setFeedback({ type: "success", text: "API key saved" });
       } else {
+        // validation_unavailable - the backend did NOT store the key.
+        // Keep the input intact so the user can retry without retyping.
         setFeedback({
           type: "error",
-          text: "API key validation unavailable; key was not saved",
+          text: "Couldn't reach OpenRouter to validate the key, so it was not saved. Check your connection or proxy and try again.",
         });
       }
     } catch (err) {
@@ -73,7 +75,7 @@ export function ApiKeySection() {
         </span>
       </div>
 
-      {/* Input — write-only, never shows saved key */}
+      {/* Input - write-only, never shows saved key */}
       <div className="flex gap-2">
         <Input
           type="password"
@@ -83,6 +85,9 @@ export function ApiKeySection() {
           disabled={busy}
           className="flex-1 text-xs"
           aria-label="API key input"
+          // Keep the browser password manager out: this is an API key field,
+          // not a login - no fill offers, no save-password prompts.
+          autoComplete="off"
         />
         <Button
           size="sm"
