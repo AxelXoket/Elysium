@@ -13,6 +13,9 @@
     <img src="https://img.shields.io/badge/frontend_tests-766_passed-success?style=flat-square" alt="Frontend Tests">
     <img src="https://img.shields.io/badge/frontend-React_19-61DAFB?style=flat-square&logo=react&logoColor=white" alt="React">
   </p>
+  <p align="center">
+    <img src="assets/elysium_design.png" alt="Elysium" width="820">
+  </p>
 </p>
 
 ---
