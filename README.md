@@ -14,7 +14,7 @@
     <img src="https://img.shields.io/badge/frontend-React_19-61DAFB?style=flat-square&logo=react&logoColor=white" alt="React">
   </p>
   <p align="center">
-    <img src="assets/elysium_design.png" alt="Elysium" width="820">
+    <img src="assets/elysium_banner.png" alt="Elysium" width="820">
   </p>
 </p>
 
