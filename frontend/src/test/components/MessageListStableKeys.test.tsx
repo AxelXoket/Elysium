@@ -14,6 +14,8 @@ import { keys } from "@/lib/query/keys";
 import { mockFetch } from "../mocks/api";
 import type { Message } from "@/lib/schemas/chats";
 import type { ReactNode } from "react";
+import { useEffect } from "react";
+import { AnimatedListItem } from "@/components/motion/AnimatedList";
 
 function msg(id: number, role: "user" | "assistant", content: string): Message {
   return {
@@ -123,5 +125,58 @@ describe("MessageList - stable keys across the optimistic→real swap", () => {
     const newNode = screen.getByText("different text");
     expect(newNode).not.toBe(draftNode);
     expect(screen.queryByText("draft text")).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Audit: a bubble remounted (losing its local state) each time it fell out of
+ * the animated tail window.
+ *
+ * AnimatedListItem returned a plain <div> when animated=false and a motion
+ * component when true, so the per-index flag flipping as the list grows changed
+ * the ELEMENT TYPE under an unchanged key - React unmounts and remounts the
+ * whole MessageBubble subtree.
+ */
+describe("AnimatedListItem keeps its identity", () => {
+  it("renders the same element type animated and not", () => {
+    const animated = render(
+      <AnimatedListItem animated className="probe">
+        <span data-testid="child">x</span>
+      </AnimatedListItem>,
+    );
+    const animatedTag = animated.container.firstElementChild?.tagName;
+    animated.unmount();
+
+    const plain = render(
+      <AnimatedListItem animated={false} className="probe">
+        <span data-testid="child">x</span>
+      </AnimatedListItem>,
+    );
+    expect(plain.container.firstElementChild?.tagName).toBe(animatedTag);
+  });
+
+  it("does not remount its child when the flag flips", () => {
+    let mounts = 0;
+    function Probe() {
+      useEffect(() => {
+        mounts += 1;
+      }, []);
+      return <span data-testid="child">x</span>;
+    }
+
+    const view = render(
+      <AnimatedListItem animated className="probe">
+        <Probe />
+      </AnimatedListItem>,
+    );
+    expect(mounts).toBe(1);
+
+    // Exactly what happens when the list grows past ANIMATED_TAIL_GROUPS.
+    view.rerender(
+      <AnimatedListItem animated={false} className="probe">
+        <Probe />
+      </AnimatedListItem>,
+    );
+    expect(mounts).toBe(1);
   });
 });

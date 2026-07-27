@@ -1,5 +1,6 @@
 import { useState, useMemo, useId, useEffect } from "react";
 import { useModels, useRefreshModels } from "@/lib/query/models";
+import { useVoiceMode } from "@/lib/query/tts";
 import { useChats, useMessages } from "@/lib/query/chats";
 import { useCharacters } from "@/lib/query/characters";
 import { usePersonas } from "@/lib/query/personas";
@@ -141,6 +142,9 @@ export function ModelPanel() {
     ? characters?.find((c) => c.id === selectedChat.character_id)
     : undefined;
   const { generationParams, contextBudgetTokens } = getRequestSettings();
+  // G2 parity (audit-2): BOTH gauges charge the voice block, or the two
+  // meters disagree with each other the moment the toggle flips.
+  const { data: voiceMode } = useVoiceMode();
   const contextUsage = estimateContextUsage({
     model: selectedModel ?? null,
     character: chatCharacter ?? null,
@@ -148,6 +152,7 @@ export function ModelPanel() {
     messages: messages ?? null,
     generationParams,
     contextBudgetTokens,
+    voicePromptChars: voiceMode?.active ? voiceMode.prompt_chars : 0,
   });
 
   return (
@@ -221,7 +226,7 @@ export function ModelPanel() {
             data-testid="fallback-reason"
             style={{
               backgroundColor: "rgba(94, 130, 174, 0.08)",
-              color: "var(--color-es-accent-amber)",
+              color: "var(--color-es-accent-strong)",
             }}
           >
             <AlertCircle size={12} />
@@ -476,10 +481,19 @@ export function ModelPanel() {
   );
 }
 
-/** Meter fill color per severity - vars already used for warnings/danger. */
+/**
+ * Meter fill colour per severity.
+ *
+ * `warning` no longer borrows --color-es-accent-amber. After the Azure
+ * recolour that token became #5E82AE against a #3E72B0 normal - about 1.25:1
+ * (audit KÖK 17), so the 75% threshold changed nothing anybody could see and a
+ * three-tier signal was really two. The pale azure below is ~3.2:1 against
+ * normal, which is the WCAG threshold for non-text, and stays inside the
+ * blue-only palette the theme decision fixed.
+ */
 const METER_COLORS: Record<ContextUsageState, string> = {
   normal: "var(--color-es-primary-sage)",
-  warning: "var(--color-es-accent-amber)",
+  warning: "var(--color-es-meter-warning)",
   danger: "var(--color-es-danger)",
 };
 

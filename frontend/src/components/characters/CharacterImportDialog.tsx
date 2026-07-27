@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -22,10 +22,25 @@ export function CharacterImportDialog({ trigger }: CharacterImportDialogProps) {
   const importChar = useImportCharacter();
   const [jsonText, setJsonText] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const resetForm = () => {
     setJsonText("");
     setError(null);
+  };
+
+  // FF14: a picked .json file fills the SAME jsonText state, so validation +
+  // submit stay on the existing paste path.
+  const handleFilePicked = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-picking the same file
+    if (!file) return;
+    setError(null);
+    try {
+      setJsonText(await file.text());
+    } catch {
+      setError("Could not read that file.");
+    }
   };
 
   const handleImport = async () => {
@@ -61,12 +76,31 @@ export function CharacterImportDialog({ trigger }: CharacterImportDialogProps) {
         </DialogHeader>
 
         <div className="space-y-3">
-          <p
-            className="text-xs leading-relaxed"
-            style={{ color: "var(--color-es-text-muted)" }}
-          >
-            Paste a Character Card V2 JSON or raw character JSON below.
-          </p>
+          <div className="flex items-center justify-between gap-2">
+            <p
+              className="text-xs leading-relaxed"
+              style={{ color: "var(--color-es-text-muted)" }}
+            >
+              Paste a Character Card V2 JSON, or pick a .json file.
+            </p>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="sidebar-dialog-cancel gap-1.5 text-xs"
+              disabled={importChar.isPending}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              Choose file
+            </Button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".json,application/json"
+              className="hidden"
+              aria-label="Character JSON file"
+              onChange={handleFilePicked}
+            />
+          </div>
 
           <Textarea
             value={jsonText}

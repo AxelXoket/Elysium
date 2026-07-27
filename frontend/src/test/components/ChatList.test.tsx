@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ChatList } from "@/components/sidebar/ChatList";
 import { useUiStore } from "@/lib/store/uiStore";
+import { useStreamRegistry } from "@/lib/chat/streamRegistry";
 import { useErrorStore } from "@/lib/errors";
 import { mockFetch } from "../mocks/api";
 import { mockFetchWithStreams, jsonResponse } from "../helpers/streamMocks";
@@ -477,7 +478,59 @@ describe("ChatList", () => {
     expect(screen.getByText("Test Chat")).toBeInTheDocument();
   });
 
-  it("RENAME: blur cancels the edit without a request", async () => {
+  // v1.1 FF11: blur now COMMITS (was: silently cancelled). Escape still
+  // cancels (see "RENAME: Escape cancels the edit without a request").
+  it("RENAME: blur commits the typed title (FF11)", async () => {
+    const user = userEvent.setup();
+    const mock = mockFetch({
+      "PATCH /chats/1": { body: { ...chatFixture, title: "Committed On Blur" } },
+      "/chats": { body: [chatFixture] },
+    });
+
+    render(<ChatList />, { wrapper });
+
+    const input = await openRenameInput(user);
+    await user.clear(input);
+    await user.type(input, "Committed On Blur");
+    // Click outside the row - blur now commits.
+    await user.click(screen.getByText("Chats"));
+
+    await waitFor(() => {
+      const calls = patchCalls(mock);
+      expect(calls).toHaveLength(1);
+      const body = JSON.parse((calls[0][1] as RequestInit).body as string);
+      expect(body).toEqual({ title: "Committed On Blur" });
+    });
+  });
+
+  // v1.1 FF1/H7: Clear/Delete are disabled while the chat streams.
+  it("FF1: Clear/Delete menu items are disabled while the chat is streaming", async () => {
+    const user = userEvent.setup();
+    mockFetch({
+      "/chats": { body: [chatFixture] },
+    });
+    useStreamRegistry.setState({
+      controllers: new Map([[1, new AbortController()]]),
+    });
+
+    try {
+      render(<ChatList />, { wrapper });
+
+      await screen.findByText("Test Chat");
+      await user.click(
+        screen.getByRole("button", { name: /open chat actions for test chat/i }),
+      );
+
+      expect(screen.getByRole("menuitem", { name: /clear chat/i })).toBeDisabled();
+      expect(screen.getByRole("menuitem", { name: /delete chat/i })).toBeDisabled();
+      // Rename stays available - it does not touch messages.
+      expect(screen.getByRole("menuitem", { name: /rename/i })).toBeEnabled();
+    } finally {
+      useStreamRegistry.setState({ controllers: new Map() });
+    }
+  });
+
+  it("RENAME: blur with an unchanged title sends no request (FF11 guard)", async () => {
     const user = userEvent.setup();
     const mock = mockFetch({
       "PATCH /chats/1": { body: { ...chatFixture, title: "x" } },
@@ -487,17 +540,14 @@ describe("ChatList", () => {
     render(<ChatList />, { wrapper });
 
     const input = await openRenameInput(user);
-    await user.clear(input);
-    await user.type(input, "Abandoned");
-    // Click outside the row - blur cancels without committing
-    await user.click(screen.getByText("Chats"));
+    expect(input.value).toBe("Test Chat");
+    await user.click(screen.getByText("Chats")); // blur with no edit
 
     await waitFor(() => {
       expect(
         screen.queryByRole("textbox", { name: /rename chat/i }),
       ).not.toBeInTheDocument();
     });
-    expect(screen.getByText("Test Chat")).toBeInTheDocument();
     expect(patchCalls(mock)).toHaveLength(0);
   });
 });

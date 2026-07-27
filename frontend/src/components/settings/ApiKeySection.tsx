@@ -25,7 +25,7 @@ export function ApiKeySection() {
         // Keep the input intact so the user can retry without retyping.
         setFeedback({
           type: "error",
-          text: "Couldn't reach OpenRouter to validate the key, so it was not saved. Check your connection or proxy and try again.",
+          text: "Could not reach OpenRouter, so the key was not saved. Check your connection or proxy.",
         });
       }
     } catch (err) {
@@ -33,8 +33,11 @@ export function ApiKeySection() {
     }
   };
 
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
   const handleDelete = async () => {
     setFeedback(null);
+    setConfirmDelete(false);
     try {
       await deleteApiKey.mutateAsync();
       setFeedback({ type: "success", text: "API key removed" });
@@ -53,7 +56,7 @@ export function ApiKeySection() {
           className="text-sm font-medium"
           style={{ color: "var(--color-es-text-light)" }}
         >
-          OpenRouter API Key
+          OpenRouter API key
         </h3>
       </div>
 
@@ -75,8 +78,15 @@ export function ApiKeySection() {
         </span>
       </div>
 
-      {/* Input - write-only, never shows saved key */}
-      <div className="flex gap-2">
+      {/* Input - write-only, never shows saved key. Wrapped in a form so
+          Enter saves (house convention). (v1.1 FF12.) */}
+      <form
+        className="flex gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!busy && keyInput.trim()) void handleSave();
+        }}
+      >
         <Input
           type="password"
           placeholder="sk-or-v1-..."
@@ -90,9 +100,9 @@ export function ApiKeySection() {
           autoComplete="off"
         />
         <Button
+          type="submit"
           size="sm"
           disabled={busy || !keyInput.trim()}
-          onClick={handleSave}
           className="gap-1"
           style={{
             backgroundColor: "var(--color-es-primary-sage)",
@@ -106,25 +116,55 @@ export function ApiKeySection() {
           )}
           Save
         </Button>
-      </div>
+      </form>
 
-      {/* Delete */}
-      {settings?.api_key_set && (
+      {/* Delete - inline confirm so one stray click can't wipe the key
+          (write-only, unrecoverable from the UI). (v1.1 FF13.) */}
+      {settings?.api_key_set && !confirmDelete && (
         <Button
+          type="button"
           variant="ghost"
           size="sm"
           disabled={busy}
-          onClick={handleDelete}
+          onClick={() => setConfirmDelete(true)}
           className="gap-1 text-xs"
           style={{ color: "var(--color-es-danger)" }}
         >
-          {deleteApiKey.isPending ? (
-            <Loader2 size={12} className="animate-spin" />
-          ) : (
-            <Trash2 size={12} />
-          )}
-          Remove API Key
+          <Trash2 size={12} />
+          Remove API key
         </Button>
+      )}
+      {settings?.api_key_set && confirmDelete && (
+        <div className="flex items-center gap-2">
+          <span className="text-xs" style={{ color: "var(--color-es-text-muted)" }}>
+            Remove the stored key?
+          </span>
+          <Button
+            type="button"
+            size="sm"
+            disabled={busy}
+            onClick={handleDelete}
+            className="gap-1 text-xs"
+            style={{ color: "var(--color-es-danger)" }}
+          >
+            {deleteApiKey.isPending ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : (
+              <Trash2 size={12} />
+            )}
+            Remove
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={busy}
+            onClick={() => setConfirmDelete(false)}
+            className="text-xs"
+          >
+            Cancel
+          </Button>
+        </div>
       )}
 
       {/* Feedback */}

@@ -11,7 +11,7 @@
  *  - ChatCanvas applies the reader variables to the message scroll area
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { SidebarFooter } from "@/components/sidebar/SidebarFooter";
@@ -49,8 +49,16 @@ describe("AppSettingsDialog", () => {
       activeRightPanelTab: "models",
       msgFontPx: MSG_FONT_DEFAULT,
       msgLineHeight: MSG_LINE_DEFAULT,
+      msgContrast: "default",
       narrationEnabled: true,
       quoteTintEnabled: true,
+      // The dialog's open state moved out of SidebarFooter's useState and into
+      // the store (the composer's voice hint has to be able to open it ON the
+      // Voice page), so it is module-global and leaks between cases: a dialog
+      // left open by the previous test makes the background inert and its
+      // "Open settings" button unreachable.
+      settingsOpen: false,
+      settingsInitialPage: null,
     });
   });
 
@@ -118,6 +126,57 @@ describe("AppSettingsDialog", () => {
     );
     expect(useUiStore.getState().msgFontPx).toBe(MSG_FONT_DEFAULT);
     expect(useUiStore.getState().msgLineHeight).toBe(MSG_LINE_DEFAULT);
+  });
+
+  // v1.1 E2: message contrast radiogroup.
+  it("contrast radiogroup writes the store and drives the preview class", async () => {
+    const user = userEvent.setup();
+    mockFetch({});
+    render(<SidebarFooter />, { wrapper });
+    await openSettings(user);
+    await user.click(screen.getByText("Text & readability"));
+
+    const group = await screen.findByRole("radiogroup", {
+      name: "Message contrast",
+    });
+    const high = screen.getByRole("radio", { name: "High contrast" });
+    await user.click(high);
+
+    expect(useUiStore.getState().msgContrast).toBe("high");
+    expect(high).toHaveAttribute("aria-checked", "true");
+    // The dialog preview carries the preset class.
+    const preview = document.querySelector(".settings-preview") as HTMLElement;
+    expect(preview.className).toContain("msg-contrast-high");
+
+    // Back to Default removes the class again.
+    await user.click(
+      within(group).getByRole("radio", { name: "Default contrast" }),
+    );
+    expect(useUiStore.getState().msgContrast).toBe("default");
+    expect(
+      (document.querySelector(".settings-preview") as HTMLElement).className,
+    ).not.toContain("msg-contrast");
+  });
+
+  it("Reset covers font, line spacing AND contrast (E2)", async () => {
+    const user = userEvent.setup();
+    mockFetch({});
+    useUiStore.setState({ msgFontPx: 17, msgLineHeight: 1.8, msgContrast: "high" });
+    render(<SidebarFooter />, { wrapper });
+    await openSettings(user);
+    await user.click(screen.getByText("Text & readability"));
+
+    await user.click(
+      await screen.findByRole("button", { name: "Reset to defaults" }),
+    );
+    expect(useUiStore.getState().msgFontPx).toBe(MSG_FONT_DEFAULT);
+    expect(useUiStore.getState().msgLineHeight).toBe(MSG_LINE_DEFAULT);
+    expect(useUiStore.getState().msgContrast).toBe("default");
+
+    // With everything at defaults, Reset is disabled (isDefault includes contrast).
+    expect(
+      screen.getByRole("button", { name: "Reset to defaults" }),
+    ).toBeDisabled();
   });
 
   it("narration page toggles both store flags and previews the parser", async () => {
@@ -203,6 +262,7 @@ describe("Reader variables on the chat canvas", () => {
       selectedCharacterId: null,
       msgFontPx: 17,
       msgLineHeight: 1.8,
+      msgContrast: "default",
     });
   });
 
@@ -211,20 +271,51 @@ describe("Reader variables on the chat canvas", () => {
     useUiStore.setState({
       msgFontPx: MSG_FONT_DEFAULT,
       msgLineHeight: MSG_LINE_DEFAULT,
+      msgContrast: "default",
     });
   });
 
-  it("applies --msg-fs/--msg-lh to the message scroll container", async () => {
+  // v1.1 E3 hoist: the reader vars now live on <main> so the composer inherits
+  // them; the scroller no longer carries them.
+  it("applies --msg-fs/--msg-lh to <main>, not the scroll container", async () => {
     mockFetch({ "/settings": { body: settingsFixture } });
+    const { container } = render(<ChatCanvas />, { wrapper });
+
+    const main = container.querySelector("main") as HTMLElement;
+    const scroller = container.querySelector(
+      ".flex-1.overflow-y-auto",
+    ) as HTMLElement;
+    expect(main).not.toBeNull();
+    expect(scroller).not.toBeNull();
+    await waitFor(() => {
+      expect(main.style.getPropertyValue("--msg-fs")).toBe("17px");
+      expect(main.style.getPropertyValue("--msg-lh")).toBe("1.8");
+    });
+    // The scroller no longer carries the reader vars (moved up to <main>).
+    expect(scroller.style.getPropertyValue("--msg-fs")).toBe("");
+    expect(scroller.style.getPropertyValue("--msg-lh")).toBe("");
+  });
+
+  // v1.1 E2: the contrast preset class rides on the scroller.
+  it("applies the msg-contrast preset class to the scroller (E2)", async () => {
+    mockFetch({ "/settings": { body: settingsFixture } });
+    useUiStore.setState({ msgContrast: "high" });
     const { container } = render(<ChatCanvas />, { wrapper });
 
     const scroller = container.querySelector(
       ".flex-1.overflow-y-auto",
     ) as HTMLElement;
-    expect(scroller).not.toBeNull();
     await waitFor(() => {
-      expect(scroller.style.getPropertyValue("--msg-fs")).toBe("17px");
-      expect(scroller.style.getPropertyValue("--msg-lh")).toBe("1.8");
+      expect(scroller.className).toContain("msg-contrast-high");
+    });
+
+    // Default sets NO msg-contrast class (zero-change baseline).
+    useUiStore.setState({ msgContrast: "default" });
+    await waitFor(() => {
+      const s = container.querySelector(
+        ".flex-1.overflow-y-auto",
+      ) as HTMLElement;
+      expect(s.className).not.toContain("msg-contrast");
     });
   });
 });

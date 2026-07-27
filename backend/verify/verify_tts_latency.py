@@ -1,0 +1,187 @@
+"""verify/verify_tts_latency.py - what the voice engine ACTUALLY costs.
+
+Every remaining number in the latency work is supposed to come from here rather
+than from somebody's estimate: the fixed per-call overhead, the real-time
+factor, seconds of speech per character, and the VRAM a decode wants per frame.
+
+Runs the real engine through the real host. It does NOT open the app and does
+NOT need the vault passphrase - the models are found by scanning the same roots
+the app scans, so nothing encrypted is touched.
+
+    .venv/Scripts/python.exe verify/verify_tts_latency.py
+
+Reports raw measurements first and the fitted model second, so a reader can
+disagree with the fit without losing the data.
+"""
+from __future__ import annotations
+
+import logging
+import sys
+import time
+from pathlib import Path
+
+BACKEND = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(BACKEND))
+
+import config                                   # noqa: E402
+from tts import host as tts_host                # noqa: E402
+from tts.registry import scan_roots             # noqa: E402
+
+#: Four sizes, because one point cannot separate a fixed cost from a
+#: proportional one. Roughly 3 / 6 / 12 / 20 seconds of speech at ~15 chars a
+#: second - English, since Turkish was dropped for this engine.
+SAMPLES = [
+    "Right, let me take a look at that for you.",
+    "Right, let me take a look at that for you. It should only take a moment, "
+    "so stay where you are.",
+    "Right, let me take a look at that for you. It should only take a moment, "
+    "so stay where you are. I have seen this particular problem before, and it "
+    "is almost never as bad as it first appears.",
+    "Right, let me take a look at that for you. It should only take a moment, "
+    "so stay where you are. I have seen this particular problem before, and it "
+    "is almost never as bad as it first appears. The trick is to change one "
+    "thing at a time and write down what happened, because the alternative is "
+    "guessing twice and learning nothing at all.",
+]
+
+
+def _line(char="-"):
+    print(char * 78)
+
+
+def _find_model():
+    # No roots argument: scan_roots already reads the extra roots out of
+    # voice/runtimes.json, which is where the checkpoint actually lives.
+    result = scan_roots()
+    for model in result.models:
+        if model.engine_id == "fish_s2":
+            return model
+    raise SystemExit("no fish_s2 model found - is voice/runtimes.json set up?")
+
+
+def _reference():
+    """The velvet reference the app itself uses, as the worker wants it."""
+    ref_dir = Path(config.TTS_REFS_DIR) / "velvet"
+    wav = ref_dir / "ref.wav"
+    if not wav.is_file():
+        return {}, {}
+    transcript = ""
+    txt = ref_dir / "transcript.txt"
+    if txt.is_file():
+        transcript = txt.read_text(encoding="utf-8", errors="replace").strip()
+    extra = {"reference_transcript": transcript} if transcript else {}
+    return {"reference_voice": str(wav)}, extra
+
+
+def _costs(client):
+    """The `cost` frames the worker emitted. The ring buffer is private and
+    read directly on purpose: this is a measurement harness, not app code, and
+    a public accessor invented for one script is worse than an honest reach."""
+    out = []
+    for frame in list(getattr(client, "_events", [])):
+        if frame.get("event") == "progress" and frame.get("stage") == "cost":
+            out.append(frame)
+    return out
+
+
+def _fit(xs, ys):
+    """Least squares y = c + m*x. Returns (c, m) or None when degenerate."""
+    n = len(xs)
+    if n < 2:
+        return None
+    mean_x = sum(xs) / n
+    mean_y = sum(ys) / n
+    denom = sum((x - mean_x) ** 2 for x in xs)
+    if denom <= 0:
+        return None
+    m = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys)) / denom
+    return mean_y - m * mean_x, m
+
+
+def main() -> int:
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
+    model = _find_model()
+    values, extra = _reference()
+    if not values:
+        print("WARNING: no velvet reference found; measuring UNCLONED speech, "
+              "which is not the path the app takes.")
+
+    host = tts_host.get_host()
+    print(f"model: {model.uid}")
+    _line("=")
+
+    t0 = time.perf_counter()
+    host.load(model, values)
+    load_seconds = time.perf_counter() - t0
+    print(f"load: {load_seconds:.1f}s")
+    _line()
+
+    # NOT measured, and the reason is a finding in itself: the first speak
+    # after a load encodes the reference clip, and encoding needs the codec, so
+    # `_free_for_codec` parks the ~7 GB model and the call pays to bring it
+    # back. The prompt tokens are cached afterwards, so it happens exactly
+    # once - which makes it a one-off cost that would otherwise contaminate
+    # every fitted coefficient below.
+    t0 = time.perf_counter()
+    host.speak("Warming up.", values, extra=extra)
+    print(f"warm-up (excluded): {time.perf_counter() - t0:.2f}s "
+          f"- reference encode + model restore, paid once per load")
+    _line()
+
+    rows = []
+    for i, text in enumerate(SAMPLES, 1):
+        t0 = time.perf_counter()
+        result = host.speak(text, values, extra=extra)
+        wall = time.perf_counter() - t0
+        audio = float(result.get("seconds") or 0.0)
+        rows.append({"n": i, "chars": len(text), "wall": wall, "audio": audio})
+        rtf = wall / audio if audio else float("nan")
+        print(f"{i}. {len(text):4d} chars -> {audio:6.2f}s audio in "
+              f"{wall:6.2f}s wall   (RTF {rtf:.3f})")
+
+    _line()
+    client = getattr(host, "_client", None)
+    cost_frames = _costs(client) if client is not None else []
+    if cost_frames:
+        print("VRAM, measured per operation:")
+        for f in cost_frames:
+            print(f"  {f.get('kind'):9s} units={f.get('units'):5} "
+                  f"peak={f.get('peak_gb')} GB  predicted={f.get('predict_gb')} GB "
+                  f"(samples {f.get('samples')})")
+    else:
+        print("no cost frames - a build without the measurement probe, or no CUDA.")
+
+    _line("=")
+    print("FITTED MODEL")
+    good = [r for r in rows if r["audio"] > 0]
+    fit = _fit([r["audio"] for r in good], [r["wall"] for r in good])
+    if fit is None:
+        print("  not enough usable points to fit.")
+    else:
+        c, rtf = fit
+        print(f"  fixed cost per call   c   = {c:6.3f} s")
+        print(f"  real-time factor      RTF = {rtf:6.3f}   "
+              f"({1 / rtf:.2f}x realtime)" if rtf > 0 else "")
+        print(f"  predicted time(d)     = {c:.3f} + {rtf:.3f} * d")
+    secs_per_char = [r["audio"] / r["chars"] for r in good if r["chars"]]
+    if secs_per_char:
+        avg = sum(secs_per_char) / len(secs_per_char)
+        print(f"  seconds per character = {avg:6.4f}  "
+              f"({1 / avg:.1f} chars/s of speech)")
+    if fit and secs_per_char:
+        c, rtf = fit
+        target = 3.0
+        # The number items 3 and 4 actually need: how much text may go in the
+        # first chunk and still start speaking inside the budget.
+        room = (target - c) / rtf if rtf > 0 else 0.0
+        print(f"\n  at a {target:.0f}s budget the first chunk may be up to "
+              f"{room:.1f}s of speech = ~{int(room / avg)} characters")
+    _line("=")
+
+    host.unload("measurement finished")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

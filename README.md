@@ -6,11 +6,11 @@
   <p align="center">
     <img src="https://img.shields.io/badge/python-3.13-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
     <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License">
-    <img src="https://img.shields.io/badge/version-1.0.0-brightgreen?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/version-1.1.0-brightgreen?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/privacy-ZDR_enforced-brightgreen?style=flat-square" alt="Privacy">
     <img src="https://img.shields.io/badge/at--rest-SQLCipher_vault-brightgreen?style=flat-square" alt="Encryption">
     <img src="https://img.shields.io/badge/streaming-SSE-brightgreen?style=flat-square" alt="Streaming">
-    <img src="https://img.shields.io/badge/frontend_tests-766_passed-success?style=flat-square" alt="Frontend Tests">
+    <img src="https://img.shields.io/badge/frontend_tests-1163_passed-success?style=flat-square" alt="Frontend Tests">
     <img src="https://img.shields.io/badge/frontend-React_19-61DAFB?style=flat-square&logo=react&logoColor=white" alt="React">
   </p>
   <p align="center">
@@ -22,12 +22,33 @@
 
 Elysium is a privacy-first AI character chat client that routes **all model traffic through a local FastAPI backend**. The frontend never contacts OpenRouter directly. Your entire chat database - messages, characters, personas, attached images, and your API key - is **passphrase-encrypted at rest (SQLCipher)**, strict ZDR privacy routing is enforced on every request, and raw upstream error bodies are never exposed to the client. It runs as a dev server pair or as a **packaged Windows desktop app** (`Elysium.exe`).
 
+## What's new in v1.1.0
+
+- **Local voice** - Elysium can speak replies out loud with a text-to-speech model that runs on **your own GPU**. Nothing is sent anywhere: no cloud voice API, no audio upload. Drop a model folder in, and its own settings appear in Settings › Voice automatically
+- **The app installs the voice engine** - one button. Elysium builds the engine's isolated Python environment itself, shows the real download size before you commit, and can be cancelled or removed at any time. You never open a terminal or edit a config file
+- **Says plainly when it cannot speak** - a voice model is always inspectable, and every reason it will not run right now (engine not set up, no NVIDIA GPU, card busy, files missing) is listed at once, in the same words the rest of the app uses
+- **Delivery direction** - with voice on, replies carry invisible performance cues (`[whisper]`, `[laughing]`) that shape HOW a line is spoken. They never appear in the chat, and they are stripped from what you read
+- **Voice clones from your own clips** - add a short reference recording. Engines that need the words spoken in it ask you to type them; no shipped engine has speech recognition, so Elysium does not offer to listen and guess
+- **Reading rules** - teach Elysium how to say a name it gets wrong (`Aoife` → `EE-fa`). Applies to spoken replies only; the chat text never changes
+- **Delivery dials** - reading speed, tag density, a standing tone, how narration is voiced, and the pause between sentences. Each one means the same thing whether a reply is arriving live or being replayed by the speak button
+- **Hear any reply** - a speak button on assistant messages. Two messages can never talk over each other, and locking the vault stops playback and deletes the generated audio
+
+- **Message editing** - Edit any of your messages inline; the reply after it is regenerated and the following turns are rewound (attachments preserved, edits are conflict-guarded)
+- **Image drag-and-drop** - Drag PNG/JPEG/WebP files onto the chat for a full-panel drop overlay; rejected files and the 4-image cap now surface a toast instead of vanishing silently
+- **Persona name in the prompt** - The persona's name now reaches the model as a `[User Persona: {name}]` block (previously only the description was sent)
+- **Smooth streaming** - A pacing layer types replies at a natural, model-tracking speed (grapheme-safe, respects reduced-motion) instead of dumping bursts
+- **Jump-to-latest** - Scroll up while a reply streams and you are never yanked back; a pulsing down-arrow returns you to the bottom on click
+- **Message contrast presets** - Soft / Default / High readability presets (all AA-verified), independent of the chat wallpaper, persisted across restarts
+- **Composer typography** - The composer font follows the message-size setting without overflowing, and generation settings survive a vault re-lock
+- **Image metadata stripped** - Every attached image is re-encoded on upload so EXIF/GPS and other embedded metadata are dropped before it is stored or sent - your camera and location never ride along with the picture
+- **Hardened by a full-system audit** - An 8-dimension adversarial code audit swept the whole codebase before release (no critical/high/medium issues); the low-severity findings it surfaced are all fixed and regression-tested
+
 ## Features
 
-- **Passphrase Vault** - The whole database (characters, chats, messages, personas, settings, attached image bytes, and your OpenRouter API key + proxy URL) is a SQLCipher-encrypted file. The app starts locked; a passphrase unlocks it (scrypt-derived raw key, held only in RAM). Change the passphrase from the Secrets tab; closing the desktop app locks the vault
+- **Passphrase Vault** - The whole database (characters, chats, messages, personas, settings, attached image bytes, and your OpenRouter API key + proxy URL) is a SQLCipher-encrypted file. The app starts locked; a passphrase unlocks it (scrypt-derived raw key, held only in RAM). Change the passphrase from the Secrets tab; closing the desktop app locks the vault. The decorative chat wallpaper is the one exception - it lives in local browser storage, not the vault
 - **Character System** - Create, import (Character Card V2 JSON), and manage characters with full field support (system prompt, description, personality, scenario, example dialogue, post-history instruction)
 - **Persona System** - Create and switch AI personas that are injected as a system block into every completion request
-- **Streaming Responses** - Token-by-token SSE streaming with a live cursor and a Stop control; aborting mid-stream keeps the partial reply, and a failed send cleanly rolls back and restores your draft
+- **Streaming Responses** - Token-by-token SSE streaming with a live cursor and a Stop control. However a reply ends early - you press Stop, the provider drops out mid-sentence, anything - the text you have already read is kept; only a send that produced nothing rolls back and restores your draft
 - **Response Variants** - Regenerate keeps every take: swipe between variants in a carousel and pick which one the conversation continues from
 - **OpenRouter Integration** - Browse and select from the full OpenRouter model catalogue; generation parameters (temperature, top\_p, top\_k, max\_tokens, seed, repetition\_penalty) are validated, model-filtered, and forwarded
 - **Context Budget** - App-level `context_budget_tokens` controls history trimming; oldest messages are dropped to fit the budget - never forwarded to OpenRouter as a provider field
@@ -41,7 +62,7 @@ Elysium is a privacy-first AI character chat client that routes **all model traf
 - **Privacy by Design** - ZDR, data\_collection=deny, allow\_fallbacks=false are hardcoded in the backend and cannot be overridden
 - **Sealed Secrets** - API key and proxy URL live inside the encrypted vault (unreadable while locked); a one-time migration moves them out of the OS keyring and deletes the old entries - never sent to the frontend
 - **Strict CORS + Host allowlist** - Backend accepts browser requests from `http://127.0.0.1:5173` only and rejects foreign `Host` headers (DNS-rebinding shield)
-- **Desktop App** - One-folder PyInstaller build with a native window (pywebview + WebView2); the exe serves the built frontend same-origin on a random loopback port and locks the vault when the window closes
+- **Desktop App** - PyInstaller build (one-folder for development, a single ~33 MB exe for release) with a native window (pywebview + WebView2); the exe serves the built frontend same-origin on a random loopback port and locks the vault when the window closes
 
 ## Architecture
 
@@ -175,9 +196,21 @@ npm run build                      # builds the SPA into frontend/dist
 
 cd ..\backend
 .venv\Scripts\activate
-pyinstaller elysium.spec           # bundles backend + SPA + SQLCipher
+pyinstaller elysium.spec           # one FOLDER: backend + SPA + SQLCipher
 dist\Elysium\Elysium.exe           # run it
 ```
+
+For the single-file build, which is what the `Elysium.exe` in this repo
+actually is:
+
+```powershell
+pyinstaller elysium_onefile.spec   # one FILE, ~33 MB
+dist\Elysium.exe
+```
+
+Both specs bundle the same things (the voice worker scripts and the engine
+requirements files among them); `backend/tests/test_release_sync.py` keeps
+them from drifting apart.
 
 - Needs the **WebView2 runtime** (preinstalled on Windows 10/11; the app
   shows an install link if it is missing)
@@ -214,6 +247,20 @@ elysium/
 │   │   ├── uploads.py        Image attachment staging + serving
 │   │   ├── models_router.py  OpenRouter model catalogue
 │   │   └── vault.py          Vault status/init/unlock/lock/change-passphrase
+│   ├── tts/                  Voice subsystem (host half - never imports torch)
+│   │   ├── adapters/         Per-engine identification, settings, VRAM estimates
+│   │   ├── worker/           The engine-side scripts, run in their own interpreter
+│   │   ├── requirements/     Per-engine dependency pins for the installer
+│   │   ├── host.py           Worker lifecycle, load/unload, the audio cache
+│   │   ├── registry.py       Model discovery and identity
+│   │   ├── readiness.py      Every reason a model will not run, at once
+│   │   ├── speech_queue.py   Sentence-at-a-time synthesis with pacing
+│   │   └── stream_hook.py    The speaker a streaming reply talks to
+│   ├── speech_prep.py        Turning a written reply into something speakable
+│   ├── voice_tags.py         Delivery tags: the prompt, the stripper, the dials
+│   ├── messages_common.py    The message row -> API shape door
+│   ├── secrets_service.py    Vault-sealed secrets (API key, proxy URL)
+│   ├── legacy_migration.py   One-time unlock-time migrations (keyring, uploads)
 │   ├── attachments_service.py  Image validation, downscale, storage, refcounts
 │   ├── config.py             App constants + PROVIDER_POLICY + data dir
 │   ├── crypto.py             scrypt KDF, verifier, rekey (vault identity)
@@ -225,7 +272,8 @@ elysium/
 │   ├── proxy_health.py       Proxy health check with TTL cache
 │   ├── main.py               FastAPI app + vault gate + CORS + router wiring
 │   ├── run_app.py            Desktop launcher (native window + uvicorn)
-│   ├── elysium.spec          PyInstaller build spec
+│   ├── elysium.spec          PyInstaller build spec (one folder)
+│   ├── elysium_onefile.spec  PyInstaller build spec (single exe - ships)
 │   ├── version_info.txt      Windows version resource for the exe
 │   ├── elysium.ico           App icon
 │   ├── tests/                pytest suite (TestClient + mock provider)
@@ -287,6 +335,9 @@ root). While the vault is locked, every data route answers `423 Locked`; only
 | `POST` | `/settings/api-key` | Store + validate API key |
 | `DELETE` | `/settings/api-key` | Remove API key |
 | `POST` | `/settings/proxy` | Store proxy config |
+| `POST` | `/settings/proxy/required` | Arm/disarm the kill-switch without rewriting the URL |
+| `POST` | `/settings/proxy/alias` | Rename the configured proxy (the URL is write-only) |
+| `POST` | `/settings/stop-sequences` | Up to 4 stop sequences |
 | `DELETE` | `/settings/proxy` | Remove proxy config |
 | `GET` | `/settings/proxy/health` | Proxy health status |
 | `GET` | `/characters` | List all characters |
@@ -307,6 +358,8 @@ root). While the vault is locked, every data route answers `423 Locked`; only
 | `DELETE` | `/chats/{id}/messages/{msg_id}` | Delete target + all following messages |
 | `POST` | `/chats/{id}/messages/{msg_id}/regenerate` | Regenerate as a new variant |
 | `POST` | `/chats/{id}/messages/{msg_id}/regenerate/stream` | Regenerate as a new variant (SSE) |
+| `POST` | `/chats/{id}/messages/{msg_id}/edit` | Edit a user message and rewrite the tail |
+| `POST` | `/chats/{id}/messages/{msg_id}/edit/stream` | Same, streamed (SSE) |
 | `POST` | `/chats/{id}/messages/{msg_id}/activate` | Make a variant the active reply |
 | `GET` | `/personas` | List personas (includes `is_active`) |
 | `POST` | `/personas` | Create persona |
@@ -316,6 +369,31 @@ root). While the vault is locked, every data route answers `423 Locked`; only
 | `GET` | `/models/openrouter` | List OpenRouter models (cached) |
 | `POST` | `/uploads/images` | Stage an image attachment (multipart) |
 | `GET` | `/uploads/images/{id}` | Serve a stored image to the frontend |
+| `DELETE` | `/uploads/images/{id}` | Drop a staged attachment |
+
+Voice (all local; nothing here contacts anything but this machine, except
+the one-time engine install, which downloads packages and sends nothing):
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/tts/models` | Discovered voice models, each with its readiness verdict |
+| `POST` | `/tts/rescan` | Re-walk the model folders |
+| `GET\|POST` | `/tts/active` | The selected model, and its live state |
+| `GET\|POST\|DELETE` | `/tts/models/{uid}/settings` | Per-model settings (stored beside the model, not in the vault) |
+| `GET` | `/tts/models/{uid}/schema` | What knobs this engine has, and what it can do |
+| `GET` | `/tts/models/{uid}/readiness` | Every reason it will not run right now, at once |
+| `POST` | `/tts/load` \| `/tts/unload` | Take the card, give it back |
+| `GET` | `/tts/state` | What is loaded, and what went wrong. Polling this is what notices a dead worker |
+| `POST` | `/tts/speak` | Synthesise a whole message into one wav |
+| `POST` | `/tts/speak_stream` | The same, sentence by sentence over SSE - what the speak button uses |
+| `POST` | `/tts/speak_live` | Start speaking the reply that is streaming right now |
+| `GET` | `/tts/audio/{audio_id}` | Fetch a generated wav (no-store; cleared on lock) |
+| `GET\|POST` | `/tts/voice-mode` | The global voice toggle |
+| `GET\|POST` | `/tts/tag-prefs` | The delivery dials: density, tone, speed, narration, pause |
+| `GET\|POST` | `/tts/pronunciations` | Reading rules (the whole table per write) |
+| `GET\|POST\|DELETE` | `/tts/voices/{voice_id}` | Reference clips to clone from |
+| `POST` | `/tts/voices/{voice_id}/transcript` | Type the words spoken in a clip |
+| `GET\|POST\|DELETE` | `/tts/runtimes/...` | Engine install: plan, start, watch, cancel, remove |
 
 ## Frontend Logic Foundation
 
@@ -340,7 +418,7 @@ The frontend is built on a layer of pure logic helpers - no browser storage of s
 
 ```powershell
 cd backend
-.venv\Scripts\python -m pytest tests -q   # TestClient regression suite (72 tests)
+.venv\Scripts\python -m pytest tests -q   # TestClient regression suite (1221 tests)
 ```
 
 The `tests/` suite covers the completion/regenerate flows (including the
@@ -358,16 +436,16 @@ uvicorn main:app --host 127.0.0.1 --port 8787
 
 The legacy `verify_*.py` scripts remain for reference.
 
-### Frontend (766 tests)
+### Frontend (1163 tests)
 
 ```powershell
 cd frontend
-npm test                          # full suite - 766 tests, 44 files
+npm test                          # full suite - 1163 tests, 84 files
 npm test -- src/test/static-safety.test.ts   # static privacy checks
 npm run typecheck                 # tsc strict - app + test configs
 ```
 
-## Known Limitations (v1.0.0)
+## Known Limitations (v1.1.0)
 
 - **Plaintext migration backup** - upgrading an older unencrypted database keeps a plaintext `app.db.plain.bak-<timestamp>` copy next to the vault; delete it once you have verified the migration
 - **No idle auto-lock** - lock manually with the sidebar button, or by closing the app
@@ -376,8 +454,12 @@ npm run typecheck                 # tsc strict - app + test configs
 - **No PDF/file upload** - images are supported (vision models); documents are not
 - **No Compatibility Mode** - strict ZDR privacy routing always enforced
 - **No ZDR toggle** - privacy settings cannot be relaxed in the UI
-- **No multi-branch chat** - linear conversation with per-message variants; delete-forward to rewind
+- **No multi-branch chat** - linear conversation with per-message variants; the latest reply can be regenerated and continued from any variant, while older variant groups are view-only (browsable but the conversation always continues from their active take); delete-forward or edit-a-message to rewind
 - **Single instance** - running two copies of the desktop app against the same data folder is unsupported
+- **Voice needs a one-time engine setup** - the speech engines are multi-GB and are not bundled in the exe; Settings › Voice installs one on request. An NVIDIA GPU is required to run them
+- **One voice model at a time** - the card holds one; loading another unloads the first
+- **Generated audio is session-only** - locking the vault or closing the app deletes the cached speech, and anything older than half an hour is cleared as the next reply is spoken
+- **No speech recognition** - no shipped engine can listen to a reference clip and write out its words; type them in yourself. The control only appears for an engine that declares the ability
 
 ## Troubleshooting
 

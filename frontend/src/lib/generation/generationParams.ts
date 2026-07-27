@@ -208,7 +208,23 @@ export function clampContextBudget(
 
 // ── Payload construction ─────────────────────────────────────────
 
-interface CompletionPayloadInput {
+/**
+ * Whether this reply should be SPOKEN as it is written, and how fast.
+ *
+ * Shared by all three request shapes so the rule cannot drift between send,
+ * regenerate and edit - a reply that speaks when regenerated but not when
+ * edited would read as a bug in the toggle rather than in three payload
+ * builders.
+ */
+interface SpeakInput {
+  speak?: boolean;
+  /** 0.80-1.25. Clamped again server-side; this is convenience, not trust. */
+  speakRate?: number | null;
+  /** How *asterisk narration* is voiced. Server validates the value. */
+  speakNarrative?: "same" | "narrator" | "skip";
+}
+
+interface CompletionPayloadInput extends SpeakInput {
   message: string;
   modelId: string;
   generationParams?: GenerationParams | null;
@@ -217,12 +233,37 @@ interface CompletionPayloadInput {
   model?: Pick<Model, "supported_parameters" | "max_completion_tokens" | "context_length"> | null;
 }
 
-interface RegeneratePayloadInput {
+interface RegeneratePayloadInput extends SpeakInput {
   modelId: string;
   generationParams?: GenerationParams | null;
   personaId?: number | null;
   contextBudgetTokens?: number | null;
   model?: Pick<Model, "supported_parameters" | "max_completion_tokens" | "context_length"> | null;
+}
+
+/**
+ * Add the voice flags.
+ *
+ * `speak: false` is the default on the server too, so it is never sent - it
+ * would change nothing and make every request body noisier to read.
+ *
+ * The DELIVERY options are different and travel regardless, because the server
+ * arms a dormant speaker on every stream so the per-message Speak button can
+ * wake one mid-reply. That speaker is configured from THIS request, so gating
+ * the options on `speak` left speak-live permanently on the defaults.
+ */
+function applySpeak(payload: Record<string, unknown>, input: SpeakInput) {
+  // "same" is the server default, so sending it only adds noise.
+  if (input.speakNarrative && input.speakNarrative !== "same") {
+    payload.speak_narrative = input.speakNarrative;
+  }
+  if (input.speakRate != null && Number.isFinite(input.speakRate)) {
+    payload.speak_rate = input.speakRate;
+  }
+  if (input.speak) {
+    payload.speak = true;
+  }
+  return payload;
 }
 
 /**
@@ -260,7 +301,7 @@ export function buildCompletionPayload(input: CompletionPayloadInput) {
     payload.context_budget_tokens = clampedBudget;
   }
 
-  return payload;
+  return applySpeak(payload, input);
 }
 
 /**
@@ -293,5 +334,16 @@ export function buildRegeneratePayload(input: RegeneratePayloadInput) {
     payload.context_budget_tokens = clampedBudget;
   }
 
-  return payload;
+  return applySpeak(payload, input);
+}
+
+/**
+ * Build a safe edit request payload (v1.1 C3). The edit body is exactly the
+ * completion shape - replacement `message` + the regenerate-style params -
+ * with NO attachments key: the edited row keeps its own linked images, and
+ * the backend re-sends them itself. Delegates so the filter/clamp rules can
+ * never drift from send's.
+ */
+export function buildEditPayload(input: CompletionPayloadInput) {
+  return buildCompletionPayload(input);
 }

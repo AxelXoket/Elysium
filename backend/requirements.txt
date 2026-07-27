@@ -9,5 +9,5 @@ python-multipart>=0.0.9
 # cipher-default bump could stop opening existing raw-key vaults on pip -U.
 sqlcipher3-wheels>=0.5.7,<0.6
 # Desktop packaging: native window (run_app.py) + one-file exe.
-pywebview>=5.0
+pywebview>=6.2  # v1.1 H17: WebView2 AllowExternalDrop default TRUE (DnD reaches the DOM)
 pyinstaller>=6.0

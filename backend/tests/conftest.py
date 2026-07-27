@@ -123,3 +123,47 @@ def get_messages(client, chat_id: int) -> list[dict]:
     resp = client.get(f"/api/v1/chats/{chat_id}/messages")
     assert resp.status_code == 200, resp.text
     return resp.json()
+
+
+def make_persona(client, display_name="Nova", description="", select=False) -> int:
+    resp = client.post("/api/v1/personas", json={
+        "display_name": display_name,
+        "description": description,
+    })
+    assert resp.status_code == 201, resp.text
+    pid = resp.json()["id"]
+    if select:
+        r = client.post(f"/api/v1/personas/{pid}/select")
+        assert r.status_code == 200, r.text
+    return pid
+
+
+@pytest.fixture(autouse=True)
+def _voice_tag_caches_reset():
+    """voice_tags memoises two answers for the process lifetime (the sticky
+    voice-ever flag and the engine tag-capability). Tests that flip either
+    must not poison their neighbours."""
+    import voice_tags
+
+    voice_tags.reset_stripping_cache()
+    voice_tags.reset_tag_support_cache()
+    yield
+    voice_tags.reset_stripping_cache()
+    voice_tags.reset_tag_support_cache()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_voice_registry(tmp_path_factory, monkeypatch):
+    """No test may see the DEVELOPER'S real voice registry.
+
+    runtimes.json carries `extra_roots`, and scan_roots() honours it on every
+    call - so a machine with a real engine registered (as this one now has)
+    leaks that model into every discovery test that only redirected
+    TTS_MODELS_DIR. Same class of guard as `_no_real_keyring`: the suite must
+    describe the code, not the machine it runs on.
+    """
+    import config
+
+    reg = tmp_path_factory.mktemp("voice-registry") / "runtimes.json"
+    monkeypatch.setattr(config, "TTS_RUNTIMES_PATH", str(reg), raising=False)
+    yield

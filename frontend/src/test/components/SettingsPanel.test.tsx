@@ -156,7 +156,7 @@ describe("Settings Panel Tests", () => {
 
     expect(
       await screen.findByText(
-        "Couldn't reach OpenRouter to validate the key, so it was not saved. Check your connection or proxy and try again.",
+        "Could not reach OpenRouter, so the key was not saved. Check your connection or proxy.",
       ),
     ).toBeInTheDocument();
     // Input NOT cleared - user can retry without retyping
@@ -197,5 +197,72 @@ describe("Settings Panel Tests", () => {
     await waitFor(() => {
       expect(settingsGetCalls()).toBeGreaterThan(before);
     });
+  });
+
+  // v1.1 FF12: Enter in the key field saves (house convention).
+  it("FF12: pressing Enter in the API key field saves", async () => {
+    const user = userEvent.setup();
+    render(<ApiKeySection />, { wrapper });
+    await waitFor(() => {
+      expect(screen.getByText("API key is set")).toBeInTheDocument();
+    });
+
+    const input = screen.getByLabelText("API key input");
+    await user.type(input, "sk-enter-save");
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true, key_status: "valid" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    await user.type(input, "{Enter}");
+
+    await waitFor(() => {
+      const postCalls = fetchMock.mock.calls.filter(
+        (c) =>
+          typeof c[0] === "string" &&
+          c[0].includes("/settings/api-key") &&
+          c[1]?.method === "POST",
+      );
+      expect(postCalls.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  // v1.1 FF13: Remove API Key requires an inline confirmation.
+  it("FF13: Remove API Key asks to confirm before deleting", async () => {
+    const user = userEvent.setup();
+    render(<ApiKeySection />, { wrapper });
+    await waitFor(() => {
+      expect(screen.getByText("API key is set")).toBeInTheDocument();
+    });
+
+    const deleteCalls = () =>
+      fetchMock.mock.calls.filter(
+        (c) =>
+          typeof c[0] === "string" &&
+          c[0].includes("/settings/api-key") &&
+          c[1]?.method === "DELETE",
+      ).length;
+
+    // First click only reveals the confirm - no DELETE yet.
+    await user.click(screen.getByRole("button", { name: /remove api key/i }));
+    expect(screen.getByText("Remove the stored key?")).toBeInTheDocument();
+    expect(deleteCalls()).toBe(0);
+
+    // Cancel closes it without deleting.
+    await user.click(screen.getByRole("button", { name: /^cancel$/i }));
+    expect(screen.queryByText("Remove the stored key?")).not.toBeInTheDocument();
+    expect(deleteCalls()).toBe(0);
+
+    // Re-open and confirm -> DELETE fires.
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: /remove api key/i }));
+    await user.click(screen.getByRole("button", { name: /^remove$/i }));
+    await waitFor(() => expect(deleteCalls()).toBe(1));
   });
 });

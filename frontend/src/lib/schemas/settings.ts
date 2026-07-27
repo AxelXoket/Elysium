@@ -3,6 +3,11 @@ import { z } from "zod/v4";
 // Exact match of routers/settings.py get_settings() return dict
 export const SettingsSchema = z.object({
   api_key_set: z.boolean(),
+  /** Stop sequences live in the ENCRYPTED settings table, not in localStorage:
+   *  they are character names, i.e. user content, which the S-09b privacy test
+   *  bans from browser storage. Keeping them server-side is what lets them
+   *  survive a session and a vault lock without breaking that rule. */
+  stop_sequences: z.array(z.string()).default([]),
   proxy_required: z.boolean(),
   proxy_configured: z.boolean(),
   proxy_alias: z.string().nullable(),
@@ -34,5 +39,11 @@ export const ApiKeySaveResponseSchema = z.discriminatedUnion("ok", [
 export type OkResponse = z.infer<typeof OkResponseSchema>;
 export type ApiKeySaveResponse = z.infer<typeof ApiKeySaveResponseSchema>;
 
+export const StopSequencesResponseSchema = z.object({
+  ok: z.boolean(),
+  stop_sequences: z.array(z.string()),
+});
+
 export type Settings = z.infer<typeof SettingsSchema>;
+export type StopSequencesResponse = z.infer<typeof StopSequencesResponseSchema>;
 export type ProxyHealth = z.infer<typeof ProxyHealthSchema>;

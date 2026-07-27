@@ -20,7 +20,9 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
-from database import get_db
+import anyio.to_thread
+
+from database import get_db, iter_chunks
 from attachments_service import delete_for_messages
 
 logger = logging.getLogger(__name__)
@@ -136,12 +138,41 @@ async def create_character(body: CharacterCreate) -> dict:
 # POST /characters/import  - declared BEFORE /{character_id}
 # ---------------------------------------------------------------------------
 
+async def _read_capped_body(request: Request) -> bytes:
+    """Read the body, refusing to hold more than MAX_IMPORT_BYTES of it.
+
+    `await request.body()` reads EVERYTHING into RAM and only then compares
+    the length, so the 1 MiB cap was enforced after the damage: a declared
+    50 MB import was fully buffered before being rejected. The equivalent
+    pre-read guard exists in main.py but is scoped to /api/v1/uploads/ only,
+    so this route was the one door without it.
+
+    Two gates, because they catch different senders: Content-Length rejects an
+    honest client before a byte is read, and the streaming count rejects one
+    that lies about the length or declares none at all.
+    """
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            if int(declared) > MAX_IMPORT_BYTES:
+                raise HTTPException(400, "character_json_too_large")
+        except ValueError:
+            raise HTTPException(400, "invalid_character_json")
+
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > MAX_IMPORT_BYTES:
+            raise HTTPException(400, "character_json_too_large")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 @router.post("/import", status_code=201)
 async def import_character(request: Request) -> dict:
     """Import a character from a raw JSON body (direct or CharCard V2)."""
-    raw = await request.body()
-    if len(raw) > MAX_IMPORT_BYTES:
-        raise HTTPException(400, "character_json_too_large")
+    raw = await _read_capped_body(request)
 
     try:
         payload = json.loads(raw)
@@ -241,10 +272,19 @@ class CharacterPatch(BaseModel):
         return v
 
 
-@router.patch("/{character_id}")
-async def patch_character(character_id: int, body: CharacterPatch) -> dict:
-    """Partially update a character. Only provided fields are changed."""
+def _patch_character_sync(character_id: int, body: "CharacterPatch") -> dict:
+    """Worker-thread body (audit KÖK 8): own connection, one write txn.
+
+    BEGIN IMMEDIATE takes SQLite's writer lock; taking it on the event loop
+    freezes every live SSE stream in the process until it is granted - up to
+    the full busy_timeout when another writer holds it. Same transaction, off
+    the loop, matching _delete_character_sync next door.
+    """
     with get_db() as con:
+        # Guard + UPDATE + re-SELECT in one write txn (v1.1 FB3): the bare
+        # SELECT ran in autocommit, so a racing delete turned the re-SELECT
+        # into None and a _row_to_dict(None) TypeError 500 instead of a 404.
+        con.execute("BEGIN IMMEDIATE")
         existing = con.execute(
             "SELECT id FROM characters WHERE id = ?", (character_id,)
         ).fetchone()
@@ -276,17 +316,30 @@ async def patch_character(character_id: int, body: CharacterPatch) -> dict:
             f"SELECT {_SELECT_COLS} FROM characters WHERE id = ?",
             (character_id,),
         ).fetchone()
+        if row is None:
+            # Defensive: a delete that raced the guard inside this txn window.
+            raise HTTPException(404, "character_not_found")
     logger.info("Character updated: id=%d", character_id)
     return _row_to_dict(row)
+
+
+@router.patch("/{character_id}")
+async def patch_character(character_id: int, body: CharacterPatch) -> dict:
+    """Partially update a character. Only provided fields are changed."""
+    return await anyio.to_thread.run_sync(
+        _patch_character_sync, character_id, body,
+    )
 
 
 # ---------------------------------------------------------------------------
 # DELETE /characters/{character_id}
 # ---------------------------------------------------------------------------
 
-@router.delete("/{character_id}")
-async def delete_character(character_id: int) -> dict:
-    """Delete a character and cascade-delete all associated chats + messages."""
+def _delete_character_sync(character_id: int) -> int:
+    """Worker-thread body (v1.1 FB2/I7): opens its own connection here, not on
+    the event loop - an image-heavy cascade holds the writer for a while and
+    would otherwise stall every live SSE stream. Returns the cascaded chat
+    count. Raises HTTPException (propagates cleanly through run_sync)."""
     with get_db() as con:
         # Write lock up front (parity with delete_chat/clear_chat): without
         # it the msg_ids SELECT runs in autocommit, and a concurrent send
@@ -300,30 +353,37 @@ async def delete_character(character_id: int) -> dict:
         if existing is None:
             raise HTTPException(404, "character_not_found")
 
-        # Cascade: messages → chats → character
+        # Cascade: messages → chats → character. FB12: chunk the chat-id lists
+        # so a character with thousands of chats cannot overflow SQLite's
+        # bound-parameter ceiling. All chunks share this one txn (atomic).
         chat_ids = [r["id"] for r in con.execute(
             "SELECT id FROM chats WHERE character_id = ?", (character_id,)
         ).fetchall()]
 
-        if chat_ids:
-            placeholders = ",".join("?" * len(chat_ids))
+        for chunk in iter_chunks(chat_ids):
+            placeholders = ",".join("?" * len(chunk))
             msg_ids = [r["id"] for r in con.execute(
                 f"SELECT id FROM messages WHERE chat_id IN ({placeholders})",
-                chat_ids,
+                chunk,
             ).fetchall()]
-            # Rows + orphaned blobs in this same transaction (E6) - no
-            # post-commit file phase anymore.
+            # Rows + orphaned blobs in this same transaction (E6).
             delete_for_messages(con, msg_ids)
             con.execute(
-                f"DELETE FROM messages WHERE chat_id IN ({placeholders})",
-                chat_ids,
+                f"DELETE FROM messages WHERE chat_id IN ({placeholders})", chunk,
             )
             con.execute(
-                f"DELETE FROM chats WHERE id IN ({placeholders})",
-                chat_ids,
+                f"DELETE FROM chats WHERE id IN ({placeholders})", chunk,
             )
 
         con.execute("DELETE FROM characters WHERE id = ?", (character_id,))
+    return len(chat_ids)
 
-    logger.info("Character deleted: id=%d (cascaded %d chats)", character_id, len(chat_ids))
+
+@router.delete("/{character_id}")
+async def delete_character(character_id: int) -> dict:
+    """Delete a character and cascade-delete all associated chats + messages."""
+    cascaded = await anyio.to_thread.run_sync(_delete_character_sync, character_id)
+    logger.info(
+        "Character deleted: id=%d (cascaded %d chats)", character_id, cascaded,
+    )
     return {"ok": True}

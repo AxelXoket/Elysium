@@ -70,12 +70,18 @@ function pngFile(name = "photo.png"): File {
   });
 }
 
-/** Upload route resolving 201 with incrementing ids starting at `firstId`. */
+/** /uploads/images route: POST stages (201, incrementing ids); DELETE
+ * unstages (200 {ok:true}). The streamMocks matcher is substring-based and
+ * first-match-wins, so this single route must branch on method - a separate
+ * DELETE key after the POST key would never be reached. */
 function uploadRoute(firstId: number): StreamRoute {
   let nextId = firstId;
   return {
-    response: () =>
-      jsonResponse(
+    response: (init) => {
+      if ((init?.method ?? "GET").toUpperCase() === "DELETE") {
+        return jsonResponse({ ok: true }, 200);
+      }
+      return jsonResponse(
         {
           id: nextId++,
           mime: "image/png",
@@ -84,7 +90,8 @@ function uploadRoute(firstId: number): StreamRoute {
           byte_size: 1234,
         },
         201,
-      ),
+      );
+    },
   };
 }
 
@@ -314,7 +321,9 @@ describe("Attachments", () => {
     expect(screen.getByText(/1\/4/)).toBeInTheDocument();
   });
 
-  it("ignores pasted non-image files", async () => {
+  // v1.1 H9/FF9: pasted non-image FILES now surface a reject toast (raw files
+  // reach the single filter+toast point instead of being pre-filtered away).
+  it("rejects a pasted non-image file with a toast and stages nothing", async () => {
     setupReadyState();
     mockFetchWithStreams(baseRoutes());
     render(<ChatCanvas />, { wrapper });
@@ -327,11 +336,33 @@ describe("Attachments", () => {
     });
 
     await waitFor(() => {
-      expect(screen.queryByAltText("Staged image")).not.toBeInTheDocument();
+      expect(useErrorStore.getState().errors[0]?.code).toBe("attachment_invalid");
     });
+    expect(screen.queryByAltText("Staged image")).not.toBeInTheDocument();
   });
 
-  it("caps staged images at 4 and quietly ignores further adds", async () => {
+  // v1.1 FF9: a pasted GIF (unsupported image) also toasts, stages nothing.
+  it("FF9: pasting a GIF toasts attachment_invalid and stages nothing", async () => {
+    setupReadyState();
+    mockFetchWithStreams(baseRoutes());
+    render(<ChatCanvas />, { wrapper });
+    await waitForComposerReady();
+    await waitForAttachReady();
+
+    const gif = new File([new Uint8Array([71, 73, 70])], "anim.gif", {
+      type: "image/gif",
+    });
+    fireEvent.paste(screen.getByLabelText("Message"), {
+      clipboardData: { files: [gif] },
+    });
+
+    await waitFor(() => {
+      expect(useErrorStore.getState().errors[0]?.code).toBe("attachment_invalid");
+    });
+    expect(screen.queryByAltText("Staged image")).not.toBeInTheDocument();
+  });
+
+  it("caps staged images at 4 and toasts too_many_attachments (FF9)", async () => {
     setupReadyState();
     mockFetchWithStreams(baseRoutes());
     render(<ChatCanvas />, { wrapper });
@@ -350,14 +381,19 @@ describe("Attachments", () => {
       expect(screen.getAllByAltText("Staged image")).toHaveLength(4);
     });
     expect(screen.getByText(/4\/4/)).toBeInTheDocument();
-    expect(screen.getByText(/up to 4 images per message/i)).toBeInTheDocument();
+    // FF9: the 5th image no longer vanishes silently.
+    expect(useErrorStore.getState().errors[0]?.code).toBe("too_many_attachments");
 
-    // Further adds are ignored without any error surface
+    // A repeated over-cap add still keeps 4 and does not spam duplicate toasts
+    // (the store dedupes identical visible toasts).
     addFiles([pngFile("f.png")]);
     await waitFor(() => {
       expect(screen.getAllByAltText("Staged image")).toHaveLength(4);
     });
-    expect(useErrorStore.getState().errors).toHaveLength(0);
+    const tooMany = useErrorStore
+      .getState()
+      .errors.filter((e) => e.code === "too_many_attachments");
+    expect(tooMany).toHaveLength(1);
   });
 
   it("remove drops the staged entry and revokes its preview URL", async () => {
@@ -382,6 +418,131 @@ describe("Attachments", () => {
       expect(screen.queryByAltText("Staged image")).not.toBeInTheDocument();
     });
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:preview-1");
+  });
+
+  // v1.1 FB8: removing a READY staged image tells the server to unstage it.
+  it("remove notifies the server via DELETE /uploads/images/{id}", async () => {
+    setupReadyState();
+    const mock = mockFetchWithStreams(baseRoutes());
+    const user = userEvent.setup();
+    render(<ChatCanvas />, { wrapper });
+    await waitForComposerReady();
+    await waitForAttachReady();
+
+    addFiles([pngFile()]);
+    await screen.findByAltText("Staged image");
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("status", { name: "Uploading image" }),
+      ).not.toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Remove attachment 1" }));
+
+    await waitFor(() => {
+      const del = mock.mock.calls.filter(
+        ([url, init]) =>
+          String(url).includes("/uploads/images/11") &&
+          (init as RequestInit | undefined)?.method === "DELETE",
+      );
+      expect(del).toHaveLength(1);
+    });
+  });
+
+  // v1.1 FB8: removing while still uploading has no id yet - the DELETE fires
+  // once the upload lands (upload-success-then-stage-fail cleanup).
+  it("remove during upload unstages once the upload resolves", async () => {
+    setupReadyState();
+    let releaseUpload!: (r: Response) => void;
+    const gate = new Promise<Response>((resolve) => {
+      releaseUpload = resolve;
+    });
+    const mock = mockFetchWithStreams({
+      ...baseRoutes(),
+      "/uploads/images": {
+        response: (init) => {
+          if ((init?.method ?? "GET").toUpperCase() === "DELETE") {
+            return jsonResponse({ ok: true }, 200);
+          }
+          return gate; // POST is held until releaseUpload
+        },
+      },
+    });
+    const user = userEvent.setup();
+    render(<ChatCanvas />, { wrapper });
+    await waitForComposerReady();
+    await waitForAttachReady();
+
+    addFiles([pngFile()]);
+    // The uploading placeholder shows a remove button even mid-upload.
+    const removeBtn = await screen.findByRole("button", {
+      name: "Remove attachment 1",
+    });
+    await user.click(removeBtn);
+
+    // No DELETE yet - the entry had no server id.
+    expect(
+      mock.mock.calls.some(
+        ([, init]) => (init as RequestInit | undefined)?.method === "DELETE",
+      ),
+    ).toBe(false);
+
+    // The upload lands: the just-created row is now an orphan → unstage it.
+    releaseUpload(
+      jsonResponse(
+        { id: 11, mime: "image/png", width: 100, height: 80, byte_size: 1 },
+        201,
+      ),
+    );
+    await waitFor(() => {
+      const del = mock.mock.calls.filter(
+        ([url, init]) =>
+          String(url).includes("/uploads/images/11") &&
+          (init as RequestInit | undefined)?.method === "DELETE",
+      );
+      expect(del).toHaveLength(1);
+    });
+    // No thumbnail reappears.
+    expect(screen.queryByAltText("Staged image")).not.toBeInTheDocument();
+  });
+
+  // v1.1 FB8: a failed unstage stays silent (best-effort - never throws).
+  it("failed unstage clears the strip without a toast", async () => {
+    setupReadyState();
+    mockFetchWithStreams({
+      ...baseRoutes(),
+      "/uploads/images": {
+        response: (init) => {
+          if ((init?.method ?? "GET").toUpperCase() === "DELETE") {
+            return jsonResponse({ detail: "attachment_not_found" }, 404);
+          }
+          return jsonResponse(
+            { id: 11, mime: "image/png", width: 100, height: 80, byte_size: 1 },
+            201,
+          );
+        },
+      },
+    });
+    const user = userEvent.setup();
+    render(<ChatCanvas />, { wrapper });
+    await waitForComposerReady();
+    await waitForAttachReady();
+
+    addFiles([pngFile()]);
+    await screen.findByAltText("Staged image");
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("status", { name: "Uploading image" }),
+      ).not.toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Remove attachment 1" }));
+
+    await waitFor(() => {
+      expect(screen.queryByAltText("Staged image")).not.toBeInTheDocument();
+    });
+    // 404 on unstage is an expected terminal state - no error toast.
+    expect(useErrorStore.getState().errors).toHaveLength(0);
   });
 
   it("failed upload pushes a toast and auto-removes the thumbnail", async () => {

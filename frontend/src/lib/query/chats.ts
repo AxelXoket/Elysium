@@ -12,6 +12,8 @@ import {
   activateVariant,
 } from "../api/chats";
 import { removeMessageAndFollowingFromCache, messageAnchor } from "@/lib/chat";
+import { stopChat } from "@/lib/chat/streamRegistry";
+import { isApiError } from "../api/client";
 import type { Chat, Message } from "../schemas/chats";
 
 export function useChats() {
@@ -84,6 +86,12 @@ export function useDeleteChat() {
   const pushError = useErrorStore((s) => s.pushError);
   return useMutation({
     mutationFn: (chatId: number) => deleteChat(chatId),
+    onMutate: (chatId) => {
+      // Kill the chat's in-flight stream FIRST (v1.1 FF1/H7): otherwise
+      // tokens keep burning and its `done` writes the reply into a cache
+      // whose chat no longer exists.
+      stopChat(chatId);
+    },
     onSuccess: (_data, chatId) => {
       qc.invalidateQueries({ queryKey: keys.chats() });
       // The chat is gone - drop its message cache entirely instead of leaving
@@ -101,6 +109,12 @@ export function useClearChat() {
   const pushError = useErrorStore((s) => s.pushError);
   return useMutation({
     mutationFn: (chatId: number) => clearChat(chatId),
+    onMutate: (chatId) => {
+      // Same rationale as useDeleteChat: abort before emptying, or `done`
+      // resurrects the cleared chat (v1.1 FF1/H7). The server-side stale
+      // guard (H12/I9) backs this up for the in-transit window.
+      stopChat(chatId);
+    },
     onSuccess: (_data, chatId) => {
       // Messages are known to be empty - set directly; only the chat list
       // (message_count/updated_at) needs a refetch.
@@ -127,7 +141,21 @@ export function useDeleteMessageAndFollowing() {
       qc.invalidateQueries({ queryKey: keys.chats() });
       qc.invalidateQueries({ queryKey: keys.messages(vars.chatId) });
     },
-    onError: (err) => {
+    onError: (err, vars) => {
+      // 404 = the row is already gone server-side (a ghost the abort race
+      // left in the cache - v1.1 D2). "Already deleted" IS the deletion the
+      // user asked for: drop it locally and resync, so the ghost cannot
+      // survive the toast.
+      if (isApiError(err) && err.status === 404) {
+        qc.setQueryData<Message[]>(keys.messages(vars.chatId), (prev) =>
+          prev
+            ? removeMessageAndFollowingFromCache(prev, vars.messageId)
+            : prev,
+        );
+        qc.invalidateQueries({ queryKey: keys.messages(vars.chatId) });
+        // chat_not_found reaches here too - refresh the list as well.
+        qc.invalidateQueries({ queryKey: keys.chats() });
+      }
       pushError(err);
     },
   });

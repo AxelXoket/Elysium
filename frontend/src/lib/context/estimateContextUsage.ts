@@ -14,7 +14,9 @@
  *  - completions.py:   _DEFAULT_CONTEXT_LEN = 32000, _DEFAULT_MAX_TOKENS = 2048
  *  - completions.py:   _build_system_block() - "[Label]\n{value}" sections
  *                      joined by "\n\n", empty (stripped) sections skipped
- *  - completions.py:   persona_block = active persona description (stripped)
+ *  - completions.py:   _build_persona_block() - "[User Persona: {name}]"
+ *                      header + "\n{description}" when non-empty; a name-only
+ *                      persona still injects the header
  *  - completions.py:   effective_tokens = budget set ? min(budget, model_ctx)
  *                      : model_ctx; safety = min(256, effective // 8);
  *                      context_budget_chars = max(0, effective - safety) * 3;
@@ -96,6 +98,10 @@ export interface ContextUsageInput {
   generationParams?: GenerationParams | null;
   /** User-set app-level context budget in tokens; null/undefined = not set. */
   contextBudgetTokens?: number | null;
+  /** Characters of the voice-delivery system block, when voice mode would
+   * actually inject it (GET /tts/voice-mode: active ? prompt_chars : 0).
+   * Charged to fixed cost exactly like the backend budget does (G2). */
+  voicePromptChars?: number | null;
 }
 
 export interface ContextUsageEstimate {
@@ -147,6 +153,25 @@ export function buildSystemBlock(character: Character): string {
     }
   }
   return sections.join("\n\n");
+}
+
+/**
+ * Mirror of completions.py _build_persona_block(): a "[User Persona: {name}]"
+ * header with the trimmed description on the next line when non-empty. A
+ * name-only persona still injects the header (16 + name.length chars). No
+ * active persona -> "". Must stay char-for-char with the backend or the gauge
+ * undercounts the header.
+ */
+export function buildPersonaBlock(
+  persona: Persona | null | undefined,
+): string {
+  if (!persona) return "";
+  const name = persona.display_name.trim();
+  const desc = persona.description.trim();
+  // The schema forbids blank names; this defensive branch keeps the backend
+  // mirror exact for hand-edited data.
+  if (!name) return desc;
+  return desc ? `[User Persona: ${name}]\n${desc}` : `[User Persona: ${name}]`;
 }
 
 // ── Per-message cost ─────────────────────────────────────────────
@@ -237,10 +262,14 @@ export function estimateContextUsage(
   // Fixed prompt cost: system block + persona block (+ post-history
   // instruction - see the approximation note in the module doc comment).
   const systemBlock = buildSystemBlock(character);
-  const personaBlock = (findActivePersona(input.personas)?.description ?? "")
-    .trim();
+  const personaBlock = buildPersonaBlock(findActivePersona(input.personas));
   const phi = character.post_history_instruction.trim();
-  const fixedChars = systemBlock.length + personaBlock.length + phi.length;
+  // V4/G2: the injected voice-delivery block is reserved server-side exactly
+  // like the PHI; charging it here keeps the gauge and the backend budget in
+  // agreement the moment the toggle flips.
+  const voiceChars = Math.max(0, input.voicePromptChars ?? 0);
+  const fixedChars =
+    systemBlock.length + personaBlock.length + phi.length + voiceChars;
 
   // completions.py _assemble_messages: trim history from the OLDEST end
   // until it fits what is left after the fixed cost.

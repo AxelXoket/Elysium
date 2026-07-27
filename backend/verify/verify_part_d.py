@@ -15,8 +15,21 @@ import urllib.request
 import urllib.error
 import http.server
 
-BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+# The scripts moved from backend/ into backend/verify/ (commit d8da7db) and
+# this line did not, so the whole grep suite walked its OWN directory: it
+# scanned 12 files, every one of them in the VERIFY_FILES exclusion set, and
+# reported PASS on privacy assertions that had examined no application code
+# at all. Adding `allow_origins=["*"]` to main.py still printed PASS.
+BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BACKEND_DIR)
+
+# Every script in this directory hardcoded `BACKEND_DIR/app.db` and ran
+# DELETE statements against it. In a dev tree that path IS the developer's
+# live vault, so the whole suite mutated real data on every run. _harness
+# redirects the child process, and this file's own direct DB access, at a
+# fresh temp directory. See verify/_harness.py.
+import _harness
+
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -154,7 +167,7 @@ class _FakeHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 
 
-_db_path = os.path.join(BACKEND_DIR, "app.db")
+_db_path = os.path.join(_harness.data_dir(), "app.db")
 _db_existed = os.path.exists(_db_path)
 _existing_char_ids = set()
 _existing_chat_ids = set()
@@ -187,7 +200,7 @@ try:
     fake_server = http.server.HTTPServer(("127.0.0.1", FAKE_PORT), _FakeHandler)
     threading.Thread(target=fake_server.serve_forever, daemon=True).start()
 
-    env = os.environ.copy()
+    env = _harness.isolated_env()
     env["OPENROUTER_BASE_URL"] = f"http://127.0.0.1:{FAKE_PORT}/api/v1"
     server_proc = subprocess.Popen(
         [UVICORN, "main:app", "--host", "127.0.0.1", "--port", "8787", "--log-level", "warning"],
@@ -201,6 +214,12 @@ try:
             pass
     else:
         print("[FATAL] start failed"); sys.exit(1)
+
+    # The vault shipped after this script was written. The server starts
+    # locked by design, so without this every data route answers 423 and
+    # each check reports a failure of whatever it is named after instead of
+    # the one thing actually wrong. Idempotent, so restarts are safe.
+    _harness.open_vault(f"{BASE}/api/v1")
 
     http_post("/api/v1/settings/api-key", {"api_key": "sk-test-d"})
     http_get("/api/v1/models/openrouter")

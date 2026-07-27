@@ -217,4 +217,60 @@ describe("Message attachments", () => {
       screen.queryByRole("button", { name: /view attached image/i }),
     ).not.toBeInTheDocument();
   });
+
+  // ── v1.1 A1: reserved thumbnail box - layout height is right BEFORE any
+  // image bytes load (the root cause of the send-scroll undershoot).
+  it("A1: attachment img carries a metadata-derived fixed box before load", async () => {
+    useUiStore.setState({ selectedChatId: 1, selectedCharacterId: 1 });
+    mockFetch({
+      "/chats/1/messages": {
+        body: [
+          {
+            ...messageFixture,
+            id: 2,
+            role: "user",
+            content: "with image",
+            attachments: [
+              // 800x600 -> scale = min(1, 200/600, 320/800) = 1/3 -> 267x200
+              { id: 11, mime: "image/png", width: 800, height: 600 },
+            ],
+          } as Message,
+        ],
+      },
+    });
+    render(<ChatCanvas />, { wrapper });
+
+    const img = (await screen.findByAltText("attached image")) as HTMLImageElement;
+    // The box is styled explicitly - NOT h-auto/w-auto - so the unloaded img
+    // occupies its final size and scrollHeight is truthful at send time.
+    expect(img.style.width).toBe("267px");
+    expect(img.style.height).toBe("200px");
+    expect(img.className).not.toMatch(/h-auto|w-auto|max-h-\[200px\]/);
+    expect(img.getAttribute("decoding")).toBe("async");
+  });
+
+  // ── v1.1 FF5: long chats render older history statically - only the
+  // newest window animates (no multi-second stagger cascade).
+  it("FF5: only the newest ~16 groups get the animated wrapper", async () => {
+    useUiStore.setState({ selectedChatId: 1, selectedCharacterId: 1 });
+    const many: Message[] = Array.from({ length: 40 }, (_, i) => ({
+      ...messageFixture,
+      id: i + 1,
+      role: i % 2 === 0 ? "user" : "assistant",
+      content: `msg ${i + 1}`,
+    })) as Message[];
+    mockFetch({ "/chats/1/messages": { body: many } });
+    const { container } = render(<ChatCanvas />, { wrapper });
+
+    await screen.findByText("msg 40");
+    const list = container.querySelector(".space-y-4") as HTMLElement;
+    const wrappers = Array.from(list.children) as HTMLElement[];
+    expect(wrappers).toHaveLength(40);
+    // Static history: plain divs, no motion inline style.
+    expect(wrappers[0].getAttribute("style")).toBeNull();
+    expect(wrappers[10].getAttribute("style")).toBeNull();
+    // Animated tail: motion wrappers carry an inline style.
+    expect(wrappers[39].getAttribute("style")).not.toBeNull();
+    expect(wrappers[24].getAttribute("style")).not.toBeNull();
+  });
 });

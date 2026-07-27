@@ -18,6 +18,11 @@ verifier.bin
 *.plain.bak-*
 *.bak
 *.new
+# Crash-recovery copies, named during the KÖK 18 work: app.db.enc-tmp is a
+# COMPLETE encrypted copy of the vault left by an interrupted migration,
+# and app.db.empty-stub-bak is the 0-byte live file adoption moves aside.
+*.enc-tmp
+*.empty-stub-bak
 
 # Environment
 .env
@@ -49,7 +54,16 @@ build_log*.txt
 backend/_show_db.py
 
 # Secrets - must never be committed
-keyring*
+# Anchored and extension-bound on purpose: a bare `keyring*` matches at ANY
+# depth, so it swallowed backend/keyring_service.py - a module imported at
+# module scope by routers/settings.py and legacy_migration.py. The published
+# tree therefore raised ModuleNotFoundError before the app could serve
+# anything, and `git add` refused the file with no hint that an ignore rule
+# was the cause.
+/keyring.json
+/keyring.db
+keyring*.json
+keyring*.db
 *.key
 *.pem
 
@@ -62,5 +76,39 @@ backend/uploads/
 # Desktop launcher's WebView2 profile (dev runs of run_app.py put it here)
 backend/webview/
 
-# Internal planning / implementation docs
-docs/
+# ── Everything the running app writes about ITS USER ────────────────────
+# In dev, DATA_DIR resolves to backend/, so every path config.py derives
+# from it lands inside this repository. None of it is source, and all of it
+# is either the user's own words, their voice, their pictures or their keys.
+#
+# Hardcoded prompts are NOT this: voice_tags.py's delivery-tag block and the
+# character/persona system blocks are code, and they stay tracked.
+backend/app.db*
+backend/logs/
+*.log
+
+# Voice / TTS data dir (dev runs resolve DATA_DIR to backend/). Holds the
+# user's downloaded model weights, their reference voice recordings and the
+# transcripts of those recordings - multi-GB binaries AND personal audio.
+# None of it may ever reach the repo: the app ships the TTS infrastructure
+# only, never a model.
+backend/voice/
+
+# Assistant / editor tooling state. .serena/memories holds notes written
+# ABOUT this project - quoted code, decisions, sometimes chat content - and
+# its cache is machine-local. Neither is source.
+.serena/
+.claude/
+
+# Internal planning / implementation docs.
+#
+# NOT the frontend contract: docs/frontend_contract.md is the contract of
+# record between the two halves of the app, and two test files read it as
+# their source of truth (test_tts_contract.py, test_release_sync.py). With
+# the whole directory ignored those tests skip on a fresh clone, so the
+# document everything else is checked against was itself unpublished.
+# docs/* not docs/ - git cannot re-include a file whose parent directory is
+# excluded, so the negations below are dead against a bare `docs/`.
+docs/*
+!docs/frontend_contract.md
+!docs/AUDIT_2026_07_CLOSURE.md

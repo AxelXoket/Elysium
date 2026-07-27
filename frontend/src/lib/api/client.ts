@@ -76,7 +76,12 @@ async function handleResponse<T>(
     // Never fire the lock signal for a 423 from a vault route itself - that
     // would invalidate vault-status → refetch → 423 → loop. (The backend
     // exempts /vault/* today; this is belt-and-suspenders.)
-    if (res.status === 423 && !path?.startsWith("/vault/")) onVaultLocked?.();
+    // Route through notifyVaultLocked() (not onVaultLocked directly) so the
+    // JSON client shares the same coalescing latch as the SSE/upload paths -
+    // otherwise a backend restart under a busy screen fires one invalidation
+    // per in-flight query, each cancelling the previous vault-status refetch.
+    // (v1.1 FF4.)
+    if (res.status === 423 && !path?.startsWith("/vault/")) notifyVaultLocked();
     const detail =
       res.status === 422 && Array.isArray((json as Record<string, unknown>)?.detail)
         ? "invalid_generation_params"

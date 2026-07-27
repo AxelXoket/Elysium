@@ -10,6 +10,7 @@ import { useState, type FormEvent } from "react";
 import { KeyRound, Loader2 } from "lucide-react";
 import { useChangeVaultPassphrase } from "@/lib/query/vault";
 import { isApiError } from "@/lib/api/client";
+import { getErrorMessage } from "@/lib/errors/errorMessages";
 
 const MIN_PASSPHRASE_LEN = 8;
 
@@ -50,7 +51,7 @@ export function VaultSection() {
     change.isError && isApiError(change.error)
       ? change.error.detail === "wrong_passphrase"
         ? "Current passphrase is wrong."
-        : "Change failed. Is the backend running?"
+        : getErrorMessage(change.error.detail)
       : null;
 
   const inputStyle = {
@@ -67,18 +68,19 @@ export function VaultSection() {
           className="text-xs font-semibold"
           style={{ color: "var(--color-es-text-light)" }}
         >
-          Vault Passphrase
+          Vault passphrase
         </h4>
       </div>
-      <p className="text-[11px]" style={{ color: "var(--color-es-text-muted)" }}>
-        Everything on disk is encrypted with this passphrase. Changing it
-        re-encrypts the database in place.
+      <p className="settings-hint">
+        Everything on disk is encrypted with this passphrase, except the
+        decorative chat wallpaper. Changing it re-encrypts the database in place.
       </p>
       <form className="space-y-2" onSubmit={submit}>
-        <label className="block space-y-1 text-[11px] font-medium" style={{ color: "var(--color-es-text-muted)" }}>
+        <label className="settings-label block space-y-1">
           <span>Current passphrase</span>
           <input
             type="password"
+            maxLength={1024}
             value={oldPass}
             onChange={(e) => setOldPass(e.target.value)}
             autoComplete="current-password"
@@ -87,10 +89,11 @@ export function VaultSection() {
             style={inputStyle}
           />
         </label>
-        <label className="block space-y-1 text-[11px] font-medium" style={{ color: "var(--color-es-text-muted)" }}>
+        <label className="settings-label block space-y-1">
           <span>New passphrase</span>
           <input
             type="password"
+            maxLength={1024}
             value={newPass}
             onChange={(e) => setNewPass(e.target.value)}
             autoComplete="new-password"
@@ -99,10 +102,11 @@ export function VaultSection() {
             style={inputStyle}
           />
         </label>
-        <label className="block space-y-1 text-[11px] font-medium" style={{ color: "var(--color-es-text-muted)" }}>
+        <label className="settings-label block space-y-1">
           <span>Repeat new passphrase</span>
           <input
             type="password"
+            maxLength={1024}
             value={confirm}
             onChange={(e) => setConfirm(e.target.value)}
             autoComplete="new-password"
@@ -112,13 +116,13 @@ export function VaultSection() {
           />
         </label>
         {(localError ?? serverError) && (
-          <p className="text-[11px]" role="alert" style={{ color: "var(--color-es-danger)" }}>
+          <p className="settings-error" role="alert">
             {localError ?? serverError}
           </p>
         )}
         {done && !localError && (
           <p
-            className="text-[11px] font-semibold"
+            className="settings-value font-semibold"
             style={{ color: "var(--color-es-primary-sage-deep)" }}
           >
             Passphrase changed.

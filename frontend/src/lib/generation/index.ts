@@ -7,4 +7,5 @@ export {
   clampContextBudget,
   buildCompletionPayload,
   buildRegeneratePayload,
+  buildEditPayload,
 } from "./generationParams";

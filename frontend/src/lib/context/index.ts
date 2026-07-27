@@ -1,6 +1,7 @@
 export {
   estimateContextUsage,
   buildSystemBlock,
+  buildPersonaBlock,
   getContextUsageState,
   formatTokensCompact,
   CHARS_PER_TOKEN,

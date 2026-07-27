@@ -7,6 +7,7 @@ import type { Persona } from "@/lib/schemas/personas";
 
 export const settingsFixture: Settings = {
   api_key_set: true,
+  stop_sequences: [],
   proxy_required: false,
   proxy_configured: false,
   proxy_alias: null,

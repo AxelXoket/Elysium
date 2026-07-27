@@ -15,7 +15,9 @@ import { mockFetch } from "../mocks/api";
 import {
   mockFetchWithStreams,
   controlledSseResponse,
+  jsonResponse,
 } from "../helpers/streamMocks";
+import { useErrorStore } from "@/lib/errors";
 import {
   settingsFixture,
   personaFixture,
@@ -655,5 +657,251 @@ describe("ChatMessageControls", () => {
     expect(
       screen.queryByRole("button", { name: "Previous reply" }),
     ).not.toBeInTheDocument();
+  });
+
+  // ── v1.1 I1: older (non-last) variant groups are VIEW-ONLY ─────────────
+
+  /** A chat where group 2 (variants 2+3) is followed by a later exchange, so
+   * it is NOT the last active group -> view-only paging, no activate. */
+  function viewOnlyBody(): Message[] {
+    return [
+      message(1, "user", "First question"),
+      {
+        ...message(2, "assistant", "Old A"),
+        variant_group: 2,
+        active: true, // the active row of the older group
+        variant_index: 0,
+        variant_count: 2,
+      },
+      {
+        ...message(3, "assistant", "Old B"),
+        variant_group: 2,
+        active: false,
+        variant_index: 1,
+        variant_count: 2,
+      },
+      message(4, "user", "Second question"),
+      message(5, "assistant", "Latest reply"),
+    ];
+  }
+
+  it("I1: an older group pages both arrows and shows the sibling's content", async () => {
+    const user = userEvent.setup();
+    const onActivateVariant = vi.fn();
+    mockFetch({ "/chats/1/messages": { body: viewOnlyBody() } });
+
+    render(
+      <MessageList chatId={1} onActivateVariant={onActivateVariant} />,
+      { wrapper },
+    );
+
+    await screen.findByText("Old A");
+    const bubble = getBubbleByText("Old A");
+    // Both arrows render (previously an older group showed only a counter).
+    expect(
+      within(bubble.parentElement as HTMLElement).getByRole("button", {
+        name: "Next reply",
+      }),
+    ).toBeInTheDocument();
+    expect(within(bubble).queryByText("1/2")).not.toBeNull();
+
+    // Paging next shows sibling #2 locally.
+    await user.click(
+      within(bubble.parentElement as HTMLElement).getByRole("button", {
+        name: "Next reply",
+      }),
+    );
+    expect(await screen.findByText("Old B")).toBeInTheDocument();
+    expect(getBubbleByText("Old B").textContent).toContain("2/2");
+    // NO activate call - the DB active flag is untouched.
+    expect(onActivateVariant).not.toHaveBeenCalled();
+  });
+
+  it("I1: paging an older group issues no /activate network request", async () => {
+    const user = userEvent.setup();
+    const mock = mockFetch({ "/chats/1/messages": { body: viewOnlyBody() } });
+
+    render(<MessageList chatId={1} />, { wrapper });
+    await screen.findByText("Old A");
+    const bubble = getBubbleByText("Old A");
+    await user.click(
+      within(bubble.parentElement as HTMLElement).getByRole("button", {
+        name: "Next reply",
+      }),
+    );
+    await screen.findByText("Old B");
+
+    const activateCalls = mock.mock.calls.filter(([url]) =>
+      String(url).includes("/activate"),
+    );
+    expect(activateCalls).toHaveLength(0);
+  });
+
+  it("I1: older-group arrows disable at both edges and never regenerate", async () => {
+    const user = userEvent.setup();
+    const onRegenerate = vi.fn();
+    mockFetch({ "/chats/1/messages": { body: viewOnlyBody() } });
+
+    render(<MessageList chatId={1} onRegenerate={onRegenerate} />, { wrapper });
+    await screen.findByText("Old A");
+    let bubble = getBubbleByText("Old A").parentElement as HTMLElement;
+
+    // At index 0: Previous disabled.
+    expect(within(bubble).getByRole("button", { name: "Previous reply" })).toBeDisabled();
+    // Next stays "Next reply" (never "Generate a new reply") in view-only mode.
+    await user.click(within(bubble).getByRole("button", { name: "Next reply" }));
+    await screen.findByText("Old B");
+    bubble = getBubbleByText("Old B").parentElement as HTMLElement;
+    // At the last sibling: Next disabled.
+    expect(within(bubble).getByRole("button", { name: "Next reply" })).toBeDisabled();
+    expect(onRegenerate).not.toHaveBeenCalled();
+  });
+
+  // ── v1.1 Faz 1: D2 (404 reconciliation) + FF10 (confirm a11y) ──────────
+
+  it("D2: delete 404 drops the ghost row, closes the panel, keeps the toast", async () => {
+    const user = userEvent.setup();
+    useErrorStore.getState().clearAll();
+    // Dynamic messages body: after the 404 the refetch returns server truth
+    // (the ghost never existed there).
+    let messagesBody: Message[] = [
+      message(1, "user", "Question to keep"),
+      message(2, "user", "Ghost row"),
+    ];
+    mockFetchWithStreams({
+      "/chats/1/messages/2": {
+        response: () => jsonResponse({ detail: "message_not_found" }, 404),
+      },
+      "/chats/1/messages": { response: () => jsonResponse(messagesBody) },
+      "/chats": { response: () => jsonResponse([]) },
+    });
+
+    render(<MessageList chatId={1} />, { wrapper });
+
+    await screen.findByText("Ghost row");
+    messagesBody = [message(1, "user", "Question to keep")];
+
+    const bubble = getBubbleByText("Ghost row");
+    await user.click(
+      within(bubble).getByRole("button", { name: "Delete message" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    // The ghost is gone from the UI even though the server said 404 -
+    // "already deleted" IS the requested outcome (the old bug kept the row
+    // AND the panel forever).
+    await waitFor(() => {
+      expect(screen.queryByText("Ghost row")).not.toBeInTheDocument();
+    });
+    expect(
+      screen.queryByText("Delete this message and everything after it?"),
+    ).not.toBeInTheDocument();
+    // The toast still explains what happened.
+    expect(useErrorStore.getState().errors.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("FF10: confirm panel autofocuses Delete; Escape closes and refocuses the trigger", async () => {
+    const user = userEvent.setup();
+    mockFetch({
+      "/chats/1/messages": {
+        body: [
+          message(1, "user", "Question to keep"),
+          message(2, "assistant", "Answer to delete"),
+        ],
+      },
+    });
+
+    render(<MessageList chatId={1} />, { wrapper });
+
+    await screen.findByText("Answer to delete");
+    const bubble = getBubbleByText("Answer to delete");
+    const trigger = within(bubble).getByRole("button", {
+      name: "Delete message",
+    });
+    await user.click(trigger);
+
+    // Destructive button gets focus on open (keyboard-flow parity with the
+    // ChatList inline confirm).
+    expect(screen.getByRole("button", { name: "Delete" })).toHaveFocus();
+
+    await user.keyboard("{Escape}");
+    expect(
+      screen.queryByText("Delete this message and everything after it?"),
+    ).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  it("KÖK 16: Escape closing the confirm panel does not also stop generation", async () => {
+    // Composer binds Escape at WINDOW level to stop the stream, and document
+    // bubbles to window - so one press dismissed the confirm box and killed
+    // the reply arriving behind it. The panel's handler must consume it.
+    const user = userEvent.setup();
+    mockFetch({
+      "/chats/1/messages": {
+        body: [
+          message(1, "user", "Question to keep"),
+          message(2, "assistant", "Answer to delete"),
+        ],
+      },
+    });
+
+    render(<MessageList chatId={1} />, { wrapper });
+
+    await screen.findByText("Answer to delete");
+    const bubble = getBubbleByText("Answer to delete");
+    await user.click(
+      within(bubble).getByRole("button", { name: "Delete message" }),
+    );
+
+    const onWindowEscape = vi.fn();
+    const listener = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onWindowEscape();
+    };
+    window.addEventListener("keydown", listener);
+    try {
+      await user.keyboard("{Escape}");
+    } finally {
+      window.removeEventListener("keydown", listener);
+    }
+
+    expect(
+      screen.queryByText("Delete this message and everything after it?"),
+    ).not.toBeInTheDocument();
+    expect(onWindowEscape).not.toHaveBeenCalled();
+  });
+
+  it("FF10: clicking outside the confirm panel closes it without mutating", async () => {
+    const user = userEvent.setup();
+    const mock = mockFetch({
+      "/chats/1/messages": {
+        body: [
+          message(1, "user", "Question to keep"),
+          message(2, "assistant", "Answer to delete"),
+        ],
+      },
+    });
+
+    render(<MessageList chatId={1} />, { wrapper });
+
+    await screen.findByText("Answer to delete");
+    const bubble = getBubbleByText("Answer to delete");
+    await user.click(
+      within(bubble).getByRole("button", { name: "Delete message" }),
+    );
+    expect(
+      screen.getByText("Delete this message and everything after it?"),
+    ).toBeInTheDocument();
+
+    // Click a different bubble's text - outside the panel.
+    await user.click(screen.getByText("Question to keep"));
+
+    expect(
+      screen.queryByText("Delete this message and everything after it?"),
+    ).not.toBeInTheDocument();
+    expect(
+      mock.mock.calls.some(
+        ([, init]) => (init as RequestInit | undefined)?.method === "DELETE",
+      ),
+    ).toBe(false);
   });
 });

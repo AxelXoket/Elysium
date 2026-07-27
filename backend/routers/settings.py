@@ -15,6 +15,7 @@ Privacy invariants:
     - This module does NOT call OpenRouter or fetch models.
 """
 
+import json
 import logging
 from urllib.parse import urlparse
 
@@ -26,7 +27,11 @@ from config import SECRET_API_KEY, SECRET_PROXY_URL
 from database import get_db, get_setting, set_setting
 from secrets_service import get_secret, set_secret, delete_secret
 from network_client import reset_client
-from proxy_health import check_proxy_health, invalidate_health_cache
+from proxy_health import (
+    check_proxy_health,
+    enforce_proxy_gate,
+    invalidate_health_cache,
+)
 from openrouter import invalidate_model_cache
 
 logger = logging.getLogger(__name__)
@@ -63,6 +68,50 @@ class ProxyBody(BaseModel):
     proxy_alias: str | None = None
 
 
+class ProxyRequiredBody(BaseModel):
+    proxy_required: bool
+
+
+class ProxyAliasBody(BaseModel):
+    """The display label, on its own.
+
+    Same reasoning as ProxyRequiredBody: the alias could only ride along with
+    POST /settings/proxy, which rejects an empty proxy_url - and the URL is
+    write-only, cleared after every save and never shown again. So once a proxy
+    existed, naming it meant retyping a URL nobody could see. It was not a
+    hard path; it was an impossible one.
+    """
+
+    proxy_alias: str | None = None
+
+
+#: Mirrors MAX_STOP_SEQUENCES / STOP_SEQUENCE_MAX_LENGTH in the dialog. Clamped
+#: rather than rejected: a stale UI must not be able to 422 a settings save.
+MAX_STOP_SEQUENCES = 4
+MAX_STOP_SEQUENCE_CHARS = 100
+
+
+class StopSequencesBody(BaseModel):
+    stop_sequences: list[str]
+
+
+def _read_stop_sequences(raw: str | None) -> list[str]:
+    """Stored as a JSON array. A corrupted value reports as "none set" rather
+    than breaking GET /settings - the same rule selected_persona_id follows."""
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        logger.warning("Ignoring malformed stop_sequences setting.")
+        return []
+    if not isinstance(value, list):
+        return []
+    return [str(v) for v in value if isinstance(v, str) and v][
+        :MAX_STOP_SEQUENCES
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Proxy URL validation
 # ---------------------------------------------------------------------------
@@ -85,6 +134,15 @@ def _validate_proxy_url(url: str) -> None:
         raise HTTPException(400, "invalid_proxy_scheme")
     if not parsed.hostname:
         raise HTTPException(400, "proxy_url_invalid")
+    # Accessing `.port` is what PARSES it, and it raises on a non-numeric one.
+    # Without this the bad URL was committed to the vault and only failed
+    # afterwards, inside the httpx client build - as an opaque 500, with every
+    # outbound request already broken and the settings page showing the value
+    # as successfully saved.
+    try:
+        parsed.port
+    except ValueError:
+        raise HTTPException(400, "proxy_url_invalid") from None
 
 
 # ---------------------------------------------------------------------------
@@ -94,14 +152,19 @@ def _validate_proxy_url(url: str) -> None:
 @router.get("")
 async def get_settings() -> dict:
     """Return current configuration state. No secrets are included."""
+    # Settings rows AND secret presence read on ONE connection = one snapshot
+    # (the previous code opened two, contradicting its own comment). (v1.1 FB11.)
     with get_db() as con:
         rows = {
             r["key"]: r["value"]
             for r in con.execute(
                 "SELECT key, value FROM settings "
-                "WHERE key IN ('proxy_required', 'proxy_alias', 'selected_persona_id')"
+                "WHERE key IN ('proxy_required', 'proxy_alias', "
+                "'selected_persona_id', 'stop_sequences')"
             ).fetchall()
         }
+        api_key_set = get_secret(SECRET_API_KEY, conn=con) is not None
+        proxy_configured = get_secret(SECRET_PROXY_URL, conn=con) is not None
 
     proxy_alias_raw = rows.get("proxy_alias", "").strip()
     persona_id_raw = rows.get("selected_persona_id")
@@ -112,14 +175,9 @@ async def get_settings() -> dict:
         logger.warning("Ignoring non-integer selected_persona_id setting.")
         selected_persona_id = None
 
-    # Secrets presence read in the SAME connection as the settings rows -
-    # one transaction, one snapshot (E5: they are DB rows now).
-    with get_db() as con:
-        api_key_set = get_secret(SECRET_API_KEY, conn=con) is not None
-        proxy_configured = get_secret(SECRET_PROXY_URL, conn=con) is not None
-
     return {
         "api_key_set": api_key_set,
+        "stop_sequences": _read_stop_sequences(rows.get("stop_sequences")),
         "proxy_required": rows.get("proxy_required") == "1",
         "proxy_configured": proxy_configured,
         "proxy_alias": proxy_alias_raw if proxy_alias_raw else None,
@@ -138,9 +196,15 @@ async def save_api_key(body: ApiKeyBody) -> dict:
     200 from /key → key stored, {ok: true, key_status: "valid"}.
     401/403 from /key → key NOT stored, HTTP 422.
     Network/timeout → key NOT stored, {ok: false, key_status: "validation_unavailable"}.
+    503 when the proxy kill-switch is armed and the proxy is not usable.
     """
     from openrouter import validate_api_key
 
+    # Validation is a LIVE outbound request carrying the key itself - it goes
+    # through the same gate as completions and /models. Without it, a user with
+    # proxy_required=1 and no usable proxy had their key and real IP sent in
+    # the clear by the very screen where they type the key.
+    await enforce_proxy_gate()
     status = await validate_api_key(body.api_key)
 
     if status == "valid":
@@ -167,8 +231,17 @@ async def save_api_key(body: ApiKeyBody) -> dict:
 
 @router.delete("/api-key")
 async def delete_api_key() -> dict:
-    """Remove API key from keyring. Silent if already absent."""
+    """Remove the API key from the vault AND from any legacy keyring copy.
+
+    The legacy delete is not housekeeping, it is the whole point: save_api_key
+    clears the OS-keyring copy and this path did not, so the unlock-time
+    migration copied the stale legacy secret straight back into the vault on
+    the next unlock. The user revoked a key, the app told them it was gone,
+    and it came back - silently, and specifically for the one action people
+    take when a key has leaked.
+    """
     delete_secret(SECRET_API_KEY)
+    keyring_service.delete_legacy(SECRET_API_KEY)
     invalidate_model_cache()
     logger.info("API key deleted.")
     return {"ok": True}
@@ -201,6 +274,85 @@ async def save_proxy(body: ProxyBody) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# POST /settings/stop-sequences
+# ---------------------------------------------------------------------------
+
+@router.post("/stop-sequences")
+async def save_stop_sequences(body: StopSequencesBody) -> dict:
+    """Persist the stop sequences IN THE VAULT, not in browser storage.
+
+    They are the one generation setting that is user CONTENT - stop sequences
+    are character names ("Human:", "Anna:") - which is why they were kept
+    in-memory and are banned from localStorage by the S-09b privacy test. The
+    consequence was that they had to be retyped every session, and were lost on
+    every vault lock.
+
+    The encrypted settings table is where content-bearing preferences already
+    live (the selected persona, the API key). Saving them there keeps the
+    privacy rule AND stops the retyping.
+    """
+    cleaned: list[str] = []
+    for raw in body.stop_sequences:
+        value = str(raw)[:MAX_STOP_SEQUENCE_CHARS]
+        if value and value not in cleaned:
+            cleaned.append(value)
+        if len(cleaned) >= MAX_STOP_SEQUENCES:
+            break
+
+    set_setting("stop_sequences", json.dumps(cleaned, ensure_ascii=False))
+    logger.info("Stop sequences saved (%d).", len(cleaned))
+    return {"ok": True, "stop_sequences": cleaned}
+
+
+# ---------------------------------------------------------------------------
+# POST /settings/proxy/required
+# ---------------------------------------------------------------------------
+
+@router.post("/proxy/required")
+async def set_proxy_required(body: ProxyRequiredBody) -> dict:
+    """Arm or disarm the proxy kill-switch WITHOUT rewriting the proxy URL.
+
+    proxy_required had no write path of its own: it could only ride along with
+    POST /settings/proxy, which rejects an empty proxy_url - and the URL field
+    is write-only (cleared after every save, never displayed). Changing one
+    boolean therefore meant retyping the whole proxy URL from memory, so users
+    who flipped the switch watched it move while nothing was written and
+    completions kept going out on an unhealthy proxy.
+
+    Arming with no proxy configured is refused: it would put every completion
+    behind "proxy_missing", and the screen that could undo it is this one.
+    """
+    if body.proxy_required and not get_secret(SECRET_PROXY_URL):
+        raise HTTPException(400, "proxy_url_required")
+
+    set_setting("proxy_required", "1" if body.proxy_required else "0")
+    # The gate reads the flag live, but a cached "healthy" verdict from before
+    # the switch was armed would still be served for up to the TTL.
+    invalidate_health_cache()
+    logger.info("Proxy required set to %s.", body.proxy_required)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# POST /settings/proxy/alias
+# ---------------------------------------------------------------------------
+
+@router.post("/proxy/alias")
+async def set_proxy_alias(body: ProxyAliasBody) -> dict:
+    """Rename the configured proxy WITHOUT rewriting its URL.
+
+    Refused when no proxy is configured: a label for a thing that does not
+    exist would show up in the panel as a proxy that is not there.
+    """
+    if not get_secret(SECRET_PROXY_URL):
+        raise HTTPException(400, "proxy_url_required")
+    alias = (body.proxy_alias or "").strip()
+    set_setting("proxy_alias", alias)
+    logger.info("Proxy alias %s.", "set" if alias else "cleared")
+    return {"ok": True, "proxy_alias": alias or None}
+
+
+# ---------------------------------------------------------------------------
 # DELETE /settings/proxy
 # ---------------------------------------------------------------------------
 
@@ -211,6 +363,10 @@ async def delete_proxy() -> dict:
         delete_secret(SECRET_PROXY_URL, conn=con)
         _set_setting_on(con, "proxy_required", "0")
         _set_setting_on(con, "proxy_alias", "")
+    # Mirrors save_proxy, for the same reason delete_api_key does: a legacy
+    # copy left behind here is re-migrated into the vault on the next unlock,
+    # so "deleted" would mean "back tomorrow".
+    keyring_service.delete_legacy(SECRET_PROXY_URL)
 
     # Side effects only after the commit above.
     await reset_client()

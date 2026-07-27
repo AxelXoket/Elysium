@@ -64,20 +64,149 @@ describe("errorMessages", () => {
     "character_name_required",
     "internal_error",
     "unknown_error",
+    // v1.1 audit L4: the conflict/edit codes the backend actually emits.
+    "variant_group_not_last",
+    "not_a_variant_target",
+    "edit_conflict",
+    "exchange_stale",
+    "not_editable",
+    "model_id_too_long",
   ];
 
-  it("maps every known code to a non-empty string", () => {
+  it("maps every known code to its OWN sentence", () => {
+    // The old assertions were truthy / typeof string / length > 5, and the
+    // fallback ("Something went wrong. Please try again.", 39 characters)
+    // passes all three - so deleting any entry in the map left this green
+    // (audit KÖK 13). The TTS block below already asserted the right two
+    // things; they were never carried up here.
+    const FALLBACK = "Something went wrong. Please try again.";
+    //: The one code whose message IS the fallback, on purpose - it is the
+    //: backend saying "we do not know either", so a more specific sentence
+    //: would be an invention.
+    const DELIBERATELY_GENERIC = new Set(["unknown_error"]);
     for (const code of KNOWN_CODES) {
-      const msg = getErrorMessage(code);
-      expect(msg).toBeTruthy();
-      expect(typeof msg).toBe("string");
-      expect(msg.length).toBeGreaterThan(5);
+      expect(isKnownErrorCode(code), code).toBe(true);
+      if (DELIBERATELY_GENERIC.has(code)) continue;
+      expect(getErrorMessage(code), code).not.toBe(FALLBACK);
     }
   });
 
   it("returns fallback for unknown codes", () => {
     expect(getErrorMessage("totally_unknown_xyz")).toBe(
       "Something went wrong. Please try again.",
+    );
+  });
+
+  // ── Voice / TTS (V0): the contract is that EVERY tts_* code the backend can
+  // emit has a real message. The generic loop above only checks length, which
+  // the fallback also passes - so assert explicitly that none fall through.
+  const TTS_ERROR_CODES = [
+    "tts_model_not_found",
+    "tts_model_unknown",
+    "tts_model_unrecognized",
+    "tts_model_incomplete",
+    "tts_engine_unknown",
+    "tts_runtime_missing",
+    "tts_runtime_broken",
+    "tts_gpu_unavailable",
+    "tts_language_unsupported",
+    "tts_runtime_installing",
+    "tts_runtime_install_failed",
+    "tts_python_not_found",
+    "tts_insufficient_disk",
+    "tts_param_invalid",
+    "tts_sidecar_write_failed",
+    "tts_values_too_large",
+    "tts_insufficient_vram",
+    "tts_model_already_loading",
+    "tts_load_timeout",
+    "tts_worker_failed",
+    "tts_worker_crashed",
+    "tts_worker_unavailable",
+    "tts_out_of_memory",
+    "tts_synthesis_failed",
+    "tts_reference_invalid",
+    "tts_reference_too_short",
+    "tts_transcript_required",
+    "tts_transcribe_unsupported",
+    "tts_nothing_to_speak",
+    "tts_audio_expired",
+    "tts_audio_device_error",
+    "tts_nothing_streaming",
+  ];
+
+  it("V0: every TTS error code maps to a real message, never the fallback", () => {
+    const FALLBACK = "Something went wrong. Please try again.";
+    for (const code of TTS_ERROR_CODES) {
+      const msg = getErrorMessage(code);
+      expect(msg, `code ${code} fell through to the fallback`).not.toBe(
+        FALLBACK,
+      );
+      expect(msg.length).toBeGreaterThan(5);
+      expect(isKnownErrorCode(code)).toBe(true);
+    }
+  });
+
+  it("V0: TTS messages name the actual problem", () => {
+    expect(getErrorMessage("tts_insufficient_vram")).toMatch(/memory|VRAM/i);
+    expect(getErrorMessage("tts_worker_crashed")).toMatch(/voice|engine/i);
+    expect(getErrorMessage("tts_model_not_found")).toMatch(/model/i);
+    expect(getErrorMessage("tts_runtime_missing")).toMatch(/set up/i);
+  });
+
+  it("V3: a machine with no GPU is not told to close other GPU apps", () => {
+    // The two causes look alike in code and feel nothing alike to the person
+    // reading them: one is fixable in seconds, the other never is.
+    const noGpu = getErrorMessage("tts_gpu_unavailable");
+    expect(noGpu).toMatch(/no NVIDIA GPU/i);
+    expect(noGpu).not.toMatch(/close other/i);
+    expect(getErrorMessage("tts_insufficient_vram")).toMatch(/close other/i);
+  });
+
+  it("V3: never-installed and installed-then-gone read differently", () => {
+    const missing = getErrorMessage("tts_runtime_missing");
+    const broken = getErrorMessage("tts_runtime_broken");
+    expect(missing).not.toBe(broken);
+    expect(broken).toMatch(/again/i);
+  });
+
+  it("V3: refused-before-starting and ran-out-midway give different advice", () => {
+    // Same shortage, different moment, different fix. Telling someone whose
+    // model died mid-sentence to "close other GPU apps" is useless when the
+    // real answer is a smaller cache.
+    expect(getErrorMessage("tts_insufficient_vram")).toMatch(/close other/i);
+    expect(getErrorMessage("tts_out_of_memory")).toMatch(/lower|smaller/i);
+  });
+
+  it("V3: a failed setup says nothing was left half-installed", () => {
+    // A multi-GB install that dies halfway is frightening. The message has to
+    // answer the question the user actually has: is my disk now a mess?
+    expect(getErrorMessage("tts_runtime_install_failed")).toMatch(
+      /half-installed|try again/i,
+    );
+  });
+
+  it("V3: setup errors never tell the user to edit a file or open a terminal", () => {
+    // Provisioning is the app's job. If any of these leak an instruction to go
+    // edit runtimes.json or run pip, the acceptance criterion is broken.
+    for (const code of [
+      "tts_runtime_missing",
+      "tts_runtime_broken",
+      "tts_runtime_installing",
+      "tts_runtime_install_failed",
+      "tts_python_not_found",
+    ]) {
+      expect(getErrorMessage(code)).not.toMatch(
+        /runtimes\.json|terminal|command line|pip install|venv/i,
+      );
+    }
+  });
+
+  it("V3: an unrunnable model still tells the user they can configure it", () => {
+    // The promise this whole verdict exists to keep - the settings page stays
+    // open, and the message says so instead of reading like a dead end.
+    expect(getErrorMessage("tts_gpu_unavailable")).toMatch(
+      /browse and configure/i,
     );
   });
 
@@ -141,6 +270,15 @@ describe("errorMessages", () => {
     expect(getErrorMessage("internal_error")).toBe(
       "Something went wrong on the server. Please try again.",
     );
+    // v1.1 audit L4: these must NOT fall through to the generic message.
+    expect(getErrorMessage("edit_conflict")).not.toBe(
+      "Something went wrong. Please try again.",
+    );
+    expect(getErrorMessage("edit_conflict")).toContain("editing");
+    expect(getErrorMessage("not_editable")).toBe(
+      "Only your own messages can be edited.",
+    );
+    expect(getErrorMessage("variant_group_not_last")).toContain("variants");
     expect(getErrorMessage("attachment_too_large")).toBe(
       "This image is too large. Please use an image under 10 MB.",
     );

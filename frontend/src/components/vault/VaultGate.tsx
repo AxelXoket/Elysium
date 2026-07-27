@@ -21,6 +21,8 @@ import { MistCanvas } from "@/components/backdrop/MistCanvas";
 import { LockOverlay } from "@/components/vault/LockOverlay";
 import { useReducedMotion } from "@/components/motion/ReducedMotion";
 import { setVaultLockedHandler, isApiError } from "@/lib/api/client";
+import { getErrorMessage } from "@/lib/errors/errorMessages";
+import { stopVoicePlayback } from "@/lib/voice/playerStore";
 import { setVaultLockAnimationHandler } from "@/lib/vaultLockUi";
 import { keys } from "@/lib/query/keys";
 import {
@@ -59,6 +61,7 @@ function PassphraseField({
       <span className="vault-input-wrap">
         <input
           type={visible ? "text" : "password"}
+          maxLength={1024}
           className="sidebar-dialog-field vault-input"
           value={value}
           onChange={(e) => onChange(e.target.value)}
@@ -143,6 +146,10 @@ export function VaultGate({ children }: { children: ReactNode }) {
   useEffect(() => {
     const unlocked = status?.unlocked === true;
     if (wasUnlockedRef.current && !unlocked) {
+      // The spoken conversation must not keep playing over the lock screen -
+      // the audio element lives outside the DOM, so unmounting the app does
+      // not silence it; only an explicit stop does (audit-2).
+      stopVoicePlayback();
       qc.removeQueries({
         predicate: (query) => query.queryKey[0] !== keys.vault()[0],
       });
@@ -221,6 +228,17 @@ function CreatePassphrase() {
   const [pass, setPass] = useState("");
   const [confirm, setConfirm] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
+  const [acknowledged, setAcknowledged] = useState(false);
+
+  // The screen above promises "everything ... is encrypted on disk with this
+  // passphrase". For an upgrading user that was not the whole truth: the
+  // migration keeps the entire pre-vault database as a fully readable
+  // app.db.plain.bak-<ts> beside the vault, forever, surviving every later
+  // passphrase change. /vault/init has always reported it - the zod schema
+  // even keeps the field - and nothing rendered it, so the only notice was a
+  // server log line. Correcting the claim belongs on the screen that made it.
+  const plaintextBackup =
+    init.isSuccess && init.data?.migrated ? init.data.backup : null;
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -236,15 +254,46 @@ function CreatePassphrase() {
     init.mutate(pass);
   };
 
+  // Through the shared error map, like every other surface in the app. Hard
+  // coding two codes and collapsing the rest into "Is the backend running?"
+  // blamed a running backend for every other outcome - and hid the one state
+  // with a one-file fix: encrypted_db_without_identity means the data is
+  // intact and salt.bin is missing, which restoring that file recovers.
   const serverError =
     init.isError && isApiError(init.error)
       ? init.error.detail === "passphrase_too_short"
         ? `Use at least ${MIN_PASSPHRASE_LEN} characters.`
-        : "Setup failed. Is the backend running?"
+        : getErrorMessage(init.error.detail)
       : null;
 
   return (
     <VaultFrame>
+      {plaintextBackup && !acknowledged ? (
+        <div className="vault-card" role="alert" aria-label="Migration notice">
+          <div className="vault-head">
+            <h1 className="vault-title">One file is still readable</h1>
+            <p className="vault-note">
+              Your data moved into the encrypted vault. The database from
+              before is kept as a safety copy, and it is NOT encrypted:
+            </p>
+            <p className="vault-note">
+              <code>{plaintextBackup}</code>
+            </p>
+            <p className="vault-note">
+              It sits in the Elysium data folder. Nothing needs it once the app
+              works normally - delete it whenever you are satisfied everything
+              came across.
+            </p>
+          </div>
+          <button
+            type="button"
+            className="sidebar-dialog-action vault-submit"
+            onClick={() => setAcknowledged(true)}
+          >
+            Got it
+          </button>
+        </div>
+      ) : (
       <form className="vault-card" onSubmit={submit} aria-label="Create passphrase">
         <div className="vault-head">
           <span className="vault-brand">
@@ -254,7 +303,8 @@ function CreatePassphrase() {
           <h1 className="vault-title">Protect your world</h1>
           <p className="vault-note">
             Everything Elysium stores - chats, characters, personas, images -
-            is encrypted on disk with this passphrase.
+            is encrypted on disk with this passphrase, except the decorative
+            chat wallpaper.
           </p>
         </div>
         <PassphraseField
@@ -297,6 +347,7 @@ function CreatePassphrase() {
           )}
         </button>
       </form>
+      )}
     </VaultFrame>
   );
 }
@@ -356,9 +407,9 @@ function LockScreen() {
         />
         {unlock.isError && (
           <p className="vault-error" role="alert">
-            {wrongPass
-              ? "Wrong passphrase."
-              : "Unlock failed. Is the backend running?"}
+            {isApiError(unlock.error)
+              ? getErrorMessage(unlock.error.detail)
+              : getErrorMessage("vault_unlock_failed")}
           </p>
         )}
         <button

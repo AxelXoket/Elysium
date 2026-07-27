@@ -2,6 +2,7 @@ import { memo, useMemo, useState } from "react";
 import { useMessages } from "@/lib/query/chats";
 import { MessageBubble } from "./MessageBubble";
 import { MessageText } from "./MessageText";
+import { SpeakLiveButton } from "./SpeakLiveButton";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AnimatedList, AnimatedListItem } from "@/components/motion/AnimatedList";
 import { parseApiError } from "@/lib/errors";
@@ -13,6 +14,9 @@ import type { StreamingEntry } from "@/lib/chat/useStreamingCompletion";
 /** Upper bound for the stable-key map - old swaps stop mattering long before
  * this; the cap just prevents unbounded growth in very long sessions. */
 const STABLE_KEY_CAP = 50;
+
+/** Only this many newest groups get the staggered entrance (v1.1 FF5). */
+const ANIMATED_TAIL_GROUPS = 16;
 
 /** Previous-render snapshot for the stable-key derivation. */
 interface StableKeyState {
@@ -81,6 +85,8 @@ interface MessageListProps {
   onActivateVariant?: (messageId: number) => void;
   /** Aborts the in-flight generation (left arrow during streaming). */
   onAbortGeneration?: () => void;
+  /** Called with (messageId, newText) when a user message edit is saved. */
+  onEditMessage?: (messageId: number, newText: string) => void;
   /** Active streaming state for THIS chat (accumulating text), if any. */
   streaming?: StreamingEntry | null;
 }
@@ -96,6 +102,7 @@ export const MessageList = memo(function MessageList({
   onRegenerate,
   onActivateVariant,
   onAbortGeneration,
+  onEditMessage,
   streaming,
 }: MessageListProps) {
   const { data: messages, isLoading, error } = useMessages(chatId);
@@ -221,14 +228,17 @@ export const MessageList = memo(function MessageList({
   }
 
   // Streaming display state:
-  //  - kind="send": before the first delta the ThinkingBubble stays; from the
-  //    first delta a transient assistant bubble renders the accumulating text.
+  //  - kind="send" | "edit": before the first delta the ThinkingBubble stays;
+  //    from the first delta a transient assistant bubble renders the
+  //    accumulating text at the bottom (edit hid the tail optimistically, so
+  //    the bottom IS directly under the edited row).
   //  - kind="regenerate": the TARGET GROUP's bubble hosts the whole
   //    generation in place (dots pane, then the accumulating text) - no
   //    bottom-of-list indicator.
   const streamingHasText = streaming != null && streaming.text.length > 0;
   const streamingSendText =
-    streaming?.kind === "send" && streaming.text.length > 0
+    (streaming?.kind === "send" || streaming?.kind === "edit") &&
+    streaming.text.length > 0
       ? streaming.text
       : null;
   const regenTargetAnchor =
@@ -237,8 +247,13 @@ export const MessageList = memo(function MessageList({
   return (
     <div className="px-6 py-8">
       <AnimatedList className="space-y-4">
-        {displayEntries.map(({ anchor, rows, display }) => (
-          <AnimatedListItem key={keyFor(display, anchor)}>
+        {displayEntries.map(({ anchor, rows, display }, index) => (
+          <AnimatedListItem
+            key={keyFor(display, anchor)}
+            // FF5: only the newest window animates in - older history renders
+            // statically so a long chat's bottom bubble is never stagger-gated.
+            animated={index >= displayEntries.length - ANIMATED_TAIL_GROUPS}
+          >
             <MessageBubble
               chatId={chatId}
               message={display}
@@ -247,6 +262,7 @@ export const MessageList = memo(function MessageList({
               onRegenerate={onRegenerate}
               onActivateVariant={onActivateVariant}
               onAbortGeneration={onAbortGeneration}
+              onEditMessage={onEditMessage}
               regenerating={regenerating}
               pendingForChat={isPending}
               isStreamingTarget={regenTargetAnchor === anchor}
@@ -261,7 +277,9 @@ export const MessageList = memo(function MessageList({
       </AnimatedList>
 
       {/* Streaming assistant bubble - transient, not in cache */}
-      {streamingSendText != null && <StreamingBubble text={streamingSendText} />}
+      {streamingSendText != null && (
+        <StreamingBubble text={streamingSendText} chatId={chatId} />
+      )}
 
       {/* Thinking indicator - transient, not in cache. Regenerate renders its
           own in-bubble dots, so it never shows a bottom indicator. */}
@@ -273,7 +291,7 @@ export const MessageList = memo(function MessageList({
 });
 
 /** Transient assistant bubble rendering in-flight streamed text. */
-function StreamingBubble({ text }: { text: string }) {
+function StreamingBubble({ text, chatId }: { text: string; chatId: number }) {
   return (
     <div className="mt-4 flex justify-start">
       <div
@@ -291,6 +309,12 @@ function StreamingBubble({ text }: { text: string }) {
             {"▍"}
           </span>
         </p>
+        {/* The reply cannot be spoken by id yet - there is no row until the
+            stream ends - so this asks the server to wake the one it is already
+            streaming. Renders nothing without a usable voice model. */}
+        <div className="mt-1 flex justify-end">
+          <SpeakLiveButton chatId={chatId} />
+        </div>
       </div>
     </div>
   );

@@ -16,6 +16,66 @@ export const MSG_LINE_DEFAULT = 1.625;
 export const MSG_LINE_MIN = 1.3;
 export const MSG_LINE_MAX = 1.95;
 
+// v1.1 E2: message contrast preset. Default is the zero-change baseline.
+/** How a message bubble's surface catches light. Matte is today's look. */
+export type SurfaceFinish = "matte" | "glossy" | "metallic";
+
+export type NarrationVoice = "same" | "narrator" | "skip";
+
+export type MsgContrast = "soft" | "default" | "high";
+
+// v1.1 FF7: generation sampling scalars persist so a vault re-lock (which
+// remounts the GenerationSettingsProvider) no longer wipes them. Names are
+// NEUTRAL on purpose - max_tokens/context_budget_tokens contain the forbidden
+// "token" substring the persisted-key safety scan rejects, so the persisted
+// fields use genMaxOutput / genContextBudget instead. Stop sequences are USER
+// CONTENT (character names) and NEVER persist - they stay in-memory in the
+// GenerationSettingsProvider (accepted loss on lock).
+export interface GenPersistedSettings {
+  genTemperature: number;
+  genTopP: number;
+  genTopK: number;
+  genRepetitionPenalty: number;
+  genMaxOutput: number;
+  genSeed: string;
+  genContextBudget: number;
+}
+
+export const GEN_PERSISTED_DEFAULTS: GenPersistedSettings = {
+  genTemperature: 0.8,
+  genTopP: 0.9,
+  genTopK: 40,
+  genRepetitionPenalty: 1.05,
+  genMaxOutput: 1024,
+  genSeed: "",
+  genContextBudget: 16384,
+};
+
+/** Defensive clamp for values coming back from localStorage (a corrupted
+ * store must never crash the app; request-time builders clamp again). */
+function clampGenSettings(
+  values: Partial<GenPersistedSettings>,
+): Partial<GenPersistedSettings> {
+  const num = (v: unknown, min: number, max: number, fallback: number) =>
+    typeof v === "number" && Number.isFinite(v)
+      ? Math.min(Math.max(v, min), max)
+      : fallback;
+  const out: Partial<GenPersistedSettings> = {};
+  if ("genTemperature" in values)
+    out.genTemperature = num(values.genTemperature, 0, 2, 0.8);
+  if ("genTopP" in values) out.genTopP = num(values.genTopP, 0, 1, 0.9);
+  if ("genTopK" in values) out.genTopK = num(values.genTopK, 0, 500, 40);
+  if ("genRepetitionPenalty" in values)
+    out.genRepetitionPenalty = num(values.genRepetitionPenalty, 0, 2, 1.05);
+  if ("genMaxOutput" in values)
+    out.genMaxOutput = num(values.genMaxOutput, 1, 2_000_000, 1024);
+  if ("genContextBudget" in values)
+    out.genContextBudget = num(values.genContextBudget, 512, 2_000_000, 16384);
+  if ("genSeed" in values)
+    out.genSeed = typeof values.genSeed === "string" ? values.genSeed : "";
+  return out;
+}
+
 interface UiState {
   selectedCharacterId: number | null;
   selectedChatId: number | null;
@@ -27,10 +87,60 @@ interface UiState {
   // timestamps, and controls never scale with these.
   msgFontPx: number;
   msgLineHeight: number;
+  /** How strongly message text stands out from its bubble (v1.1 E2). */
+  msgContrast: MsgContrast;
   /** Style *asterisk* narration spans in message text. */
   narrationEnabled: boolean;
   /** Tint "quoted speech" spans in message text. */
   quoteTintEnabled: boolean;
+
+  /**
+   * Speak every assistant reply as it arrives (V9-1).
+   *
+   * Default OFF, and it stays that way until the person asks: voice costs GPU
+   * time and makes noise, so it is the one setting that must never surprise
+   * anyone by being on. Persisted like the other preferences - somebody who
+   * turned it on meant to leave it on.
+   *
+   * Toggling it mid-stream does NOT retro-fit the reply already arriving; the
+   * next one speaks. That is not a limitation but the rule the app was asked
+   * for, and it falls out of the flag being read when a request is BUILT.
+   */
+  continuousVoice: boolean;
+  /** The "voice is set up but nothing is chosen" hint was closed. Persisted:
+   *  a hint that comes back every launch is a nag. */
+  voiceHintDismissed: boolean;
+  /** The Settings dialog, hoisted out of SidebarFooter's local state so any
+   *  surface can open it - and open it ON a page. Deliberately NOT persisted:
+   *  a dialog that reopens itself on launch is a bug, not a preference. */
+  settingsOpen: boolean;
+  settingsInitialPage: string | null;
+
+  /**
+   * How *asterisk narration* is SPOKEN (V9-3).
+   *
+   * "same" keeps today's behaviour. "narrator" hands the span to the engine
+   * with a delivery tag so stage direction sounds like stage direction rather
+   * than the character talking about themselves. "skip" reads only dialogue.
+   *
+   * Deliberately mirrors `narrationEnabled` - the same spans the screen
+   * italicises are the ones the ear hears differently, and a divergence there
+   * is the kind of bug nobody thinks to look for.
+   */
+  narrationVoice: NarrationVoice;
+
+  /**
+   * Custom message ink, or null to follow the contrast preset (V11).
+   *
+   * An override ON TOP of the preset rather than a replacement for it: the
+   * presets carry measured contrast ratios and a deliberate soft<default<high
+   * ordering, and throwing that away for a colour field would undo three
+   * versions of care. The picker shows the ratio it is producing instead.
+   */
+  msgInk: string | null;
+
+  /** Bubble surface finish. Bubbles only - never controls (V11). */
+  surfaceFinish: SurfaceFinish;
 
   // Chat background (image blob lives in the appearance blob store, NOT
   // here - persisting only flat scalars keeps localStorage writes tiny).
@@ -49,6 +159,15 @@ interface UiState {
    * static gradient wherever it cannot or should not run). */
   ambientFogOn: boolean;
 
+  // v1.1 FF7: persisted generation sampling scalars (neutral names).
+  genTemperature: number;
+  genTopP: number;
+  genTopK: number;
+  genRepetitionPenalty: number;
+  genMaxOutput: number;
+  genSeed: string;
+  genContextBudget: number;
+
   selectCharacter: (id: number | null) => void;
   selectChat: (id: number | null) => void;
   selectModel: (id: string | null) => void;
@@ -56,8 +175,16 @@ interface UiState {
   toggleSidebar: () => void;
   setMsgFontPx: (px: number) => void;
   setMsgLineHeight: (lh: number) => void;
+  setMsgContrast: (level: MsgContrast) => void;
   setNarrationEnabled: (on: boolean) => void;
   setQuoteTintEnabled: (on: boolean) => void;
+  setContinuousVoice: (on: boolean) => void;
+  dismissVoiceHint: () => void;
+  openSettings: (page?: string) => void;
+  setSettingsOpen: (open: boolean) => void;
+  setNarrationVoice: (mode: NarrationVoice) => void;
+  setMsgInk: (hex: string | null) => void;
+  setSurfaceFinish: (finish: SurfaceFinish) => void;
   /** Image stored → mark on + record its luminance (contrast/tint kept). */
   setChatBgMeta: (meta: { lum: number }) => void;
   /** Image removed → mark off (contrast/tint kept for the next image). */
@@ -65,6 +192,8 @@ interface UiState {
   setChatBgContrast: (contrast: number) => void;
   setChatBgTint: (tint: string) => void;
   setAmbientFogOn: (on: boolean) => void;
+  /** Bulk write-through for persisted generation scalars (FF7). */
+  setGenSettings: (values: Partial<GenPersistedSettings>) => void;
 }
 
 // Normalize old persisted tab values to new names.
@@ -91,14 +220,23 @@ export const useUiStore = create<UiState>()(
       sidebarCollapsed: false,
       msgFontPx: MSG_FONT_DEFAULT,
       msgLineHeight: MSG_LINE_DEFAULT,
+      msgContrast: "default",
       narrationEnabled: true,
       quoteTintEnabled: true,
+      continuousVoice: false,
+      voiceHintDismissed: false,
+      settingsOpen: false,
+      settingsInitialPage: null,
+      narrationVoice: "same",
+      msgInk: null,
+      surfaceFinish: "matte",
       chatBgOn: false,
       chatBgLum: 0.5,
       chatBgContrast: 0.35,
       chatBgTint: "auto",
       chatBgRev: 0,
       ambientFogOn: true,
+      ...GEN_PERSISTED_DEFAULTS,
 
       selectCharacter: (id) =>
         set({ selectedCharacterId: id, selectedChatId: null }),
@@ -115,8 +253,23 @@ export const useUiStore = create<UiState>()(
         set({
           msgLineHeight: Math.min(MSG_LINE_MAX, Math.max(MSG_LINE_MIN, lh)),
         }),
+      setMsgContrast: (level) =>
+        set({
+          // allowlist guard (setChatBgTint pattern): unknown -> default.
+          msgContrast:
+            level === "soft" || level === "high" ? level : "default",
+        }),
       setNarrationEnabled: (on) => set({ narrationEnabled: on }),
       setQuoteTintEnabled: (on) => set({ quoteTintEnabled: on }),
+      setContinuousVoice: (on) => set({ continuousVoice: on }),
+      dismissVoiceHint: () => set({ voiceHintDismissed: true }),
+      openSettings: (page) =>
+        set({ settingsOpen: true, settingsInitialPage: page ?? null }),
+      setSettingsOpen: (open) =>
+        set(open ? { settingsOpen: true } : { settingsOpen: false, settingsInitialPage: null }),
+      setNarrationVoice: (mode) => set({ narrationVoice: mode }),
+      setMsgInk: (hex) => set({ msgInk: hex }),
+      setSurfaceFinish: (finish) => set({ surfaceFinish: finish }),
       setChatBgMeta: ({ lum }) =>
         set((s) => ({
           chatBgOn: true,
@@ -137,6 +290,7 @@ export const useUiStore = create<UiState>()(
           chatBgTint: /^auto$|^#[0-9a-f]{6}$/i.test(tint) ? tint : "auto",
         }),
       setAmbientFogOn: (on) => set({ ambientFogOn: on }),
+      setGenSettings: (values) => set(clampGenSettings(values)),
     }),
     {
       name: "elysium-ui-state",
@@ -165,13 +319,28 @@ export const useUiStore = create<UiState>()(
         sidebarCollapsed: state.sidebarCollapsed,
         msgFontPx: state.msgFontPx,
         msgLineHeight: state.msgLineHeight,
+        msgContrast: state.msgContrast,
         narrationEnabled: state.narrationEnabled,
         quoteTintEnabled: state.quoteTintEnabled,
+        continuousVoice: state.continuousVoice,
+        voiceHintDismissed: state.voiceHintDismissed,
+        narrationVoice: state.narrationVoice,
+        msgInk: state.msgInk,
+        surfaceFinish: state.surfaceFinish,
         chatBgOn: state.chatBgOn,
         chatBgLum: state.chatBgLum,
         chatBgContrast: state.chatBgContrast,
         chatBgTint: state.chatBgTint,
         ambientFogOn: state.ambientFogOn,
+        // v1.1 (FF7) generation sampling scalars - neutral names, never
+        // stopSequences (those are user content).
+        genTemperature: state.genTemperature,
+        genTopP: state.genTopP,
+        genTopK: state.genTopK,
+        genRepetitionPenalty: state.genRepetitionPenalty,
+        genMaxOutput: state.genMaxOutput,
+        genSeed: state.genSeed,
+        genContextBudget: state.genContextBudget,
       }),
     },
   ),

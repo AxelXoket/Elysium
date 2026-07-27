@@ -141,7 +141,10 @@ def test_full_passphrase_lifecycle_on_fresh_vault(client, tmp_path, monkeypatch)
     vault_state.clear_key()
 
     assert client.get("/api/v1/vault/status").json() == {
-        "initialized": False, "unlocked": False,
+        # orphaned_copy: a stranded app.db.enc-tmp is a full readable copy of
+        # the vault that is never removed automatically, so status reports it
+        # rather than leaving a log line as the only trace (audit KÖK 18).
+        "initialized": False, "unlocked": False, "orphaned_copy": False,
     }
     r = client.post("/api/v1/vault/init", json={"passphrase": "seaside-orchid-9"})
     assert r.status_code == 200 and r.json()["migrated"] is False
@@ -361,6 +364,132 @@ def test_passphrase_too_long_is_rejected_without_echo(client, tmp_path, monkeypa
     assert long_pass not in r.text
 
 
+# ── v1.1 FB5: change-passphrase parity (recover fallback, locked-window,
+# bootstrap re-lock) ─────────────────────────────────────────────────────────
+
+def test_fb5a_change_recovers_from_corrupt_verifier(client, tmp_path, monkeypatch):
+    """FB5a: a corrupt verifier.bin must not reject a CORRECT old passphrase -
+    the DB is the authority (parity with unlock's recover_with_db)."""
+    vdir = _fresh_vault(client, tmp_path, monkeypatch, "fb5a")
+    client.post("/api/v1/vault/init", json={"passphrase": "first-pass-abc"})
+    client.post("/api/v1/characters", json={
+        "name": "Fb5aChar", "description": "d", "first_mes": "hi",
+    })
+    client.post("/api/v1/vault/lock")
+
+    # Corrupt the verifier so vault.unlock() returns None.
+    (vdir / "verifier.bin").write_bytes(b"garbage-garbage-garbage")
+
+    r = client.post("/api/v1/vault/change-passphrase", json={
+        "old_passphrase": "first-pass-abc", "new_passphrase": "second-pass-xyz",
+    })
+    assert r.status_code == 200, r.text
+    client.post("/api/v1/vault/lock")
+    assert client.post(
+        "/api/v1/vault/unlock", json={"passphrase": "second-pass-xyz"}
+    ).status_code == 200
+
+
+def test_fb5b_locked_vault_stays_locked_through_rekey(client, tmp_path, monkeypatch):
+    """FB5b: a change issued while LOCKED must keep the 423 gate shut for the
+    whole rekey window (no early set_key(old_key))."""
+    import database
+    import vault_state
+
+    _fresh_vault(client, tmp_path, monkeypatch, "fb5b")
+    client.post("/api/v1/vault/init", json={"passphrase": "first-pass-abc"})
+    client.post("/api/v1/vault/lock")
+    assert not vault_state.is_unlocked()
+
+    real_rekey = database.rekey_db
+    observed = {"unlocked_during_rekey": None}
+
+    def spy_rekey(new_key, current_key=None):
+        observed["unlocked_during_rekey"] = vault_state.is_unlocked()
+        return real_rekey(new_key, current_key=current_key)
+
+    monkeypatch.setattr(database, "rekey_db", spy_rekey)
+    r = client.post("/api/v1/vault/change-passphrase", json={
+        "old_passphrase": "first-pass-abc", "new_passphrase": "second-pass-xyz",
+    })
+    assert r.status_code == 200, r.text
+    # The gate was still shut at rekey time.
+    assert observed["unlocked_during_rekey"] is False
+
+
+def test_fb5b_unlocked_change_still_works(client, tmp_path, monkeypatch):
+    """FB5b regression: an UNLOCKED change still succeeds and stays unlocked."""
+    import vault_state
+
+    _fresh_vault(client, tmp_path, monkeypatch, "fb5bU")
+    client.post("/api/v1/vault/init", json={"passphrase": "first-pass-abc"})
+    assert vault_state.is_unlocked()
+    r = client.post("/api/v1/vault/change-passphrase", json={
+        "old_passphrase": "first-pass-abc", "new_passphrase": "second-pass-xyz",
+    })
+    assert r.status_code == 200
+    assert vault_state.is_unlocked()  # unlocked callers stay unlocked
+
+
+def test_fb5c_bootstrap_failure_relocks(client, tmp_path, monkeypatch):
+    """FB5c: change SUCCEEDS but the locked-path bootstrap fails -> re-lock so
+    no key stays resident; a subsequent unlock self-heals."""
+    import routers.vault as vault_router
+    import vault_state
+
+    _fresh_vault(client, tmp_path, monkeypatch, "fb5c")
+    client.post("/api/v1/vault/init", json={"passphrase": "first-pass-abc"})
+    client.post("/api/v1/vault/lock")
+
+    real_bootstrap = vault_router._bootstrap_unlocked
+    monkeypatch.setattr(
+        vault_router, "_bootstrap_unlocked",
+        lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    r = client.post("/api/v1/vault/change-passphrase", json={
+        "old_passphrase": "first-pass-abc", "new_passphrase": "second-pass-xyz",
+    })
+    assert r.status_code == 200, r.text  # the change itself succeeded
+    assert not vault_state.is_unlocked()  # re-locked, no resident key
+
+    # Restore ONLY the bootstrap (monkeypatch.undo would also revert DB_PATH).
+    monkeypatch.setattr(vault_router, "_bootstrap_unlocked", real_bootstrap)
+    # The new passphrase unlocks and self-heals.
+    assert client.post(
+        "/api/v1/vault/unlock", json={"passphrase": "second-pass-xyz"}
+    ).status_code == 200
+
+
+def test_fb5_change_failure_keeps_vault_locked(client, tmp_path, monkeypatch):
+    """A rekey that fails must not leak the key: vault stays LOCKED, old
+    passphrase still unlocks."""
+    import crypto
+    import vault_state
+
+    _fresh_vault(client, tmp_path, monkeypatch, "fb5fail")
+    client.post("/api/v1/vault/init", json={"passphrase": "first-pass-abc"})
+    client.post("/api/v1/vault/lock")
+
+    real_change = crypto.KeyVault.change_passphrase
+
+    def boom(self, *a, **k):
+        raise RuntimeError("rekey exploded")
+
+    monkeypatch.setattr(crypto.KeyVault, "change_passphrase", boom)
+    r = client.post("/api/v1/vault/change-passphrase", json={
+        "old_passphrase": "first-pass-abc", "new_passphrase": "second-pass-xyz",
+    })
+    assert r.status_code == 500
+    assert r.json()["detail"] == "change_passphrase_failed"
+    assert not vault_state.is_unlocked()  # no set_key leak
+
+    # Restore only change_passphrase (not DB_PATH) for the follow-up unlock.
+    monkeypatch.setattr(crypto.KeyVault, "change_passphrase", real_change)
+    assert client.post(
+        "/api/v1/vault/unlock", json={"passphrase": "first-pass-abc"}
+    ).status_code == 200  # old passphrase still valid
+
+
 def test_rename_with_retry_recovers_after_a_held_handle_releases(tmp_path):
     """Proves the Windows file-lock retry actually recovers: hold an OS handle
     on the source (blocks os.replace on Windows), release it from a timer, and
@@ -438,3 +567,76 @@ def test_lock_mid_stream_yields_423_event_and_ends_cleanly(client, tmp_path, mon
     # Re-unlock and confirm the app is still usable (no corruption from the abort).
     vault_state.set_key(TEST_VAULT_KEY)
     assert client.get("/api/v1/characters").status_code == 200
+
+
+# ── The voice model is warmed at unlock, not on the first press of Speak ────
+#
+# Loading is slow: a cold Fish S2 pays a torch.compile the worker itself calls
+# "first compile is slow", and TTS_LOAD_TIMEOUT_S is 180. Left lazy, all of it
+# landed on the first Speak press - the one interaction that should feel
+# instant. Unlock is the right moment because resolving the model reads its
+# saved parameters out of the vault, which does not exist before then.
+
+
+def test_unlock_starts_the_voice_preload_in_the_background(monkeypatch):
+    import threading
+    import routers.vault as vault_router
+
+    started = threading.Event()
+
+    def fake_thread(target, name=None, daemon=None):
+        class T:
+            def start(self_inner):
+                started.set()
+                assert daemon is True, "unlock must not wait on a GPU"
+                assert name == "tts-preload"
+        return T()
+
+    monkeypatch.setattr(threading, "Thread", fake_thread)
+    vault_router._preload_voice_model()
+    assert started.is_set()
+
+
+def test_the_preload_never_raises(monkeypatch):
+    """No engine, no GPU, a renamed model folder, a worker that will not
+    start - the UI reports all of them from /tts/active. None is a reason to
+    disturb an unlock that otherwise worked."""
+    import routers.vault as vault_router
+    import database
+
+    def explode(*a, **k):
+        raise RuntimeError("no GPU on this machine")
+
+    monkeypatch.setattr(database, "get_setting", explode)
+    # Runs the worker body inline by making Thread call it immediately.
+    import threading
+
+    def inline_thread(target, name=None, daemon=None):
+        class T:
+            def start(self_inner):
+                target()
+        return T()
+
+    monkeypatch.setattr(threading, "Thread", inline_thread)
+    vault_router._preload_voice_model()   # must not raise
+
+
+def test_the_preload_skips_when_no_model_is_chosen(client, monkeypatch):
+    import threading
+    import routers.vault as vault_router
+    import database
+    import routers.tts_runtime as runtime
+
+    database.set_setting(runtime.SETTING_ACTIVE_UID, "")
+    resolved = []
+    monkeypatch.setattr(runtime, "_resolve", lambda uid: resolved.append(uid))
+
+    def inline_thread(target, name=None, daemon=None):
+        class T:
+            def start(self_inner):
+                target()
+        return T()
+
+    monkeypatch.setattr(threading, "Thread", inline_thread)
+    vault_router._preload_voice_model()
+    assert resolved == [], "nothing chosen - nothing to warm"

@@ -96,3 +96,21 @@ export async function uploadImage(file: File): Promise<UploadedImage> {
   }
   return parsed.data;
 }
+
+/**
+ * Best-effort unstage (DELETE /uploads/images/{id}) for a staged upload the
+ * user removed before sending (v1.1 FB8). 404 (already purged), 409 (already
+ * linked) and network failures are all EXPECTED terminal states - the 24h +
+ * opportunistic server purge is the fallback - so this NEVER throws and never
+ * surfaces an error. Resolves true only when the row was actually removed.
+ */
+export async function unstageImage(id: number): Promise<boolean> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/uploads/images/${id}`, { method: "DELETE" });
+  } catch {
+    return false;
+  }
+  if (res.status === 423) notifyVaultLocked();
+  return res.ok;
+}

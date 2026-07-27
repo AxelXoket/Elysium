@@ -8,9 +8,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   setVaultLockedHandler,
   isApiError,
+  request,
 } from "@/lib/api/client";
 import { streamCompletion } from "@/lib/api/stream";
 import { uploadImage } from "@/lib/api/uploads";
+import { z } from "zod/v4";
 
 function stub423(path: string) {
   vi.stubGlobal(
@@ -79,5 +81,26 @@ describe("vault-lock signal from bypassing transports", () => {
 
     expect(fired).toBe(1);
     expect(isApiError(threw) && threw.status).toBe(423);
+  });
+
+  // v1.1 FF4: the main JSON client goes through the SAME coalescing latch as
+  // the SSE/upload transports - a burst of 423s fires the handler ONCE.
+  it("JSON client 423 fires the handler through the shared latch (coalesced)", async () => {
+    stub423("/api/v1/chats");
+    let fired = 0;
+    setVaultLockedHandler(() => {
+      fired += 1;
+    });
+
+    const schema = z.object({ ok: z.boolean() });
+    // Fire several JSON requests concurrently - the backend restart case.
+    await Promise.allSettled([
+      request("/chats", schema),
+      request("/chats", schema),
+      request("/chats", schema),
+    ]);
+
+    // Coalesced to a single handler invocation despite 3 concurrent 423s.
+    expect(fired).toBe(1);
   });
 });

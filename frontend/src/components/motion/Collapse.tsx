@@ -17,10 +17,24 @@ interface CollapseProps {
  *
  * Content stays mounted (so form state persists across toggles) but is
  * inert-height and clipped while closed.
+ *
+ * Clipped is not the same as gone, and that difference was a real bug (audit
+ * KÖK 17): height and overflow say nothing to the tab order or to a screen
+ * reader, so the two textareas in a CLOSED "Advanced" section of the character
+ * dialogs still took focus. Somebody tabbing through the form typed into a
+ * field they could not see, and that text was saved as the character's system
+ * prompt. `inert` removes it from focus, hit-testing and the accessibility
+ * tree in one attribute; `aria-hidden` covers browsers that do not have it
+ * yet, which is the whole reason both are here.
  */
 export function Collapse({ open, children, className }: CollapseProps) {
   return (
-    <div className="es-collapse" data-open={open}>
+    <div
+      className="es-collapse"
+      data-open={open}
+      inert={!open ? true : undefined}
+      aria-hidden={!open || undefined}
+    >
       <div className={`es-collapse-inner${className ? ` ${className}` : ""}`}>
         {children}
       </div>

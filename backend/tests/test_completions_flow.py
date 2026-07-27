@@ -10,7 +10,7 @@ These lock in the fixes for:
 
 from openrouter import OpenRouterError
 
-from conftest import make_character, make_chat, get_messages
+from conftest import make_character, make_chat, get_messages, make_persona
 
 
 BODY = {
@@ -157,6 +157,111 @@ def test_corrupt_selected_persona_does_not_500(client, provider):
     resp = client.get("/api/v1/settings")
     assert resp.status_code == 200
     assert resp.json()["selected_persona_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# KUME D: persona block reaches the provider (name + description)
+# ---------------------------------------------------------------------------
+
+def _persona_blocks(call: dict) -> list[str]:
+    return [
+        m["content"] for m in call["messages"]
+        if m["role"] == "system" and str(m["content"]).startswith("[User Persona")
+    ]
+
+
+def _first_user_index(call: dict) -> int:
+    for i, m in enumerate(call["messages"]):
+        if m["role"] == "user":
+            return i
+    return len(call["messages"])
+
+
+def test_persona_name_and_description_reach_provider(client, provider):
+    char_id = make_character(client)
+    chat_id = make_chat(client, char_id)
+    make_persona(client, "Nova", "Curious explorer.", select=True)
+
+    resp = client.post(f"/api/v1/chats/{chat_id}/complete", json=BODY)
+    assert resp.status_code == 200, resp.text
+
+    msgs = provider.calls[0]["messages"]
+    # Character block first, persona block second.
+    assert "[Description]\nA test character" in msgs[0]["content"]
+    assert msgs[1] == {
+        "role": "system",
+        "content": "[User Persona: Nova]\nCurious explorer.",
+    }
+    # Persona sits AFTER the character block and BEFORE the first user turn.
+    persona_idx = next(
+        i for i, m in enumerate(msgs)
+        if m["role"] == "system" and m["content"].startswith("[User Persona")
+    )
+    assert 0 < persona_idx < _first_user_index(provider.calls[0])
+
+
+def test_name_only_persona_injects_header(client, provider):
+    char_id = make_character(client)
+    chat_id = make_chat(client, char_id)
+    make_persona(client, "Nova", "", select=True)
+
+    resp = client.post(f"/api/v1/chats/{chat_id}/complete", json=BODY)
+    assert resp.status_code == 200, resp.text
+    # Behavior CHANGE: a name-only persona used to inject nothing.
+    assert _persona_blocks(provider.calls[0]) == ["[User Persona: Nova]"]
+
+
+def test_persona_id_override_beats_selected_setting(client, provider):
+    char_id = make_character(client)
+    chat_id = make_chat(client, char_id)
+    make_persona(client, "Alpha", "Selected one.", select=True)
+    beta = make_persona(client, "Beta", "Override.")
+
+    resp = client.post(
+        f"/api/v1/chats/{chat_id}/complete",
+        json={**BODY, "persona_id": beta},
+    )
+    assert resp.status_code == 200, resp.text
+    blocks = _persona_blocks(provider.calls[0])
+    assert blocks == ["[User Persona: Beta]\nOverride."]
+    assert "Alpha" not in "".join(m["content"] for m in provider.calls[0]["messages"])
+
+
+def test_no_persona_no_user_persona_block(client, provider):
+    char_id = make_character(client)
+    chat_id = make_chat(client, char_id)
+
+    resp = client.post(f"/api/v1/chats/{chat_id}/complete", json=BODY)
+    assert resp.status_code == 200, resp.text
+    assert _persona_blocks(provider.calls[0]) == []
+
+
+def test_explicit_persona_not_found_still_404(client, provider):
+    char_id = make_character(client)
+    chat_id = make_chat(client, char_id)
+
+    resp = client.post(
+        f"/api/v1/chats/{chat_id}/complete",
+        json={**BODY, "persona_id": 99999},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "persona_not_found"
+    # Nothing persisted (only first_mes remains).
+    assert [m["role"] for m in get_messages(client, chat_id)] == ["assistant"]
+
+
+def test_stale_selected_persona_setting_tolerated(client, provider, caplog):
+    """FB7: a selection pointing at a deleted persona must NOT 404 every
+    completion - it runs without a persona, warning logged."""
+    import database
+    database.set_setting("selected_persona_id", "99999")
+
+    char_id = make_character(client)
+    chat_id = make_chat(client, char_id)
+    resp = client.post(f"/api/v1/chats/{chat_id}/complete", json=BODY)
+    assert resp.status_code == 200, resp.text
+    assert _persona_blocks(provider.calls[0]) == []
+    assert "no longer exists" in caplog.text
 
 
 def test_stop_sequences_pass_through_to_provider(client, provider):

@@ -8,6 +8,8 @@ Locks in three invariants the audits flagged as untested:
      %LOCALAPPDATA%\\Elysium, dev stays beside the code.
 """
 
+import pytest
+
 import re
 import sys
 from pathlib import Path
@@ -98,3 +100,302 @@ def test_data_dir_dev_stays_beside_code(monkeypatch):
     monkeypatch.delenv("ELYSIUM_DATA_DIR", raising=False)
     monkeypatch.setattr(sys, "frozen", False, raising=False)
     assert config._resolve_data_dir() == Path(config.__file__).resolve().parent
+
+
+class TestPerMonitorDpi:
+    """V10 - the opt-in sharpness switch.
+
+    pywebview calls the Vista-era `SetProcessDPIAware()`, which means the app
+    is sharp only at the primary monitor's login-time scale; anywhere else
+    Windows bitmap-stretches it. This is the switch that fixes that, and the
+    thing worth pinning is that it is REAL - the first version returned False
+    every time because a HANDLE was being marshalled as a 32-bit int.
+    """
+
+    def test_it_is_on_by_default_now_that_a_real_window_confirmed_it(self,
+                                                                     monkeypatch):
+        """Verified on a real screen: window normal size, everything sharp.
+
+        What that launch proved is "does not break the window" - the machine
+        runs at 100% scale, so the sharpness win belongs to the fractional-
+        scaling and mixed-DPI setups this exists for.
+        """
+        import sys
+
+        import run_app
+
+        monkeypatch.delenv("ELYSIUM_PER_MONITOR_DPI", raising=False)
+        if sys.platform != "win32":
+            assert run_app._try_per_monitor_dpi() is False
+        else:
+            assert run_app._try_per_monitor_dpi() is True
+
+    def test_there_is_a_way_out_if_a_display_setup_disagrees(self, monkeypatch):
+        import run_app
+
+        monkeypatch.setenv("ELYSIUM_PER_MONITOR_DPI", "0")
+        assert run_app._try_per_monitor_dpi() is False
+
+    def test_the_handle_is_marshalled_as_a_pointer_not_an_int(self):
+        """Regression: without argtypes the call silently returns 0 on 64-bit -
+        a switch that reports success by doing nothing."""
+        import inspect
+
+        import run_app
+
+        src = inspect.getsource(run_app._try_per_monitor_dpi)
+        assert "argtypes" in src and "c_void_p" in src
+
+    def test_it_runs_before_the_window_is_created(self):
+        """A process's DPI awareness can only be set once and the first caller
+        wins - after pywebview starts it is too late."""
+        import inspect
+
+        import run_app
+
+        src = inspect.getsource(run_app.main)
+        assert src.index("_try_per_monitor_dpi") < src.index("create_window")
+
+
+class TestApiIsNeverCachedToDisk:
+    """Audit finding (2026-07-25): the packaged app runs WebView2 with a
+    PERSISTENT profile, so Chromium was free to write the JSON data routes -
+    the whole conversation, characters and personas - to its on-disk HTTP cache
+    in plaintext, outside the encrypted vault. Uploads, audio and the SSE
+    stream had each been given a policy already; the ordinary data routes, the
+    largest volume of the most sensitive content, were the gap.
+    """
+
+    def test_data_routes_are_no_store(self, client):
+        for path in ("/api/v1/settings", "/api/v1/chats", "/api/v1/characters"):
+            got = client.get(path).headers.get("cache-control")
+            assert got == "no-store", f"{path} -> {got!r}"
+
+    def test_a_locked_423_is_covered_too(self):
+        """The vault gate short-circuits without calling downstream, so this
+        only holds while the policy is the OUTERMOST middleware layer - which
+        is the whole reason it is registered last."""
+        from fastapi.testclient import TestClient
+
+        import main
+
+        with TestClient(main.app) as c:          # a fresh app: vault locked
+            r = c.get("/api/v1/chats")
+            assert r.status_code == 423
+            assert r.headers.get("cache-control") == "no-store"
+
+    def test_the_spa_bundle_stays_cacheable(self):
+        # Hashed static output SHOULD be cached; making it uncacheable would
+        # slow every launch to protect nothing.
+        from fastapi.testclient import TestClient
+
+        import main
+
+        with TestClient(main.app) as c:
+            assert c.get("/").headers.get("cache-control") is None
+
+
+class TestAuditRegressions2026_07_25:
+    """Three findings from the whole-repo audit, each a silent failure."""
+
+    def test_a_non_numeric_proxy_port_is_refused_before_it_is_saved(self):
+        """It used to pass validation, reach the vault, and only fail later
+        inside the httpx client build - an opaque 500 with all networking
+        already broken and the settings page showing the value as saved."""
+        from fastapi import HTTPException
+
+        from routers.settings import _validate_proxy_url
+
+        with pytest.raises(HTTPException) as exc:
+            _validate_proxy_url("http://host:notaport")
+        assert exc.value.detail == "proxy_url_invalid"
+        _validate_proxy_url("http://host:8080")      # still accepted
+
+    def test_uvicorn_logs_reach_the_file_the_error_dialog_points_at(self):
+        """uvicorn installs its own handlers with propagate=False, so a
+        windowed build wrote every SERVER log to a stderr that does not exist -
+        while the failure dialog promised the details were in elysium.log."""
+        import inspect
+
+        import run_app
+
+        src = inspect.getsource(run_app._setup_frozen_logging)
+        assert "uvicorn.error" in src and "addHandler" in src
+
+    def test_a_refused_load_does_not_orphan_the_resident_model(self):
+        """A pre-spawn refusal leaves the running worker untouched, so the
+        state must keep describing it. Wiping the identity reported "nothing
+        loaded" while a process still held its VRAM."""
+        import inspect
+
+        from tts.host import VoiceHost
+
+        src = inspect.getsource(VoiceHost.load)
+        assert "prior" in src and "STATE_LOADED" in src
+
+
+# ── Audit: the base-URL override warning must reach the LOG FILE ────────────
+#
+# config.py's warning is the only guard against a poisoned environment
+# redirecting every completion - Authorization header included - to an
+# arbitrary host. It fired at config IMPORT time, and run_app.py imports config
+# for DATA_DIR before installing the file handler, so in the shipped
+# console=False build it went to logging.lastResort (a stderr no windowed exe
+# can show) and never reached elysium.log.
+
+
+def test_the_override_warning_is_callable_after_logging_exists():
+    import config
+    assert callable(config.warn_if_base_url_overridden)
+
+
+def test_config_import_alone_emits_nothing(monkeypatch, caplog):
+    """Import must be silent: whoever imports first would otherwise decide
+    whether the warning is visible."""
+    import importlib
+    import config
+
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "http://evil.example/v1")
+    with caplog.at_level("WARNING"):
+        reloaded = importlib.reload(config)
+    assert "evil.example" not in caplog.text
+    assert reloaded.OPENROUTER_BASE_URL_OVERRIDDEN is True
+
+    # ...and the report lands when the caller asks for it.
+    with caplog.at_level("WARNING"):
+        reloaded.warn_if_base_url_overridden()
+    assert "evil.example" in caplog.text
+    assert "Authorization" in caplog.text
+
+    # ONCE. run_app (frozen) and main (dev) both call it, and in the packaged
+    # app both run - the shipped log carried the same warning twice.
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        reloaded.warn_if_base_url_overridden()
+    assert caplog.text == ""
+
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    importlib.reload(config)
+
+
+def test_the_default_destination_warns_about_nothing(caplog):
+    import config
+    assert config.OPENROUTER_BASE_URL_OVERRIDDEN is False
+    with caplog.at_level("WARNING"):
+        config.warn_if_base_url_overridden()
+    assert caplog.text == ""
+
+
+def test_run_app_reports_the_override_after_installing_its_handler():
+    """Ordering is the whole bug: the call must come AFTER basicConfig."""
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parent.parent / "run_app.py"
+    text = source.read_text(encoding="utf-8")
+    assert "warn_if_base_url_overridden" in text, (
+        "the frozen build no longer reports a redirected base URL"
+    )
+    assert text.index("logging.basicConfig") < text.index(
+        "warn_if_base_url_overridden"
+    ), "the warning would land before the log handler exists"
+
+
+# ── Audit: a random port every launch made the persistent profile useless ───
+#
+# localStorage and IndexedDB are keyed by scheme://host:port. bind((HOST, 0))
+# gave every launch a new origin, so the WebView2 profile that private_mode=
+# False was turned OFF to keep delivered none of it: font size, contrast preset,
+# narration style, the wallpaper and the last-open chat reverted every time, and
+# the dead origins' storage accumulated on disk (twelve buckets on the shipping
+# profile, one per port it had ever used).
+
+
+def test_the_port_is_remembered_and_reused(tmp_path, monkeypatch):
+    import config
+    import run_app
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+
+    first = run_app.bind_app_socket()
+    try:
+        port = first.getsockname()[1]
+        assert port != 0
+        assert (tmp_path / "port").read_text(encoding="utf-8").strip() == str(port)
+    finally:
+        first.close()
+
+    second = run_app.bind_app_socket()
+    try:
+        assert second.getsockname()[1] == port, "the origin changed between launches"
+    finally:
+        second.close()
+
+
+def test_a_busy_remembered_port_falls_back_instead_of_refusing(tmp_path, monkeypatch):
+    """A lost preference beats a refusal to start."""
+    import config
+    import run_app
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+
+    held = run_app.bind_app_socket()
+    try:
+        taken = held.getsockname()[1]
+        other = run_app.bind_app_socket()
+        try:
+            assert other.getsockname()[1] != taken
+            # ...and the new one is what the NEXT launch will try.
+            assert (tmp_path / "port").read_text(encoding="utf-8").strip() == str(
+                other.getsockname()[1]
+            )
+        finally:
+            other.close()
+    finally:
+        held.close()
+
+
+def test_a_corrupt_port_file_is_ignored(tmp_path, monkeypatch):
+    import config
+    import run_app
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    (tmp_path / "port").write_text("not a port", encoding="utf-8")
+    sock = run_app.bind_app_socket()
+    try:
+        assert 1024 <= sock.getsockname()[1] <= 65535
+    finally:
+        sock.close()
+
+
+def test_a_privileged_port_is_not_trusted(tmp_path, monkeypatch):
+    import config
+    import run_app
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    (tmp_path / "port").write_text("80", encoding="utf-8")
+    assert run_app._remembered_port() == 0
+
+
+def test_the_completions_header_describes_what_the_module_does():
+    """Audit LOW: the header of the app's most load-bearing backend module
+    declared "Text-only, non-streaming ... No streaming (stream: true)" and
+    listed one route, while the file implements three SSE endpoints and builds
+    image_url parts. The docstring is what the next change gets built on."""
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parent.parent
+              / "routers" / "completions.py").read_text(encoding="utf-8")
+    header = source[:source.index('"""', 3)]
+
+    # The SCOPE block is the part a maintainer reads as the contract. (The
+    # prose above it quotes the old wording on purpose, to say what changed.)
+    scope = header[header.index("Scope:"):]
+    assert "No streaming" not in scope
+    assert "Text-only" not in scope
+    assert "image_url" in scope, "vision support is not stated"
+    for route in ("complete/stream", "regenerate/stream", "edit/stream"):
+        assert route in header, f"{route} is not in the module header"
+    # And the real endpoints still exist under those names.
+    for fn in ("complete_chat_stream", "regenerate_message_stream",
+               "edit_message_stream"):
+        assert f"async def {fn}" in source

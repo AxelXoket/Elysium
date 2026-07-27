@@ -1,9 +1,13 @@
-import { useState } from "react";
 import { AppSettingsDialog } from "@/components/settings/AppSettingsDialog";
 import { Settings } from "lucide-react";
 
+import { useUiStore } from "@/lib/store/uiStore";
+
 export function SidebarFooter() {
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  // Store-owned rather than local: the composer's voice hint needs to open
+  // this dialog ON the Voice page, and it cannot reach a useState in here.
+  const settingsOpen = useUiStore((s) => s.settingsOpen);
+  const setSettingsOpen = useUiStore((s) => s.setSettingsOpen);
 
   return (
     <div className="px-3 py-3">

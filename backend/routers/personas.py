@@ -16,6 +16,7 @@ Privacy invariants:
 
 import logging
 
+import anyio.to_thread
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, field_validator
 
@@ -127,10 +128,18 @@ async def create_persona(body: PersonaCreate) -> dict:
 # PATCH /personas/{persona_id}
 # ---------------------------------------------------------------------------
 
-@router.patch("/{persona_id}")
-async def patch_persona(persona_id: int, body: PersonaPatch) -> dict:
-    """Partially update a persona. Only provided fields are changed."""
+def _patch_persona_sync(persona_id: int, body: "PersonaPatch") -> dict:
+    """Worker-thread body (audit KÖK 8): own connection, one write txn.
+
+    BEGIN IMMEDIATE takes SQLite's writer lock; taking it on the event loop
+    freezes every live SSE stream in the process until it is granted - up to
+    the full busy_timeout when another writer holds it.
+    """
     with get_db() as con:
+        # Guard + UPDATE + re-SELECT in one write txn (v1.1 FB3): the bare
+        # SELECT ran in autocommit, so a racing delete made the re-SELECT
+        # None and _row_to_dict(None) raise a TypeError 500 instead of a 404.
+        con.execute("BEGIN IMMEDIATE")
         existing = con.execute(
             "SELECT id FROM personas WHERE id = ?", (persona_id,)
         ).fetchone()
@@ -159,9 +168,17 @@ async def patch_persona(persona_id: int, body: PersonaPatch) -> dict:
             "FROM personas WHERE id = ?",
             (persona_id,),
         ).fetchone()
+        if row is None:
+            raise HTTPException(404, "persona_not_found")
     selected_id = _read_selected_id()
     logger.info("Persona updated: id=%d", persona_id)
     return _row_to_dict(row, is_active=(row["id"] == selected_id))
+
+
+@router.patch("/{persona_id}")
+async def patch_persona(persona_id: int, body: PersonaPatch) -> dict:
+    """Partially update a persona. Only provided fields are changed."""
+    return await anyio.to_thread.run_sync(_patch_persona_sync, persona_id, body)
 
 
 # ---------------------------------------------------------------------------

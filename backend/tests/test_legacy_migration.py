@@ -177,6 +177,26 @@ def test_reconcile_drops_only_truly_unrecoverable_rows(client):
     assert _rows_for(sha_on_disk) == 1
 
 
+def test_reconcile_chunks_over_sql_var_ceiling(client, monkeypatch):
+    """v1.1 audit L2: the reconcile DELETE must chunk its IN(...) list so a
+    legacy upgrade with more orphan shas than SQL_VAR_CHUNK cannot overflow
+    the bound-parameter ceiling. Small chunk size forces multiple chunks."""
+    monkeypatch.setattr(database, "SQL_VAR_CHUNK", 10)
+    with database.get_db() as con:
+        for i in range(25):  # 25 orphan rows, no blob, no file -> all doomed
+            con.execute(
+                "INSERT INTO attachments (message_id, sha256, mime, width, "
+                "height, byte_size) VALUES (NULL, ?, 'image/png', 1, 1, 1)",
+                (f"{i:064d}",),
+            )
+
+    deleted = legacy_migration.reconcile_attachments_without_blobs(set())
+    assert deleted == 25  # all removed across 3 chunks, one atomic txn
+    with database.get_db() as con:
+        remaining = con.execute("SELECT COUNT(*) AS n FROM attachments").fetchone()["n"]
+    assert remaining == 0
+
+
 def test_save_transaction_atomicity_blob_rolls_back(client):
     """A failure after the blob INSERT rolls the blob back too (user test #6)."""
     sha = "d" * 64
@@ -322,3 +342,46 @@ def test_bootstrap_survives_migration_crash_and_skips_reconcile(
     assert reconcile_calls["n"] == 0  # crash skipped reconcile entirely
     assert _rows_for(sha) == 1  # nothing was destroyed
     assert (Path(config.UPLOADS_DIR) / f"{sha}.png").exists()
+
+
+# ── Audit: the premigrate snapshot could never be discarded ─────────────────
+#
+# The discard was gated on `pending`, computed BEFORE the migration runs. Once
+# the condition that made a pass dirty disappeared (the user deletes the stuck
+# uploads/<sha>.png by hand), every later pass was clean AND pending=False, so
+# the snapshot the dirty pass left behind was unreachable: a permanently
+# orphaned, full-size encrypted copy of the whole DB in %LOCALAPPDATA%,
+# mentioned in no UI and no README - and, before the rekey fix, still openable
+# with whatever passphrase was current when it was taken.
+
+
+def test_a_clean_pass_discards_a_snapshot_left_by_an_earlier_dirty_one():
+    from pathlib import Path
+    import legacy_migration
+    import routers.vault as vault_router
+
+    source = Path(vault_router.__file__).read_text(encoding="utf-8")
+    assert "if pending and not failed_shas:" not in source, (
+        "the discard is gated on a flag computed before the migration ran"
+    )
+    assert "if not failed_shas:" in source
+    assert callable(legacy_migration.discard_premigrate_backup)
+
+
+def test_discarding_a_snapshot_that_is_not_there_is_harmless(tmp_path, monkeypatch):
+    import config
+    import legacy_migration
+
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "app.db"), raising=False)
+    legacy_migration.discard_premigrate_backup()
+    legacy_migration.discard_premigrate_backup()
+
+
+def test_a_failed_pass_still_keeps_the_snapshot():
+    """The rule that has to survive the fix: ANY failure keeps it."""
+    from pathlib import Path
+    import routers.vault as vault_router
+
+    source = Path(vault_router.__file__).read_text(encoding="utf-8")
+    body = source[source.index("uploads_migration_pending"):]
+    assert "if not failed_shas:" in body[:2000]

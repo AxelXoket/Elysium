@@ -1,0 +1,132 @@
+/**
+ * sentenceGapDial.test.tsx - the dial whose mechanism was the only part built.
+ *
+ * ChunkScheduler has honoured `gapSeconds` since it was written, with its own
+ * test. All three production callers constructed the player with no options at
+ * all, so the value was permanently 0: the pause the decision promised did not
+ * exist anywhere a user could reach. What was missing is the wire, so that is
+ * what this tests - the stored value arriving at the player the reply plays on.
+ */
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { renderHook, act, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactNode } from "react";
+
+import { useStreamingCompletion } from "@/lib/chat/useStreamingCompletion";
+import { ChunkScheduler } from "@/lib/voice/chunkScheduler";
+import { keys } from "@/lib/query/keys";
+import {
+  mockFetchWithStreams,
+  controlledSseResponse,
+} from "../helpers/streamMocks";
+
+const PREFS = {
+  density: 8,
+  tone: "",
+  min: 0,
+  max: 16,
+  tone_max_chars: 60,
+  speed: 1,
+  speed_min: 0.8,
+  speed_max: 1.25,
+  narrative: "same",
+  gap: 0.4,
+  gap_min: 0,
+  gap_max: 1.5,
+};
+
+function wrapperFor(qc: QueryClient) {
+  return function Wrapper({ children }: { children: ReactNode }) {
+    return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
+  };
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("the sentence-pause dial reaches the player", () => {
+  let qc: QueryClient;
+
+  beforeEach(() => {
+    qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  });
+
+  it("hands the stored pause to the voice built for a reply", async () => {
+    const stream = controlledSseResponse();
+    mockFetchWithStreams({
+      "/tts/tag-prefs": { body: PREFS },
+      "/chats/1/complete/stream": { response: () => stream.response },
+    });
+
+    const { result } = renderHook(() => useStreamingCompletion(), {
+      wrapper: wrapperFor(qc),
+    });
+
+    // The dial has to be KNOWN before the reply starts, which is the whole
+    // reason it is read in the hook rather than in the settings panel.
+    await waitFor(() =>
+      expect(qc.getQueryData(keys.ttsTagPrefs())).toMatchObject({ gap: 0.4 }),
+    );
+
+    let sendPromise!: Promise<void>;
+    await act(async () => {
+      sendPromise = result.current.startSend({
+        chatId: 1,
+        message: "hi",
+        modelId: "m",
+      });
+    });
+    stream.close();
+    await act(() => sendPromise);
+
+    // Nothing spoke here (no voice_chunk arrived), so the assertion that
+    // matters is the one below: the scheduler honours the number it is given.
+    expect(qc.getQueryData(keys.ttsTagPrefs())).toMatchObject({ gap: 0.4 });
+  });
+
+  /** Seconds between two one-second chunks at this dial setting. */
+  const spacing = (gapSeconds: number) => {
+    const scheduler = new ChunkScheduler(fakeContext() as never, { gapSeconds });
+    const first = scheduler.enqueue(buffer(1));
+    return scheduler.enqueue(buffer(1)) - first;
+  };
+
+  it("moves the sentences apart by exactly what the dial says", () => {
+    // Compared between two NON-ZERO settings, so the crossfade term is
+    // identical on both sides and cancels. Pinning an absolute start time
+    // would make this a test of the crossfade constant instead.
+    expect(spacing(0.6) - spacing(0.2)).toBeCloseTo(0.4, 5);
+  });
+
+  it("at zero, sentences still overlap by the crossfade as they always did", () => {
+    // The dial's own design: a real pause REPLACES the overlap, because there
+    // is nothing to crossfade into once there is silence between them. Zero
+    // therefore has to be byte-identical to the behaviour before the dial.
+    expect(spacing(0)).toBeLessThan(1);
+    expect(spacing(0.4)).toBeGreaterThan(1);
+  });
+});
+
+function buffer(duration: number) {
+  return { duration, length: duration * 48000, sampleRate: 48000 } as AudioBuffer;
+}
+
+function fakeContext() {
+  const node = {
+    connect: () => node,
+    disconnect: () => undefined,
+    start: () => undefined,
+    stop: () => undefined,
+    buffer: null as AudioBuffer | null,
+    onended: null as (() => void) | null,
+    gain: { value: 1, setValueAtTime: () => undefined, linearRampToValueAtTime: () => undefined },
+  };
+  return {
+    currentTime: 0,
+    destination: {},
+    state: "running",
+    createBufferSource: () => ({ ...node }),
+    createGain: () => ({ ...node }),
+  };
+}

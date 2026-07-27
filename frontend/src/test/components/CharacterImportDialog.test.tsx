@@ -112,4 +112,71 @@ describe("Character Import Dialog Tests", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText("RAW_UPSTREAM_DETAIL")).not.toBeInTheDocument();
   });
+
+  // ── v1.1 FF14: pick a .json file ───────────────────────────────────────
+
+  it("FF14: picking a .json file fills the textarea and imports its text", async () => {
+    const fetchMock = mockFetch({});
+    const user = userEvent.setup();
+    render(
+      <CharacterImportDialog trigger={<Button>Import</Button>} />,
+      { wrapper },
+    );
+    await user.click(screen.getByRole("button", { name: /import/i }));
+    await screen.findByText("Import Character (JSON)");
+
+    const fileContent = '{"name":"From File","description":"picked"}';
+    const file = new File([fileContent], "char.json", {
+      type: "application/json",
+    });
+    const input = screen.getByLabelText(
+      "Character JSON file",
+    ) as HTMLInputElement;
+    expect(input).toHaveAttribute("accept", ".json,application/json");
+
+    // File.text() is available in jsdom's File since it extends Blob.
+    fireEvent.change(input, { target: { files: [file] } });
+
+    const textarea = (await screen.findByLabelText(
+      "Character JSON input",
+    )) as HTMLTextAreaElement;
+    await waitFor(() => {
+      expect(textarea.value).toBe(fileContent);
+    });
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(characterFixture), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const importBtns = screen.getAllByRole("button", { name: /import/i });
+    await user.click(importBtns[importBtns.length - 1]);
+
+    await waitFor(() => {
+      const postCalls = fetchMock.mock.calls.filter(
+        (call) =>
+          typeof call[0] === "string" &&
+          call[0].includes("/characters/import") &&
+          call[1]?.method === "POST",
+      );
+      expect(postCalls.length).toBeGreaterThanOrEqual(1);
+      expect(postCalls[0][1]?.body as string).toContain("From File");
+    });
+  });
+
+  it("FF14: the file picker is disabled while an import is pending", async () => {
+    mockFetch({});
+    const user = userEvent.setup();
+    render(
+      <CharacterImportDialog trigger={<Button>Import</Button>} />,
+      { wrapper },
+    );
+    await user.click(screen.getByRole("button", { name: /import/i }));
+    await screen.findByText("Import Character (JSON)");
+    // Not pending yet -> Choose file is enabled.
+    expect(
+      screen.getByRole("button", { name: "Choose file" }),
+    ).toBeEnabled();
+  });
 });

@@ -12,6 +12,7 @@ import {
 import { ModelPanel } from "@/components/models/ModelPanel";
 import { useUiStore } from "@/lib/store/uiStore";
 import { mockFetch } from "@/test/mocks/api";
+import { settingsFixture } from "@/test/mocks/fixtures";
 import { modelFixture } from "@/test/mocks/fixtures";
 import type { ModelList, Model } from "@/lib/schemas/models";
 import type { ReactNode } from "react";
@@ -63,11 +64,44 @@ function wrapper({ children }: { children: ReactNode }) {
   );
 }
 
-async function renderWithModel(model: Model) {
-  useUiStore.setState({ selectedModelId: model.id });
-  mockFetch({
+/**
+ * Routes every dialog test needs, with a WORKING stop-sequences store.
+ *
+ * Stop sequences round-trip through the vault now (they are character names -
+ * user content - so browser storage is closed to them), so a chip exists only
+ * once the save has landed and the server has echoed it back. A stub that
+ * always answered with an empty list would delete every chip on add.
+ */
+function mockDialogFetch(model: Model) {
+  const base = mockFetch({
+    "/settings": { body: settingsFixture },
     "/models/openrouter": { body: modelList(model) },
   });
+  let stored: string[] = [];
+  const json = (body: unknown) =>
+    new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+
+  const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("/settings/stop-sequences")) {
+      stored = JSON.parse(String(init?.body)).stop_sequences as string[];
+      return json({ ok: true, stop_sequences: stored });
+    }
+    if (url.includes("/settings")) {
+      return json({ ...settingsFixture, stop_sequences: stored });
+    }
+    return base(input, init);
+  });
+  vi.stubGlobal("fetch", mock);
+  return mock;
+}
+
+async function renderWithModel(model: Model) {
+  useUiStore.setState({ selectedModelId: model.id });
+  mockDialogFetch(model);
 
   render(<ModelPanel />, { wrapper });
 
@@ -98,9 +132,7 @@ async function renderWithModelAndApi(model: Model) {
   }
 
   useUiStore.setState({ selectedModelId: model.id });
-  mockFetch({
-    "/models/openrouter": { body: modelList(model) },
-  });
+  mockDialogFetch(model);
 
   render(
     <>
@@ -130,6 +162,16 @@ describe("Generation Settings Panel", () => {
       selectedModelId: null,
       selectedChatId: null,
       selectedCharacterId: null,
+      // v1.1 FF7: gen scalars now persist to the module-global uiStore and the
+      // provider hydrates from it - reset them so tests don't leak into each
+      // other's "last committed value".
+      genTemperature: 0.8,
+      genTopP: 0.9,
+      genTopK: 40,
+      genRepetitionPenalty: 1.05,
+      genMaxOutput: 1024,
+      genSeed: "",
+      genContextBudget: 16384,
     });
   });
 
@@ -362,9 +404,11 @@ function renderSettingsHarness() {
   }
 
   render(
-    <GenerationSettingsProvider>
-      <Harness />
-    </GenerationSettingsProvider>,
+    <QueryClientProvider client={new QueryClient()}>
+      <GenerationSettingsProvider>
+        <Harness />
+      </GenerationSettingsProvider>
+    </QueryClientProvider>,
   );
 
   return api;
@@ -607,21 +651,31 @@ describe("Generation Settings stop sequences (dialog)", () => {
     expect(screen.getByLabelText("Stop sequence")).toBeEnabled();
   });
 
-  it("disables the section when the model does not list stop", async () => {
+  // Audit: this case used to assert the SECTION WAS DISABLED, on the premise
+  // stated in the code ("stop is filtered out of unsupported-model requests
+  // anyway"). That premise is false: filterParamsByModel keeps `stop`
+  // regardless of supported_parameters and the backend mirrors it. So the UI
+  // blocked a feature that works AND kept sending the chips it had greyed out.
+  it("stays usable on a model that does not advertise stop", async () => {
     // fullModel supports the six other params but not stop.
-    await renderWithModel(fullModel);
-    await openDialog();
+    const api = await renderWithModelAndApi(fullModel);
+    const user = await openDialog();
 
-    expect(screen.getByLabelText("Stop sequence")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Add" })).toBeDisabled();
-    expect(
-      screen.getAllByText("Not supported by selected model.").length,
-    ).toBeGreaterThan(0);
+    expect(screen.getByLabelText("Stop sequence")).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Add" })).toBeEnabled();
+
+    await user.type(screen.getByLabelText("Stop sequence"), "Human:");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+
+    // The chip is on the wire either way - which is exactly why the editor
+    // must not pretend the feature is unavailable.
+    expect(api.current!.getRequestSettings().generationParams.stop).toEqual([
+      "Human:",
+    ]);
   });
 
   // U3: a user who added stop chips under a model that supports `stop`, then
   // switched to one that does not, must still be able to clear the stale chips.
-  // Only the Add input/button are disabled; the chip remove buttons stay live.
   it("U3: keeps chip remove buttons enabled when the model lacks stop support", async () => {
     // fullModel supports the six other params but NOT stop.
     const api = await renderWithModelAndApi(fullModel);
@@ -630,11 +684,7 @@ describe("Generation Settings stop sequences (dialog)", () => {
     // Chips carried over in memory from a previous stop-capable model.
     act(() => api.current!.setStopSequences(["User:", "END"]));
 
-    // The add controls are disabled because the model does not support stop.
-    expect(screen.getByLabelText("Stop sequence")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Add" })).toBeDisabled();
-
-    // ...but every remove button stays enabled so stale chips can be cleared.
+    // Every remove button stays enabled so stale chips can be cleared.
     const removeButtons = screen.getAllByLabelText(/Remove stop sequence/);
     expect(removeButtons).toHaveLength(2);
     for (const btn of removeButtons) {
@@ -755,5 +805,214 @@ describe("Context budget UI max cap", () => {
       "max",
       "2000000",
     );
+  });
+
+  // ── v1.1 FF7: sampling scalars survive a provider remount (vault re-lock).
+  // Stop sequences survive too, but from the VAULT rather than localStorage -
+  // they are character names, i.e. user content, which browser storage is
+  // closed to (privacy rule S-09b).
+  describe("FF7 persistence", () => {
+    /** The settings endpoint, with the server's own clamp/dedupe behaviour. */
+    function stubSettingsStore() {
+      let stored: string[] = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = String(input);
+          const json = (data: unknown) =>
+            new Response(JSON.stringify(data), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          if (url.includes("/settings/stop-sequences")) {
+            const body = JSON.parse(String(init?.body)) as {
+              stop_sequences: string[];
+            };
+            stored = [...new Set(body.stop_sequences.filter(Boolean))].slice(0, 4);
+            return json({ ok: true, stop_sequences: stored });
+          }
+          if (url.includes("/settings")) {
+            return json({
+              ...settingsFixture,
+              stop_sequences: stored,
+            });
+          }
+          return json({});
+        }),
+      );
+    }
+
+    beforeEach(() => {
+      stubSettingsStore();
+      // Reset the persisted slice to defaults for a clean baseline.
+      useUiStore.getState().setGenSettings({
+        genTemperature: 0.8,
+        genTopP: 0.9,
+        genTopK: 40,
+        genRepetitionPenalty: 1.05,
+        genMaxOutput: 1024,
+        genSeed: "",
+        genContextBudget: 16384,
+      });
+    });
+
+    function ProbeOnly() {
+      const api = useGenerationSettings();
+      probeRef.current = api;
+      return null;
+    }
+    const probeRef: {
+      current: ReturnType<typeof useGenerationSettings> | null;
+    } = { current: null };
+
+    it("temperature/max output rehydrate after a remount, and so do stop sequences", async () => {
+      const { unmount } = render(
+        <QueryClientProvider client={new QueryClient()}>
+          <GenerationSettingsProvider>
+            <ProbeOnly />
+          </GenerationSettingsProvider>
+        </QueryClientProvider>,
+      );
+
+      act(() => {
+        probeRef.current!.setSetting("temperature", 1.3);
+        probeRef.current!.setSetting("max_tokens", 512);
+        probeRef.current!.setStopSequences(["Alice", "Bob"]);
+      });
+
+      // Persisted slice mirrors the sampling scalars (write-through).
+      expect(useUiStore.getState().genTemperature).toBe(1.3);
+      expect(useUiStore.getState().genMaxOutput).toBe(512);
+
+      // The stop sequences go to the VAULT, so the write is a round trip -
+      // let it land before tearing the provider down.
+      await waitFor(() => {
+        expect(
+          (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.some(
+            ([url]) => String(url).includes("/settings/stop-sequences"),
+          ),
+        ).toBe(true);
+      });
+
+      // Simulate the VaultGate remounting the provider on lock/unlock.
+      unmount();
+      probeRef.current = null;
+      render(
+        <QueryClientProvider client={new QueryClient()}>
+          <GenerationSettingsProvider>
+            <ProbeOnly />
+          </GenerationSettingsProvider>
+        </QueryClientProvider>,
+      );
+
+      // Sampling scalars rehydrated from the persisted slice.
+      expect(probeRef.current!.settings.temperature).toBe(1.3);
+      expect(probeRef.current!.settings.max_tokens).toBe(512);
+      // Stop sequences survive too, from the VAULT rather than from
+      // localStorage. They are character names - user content - so browser
+      // storage is closed to them (privacy rule S-09b); keeping them in memory
+      // meant retyping them every session and after every vault lock. The
+      // encrypted settings table keeps the rule and drops the retyping.
+      await waitFor(() => {
+        expect(probeRef.current!.stopSequences).toEqual(["Alice", "Bob"]);
+      });
+    });
+  });
+});
+
+/**
+ * Stop sequences round-trip through the vault, so the local mirror has the two
+ * failure modes every write-through mirror has.
+ */
+describe("stop sequences: the vault mirror", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function ProbeOnly({
+    take,
+  }: {
+    take: (api: ReturnType<typeof useGenerationSettings>) => void;
+  }) {
+    take(useGenerationSettings());
+    return null;
+  }
+
+  function renderProbe(fetchImpl: typeof fetch) {
+    vi.stubGlobal("fetch", fetchImpl);
+    const ref: { current: ReturnType<typeof useGenerationSettings> | null } = {
+      current: null,
+    };
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <GenerationSettingsProvider>
+          <ProbeOnly take={(api) => (ref.current = api)} />
+        </GenerationSettingsProvider>
+      </QueryClientProvider>,
+    );
+    return ref;
+  }
+
+  it("reverts to what the vault holds when the save fails", async () => {
+    // Keeping the mirror would leave the chips showing a value that was never
+    // saved, contradicting the error toast raised beside them.
+    const ref = renderProbe(
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/settings/stop-sequences")) {
+          return new Response(JSON.stringify({ detail: "vault_locked" }), {
+            status: 423,
+          });
+        }
+        return new Response(
+          JSON.stringify({ ...settingsFixture, stop_sequences: ["Kept"] }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as unknown as typeof fetch,
+    );
+
+    await waitFor(() => expect(ref.current!.stopSequences).toEqual(["Kept"]));
+    act(() => ref.current!.setStopSequences(["Never saved"]));
+    await waitFor(() => expect(ref.current!.stopSequences).toEqual(["Kept"]));
+  });
+
+  it("a slow first save does not clobber a newer edit", async () => {
+    // Two quick edits: the FIRST response must not retire the SECOND one's
+    // mirror, or the older list flashes back until the second lands.
+    let releaseFirst: (() => void) | null = null;
+    let call = 0;
+    const ref = renderProbe(
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const ok = (body: unknown) =>
+          new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        if (url.includes("/settings/stop-sequences")) {
+          const sent = JSON.parse(String(init?.body)).stop_sequences;
+          call += 1;
+          if (call === 1) {
+            await new Promise<void>((r) => {
+              releaseFirst = r;
+            });
+          }
+          return ok({ ok: true, stop_sequences: sent });
+        }
+        return ok({ ...settingsFixture, stop_sequences: [] });
+      }) as unknown as typeof fetch,
+    );
+
+    await waitFor(() => expect(ref.current).not.toBeNull());
+    act(() => ref.current!.setStopSequences(["first"]));
+    act(() => ref.current!.setStopSequences(["second"]));
+    expect(ref.current!.stopSequences).toEqual(["second"]);
+
+    await act(async () => {
+      releaseFirst?.();
+      await Promise.resolve();
+    });
+    // Still the newer edit, never a flash back to "first".
+    await waitFor(() => expect(ref.current!.stopSequences).toEqual(["second"]));
   });
 });

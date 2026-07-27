@@ -20,12 +20,29 @@ FRONTEND_DIST = os.path.abspath(os.path.join(BACKEND, "..", "frontend", "dist"))
 
 # The built SPA (index.html + assets + /elysium-icon.png) served at runtime.
 datas = [(FRONTEND_DIST, "frontend_dist")]
+
+# The engine worker halves must exist as REAL FILES on disk: they are run by an
+# interpreter that is not ours and cannot see inside the exe. In a onefile
+# build the bootloader extracts data files to sys._MEIPASS at launch, which is
+# exactly the real path tts/host.py:worker_script() resolves to.
+#
+# The pinned requirements travel too. They are the measured working
+# configuration for each engine - without them "Set up voice" would resolve
+# "latest" and quietly install something nobody ever tested.
+_WORKER_DIR = os.path.join(BACKEND, "tts", "worker")
+datas += [
+    (os.path.join(_WORKER_DIR, name), "tts_worker")
+    for name in os.listdir(_WORKER_DIR)
+    if name.endswith(".py") and name != "__init__.py"
+]
+datas += [(os.path.join(BACKEND, "tts", "requirements"), "tts/requirements")]
 binaries = []
 
 # App modules PyInstaller cannot see through the lazy `from main import app`.
 hiddenimports = [
     "main", "config", "database", "crypto", "vault_state",
-    "keyring_service", "network_client", "openrouter", "proxy_health",
+    "keyring_service", "secrets_service", "legacy_migration",
+    "messages_common", "network_client", "openrouter", "proxy_health",
     "attachments_service",
 ]
 hiddenimports += collect_submodules("routers")

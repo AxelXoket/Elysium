@@ -345,4 +345,156 @@ describe("Composer", () => {
       .join(" ");
     expect(described).toMatch(/api key/i);
   });
+
+  // ── v1.1 FF3/H3: focus recovery + Escape-stop ────────────────────────
+
+  it("FF3: focus returns to the textarea when pending ends", async () => {
+    const user = userEvent.setup();
+    setupReadyState();
+    const stream = controlledSseResponse();
+    mockFetchWithStreams({
+      "/settings": { body: settingsFixture },
+      "/chats/1/messages": { body: [messageFixture] },
+      "/chats/1/complete/stream": { response: () => stream.response },
+      "/chats": { body: [] },
+    });
+    render(<ChatCanvas />, { wrapper });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Message")).not.toBeDisabled();
+    });
+
+    await user.type(screen.getByLabelText("Message"), "Focus test");
+    await user.click(screen.getByRole("button", { name: /send message/i }));
+
+    // Pending: the textarea is disabled - focus fell to body.
+    await waitFor(() => {
+      expect(screen.getByLabelText("Message")).toBeDisabled();
+    });
+
+    stream.emit({
+      type: "user_message",
+      message: completionFixture.user_message,
+    });
+    stream.emit({ type: "delta", content: "Hi" });
+    stream.emit({ type: "done", ...completionFixture });
+    stream.close();
+
+    // Pending ends → focus recovered without a mouse trip (FF3).
+    await waitFor(() => {
+      expect(screen.getByLabelText("Message")).not.toBeDisabled();
+      expect(screen.getByLabelText("Message")).toHaveFocus();
+    });
+  });
+
+  it("H3: Escape stops the stream (window-level - textarea is disabled)", async () => {
+    const user = userEvent.setup();
+    setupReadyState();
+    const stream = controlledSseResponse();
+    mockFetchWithStreams({
+      "/settings": { body: settingsFixture },
+      "/chats/1/messages": { body: [messageFixture] },
+      "/chats/1/complete/stream": { response: () => stream.response },
+      "/chats": { body: [] },
+    });
+    render(<ChatCanvas />, { wrapper });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Message")).not.toBeDisabled();
+    });
+
+    await user.type(screen.getByLabelText("Message"), "Escape test");
+    await user.click(screen.getByRole("button", { name: /send message/i }));
+
+    // Streaming state: the Stop button is on screen.
+    stream.emit({
+      type: "user_message",
+      message: completionFixture.user_message,
+    });
+    await screen.findByRole("button", { name: /stop generating/i });
+
+    // Escape from ANYWHERE (focus is on body - the textarea is disabled).
+    await user.keyboard("{Escape}");
+
+    // The stream aborts: Stop disappears, composer returns to sendable state.
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("button", { name: /stop generating/i }),
+      ).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Message")).not.toBeDisabled();
+    });
+  });
+
+  // ── v1.1 E1: send/stop button restyle (class, not inline paint) ──────
+
+  it("E1: send button carries composer-send-button and no inline paint", async () => {
+    setupReadyState();
+    mockFetch({
+      "/settings": { body: settingsFixture },
+      "/chats/1/messages": { body: [messageFixture] },
+      "/chats": { body: [] },
+    });
+    render(<ChatCanvas />, { wrapper });
+    await waitFor(() => {
+      expect(screen.getByLabelText("Message")).not.toBeDisabled();
+    });
+
+    const send = screen.getByRole("button", { name: /send message/i });
+    expect(send.className).toContain("composer-send-button");
+    expect(send.className).not.toContain("btn-sage-glow");
+    // The paint now lives in the stylesheet, not an inline style.
+    expect(send.style.backgroundColor).toBe("");
+    expect(send.style.color).toBe("");
+  });
+
+  it("E1: stop button carries the same class mid-stream", async () => {
+    setupReadyState();
+    const stream = controlledSseResponse();
+    mockFetchWithStreams({
+      "/settings": { body: settingsFixture },
+      "/chats/1/messages": { body: [messageFixture] },
+      "/chats/1/complete/stream": { response: () => stream.response },
+      "/chats": { body: [] },
+    });
+    const user = userEvent.setup();
+    render(<ChatCanvas />, { wrapper });
+    await waitFor(() => {
+      expect(screen.getByLabelText("Message")).not.toBeDisabled();
+    });
+
+    await user.type(screen.getByLabelText("Message"), "hi");
+    await user.click(screen.getByRole("button", { name: /send message/i }));
+    stream.emit({ type: "user_message", message: completionFixture.user_message });
+
+    const stop = await screen.findByRole("button", { name: /stop generating/i });
+    expect(stop.className).toContain("composer-send-button");
+    expect(stop.className).not.toContain("btn-sage-glow");
+    expect(stop.style.backgroundColor).toBe("");
+
+    stream.emit({ type: "delta", content: "x" });
+    stream.emit({ type: "done", ...completionFixture });
+    stream.close();
+  });
+
+  // ── v1.1 E3: composer font tracks the reader setting ─────────────────
+
+  it("E3: textarea consumes the reader font var, not a fixed text-sm", async () => {
+    setupReadyState();
+    mockFetch({
+      "/settings": { body: settingsFixture },
+      "/chats/1/messages": { body: [messageFixture] },
+      "/chats": { body: [] },
+    });
+    render(<ChatCanvas />, { wrapper });
+    await waitFor(() => {
+      expect(screen.getByLabelText("Message")).not.toBeDisabled();
+    });
+
+    const ta = screen.getByLabelText("Message") as HTMLTextAreaElement;
+    expect(ta.className).not.toContain("text-sm");
+    expect(ta.style.fontSize).toBe("var(--msg-fs, 0.875rem)");
+    // jsdom never resolves min()/calc() - assert the literal formula pieces.
+    expect(ta.style.maxHeight).toContain("min(11rem");
+    expect(ta.style.maxHeight).toContain("0.75rem");
+  });
 });

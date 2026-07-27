@@ -1,0 +1,192 @@
+"""V8-4 - the reading-speed dial.
+
+Two halves, tested where each can actually run.
+
+`tts/speed.py` is host-side and pure stdlib, so its routing (who applies the
+rate: the engine or the DSP) is asserted here directly.
+
+`tts/worker/_dsp.py` needs numpy, which the app venv deliberately does not have.
+Its maths lives in `dsp_numeric_check.py` and is executed here through a
+registered engine interpreter - real coverage on a machine with a voice engine
+set up, an honest skip on one without. The shape checks below run everywhere.
+"""
+import ast
+import re
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+import config
+from tts import speed
+from tts.base import ParamSpec
+
+WORKER_DSP = Path(__file__).resolve().parents[1] / "tts" / "worker" / "_dsp.py"
+NUMERIC = Path(__file__).resolve().parent / "dsp_numeric_check.py"
+
+
+# ── the routing decision (host side, always runs) ────────────────────────────
+
+def fish_specs():
+    """Fish has no rate control of its own."""
+    return [ParamSpec("temperature", "float", 0.7, "Expressiveness"),
+            ParamSpec("top_p", "float", 0.8, "Top-p")]
+
+
+def xtts_specs():
+    return [ParamSpec("temperature", "float", 0.65, "Expressiveness"),
+            ParamSpec("speed", "float", 1.0, "Speed", minimum=0.5, maximum=1.5)]
+
+
+def test_an_engine_without_a_rate_knob_gets_the_dsp_path():
+    plan = speed.plan(fish_specs(), 1.2)
+    assert plan.native_param is None
+    assert plan.uses_dsp
+    assert plan.dsp_rate == pytest.approx(1.2)
+
+
+def test_an_engine_with_its_own_rate_knob_never_runs_the_dsp():
+    # Generating at the target pace beats reshaping the output afterwards -
+    # there is simply nothing to smear.
+    plan = speed.plan(xtts_specs(), 1.2)
+    assert plan.native_param == "speed"
+    assert not plan.uses_dsp
+    assert plan.dsp_rate == pytest.approx(1.0)
+
+
+def test_the_native_knob_is_hidden_from_the_settings_list():
+    shown = [s.name for s in speed.hide_native(xtts_specs())]
+    assert "speed" not in shown
+    assert "temperature" in shown
+
+
+def test_a_non_speed_engine_keeps_its_whole_settings_list():
+    assert len(speed.hide_native(fish_specs())) == 2
+
+
+def test_engine_values_drives_the_native_knob_and_nothing_else():
+    assert speed.engine_values(xtts_specs(), 1.2) == {"speed": pytest.approx(1.2)}
+    assert speed.engine_values(fish_specs(), 1.2) == {}
+
+
+def test_the_engines_own_range_wins_over_ours():
+    # Ours is 0.80-1.25; an engine whose knob stops at 1.1 must not be handed
+    # 1.25 and left to floor it silently.
+    specs = [ParamSpec("speed", "float", 1.0, "Speed", minimum=0.9, maximum=1.1)]
+    assert speed.engine_values(specs, 1.25) == {"speed": pytest.approx(1.1)}
+
+
+@pytest.mark.parametrize("given,want", [
+    (None, 1.0), ("nonsense", 1.0), (0.1, speed.MIN_RATE),
+    (9.0, speed.MAX_RATE), (float("nan"), 1.0), (1.0, 1.0),
+])
+def test_rate_clamping(given, want):
+    assert speed.clamp(given) == pytest.approx(want)
+
+
+def test_a_rate_of_one_asks_nobody_to_do_anything():
+    assert not speed.plan(fish_specs(), 1.0).uses_dsp
+    assert not speed.plan(fish_specs(), 1.01).uses_dsp
+
+
+# ── the worker module's shape (always runs, no numpy needed) ─────────────────
+
+def test_dsp_module_parses():
+    ast.parse(WORKER_DSP.read_text(encoding="utf-8"), filename=str(WORKER_DSP))
+
+
+def test_numpy_is_not_imported_at_module_scope():
+    """A module-scope numpy would break the worker's failure contract.
+
+    A damaged engine venv must exit with "the environment is broken", not die
+    at import with "no idea what happened" - and the packaging test enforces
+    exactly this for every file in the worker directory.
+    """
+    tree = ast.parse(WORKER_DSP.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            names = [a.name for a in getattr(node, "names", [])]
+            names.append(getattr(node, "module", "") or "")
+            assert not any(n.split(".")[0] == "numpy" for n in names), \
+                "numpy must be imported inside the functions, not at module scope"
+
+
+def test_the_advertised_range_matches_the_host_side_dial():
+    """Two files hold the same numbers; a divergence would let the UI offer a
+    rate the DSP then silently clamps away."""
+    src = WORKER_DSP.read_text(encoding="utf-8")
+    assert f"MIN_RATE = {speed.MIN_RATE}" in src
+    assert f"MAX_RATE = {speed.MAX_RATE}" in src
+
+
+def test_the_no_op_threshold_is_the_same_on_both_sides():
+    """The host decides whether to SEND a rate; the worker decides whether to
+    ACT on one. If those thresholds drift, a rate lands in the payload that the
+    worker then ignores - a dial that moves and does nothing, which is the one
+    failure mode a settings page cannot explain.
+
+    They cannot share a constant: `_dsp` lives in the worker tree and the app
+    venv has no numpy to import it with. So the agreement is asserted instead.
+    """
+    import routers.tts_runtime as rt
+
+    src = WORKER_DSP.read_text(encoding="utf-8")
+    m = re.search(r"RATE_EPSILON\s*=\s*([0-9.]+)", src)
+    assert m, "_dsp lost its RATE_EPSILON"
+    worker_eps = float(m.group(1))
+    # Probe the host-side helper right at the worker's threshold.
+    assert rt._dsp_noop(1.0 + worker_eps / 2) is True
+    assert rt._dsp_noop(1.0 + worker_eps * 2) is False
+
+
+# ── the maths (runs wherever numpy can be reached) ───────────────────────────
+
+def _numpy_interpreter() -> str | None:
+    """An interpreter that can import numpy: this one, or a registered engine.
+
+    This deliberately reads the registry at its REAL location rather than the
+    temp one `_isolated_voice_registry` provides. That shield exists so that
+    discovery tests describe the code instead of the machine they run on - and
+    this test is the opposite kind on purpose. It asks a question about the
+    machine ("is there a python here that can import numpy?") and skips when
+    the answer is no, so it can neither leak a real model into a discovery
+    assertion nor pass because of one.
+    """
+    override = os.environ.get("ELYSIUM_DSP_TEST_PYTHON")
+    if override and _has_numpy(override):
+        return override
+    if _has_numpy(sys.executable):
+        return sys.executable
+    registry = Path(config.TTS_DIR) / "runtimes.json"
+    try:
+        data = json.loads(registry.read_text("utf-8"))
+    except Exception:                                   # noqa: BLE001
+        return None
+    for engine in (data.get("engines") or {}).values():
+        exe = engine.get("python")
+        if exe and Path(exe).is_file() and _has_numpy(exe):
+            return exe
+    return None
+
+
+def _has_numpy(exe: str) -> bool:
+    try:
+        return subprocess.run([exe, "-c", "import numpy"], timeout=60,
+                              capture_output=True).returncode == 0
+    except Exception:                                   # noqa: BLE001
+        return False
+
+
+def test_dsp_numeric_checks_pass():
+    exe = _numpy_interpreter()
+    if exe is None:
+        pytest.skip("no numpy-capable interpreter: set up a voice engine to "
+                    "cover the DSP maths (tests/dsp_numeric_check.py)")
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    proc = subprocess.run([exe, str(NUMERIC)], capture_output=True,
+                          text=True, timeout=600, env=env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "all dsp numeric checks passed" in proc.stdout

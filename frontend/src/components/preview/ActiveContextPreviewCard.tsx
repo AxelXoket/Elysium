@@ -9,6 +9,7 @@ import { useChats, useMessages } from "@/lib/query/chats";
 import { useGenerationSettings } from "@/components/generation/GenerationSettingsContext";
 import { buildActiveContextPreview } from "@/lib/preview";
 import { findModelById, TEXT_ONLY_NOTE } from "@/lib/models";
+import { useVoiceMode } from "@/lib/query/tts";
 import { estimateContextUsage, formatTokensCompact } from "@/lib/context";
 
 /**
@@ -69,6 +70,7 @@ export function ActiveContextPreviewCard() {
   const chatCharacter = selectedChat
     ? characters?.find((c) => c.id === selectedChat.character_id) ?? null
     : null;
+  const { data: voiceMode } = useVoiceMode();
   const contextUsage = estimateContextUsage({
     model,
     character: chatCharacter,
@@ -76,6 +78,10 @@ export function ActiveContextPreviewCard() {
     messages: messages ?? null,
     generationParams,
     contextBudgetTokens,
+    // G2: charge the voice-delivery block exactly when the backend would
+    // inject it. While the flag is unknown (query loading/error) charge
+    // nothing - matching a backend that cannot inject what it cannot read.
+    voicePromptChars: voiceMode?.active ? voiceMode.prompt_chars : 0,
   });
   const messagesValue =
     contextUsage && contextUsage.totalMessages > 0

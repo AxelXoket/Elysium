@@ -195,4 +195,12 @@ class KeyVault:
                     pass
         salt_new.replace(self.salt_path)
         ver_new.replace(self.verifier_path)
+        # The shelved identity covered the crash window that just closed. Left
+        # on disk it is a working recipe for the OLD key - same scrypt params,
+        # same 16-byte salt - sitting beside any encrypted snapshot still under
+        # that key, so a rotation would revoke nothing for anyone who knew the
+        # previous passphrase. The caller re-keys the snapshots; this removes
+        # the recipe.
+        for p in (self.salt_path, self.verifier_path):
+            p.with_name(f"{p.name}.bak-{ts}").unlink(missing_ok=True)
         return key

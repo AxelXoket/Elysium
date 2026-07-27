@@ -1,7 +1,16 @@
-"""routers/completions.py -- Text-only OpenRouter completion endpoint (Phase 5B).
+"""routers/completions.py -- OpenRouter completion endpoints.
 
-Route:
-    POST /chats/{chat_id}/complete  - send a user message, get assistant response.
+Routes:
+    POST /chats/{chat_id}/complete                      - non-streaming send
+    POST /chats/{chat_id}/complete/stream               - SSE send
+    POST /chats/{chat_id}/messages/{id}/regenerate/stream - SSE regenerate
+    POST /chats/{chat_id}/messages/{id}/edit/stream     - SSE edit + rewrite
+
+The three SSE endpoints carry all of the abort, stale-exchange and voice
+handling; the non-streaming one is the simple case. A change that touches only
+`complete_chat` has almost certainly missed the part that matters - this header
+used to say the opposite ("Text-only, non-streaming ... No streaming"), which
+is what the next change would have been built on.
 
 Privacy invariants:
     - API key is read via secrets_service.get_secret() (sealed in the
@@ -14,9 +23,10 @@ Privacy invariants:
     - Raw OpenRouter error bodies are never forwarded to the client.
 
 Scope:
-    - Text-only, non-streaming.
-    - No tools, tool_choice, response_format, image_url, file, reasoning.
-    - No streaming (stream: true).
+    - Text, plus `image_url` parts for models that accept image input
+      (_model_accepts_images is the ONE rule; the attachment gate and payload
+      assembly both read it, which is what stops them disagreeing).
+    - No tools, tool_choice, response_format, file, reasoning.
     - No local models.
 """
 
@@ -38,17 +48,22 @@ from config import (
     IMAGE_TOKEN_ESTIMATE,
     MAX_ATTACHMENTS_PER_MESSAGE,
 )
-from database import get_db, get_setting
+import voice_tags
+from database import get_db
+from typing import Literal
+
 from vault_state import VaultLockedError
+from tts import stream_hook
+from routers import tts_runtime
 from secrets_service import get_secret
 from attachments_service import (
     AttachmentError,
     validate_staged,
     link_attachments,
     load_for_messages,
+    delete_for_messages,
     build_image_part,
     prefetch_blobs,
-    to_api as attachment_to_api,
 )
 from openrouter import (
     OpenRouterError,
@@ -57,7 +72,7 @@ from openrouter import (
     complete,
     complete_stream,
 )
-from proxy_health import check_proxy_health
+from proxy_health import enforce_proxy_gate
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +88,15 @@ _DEFAULT_MAX_TOKENS = 2048
 # Flat per-image budget cost, expressed in "estimate chars" so the existing
 # char-based trim math keeps working unchanged.
 _IMAGE_CHAR_COST = IMAGE_TOKEN_ESTIMATE * _CHAR_PER_TOKEN
+# v1.1 audit L6: the stream-abort cleanup writes run SYNCHRONOUSLY on the event
+# loop (awaiting inside GeneratorExit handling is fragile). A short busy_timeout
+# bounds how long a contended write lock can stall the loop; past it the write
+# fails fast, the partial is dropped, and the abort handler logs and re-raises.
+_ABORT_DB_BUSY_TIMEOUT_MS = 800
+#: The ordinary ceiling, matching database.get_db's own default. Named here so
+#: the salvage path can pick between the two by which caller it has, instead of
+#: repeating the number.
+_DB_BUSY_TIMEOUT_MS = 15000
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +152,25 @@ class ProviderPolicy(BaseModel):
     # They are NOT accepted from the frontend (extra="ignore" drops them).
 
 
-class CompleteRequest(BaseModel):
+class SpeakOptions(BaseModel):
+    """Whether this reply should be SPOKEN while it is written, and how fast.
+
+    Off by default and on every request type: the user's rule was that voice
+    changes nothing until they ask for it. `speak_rate` is clamped server-side
+    (tts/speed.py) - a client is not trusted to keep the dial inside the range
+    where the time-stretch still sounds like speech.
+    """
+    model_config = ConfigDict(extra="ignore")
+
+    speak: bool = False
+    speak_rate: float | None = None
+    # How *asterisk narration* is voiced: same tone, a narrator tone, or not
+    # read at all. Validated here rather than trusted: an unknown value would
+    # reach speech_prep and raise inside an SSE generator, costing the reply.
+    speak_narrative: Literal["same", "narrator", "skip"] = "same"
+
+
+class CompleteRequest(SpeakOptions):
     model_config = ConfigDict(extra="ignore")
 
     message: str
@@ -196,14 +238,66 @@ def _build_system_block(char_row) -> str:
     return "\n\n".join(sections)
 
 
-def _entry_chars(text: str, attachments: list[dict] | None) -> int:
-    """Budget length of one message: text chars + flat per-image cost."""
+def _build_persona_block(persona_row) -> str:
+    """Render the user-persona system block (v1.1 KUME D).
+
+    Same `[Label]\\n{value}` convention as the character block so the model
+    sees one consistent sectioning scheme. A name-only persona still injects
+    the header - the name alone is meaningful, and this was the reported bug
+    (the persona NAME never reached the model before). Frontend parity:
+    lib/context/estimateContextUsage.ts buildPersonaBlock must match this
+    char-for-char or the context gauge undercounts by 16 + len(name).
+
+    Privacy: the description is never logged (personas.py invariant).
+    """
+    name = (persona_row["display_name"] or "").strip()
+    desc = (persona_row["description"] or "").strip()
+    if not name:
+        # The schema forbids blank names; this defensive branch only protects
+        # hand-edited DBs. Never emit a nameless header.
+        return desc
+    if desc:
+        return f"[User Persona: {name}]\n{desc}"
+    return f"[User Persona: {name}]"
+
+
+def _model_accepts_images(meta: dict | None) -> bool:
+    """Whether a payload for this model may carry image parts.
+
+    ONE rule, shared by the request gate (_validate_request_attachments) and
+    payload assembly (_prepare_completion). Refuse only when cached metadata
+    POSITIVELY says the model has no image input; unknown or empty metadata is
+    allowed through, because the provider is the final arbiter.
+
+    Deriving this twice is what made the attachment gate accept an image that
+    assembly then silently dropped: with an empty _model_cache (fresh start, or
+    any settings change calling invalidate_model_cache) the gate said "let the
+    provider decide" while assembly read the same absent metadata as "no image
+    support" and stripped every image from the payload - no error, no SSE
+    event, no log, and the user billed for a reply about an image the model
+    never received.
+    """
+    mods = (meta or {}).get("input_modalities") or []
+    return not (meta is not None and mods and "image" not in mods)
+
+
+def _entry_chars(text: str, attachments: list[dict] | None,
+                 include_images: bool = True) -> int:
+    """Budget length of one message: text chars + flat per-image cost.
+
+    include_images mirrors payload assembly: images the payload will not carry
+    cost nothing, or the trim would drop real history to make room for bytes
+    that are never sent.
+    """
+    if not include_images:
+        return len(text)
     return len(text) + len(attachments or []) * _IMAGE_CHAR_COST
 
 
 def _content_for(text: str, attachments: list[dict] | None,
                  include_images: bool,
-                 image_blobs: dict[str, bytes]) -> str | list[dict]:
+                 image_blobs: dict[str, bytes],
+                 omitted: list[int] | None = None) -> str | list[dict]:
     """Plain string content, or OpenRouter content parts when images ride along.
 
     Image parts are emitted only when the model accepts image input; for
@@ -217,7 +311,7 @@ def _content_for(text: str, attachments: list[dict] | None,
         return text
     parts: list[dict] = [{"type": "text", "text": text}]
     for row in attachments:
-        part = build_image_part(row, image_blobs)
+        part = build_image_part(row, image_blobs, omitted)
         if part is not None:
             parts.append(part)
     return parts if len(parts) > 1 else text
@@ -234,6 +328,8 @@ def _assemble_messages(
     include_images: bool = False,
     pending_attachments: list[dict] | None = None,
     image_blobs: dict[str, bytes] | None = None,
+    voice_block: str = "",
+    omitted_images: list[int] | None = None,
 ) -> list[dict]:
     """Build the final messages list with context budget truncation.
 
@@ -251,8 +347,13 @@ def _assemble_messages(
     phi_chars = len(post_history_instruction.strip()) if post_history_instruction else 0
 
     available = context_budget_chars - max_tokens_chars
-    system_chars = len(system_block) + len(persona_block) + phi_chars
-    user_msg_chars = _entry_chars(user_message, pending_attachments)
+    # The voice-delivery block (V4) is reserved like the PHI: injected
+    # unconditionally when voice is on, so unbudgeted it would silently push
+    # the payload past the model context on long chats.
+    system_chars = (len(system_block) + len(persona_block) + phi_chars
+                    + len(voice_block))
+    user_msg_chars = _entry_chars(user_message, pending_attachments,
+                                  include_images)
     min_required = system_chars + user_msg_chars
 
     if min_required > available:
@@ -261,11 +362,14 @@ def _assemble_messages(
     # Trim history from oldest end until it fits
     remaining = available - system_chars - user_msg_chars
     history_chars = sum(
-        _entry_chars(m["content"], m.get("attachments")) for m in history
+        _entry_chars(m["content"], m.get("attachments"), include_images)
+        for m in history
     )
     while history_chars > remaining and history:
         dropped = history.pop(0)
-        history_chars -= _entry_chars(dropped["content"], dropped.get("attachments"))
+        history_chars -= _entry_chars(
+            dropped["content"], dropped.get("attachments"), include_images,
+        )
 
     # Build final list
     blobs = image_blobs or {}
@@ -277,11 +381,18 @@ def _assemble_messages(
     if persona_block:
         messages.append({"role": "system", "content": persona_block})
 
+    # V4: HOW to speak - injected at call level, invisible to the user, never
+    # stored on the character. After the persona (stable identity first),
+    # before the history (so the examples read as instruction, not dialogue).
+    if voice_block:
+        messages.append({"role": "system", "content": voice_block})
+
     for msg in history:
         messages.append({
             "role": msg["role"],
             "content": _content_for(
                 msg["content"], msg.get("attachments"), include_images, blobs,
+                omitted_images,
             ),
         })
 
@@ -289,6 +400,7 @@ def _assemble_messages(
         "role": "user",
         "content": _content_for(
             user_message.strip(), pending_attachments, include_images, blobs,
+            omitted_images,
         ),
     })
 
@@ -312,34 +424,8 @@ def _build_provider_dict(req_provider: ProviderPolicy) -> dict:
     return provider_dict
 
 
-def _msg_to_dict(
-    row,
-    attachments: list[dict] | None = None,
-    variant_index: int | None = None,
-    variant_count: int | None = None,
-) -> dict:
-    """Convert a message DB row to the API response shape.
-
-    variant_group/active are read defensively (older SELECTs may not include
-    them); variant_index/variant_count are attached only when the caller
-    computed them - the frontend schema defaults the rest.
-    """
-    keys = row.keys() if hasattr(row, "keys") else []
-    d = {
-        "id":         row["id"],
-        "chat_id":    row["chat_id"],
-        "role":       row["role"],
-        "content":    row["content"],
-        "created_at": row["created_at"],
-        "attachments": [attachment_to_api(a) for a in (attachments or [])],
-        "variant_group": row["variant_group"] if "variant_group" in keys else None,
-        "active": bool(row["active"]) if "active" in keys else True,
-    }
-    if variant_index is not None:
-        d["variant_index"] = variant_index
-    if variant_count is not None:
-        d["variant_count"] = variant_count
-    return d
+# Shared with chats.py since v1.1 FB6 - one response shape, one guard.
+from messages_common import msg_to_dict as _msg_to_dict, last_active_anchor
 
 
 def _validate_request_attachments(ids: list[int], model_id: str) -> list[dict]:
@@ -358,8 +444,7 @@ def _validate_request_attachments(ids: list[int], model_id: str) -> list[dict]:
         raise HTTPException(400, "attachment_unavailable")
 
     meta = get_cached_model_metadata(model_id)
-    mods = (meta or {}).get("input_modalities") or []
-    if meta is not None and mods and "image" not in mods:
+    if not _model_accepts_images(meta):
         raise HTTPException(400, "model_no_image_input")
 
     try:
@@ -391,38 +476,23 @@ _ERROR_MAP: dict[str, tuple[int, str]] = {
 # Internal: shared provider-call logic (used by complete and regenerate)
 # ---------------------------------------------------------------------------
 
-async def _prepare_completion(
-    chat_id: int,
-    model_id: str,
-    user_message_text: str,
-    generation_params: GenerationParams,
-    provider: ProviderPolicy,
-    persona_id: int | None,
-    context_budget_tokens: int | None,
-    history_before_id: int | None = None,
-    pending_attachments: list[dict] | None = None,
-) -> tuple[list[dict], dict, dict]:
-    """Build everything needed for a provider call, without calling it.
+def _load_completion_context(
+    chat_id: int, history_before_id: int | None, persona_id: int | None,
+) -> dict:
+    """Every DB read one completion needs, in ONE worker-thread hop.
 
-    Handles:
-      - fetch chat + character + history from DB
-      - check API key
-      - proxy health gate
-      - persona resolution & injection
-      - context budget computation & history trimming
-      - generation parameter validation & filtering
-      - provider privacy policy hardcoding
+    These ran one at a time ON THE EVENT LOOP - three separate connections,
+    each able to queue behind a held write lock for the full busy_timeout. A
+    send that arrives while a chat delete is committing therefore stalled every
+    OTHER live SSE stream in the process, because none of them could be resumed
+    until this coroutine yielded. The work is unchanged; only the thread it runs
+    on is.
 
-    history_before_id: when set, only messages with id < history_before_id are
-    used as history. The regenerate flow passes the preceding user message's id
-    so that neither that user message (re-appended as user_message_text) nor
-    the assistant message being regenerated leaks into the history - otherwise
-    the user turn would appear twice in the payload.
-
-    Returns (messages, filtered_gen_params, provider_dict).
-    Raises HTTPException on any failure.
+    404s that already preceded the async proxy gate are raised here so their
+    precedence is preserved. The persona 404 is RETURNED instead: it fires
+    AFTER the gate today, and moving it earlier would change which error a
+    request with both problems reports.
     """
-    # ── Fetch chat + character from DB ────────────────────────────────────
     with get_db() as con:
         chat_row = con.execute(
             "SELECT id, character_id, model_id FROM chats WHERE id = ?",
@@ -465,18 +535,97 @@ async def _prepare_completion(
         for r in history_rows
     ]
 
+    api_key_present = bool(get_secret(SECRET_API_KEY))
+
+    # FB7: the setting read AND the persona SELECT run on ONE connection, so a
+    # concurrent delete_persona (which clears the setting and deletes the row
+    # in its own txn) cannot be half-observed across two connections.
+    resolved_persona_id = persona_id
+    from_settings = False
+    persona_row = None
+    with get_db() as con:
+        if resolved_persona_id is None:
+            sel_row = con.execute(
+                "SELECT value FROM settings WHERE key = ?",
+                ("selected_persona_id",),
+            ).fetchone()
+            sel = sel_row["value"] if sel_row else None
+            if sel:
+                try:
+                    resolved_persona_id = int(sel)
+                    from_settings = True
+                except ValueError:
+                    # Corrupted setting must not 500 the request; treat as unset.
+                    logger.warning(
+                        "Ignoring non-integer selected_persona_id setting.",
+                    )
+                    resolved_persona_id = None
+        if resolved_persona_id is not None:
+            persona_row = con.execute(
+                "SELECT id, display_name, description FROM personas WHERE id = ?",
+                (resolved_persona_id,),
+            ).fetchone()
+
+    return {
+        "char_row": char_row,
+        "history": history,
+        "api_key_present": api_key_present,
+        "persona_row": persona_row,
+        "resolved_persona_id": resolved_persona_id,
+        "persona_from_settings": from_settings,
+    }
+
+
+async def _prepare_completion(
+    chat_id: int,
+    model_id: str,
+    user_message_text: str,
+    generation_params: GenerationParams,
+    provider: ProviderPolicy,
+    persona_id: int | None,
+    context_budget_tokens: int | None,
+    history_before_id: int | None = None,
+    pending_attachments: list[dict] | None = None,
+) -> tuple[list[dict], dict, dict, list[dict]]:
+    """Build everything needed for a provider call, without calling it.
+
+    Handles:
+      - fetch chat + character + history from DB
+      - check API key
+      - proxy health gate
+      - persona resolution & injection
+      - context budget computation & history trimming
+      - generation parameter validation & filtering
+      - provider privacy policy hardcoding
+
+    history_before_id: when set, only messages with id < history_before_id are
+    used as history. The regenerate flow passes the preceding user message's id
+    so that neither that user message (re-appended as user_message_text) nor
+    the assistant message being regenerated leaks into the history - otherwise
+    the user turn would appear twice in the payload.
+
+    Returns (messages, filtered_gen_params, provider_dict, notices).
+
+    `notices` are SSE-shaped events for things the caller must not hide: today
+    the images that were left out of the payload. Empty on the ordinary path.
+    Raises HTTPException on any failure.
+    """
+    # ── Every DB read, once, OFF the event loop ───────────────────────────
+    ctx = await anyio.to_thread.run_sync(
+        _load_completion_context, chat_id, history_before_id, persona_id,
+    )
+    char_row = ctx["char_row"]
+    history = ctx["history"]
+    persona_row = ctx["persona_row"]
+    resolved_persona_id = ctx["resolved_persona_id"]
+    from_settings = ctx["persona_from_settings"]
+
     # ── Check API key ─────────────────────────────────────────────────────
-    api_key = get_secret(SECRET_API_KEY)
-    if not api_key:
+    if not ctx["api_key_present"]:
         raise HTTPException(401, "api_key_missing")
 
     # ── Proxy health check ────────────────────────────────────────────────
-    proxy_required = get_setting("proxy_required", "0") == "1"
-    if proxy_required:
-        health = await check_proxy_health()
-        if not health["healthy"]:
-            reason = health.get("reason", "proxy_unhealthy")
-            raise HTTPException(503, reason)
+    await enforce_proxy_gate()
 
     # ── Assemble messages ─────────────────────────────────────────────────
     model_id_stripped = model_id  # already stripped by validator
@@ -485,28 +634,22 @@ async def _prepare_completion(
 
     # ── Resolve persona ───────────────────────────────────────────────────
     persona_block = ""
-    resolved_persona_id = persona_id
-    if resolved_persona_id is None:
-        sel = get_setting("selected_persona_id")
-        if sel:
-            try:
-                resolved_persona_id = int(sel)
-            except ValueError:
-                # Corrupted setting must not 500 the request; treat as unset.
-                logger.warning("Ignoring non-integer selected_persona_id setting.")
-                resolved_persona_id = None
-
-    if resolved_persona_id is not None:
-        with get_db() as con:
-            persona_row = con.execute(
-                "SELECT id, description FROM personas WHERE id = ?",
-                (resolved_persona_id,),
-            ).fetchone()
-        if persona_row is None:
+    if resolved_persona_id is not None and persona_row is None:
+        if from_settings:
+            # FB7: a selection pointing at a deleted persona must not fail
+            # every completion - run without a persona instead. Only the
+            # numeric id is logged (no PII).
+            logger.warning(
+                "selected_persona_id %d no longer exists; "
+                "continuing without persona.",
+                resolved_persona_id,
+            )
+        else:
+            # An explicit body.persona_id that does not exist is a real error.
             raise HTTPException(404, "persona_not_found")
-        desc = (persona_row["description"] or "").strip()
-        if desc:
-            persona_block = desc
+
+    if persona_row is not None:
+        persona_block = _build_persona_block(persona_row)
 
     # ── Context budget from model metadata ────────────────────────────────
     meta = get_cached_model_metadata(model_id_stripped)
@@ -532,8 +675,8 @@ async def _prepare_completion(
     if max_tokens_chars > context_budget_chars:
         max_tokens_chars = max(0, context_budget_chars // 2)
 
-    input_modalities = (meta or {}).get("input_modalities") or []
-    include_images = "image" in input_modalities
+    # SAME rule the attachment gate applied - see _model_accepts_images.
+    include_images = _model_accepts_images(meta)
 
     # E6: prefetch every needed blob in ONE query OFF the event loop -
     # per-image DB reads during assembly would stall live SSE streams.
@@ -550,6 +693,12 @@ async def _prepare_completion(
                 prefetch_blobs, shas_newest_first
             )
 
+    # P4: an image the model never saw is not a detail. build_image_part has
+    # collected these all along and the list went no further than a log line,
+    # so a completion answered from a payload with a picture missing looked
+    # exactly like one that had it. This is the wire it was missing.
+    omitted_images: list[int] = []
+
     messages = _assemble_messages(
         system_block,
         persona_block,
@@ -561,6 +710,10 @@ async def _prepare_completion(
         include_images=include_images,
         pending_attachments=pending_attachments,
         image_blobs=image_blobs,
+        # Off the event loop: a cold capability cache walks the models folder,
+        # and one slow disk must not stall every in-flight request (audit-2).
+        voice_block=await anyio.to_thread.run_sync(voice_tags.voice_block),
+        omitted_images=omitted_images,
     )
 
     # ── Validate and filter gen_params ─────────────────────────────────────
@@ -589,7 +742,19 @@ async def _prepare_completion(
     # ── Build provider dict ───────────────────────────────────────────────
     provider_dict = _build_provider_dict(provider)
 
-    return messages, filtered_gen_params, provider_dict
+    notices: list[dict] = []
+    if omitted_images:
+        logger.warning(
+            "Completion payload omitted %d image(s): chat_id=%d",
+            len(omitted_images), chat_id,
+        )
+        notices.append({
+            "type": "notice",
+            "code": "images_omitted",
+            "count": len(omitted_images),
+        })
+
+    return messages, filtered_gen_params, provider_dict, notices
 
 
 async def _call_provider_for_chat(
@@ -602,13 +767,16 @@ async def _call_provider_for_chat(
     context_budget_tokens: int | None,
     history_before_id: int | None = None,
     pending_attachments: list[dict] | None = None,
-) -> str:
+) -> tuple[str, list[dict]]:
     """Non-streaming provider call: prepare, call OpenRouter, parse.
 
-    Returns the assistant text string on success.
+    Returns (assistant_text, notices) on success. The notices ride back out to
+    the caller for the same reason the SSE path emits them: this endpoint has a
+    response body, so "the model never saw your picture" has somewhere to go
+    here too, and the two paths must not disagree about that (P4).
     Raises HTTPException on any failure.
     """
-    messages, filtered_gen_params, provider_dict = await _prepare_completion(
+    messages, filtered_gen_params, provider_dict, notices = await _prepare_completion(
         chat_id=chat_id,
         model_id=model_id,
         user_message_text=user_message_text,
@@ -641,9 +809,14 @@ async def _call_provider_for_chat(
     content = message.get("content")
     if not isinstance(content, str) or not content.strip():
         raise HTTPException(502, "invalid_openrouter_completion_response")
+    # Same refusal for a reply that is ONLY delivery tags: after stripping it
+    # would render as a permanently empty bubble (audit-2). Raw non-empty but
+    # visibly empty = not a usable completion.
+    if voice_tags.stripping_active() and not voice_tags.strip_tags(content).strip():
+        raise HTTPException(502, "invalid_openrouter_completion_response")
 
     logger.info("Gen params keys: %s", list(filtered_gen_params.keys()))
-    return content  # assistant text
+    return content, notices  # assistant text
 
 
 # ---------------------------------------------------------------------------
@@ -656,7 +829,7 @@ async def complete_chat(chat_id: int, body: CompleteRequest) -> dict:
 
     pending_rows = _validate_request_attachments(body.attachments, body.model_id)
 
-    assistant_text = await _call_provider_for_chat(
+    assistant_text, notices = await _call_provider_for_chat(
         chat_id=chat_id,
         model_id=body.model_id,
         user_message_text=body.message,
@@ -716,6 +889,7 @@ async def complete_chat(chat_id: int, body: CompleteRequest) -> dict:
         "model_id": model_id_stripped,
         "user_message": _msg_to_dict(user_row, linked_rows),
         "assistant_message": _msg_to_dict(asst_row),
+        "notices": notices,
     }
 
 
@@ -735,20 +909,25 @@ def _sse_event(obj: dict) -> str:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
 
-def _error_event(reason: str) -> str:
-    status, detail = _ERROR_MAP.get(reason, (502, "openrouter_completion_error"))
-    return _sse_event({"type": "error", "status": status, "code": detail})
+def _provider_error_status(reason: str) -> tuple[int, str]:
+    """The (status, code) pair a provider failure reports on the wire."""
+    return _ERROR_MAP.get(reason, (502, "openrouter_completion_error"))
 
 
-def _delete_message_row(chat_id: int, message_id: int) -> None:
+def _delete_message_row(
+    chat_id: int, message_id: int, busy_timeout_ms: int = 15000,
+) -> None:
     """Best-effort cleanup of a single message row (sync, abort-safe).
 
     Linked attachments are UNLINKED first (back to staged) - both because
     foreign_keys=ON would otherwise block the delete, and because the client
     keeps the staged ids for a retry after a failed send.
+
+    busy_timeout_ms (L6): the abort path passes a short value so a held lock
+    cannot freeze the event loop; a failure here is already best-effort.
     """
     try:
-        with get_db() as con:
+        with get_db(busy_timeout_ms=busy_timeout_ms) as con:
             con.execute(
                 "UPDATE attachments SET message_id = NULL WHERE message_id = ?",
                 (message_id,),
@@ -763,9 +942,47 @@ def _delete_message_row(chat_id: int, message_id: int) -> None:
         )
 
 
-def _insert_assistant_message(chat_id: int, model_id: str, text: str) -> dict:
-    """Insert an assistant message + bump the chat; return the API row dict."""
-    with get_db() as con:
+class StaleExchangeError(Exception):
+    """The exchange's user row (or the chat itself) vanished mid-stream -
+    the user cleared/deleted while text streamed. Finalizing would insert an
+    orphan assistant row and "resurrect" the emptied chat. (v1.1 H12/I9.)"""
+
+
+def _insert_assistant_message(
+    chat_id: int, model_id: str, text: str, user_msg_id: int,
+    busy_timeout_ms: int = 15000,
+) -> dict:
+    """Insert an assistant message + bump the chat; return the API row dict.
+
+    Guard + insert are ONE write transaction (BEGIN IMMEDIATE, same TOCTOU
+    rationale as the regenerate swap): the exchange's user row must still
+    exist AND still be the chat's tail at commit time, else StaleExchangeError.
+    This covers BOTH callers - the normal `done` insert and the abort-partial
+    insert - against a clear/delete landing while the provider streamed.
+
+    The tail half was missing while both sibling swaps had it (`_append_variant`
+    checks last_active_anchor, `_finalize_edit` checks MAX(id)). Existence alone
+    lets a reply land BEHIND a turn that arrived while it streamed, so the chat
+    reloads as user -> user -> assistant with the answer attached to the wrong
+    question. Hard to reach - the writer has to win a race against a stream that
+    is already finishing - but the asymmetry was real and the guard is one query.
+
+    busy_timeout_ms (L6): the abort-partial caller passes a short value so a
+    held lock cannot freeze the event loop; the partial is dropped instead.
+    """
+    with get_db(busy_timeout_ms=busy_timeout_ms) as con:
+        con.execute("BEGIN IMMEDIATE")
+        user_still_there = con.execute(
+            "SELECT 1 FROM messages WHERE id = ? AND chat_id = ? AND role = 'user'",
+            (user_msg_id, chat_id),
+        ).fetchone()
+        if user_still_there is None:
+            raise StaleExchangeError()
+        tail = con.execute(
+            "SELECT MAX(id) AS m FROM messages WHERE chat_id = ?", (chat_id,)
+        ).fetchone()["m"]
+        if tail != user_msg_id:
+            raise StaleExchangeError()
         cur = con.execute(
             "INSERT INTO messages (chat_id, role, content) VALUES (?, 'assistant', ?)",
             (chat_id, text),
@@ -780,6 +997,379 @@ def _insert_assistant_message(chat_id: int, model_id: str, text: str) -> dict:
             (asst_msg_id,),
         ).fetchone()
     return _msg_to_dict(row)
+
+
+class RegenerateConflictError(Exception):
+    """The target group is no longer the chat's last active group at swap time
+    - nothing was written. (v1.1 FB2b: shared by both regenerate handlers.)"""
+
+
+class EditConflictError(Exception):
+    """The edit target changed while the provider ran (row edited/deleted,
+    downstream grew or shrank, chat cleared). NOTHING was written. (I6.)
+
+    Declared beside its two siblings rather than next to _finalize_edit: the
+    shared streaming body maps all three to one 409 branch, so the map has to
+    be able to name them all."""
+
+
+def _append_variant(
+    chat_id: int, anchor: int, text: str, model_id: str, fallback_active_id: int,
+) -> dict:
+    """Atomic variant append (v1.1 FB2b/I7): run in a WORKER THREAD, opening
+    its own connection here. Guard + deactivate + insert + chat bump all live
+    in ONE BEGIN IMMEDIATE txn - unchanged semantics/SQL from the two inline
+    swap blocks it replaces. Nothing is deleted; the old variant is
+    deactivated in place. Raises RegenerateConflictError when the target group
+    is no longer the last active group.
+
+    Returns a plain dict (not a Row) so the result is safe to hand back across
+    the thread boundary.
+    """
+    with get_db() as con:
+        con.execute("BEGIN IMMEDIATE")
+        # Guard scope (deliberate): the target's GROUP must still be the last
+        # ACTIVE group. A concurrent regenerate of the SAME group passes and
+        # appends another sibling by design - that is intended, not a lost
+        # update.
+        if last_active_anchor(con, chat_id) != anchor:
+            raise RegenerateConflictError()
+
+        # Re-resolve the active sibling AT SWAP TIME: an activate (or a racing
+        # regenerate) may have changed it while the provider ran; reporting the
+        # pre-call id would desync the client's cache.
+        cur_active = con.execute(
+            "SELECT id FROM messages WHERE chat_id = ? "
+            "AND COALESCE(variant_group, id) = ? AND active = 1",
+            (chat_id, anchor),
+        ).fetchone()
+        deactivated_id = cur_active["id"] if cur_active else fallback_active_id
+
+        # Deactivate BEFORE insert - idx_one_active_per_group allows only one
+        # active row per group. Also stamps the anchor's variant_group.
+        con.execute(
+            "UPDATE messages SET variant_group = ?, active = 0 "
+            "WHERE chat_id = ? AND COALESCE(variant_group, id) = ? "
+            "AND active = 1",
+            (anchor, chat_id, anchor),
+        )
+        cur = con.execute(
+            "INSERT INTO messages "
+            "(chat_id, role, content, variant_group, active) "
+            "VALUES (?, 'assistant', ?, ?, 1)",
+            (chat_id, text, anchor),
+        )
+        asst_msg_id = cur.lastrowid
+        variant_count = con.execute(
+            "SELECT COUNT(*) AS n FROM messages "
+            "WHERE chat_id = ? AND COALESCE(variant_group, id) = ?",
+            (chat_id, anchor),
+        ).fetchone()["n"]
+        con.execute(
+            "UPDATE chats SET model_id = ?, updated_at = datetime('now') "
+            "WHERE id = ?",
+            (model_id, chat_id),
+        )
+        asst_row = con.execute(
+            "SELECT id, chat_id, role, content, created_at, "
+            "variant_group, active FROM messages WHERE id = ?",
+            (asst_msg_id,),
+        ).fetchone()
+    return {
+        "asst_row": dict(asst_row),
+        "variant_count": variant_count,
+        "deactivated_id": deactivated_id,
+    }
+
+
+def _persist_user_turn(
+    chat_id: int, content: str, model_id: str, attachment_ids: list[int],
+) -> tuple[dict, int]:
+    """Worker-thread body (v1.1 FB2a/I7): open the connection here, never on
+    the event loop - an image-linking insert must not stall live SSE streams.
+    Returns (user_message_dict, user_msg_id)."""
+    with get_db() as con:
+        cur = con.execute(
+            "INSERT INTO messages (chat_id, role, content) VALUES (?, 'user', ?)",
+            (chat_id, content),
+        )
+        user_msg_id = cur.lastrowid
+        linked_rows: list[dict] = []
+        if attachment_ids:
+            linked_rows = link_attachments(con, attachment_ids, user_msg_id)
+        con.execute(
+            "UPDATE chats SET model_id = ?, updated_at = datetime('now') WHERE id = ?",
+            (model_id, chat_id),
+        )
+        user_row = con.execute(
+            "SELECT id, chat_id, role, content, created_at FROM messages WHERE id = ?",
+            (user_msg_id,),
+        ).fetchone()
+    return _msg_to_dict(user_row, linked_rows), user_msg_id
+
+
+# ---------------------------------------------------------------------------
+# The shared streaming body
+# ---------------------------------------------------------------------------
+#
+# Three endpoints - send, regenerate, edit - ran ~60 byte-identical lines each:
+# open the speaker, stream the deltas past the stripper, flush the tail, judge
+# the display view, finalize, drain the audio. Three copies meant every voice
+# and abort fix had to be made three times, and the audit found places where it
+# had been made twice.
+#
+# What actually differs is small and now explicit: the first event, how the
+# finished text is committed, and what an interrupted exchange leaves behind.
+
+#: Finalizers raise these when the chat moved under them. All three mean the
+#: same thing to a client - "your view is stale, resync" - and all three were
+#: already answered with 409; only the code differed per endpoint.
+_CONFLICT_CODES: dict[type, str] = {
+    StaleExchangeError: "exchange_stale",
+    RegenerateConflictError: "regenerate_conflict",
+    EditConflictError: "edit_conflict",
+}
+
+
+def _visible_view(raw: str) -> str:
+    """What the bubble will actually SHOW for this raw reply.
+
+    One definition, used by every gate that asks "is there anything here?".
+    The success path judged on this view and the abort path judged on the raw
+    text, so a reply that was nothing but delivery tags was refused when it
+    finished and stored when it was stopped - the same bytes, opposite answers,
+    and the stored one rendered as a permanently empty bubble forever.
+    """
+    return voice_tags.strip_tags(raw) if voice_tags.stripping_active() else raw
+
+
+def _keepable_partial(parts: list[str]) -> str:
+    """The RAW text worth storing from an interrupted reply, or "".
+
+    Two steps, in this order. trim_broken_tail drops an in-progress tag the
+    stripper was still withholding - text the user never saw, which would
+    reload as a broken bracket. Then the survivor is judged on its display
+    view, so a partial with no visible content is not stored at all.
+
+    Raw is what gets STORED (the tags are what make a replay worth hearing);
+    the display view only decides whether storing is worth it.
+    """
+    partial = "".join(parts)
+    if voice_tags.stripping_active():
+        partial = voice_tags.trim_broken_tail(partial)
+    return partial if _visible_view(partial).strip() else ""
+
+
+async def _stream_exchange(
+    *,
+    chat_id: int,
+    model_id: str,
+    label: str,
+    body: "SpeakOptions",
+    messages: list[dict],
+    gen_params: dict,
+    provider_dict: dict,
+    first_event: dict,
+    notices: list[dict],
+    finalize,
+    rescue=None,
+):
+    """Stream one provider reply and commit it. The body all three share.
+
+    finalize(full_text) -> dict: awaited once the reply is complete; the dict
+        is merged into the `done` event. May raise any key of _CONFLICT_CODES.
+    rescue(partial, persisted, urgent) -> bool: what an exchange that ended
+        early leaves behind, True when it kept the partial. None for the two
+        endpoints that write nothing until finalize, so there is nothing to
+        undo. `urgent` is set only inside GeneratorExit handling, where
+        awaiting is not an option.
+    """
+    parts: list[str] = []
+    persisted = False  # guards against a double-insert if the client
+    # disconnects exactly at the `done` yield (GeneratorExit lands in the
+    # abort handler after the assistant row is already written).
+    aborting = False   # the `finally` cannot await once we are being cancelled
+    # Voice rides ALONGSIDE the reply and may never cost it: a silent hook
+    # is returned for "off", "not configured" and "engine broke", so no
+    # branch below has to know which. The rate is bound in here because it
+    # belongs to the engine set-up, not to the stream.
+    voice = stream_hook.open_speaker(
+        bool(getattr(body, "speak", False)),
+        # Armable even when speaking was not asked for: during a stream the
+        # assistant row does not exist yet, so the Speak button has no id to
+        # send. Buffering the raw text here is what keeps that button
+        # meaningful mid-reply - and lets it speak FROM THE START rather
+        # than joining three sentences in. Gated on the sticky "voice was
+        # ever enabled" flag, already read and cached for the stripper, so
+        # a user who has never touched voice allocates nothing.
+        #
+        # OR a voice model is selected: SpeakLiveButton renders on model
+        # readiness, not on the sticky flag, so gating only on the flag made
+        # the button answer 404 tts_nothing_streaming for a reply that was
+        # still streaming - "a button that can only produce an error toast
+        # is a broken promise". Both predicates are cheap settings reads.
+        armable=(voice_tags.stripping_active()
+                 or tts_runtime.a_voice_model_is_selected()),
+        narrative=getattr(body, "speak_narrative", "same"),
+        make_synth=lambda: tts_runtime.make_stream_synth(
+            rate=getattr(body, "speak_rate", None)),
+        # The FUNCTION, not the table: reading it is a vault call, and a stream
+        # that only arms a dormant speaker (most of them) must not pay for one
+        # here on the event loop. The hook resolves it when it actually speaks.
+        pronunciations=tts_runtime.stored_pronunciations,
+    )
+    stream_hook.register_live(chat_id, voice)
+
+    async def _run_rescue(*, urgent: bool) -> bool:
+        """True when a partial was kept. Never raises."""
+        if rescue is None:
+            return False
+        partial = _keepable_partial(parts)
+        try:
+            if urgent:
+                # Inside GeneratorExit/CancelledError: awaiting here is
+                # fragile, and WAL + synchronous=NORMAL keeps the commit cheap.
+                return bool(rescue(partial, persisted=persisted, urgent=True))
+            return bool(await anyio.to_thread.run_sync(
+                lambda: rescue(partial, persisted=persisted, urgent=False),
+            ))
+        except Exception:
+            logger.warning(
+                "Streaming %s cleanup failed: chat_id=%d", label, chat_id,
+                exc_info=True,
+            )
+            return False
+
+    try:
+        yield _sse_event(first_event)
+        # Before the first delta ON PURPOSE: a picture the model never saw
+        # changes how the answer should be read, so it must arrive before the
+        # answer does, not as a footnote after it.
+        for notice in notices:
+            yield _sse_event(notice)
+
+        # None when voice was never enabled: zero stripping work, and the raw
+        # text IS the display text (audit-2: no unconditional stripping).
+        stripper = voice_tags.StreamStripper() if voice_tags.stripping_active() else None
+        async for delta in complete_stream(
+            messages, model_id, gen_params, provider_dict,
+        ):
+            parts.append(delta)                      # RAW - storage
+            voice.feed(delta)                        # RAW - the tags are
+            # what make the delivery worth hearing, and only the raw text
+            # has them; the client never sees this view.
+            shown = stripper.feed(delta) if stripper else delta
+            if shown:
+                yield _sse_event({"type": "delta", "content": shown})
+            for event in voice.events():             # never waits
+                yield _sse_event(event)
+
+        # A tag still held at stream end was never a tag - show it now,
+        # or the visible tail of the message would simply vanish.
+        tail = stripper.flush() if stripper else ""
+        if tail:
+            yield _sse_event({"type": "delta", "content": tail})
+        # NOT voice.feed(tail): the stripper's tail is text it WITHHELD
+        # from the display, and the speaker already received it as a raw
+        # delta. Feeding it again would say that clause twice.
+        voice.finish()
+
+        full_text = "".join(parts)
+        # Judged on the DISPLAY view: a reply that is only delivery tags
+        # would render as a permanently empty bubble - the one silence R3
+        # bans. (Raw is still what gets stored when the gate passes.)
+        if not _visible_view(full_text).strip():
+            raise OpenRouterError("openrouter_error")
+
+        try:
+            done = await finalize(full_text)
+        except tuple(_CONFLICT_CODES) as exc:
+            code = _CONFLICT_CODES[type(exc)]
+            logger.warning(
+                "Streaming %s conflict: chat_id=%d code=%s", label, chat_id, code,
+            )
+            yield _sse_event({"type": "error", "status": 409, "code": code})
+            return
+        persisted = True
+        logger.info(
+            "Streaming %s success: chat_id=%d asst_msg_id=%s",
+            label, chat_id, done.get("assistant_message", {}).get("id"),
+        )
+        yield _sse_event({
+            "type": "done",
+            "chat_id": chat_id,
+            "model_id": model_id,
+            **done,
+        })
+
+        # The text is done; the audio is not. Reading must never wait on
+        # speaking, so `done` has already gone out and the remaining
+        # sentences arrive behind it until `voice_done`. A client that
+        # ignores voice events sees exactly the stream it saw before.
+        async for event in stream_hook.drain_events(voice):
+            yield _sse_event(event)
+
+    except OpenRouterError as exc:
+        # KÖK 16: the provider can fail AFTER most of the reply has already
+        # been emitted (a chunk carrying finish_reason == "error"). Treating
+        # that as a failure before the first byte threw away text the user had
+        # already read - while the abort branch just below KEPT the same amount
+        # of text. Two policies for one situation, and the one who lost was the
+        # user. Same salvage now, and the error event still goes out so they
+        # also learn why it stopped.
+        kept = await _run_rescue(urgent=False)
+        logger.warning(
+            "Streaming %s failed: chat_id=%d reason=%s partial_kept=%s",
+            label, chat_id, exc.reason, kept,
+        )
+        status, detail = _provider_error_status(exc.reason)
+        event = {"type": "error", "status": status, "code": detail}
+        if kept:
+            # The client keeps what it read instead of rolling it back; the
+            # rows are committed already, so its refetch answers with them.
+            event["partial_saved"] = True
+        yield _sse_event(event)
+
+    except (GeneratorExit, asyncio.CancelledError):
+        aborting = True
+        await _run_rescue(urgent=True)
+        logger.info("Streaming %s aborted: chat_id=%d", label, chat_id)
+        raise
+
+    except VaultLockedError:
+        # Vault locked mid-stream (deliberate user action). The reply is
+        # lost and nothing can be cleaned up while locked; report it
+        # honestly instead of a generic 500.
+        logger.info(
+            "Streaming %s interrupted by vault lock: chat_id=%d", label, chat_id,
+        )
+        yield _sse_event({"type": "error", "status": 423, "code": "vault_locked"})
+
+    except Exception:
+        await _run_rescue(urgent=False)
+        logger.warning(
+            "Streaming %s internal error: chat_id=%d", label, chat_id,
+            exc_info=True,
+        )
+        yield _sse_event({"type": "error", "status": 500, "code": "internal_error"})
+
+    finally:
+        # Every exit path, including the GeneratorExit the abort handler
+        # re-raises: a surviving speaker keeps synthesising a reply nobody
+        # is listening to any more, and a stale registry entry would point
+        # Speak at a reply that finished minutes ago.
+        stream_hook.unregister_live(chat_id, voice)
+        if aborting:
+            # Blocking close ON PURPOSE here. A fresh await inside
+            # GeneratorExit/CancelledError handling can re-raise immediately,
+            # which would both replace the exception this generator owes its
+            # caller AND leak the speaker we came here to close. cancel() runs
+            # first inside close(), so the worker is already told to stop and
+            # the join is short - and the connection it would have delayed is
+            # gone anyway. Every other path takes the thread hop.
+            voice.close()
+        else:
+            await stream_hook.aclose(voice)
 
 
 # ---------------------------------------------------------------------------
@@ -809,7 +1399,7 @@ async def complete_chat_stream(chat_id: int, body: CompleteRequest) -> Streaming
     """
     pending_rows = _validate_request_attachments(body.attachments, body.model_id)
 
-    messages, filtered_gen_params, provider_dict = await _prepare_completion(
+    messages, filtered_gen_params, provider_dict, notices = await _prepare_completion(
         chat_id=chat_id,
         model_id=body.model_id,
         user_message_text=body.message,
@@ -823,123 +1413,93 @@ async def complete_chat_stream(chat_id: int, body: CompleteRequest) -> Streaming
     user_message_stripped = body.message.strip()
     model_id_stripped = body.model_id
 
-    with get_db() as con:
-        cur = con.execute(
-            "INSERT INTO messages (chat_id, role, content) VALUES (?, 'user', ?)",
-            (chat_id, user_message_stripped),
-        )
-        user_msg_id = cur.lastrowid
-        linked_rows: list[dict] = []
-        if body.attachments:
-            linked_rows = link_attachments(con, body.attachments, user_msg_id)
-        con.execute(
-            "UPDATE chats SET model_id = ?, updated_at = datetime('now') WHERE id = ?",
-            (model_id_stripped, chat_id),
-        )
-        user_row = con.execute(
-            "SELECT id, chat_id, role, content, created_at FROM messages WHERE id = ?",
-            (user_msg_id,),
-        ).fetchone()
-    user_message = _msg_to_dict(user_row, linked_rows)
+    # FB2a: the user-insert txn (insert + link_attachments + chat bump) runs
+    # off the event loop so an image-heavy link cannot stall other live SSE
+    # streams before this one even starts yielding.
+    user_message, user_msg_id = await anyio.to_thread.run_sync(
+        _persist_user_turn,
+        chat_id, user_message_stripped, model_id_stripped, list(body.attachments),
+    )
 
     logger.info(
         "Streaming completion start: chat_id=%d model=%s user_msg_id=%d",
         chat_id, model_id_stripped, user_msg_id,
     )
 
-    async def event_source():
-        parts: list[str] = []
-        persisted = False  # guards against a double-insert if the client
-        # disconnects exactly at the `done` yield (GeneratorExit lands in the
-        # abort handler after the assistant row is already written).
-        try:
-            yield _sse_event({"type": "user_message", "message": user_message})
+    async def finalize(full_text: str) -> dict:
+        # Worker thread: the commit between SSE events must not block the
+        # loop (other live streams stall for its duration).
+        assistant_message = await anyio.to_thread.run_sync(
+            _insert_assistant_message,
+            chat_id, model_id_stripped, full_text, user_msg_id,
+        )
+        return {
+            "user_message": user_message,
+            "assistant_message": assistant_message,
+        }
 
-            async for delta in complete_stream(
-                messages, model_id_stripped, filtered_gen_params, provider_dict,
-            ):
-                parts.append(delta)
-                yield _sse_event({"type": "delta", "content": delta})
+    def rescue(partial: str, *, persisted: bool, urgent: bool) -> bool:
+        """What a half-finished send leaves behind. Returns True if kept.
 
-            full_text = "".join(parts)
-            if not full_text.strip():
-                raise OpenRouterError("openrouter_error")
-
-            # Worker thread: the commit between SSE events must not block the
-            # loop (other live streams stall for its duration). The abort
-            # paths below stay synchronous ON PURPOSE - awaiting inside
-            # GeneratorExit/CancelledError handling is fragile, and WAL +
-            # synchronous=NORMAL keeps those commits cheap.
-            assistant_message = await anyio.to_thread.run_sync(
-                _insert_assistant_message, chat_id, model_id_stripped, full_text,
-            )
-            persisted = True
+        ONE policy for all three ways a send can end early - client abort,
+        provider failure mid-stream, internal error - because from the user's
+        chair they are the same event: text appeared, and then it stopped.
+        Keeping the partial for a Stop press and discarding it for a dropped
+        connection made the reply's survival depend on which side let go
+        first, which is not something anyone can predict or learn.
+        """
+        if persisted:
+            # Success already committed the assistant row; the disconnect
+            # happened at or after the `done` yield.
             logger.info(
-                "Streaming completion success: chat_id=%d asst_msg_id=%d",
-                chat_id, assistant_message["id"],
+                "Streaming completion disconnected after done: chat_id=%d", chat_id,
             )
-            yield _sse_event({
-                "type": "done",
-                "chat_id": chat_id,
-                "model_id": model_id_stripped,
-                "user_message": user_message,
-                "assistant_message": assistant_message,
-            })
-
-        except OpenRouterError as exc:
-            await anyio.to_thread.run_sync(_delete_message_row, chat_id, user_msg_id)
-            logger.warning(
-                "Streaming completion failed: chat_id=%d reason=%s",
-                chat_id, exc.reason,
-            )
-            yield _error_event(exc.reason)
-
-        except (GeneratorExit, asyncio.CancelledError):
-            partial = "".join(parts)
-            # Cleanup DB writes are wrapped: a vault lock (or any DB error)
-            # mid-abort must NOT replace the GeneratorExit we have to re-raise,
-            # or it escapes into ASGI finalization as an ugly logged error.
+            return False
+        # L6: the urgent (GeneratorExit) caller cannot afford to queue on a
+        # held write lock - it would freeze the event loop - so the partial is
+        # dropped instead of waited for.
+        timeout = _ABORT_DB_BUSY_TIMEOUT_MS if urgent else _DB_BUSY_TIMEOUT_MS
+        if partial:
             try:
-                if persisted:
-                    # Success already committed the assistant row; the
-                    # disconnect happened at/after the `done` yield.
-                    logger.info(
-                        "Streaming completion disconnected after done: chat_id=%d", chat_id,
-                    )
-                elif partial.strip():
-                    _insert_assistant_message(chat_id, model_id_stripped, partial)
-                    logger.info(
-                        "Streaming completion aborted; partial persisted: chat_id=%d",
-                        chat_id,
-                    )
-                else:
-                    _delete_message_row(chat_id, user_msg_id)
-                    logger.info(
-                        "Streaming completion aborted; no partial: chat_id=%d", chat_id,
-                    )
-            except Exception:
-                logger.warning(
-                    "Streaming completion abort cleanup failed: chat_id=%d", chat_id,
+                _insert_assistant_message(
+                    chat_id, model_id_stripped, partial, user_msg_id,
+                    busy_timeout_ms=timeout,
                 )
-            raise
-
-        except VaultLockedError:
-            # Vault locked mid-stream (deliberate user action). The reply is
-            # lost and the user row cannot be cleaned up while locked; report
-            # it honestly instead of a generic 500.
-            logger.info("Streaming completion interrupted by vault lock: chat_id=%d", chat_id)
-            yield _sse_event({"type": "error", "status": 423, "code": "vault_locked"})
-
-        except Exception:
-            try:
-                _delete_message_row(chat_id, user_msg_id)
-            except Exception:
-                pass
-            logger.warning("Streaming completion internal error: chat_id=%d", chat_id)
-            yield _sse_event({"type": "error", "status": 500, "code": "internal_error"})
+                logger.info(
+                    "Streaming completion ended early; partial persisted: "
+                    "chat_id=%d", chat_id,
+                )
+                return True
+            except StaleExchangeError:
+                # Chat cleared/deleted while streaming - the partial has no
+                # user turn to attach to; discarding it IS the correct
+                # outcome, and there is no user row left to remove either.
+                logger.info(
+                    "Streaming completion ended early; exchange stale, partial "
+                    "discarded: chat_id=%d", chat_id,
+                )
+                return False
+        _delete_message_row(chat_id, user_msg_id, busy_timeout_ms=timeout)
+        logger.info(
+            "Streaming completion ended early; no partial: chat_id=%d", chat_id,
+        )
+        return False
 
     return StreamingResponse(
-        event_source(), media_type="text/event-stream", headers=_SSE_HEADERS,
+        _stream_exchange(
+            chat_id=chat_id,
+            model_id=model_id_stripped,
+            label="completion",
+            body=body,
+            messages=messages,
+            gen_params=filtered_gen_params,
+            provider_dict=provider_dict,
+            first_event={"type": "user_message", "message": user_message},
+            notices=notices,
+            finalize=finalize,
+            rescue=rescue,
+        ),
+        media_type="text/event-stream", headers=_SSE_HEADERS,
     )
 
 
@@ -947,7 +1507,7 @@ async def complete_chat_stream(chat_id: int, body: CompleteRequest) -> Streaming
 # POST /chats/{chat_id}/messages/{message_id}/regenerate
 # ---------------------------------------------------------------------------
 
-class RegenerateRequest(BaseModel):
+class RegenerateRequest(SpeakOptions):
     model_config = ConfigDict(extra="ignore")
 
     model_id: str
@@ -997,15 +1557,7 @@ def _validate_regenerate_target(
 
         anchor = msg_row["variant_group"] or msg_row["id"]
 
-        last_active = con.execute(
-            "SELECT id, variant_group FROM messages "
-            "WHERE chat_id = ? AND active = 1 ORDER BY id DESC LIMIT 1",
-            (chat_id,),
-        ).fetchone()
-        if (
-            last_active is None
-            or (last_active["variant_group"] or last_active["id"]) != anchor
-        ):
+        if last_active_anchor(con, chat_id) != anchor:
             raise HTTPException(422, "not_last_assistant_message")
 
         active_row = con.execute(
@@ -1058,7 +1610,7 @@ async def regenerate_message(chat_id: int, message_id: int,
     # Call provider first - the old assistant variants stay untouched until
     # the new one exists. history_before_id excludes the user message (it is
     # re-appended as the current turn) and the whole target variant group.
-    assistant_text = await _call_provider_for_chat(
+    assistant_text, notices = await _call_provider_for_chat(
         chat_id=chat_id,
         model_id=body.model_id,
         user_message_text=user_text,
@@ -1070,82 +1622,26 @@ async def regenerate_message(chat_id: int, message_id: int,
         pending_attachments=user_atts,
     )
 
-    # Atomic variant append: deactivate the group, insert the new active row.
-    # Nothing is ever deleted - old variants stay navigable.
+    # Atomic variant append on a worker thread (v1.1 FB2b): the swap txn must
+    # not block the event loop while other SSE streams are live. Nothing is
+    # ever deleted - old variants stay navigable.
     model_id_stripped = body.model_id
     try:
-        with get_db() as con:
-            # Guard + mutate must be ONE write transaction: sqlite3 opens the
-            # implicit txn only at the first DML, so a bare SELECT guard runs
-            # in autocommit and another connection could delete/append between
-            # guard and UPDATE (TOCTOU). BEGIN IMMEDIATE takes the write lock
-            # up front, making the guard's snapshot the one the writes see.
-            con.execute("BEGIN IMMEDIATE")
-            # Guard scope (deliberate): the target's GROUP must still be the
-            # last ACTIVE group. A concurrent regenerate of the SAME group
-            # passes and simply appends another variant - that is the intended
-            # "append a sibling" semantics, not a lost update.
-            last_active = con.execute(
-                "SELECT id, variant_group FROM messages "
-                "WHERE chat_id = ? AND active = 1 ORDER BY id DESC LIMIT 1",
-                (chat_id,),
-            ).fetchone()
-            if (
-                last_active is None
-                or (last_active["variant_group"] or last_active["id"]) != anchor
-            ):
-                raise HTTPException(409, "regenerate_conflict")
-
-            # Re-resolve the active sibling AT SWAP TIME: an activate (or a
-            # racing regenerate) may have changed it while the provider ran -
-            # reporting the pre-call id would desync the client's cache.
-            cur_active = con.execute(
-                "SELECT id FROM messages WHERE chat_id = ? "
-                "AND COALESCE(variant_group, id) = ? AND active = 1",
-                (chat_id, anchor),
-            ).fetchone()
-            deactivated_id = cur_active["id"] if cur_active else prev_active_id
-
-            # Deactivate BEFORE insert - idx_one_active_per_group allows only
-            # one active row per group. Also stamps the anchor's variant_group.
-            con.execute(
-                "UPDATE messages SET variant_group = ?, active = 0 "
-                "WHERE chat_id = ? AND COALESCE(variant_group, id) = ? "
-                "AND active = 1",
-                (anchor, chat_id, anchor),
-            )
-            cur = con.execute(
-                "INSERT INTO messages "
-                "(chat_id, role, content, variant_group, active) "
-                "VALUES (?, 'assistant', ?, ?, 1)",
-                (chat_id, assistant_text, anchor),
-            )
-            asst_msg_id = cur.lastrowid
-            variant_count = con.execute(
-                "SELECT COUNT(*) AS n FROM messages "
-                "WHERE chat_id = ? AND COALESCE(variant_group, id) = ?",
-                (chat_id, anchor),
-            ).fetchone()["n"]
-
-            con.execute(
-                "UPDATE chats SET model_id = ?, updated_at = datetime('now') WHERE id = ?",
-                (model_id_stripped, chat_id),
-            )
-
-            asst_row = con.execute(
-                "SELECT id, chat_id, role, content, created_at, "
-                "variant_group, active FROM messages WHERE id = ?",
-                (asst_msg_id,),
-            ).fetchone()
-    except HTTPException:
-        raise
+        result = await anyio.to_thread.run_sync(
+            _append_variant,
+            chat_id, anchor, assistant_text, model_id_stripped, prev_active_id,
+        )
+    except RegenerateConflictError:
+        raise HTTPException(409, "regenerate_conflict")
     except Exception:
         logger.warning("DB write failed after successful regeneration: chat_id=%d", chat_id)
         raise
 
+    asst_row = result["asst_row"]
+    variant_count = result["variant_count"]
     logger.info(
         "Regenerate success: chat_id=%d existing_user=%d new_variant=%d group=%d",
-        chat_id, existing_user_row["id"], asst_msg_id, anchor,
+        chat_id, existing_user_row["id"], asst_row["id"], anchor,
     )
 
     return {
@@ -1155,7 +1651,8 @@ async def regenerate_message(chat_id: int, message_id: int,
         "assistant_message": _msg_to_dict(
             asst_row, variant_index=variant_count - 1, variant_count=variant_count,
         ),
-        "deactivated_message_id": deactivated_id,
+        "deactivated_message_id": result["deactivated_id"],
+        "notices": notices,
     }
 
 
@@ -1192,7 +1689,7 @@ async def regenerate_message_stream(chat_id: int, message_id: int,
         existing_user_row["id"], [],
     )
 
-    messages, filtered_gen_params, provider_dict = await _prepare_completion(
+    messages, filtered_gen_params, provider_dict, notices = await _prepare_completion(
         chat_id=chat_id,
         model_id=body.model_id,
         user_message_text=user_text,
@@ -1209,141 +1706,315 @@ async def regenerate_message_stream(chat_id: int, message_id: int,
         chat_id, model_id_stripped, message_id,
     )
 
-    async def event_source():
-        parts: list[str] = []
-        try:
-            yield _sse_event({
-                "type": "user_message",
-                "message": _msg_to_dict(existing_user_row, user_atts),
-            })
-
-            async for delta in complete_stream(
-                messages, model_id_stripped, filtered_gen_params, provider_dict,
-            ):
-                parts.append(delta)
-                yield _sse_event({"type": "delta", "content": delta})
-
-            full_text = "".join(parts)
-            if not full_text.strip():
-                raise OpenRouterError("openrouter_error")
-
-            # Atomic variant append, guarded against concurrent changes.
-            # Nothing is deleted - the old variant is deactivated in place.
-            # SSE yields happen OUTSIDE the connection context: yielding
-            # suspends the generator, and holding a connection open across a
-            # network write is a leak waiting for a disconnect.
-            conflict = False
-            deactivated_id = prev_active_id
-            asst_row = None
-            variant_count = 0
-            with get_db() as con:
-                # One write txn for guard + mutate (see the non-streaming
-                # regenerate swap for the TOCTOU rationale).
-                con.execute("BEGIN IMMEDIATE")
-                # Guard scope (deliberate): the group must still be the last
-                # ACTIVE group; a concurrent regenerate of the SAME group
-                # appends another sibling by design.
-                last_active = con.execute(
-                    "SELECT id, variant_group FROM messages "
-                    "WHERE chat_id = ? AND active = 1 ORDER BY id DESC LIMIT 1",
-                    (chat_id,),
-                ).fetchone()
-                if (
-                    last_active is None
-                    or (last_active["variant_group"] or last_active["id"]) != anchor
-                ):
-                    conflict = True
-                else:
-                    # Re-resolve the active sibling AT SWAP TIME (an activate
-                    # may have changed it while the provider streamed).
-                    cur_active = con.execute(
-                        "SELECT id FROM messages WHERE chat_id = ? "
-                        "AND COALESCE(variant_group, id) = ? AND active = 1",
-                        (chat_id, anchor),
-                    ).fetchone()
-                    if cur_active:
-                        deactivated_id = cur_active["id"]
-
-                    # Deactivate BEFORE insert (one-active-per-group index).
-                    con.execute(
-                        "UPDATE messages SET variant_group = ?, active = 0 "
-                        "WHERE chat_id = ? AND COALESCE(variant_group, id) = ? "
-                        "AND active = 1",
-                        (anchor, chat_id, anchor),
-                    )
-                    cur = con.execute(
-                        "INSERT INTO messages "
-                        "(chat_id, role, content, variant_group, active) "
-                        "VALUES (?, 'assistant', ?, ?, 1)",
-                        (chat_id, full_text, anchor),
-                    )
-                    asst_msg_id = cur.lastrowid
-                    variant_count = con.execute(
-                        "SELECT COUNT(*) AS n FROM messages "
-                        "WHERE chat_id = ? AND COALESCE(variant_group, id) = ?",
-                        (chat_id, anchor),
-                    ).fetchone()["n"]
-                    con.execute(
-                        "UPDATE chats SET model_id = ?, "
-                        "updated_at = datetime('now') WHERE id = ?",
-                        (model_id_stripped, chat_id),
-                    )
-                    asst_row = con.execute(
-                        "SELECT id, chat_id, role, content, created_at, "
-                        "variant_group, active FROM messages WHERE id = ?",
-                        (asst_msg_id,),
-                    ).fetchone()
-
-            if conflict or asst_row is None:
-                logger.warning(
-                    "Streaming regenerate conflict: chat_id=%d", chat_id,
-                )
-                yield _sse_event({
-                    "type": "error", "status": 409, "code": "regenerate_conflict",
-                })
-                return
-
-            logger.info(
-                "Streaming regenerate success: chat_id=%d new_variant=%d group=%d",
-                chat_id, asst_row["id"], anchor,
-            )
-            yield _sse_event({
-                "type": "done",
-                "chat_id": chat_id,
-                "model_id": model_id_stripped,
-                "user_message": _msg_to_dict(existing_user_row, user_atts),
-                "assistant_message": _msg_to_dict(
-                    asst_row,
-                    variant_index=variant_count - 1,
-                    variant_count=variant_count,
-                ),
-                "deactivated_message_id": deactivated_id,
-            })
-
-        except OpenRouterError as exc:
-            # Old assistant message untouched - nothing to clean up.
-            logger.warning(
-                "Streaming regenerate failed: chat_id=%d reason=%s",
-                chat_id, exc.reason,
-            )
-            yield _error_event(exc.reason)
-
-        except (GeneratorExit, asyncio.CancelledError):
-            logger.info(
-                "Streaming regenerate aborted; old message kept: chat_id=%d",
-                chat_id,
-            )
-            raise
-
-        except VaultLockedError:
-            logger.info("Streaming regenerate interrupted by vault lock: chat_id=%d", chat_id)
-            yield _sse_event({"type": "error", "status": 423, "code": "vault_locked"})
-
-        except Exception:
-            logger.warning("Streaming regenerate internal error: chat_id=%d", chat_id)
-            yield _sse_event({"type": "error", "status": 500, "code": "internal_error"})
+    async def finalize(full_text: str) -> dict:
+        # Atomic variant append on a worker thread (v1.1 FB2b): the swap txn
+        # runs off the loop so other live SSE streams do not stall. The await
+        # lands BETWEEN yields (holding no connection), preserving the "SSE
+        # yields happen outside the connection context" invariant.
+        result = await anyio.to_thread.run_sync(
+            _append_variant,
+            chat_id, anchor, full_text, model_id_stripped, prev_active_id,
+        )
+        variant_count = result["variant_count"]
+        return {
+            "user_message": _msg_to_dict(existing_user_row, user_atts),
+            "assistant_message": _msg_to_dict(
+                result["asst_row"],
+                variant_index=variant_count - 1,
+                variant_count=variant_count,
+            ),
+            "deactivated_message_id": result["deactivated_id"],
+        }
 
     return StreamingResponse(
-        event_source(), media_type="text/event-stream", headers=_SSE_HEADERS,
+        _stream_exchange(
+            chat_id=chat_id,
+            model_id=model_id_stripped,
+            label="regenerate",
+            body=body,
+            messages=messages,
+            gen_params=filtered_gen_params,
+            provider_dict=provider_dict,
+            first_event={
+                "type": "user_message",
+                "message": _msg_to_dict(existing_user_row, user_atts),
+            },
+            notices=notices,
+            finalize=finalize,
+            # No rescue: nothing is written until the swap, so an interrupted
+            # regenerate has nothing to undo - and keeping ITS partial would
+            # destroy the complete existing reply it was meant to replace.
+        ),
+        media_type="text/event-stream", headers=_SSE_HEADERS,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /chats/{chat_id}/messages/{message_id}/edit (+ /edit/stream) - v1.1 C3
+# ---------------------------------------------------------------------------
+
+class EditRequest(RegenerateRequest):
+    """Regenerate's payload plus the replacement user text."""
+
+    message: str
+
+    @field_validator("message")
+    @classmethod
+    def message_must_not_be_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("message_required")
+        return v  # preserve original; stripped only where persisted/sent
+
+
+def _validate_edit_target(chat_id: int, message_id: int) -> tuple[dict, int]:
+    """Validate the edit target and capture the I6 concurrency snapshot.
+
+    Any USER row is editable (no last-group restriction - editing an older
+    turn deliberately rewrites everything after it). Returns
+    (user_row_dict incl. updated_at, chat_tail_id) - the snapshot the final
+    swap must still observe, or it refuses with edit_conflict.
+
+    Stable error codes: chat_not_found, message_not_found, not_editable.
+    """
+    with get_db() as con:
+        chat_row = con.execute(
+            "SELECT id FROM chats WHERE id = ?", (chat_id,)
+        ).fetchone()
+        if chat_row is None:
+            raise HTTPException(404, "chat_not_found")
+
+        row = con.execute(
+            "SELECT id, chat_id, role, content, created_at, "
+            "COALESCE(updated_at, created_at) AS updated_at, "
+            "variant_group, active "
+            "FROM messages WHERE id = ? AND chat_id = ?",
+            (message_id, chat_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, "message_not_found")
+        if row["role"] != "user":
+            raise HTTPException(422, "not_editable")
+
+        tail_id = con.execute(
+            "SELECT MAX(id) AS m FROM messages WHERE chat_id = ?", (chat_id,)
+        ).fetchone()["m"]
+
+    return dict(row), tail_id
+
+
+def _finalize_edit(
+    chat_id: int,
+    message_id: int,
+    new_content: str,
+    assistant_text: str,
+    model_id: str,
+    expected_updated_at: str,
+    expected_content: str,
+    expected_tail_id: int,
+) -> dict:
+    """Atomic edit swap. Runs in a WORKER THREAD and opens its own
+    connection there (I7: a connection never crosses threads; guard + sweep +
+    update + insert + commit all live in this one BEGIN IMMEDIATE txn).
+
+    Optimistic concurrency (I6): the user row must be byte-identical to the
+    validate-time snapshot AND the chat's tail unchanged - a concurrent edit,
+    delete, send or clear means the provider answered a stale question, so
+    NOTHING is written and EditConflictError raises (context manager rolls
+    the txn back). Attachments of swept rows are removed in the same txn
+    (E6); the edited row's own attachments are untouched - a content UPDATE
+    does not break the message_id link.
+    """
+    with get_db() as con:
+        con.execute("BEGIN IMMEDIATE")
+        row = con.execute(
+            "SELECT content, COALESCE(updated_at, created_at) AS updated_at "
+            "FROM messages WHERE id = ? AND chat_id = ? AND role = 'user'",
+            (message_id, chat_id),
+        ).fetchone()
+        if (
+            row is None
+            or row["content"] != expected_content
+            or row["updated_at"] != expected_updated_at
+        ):
+            raise EditConflictError()
+        tail = con.execute(
+            "SELECT MAX(id) AS m FROM messages WHERE chat_id = ?", (chat_id,)
+        ).fetchone()["m"]
+        if tail != expected_tail_id:
+            raise EditConflictError()
+
+        # Sweep everything after the edited turn. Plain `id >` is safe: user
+        # rows have no variant siblings, so nothing earlier can belong to a
+        # swept group.
+        swept = [r["id"] for r in con.execute(
+            "SELECT id FROM messages WHERE chat_id = ? AND id > ?",
+            (chat_id, message_id),
+        ).fetchall()]
+        delete_for_messages(con, swept)  # rows + orphan blobs, same txn (E6)
+        deleted = con.execute(
+            "DELETE FROM messages WHERE chat_id = ? AND id > ?",
+            (chat_id, message_id),
+        ).rowcount
+
+        con.execute(
+            "UPDATE messages SET content = ?, updated_at = datetime('now') "
+            "WHERE id = ?",
+            (new_content, message_id),
+        )
+        cur = con.execute(
+            "INSERT INTO messages (chat_id, role, content) "
+            "VALUES (?, 'assistant', ?)",
+            (chat_id, assistant_text),
+        )
+        asst_msg_id = cur.lastrowid
+        con.execute(
+            "UPDATE chats SET model_id = ?, updated_at = datetime('now') "
+            "WHERE id = ?",
+            (model_id, chat_id),
+        )
+
+        user_row = con.execute(
+            "SELECT id, chat_id, role, content, created_at, variant_group, "
+            "active FROM messages WHERE id = ?",
+            (message_id,),
+        ).fetchone()
+        asst_row = con.execute(
+            "SELECT id, chat_id, role, content, created_at, variant_group, "
+            "active FROM messages WHERE id = ?",
+            (asst_msg_id,),
+        ).fetchone()
+
+    user_atts = load_for_messages([message_id]).get(message_id, [])
+    return {
+        "user_message": _msg_to_dict(user_row, user_atts),
+        "assistant_message": _msg_to_dict(asst_row),
+        "deleted_count": deleted,
+    }
+
+
+@router.post("/{chat_id}/messages/{message_id}/edit")
+async def edit_message(chat_id: int, message_id: int, body: EditRequest) -> dict:
+    """Edit a user message: provider-first, then one atomic swap.
+
+    The tail after the edited turn is only removed once the NEW reply exists
+    (regenerate's data-protection law, not send's persist-first): provider
+    failure or conflict leaves every existing row and attachment intact.
+    """
+    user_row, tail_id = _validate_edit_target(chat_id, message_id)
+    new_content = body.message.strip()
+    # The edited turn is re-sent as the current turn - its linked images ride
+    # along again, exactly like regenerate.
+    user_atts = load_for_messages([message_id]).get(message_id, [])
+
+    assistant_text, notices = await _call_provider_for_chat(
+        chat_id=chat_id,
+        model_id=body.model_id,
+        user_message_text=new_content,
+        generation_params=body.generation_params,
+        provider=body.provider,
+        persona_id=body.persona_id,
+        context_budget_tokens=body.context_budget_tokens,
+        history_before_id=message_id,
+        pending_attachments=user_atts,
+    )
+
+    try:
+        result = await anyio.to_thread.run_sync(
+            _finalize_edit,
+            chat_id, message_id, new_content, assistant_text, body.model_id,
+            user_row["updated_at"], user_row["content"], tail_id,
+        )
+    except EditConflictError:
+        raise HTTPException(409, "edit_conflict")
+
+    logger.info(
+        "Edit success: chat_id=%d user_msg_id=%d new_asst_id=%d swept=%d",
+        chat_id, message_id, result["assistant_message"]["id"],
+        result["deleted_count"],
+    )
+    return {
+        "chat_id": chat_id,
+        "model_id": body.model_id,
+        "user_message": result["user_message"],
+        "assistant_message": result["assistant_message"],
+        "notices": notices,
+    }
+
+
+@router.post("/{chat_id}/messages/{message_id}/edit/stream")
+async def edit_message_stream(chat_id: int, message_id: int,
+                              body: EditRequest) -> StreamingResponse:
+    """Streaming variant of /edit (SSE).
+
+    Event sequence mirrors /complete/stream: user_message (the edited row -
+    same id, NEW content, its attachments) → delta* → done | error.
+
+    Persistence semantics protect existing content (regenerate's law):
+      - Nothing is written until the atomic swap after the full stream. The
+        old tail and the pre-edit content survive provider failures intact.
+      - Client abort discards the partial - the chat is byte-identical to
+        before the edit attempt.
+      - If the chat changed while streaming (concurrent edit/send/delete/
+        clear), an edit_conflict error event is emitted and nothing changes.
+    """
+    user_row, tail_id = _validate_edit_target(chat_id, message_id)
+    new_content = body.message.strip()
+    user_atts = load_for_messages([message_id]).get(message_id, [])
+    model_id_stripped = body.model_id
+
+    messages, filtered_gen_params, provider_dict, notices = await _prepare_completion(
+        chat_id=chat_id,
+        model_id=body.model_id,
+        user_message_text=new_content,
+        generation_params=body.generation_params,
+        provider=body.provider,
+        persona_id=body.persona_id,
+        context_budget_tokens=body.context_budget_tokens,
+        history_before_id=message_id,
+        pending_attachments=user_atts,
+    )
+
+    logger.info(
+        "Streaming edit start: chat_id=%d model=%s user_msg_id=%d",
+        chat_id, model_id_stripped, message_id,
+    )
+
+    async def finalize(full_text: str) -> dict:
+        result = await anyio.to_thread.run_sync(
+            _finalize_edit,
+            chat_id, message_id, new_content, full_text, model_id_stripped,
+            user_row["updated_at"], user_row["content"], tail_id,
+        )
+        logger.info(
+            "Streaming edit swept %d row(s): chat_id=%d user_msg_id=%d",
+            result["deleted_count"], chat_id, message_id,
+        )
+        return {
+            "user_message": result["user_message"],
+            "assistant_message": result["assistant_message"],
+        }
+
+    return StreamingResponse(
+        _stream_exchange(
+            chat_id=chat_id,
+            model_id=model_id_stripped,
+            label="edit",
+            body=body,
+            messages=messages,
+            gen_params=filtered_gen_params,
+            provider_dict=provider_dict,
+            first_event={
+                "type": "user_message",
+                # Preview of the edited row: same id, replacement content. The
+                # DB still holds the OLD content - final truth lands at done.
+                "message": {**_msg_to_dict(user_row, user_atts),
+                            "content": new_content},
+            },
+            notices=notices,
+            finalize=finalize,
+            # No rescue: the edit writes nothing until the atomic swap, so an
+            # interrupted attempt leaves the chat byte-identical to before it.
+        ),
+        media_type="text/event-stream", headers=_SSE_HEADERS,
     )
 

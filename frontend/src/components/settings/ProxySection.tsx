@@ -5,6 +5,8 @@ import { Switch } from "@/components/ui/switch";
 import {
   useSettings,
   useSetProxy,
+  useSetProxyAlias,
+  useSetProxyRequired,
   useDeleteProxy,
   useProxyHealth,
   useRefreshProxyHealth,
@@ -16,11 +18,18 @@ export function ProxySection() {
   const { data: settings } = useSettings();
   const { data: health } = useProxyHealth();
   const setProxy = useSetProxy();
+  const setRequired = useSetProxyRequired();
+  const setAlias = useSetProxyAlias();
   const deleteProxy = useDeleteProxy();
   const refreshHealth = useRefreshProxyHealth();
 
   const [urlInput, setUrlInput] = useState("");
   const [aliasInput, setAliasInput] = useState("");
+  // Same reason as requiredDirty: the alias field is write-only too, so an
+  // untouched box must mean "keep what is stored", not "clear it". Sending
+  // `aliasInput.trim() || null` unconditionally wiped the stored alias on
+  // every later URL-only update.
+  const [aliasDirty, setAliasDirty] = useState(false);
   const [requiredToggle, setRequiredToggle] = useState(false);
   // Tracks whether the user touched the toggle since the last save. While NOT
   // dirty, the toggle mirrors the server value - this prevents a save that only
@@ -44,17 +53,56 @@ export function ProxySection() {
     setRequiredToggle(checked);
   };
 
+  // A save is meaningful with a new URL, or - once a proxy exists - with
+  // nothing but the kill-switch or the label moved. `aliasDirty` was left
+  // out of both of these (KÖK 15), and there was no alias-only write path
+  // at all, so naming an existing proxy was impossible: the URL is
+  // write-only and never shown, and the box refused to save without it.
+  const noUrl = !urlInput.trim();
+  const configured = Boolean(settings?.proxy_configured);
+  const fieldsOnlySave = noUrl && configured && (requiredDirty || aliasDirty);
+  const canSave = Boolean(urlInput.trim()) || fieldsOnlySave;
+
   const handleSave = async () => {
-    if (!urlInput.trim()) return;
+    if (!canSave) return;
     setFeedback(null);
     try {
+      if (fieldsOnlySave) {
+        // The switch and/or the label, without the URL. Routing either
+        // through the full proxy write meant retyping a URL nobody can see.
+        //
+        // BOTH are sent when both moved. The old branch fired on
+        // requiredDirty alone and returned early, so changing the switch and
+        // the name together wrote only the switch - and then reported
+        // "Proxy is now required" over a name box still showing the text
+        // that had just been dropped.
+        const done: string[] = [];
+        if (aliasDirty) {
+          await setAlias.mutateAsync(aliasInput.trim() || null);
+          setAliasDirty(false);
+          done.push(aliasInput.trim() ? "Name saved" : "Name cleared");
+        }
+        if (requiredDirty) {
+          await setRequired.mutateAsync(requiredToggle);
+          setRequiredDirty(false);
+          done.push(
+            requiredToggle ? "Proxy is now required" : "Proxy no longer required",
+          );
+        }
+        setFeedback({ type: "success", text: done.join(" · ") });
+        return;
+      }
       await setProxy.mutateAsync({
         proxyUrl: urlInput.trim(),
         proxyRequired: requiredToggle,
-        proxyAlias: aliasInput.trim() || null,
+        // Untouched box → preserve the stored alias instead of erasing it.
+        proxyAlias: aliasDirty
+          ? aliasInput.trim() || null
+          : (settings?.proxy_alias ?? null),
       });
       setUrlInput(""); // Clear URL on success - write-only
       setAliasInput("");
+      setAliasDirty(false);
       setRequiredDirty(false); // Saved value is now the server value - resume syncing
       setFeedback({ type: "success", text: "Proxy configured" });
     } catch (err) {
@@ -67,13 +115,18 @@ export function ProxySection() {
     try {
       await deleteProxy.mutateAsync();
       setRequiredDirty(false);
+      setAliasDirty(false);
       setFeedback({ type: "success", text: "Proxy removed" });
     } catch (err) {
       setFeedback({ type: "error", text: parseApiError(err).message });
     }
   };
 
-  const busy = setProxy.isPending || deleteProxy.isPending;
+  const busy =
+    setProxy.isPending ||
+    setRequired.isPending ||
+    setAlias.isPending ||
+    deleteProxy.isPending;
 
   return (
     <div className="space-y-3">
@@ -168,7 +221,10 @@ export function ProxySection() {
           type="text"
           placeholder="Alias (optional)"
           value={aliasInput}
-          onChange={(e) => setAliasInput(e.target.value)}
+          onChange={(e) => {
+            setAliasDirty(true);
+            setAliasInput(e.target.value);
+          }}
           disabled={busy}
           className="text-xs"
           aria-label="Proxy alias input"
@@ -189,7 +245,7 @@ export function ProxySection() {
         </div>
         <Button
           size="sm"
-          disabled={busy || !urlInput.trim()}
+          disabled={busy || !canSave}
           onClick={handleSave}
           className="gap-1"
           style={{
@@ -197,12 +253,12 @@ export function ProxySection() {
             color: "var(--color-es-text-dark)",
           }}
         >
-          {setProxy.isPending ? (
+          {setProxy.isPending || setRequired.isPending ? (
             <Loader2 size={12} className="animate-spin" />
           ) : (
             <Check size={12} />
           )}
-          Save Proxy
+          Save proxy
         </Button>
       </div>
 
@@ -221,7 +277,7 @@ export function ProxySection() {
           ) : (
             <Trash2 size={12} />
           )}
-          Remove Proxy
+          Remove proxy
         </Button>
       )}
 

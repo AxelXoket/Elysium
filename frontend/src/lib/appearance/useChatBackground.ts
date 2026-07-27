@@ -10,6 +10,7 @@
  */
 import { useEffect, useState, type CSSProperties } from "react";
 import { useUiStore } from "@/lib/store/uiStore";
+import { useErrorStore } from "@/lib/errors/errorStore";
 import { getChatBgBlob } from "@/lib/store/chatBgDb";
 import {
   buildBgLayers,
@@ -26,6 +27,7 @@ export interface ChatBackground {
 
 export function useChatBackground(): ChatBackground {
   const on = useUiStore((s) => s.chatBgOn);
+  const clearChatBg = useUiStore((s) => s.clearChatBg);
   const rev = useUiStore((s) => s.chatBgRev);
   const lum = useUiStore((s) => s.chatBgLum);
   const contrast = useUiStore((s) => s.chatBgContrast);
@@ -39,11 +41,36 @@ export function useChatBackground(): ChatBackground {
     if (!on) return;
     let cancelled = false;
     let url: string | null = null;
-    void getChatBgBlob().then((blob) => {
-      if (cancelled || !blob) return;
-      url = URL.createObjectURL(blob);
-      setObjectUrl(url);
-    });
+    void getChatBgBlob()
+      .then((blob) => {
+        if (cancelled) return;
+        if (!blob) {
+          // `chatBgOn` is persisted independently of the blob, so an evicted
+          // or missing image left the app claiming a background was set while
+          // rendering none. Make the flag agree with what is actually there.
+          clearChatBg();
+          return;
+        }
+        url = URL.createObjectURL(blob);
+        setObjectUrl(url);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        // There was no .catch at all. chatBgDb.withStore rejects on
+        // req.onerror, tx.onerror and tx.onabort, so any IndexedDB failure
+        // became an unhandled promise rejection and this hook returned
+        // "no background" forever - indistinguishable from having none. The
+        // write path in AppSettingsDialog handles its errors; this one did not.
+        clearChatBg();
+        useErrorStore
+          .getState()
+          .pushErrorDirect(
+            "chat_background_unreadable",
+            "The chat background could not be loaded, so it has been turned off.",
+            "warning",
+          );
+        void err;
+      });
     return () => {
       cancelled = true;
       if (url) URL.revokeObjectURL(url);

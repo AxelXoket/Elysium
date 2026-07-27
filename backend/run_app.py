@@ -8,6 +8,7 @@ the lock screen and asks for the passphrase.
 """
 from __future__ import annotations
 
+import atexit
 import ctypes
 import logging
 import os
@@ -67,6 +68,25 @@ def _setup_frozen_logging() -> None:
             logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s")
         )
         logging.basicConfig(level=logging.INFO, handlers=[handler])
+
+        # The config import above happened BEFORE this handler existed, so a
+        # redirected OPENROUTER_BASE_URL - the one thing that can send the API
+        # key to an arbitrary host - warned into a dead stderr and was absent
+        # from elysium.log in exactly the build where nothing else could show
+        # it. Report it now that there is somewhere for it to land.
+        import config as _config
+        _config.warn_if_base_url_overridden()
+
+        # uvicorn does NOT propagate to root: `uvicorn.Config(...)` installs its
+        # own handlers on "uvicorn", "uvicorn.error" and "uvicorn.access" with
+        # propagate=False. So a windowed build wrote every application log to
+        # the file and every SERVER log to a stderr that does not exist - and
+        # the failure dialog told people the details were in elysium.log.
+        # Attaching the same handler is what makes that sentence true.
+        for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+            server_logger = logging.getLogger(name)
+            server_logger.addHandler(handler)
+            server_logger.setLevel(logging.INFO)
     except Exception:
         pass  # diagnostics must never block the launch
 
@@ -92,13 +112,64 @@ def _webview2_installed() -> bool:
     return False
 
 
+def _port_file():
+    from config import DATA_DIR
+
+    return DATA_DIR / "port"
+
+
+def _remembered_port() -> int:
+    try:
+        value = int(_port_file().read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return 0
+    return value if 1024 <= value <= 65535 else 0
+
+
+def _remember_port(port: int) -> None:
+    try:
+        path = _port_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(port), encoding="utf-8")
+    except OSError:
+        # A port we cannot remember only costs the next launch its stored UI
+        # preferences; it must never stop the app from starting.
+        logging.getLogger(__name__).warning("could not remember the app port")
+
+
 def bind_app_socket() -> socket.socket:
     """Bind (not listen) the server socket here and hand it to uvicorn:
     no close-then-rebind gap, so the port cannot be lost to another process
     between picking it and serving on it. uvicorn's loop.create_server()
-    takes over the bound socket and calls listen() itself."""
+    takes over the bound socket and calls listen() itself.
+
+    THE PORT IS REMEMBERED. localStorage and IndexedDB are keyed by
+    scheme://host:port, so binding 0 every launch handed the persistent
+    WebView2 profile a brand-new, empty storage bucket each time: font size,
+    contrast preset, narration style, the chat wallpaper (its IndexedDB blob
+    orphaned under the dead origin) and the last-open chat all reverted to
+    defaults - exactly what private_mode=False was turned off to prevent - and
+    every dead origin's storage stayed on disk forever. The shipping profile
+    had twelve of them, one per port it had ever used.
+
+    Still bound, never assumed: if the remembered port is taken (another
+    instance, or something else claimed it), we fall back to an ephemeral one
+    and remember THAT. A lost preference beats a refusal to start.
+    """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    wanted = _remembered_port()
+    if wanted:
+        try:
+            sock.bind((HOST, wanted))
+            return sock
+        except OSError:
+            logging.getLogger(__name__).info(
+                "app port %d is busy; taking a new one", wanted,
+            )
+            sock.close()
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind((HOST, 0))
+    _remember_port(sock.getsockname()[1])
     return sock
 
 
@@ -148,12 +219,123 @@ def _selftest(base: str) -> None:
     except Exception as exc:  # pragma: no cover
         print(f"SELFTEST_FAIL {exc}", flush=True)
         sys.exit(1)
-    print(f"SELFTEST healthz={healthz} root_serves_spa={root_ok} status={status}", flush=True)
-    sys.exit(0 if (healthz and root_ok) else 1)
+    # The two things the custom spec files EXIST for (audit KÖK 13). The HTTP
+    # checks above pass on a build with no voice at all: the worker scripts and
+    # the engine requirements are plain data files, so PyInstaller drops them
+    # unless the spec says otherwise - and nothing here or in
+    # test_tts_packaging.py ever looked at a real output. Both gates could be
+    # green on an exe that cannot speak.
+    voice_ok, voice_detail = _selftest_voice_payload()
+
+    print(
+        f"SELFTEST healthz={healthz} root_serves_spa={root_ok} "
+        f"voice_payload={voice_ok} status={status}",
+        flush=True,
+    )
+    if not voice_ok:
+        print(f"SELFTEST_FAIL missing from the bundle: {voice_detail}", flush=True)
+    sys.exit(0 if (healthz and root_ok and voice_ok) else 1)
+
+
+def _selftest_voice_payload() -> tuple[bool, str]:
+    """Is every engine's worker script and requirements file actually here?
+
+    Returns (ok, what is missing). Never raises: a self-test that dies on its
+    own import is indistinguishable from the failure it is looking for.
+    """
+    try:
+        from tts import provision
+        from tts.host import worker_script
+
+        missing: list[str] = []
+        for engine_id in provision.ENGINES:
+            script = worker_script(engine_id)
+            if not script.is_file():
+                missing.append(str(script))
+            reqs = provision.requirements_path(engine_id)
+            if not reqs.is_file():
+                missing.append(str(reqs))
+        return (not missing), ", ".join(missing)
+    except Exception as exc:                             # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+def _stop_voice_worker(grace: float = 1.0) -> None:
+    """Take the voice worker down. Registered on three different exits because
+    the obvious one does not fire in the packaged app.
+
+    uvicorn runs in a daemon thread here, so when webview.start() returns the
+    process exits and FastAPI's shutdown hook never runs. The worker holds
+    several GB of VRAM, which makes an orphan the difference between closing an
+    app and rebooting a machine. Belt (window closed), braces (atexit), and a
+    Win32 job object underneath for the case where neither gets to run.
+    """
+    try:
+        from tts.worker_client import hard_close
+
+        hard_close(grace=grace)
+    except Exception:
+        logging.getLogger(__name__).warning("voice teardown failed", exc_info=True)
+
+
+def _try_per_monitor_dpi() -> bool:
+    """Ask Windows for PER-MONITOR DPI awareness. Opt-in, and here is why.
+
+    pywebview already calls `SetProcessDPIAware()` - the Vista-era API, which
+    means SYSTEM dpi aware: the app is sharp at the scale factor the primary
+    monitor had at login, and Windows BITMAP-STRETCHES it anywhere else. Move
+    the window to a second monitor on a different scale, or change the display
+    scale while it runs, and every glyph goes soft. That is the whole of the
+    "WebView2 looks blurry" class of reports.
+
+    `PER_MONITOR_AWARE_V2` fixes it - but pywebview's WinForms host was written
+    against the old model ("Bounds are already in logical pixels due to
+    SetProcessDPIAware"), so changing the contract underneath it could just as
+    easily produce a wrongly-sized window. That is not a trade to make blind on
+    somebody else's machine, and it cannot be verified without a screen.
+
+    It shipped opt-in for exactly one launch to answer that question on a real
+    screen. It did not happen - window normal, everything sharp - so this is
+    now ON by default, with `ELYSIUM_PER_MONITOR_DPI=0` as the way out if a
+    display configuration somewhere disagrees.
+
+    Note the machine it was verified on runs at 100% scale, so what that launch
+    PROVED is "does not break the window", not "makes text sharper". The
+    sharpness claim rests on the API contract and applies to the setups this
+    exists for: fractional scaling and mixed-DPI multi-monitor.
+
+    Must run BEFORE pywebview starts: a process's DPI awareness can only be set
+    once, and the first caller wins.
+    """
+    if os.name != "nt" or os.environ.get("ELYSIUM_PER_MONITOR_DPI") == "0":
+        return False
+    try:
+        import ctypes
+
+        # -4 = DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2. Windows 10 1703+;
+        # older builds simply do not export it, which is not an error here.
+        #
+        # The argtype is NOT optional. The parameter is a HANDLE, so on 64-bit
+        # a bare Python -4 is marshalled as a 32-bit int and the call fails
+        # silently, returning 0 - a switch that reports success by doing
+        # nothing at all. Declaring it as a pointer is what makes it real.
+        fn = ctypes.windll.user32.SetProcessDpiAwarenessContext
+        fn.argtypes = [ctypes.c_void_p]
+        fn.restype = ctypes.c_bool
+        ok = bool(fn(ctypes.c_void_p(-4)))
+    except (AttributeError, OSError):
+        return False
+    logging.getLogger(__name__).info(
+        "per-monitor DPI awareness: %s", "on" if ok else "refused")
+    return ok
 
 
 def main() -> None:
     _setup_frozen_logging()
+    _try_per_monitor_dpi()
+    # Covers the selftest path too, which returns via sys.exit and would
+    # otherwise leave a worker behind on every frozen-exe check.
+    atexit.register(_stop_voice_worker)
     sock = bind_app_socket()
     port = sock.getsockname()[1]
     serve(sock)
@@ -180,7 +362,7 @@ def main() -> None:
         logging.getLogger(__name__).error("Backend not ready within timeout; aborting launch.")
         _alert(message)
         raise SystemExit("Elysium backend did not start in time.")
-    webview.create_window(
+    window = webview.create_window(
         WINDOW_TITLE,
         base + "/",
         width=1200,
@@ -190,6 +372,15 @@ def main() -> None:
         # keeps ~360px. Below this the composer would get uncomfortably narrow.
         min_size=(980, 660),
     )
+    # Fire-and-forget on a thread: even with grace=0 the teardown still waits
+    # briefly for the terminated process to be reaped, and a pywebview event
+    # handler that blocks freezes the close. If the process exits before the
+    # thread finishes, the kernel closes the job object handle and
+    # KILL_ON_JOB_CLOSE reaps the worker anyway - the guarantee does not
+    # depend on this thread winning the race.
+    window.events.closed += lambda: threading.Thread(
+        target=_stop_voice_worker, args=(0.0,), daemon=True
+    ).start()
     # Persistent WebView2 profile: pywebview's default private mode wipes
     # localStorage/IndexedDB on every close, which would reset font size,
     # narration style, the wallpaper, and the last-open chat each launch.

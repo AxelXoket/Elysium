@@ -46,7 +46,27 @@ def check(label: str, ok: bool, detail: str = "") -> None:
 def section(title: str) -> None:
     print(f"\n{'-'*62}\n  {title}\n{'-'*62}")
 
-BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+# The scripts moved from backend/ into backend/verify/ (commit d8da7db) and
+# this line did not, so the whole grep suite walked its OWN directory: it
+# scanned 12 files, every one of them in the VERIFY_FILES exclusion set, and
+# reported PASS on privacy assertions that had examined no application code
+# at all. Adding `allow_origins=["*"]` to main.py still printed PASS.
+BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Its ten siblings all do this and this one did not, so `import database`
+# below raised ModuleNotFoundError the moment the file stopped living next to
+# the module it imports. Nothing noticed, because the aggregate runner was
+# looking for these scripts in the old directory and never launched any of
+# them - two halves of the same move, each hiding the other.
+sys.path.insert(0, BACKEND_DIR)
+
+# Every script in this directory hardcoded `BACKEND_DIR/app.db` and ran
+# DELETE statements against it. In a dev tree that path IS the developer's
+# live vault, so the whole suite mutated real data on every run. _harness
+# redirects the child process, and this file's own direct DB access, at a
+# fresh temp directory. See verify/_harness.py.
+import _harness
+
 
 # ── Temp DB setup ─────────────────────────────────────────────────────────────
 # All in-process test DB artifacts go to the OS temp dir.
@@ -86,7 +106,7 @@ section("V6-V7  Server bind (127.0.0.1:8787) + GET /healthz")
 
 _uvicorn_name = "uvicorn.exe" if sys.platform == "win32" else "uvicorn"
 UVICORN_EXE = os.path.join(os.path.dirname(sys.executable), _uvicorn_name)
-_server_db = os.path.join(BACKEND_DIR, "app.db")
+_server_db = os.path.join(_harness.data_dir(), "app.db")
 _server_db_existed = os.path.exists(_server_db)
 
 server_proc: subprocess.Popen | None = None

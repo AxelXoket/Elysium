@@ -1,0 +1,66 @@
+{
+  "_why": "Narration is decided twice: parseMessage.ts tints it on screen, speech_prep.py hands it to the engine. Two implementations in two languages will drift, and the drift is invisible - the screen italicises a span the ear hears in the character's own voice, or the reverse. This table is the single agreed answer. Both suites assert against it, so a divergence fails a test instead of surprising someone mid-conversation.",
+  "_shape": "text = input. em = the substrings that must come out marked as narration, in order. If em is empty the text contains no narration at all.",
+  "cases": [
+    {
+      "name": "plain prose has no narration",
+      "text": "She looked at me and smiled.",
+      "em": []
+    },
+    {
+      "name": "a single asterisk span is narration",
+      "text": "*She leans closer.* \"Come here,\" she says.",
+      "em": ["She leans closer."]
+    },
+    {
+      "name": "bold is emphasis, not narration",
+      "text": "This is **really** important.",
+      "em": []
+    },
+    {
+      "name": "triple run is both, so it counts as narration",
+      "text": "That was ***everything*** to me.",
+      "em": ["everything"]
+    },
+    {
+      "name": "arithmetic is not narration - a digit before the run blocks opening",
+      "text": "The answer is 5*3*2 exactly.",
+      "em": []
+    },
+    {
+      "name": "mid-word asterisks do not open - a letter before the run blocks it",
+      "text": "That was un*believ*able.",
+      "em": []
+    },
+    {
+      "name": "a run followed by whitespace does not open",
+      "text": "Look at that * thing over there.",
+      "em": []
+    },
+    {
+      "name": "two narration spans in one reply",
+      "text": "*He pauses.* \"Well?\" *She waits.*",
+      "em": ["He pauses.", "She waits."]
+    },
+    {
+      "name": "a blank line force-closes an unterminated span",
+      "text": "*She turns away\n\nand the room is quiet.",
+      "em": ["She turns away"]
+    },
+    {
+      "name": "an unclosed span runs to the end of the text",
+      "text": "*She never finished the",
+      "em": ["She never finished the"]
+    },
+    {
+      "name": "four or more asterisks are a decorative divider, not a delimiter",
+      "text": "before ****** after",
+      "em": []
+    },
+    {
+      "name": "narration wrapping quoted speech keeps the quotes inside it",
+      "text": "*She whispers, \"stay\", and steps back.*",
+      "em": ["She whispers, \"stay\", and steps back."]
+    }
+  ]
+}

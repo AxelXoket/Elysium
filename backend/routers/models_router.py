@@ -14,9 +14,8 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 
-from database import get_setting
 from openrouter import fetch_models, OpenRouterError
-from proxy_health import check_proxy_health
+from proxy_health import enforce_proxy_gate
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +30,7 @@ router = APIRouter(prefix="/models", tags=["models"])
 async def list_openrouter_models(refresh: bool = False) -> dict:
     """Return available OpenRouter models with caching and proxy gating."""
     # 1. Proxy gate
-    proxy_required = get_setting("proxy_required") == "1"
-    if proxy_required:
-        health = await check_proxy_health()
-        if not health.get("healthy"):
-            raise HTTPException(503, health.get("reason", "proxy_unhealthy"))
+    await enforce_proxy_gate()
 
     # 2. Fetch models
     try:
@@ -44,6 +39,10 @@ async def list_openrouter_models(refresh: bool = False) -> dict:
         reason = e.reason
         if reason in ("api_key_invalid", "api_key_required_by_openrouter"):
             raise HTTPException(401, reason)
+        elif reason == "proxy_auth_failed":
+            # The user's own proxy refused the tunnel - never blamed on the
+            # provider, so the UI can point at the proxy settings.
+            raise HTTPException(502, reason)
         elif reason == "openrouter_timeout":
             raise HTTPException(504, reason)
         elif reason == "invalid_openrouter_models_response":

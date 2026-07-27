@@ -84,6 +84,11 @@ describe("chat background store actions", () => {
       chatBgContrast: 0.35,
       chatBgTint: "auto",
       chatBgRev: 0,
+      // The Settings dialog's open state lives in the store now, so it is
+      // module-global: a dialog left open by an earlier case makes the
+      // background inert and SidebarFooter's trigger unreachable.
+      settingsOpen: false,
+      settingsInitialPage: null,
     });
   });
 
@@ -128,6 +133,11 @@ describe("Background settings page", () => {
       chatBgOn: false,
       chatBgContrast: 0.35,
       chatBgTint: "auto",
+      // Store-owned since the composer's voice hint needs to open Settings on
+      // the Voice page - so it is module-global and a dialog left open by an
+      // earlier case hides SidebarFooter's trigger behind an inert background.
+      settingsOpen: false,
+      settingsInitialPage: null,
     });
   });
 

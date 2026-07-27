@@ -17,11 +17,14 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { renderHook, waitFor, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useStreamingCompletion } from "@/lib/chat/useStreamingCompletion";
+import { useStreamRegistry, stopChat } from "@/lib/chat/streamRegistry";
+import { useClearChat, useDeleteChat } from "@/lib/query/chats";
 import { keys } from "@/lib/query/keys";
 import { useErrorStore } from "@/lib/errors";
 import {
   mockFetchWithStreams,
   controlledSseResponse,
+  jsonResponse,
 } from "../helpers/streamMocks";
 import type { Message } from "@/lib/schemas/chats";
 import type { ReactNode } from "react";
@@ -164,6 +167,93 @@ describe("useStreamingCompletion - send", () => {
     // Send errors surface in the Composer banner - never as a toast
     expect(useErrorStore.getState().errors).toHaveLength(0);
     expect(result.current.streamingByChat.has(1)).toBe(false);
+  });
+
+  it("KÖK 16: an error that saved the partial keeps the rows it committed", async () => {
+    // The provider failed AFTER text arrived and the server kept it - the
+    // same thing pressing Stop at that moment does. Mirroring the old
+    // roll-back here would delete a reply the user is still looking at.
+    const qc = newQueryClient();
+    qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]);
+    const stream = controlledSseResponse();
+    mockFetchWithStreams({
+      "/chats/1/complete/stream": { response: () => stream.response },
+    });
+
+    const { result } = renderHook(() => useStreamingCompletion(), {
+      wrapper: createWrapper(qc),
+    });
+
+    const onError = vi.fn();
+    const onPersisted = vi.fn();
+    let sendPromise!: Promise<void>;
+    await act(async () => {
+      sendPromise = result.current.startSend(sendVars, { onError, onPersisted });
+    });
+
+    stream.emit({ type: "user_message", message: msg(5, "user", "stream me") });
+    stream.emit({ type: "delta", content: "half an answer" });
+    await waitFor(() => {
+      expect(result.current.streamingByChat.get(1)?.text).toBe("half an answer");
+    });
+
+    stream.emit({
+      type: "error",
+      status: 429,
+      code: "openrouter_rate_limited",
+      partial_saved: true,
+    });
+    stream.close();
+    await act(() => sendPromise);
+
+    // The user row STAYS - unlike the plain-error path above, which removes it.
+    expect(messagesInCache(qc).map((m) => m.id)).toEqual([1, 5]);
+    // And the failure is still reported: they keep what they read AND learn
+    // why it stopped.
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0][0]).toMatchObject({
+      status: 429,
+      detail: "openrouter_rate_limited",
+    });
+    expect(onPersisted).toHaveBeenCalledTimes(1);
+  });
+
+  it("a notice arriving before the reply becomes a warning, not an error", async () => {
+    const qc = newQueryClient();
+    qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]);
+    const stream = controlledSseResponse();
+    mockFetchWithStreams({
+      "/chats/1/complete/stream": { response: () => stream.response },
+    });
+
+    const { result } = renderHook(() => useStreamingCompletion(), {
+      wrapper: createWrapper(qc),
+    });
+
+    let sendPromise!: Promise<void>;
+    await act(async () => {
+      sendPromise = result.current.startSend(sendVars);
+    });
+
+    stream.emit({ type: "user_message", message: msg(5, "user", "stream me") });
+    stream.emit({ type: "notice", code: "images_omitted", count: 2 });
+    stream.emit({ type: "delta", content: "I see no image." });
+    stream.emit({
+      type: "done",
+      chat_id: 1,
+      model_id: "m",
+      user_message: msg(5, "user", "stream me"),
+      assistant_message: msg(6, "assistant", "I see no image."),
+    });
+    stream.close();
+    await act(() => sendPromise);
+
+    const [notice] = useErrorStore.getState().errors;
+    expect(notice.code).toBe("images_omitted");
+    expect(notice.severity).toBe("warning");
+    expect(notice.message).toContain("2 images");
+    // The reply itself succeeded - the notice must not look like a failure.
+    expect(messagesInCache(qc).map((m) => m.id)).toEqual([1, 5, 6]);
   });
 
   it("abort with partial text: keeps user row and refetches messages", async () => {
@@ -756,5 +846,217 @@ describe("useStreamingCompletion - attachments", () => {
     expect(onPersisted).not.toHaveBeenCalled();
     expect(onAbortedEmpty).toHaveBeenCalledTimes(1);
     expect(onError).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── v1.1 Faz 1: ghost-message chain (D1/D3/I8) + stream registry (FF1/H7) ──
+
+describe("useStreamingCompletion - ghost-message chain (v1.1)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useErrorStore.getState().clearAll();
+    useStreamRegistry.setState({ controllers: new Map() });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("D1: abort-empty deletes the persisted user row BEFORE invalidating; 404 is swallowed", async () => {
+    const qc = newQueryClient();
+    qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]);
+    const order: string[] = [];
+    const invalidateOriginal = qc.invalidateQueries.bind(qc);
+    vi.spyOn(qc, "invalidateQueries").mockImplementation((filters, opts) => {
+      order.push("invalidate");
+      return invalidateOriginal(filters as never, opts as never);
+    });
+    const stream = controlledSseResponse();
+    mockFetchWithStreams({
+      "/chats/1/complete/stream": { response: () => stream.response },
+      // The authority delete: answered with the ghost 404 - MUST be silent.
+      "/messages/5": {
+        response: () => {
+          order.push("delete");
+          return jsonResponse({ detail: "message_not_found" }, 404);
+        },
+      },
+    });
+
+    const { result } = renderHook(() => useStreamingCompletion(), {
+      wrapper: createWrapper(qc),
+    });
+
+    const onAbortedEmpty = vi.fn();
+    let sendPromise!: Promise<void>;
+    await act(async () => {
+      sendPromise = result.current.startSend(sendVars, { onAbortedEmpty });
+    });
+
+    stream.emit({ type: "user_message", message: msg(5, "user", "stream me") });
+    await waitFor(() => {
+      expect(messagesInCache(qc).some((m) => m.id === 5)).toBe(true);
+    });
+
+    act(() => {
+      result.current.stop(1);
+    });
+    await act(() => sendPromise);
+
+    // The DELETE fired, and BEFORE the messages invalidate (the whole point:
+    // the refetch must not race the server's own lazy cleanup).
+    expect(order).toContain("delete");
+    expect(order.indexOf("delete")).toBeLessThan(order.lastIndexOf("invalidate"));
+    // 404 swallowed - no "already deleted" toast, ghost gone from the cache.
+    expect(useErrorStore.getState().errors).toHaveLength(0);
+    expect(messagesInCache(qc).map((m) => m.id)).toEqual([1]);
+    expect(onAbortedEmpty).toHaveBeenCalledTimes(1);
+  });
+
+  it("D3: done invalidates messages UNCONDITIONALLY (history already present)", async () => {
+    const qc = newQueryClient();
+    qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]); // history loaded
+    const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+    const stream = controlledSseResponse();
+    mockFetchWithStreams({
+      "/chats/1/complete/stream": { response: () => stream.response },
+    });
+
+    const { result } = renderHook(() => useStreamingCompletion(), {
+      wrapper: createWrapper(qc),
+    });
+
+    let sendPromise!: Promise<void>;
+    await act(async () => {
+      sendPromise = result.current.startSend(sendVars);
+    });
+    stream.emit({ type: "user_message", message: msg(5, "user", "stream me") });
+    stream.emit({ type: "delta", content: "Hi" });
+    stream.emit({
+      type: "done",
+      chat_id: 1,
+      model_id: "m",
+      user_message: msg(5, "user", "stream me"),
+      assistant_message: msg(6, "assistant", "Hi"),
+    });
+    stream.close();
+    await act(() => sendPromise);
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: keys.messages(1) });
+  });
+
+  it("I8: abort-empty BEFORE user_message arms a 750ms one-shot resync", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const qc = newQueryClient();
+    qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]);
+    const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+    const stream = controlledSseResponse();
+    mockFetchWithStreams({
+      "/chats/1/complete/stream": { response: () => stream.response },
+    });
+
+    const { result } = renderHook(() => useStreamingCompletion(), {
+      wrapper: createWrapper(qc),
+    });
+
+    const onAbortedEmpty = vi.fn();
+    let sendPromise!: Promise<void>;
+    await act(async () => {
+      sendPromise = result.current.startSend(sendVars, { onAbortedEmpty });
+    });
+
+    // Stop before ANY event: the server persisted a row under an id the
+    // client never learned - the blind window.
+    act(() => {
+      result.current.stop(1);
+    });
+    await act(() => sendPromise);
+    expect(onAbortedEmpty).toHaveBeenCalledTimes(1);
+
+    const messageInvalidates = () =>
+      invalidateSpy.mock.calls.filter(
+        (c) =>
+          JSON.stringify((c[0] as { queryKey?: unknown })?.queryKey) ===
+          JSON.stringify(keys.messages(1)),
+      ).length;
+
+    const immediate = messageInvalidates();
+    expect(immediate).toBeGreaterThanOrEqual(1);
+
+    // The one-shot net fires at +750ms and settles the cache on server truth.
+    act(() => {
+      vi.advanceTimersByTime(750);
+    });
+    expect(messageInvalidates()).toBe(immediate + 1);
+
+    // One-shot: no further firings.
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(messageInvalidates()).toBe(immediate + 1);
+  });
+
+  it("FF1/H7: the module registry tracks the stream and stopChat aborts it", async () => {
+    const qc = newQueryClient();
+    qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]);
+    const stream = controlledSseResponse();
+    mockFetchWithStreams({
+      "/chats/1/complete/stream": { response: () => stream.response },
+    });
+
+    const { result } = renderHook(() => useStreamingCompletion(), {
+      wrapper: createWrapper(qc),
+    });
+
+    const onAbortedEmpty = vi.fn();
+    let sendPromise!: Promise<void>;
+    await act(async () => {
+      sendPromise = result.current.startSend(sendVars, { onAbortedEmpty });
+    });
+
+    // Registered while in flight - visible OUTSIDE the hook instance.
+    expect(useStreamRegistry.getState().controllers.has(1)).toBe(true);
+
+    // stopChat (what useClearChat/useDeleteChat call in onMutate) aborts it.
+    act(() => {
+      stopChat(1);
+    });
+    await act(() => sendPromise);
+
+    expect(onAbortedEmpty).toHaveBeenCalledTimes(1);
+    expect(useStreamRegistry.getState().controllers.has(1)).toBe(false);
+  });
+
+  it("FF1: useClearChat/useDeleteChat abort the chat's stream in onMutate", async () => {
+    const qc = newQueryClient();
+    mockFetchWithStreams({
+      "/chats/1/clear": { body: { ok: true, deleted_count: 2 } },
+      "/chats/2": { body: { ok: true, deleted_count: 1 } },
+    });
+
+    const clearController = new AbortController();
+    const deleteController = new AbortController();
+    useStreamRegistry.setState({
+      controllers: new Map([
+        [1, clearController],
+        [2, deleteController],
+      ]),
+    });
+
+    const { result } = renderHook(
+      () => ({ clear: useClearChat(), del: useDeleteChat() }),
+      { wrapper: createWrapper(qc) },
+    );
+
+    await act(async () => {
+      result.current.clear.mutate(1);
+    });
+    expect(clearController.signal.aborted).toBe(true);
+
+    await act(async () => {
+      result.current.del.mutate(2);
+    });
+    expect(deleteController.signal.aborted).toBe(true);
   });
 });

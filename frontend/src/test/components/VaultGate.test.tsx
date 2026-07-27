@@ -87,6 +87,17 @@ describe("VaultGate", () => {
     expect(await screen.findByTestId("app-root")).toBeInTheDocument();
   });
 
+  it("FF15: setup copy names the wallpaper as the encryption exception", async () => {
+    stubVaultFetch({ initialized: false, unlocked: false, passphrase: null });
+    render(<VaultGate>{APP_MARKER}</VaultGate>, { wrapper });
+
+    await screen.findByText("Protect your world");
+    // The claim is narrowed: the decorative wallpaper is NOT encrypted.
+    expect(
+      screen.getByText(/except the decorative chat wallpaper/i),
+    ).toBeInTheDocument();
+  });
+
   it("rejects mismatched entries locally without calling the API", async () => {
     const user = userEvent.setup();
     stubVaultFetch({ initialized: false, unlocked: false, passphrase: null });
@@ -176,5 +187,112 @@ describe("VaultGate lock hygiene", () => {
     expect(qc.getQueryData(["chats"])).toBeUndefined();
     expect(qc.getQueryData(["characters"])).toBeUndefined();
     expect(qc.getQueryData(["settings"])).toBeUndefined();
+  });
+});
+
+/**
+ * Audit: what the gate says when something other than a wrong passphrase
+ * happens, and what it does NOT say about the plaintext copy it left behind.
+ */
+describe("VaultGate - the states nobody rendered", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubInitFailure(detail: string, status = 500) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        const json = (data: unknown, s = 200) =>
+          new Response(JSON.stringify(data), { status: s });
+        if (url.endsWith("/vault/status")) {
+          return json({ initialized: false, unlocked: false });
+        }
+        if (url.endsWith("/vault/init")) return json({ detail }, status);
+        return json({}, 404);
+      }),
+    );
+  }
+
+  async function attemptCreate() {
+    const user = userEvent.setup();
+    render(<VaultGate>{APP_MARKER}</VaultGate>, { wrapper });
+    await screen.findByText("Protect your world");
+    await user.type(screen.getByLabelText("Passphrase"), "seaside-orchid-9");
+    await user.type(
+      screen.getByLabelText("Repeat passphrase"),
+      "seaside-orchid-9",
+    );
+    await user.click(screen.getByRole("button", { name: "Create vault" }));
+  }
+
+  it("names the one-file fix instead of blaming the backend", async () => {
+    // encrypted_db_without_identity: the vault data is intact and salt.bin is
+    // gone. It used to read "Setup failed. Is the backend running?" - the
+    // backend IS running, so the user retried forever, and nothing said that
+    // restoring one 16-byte file recovers everything.
+    stubInitFailure("encrypted_db_without_identity", 409);
+    await attemptCreate();
+
+    const error = await screen.findByRole("alert");
+    expect(error).toHaveTextContent(/salt\.bin/);
+    expect(error).not.toHaveTextContent(/backend running/i);
+  });
+
+  it("explains a failed init rather than pointing at the backend", async () => {
+    stubInitFailure("vault_init_failed");
+    await attemptCreate();
+    const error = await screen.findByRole("alert");
+    expect(error).toHaveTextContent(/writable|free space/i);
+    expect(error).not.toHaveTextContent(/backend running/i);
+  });
+
+  it("keeps the short-passphrase message", async () => {
+    stubInitFailure("passphrase_too_short", 400);
+    await attemptCreate();
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /at least 8 characters/i,
+    );
+  });
+
+  it("names the plaintext copy the migration kept", async () => {
+    // The screen just promised "everything ... is encrypted on disk with this
+    // passphrase". For an upgrading user the pre-vault database is kept
+    // readable beside the vault, forever - /vault/init has always reported it
+    // and nothing rendered it.
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        const json = (data: unknown, s = 200) =>
+          new Response(JSON.stringify(data), { status: s });
+        if (url.endsWith("/vault/status")) {
+          return json({ initialized: false, unlocked: false });
+        }
+        if (url.endsWith("/vault/init")) {
+          return json({
+            ok: true,
+            migrated: true,
+            backup: "app.db.plain.bak-1753400000",
+          });
+        }
+        return json({}, 404);
+      }),
+    );
+
+    render(<VaultGate>{APP_MARKER}</VaultGate>, { wrapper });
+    await screen.findByText("Protect your world");
+    await user.type(screen.getByLabelText("Passphrase"), "seaside-orchid-9");
+    await user.type(
+      screen.getByLabelText("Repeat passphrase"),
+      "seaside-orchid-9",
+    );
+    await user.click(screen.getByRole("button", { name: "Create vault" }));
+
+    const notice = await screen.findByRole("alert");
+    expect(notice).toHaveTextContent("app.db.plain.bak-1753400000");
+    expect(notice).toHaveTextContent(/not encrypted/i);
   });
 });

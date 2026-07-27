@@ -1,4 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
+import { stopChat } from "../chat/streamRegistry";
 import { keys } from "./keys";
 import {
   listCharacters,
@@ -59,11 +61,42 @@ export function useDeleteCharacter() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: number) => deleteCharacter(id),
-    onSuccess: (_data, id) => {
+    // The cascade reaches chats, so it has to reach their STREAMS too (KÖK 15).
+    // useDeleteChat and useClearChat both do this (v1.1 FF1/H7) and this path
+    // did not: a reply for a chat the user had just deleted along with its
+    // character went on generating and being billed, and then announced itself
+    // with "This chat was cleared or deleted while streaming. Please refresh."
+    // about a deletion the user performed on purpose.
+    onMutate: (id) => {
+      const doomed = chatIdsOfCharacter(qc, id);
+      for (const chatId of doomed) stopChat(chatId);
+      return { doomed };
+    },
+    onSuccess: (_data, id, context) => {
       qc.invalidateQueries({ queryKey: keys.characters() });
-      // Backend cascades: all chats/messages of the character are deleted.
       qc.invalidateQueries({ queryKey: keys.chats() });
       qc.removeQueries({ queryKey: keys.character(id) });
+      // Their message caches are stale the moment the rows are gone; leaving
+      // them behind is what lets a deleted conversation reappear on a revisit.
+      for (const chatId of context?.doomed ?? []) {
+        qc.removeQueries({ queryKey: keys.messages(chatId) });
+      }
     },
   });
+}
+
+/**
+ * The character's chats, as far as the cache knows.
+ *
+ * Read BEFORE the delete, because afterwards there is nothing left to ask.
+ * Best-effort by nature: a chat the client has never listed cannot be stopped
+ * from here, and the server-side cascade is what actually ends it.
+ */
+function chatIdsOfCharacter(qc: QueryClient, characterId: number): number[] {
+  const chats = qc.getQueryData<{ id: number; character_id: number }[]>(
+    keys.chats(),
+  );
+  return (chats ?? [])
+    .filter((chat) => chat.character_id === characterId)
+    .map((chat) => chat.id);
 }

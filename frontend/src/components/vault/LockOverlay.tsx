@@ -20,7 +20,7 @@
  *
  * Reduced motion: a plain veil fade; commit at 0.12s, total 0.55s.
  */
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { motion as m } from "motion/react";
 import { useReducedMotion } from "@/components/motion/ReducedMotion";
 
@@ -47,14 +47,39 @@ export function LockOverlay({
 }) {
   const reduced = useReducedMotion();
 
+  // The callbacks are read through refs so the timers are armed ONCE.
+  //
+  // VaultGate passes fresh inline arrows on every render, and it always
+  // re-renders right after the commit: the lock mutation invalidates
+  // vault-status and `unlocked` flips to false. So the effect's cleanup
+  // cleared both timeouts and re-armed them mid-animation - a SECOND
+  // POST /vault/lock fired ~1.65 s in (silently: SidebarHeader is unmounted by
+  // then, so its onError no longer runs, and the voice teardown thread ran
+  // again), and the overlay unmounted ~870 ms late. During that tail every
+  // animated child has reached opacity 0, so a fully transparent fixed overlay
+  // sat over the visible lock screen and swallowed clicks on the passphrase
+  // field and the Unlock button.
+  const onCommitRef = useRef(onCommit);
+  const onDoneRef = useRef(onDone);
   useEffect(() => {
-    const commit = setTimeout(onCommit, reduced ? REDUCED_COMMIT_MS : COMMIT_MS);
-    const done = setTimeout(onDone, reduced ? REDUCED_TOTAL_MS : TOTAL_MS);
+    onCommitRef.current = onCommit;
+    onDoneRef.current = onDone;
+  });
+
+  useEffect(() => {
+    const commit = setTimeout(
+      () => onCommitRef.current(),
+      reduced ? REDUCED_COMMIT_MS : COMMIT_MS,
+    );
+    const done = setTimeout(
+      () => onDoneRef.current(),
+      reduced ? REDUCED_TOTAL_MS : TOTAL_MS,
+    );
     return () => {
       clearTimeout(commit);
       clearTimeout(done);
     };
-  }, [onCommit, onDone, reduced]);
+  }, [reduced]);
 
   const totalS = (reduced ? REDUCED_TOTAL_MS : TOTAL_MS) / 1000;
 

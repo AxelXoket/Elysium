@@ -207,12 +207,30 @@ describe("Static safety tests", () => {
     const uiStorePath = path.resolve(SRC_DIR, "src", "lib", "store", "uiStore.ts");
     const content = readFile(uiStorePath);
 
-    const match = /partialize:\s*\([^)]*\)\s*=>\s*\(\{([\s\S]*?)\}\)/.exec(content);
-    // Vacuous-pass guard: the partialize block MUST be found, else the check is
-    // meaningless (mirrors the S-12 file-count guard).
-    expect(match, "Could not locate partialize(...) in uiStore.ts").not.toBeNull();
-
-    const body = match![1];
+    // v1.1 audit L8: extract the partialize object body by BRACE-BALANCING
+    // from `=> ({` to its matching `})`. The old non-greedy regex stopped at
+    // the FIRST `})`, so a value literal containing `})` (e.g. Object.assign({}))
+    // would truncate the scanned region and let every later key escape.
+    const head = /partialize:\s*\([^)]*\)\s*=>\s*\(\s*\{/.exec(content);
+    expect(head, "Could not locate partialize(...) in uiStore.ts").not.toBeNull();
+    const openBrace = head!.index + head![0].length - 1; // index of the '{'
+    let depth = 0;
+    let closeBrace = -1;
+    for (let i = openBrace; i < content.length; i++) {
+      const ch = content[i];
+      if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) {
+          closeBrace = i;
+          break;
+        }
+      }
+    }
+    expect(closeBrace, "Unbalanced partialize object braces").toBeGreaterThan(
+      openBrace,
+    );
+    const body = content.slice(openBrace + 1, closeBrace);
 
     const ALLOWED_PERSISTED_KEYS = new Set([
       "selectedCharacterId",
@@ -224,8 +242,27 @@ describe("Static safety tests", () => {
       // numbers and flags; never content, drafts, or secrets.
       "msgFontPx",
       "msgLineHeight",
+      // Message contrast preset (Soft/Default/High) - a display preference.
+      "msgContrast",
       "narrationEnabled",
       "quoteTintEnabled",
+      // Continuous voice (V9-1) - one boolean saying "speak replies aloud".
+      // No content, no id, nothing about WHAT was said. Persisted because
+      // somebody who turned it on meant to leave it on; it defaults to false
+      // so a fresh profile is silent.
+      "continuousVoice",
+      // How narration is SPOKEN (V9-3) - one of three enum strings, mirroring
+      // the narrationEnabled display flag above it. No content either way.
+      "narrationVoice",
+      // "I closed the 'voice is set up but nothing is chosen' hint." One
+      // boolean about a piece of UI chrome - no content, no id. Persisted
+      // because a hint that returns every launch is a nag; the dialog's own
+      // open state is deliberately NOT persisted.
+      "voiceHintDismissed",
+      // Appearance only (V11): a hex string for message ink and one of three
+      // finish names. Neither is content, an id, or anything about a person.
+      "msgInk",
+      "surfaceFinish",
       // Chat background scalars - the image itself lives as a Blob in the
       // approved appearance store (see S-13), never in localStorage.
       "chatBgOn",
@@ -233,21 +270,59 @@ describe("Static safety tests", () => {
       "chatBgContrast",
       "chatBgTint",
       "ambientFogOn",
+      // Generation sampling scalars (v1.1 FF7) - neutral names, no user
+      // content. stopSequences (character names) are deliberately NOT here:
+      // they stay in-memory in the GenerationSettingsProvider.
+      "genTemperature",
+      "genTopP",
+      "genTopK",
+      "genRepetitionPenalty",
+      "genMaxOutput",
+      "genSeed",
+      "genContextBudget",
     ]);
 
-    const keys = [...body.matchAll(/([A-Za-z_$][\w$]*)\s*:/g)].map((m) => m[1]);
-    // Guard: at least one persisted key must be parsed, else an empty capture
-    // would let the allowlist assertion pass vacuously.
+    // v1.1 audit L8 (value provenance): every persisted entry must be exactly
+    // `key: state.<sameKey>,` - a direct mirror of the store field, with the
+    // SAME name on both sides. This closes the gap where the old name-only
+    // check let `genSeed: state.vaultKey` through (an allowlisted key aliasing
+    // a secret). Anything derived, renamed, or content-bearing fails here.
+    const entryRe = /([A-Za-z_$][\w$]*)\s*:\s*state\.([A-Za-z_$][\w$]*)\s*,/g;
+    const entries = [...body.matchAll(entryRe)];
     expect(
-      keys.length,
-      "no keys parsed from partialize body (guard against a broken scan)",
+      entries.length,
+      "no `key: state.key` entries parsed from partialize (broken scan guard)",
     ).toBeGreaterThan(0);
 
-    for (const key of keys) {
+    // No line in the body may be anything OTHER than a `key: state.key` entry
+    // (or a comment/blank). A value like `x: someFn(state.y)` would not match
+    // and would leave a residue - catch it.
+    const lineRe = /^[A-Za-z_$][\w$]*\s*:\s*state\.[A-Za-z_$][\w$]*\s*,?$/;
+    const residue = body
+      .split("\n")
+      // The `\r` strip is not cosmetic: `.` does not match a carriage return
+      // and `$` (no /m) only matches end-of-string, so on a CRLF checkout the
+      // comment strip below silently fails and every comment inside partialize
+      // is reported as a violation. A privacy guard must not go red for a
+      // reason that has nothing to do with privacy.
+      .map((l) => l.replace(/\r$/, "").replace(/\/\/.*$/, "").trim())
+      .filter((l) => l.length > 0)
+      .filter((l) => !lineRe.test(l));
+    expect(
+      residue,
+      `partialize contains non-\`key: state.key\` lines: ${JSON.stringify(residue)}`,
+    ).toEqual([]);
+
+    for (const [, key, source] of entries) {
       expect(
         ALLOWED_PERSISTED_KEYS.has(key),
         `Non-allowlisted key "${key}" persisted by uiStore partialize`,
       ).toBe(true);
+      // Provenance: the value must read the field of the SAME name.
+      expect(
+        source,
+        `partialize key "${key}" reads state.${source} (must mirror its own name)`,
+      ).toBe(key);
     }
 
     // Belt-and-suspenders: no draft/message/persona/attachment/secret field may

@@ -5,6 +5,9 @@ import {
   setApiKey,
   deleteApiKey,
   setProxy,
+  setProxyAlias,
+  setProxyRequired,
+  setStopSequences,
   deleteProxy,
   getProxyHealth,
 } from "../api/settings";
@@ -77,6 +80,57 @@ export function useSetProxy() {
       qc.invalidateQueries({ queryKey: keys.settings() });
       qc.invalidateQueries({ queryKey: keys.proxyHealth() });
       qc.invalidateQueries({ queryKey: keys.models() });
+    },
+  });
+}
+
+/** Persist the label on its own (no URL rewrite). */
+export function useSetProxyAlias() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (proxyAlias: string | null) => setProxyAlias(proxyAlias),
+    onSuccess: (_data, proxyAlias) => {
+      qc.setQueryData<Settings>(keys.settings(), (prev) =>
+        prev ? { ...prev, proxy_alias: proxyAlias } : prev,
+      );
+      qc.invalidateQueries({ queryKey: keys.settings() });
+    },
+  });
+}
+
+/** Persist the kill-switch on its own (no URL rewrite). */
+export function useSetProxyRequired() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (proxyRequired: boolean) => setProxyRequired(proxyRequired),
+    onSuccess: (_data, proxyRequired) => {
+      qc.setQueryData<Settings>(keys.settings(), (prev) =>
+        prev ? { ...prev, proxy_required: proxyRequired } : prev,
+      );
+      qc.invalidateQueries({ queryKey: keys.settings() });
+      qc.invalidateQueries({ queryKey: keys.proxyHealth() });
+    },
+  });
+}
+
+/**
+ * Persist the stop sequences in the vault.
+ *
+ * They are the one generation setting that is user CONTENT (character names),
+ * so localStorage is closed to them by the S-09b privacy rule - which is why
+ * they used to be in-memory only, and had to be retyped every session and
+ * after every vault lock.
+ */
+export function useSetStopSequences() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (stopSequences: string[]) => setStopSequences(stopSequences),
+    onSuccess: (data) => {
+      // Write the SERVER's list through: it clamps to four, drops blanks and
+      // dedupes, so echoing what we sent would let the UI drift from the vault.
+      qc.setQueryData<Settings>(keys.settings(), (prev) =>
+        prev ? { ...prev, stop_sequences: data.stop_sequences } : prev,
+      );
     },
   });
 }

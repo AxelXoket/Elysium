@@ -7,6 +7,8 @@ import {
   useRenameChat,
 } from "@/lib/query/chats";
 import { useUiStore } from "@/lib/store/uiStore";
+import { parseServerDate } from "@/lib/chat";
+import { useStreamRegistry } from "@/lib/chat/streamRegistry";
 import { ChatCreateDialog } from "@/components/chats/ChatCreateDialog";
 import { AnimatedList, AnimatedListItem } from "@/components/motion/AnimatedList";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -195,6 +197,13 @@ function ChatListItem({
   const clearChat = useClearChat();
   const deleteChat = useDeleteChat();
   const renameChat = useRenameChat();
+  // Live-stream guard (v1.1 FF1/H7): while this chat is generating, Clear/
+  // Delete are disabled - destructive actions on a mid-flight exchange are
+  // the ghost-message factory. The registry is module-level, so this row
+  // sees streams started by ChatCanvas's hook instance.
+  const isStreamingThisChat = useStreamRegistry((s) =>
+    s.controllers.has(chat.id),
+  );
   const title = chat.title || `Chat #${chat.id}`;
   const isBusy =
     clearChat.isPending || deleteChat.isPending || renameChat.isPending;
@@ -249,6 +258,11 @@ function ChatListItem({
         !(container && container.contains(event.target)) &&
         !(popup && popup.contains(event.target))
       ) {
+        // While renaming, DON'T closeAll here - it would unmount the input
+        // before its onBlur commits the typed title (v1.1 FF11). The input's
+        // blur fires from this same outside click and does the commit itself.
+        // (`editing` is in this effect's deps so the closure is never stale.)
+        if (editing) return;
         closeAll();
       }
     };
@@ -278,7 +292,9 @@ function ChatListItem({
       window.removeEventListener("scroll", handleReflow, true);
       window.removeEventListener("resize", handleReflow);
     };
-  }, [popupOpen]);
+    // `editing` included so the outside-click handler sees the live rename
+    // state (popupOpen alone stays true across the menu->rename transition).
+  }, [popupOpen, editing]);
 
   // Destructive inline confirm: focus the confirm button when it appears.
   useEffect(() => {
@@ -307,6 +323,11 @@ function ChatListItem({
     setEditing(true);
   };
 
+  // Escape must still CANCEL even though blur now commits (v1.1 FF11 + H10):
+  // the flag is set before the Escape-driven blur so the single blur-commit
+  // path can distinguish "cancelled" from "committed".
+  const escapeCancelRef = useRef(false);
+
   const commitRename = () => {
     const trimmed = draftTitle.trim();
     setEditing(false);
@@ -316,12 +337,29 @@ function ChatListItem({
     renameChat.mutate({ chatId: chat.id, title: trimmed });
   };
 
+  // Single commit path: Enter/blur commit, Escape cancels. Both keys blur the
+  // input so onBlur is the ONLY place that decides commit-vs-cancel (avoids a
+  // double mutate from Enter-then-blur).
+  const handleEditBlur = () => {
+    if (escapeCancelRef.current) {
+      escapeCancelRef.current = false;
+      setEditing(false);
+      triggerRef.current?.focus();
+      return;
+    }
+    commitRename();
+  };
+
   const handleEditKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "Enter") {
       event.preventDefault();
-      commitRename();
+      event.currentTarget.blur();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation(); // don't let the document handler also fire
+      escapeCancelRef.current = true;
+      event.currentTarget.blur();
     }
-    // Escape bubbles to the document-level handler above (cancel + refocus)
   };
 
   const handleConfirm = () => {
@@ -361,7 +399,7 @@ function ChatListItem({
             value={draftTitle}
             onChange={(event) => setDraftTitle(event.target.value)}
             onKeyDown={handleEditKeyDown}
-            onBlur={() => setEditing(false)}
+            onBlur={handleEditBlur}
             aria-label={`Rename chat ${title}`}
             className="w-full rounded-lg px-2 py-1 text-sm outline-none"
             style={{
@@ -411,7 +449,7 @@ function ChatListItem({
               className="text-[10px]"
               style={{ color: "var(--color-es-text-muted)", opacity: 0.65 }}
             >
-              {new Date(chat.updated_at).toLocaleDateString()}
+              {parseServerDate(chat.updated_at).toLocaleDateString()}
             </span>
           </div>
         </button>
@@ -461,6 +499,12 @@ function ChatListItem({
             type="button"
             role="menuitem"
             className="chat-action-menu-item"
+            disabled={isStreamingThisChat}
+            title={
+              isStreamingThisChat
+                ? "Wait for the reply to finish (or stop it) first"
+                : undefined
+            }
             onClick={() => {
               setMenuOpen(false);
               setConfirmAction("clear");
@@ -473,6 +517,12 @@ function ChatListItem({
             type="button"
             role="menuitem"
             className="chat-action-menu-item is-danger"
+            disabled={isStreamingThisChat}
+            title={
+              isStreamingThisChat
+                ? "Wait for the reply to finish (or stop it) first"
+                : undefined
+            }
             onClick={() => {
               setMenuOpen(false);
               setConfirmAction("delete");

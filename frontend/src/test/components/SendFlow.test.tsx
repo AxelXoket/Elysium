@@ -91,6 +91,40 @@ function setupReadyState() {
   });
 }
 
+/**
+ * Messages + stream routes that mirror server truth around a send: pre-send
+ * history until the completion stream RESOLVES, the persisted exchange
+ * afterwards. Needed since v1.1 D3 - `done` always refetches messages, and a
+ * static body would clobber the streamed rows with pre-send state (a mock
+ * artifact production never sees: the backend persists before emitting done).
+ */
+function liveSendRoutes(streamResponse?: () => Promise<Response> | Response) {
+  let sent = false;
+  return {
+    "/chats/1/messages": {
+      response: () =>
+        jsonResponse(
+          sent
+            ? [
+                messageFixture,
+                completionFixture.user_message,
+                completionFixture.assistant_message,
+              ]
+            : [messageFixture],
+        ),
+    },
+    "/chats/1/complete/stream": {
+      response: async () => {
+        const res = streamResponse
+          ? await streamResponse()
+          : sseResponse(sseEventsFor(completionFixture));
+        sent = true;
+        return res;
+      },
+    },
+  };
+}
+
 describe("SendFlow", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -357,8 +391,7 @@ describe("SendFlow", () => {
     setupReadyState();
     mockFetchWithStreams({
       "/settings": { body: settingsFixture },
-      "/chats/1/messages": { body: [messageFixture] },
-      "/chats/1/complete/stream": { sse: sseEventsFor(completionFixture) },
+      ...liveSendRoutes(),
       "/chats": { body: [] },
     });
     render(<ChatCanvas />, { wrapper });
@@ -379,8 +412,7 @@ describe("SendFlow", () => {
     setupReadyState();
     mockFetchWithStreams({
       "/settings": { body: settingsFixture },
-      "/chats/1/messages": { body: [messageFixture] },
-      "/chats/1/complete/stream": { sse: sseEventsFor(completionFixture) },
+      ...liveSendRoutes(),
       "/chats": { body: [] },
     });
     render(<ChatCanvas />, { wrapper });
@@ -638,13 +670,10 @@ describe("SendFlow", () => {
 
     mockFetchWithStreams({
       "/settings": { body: settingsFixture },
-      "/chats/1/messages": { body: [messageFixture] },
-      "/chats/1/complete/stream": {
-        response: async () => {
-          await completionGate;
-          return sseResponse(sseEventsFor(completionFixture));
-        },
-      },
+      ...liveSendRoutes(async () => {
+        await completionGate;
+        return sseResponse(sseEventsFor(completionFixture));
+      }),
       "/chats": { body: [] },
     });
 
@@ -716,8 +745,7 @@ describe("SendFlow", () => {
     setupReadyState();
     mockFetchWithStreams({
       "/settings": { body: settingsFixture },
-      "/chats/1/messages": { body: [messageFixture] },
-      "/chats/1/complete/stream": { sse: sseEventsFor(completionFixture) },
+      ...liveSendRoutes(),
       "/chats": { body: [] },
     });
     render(<ChatCanvas />, { wrapper });
@@ -749,13 +777,10 @@ describe("SendFlow", () => {
 
     mockFetchWithStreams({
       "/settings": { body: settingsFixture },
-      "/chats/1/messages": { body: [messageFixture] },
-      "/chats/1/complete/stream": {
-        response: async () => {
-          await completionGate;
-          return sseResponse(sseEventsFor(completionFixture));
-        },
-      },
+      ...liveSendRoutes(async () => {
+        await completionGate;
+        return sseResponse(sseEventsFor(completionFixture));
+      }),
       "/chats": { body: [] },
     });
 
@@ -792,14 +817,11 @@ describe("SendFlow", () => {
 
     mockFetchWithStreams({
       "/settings": { body: settingsFixture },
-      "/chats/1/messages": { body: [messageFixture] },
       "/chats/2/messages": { body: [] },
-      "/chats/1/complete/stream": {
-        response: async () => {
-          await completionGate;
-          return sseResponse(sseEventsFor(completionFixture));
-        },
-      },
+      ...liveSendRoutes(async () => {
+        await completionGate;
+        return sseResponse(sseEventsFor(completionFixture));
+      }),
       "/chats": { body: [] },
     });
 

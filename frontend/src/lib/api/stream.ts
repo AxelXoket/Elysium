@@ -35,6 +35,62 @@ export const StreamEventSchema = z.discriminatedUnion("type", [
     type: z.literal("error"),
     status: z.number(),
     code: z.string(),
+    /**
+     * The provider failed AFTER text had already arrived, and the server kept
+     * what was read rather than throwing it away (the same thing pressing Stop
+     * at that moment does). The rows are committed; rolling the optimistic
+     * ones back would delete a reply the user is still looking at.
+     */
+    partial_saved: z.boolean().optional(),
+  }),
+  z.object({
+    /**
+     * Something the request itself has to disclose, sent BEFORE the first
+     * delta: today, images that were left out of the payload. A model that
+     * never saw the picture will answer as if it were not there, and that
+     * changes how the answer should be read - so it cannot arrive as a
+     * footnote after it.
+     */
+    type: z.literal("notice"),
+    code: z.string(),
+    count: z.number().optional(),
+  }),
+  // ── voice (V8-5) ────────────────────────────────────────────────
+  // These ride alongside the reply and arrive AFTER `done`: reading must
+  // never wait on speaking. A client that ignores them sees exactly the
+  // stream it saw before voice existed, which is what makes them safe to
+  // add to a union the parser already treats as forward-compatible.
+  z.object({
+    type: z.literal("voice_chunk"),
+    /** Fetch it from /tts/audio/{audio_id}. */
+    audio_id: z.string().nullable(),
+    seconds: z.number().nullable().optional(),
+    /** Playback order. The transport preserves it; this makes it checkable. */
+    index: z.number(),
+  }),
+  z.object({
+    type: z.literal("voice_error"),
+    /** A tts_* code the shared error map already has a sentence for. */
+    code: z.string(),
+  }),
+  z.object({
+    /** The worker telling the PERSON something they can act on: a compile
+     *  that fell back to eager decoding, a run staying bf16, a cache that is
+     *  cold. Not an error - the speech is fine, it is just slower or
+     *  different than it should be, and the user is the only one who can do
+     *  anything about the cause. */
+    type: z.literal("voice_notice"),
+    note: z.string(),
+  }),
+  z.object({
+    type: z.literal("voice_done"),
+    count: z.number().optional(),
+    /** The text was cut at the 5000-character ceiling. */
+    truncated: z.boolean().optional(),
+    /** Sentences that had words and produced no audio: the reply was spoken
+     *  with a line missing. */
+    dropped: z.number().optional(),
+    dropped_samples: z.array(z.string()).optional(),
   }),
 ]);
 
@@ -222,6 +278,15 @@ export async function streamCompletion(
     parser.flush();
   } finally {
     signal?.removeEventListener("abort", onAbort);
+    // UNCONDITIONAL, and that is the fix: cancelling was wired only to the
+    // abort signal, so every exit that did NOT come from that signal - a
+    // network_error thrown out of reader.read(), or either of the two
+    // `signal?.aborted` checks winning the race against the listener - left
+    // the body open. The server's generator never received its GeneratorExit,
+    // so its abort branch never ran: the user message stayed, the partial was
+    // never saved, and the voice worker kept synthesising a reply nobody was
+    // reading. On a stream that ended normally this is a no-op.
+    void reader.cancel().catch(() => undefined);
   }
 }
 
@@ -245,6 +310,20 @@ export function streamRegenerateMessage(
 ): Promise<void> {
   return streamCompletion(
     `/chats/${chatId}/messages/${messageId}/regenerate/stream`,
+    payload,
+    options,
+  );
+}
+
+/** Stream a user-message edit (v1.1 C3). Body from buildEditPayload. */
+export function streamEditMessage(
+  chatId: number,
+  messageId: number,
+  payload: Record<string, unknown>,
+  options: StreamOptions,
+): Promise<void> {
+  return streamCompletion(
+    `/chats/${chatId}/messages/${messageId}/edit/stream`,
     payload,
     options,
   );

@@ -41,6 +41,8 @@ from config import (
     COMPLETION_TIMEOUT,
     STREAM_CONNECT_TIMEOUT,
     STREAM_READ_TIMEOUT,
+    STREAM_FIRST_TOKEN_TIMEOUT,
+    STREAM_TOTAL_TIMEOUT,
     SECRET_API_KEY,
 )
 from network_client import get_client
@@ -249,6 +251,15 @@ async def fetch_models(refresh: bool = False) -> dict:
         raise
     except httpx.TimeoutException:
         raise OpenRouterError("openrouter_timeout")
+    except httpx.ProxyError as exc:
+        # The user's OWN proxy rejected or could not establish the tunnel (407,
+        # SOCKS auth, "could not connect"). Folding it into the generic handler
+        # blamed OpenRouter for a local misconfiguration - "The provider
+        # returned an error. Please try again." - and left the user retrying
+        # forever against a proxy that will never work. The proxy health gate
+        # cannot cover this: it only runs when proxy_required is on.
+        logger.warning("%s rejected by the configured proxy.", "GET /models")
+        raise OpenRouterError("proxy_auth_failed") from exc
     except Exception as exc:
         logger.warning("GET /models failed: %s", type(exc).__name__)
         raise OpenRouterError("openrouter_models_error") from exc
@@ -399,6 +410,15 @@ async def complete(
     except httpx.TimeoutException:
         logger.warning("Completion request timed out: model=%s", model_id)
         raise OpenRouterError("openrouter_timeout")
+    except httpx.ProxyError as exc:
+        # The user's OWN proxy rejected or could not establish the tunnel (407,
+        # SOCKS auth, "could not connect"). Folding it into the generic handler
+        # blamed OpenRouter for a local misconfiguration - "The provider
+        # returned an error. Please try again." - and left the user retrying
+        # forever against a proxy that will never work. The proxy health gate
+        # cannot cover this: it only runs when proxy_required is on.
+        logger.warning("%s rejected by the configured proxy.", "Completion request")
+        raise OpenRouterError("proxy_auth_failed") from exc
     except Exception as exc:
         logger.warning("Completion request failed: %s", type(exc).__name__)
         raise OpenRouterError("openrouter_error") from exc
@@ -481,7 +501,28 @@ async def complete_stream(
                 )
                 raise OpenRouterError(_status_to_reason(response.status_code))
 
+            saw_token = False
             async for line in response.aiter_lines():
+                # The only bound that survives a keepalive. Everything below
+                # `continue`s on a comment line, and each of those comments
+                # reset httpx's per-read timeout - so a queued request with a
+                # chatty provider could hold this generator open forever.
+                # Checked on EVERY line, comments included, which is the whole
+                # point: the comments are the thing that used to buy time.
+                waited = time.monotonic() - start
+                if not saw_token and waited > STREAM_FIRST_TOKEN_TIMEOUT:
+                    logger.warning(
+                        "Stream produced no token in %.0fs: model=%s",
+                        waited, model_id,
+                    )
+                    raise OpenRouterError("openrouter_timeout")
+                if waited > STREAM_TOTAL_TIMEOUT:
+                    logger.warning(
+                        "Stream exceeded its wall-clock budget (%.0fs): model=%s",
+                        waited, model_id,
+                    )
+                    raise OpenRouterError("openrouter_timeout")
+
                 line = line.strip()
                 if not line or line.startswith(":"):
                     continue  # blank or keepalive comment
@@ -517,6 +558,9 @@ async def complete_stream(
                 delta = choice.get("delta") or {}
                 content = delta.get("content")
                 if isinstance(content, str) and content:
+                    # Past this point the provider has demonstrably started,
+                    # so only the total budget still applies.
+                    saw_token = True
                     yield content
 
         latency_ms = int((time.monotonic() - start) * 1000)
@@ -530,6 +574,15 @@ async def complete_stream(
     except httpx.TimeoutException:
         logger.warning("Streaming completion timed out: model=%s", model_id)
         raise OpenRouterError("openrouter_timeout")
+    except httpx.ProxyError as exc:
+        # The user's OWN proxy rejected or could not establish the tunnel (407,
+        # SOCKS auth, "could not connect"). Folding it into the generic handler
+        # blamed OpenRouter for a local misconfiguration - "The provider
+        # returned an error. Please try again." - and left the user retrying
+        # forever against a proxy that will never work. The proxy health gate
+        # cannot cover this: it only runs when proxy_required is on.
+        logger.warning("%s rejected by the configured proxy.", "Streaming completion")
+        raise OpenRouterError("proxy_auth_failed") from exc
     except Exception as exc:
         # CancelledError/GeneratorExit are BaseException subclasses and pass
         # through untouched, preserving client-abort semantics.

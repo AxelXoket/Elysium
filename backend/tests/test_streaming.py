@@ -12,7 +12,7 @@ import pytest
 
 from openrouter import OpenRouterError
 
-from conftest import make_character, make_chat, get_messages
+from conftest import make_character, make_chat, get_messages, make_persona
 
 
 BODY = {"message": "Stream me a story", "model_id": "test/model-1"}
@@ -96,7 +96,37 @@ def test_stream_complete_happy_path(client, stream_provider):
     assert len(user_turns) == 1
 
 
-def test_stream_complete_provider_error_rolls_back_user_message(client, stream_provider):
+def test_stream_complete_provider_error_before_any_text_rolls_back(
+    client, stream_provider,
+):
+    """Nothing was read, so nothing is kept: the half-turn goes."""
+    char_id = make_character(client)
+    chat_id = make_chat(client, char_id)
+    stream_provider.error_after = 0  # fail before the first delta
+
+    with client.stream(
+        "POST", f"/api/v1/chats/{chat_id}/complete/stream", json=BODY,
+    ) as resp:
+        events = read_events(resp)
+
+    assert [e["type"] for e in events] == ["user_message", "error"]
+    assert events[-1]["code"] == "openrouter_rate_limited"
+    assert events[-1]["status"] == 429
+    assert "partial_saved" not in events[-1]
+
+    # The half-turn must be rolled back: only first_mes remains.
+    msgs = get_messages(client, chat_id)
+    assert [m["role"] for m in msgs] == ["assistant"]
+
+
+def test_stream_complete_provider_error_keeps_what_was_already_read(
+    client, stream_provider,
+):
+    """Audit KÖK 16: the provider can fail after most of the reply has
+    arrived. That used to delete the user message and throw every delta away,
+    while pressing Stop at the SAME point kept the partial - two opposite
+    policies for a situation the user cannot tell apart. The error still has
+    to be reported; what changes is that the text survives it."""
     char_id = make_character(client)
     chat_id = make_chat(client, char_id)
     stream_provider.error_after = 1  # one delta, then failure
@@ -109,10 +139,13 @@ def test_stream_complete_provider_error_rolls_back_user_message(client, stream_p
     assert [e["type"] for e in events] == ["user_message", "delta", "error"]
     assert events[-1]["code"] == "openrouter_rate_limited"
     assert events[-1]["status"] == 429
+    # The client must be able to tell "keep what you rendered" from "roll it
+    # back", or it drops text the server just committed.
+    assert events[-1]["partial_saved"] is True
 
-    # The half-turn must be rolled back: only first_mes remains.
     msgs = get_messages(client, chat_id)
-    assert [m["role"] for m in msgs] == ["assistant"]
+    assert [m["role"] for m in msgs] == ["assistant", "user", "assistant"]
+    assert msgs[-1]["content"] == "Once "
 
 
 def test_stream_complete_validation_errors_are_plain_http(client, stream_provider):
@@ -179,3 +212,23 @@ def test_stream_regenerate_error_keeps_old_message(client, stream_provider):
     msgs = get_messages(client, chat_id)
     assert msgs[-1]["id"] == asst_id
     assert msgs[-1]["content"] == "Once upon a time."
+
+
+def test_stream_payload_contains_persona_block(client, stream_provider):
+    """KUME D: the streaming path shares _prepare_completion, so the persona
+    block reaches the provider there too."""
+    char_id = make_character(client)
+    chat_id = make_chat(client, char_id)
+    make_persona(client, "Nova", "Curious explorer.", select=True)
+
+    with client.stream(
+        "POST", f"/api/v1/chats/{chat_id}/complete/stream", json=BODY,
+    ) as resp:
+        read_events(resp)
+
+    msgs = stream_provider.calls[0]["messages"]
+    assert {
+        "role": "system",
+        "content": "[User Persona: Nova]\nCurious explorer.",
+    } in msgs
+    assert msgs[1]["content"] == "[User Persona: Nova]\nCurious explorer."

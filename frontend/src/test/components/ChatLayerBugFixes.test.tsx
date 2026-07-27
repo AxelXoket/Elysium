@@ -428,6 +428,12 @@ describe("Chat layer bug fixes", () => {
       expect(screen.getAllByAltText("Staged image")).toHaveLength(4);
     });
     expect(screen.getByText(/4\/4/)).toBeInTheDocument();
-    expect(useErrorStore.getState().errors).toHaveLength(0);
+    // v1.1 FF9: the over-cap images now surface a too_many_attachments toast
+    // (the second batch overflowed the 4-slot cap). The cap itself still holds.
+    expect(
+      useErrorStore
+        .getState()
+        .errors.some((e) => e.code === "too_many_attachments"),
+    ).toBe(true);
   });
 });

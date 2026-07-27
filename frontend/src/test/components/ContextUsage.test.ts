@@ -12,6 +12,7 @@ import { describe, it, expect } from "vitest";
 import {
   estimateContextUsage,
   buildSystemBlock,
+  buildPersonaBlock,
   getContextUsageState,
   formatTokensCompact,
 } from "@/lib/context";
@@ -82,8 +83,10 @@ function msg(id: number, content: string): Message {
 // Shared fixtures:
 // character100: system_prompt = 100 chars
 //   system_block = "[System Prompt]\n" (16 chars) + 100 = 116 chars
-// persona50: description = 50 chars -> persona_block = 50 chars
-// fixed = 116 + 50 + 0 (no post_history_instruction) = 166 chars
+// persona50: display_name "Test Persona" (12) + description 50 chars
+//   persona_block = "[User Persona: Test Persona]\n" (29) + 50 = 79 chars
+//   (v1.1 KUME D: the block now carries the NAME header, not just the desc)
+// fixed = 116 + 79 + 0 (no post_history_instruction) = 195 chars
 const character100 = makeCharacter({ system_prompt: "S".repeat(100) });
 const persona50 = [makePersona({ description: "P".repeat(50) })];
 
@@ -117,7 +120,7 @@ describe("estimateContextUsage", () => {
   });
 
   it("handles an empty history (fixed cost only)", () => {
-    // fixed = 166 -> used = ceil(166 / 3) = 56; capacity = 950 (see ctx1200).
+    // fixed = 195 -> used = ceil(195 / 3) = 65; capacity = 950 (see ctx1200).
     const result = estimateContextUsage({
       model: ctx1200,
       character: character100,
@@ -125,7 +128,7 @@ describe("estimateContextUsage", () => {
       messages: [],
     });
     expect(result).toMatchObject({
-      usedTokens: 56,
+      usedTokens: 65,
       capacityTokens: 950,
       reservedOutputTokens: 100,
       includedMessages: 0,
@@ -133,15 +136,14 @@ describe("estimateContextUsage", () => {
       totalMessages: 0,
       isEstimate: true,
     });
-    // percent = 56 / 950 * 100 = 5.894736...
-    expect(result!.percent).toBeCloseTo((56 / 950) * 100, 9);
+    // percent = 65 / 950 * 100 = 6.842...
+    expect(result!.percent).toBeCloseTo((65 / 950) * 100, 9);
   });
 
   it("drops the oldest messages until the history fits", () => {
-    // available = 2850, fixed = 166 -> remaining = 2684.
-    // history = 3 x 1000 = 3000 > 2684 -> drop oldest -> 2000 <= 2684.
-    // used = ceil((166 + 2000) / 3) = ceil(2166 / 3) = 722 (exact).
-    // percent = 722 / 950 * 100 = 76 (exact: 950 * 0.76 = 722).
+    // available = 2850, fixed = 195 -> remaining = 2655.
+    // history = 3 x 1000 = 3000 > 2655 -> drop oldest -> 2000 <= 2655.
+    // used = ceil((195 + 2000) / 3) = ceil(2195 / 3) = 732.
     const result = estimateContextUsage({
       model: ctx1200,
       character: character100,
@@ -153,14 +155,14 @@ describe("estimateContextUsage", () => {
       ],
     });
     expect(result).toMatchObject({
-      usedTokens: 722,
+      usedTokens: 732,
       capacityTokens: 950,
       reservedOutputTokens: 100,
       includedMessages: 2,
       droppedMessages: 1,
       totalMessages: 3,
     });
-    expect(result!.percent).toBeCloseTo(76, 9);
+    expect(result!.percent).toBeCloseTo((732 / 950) * 100, 9);
   });
 
   it("excludes inactive variant siblings, mirroring the backend active filter", () => {
@@ -179,7 +181,7 @@ describe("estimateContextUsage", () => {
       ],
     });
     expect(result).toMatchObject({
-      usedTokens: 722,
+      usedTokens: 732,
       includedMessages: 2,
       droppedMessages: 1,
       totalMessages: 3, // active rows only - the hidden sibling is invisible
@@ -197,19 +199,19 @@ describe("estimateContextUsage", () => {
       max_completion_tokens: 100,
     });
     const plain = [msg(1, "a".repeat(1000)), msg(2, "b".repeat(1000))];
-    // Without attachments: used = ceil((166 + 2000) / 3) = 722.
+    // Without attachments: used = ceil((195 + 2000) / 3) = ceil(2195/3) = 732.
     const without = estimateContextUsage({
       model: ctx4000,
       character: character100,
       personas: persona50,
       messages: plain,
     });
-    expect(without!.usedTokens).toBe(722);
+    expect(without!.usedTokens).toBe(732);
     expect(without!.capacityTokens).toBe(3644);
 
     // One attachment adds 1100 * 3 = 3300 chars to that message:
-    // used = ceil((166 + 1000 + 1000 + 3300) / 3) = ceil(5466 / 3) = 1822.
-    // 1822 - 722 = 1100 tokens, exactly IMAGE_TOKEN_ESTIMATE.
+    // used = ceil((195 + 1000 + 1000 + 3300) / 3) = ceil(5495 / 3) = 1832.
+    // 1832 - 732 = 1100 tokens, exactly IMAGE_TOKEN_ESTIMATE.
     const withImage = [
       plain[0],
       { ...plain[1], attachments: [{ id: 7 }] } as Message,
@@ -220,7 +222,7 @@ describe("estimateContextUsage", () => {
       personas: persona50,
       messages: withImage,
     });
-    expect(withAttachment!.usedTokens).toBe(1822);
+    expect(withAttachment!.usedTokens).toBe(1832);
     expect(withAttachment!.usedTokens - without!.usedTokens).toBe(1100);
     expect(withAttachment!.includedMessages).toBe(2);
   });
@@ -241,8 +243,8 @@ describe("estimateContextUsage", () => {
     });
     expect(result!.capacityTokens).toBe(14080);
     expect(result!.reservedOutputTokens).toBe(2048);
-    // fixed = 166 -> used = ceil(166 / 3) = 56.
-    expect(result!.usedTokens).toBe(56);
+    // fixed = 195 -> used = ceil(195 / 3) = 65.
+    expect(result!.usedTokens).toBe(65);
 
     // Budget larger than the model context clamps down to the context:
     // effective = 1200 -> identical numbers to the no-budget ctx1200 case.
@@ -348,11 +350,27 @@ describe("estimateContextUsage", () => {
     expect(result!.usedTokens).toBe(39);
   });
 
+  it("charges a name-only persona for its header (v1.1 KUME D)", () => {
+    // display_name "Nova" (4), no description ->
+    //   block = "[User Persona: Nova]" = 20 chars.
+    // fixed = 116 + 20 = 136 -> used = ceil(136 / 3) = 46 (vs 39 with none).
+    const nameOnly = [
+      makePersona({ display_name: "Nova", description: "", is_active: true }),
+    ];
+    const result = estimateContextUsage({
+      model: ctx1200,
+      character: character100,
+      personas: nameOnly,
+      messages: [],
+    });
+    expect(result!.usedTokens).toBe(46);
+  });
+
   it("clamps percent to 100 when even the fixed cost overflows", () => {
     // ctx 600, meta max 100: safety = 75; budget_chars = 1575;
     // reservation 300 -> available = 1275 -> capacity = 425.
-    // fixed = 2016 (system block 16 + 2000) + 50 persona = 2066 > available
-    // -> every message dropped; used = ceil(2066 / 3) = 689 > 425 -> 100%.
+    // fixed = 2016 (system block 16 + 2000) + 79 persona = 2095 > available
+    // -> every message dropped; used = ceil(2095 / 3) = 699 > 425 -> 100%.
     const tiny = makeModel({
       id: "test/ctx-600-meta",
       context_length: 600,
@@ -366,7 +384,7 @@ describe("estimateContextUsage", () => {
       messages: [msg(1, "aaa"), msg(2, "bbb")],
     });
     expect(result).toMatchObject({
-      usedTokens: 689,
+      usedTokens: 699,
       capacityTokens: 425,
       includedMessages: 0,
       droppedMessages: 2,
@@ -395,8 +413,9 @@ describe("buildSystemBlock", () => {
   it("feeds the exact fixed cost into the estimate", () => {
     // Sections: "[System Prompt]\nSP" = 18, "[Personality]\nPE" = 16,
     // "[Scenario]\nSC" = 13, "[Example Dialogue]\nME" = 21 -> 68 chars
-    // + 3 joins x 2 = 74. Persona " PD " trims to 2; phi "PH" adds 2.
-    // fixed = 74 + 2 + 2 = 78 -> used = ceil(78 / 3) = 26 (exact).
+    // + 3 joins x 2 = 74. Persona (name "Test Persona", " PD " -> "PD"):
+    // block = "[User Persona: Test Persona]\nPD" = 31; phi "PH" adds 2.
+    // fixed = 74 + 31 + 2 = 107 -> used = ceil(107 / 3) = 36.
     const character = makeCharacter({
       system_prompt: "SP",
       description: "   ",
@@ -411,8 +430,40 @@ describe("buildSystemBlock", () => {
       personas: [makePersona({ description: " PD " })],
       messages: [],
     });
-    expect(result!.usedTokens).toBe(26);
+    expect(result!.usedTokens).toBe(36);
     expect(result!.capacityTokens).toBe(950);
+  });
+});
+
+describe("buildPersonaBlock", () => {
+  it("renders the name header with the description on the next line", () => {
+    const p = makePersona({ display_name: "Nova", description: "Likes tea." });
+    expect(buildPersonaBlock(p)).toBe("[User Persona: Nova]\nLikes tea.");
+  });
+
+  it("injects a header-only block for a name-only persona", () => {
+    const p = makePersona({ display_name: "Nova", description: "" });
+    expect(buildPersonaBlock(p)).toBe("[User Persona: Nova]");
+  });
+
+  it("treats a whitespace-only description as name-only", () => {
+    const p = makePersona({ display_name: "Nova", description: "   " });
+    expect(buildPersonaBlock(p)).toBe("[User Persona: Nova]");
+  });
+
+  it("trims the name and the description", () => {
+    const p = makePersona({ display_name: "  Nova  ", description: "  hi  " });
+    expect(buildPersonaBlock(p)).toBe("[User Persona: Nova]\nhi");
+  });
+
+  it("returns an empty string for no persona", () => {
+    expect(buildPersonaBlock(null)).toBe("");
+    expect(buildPersonaBlock(undefined)).toBe("");
+  });
+
+  it("defensively returns the bare description for a blank name (backend mirror)", () => {
+    const p = makePersona({ display_name: "  ", description: "orphaned" });
+    expect(buildPersonaBlock(p)).toBe("orphaned");
   });
 });
 
@@ -436,5 +487,65 @@ describe("formatTokensCompact", () => {
     expect(formatTokensCompact(8064)).toBe("8.1K");
     expect(formatTokensCompact(30720)).toBe("30.7K");
     expect(formatTokensCompact(128000)).toBe("128K");
+  });
+});
+
+
+describe("G2: the voice-delivery block in the fixed cost", () => {
+  it("charges voicePromptChars exactly like the PHI", () => {
+    const model = makeModel({ context_length: 3000 });
+    const character = makeCharacter({ system_prompt: "S".repeat(300) });
+    const base = estimateContextUsage({
+      model,
+      character,
+      messages: [],
+    })!;
+    const withVoice = estimateContextUsage({
+      model,
+      character,
+      messages: [],
+      voicePromptChars: 3200,
+    })!;
+    // 3200 chars at 3 chars/token is ~1066-1067 tokens of extra fixed cost
+    // (the exact value depends on where the ceil rounding lands relative to
+    // the base). What matters: the gauge moves by the block's full weight the
+    // moment the toggle would inject it - not by zero, not by an estimate.
+    const diff = withVoice.usedTokens - base.usedTokens;
+    expect(diff).toBeGreaterThanOrEqual(Math.floor(3200 / 3));
+    expect(diff).toBeLessThanOrEqual(Math.ceil(3200 / 3));
+  });
+
+  it("an unknown flag charges nothing - matching a backend that cannot inject what it cannot read", () => {
+    const model = makeModel({ context_length: 3000 });
+    const character = makeCharacter({});
+    const a = estimateContextUsage({ model, character, messages: [] })!;
+    const b = estimateContextUsage({
+      model,
+      character,
+      messages: [],
+      voicePromptChars: null,
+    })!;
+    expect(b.usedTokens).toBe(a.usedTokens);
+  });
+
+  it("the voice block can push history out, exactly like any other fixed cost", () => {
+    const model = makeModel({ context_length: 1200 });
+    const character = makeCharacter({ system_prompt: "S".repeat(60) });
+    const messages = [
+      msg(1, "H".repeat(1200)),
+      msg(2, "H".repeat(1200)),
+    ];
+    const without = estimateContextUsage({ model, character, messages })!;
+    const withVoice = estimateContextUsage({
+      model,
+      character,
+      messages,
+      voicePromptChars: 1500,
+    })!;
+    // STRICT (audit-2: <= was satisfied by eviction doing nothing at all).
+    // The fixture is sized so the block genuinely pushes a message out.
+    expect(without.includedMessages).toBeGreaterThan(0);
+    expect(withVoice.includedMessages).toBeLessThan(without.includedMessages);
+    expect(withVoice.usedTokens).toBeGreaterThan(0);
   });
 });

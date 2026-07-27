@@ -72,7 +72,22 @@
 
     --color-es-primary-sage:      #3E72B0;
     --color-es-primary-sage-deep: #2B5384;
+    /* CTA ink - the send button's pressed-in depth. One step past deep so a
+       filled control reads ANCHORED against the white canvas, not washed. */
+    --color-es-primary-ink:       #20406B;
     --color-es-accent-amber:      #5E82AE;
+    /* The middle tier of the context meter. Its own token because reusing
+       --color-es-accent-amber put it at ~1.25:1 against the normal tier after
+       the Azure recolour, so the 75% threshold was invisible (KÖK 17). Pale
+       enough to read as a change at a glance: ~3.2:1 against normal, the WCAG
+       non-text threshold. */
+    --color-es-meter-warning:     #B9D4F0;
+    /* The accent when it carries TEXT rather than decoration.
+       --color-es-accent-amber at 0.85 opacity lands around 3.1:1 on the light
+       glass panel - under WCAG AA 4.5:1 - and its most frequent use is the
+       SectionLabel in the character dialogs, which renders unconditionally
+       (KOK 17). This is 5.5:1 at full opacity. */
+    --color-es-accent-strong:     #3A6396;
     --color-es-mist-blue:         #6E93C4;
 
     --color-es-text-light: #EAEEF3;
@@ -105,9 +120,17 @@
     --shadow-panel:    0 4px 24px rgba(10, 20, 32, 0.30);
     --shadow-bubble:   0 1px 4px rgba(20, 35, 55, 0.14);
     --shadow-composer: 0 -2px 20px rgba(10, 20, 32, 0.14);
-    --shadow-sage-btn: 0 0 0 3px rgba(62, 114, 176, 0.22);
     --shadow-app-frame: 0 30px 90px rgba(0,0,0,0.48), 0 10px 34px rgba(0,0,0,0.30);
     --color-es-frame-border: rgba(150, 175, 205, 0.28);
+    /* The thin rule INSIDE a panel, as opposed to the frame around one.
+       Used by the settings segmented buttons, the hex field, the colour wheel
+       and the dashed "this engine cannot do that" block - and it was never
+       defined anywhere (audit KÖK 17). An unresolvable var() with no fallback
+       invalidates the WHOLE declaration, so `border: 1px solid var(...)`
+       became `border-style: none` and all four drew with no edge at all.
+       Lighter than the frame token on purpose: this separates things that are
+       already inside the same surface. */
+    --color-es-hairline: rgba(150, 175, 205, 0.22);
 
     /* ── Elysium Seasonal: Typography ── */
     --font-serif: Georgia, Cambria, "Times New Roman", serif;
@@ -119,6 +142,11 @@
     --radius-canvas:   5px;
     --radius-card:     4px;
     --radius-input:    3px;
+    /* One place to tune the whole app's sharpness - and the voice work
+       added in V9 went round it with flat 6px, 7px, 8px and a 0.75rem, so
+       surfaces of the same rank stopped sharing a shape (audit KÖK 17,
+       breaking D4 and D6). Those six are back on the scale;
+       palette-guard.test.ts keeps new ones from drifting off it. */
     --radius-icon-btn: 3px;
     --radius-badge:    999px;   /* tiny status chips stay pill-shaped */
     --radius-app-frame: 8px;
@@ -357,6 +385,12 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  /* Stated, not inherited. Blocking input mid-lock is the intent (the two
+     veils are pointer-events: none precisely so THIS element is the one that
+     catches), and the reason it was safe is that the overlay unmounts when the
+     animation ends - which only became true once the timers stopped re-arming
+     on every parent render (LockOverlay). */
+  pointer-events: auto;
 }
 
 .lock-overlay-dim,
@@ -385,6 +419,35 @@
   filter:
     drop-shadow(0 0 26px rgba(150, 190, 235, 0.30))
     drop-shadow(0 18px 46px rgba(0, 0, 0, 0.55));
+}
+
+/* ── Drop-zone overlay (v1.1 KUME B) ──────────────────────────────────
+   Milk veil, NO backdrop-filter (living-mist law: blur over the animated fog
+   recomposites every frame). pointer-events:none keeps every drag event on
+   <main> so useFileDrop's enter/leave depth counter never storms. z:30 is
+   BELOW the toast stack (z:35, H19) so an upload-error toast stays readable
+   mid-drag; contained by .warm-canvas (position:relative + isolation:isolate). */
+.drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 60% 45% at 50% 42%, rgba(150, 188, 232, 0.28), transparent 70%),
+    linear-gradient(176deg, rgba(248, 251, 254, 0.90), rgba(238, 245, 251, 0.94));
+}
+
+.drop-overlay-frame {
+  position: absolute;
+  inset: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border: 2px dashed var(--color-es-primary-sage);
+  border-radius: var(--radius-panel);
+  background: rgba(62, 114, 176, 0.04);
 }
 
 /* ── Wordmark ("Elysium") ─────────────────────────────────────────────
@@ -1752,6 +1815,52 @@
 .thinking-dot:nth-child(2) { animation-delay: 200ms; }
 .thinking-dot:nth-child(3) { animation-delay: 400ms; }
 
+/* Jump-to-latest indicator (v1.1 A3). Mounted OUTSIDE the scroller in the
+   relative wrapper; remounting with a new pulseKey replays the one-shot
+   pulse - never an infinite loop. */
+.jump-to-latest {
+  position: absolute;
+  bottom: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 9999px;
+  background: var(--color-es-user-bubble);
+  color: var(--color-es-user-bubble-text);
+  border: 1px solid rgba(28, 38, 50, 0.10);
+  box-shadow: var(--shadow-bubble);
+  transition:
+    transform var(--duration-fast) var(--ease-smooth),
+    box-shadow var(--duration-fast) var(--ease-smooth),
+    opacity var(--duration-fast) var(--ease-smooth);
+  animation: jump-to-latest-pulse 900ms var(--ease-smooth) 1;
+}
+
+.jump-to-latest:hover {
+  transform: translateX(-50%) translateY(-1px);
+}
+
+/* H2: the dark-wallpaper variant is a PROP-driven class - the button lives
+   outside the scroller, so `.chat-bg-dark .jump-to-latest` would never match. */
+.jump-to-latest.is-dark {
+  background: rgba(20, 27, 36, 0.88);
+  color: rgba(236, 242, 248, 0.94);
+  border-color: rgba(200, 216, 236, 0.22);
+}
+
+/* Gentle one-shot pulse: opacity/scale only (no translate - the button must
+   not wander), restarted per unseen-content revision. */
+@keyframes jump-to-latest-pulse {
+  0% { opacity: 0.55; scale: 0.92; }
+  45% { opacity: 1; scale: 1.08; }
+  100% { opacity: 1; scale: 1; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .thinking-dot {
     animation: none;
@@ -1833,13 +1942,6 @@
   filter: saturate(0.95);
 }
 
-/* ─────────────────────────────────────────────────────────
-   PHASE 6E-A: Sage button glow (hover state only)
-   ───────────────────────────────────────────────────────── */
-.btn-sage-glow:hover:not(:disabled) {
-  box-shadow: var(--shadow-sage-btn);
-}
-
 /* Composer icon buttons (attach + send/stop): one shared motion language.
    Hover lifts and brightens, press compresses. brightness() instead of a
    background override so it composes with each button's inline background. */
@@ -1847,6 +1949,7 @@
   transition:
     transform var(--duration-fast) var(--ease-smooth),
     filter var(--duration-fast) var(--ease-smooth),
+    background-color var(--duration-fast) var(--ease-smooth),
     box-shadow var(--duration-fast) var(--ease-smooth),
     opacity var(--duration-fast) var(--ease-smooth);
 }
@@ -1858,6 +1961,30 @@
 
 .composer-icon-button:active:not(:disabled) {
   transform: translateY(0) scale(0.92);
+}
+
+/* v1.1 E1 - Send/Stop fill. The theme law is white-on-primary (:root
+   --primary/--primary-foreground); the old dark-ink icon sat at ~3.1:1 on the
+   sage fill (a smudge). White on sage is ~5.0:1 (AA). The hairline is an INSET
+   ring, NOT a real border - a 1px border would grow the 35px square to 37px
+   and break items-end alignment with the attach button. Hover DEEPENS the
+   fill instead of glowing (flat-control law); filter:none so the shared
+   .composer-icon-button brightness(1.07) lift cannot fight the deepening.
+   Placed AFTER .composer-icon-button:active so this hover wins on source order
+   (both selectors are specificity 0-3-0). */
+.composer-send-button {
+  /* Azure pass 2: the mid primary (#3E72B0) read WASHED against the white
+     canvas - the one filled CTA on the page must sit at the theme's deep end,
+     matching the sidebar's weight. Resting = deep, hover = ink; the flat-
+     control law (deepen, never glow) unchanged. White on #2B5384 ~= 7:1. */
+  background: var(--color-es-primary-sage-deep);
+  color: var(--primary-foreground);
+  box-shadow: inset 0 0 0 1px var(--color-es-primary-ink);
+}
+
+.composer-send-button:hover:not(:disabled) {
+  background: var(--color-es-primary-ink);
+  filter: none;
 }
 
 /* Variant navigation chevrons - side-edge page-flip arrows on the last
@@ -2000,9 +2127,11 @@
 .settings-preview {
   padding: 0.75rem 0.85rem;
   border-radius: var(--radius-card);
-  background: rgba(238, 244, 250, 0.92);
+  /* v1.1 E2: bound to the layered surface vars so a msg-contrast-* class on
+     this element makes the live preview show the actual pair. */
+  background: var(--msg-asst-bg, rgba(238, 244, 250, 0.92));
   border: 1px solid rgba(255, 255, 255, 0.35);
-  color: var(--color-es-asst-bubble-text, #1C2632);
+  color: var(--msg-asst-fg, var(--color-es-asst-bubble-text, #1C2632));
 }
 
 /* Sliding pill switch (settings toggles) - sharp-scale, sage when on. */
@@ -2100,6 +2229,71 @@
   cursor: not-allowed;
 }
 
+/* Text-pill segments (Message contrast) - the .settings-tint-chip state
+   recipe as a labelled pill. */
+.settings-segment-option {
+  padding: 0.3rem 0.7rem;
+  border-radius: var(--radius-input);
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(230, 236, 243, 0.72);
+  background: rgba(200, 216, 236, 0.05);
+  border: 1px solid rgba(200, 216, 236, 0.28);
+  transition:
+    transform var(--duration-fast) var(--ease-smooth),
+    box-shadow var(--duration-fast) var(--ease-smooth),
+    border-color var(--duration-fast) var(--ease-smooth),
+    background-color var(--duration-fast) var(--ease-smooth),
+    color var(--duration-fast) var(--ease-smooth);
+}
+
+.settings-segment-option:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.settings-segment-option[data-selected="true"] {
+  border-color: rgba(62, 114, 176, 0.95);
+  box-shadow: 0 0 0 2px rgba(62, 114, 176, 0.25);
+  color: rgba(238, 243, 249, 0.98);
+  background: rgba(62, 114, 176, 0.18);
+}
+
+/* v1.1 E2 - Message contrast presets (Soft / Default / High).
+   ORTHOGONALITY CONTRACT: msg-contrast-* retunes ONLY bubble-SURFACE vars
+   (--msg-user-bg/fg, --msg-asst-bg/fg, + narration/quote inks in High);
+   chat-bg-dark flips ONLY bare-canvas chrome (nav buttons, scrollbar) and the
+   bubble shadow. Both classes live on the same scroller and are fully
+   co-resident - presets must NEVER touch box-shadow, .variant-nav-button, or
+   scrollbar rules. Default sets NOTHING: today's pixels are the MessageBubble
+   fallbacks. Every pair was contrast-checked (soft 6.5/8.1, high 15.2/18.8 :1,
+   default 9.2/15.3 :1 - all >= AA, ordered soft < default < high). */
+.msg-contrast-soft {
+  --msg-user-bg: #33465A;
+  --msg-user-fg: #C9D4DF;
+  --msg-asst-bg: #EFF3F8;
+  --msg-asst-fg: #3D4A59;
+}
+
+.msg-contrast-high {
+  --msg-user-bg: #16222F;
+  --msg-user-fg: #F5F9FD;
+  --msg-asst-bg: #FFFFFF;
+  --msg-asst-fg: #0B1219;
+}
+
+/* High preset also darkens the narration/quote inks so they keep the same
+   emphasis against the higher-contrast surfaces (descendant selector 0-3-0
+   outranks the base 0-2-0 rule above). */
+.msg-contrast-high .message-bubble-shell.is-assistant,
+.settings-preview.msg-contrast-high {
+  --narration-color: rgba(11, 18, 25, 0.85);
+  --quote-color: #2C4A73;
+}
+
+.msg-contrast-high .message-bubble-shell.is-user {
+  --narration-color: rgba(240, 246, 252, 0.85);
+}
+
 /* Adaptive chrome over a DARK wallpaper: only elements sitting bare on the
    canvas flip - bubbles are opaque and keep their own colors by design. */
 .chat-bg-dark .variant-nav-button {
@@ -2113,12 +2307,27 @@
   background: rgba(230, 234, 239, 0.16);
 }
 
-.chat-bg-dark::-webkit-scrollbar-thumb {
+/* Matched with the SAME two class selectors as the page-wide thumb rule
+   (.elysium-page .overflow-y-auto::-webkit-scrollbar-thumb, 0-2-1). The
+   single-class version lost to it on specificity while matching the very same
+   element - the scroller carries Tailwind's overflow-y-auto and sits inside
+   .elysium-page - so the thumb stayed dark-on-dark over a dark wallpaper and
+   half of the documented orthogonality contract was dead. */
+.elysium-page .chat-bg-dark::-webkit-scrollbar-thumb {
   background: rgba(230, 234, 239, 0.35);
 }
 
+.elysium-page .chat-bg-dark::-webkit-scrollbar-thumb:hover {
+  background: rgba(230, 234, 239, 0.5);
+}
+
+/* Deepen the bubble shadow over a dark wallpaper. MessageBubble sets the
+   shadow inline as `box-shadow: var(--shadow-bubble)`, so an inline
+   `box-shadow` here would lose to it (inline wins on specificity). Redefine
+   the VARIABLE instead - the inline `var()` then resolves to the dark value
+   automatically, with no inline change and no !important. (v1.1 audit L7.) */
 .chat-bg-dark .message-bubble-shell {
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
+  --shadow-bubble: 0 2px 10px rgba(0, 0, 0, 0.28);
 }
 
 /* FE-5B: compact chat/message action controls */
@@ -2221,11 +2430,17 @@
     transform var(--duration-fast) var(--ease-smooth);
 }
 
-.chat-action-menu-item:hover,
+.chat-action-menu-item:hover:not(:disabled),
 .chat-action-menu-item:focus-visible {
   color: rgba(241, 245, 250, 0.98);
   background: rgba(200, 216, 236, 0.09);
   transform: translateY(-1px);
+}
+
+/* v1.1 FF1: Clear/Delete are disabled while the chat is streaming. */
+.chat-action-menu-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .chat-action-menu-item.is-danger,
@@ -2326,7 +2541,12 @@
   top: 2.25rem;
   right: 0.5rem;
   z-index: 6;
-  width: min(17rem, calc(100% - 1rem));
+  /* Fixed width, NOT bubble-relative (v1.1 D4): `calc(100% - 1rem)` tracked
+     the BUBBLE, so a short "hey" bubble squeezed the panel to ~5rem and the
+     text wrapped one word per line with the buttons overflowing. The shell
+     has no overflow:hidden - the panel safely overhangs onto the canvas. */
+  width: 17rem;
+  max-width: min(17rem, 60vw);
   border-radius: 5px;
   border: 1px solid rgba(200, 216, 236, 0.14);
   background: linear-gradient(90deg, rgba(20, 27, 36, 0.96), rgba(42, 52, 64, 0.92));
@@ -2338,6 +2558,41 @@
   backdrop-filter: blur(16px) saturate(112%);
   -webkit-backdrop-filter: blur(16px) saturate(112%);
   animation: inline-action-enter 180ms var(--ease-smooth) both;
+}
+
+/* Role-aware anchoring (v1.1 H5): user bubbles sit on the RIGHT edge, so a
+   right-anchored panel overhangs safely leftwards into the canvas. Assistant
+   bubbles sit on the LEFT edge - the same right anchor would push a 17rem
+   panel past the scroller's left boundary in a narrow bubble and clip it.
+   Anchor those left so the overhang points right, into open canvas. */
+.message-bubble-shell.is-assistant .message-action-confirm {
+  left: 0.5rem;
+  right: auto;
+}
+
+/* Inline user-message edit (v1.1 C3 + H22): a short bubble ("hey") would
+   squeeze the textarea into the same one-word-per-line pathology as the old
+   confirm panel - entering edit mode widens the shell to a workable size. */
+.message-bubble-shell.is-editing {
+  min-width: min(22rem, 80%);
+}
+
+.message-edit-textarea {
+  width: 100%;
+  resize: none;
+  overflow: hidden;
+  border-radius: var(--radius-input);
+  border: 1px solid rgba(200, 216, 236, 0.28);
+  background: rgba(10, 16, 24, 0.22);
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  padding: 0.4rem 0.55rem;
+  outline: none;
+}
+
+.message-edit-textarea:focus-visible {
+  border-color: rgba(200, 216, 236, 0.48);
 }
 
 .inline-confirm-button {
@@ -2393,6 +2648,7 @@
   .message-action-confirm,
   .inline-confirm-button,
   .variant-nav-button,
+  .jump-to-latest,
   .composer-icon-button {
     animation-duration: 1ms !important;
     transition: opacity 120ms ease-out !important;
@@ -2504,4 +2760,647 @@
 input::-ms-reveal,
 input::-ms-clear {
   display: none;
+}
+
+/* ── Settings › Voice (V5) ─────────────────────────────────────────────
+   Same material language as the settings rows above: soft mist-blue
+   surfaces, quiet borders, no new colors - the page should read as native
+   to the dialog it lives in. */
+
+/* ── Settings type scale ────────────────────────────────────────────────────
+   Three roles, one place. The sizes were previously spelled three different
+   ways - this CSS class, Tailwind's `text-xs`, and `text-[11px]` written out by
+   hand eighteen times - so nothing kept them in step, and the section HEADING
+   ended up smaller (11px) than the labels underneath it (12px). A heading that
+   is smaller than its own contents reads as a caption.
+
+     .settings-section-title  section heading   12px, uppercase, quiet
+     .settings-label          control label     12px, semibold
+     .settings-hint           helper sentence   11px, muted
+
+   Anything smaller than 11px is reserved for the install log, which is
+   machine output rather than prose. */
+.settings-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(202, 212, 224, 0.62);
+}
+
+.settings-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.settings-hint {
+  display: block;
+  margin-top: 1px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: rgba(202, 212, 224, 0.72);
+}
+
+/* The live value beside a slider, and a sub-label inside a control. Same size
+   as a hint, but inline - so `display: block` would break the row. */
+.settings-value {
+  font-size: 11px;
+  line-height: 1.45;
+  color: rgba(202, 212, 224, 0.72);
+}
+
+/* A refusal or a validation failure. The colour was written inline at each
+   site, which is why the sizes drifted with it. */
+.settings-error {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--color-es-danger);
+}
+
+.settings-voice-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: var(--radius-card);
+  color: var(--color-es-text-light);
+  background: rgba(200, 216, 236, 0.05);
+  border: 1px solid rgba(200, 216, 236, 0.10);
+}
+
+.settings-voice-model {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: var(--radius-card);
+  background: rgba(200, 216, 236, 0.05);
+  border: 1px solid rgba(200, 216, 236, 0.10);
+}
+
+.settings-voice-model[data-selected="true"] {
+  border-color: rgba(110, 147, 196, 0.45);
+  background: rgba(94, 130, 174, 0.10);
+}
+
+.settings-voice-model .settings-voice-row {
+  padding: 0;
+  background: none;
+  border: none;
+}
+
+.settings-voice-radio {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  color: var(--color-es-mist-blue, #6e93c4);
+  background: rgba(200, 216, 236, 0.06);
+  border: 1px solid rgba(200, 216, 236, 0.22);
+  transition: border-color var(--duration-fast) var(--ease-smooth);
+}
+
+/* The radio is now a decorative dot INSIDE the pick button, so the checked
+   state is driven by the button that carries the role. */
+.settings-voice-pick[aria-checked="true"] .settings-voice-radio {
+  border-color: rgba(110, 147, 196, 0.85);
+  background: rgba(94, 130, 174, 0.22);
+}
+
+/* The whole name row selects. It used to be an unlabelled 18px circle while
+   the name opened the parameter panel - so the one control that arms voice at
+   all was the least visible thing in the list. */
+.settings-voice-pick {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+  padding: 0.25rem 0.35rem;
+  margin: -0.25rem -0.35rem;
+  border-radius: var(--radius-card);
+  transition: background var(--duration-fast) var(--ease-smooth);
+}
+
+.settings-voice-pick:hover {
+  background: rgba(200, 216, 236, 0.06);
+}
+
+.settings-voice-pick[aria-checked="true"] {
+  background: rgba(94, 130, 174, 0.10);
+}
+
+/* Settings live behind their own control now, so "open the panel" and "use
+   this voice" are two different targets instead of one ambiguous row. */
+.settings-voice-disclosure {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border-radius: var(--radius-input);
+  color: var(--color-es-text-muted, #9fb2cc);
+  transition:
+    background var(--duration-fast) var(--ease-smooth),
+    color var(--duration-fast) var(--ease-smooth);
+}
+
+.settings-voice-disclosure:hover {
+  background: rgba(200, 216, 236, 0.08);
+  color: var(--color-es-text, #e6eaef);
+}
+
+.settings-voice-disclosure svg {
+  transition: transform var(--duration-fast) var(--ease-smooth);
+}
+
+.settings-voice-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+  padding: 0.3rem 0.6rem;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  border-radius: var(--radius-input);
+  color: var(--color-es-text-light);
+  background: rgba(94, 130, 174, 0.18);
+  border: 1px solid rgba(110, 147, 196, 0.35);
+  transition:
+    background-color var(--duration-fast) var(--ease-smooth),
+    border-color var(--duration-fast) var(--ease-smooth);
+}
+
+.settings-voice-button:hover:not(:disabled) {
+  background: rgba(94, 130, 174, 0.28);
+  border-color: rgba(110, 147, 196, 0.5);
+}
+
+.settings-voice-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.settings-voice-button.is-quiet {
+  background: rgba(200, 216, 236, 0.05);
+  border-color: rgba(200, 216, 236, 0.14);
+  color: rgba(202, 212, 224, 0.8);
+}
+
+/* Blockers ("it will not run") speak the app's ONE established danger
+   voice - the muted rose of --color-es-danger, the same lineage as the error
+   toast and the destructive menu item. The first cut invented a brown/amber
+   pair, which quietly resurrected the hues this theme deliberately retired. */
+.settings-voice-issues {
+  margin: 0;
+  padding: 0.45rem 0.6rem;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 11px;
+  border-radius: var(--radius-input);
+  color: rgba(206, 146, 154, 0.92);
+  background: rgba(195, 106, 114, 0.10);
+  border: 1px solid rgba(195, 106, 114, 0.24);
+}
+
+/* Warnings ("it runs, just not the way you asked") get STRUCTURE, not a new
+   hue: a left rule and quieter type. Amber is dead in this theme, and the
+   palette's own --color-es-warning is blue - so severity is carried by weight
+   and position instead of colour, which is also what a colour-blind reader
+   gets for free. */
+.settings-voice-warning {
+  margin: 0;
+  padding-left: 0.5rem;
+  font-size: 11px;
+  color: rgba(202, 212, 224, 0.78);
+  border-left: 2px solid var(--color-es-mist-blue, #6e93c4);
+}
+
+.settings-voice-ok {
+  color: var(--color-es-mist-blue, #6e93c4);
+  flex-shrink: 0;
+}
+
+.settings-voice-variant {
+  font-weight: 400;
+  color: rgba(202, 212, 224, 0.6);
+}
+
+/* Section rhythm: four stacked sections with no separation read as one long
+   scroll of controls. A hairline above each heading group gives the page a
+   spine without adding boxes-inside-boxes. */
+.settings-voice-section + .settings-voice-section {
+  padding-top: 0.75rem;
+  border-top: 1px solid rgba(200, 216, 236, 0.08);
+}
+
+/* Install progress. uv emits no byte counts through a redirected pipe (it
+   suppresses its own bar when not a TTY), so a percentage here would be a
+   number we invented. An INDETERMINATE bar is the honest shape: it says
+   "working, do not close this" without pretending to know how far along a
+   multi-GB download is. */
+.settings-voice-progress {
+  position: relative;
+  height: 3px;
+  margin-top: 0.4rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(200, 216, 236, 0.10);
+}
+
+.settings-voice-progress::after {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  width: 38%;
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--color-es-mist-blue, #6e93c4),
+    transparent
+  );
+  animation: voice-progress-sweep 1.6s var(--ease-smooth) infinite;
+}
+
+@keyframes voice-progress-sweep {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(300%); }
+}
+
+/* Reduced motion: a steady dim fill still reads as "in progress" - the
+   information survives, the movement does not. */
+@media (prefers-reduced-motion: reduce) {
+  .settings-voice-progress::after {
+    animation: none;
+    width: 100%;
+    background: rgba(110, 147, 196, 0.35);
+  }
+}
+
+/* A message that is currently being spoken keeps its button lit, so the
+   source of the voice is obvious in a long thread without hunting for the
+   one square icon. */
+.message-action-button[aria-pressed="true"] {
+  color: var(--color-es-primary-sage-deep);
+  background: rgba(94, 130, 174, 0.18);
+  border-color: rgba(110, 147, 196, 0.45);
+}
+
+/* Spinners, for people who asked the OS for less motion. Freezing them would
+   read as "hung"; slowing the rotation keeps the "still working" signal while
+   dropping the fast spin that actually causes discomfort. This covers every
+   Loader2 in the app - voice setup, saving, deleting, synthesising. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-spin {
+    animation-duration: 2.4s !important;
+    animation-timing-function: linear !important;
+  }
+}
+
+/* Skeletons, same audience. Its sibling above has had this from the start
+   and the pulse did not (KOK 17) - a slow fade still says "loading" without
+   the throb. Frozen would be indistinguishable from a blank panel. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse {
+    animation-duration: 3.2s !important;
+  }
+}
+
+.settings-voice-log {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(202, 212, 224, 0.55);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-voice-params {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  padding-top: 0.25rem;
+  border-top: 1px solid rgba(200, 216, 236, 0.08);
+}
+
+.settings-voice-select,
+.settings-voice-input,
+.settings-voice-textarea {
+  width: 100%;
+  padding: 0.4rem 0.55rem;
+  font-size: 12px;
+  border-radius: var(--radius-input);
+  color: var(--color-es-text-light);
+  background: rgba(20, 28, 40, 0.55);
+  border: 1px solid rgba(200, 216, 236, 0.14);
+  outline: none;
+  transition: border-color var(--duration-fast) var(--ease-smooth);
+}
+
+.settings-voice-select:focus-visible,
+.settings-voice-input:focus-visible,
+.settings-voice-textarea:focus-visible {
+  border-color: rgba(110, 147, 196, 0.6);
+}
+
+.settings-voice-textarea {
+  resize: vertical;
+  min-height: 44px;
+}
+
+/* Narration voice picker (V9-3). Three mutually exclusive choices, flush and
+   unembossed like every other control - the "no gradients, no bevels" rule
+   from the v1.1 pass applies to new controls too, not just the audited ones. */
+.settings-segment-button {
+  border: 1px solid var(--color-es-hairline);
+  border-radius: var(--radius-input);
+  padding: 3px 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  /* `--color-es-asst-bubble-text` is the ink for a LIGHT message bubble; these
+     controls sit on the DARK settings dialog, where it renders near-invisible
+     (measured ~1.1:1 against the panel). The dialog's own text colour is the
+     one that belongs here - the same token every other control on this surface
+     already uses. */
+  color: var(--color-es-text-light);
+  background-color: transparent;
+  transition: background-color var(--duration-fast) var(--ease-smooth),
+    border-color var(--duration-fast) var(--ease-smooth);
+}
+
+.settings-segment-button:hover {
+  background-color: rgba(200, 216, 236, 0.08);
+}
+
+.settings-segment-button[data-active="true"] {
+  border-color: var(--color-es-accent, currentColor);
+  background-color: rgba(200, 216, 236, 0.16);
+  font-weight: 600;
+}
+
+/* Free-text tone entry (V9-4). Flush, hairline, no inset shadow - same rule
+   as every other control since the v1.1 pass. */
+.settings-text-input {
+  border: 1px solid var(--color-es-hairline);
+  border-radius: var(--radius-input);
+  padding: 5px 8px;
+  font-size: 12px;
+  /* Same correction as the segment buttons above: dialog ink on a dialog. */
+  color: var(--color-es-text-light);
+  background-color: rgba(200, 216, 236, 0.06);
+}
+
+.settings-text-input:focus {
+  outline: none;
+  border-color: var(--color-es-accent, currentColor);
+}
+
+/* A setting this engine cannot act on (V9-5). Text, not a dead input: a
+   disabled slider still invites dragging, and failing silently under the
+   finger is worse than plainly not being a control. */
+.settings-param-disabled {
+  padding: 6px 8px;
+  border: 1px dashed var(--color-es-hairline);
+  border-radius: var(--radius-card);
+  opacity: 0.55;
+}
+
+/* ── Reduced transparency (V10) ─────────────────────────────────────────────
+   Windows exposes this at Settings > Personalization > Colors > Transparency
+   effects, and Elysium is a Windows desktop app - so this is a switch the
+   people using it can actually already have on, and until now the app ignored
+   it completely across every one of its glass surfaces.
+
+   It is NOT the same preference as reduced-motion. Reduced motion is about
+   vestibular symptoms from movement; this one is about READABILITY - text over
+   a live blur of whatever is behind it is harder to read, and for some people
+   tiring rather than merely busy.
+
+   The blur is dropped rather than softened. Halving it would keep the cost
+   (Chromium reads back the destination texture for every backdrop-filter
+   render pass regardless of radius) while still leaving the thing that hurts
+   to read. Opacity goes up to compensate so the surface still reads as a
+   surface, and the hairline borders stay so panels keep their edges.
+
+   `!important` is deliberate and confined to this block: these rules exist to
+   override the specific surface rules above them, which is the one case where
+   it is the correct tool rather than a shortcut. */
+@media (prefers-reduced-transparency: reduce) {
+  /* The full backdrop-filter inventory of this file. `[class*="glass"]`
+     already covers .glass-dark and .glass-right; the rest were listed by names
+     that exist nowhere in the codebase (.glass-panel, .composer-glass,
+     .sidebar-glass each appeared exactly once - here), so five blurred,
+     text-bearing surfaces kept their live blur with transparency turned off.
+     .message-action-button is spelled out because the !important on
+     .message-bubble-shell does not reach a descendant. */
+  .glass-dialog,
+  .message-bubble-shell,
+  .persona-menu,
+  .chat-action-confirm,
+  .message-action-confirm,
+  .message-action-button,
+  .chat-newchat-dock::before,
+  [class*="glass"] {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+
+  /* The ambient fog is decoration behind text. With transparency reduced it
+     is exactly the layer that was making reading harder, so it goes. */
+  /* The REAL class names MistCanvas renders. The three this listed
+     (.ambient-fog-canvas, .ambient-mist, .chat-fog) appear exactly once in the
+     whole repo - inside this selector list - and zero times in any .tsx, so
+     the animated WebGL fog kept running for users who had turned transparency
+     effects off: the block's stated goal did not happen. */
+  .mist-canvas,
+  .canvas-mist,
+  .panel-mist {
+    display: none !important;
+  }
+}
+
+/* ── Origin-aware entrances (V10) ───────────────────────────────────────────
+   Everything scaled from its own centre until now, which is the small thing
+   that makes a menu feel like it appeared rather than like it OPENED. A
+   surface anchored to a trigger should grow FROM that trigger; only a modal,
+   which belongs to the whole window rather than to any one control, is
+   correctly centred.
+
+   Radix/base-ui already publish the anchor as `--radix-*-content-transform-
+   origin`, computed after collision flipping - so a menu that flipped upwards
+   grows downward-from-its-trigger correctly, which a hand-written `top left`
+   would get exactly backwards. Using their value rather than guessing is the
+   whole point. The fallbacks only apply if the variable is absent. */
+[data-slot="menu-content"],
+[data-slot="dropdown-menu-content"] {
+  transform-origin: var(--radix-dropdown-menu-content-transform-origin, top);
+}
+
+[data-slot="select-content"] {
+  transform-origin: var(--radix-select-content-transform-origin, top);
+}
+
+[data-slot="popover-content"] {
+  transform-origin: var(--radix-popover-content-transform-origin, top);
+}
+
+[data-slot="tooltip-content"] {
+  transform-origin: var(--radix-tooltip-content-transform-origin, top);
+}
+
+/* Dialogs stay centred ON PURPOSE - they are not anchored to anything, and
+   growing one from a corner reads as a glitch rather than as an origin. */
+[data-slot="dialog-content"] {
+  transform-origin: center;
+}
+
+/* ── Voice controls while the engine is coming up ───────────────────────────
+   The model preloads after unlock, and a cold Fish S2 pays a torch.compile its
+   own progress line calls "first compile is slow" - so the first minute of a
+   session is normally spent in this state. The controls stay VISIBLE and say
+   what is happening (the tooltip) rather than vanishing or failing on a press:
+   a button that disappears for a minute and then reappears is harder to trust
+   than one that tells you to wait.
+
+   The pulse is the at-a-glance half of the same message - hover is not
+   discoverable, and this is a state you meet before you have learned the UI. */
+@keyframes voice-loading-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+[data-voice-loading="true"] {
+  animation: voice-loading-pulse 1.25s var(--ease-smooth) infinite;
+  cursor: progress;
+}
+
+/* Disabled styling must not fight the pulse: the control is not unavailable,
+   it is not ready YET, and it says so. */
+[data-voice-loading="true"]:disabled {
+  opacity: 1;
+  cursor: progress;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* A steady dim reads as "not yet" just as well, and a blinking control is
+     exactly what somebody who asked for less motion is avoiding.
+     The :disabled pair is not redundant - `.message-action-button:disabled`
+     (0-2-0) outranks a lone attribute selector (0-1-0), so without it this
+     block would silently deliver that rule's 0.48 instead of the value
+     written here. */
+  [data-voice-loading="true"],
+  [data-voice-loading="true"]:disabled {
+    animation: none;
+    opacity: 0.55;
+  }
+}
+
+/* ── "Voice is set up but nothing is chosen" hint ───────────────────────────
+   Sits above the composer dock, in the same quiet register as the API-key
+   helper line: it is information, not an error. Every in-chat voice control
+   hides itself until a model is selected, so without this the chat of somebody
+   who installed an engine, downloaded a model and recorded a reference voice
+   is indistinguishable from a fresh install. */
+.voice-hint {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  padding: 0.45rem 0.75rem;
+  border-radius: var(--radius-panel);
+  font-size: 12px;
+  line-height: 1.45;
+  background: rgba(28, 38, 50, 0.07);
+  color: var(--color-es-asst-bubble-text);
+  opacity: 0.85;
+}
+
+.voice-hint-link {
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.voice-hint-link:hover {
+  opacity: 0.75;
+}
+
+.voice-hint-dismiss {
+  flex-shrink: 0;
+  opacity: 0.55;
+  transition: opacity var(--duration-fast) var(--ease-smooth);
+}
+
+.voice-hint-dismiss:hover {
+  opacity: 1;
+}
+
+/* ── Message ink override (V11) ─────────────────────────────────────────────
+   Layered ON TOP of the contrast presets rather than replacing them: the
+   presets carry measured ratios and a deliberate soft<default<high ordering,
+   and a colour field that discarded that would undo three versions of care.
+   The picker shows the ratio it is producing; this rule just applies it, and
+   only when one was actually chosen. */
+.msg-ink-custom .message-bubble-shell.is-assistant,
+.settings-preview.msg-ink-custom {
+  --msg-asst-fg: var(--msg-ink-custom);
+  --narration-color: color-mix(in oklab, var(--msg-ink-custom) 85%, transparent);
+}
+
+/* ── Surface finish (V11) ───────────────────────────────────────────────────
+   Bubbles ONLY. The v1.1 pass deliberately flattened every control - no
+   bevels, no gradients - and that rule is not being reopened for a preference:
+   a control has to read as pressable, and shading it fights that. A message
+   bubble is content, not a control, so it can carry a surface quality without
+   contradicting anything.
+
+   All three are restrained on purpose. The premium signal in the sources is
+   RESTRAINT - when every element performs, nothing stands out - so "glossy" is
+   a hairline of light along the top edge rather than a shine, and "metallic"
+   is a cool directional wash rather than chrome. Matte is today's pixels and
+   sets nothing at all, exactly like the Default contrast preset. */
+.surface-glossy .message-bubble-shell {
+  background-image: linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.10) 0%,
+    rgba(255, 255, 255, 0.03) 18%,
+    transparent 46%
+  );
+}
+
+.surface-metallic .message-bubble-shell {
+  background-image: linear-gradient(
+    160deg,
+    rgba(200, 216, 236, 0.11) 0%,
+    transparent 38%,
+    rgba(28, 38, 50, 0.05) 100%
+  );
+}
+
+/* Reduced transparency means somebody is asking for flat, readable surfaces.
+   A decorative sheen is precisely what they turned off. */
+@media (prefers-reduced-transparency: reduce) {
+  .surface-glossy .message-bubble-shell,
+  .surface-metallic .message-bubble-shell {
+    background-image: none !important;
+  }
 }

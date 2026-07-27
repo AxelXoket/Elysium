@@ -245,10 +245,16 @@ export function GenerationSettingsDialog({
             />
           </GenerationSection>
 
+          {/* NOT gated on supported_parameters. `stop` always travels:
+              filterParamsByModel keeps it regardless (generationParams.ts:135
+              `supported.has(key) || key === "stop"`) and the backend mirrors
+              that (completions.py `if k in supported or k == "stop"`). Gating
+              the editor blocked a feature that works AND kept sending the
+              chips it had greyed out - generation truncated at "Human:" on a
+              model the UI had just said did not support stop. */}
           <GenerationSection title="Stop sequences">
             <StopSequencesSetting
               sequences={stopSequences}
-              disabled={!isParamSupportedByModel("stop", selectedModel)}
               onChange={setStopSequences}
             />
           </GenerationSection>
@@ -436,18 +442,16 @@ const STOP_SEQUENCE_MAX_LENGTH = 100;
  */
 function StopSequencesSetting({
   sequences,
-  disabled,
   onChange,
 }: {
   sequences: string[];
-  disabled: boolean;
   onChange: (sequences: string[]) => void;
 }) {
   const [draft, setDraft] = useState("");
   const atCap = sequences.length >= MAX_STOP_SEQUENCES;
 
   const commitDraft = () => {
-    if (disabled || atCap) return;
+    if (atCap) return;
     // Typed literal "\n" becomes a real newline in the committed sequence.
     const converted = draft.replaceAll("\\n", "\n");
     if (converted.length === 0) return;
@@ -462,7 +466,7 @@ function StopSequencesSetting({
   };
 
   return (
-    <div className={`generation-control ${disabled ? "is-disabled" : ""}`}>
+    <div className="generation-control">
       <div className="flex items-center justify-between gap-3">
         <label className="text-xs font-semibold">Stop sequences</label>
         <span
@@ -490,10 +494,9 @@ function StopSequencesSetting({
                 title={display}
               >
                 <span className="truncate">{display}</span>
-                {/* Remove stays enabled even when the model lacks stop support:
-                    a user who switches to a model without stop support must
-                    still be able to clear stale chips (stop is filtered out of
-                    unsupported-model requests anyway, so removal is always safe). */}
+                {/* Remove is always enabled - the whole control is now, since
+                    `stop` is sent on every model regardless of what
+                    supported_parameters advertises. */}
                 <button
                   type="button"
                   aria-label={`Remove stop sequence ${index + 1}`}
@@ -512,7 +515,7 @@ function StopSequencesSetting({
           type="text"
           aria-label="Stop sequence"
           value={draft}
-          disabled={disabled || atCap}
+          disabled={atCap}
           maxLength={STOP_SEQUENCE_MAX_LENGTH}
           placeholder={atCap ? "Limit reached" : "Add a sequence"}
           className="sidebar-dialog-field h-8 flex-1 text-xs"
@@ -528,7 +531,7 @@ function StopSequencesSetting({
           type="button"
           size="sm"
           className="sidebar-dialog-action text-xs"
-          disabled={disabled || atCap}
+          disabled={atCap}
           onClick={commitDraft}
         >
           Add
@@ -537,11 +540,9 @@ function StopSequencesSetting({
       <p className="generation-helper">
         {"Generation stops when the model outputs one of these. Type \\n for a newline. Max 4 sequences."}
       </p>
-      {disabled && (
-        <p className="generation-support-note">
-          Not supported by selected model.
-        </p>
-      )}
+      {/* No "not supported by selected model" note here: `stop` is sent on
+          every model regardless of supported_parameters, so the note would be
+          telling the user the opposite of what the pipeline does. */}
     </div>
   );
 }

@@ -300,9 +300,10 @@ describe("ActiveContextPreviewCard", () => {
     // Fixed cost from characterFixture + personaFixture:
     //   system_block = "[System Prompt]\n" + 25 + "\n\n[Description]\n" + 32
     //     + "\n\n[Personality]\n" + 21 + "\n\n[Scenario]\n" + 20 = 159 chars
-    //   persona = 15, phi = 0 -> fixed = 174
+    //   persona block = "[User Persona: Test Persona]\n" (29) + 15 = 44,
+    //   phi = 0 -> fixed = 159 + 44 = 203  (v1.1 KUME D name header)
     // History: 28 + 30 = 58 chars, both fit.
-    //   used = ceil((174 + 58) / 3) = ceil(232 / 3) = 78
+    //   used = ceil((203 + 58) / 3) = ceil(261 / 3) = 87
     mockFetch({
       "/models/openrouter": { body: modelListBody },
       "/personas": { body: [personaFixture] },
@@ -314,7 +315,7 @@ describe("ActiveContextPreviewCard", () => {
     await openCard();
 
     expect(
-      await screen.findByText("2 of 2 messages fit (≈78 / 8.1K tokens)"),
+      await screen.findByText("2 of 2 messages fit (≈87 / 8.1K tokens)"),
     ).toBeInTheDocument();
     expect(
       screen.queryByText("2 messages in chat history"),
@@ -329,8 +330,8 @@ describe("ActiveContextPreviewCard", () => {
     //   budget = clamp(16384, 600) = 600; safety = min(256, 75) = 75
     //   budget_chars = 525 * 3 = 1575; reservation = 100 * 3 = 300
     //   available = 1275 -> capacity = floor(1275 / 3) = 425
-    // fixed = 174 -> remaining = 1101; history 600 + 600 = 1200 > 1101
-    //   -> oldest dropped -> 600 kept; used = ceil((174 + 600) / 3) = 258
+    // fixed = 203 -> remaining = 1072; history 600 + 600 = 1200 > 1072
+    //   -> oldest dropped -> 600 kept; used = ceil((203 + 600) / 3) = 268
     const tinyModel: Model = {
       ...modelFixture,
       id: "test/tiny-ctx",
@@ -368,7 +369,7 @@ describe("ActiveContextPreviewCard", () => {
     await openCard();
 
     expect(
-      await screen.findByText("1 of 2 messages fit (≈258 / 425 tokens)"),
+      await screen.findByText("1 of 2 messages fit (≈268 / 425 tokens)"),
     ).toBeInTheDocument();
     expect(
       screen.getByTestId("context-usage-dropped-note"),

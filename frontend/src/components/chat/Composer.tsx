@@ -5,7 +5,7 @@ import { useUiStore } from "@/lib/store/uiStore";
 import { parseApiError } from "@/lib/errors";
 import { findModelById, hasInputModality } from "@/lib/models";
 import { AttachmentStrip } from "./AttachmentStrip";
-import { ACCEPTED_IMAGE_ACCEPT, isAcceptedImageFile } from "./attachments";
+import { ACCEPTED_IMAGE_ACCEPT } from "./attachments";
 import type { StagedAttachment } from "./attachments";
 import {
   Send,
@@ -16,6 +16,9 @@ import {
   Square,
   ImagePlus,
 } from "lucide-react";
+
+import { ContinuousVoiceToggle } from "./ContinuousVoiceToggle";
+import { VoiceUnselectedHint } from "./VoiceUnselectedHint";
 
 // ── CTA-aware error mapping ─────────────────────────────────────
 // Uses FE-1A parseApiError for safe message, adds CTA hint for secrets-related errors
@@ -95,6 +98,8 @@ export const Composer = memo(function Composer({
   const errorId = useId();
   const selectedChatId = useUiStore((s) => s.selectedChatId);
   const selectedModelId = useUiStore((s) => s.selectedModelId);
+  // v1.1 E3: font size drives the composer's autosize re-measure.
+  const msgFontPx = useUiStore((s) => s.msgFontPx);
   // CTA routes to "secrets" tab (renamed from "settings" in Phase 6E-A)
   const setActiveTab = useUiStore((s) => s.setActiveRightPanelTab);
   const { data: settings, isLoading: settingsLoading, error: settingsError } = useSettings();
@@ -118,14 +123,50 @@ export const Composer = memo(function Composer({
   // and are skipped here: repeating the auto→measure→set dance would force a
   // second reflow per keystroke for nothing.
   const sizedByKeystrokeRef = useRef<string | null>(null);
+  // v1.1 E3: a font-size change invalidates the last keystroke measurement
+  // even though the draft text is identical - the row must re-measure at the
+  // new metrics. Tracked in a ref (no render-phase ref writes - lint rule).
+  const measuredFontRef = useRef(msgFontPx);
   useEffect(() => {
-    if (sizedByKeystrokeRef.current === draft) return;
+    const fontChanged = measuredFontRef.current !== msgFontPx;
+    measuredFontRef.current = msgFontPx;
+    if (!fontChanged && sizedByKeystrokeRef.current === draft) return;
     sizedByKeystrokeRef.current = null;
     const ta = textareaRef.current;
     if (!ta) return;
     ta.style.height = "auto";
     if (draft.length > 0) ta.style.height = `${ta.scrollHeight}px`;
-  }, [draft]);
+  }, [draft, msgFontPx]);
+
+  // Focus recovery (v1.1 FF3/H3): disabling the textarea during a send drops
+  // focus to <body> - every turn then needs a mouse trip back. When pending
+  // ends, return focus to the textarea - but ONLY if focus is currently on
+  // body or inside the composer (guarded: never steal focus from an open
+  // dialog or an inline edit elsewhere).
+  const composerRootRef = useRef<HTMLDivElement>(null);
+  const prevPendingRef = useRef(isPending);
+  useEffect(() => {
+    const wasPending = prevPendingRef.current;
+    prevPendingRef.current = isPending;
+    if (!wasPending || isPending) return; // only the true→false edge
+    const active = document.activeElement;
+    const safeToSteal =
+      active == null ||
+      active === document.body ||
+      (composerRootRef.current?.contains(active) ?? false);
+    if (safeToSteal) textareaRef.current?.focus();
+  }, [isPending]);
+
+  // Escape = stop, bound at window level (H3): the textarea is DISABLED
+  // while streaming, so its own keydown can never fire.
+  useEffect(() => {
+    if (!streaming || onStop == null) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onStop();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [streaming, onStop]);
 
   // ── Preflight ──
   const noChatSelected = selectedChatId == null;
@@ -182,9 +223,10 @@ export const Composer = memo(function Composer({
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     // The button guarding this input is disabled while attachBlocked, but the
     // change handler re-checks (defense in depth, same as the paste path).
-    const files = attachBlocked
-      ? []
-      : Array.from(e.target.files ?? []).filter(isAcceptedImageFile);
+    // H9: NO pre-filter here - handleAddAttachments is the single filter+toast
+    // point (the accept= attr narrows the picker; picking "All files" then a
+    // non-image now surfaces a reject toast instead of vanishing).
+    const files = attachBlocked ? [] : Array.from(e.target.files ?? []);
     if (files.length > 0) onAddFiles?.(files);
     // Reset so selecting the same file again re-fires the change event.
     e.target.value = "";
@@ -192,12 +234,13 @@ export const Composer = memo(function Composer({
 
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     if (attachBlocked) return;
-    const images = Array.from(e.clipboardData?.files ?? []).filter(
-      isAcceptedImageFile,
-    );
-    if (images.length === 0) return;
+    // H9: forward raw clipboard files. A pasted GIF/non-image FILE now reaches
+    // the single filter+toast point (FF9) instead of falling through silently.
+    // Text pastes carry no files, so native paste is untouched.
+    const files = Array.from(e.clipboardData?.files ?? []);
+    if (files.length === 0) return;
     e.preventDefault();
-    onAddFiles?.(images);
+    onAddFiles?.(files);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -266,6 +309,7 @@ export const Composer = memo(function Composer({
 
   return (
     <div
+      ref={composerRootRef}
       // xl (not lg): the side panels' clamp() floors leave the chat column
       // ~380-430px at a 1024-1185px window - a viewport-keyed lg:px-14 would
       // spend 112px of that on padding right where space is tightest.
@@ -335,6 +379,11 @@ export const Composer = memo(function Composer({
         </div>
       )}
 
+      {/* Voice is installed but nothing is chosen: every in-chat voice control
+          hides itself in that state, so without this line the chat of somebody
+          who did the whole setup looks exactly like a fresh install. */}
+      <VoiceUnselectedHint />
+
       {/* Input dock - warm translucent surface */}
       <div
         className="rounded-xl px-5 py-4"
@@ -393,27 +442,33 @@ export const Composer = memo(function Composer({
             aria-label="Message"
             aria-describedby={describedBy}
             rows={1}
-            // py-1.5 sizes a single line (~22.75px text + 12px padding) to the
-            // 35px icon buttons, so the caret/text line sits vertically
-            // centered against them; multiline growth stays bottom-aligned.
-            className="flex-1 resize-none bg-transparent py-1.5 text-sm leading-relaxed outline-none disabled:cursor-not-allowed disabled:opacity-40"
+            // v1.1 E3: the composer font tracks the reader's message-size
+            // setting (--msg-fs, hoisted onto <main>). py-1.5 sizes a 14px
+            // single line to the 35px icon buttons; at a larger --msg-fs a
+            // single line grows taller than the buttons - accepted, the row is
+            // items-end so the buttons stay base-aligned. leading-relaxed stays
+            // unitless (1.625) so line-height self-scales with the font.
+            className="flex-1 resize-none bg-transparent py-1.5 leading-relaxed outline-none disabled:cursor-not-allowed disabled:opacity-40"
             style={{
               color: "var(--color-es-asst-bubble-text)",
-              maxHeight: "6rem",
+              fontSize: "var(--msg-fs, 0.875rem)",
+              // 4 lines at leading-relaxed (1.625) + py (0.75rem), hard-capped
+              // at 11rem. Overflow past that scrolls INSIDE - the dock never
+              // grows past the cap, so the composer can never push the chat
+              // off-screen.
+              maxHeight:
+                "min(11rem, calc(var(--msg-fs, 0.875rem) * 1.625 * 4 + 0.75rem))",
               overflowY: "auto",
             }}
           />
+          <ContinuousVoiceToggle />
           {streaming ? (
             <button
               type="button"
               onClick={onStop}
               aria-label="Stop generating"
               title="Stop generating"
-              className="btn-sage-glow composer-icon-button shrink-0 rounded-xl p-2.5"
-              style={{
-                backgroundColor: "var(--color-es-primary-sage)",
-                color: "var(--color-es-text-dark)",
-              }}
+              className="composer-icon-button composer-send-button shrink-0 rounded-xl p-2.5"
             >
               <Square size={15} />
             </button>
@@ -424,11 +479,7 @@ export const Composer = memo(function Composer({
               onClick={handleSend}
               aria-label="Send message"
               title={sendTitle}
-              className="btn-sage-glow composer-icon-button shrink-0 rounded-xl p-2.5 disabled:cursor-not-allowed disabled:opacity-30"
-              style={{
-                backgroundColor: "var(--color-es-primary-sage)",
-                color: "var(--color-es-text-dark)",
-              }}
+              className="composer-icon-button composer-send-button shrink-0 rounded-xl p-2.5 disabled:cursor-not-allowed disabled:opacity-30"
             >
               {isPending ? (
                 <Loader2 size={15} className="animate-spin" />

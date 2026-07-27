@@ -19,14 +19,15 @@ Privacy invariants:
 import logging
 from datetime import datetime, timezone
 
+import anyio.to_thread
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from sqlcipher3 import dbapi2 as sqlite3
 
-from database import get_db
+from database import get_db, iter_chunks
 from attachments_service import (
     load_for_messages,
     delete_for_messages,
-    to_api as attachment_to_api,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,12 @@ router = APIRouter(prefix="/chats", tags=["chats"])
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
+
+# Length caps shared by create + rename so POST can never store a title PATCH
+# could not produce. (v1.1 FB10.)
+_MAX_TITLE_LEN = 200
+_MAX_MODEL_ID_LEN = 300
+
 
 class ChatCreate(BaseModel):
     character_id: int
@@ -72,29 +79,8 @@ def _chat_to_dict(row) -> dict:
     }
 
 
-def _msg_to_dict(
-    row,
-    attachments: list[dict] | None = None,
-    variant_index: int | None = None,
-    variant_count: int | None = None,
-) -> dict:
-    """Convert a message row to an API-safe dict (variant-aware)."""
-    keys = row.keys() if hasattr(row, "keys") else []
-    d = {
-        "id":         row["id"],
-        "chat_id":    row["chat_id"],
-        "role":       row["role"],
-        "content":    row["content"],
-        "created_at": row["created_at"],
-        "attachments": [attachment_to_api(a) for a in (attachments or [])],
-        "variant_group": row["variant_group"] if "variant_group" in keys else None,
-        "active": bool(row["active"]) if "active" in keys else True,
-    }
-    if variant_index is not None:
-        d["variant_index"] = variant_index
-    if variant_count is not None:
-        d["variant_count"] = variant_count
-    return d
+# Shared with completions.py since v1.1 FB6 - one response shape, one guard.
+from messages_common import msg_to_dict as _msg_to_dict, last_active_anchor
 
 
 # ---------------------------------------------------------------------------
@@ -115,14 +101,27 @@ async def list_chats() -> list[dict]:
 # POST /chats
 # ---------------------------------------------------------------------------
 
-@router.post("", status_code=201)
-async def create_chat(body: ChatCreate) -> dict:
-    """Create a chat session. Optionally inserts character.first_mes."""
+def _create_chat_sync(character_id: int, title_in: str | None,
+                      model_id_in: str | None) -> dict:
+    """Worker-thread body (audit KÖK 8): own connection, one write txn.
+
+    BEGIN IMMEDIATE takes SQLite's writer lock, and taking it ON THE EVENT LOOP
+    means every live SSE stream in the process is frozen for as long as this
+    waits - up to the full 15 s busy_timeout if another writer holds it. The
+    transaction below is unchanged; only the thread it runs on is. The five
+    handlers that did this are the ones the audit named; the pattern they now
+    follow is the one _delete_chat_sync has used all along.
+    """
     with get_db() as con:
+        # One write txn (v1.1 FB3): the character-exists guard must hold until
+        # the FK-bearing chats INSERT commits. In autocommit a racing character
+        # delete between guard and INSERT trips the FK -> IntegrityError 500.
+        # BEGIN IMMEDIATE serializes against delete_character's own txn.
+        con.execute("BEGIN IMMEDIATE")
         # 1. Verify character exists
         char_row = con.execute(
             "SELECT id, name, first_mes FROM characters WHERE id = ?",
-            (body.character_id,),
+            (character_id,),
         ).fetchone()
         if char_row is None:
             raise HTTPException(404, "character_not_found")
@@ -130,20 +129,29 @@ async def create_chat(body: ChatCreate) -> dict:
         char_name = char_row["name"]
         first_mes = char_row["first_mes"].strip() if char_row["first_mes"] else ""
 
-        # 2. Normalize title
-        title = body.title.strip() if body.title and body.title.strip() else None
+        # 2. Normalize + cap title (parity with rename's title_too_long)
+        title = title_in.strip() if title_in and title_in.strip() else None
+        if title is not None and len(title) > _MAX_TITLE_LEN:
+            raise HTTPException(400, "title_too_long")
         if title is None:
             now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
             title = f"{char_name} - {now_str}"
 
-        # 3. Normalize model_id
-        model_id = body.model_id.strip() if body.model_id and body.model_id.strip() else None
+        # 3. Normalize + cap model_id
+        model_id = model_id_in.strip() if model_id_in and model_id_in.strip() else None
+        if model_id is not None and len(model_id) > _MAX_MODEL_ID_LEN:
+            raise HTTPException(400, "model_id_too_long")
 
         # 4. Insert chat
-        cur = con.execute(
-            "INSERT INTO chats (character_id, title, model_id) VALUES (?,?,?)",
-            (body.character_id, title, model_id),
-        )
+        try:
+            cur = con.execute(
+                "INSERT INTO chats (character_id, title, model_id) VALUES (?,?,?)",
+                (character_id, title, model_id),
+            )
+        except sqlite3.IntegrityError:
+            # Belt over the txn guard: the FK says the character vanished -
+            # report a 404, never a 500.
+            raise HTTPException(404, "character_not_found")
         chat_id = cur.lastrowid
 
         # 5. Insert first_mes as assistant message if non-empty
@@ -163,8 +171,16 @@ async def create_chat(body: ChatCreate) -> dict:
             _CHAT_SELECT + "WHERE c.id = ?", (chat_id,)
         ).fetchone()
 
-    logger.info("Chat created: id=%d character_id=%d", chat_id, body.character_id)
+    logger.info("Chat created: id=%d character_id=%d", chat_id, character_id)
     return _chat_to_dict(row)
+
+
+@router.post("", status_code=201)
+async def create_chat(body: ChatCreate) -> dict:
+    """Create a chat session. Optionally inserts character.first_mes."""
+    return await anyio.to_thread.run_sync(
+        _create_chat_sync, body.character_id, body.title, body.model_id,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -187,11 +203,36 @@ async def get_chat(chat_id: int) -> dict:
 # PATCH /chats/{chat_id}
 # ---------------------------------------------------------------------------
 
-_MAX_TITLE_LEN = 200
-
-
 class ChatPatch(BaseModel):
     title: str
+
+
+def _rename_chat_sync(chat_id: int, title: str) -> dict:
+    """Worker-thread body (KÖK 8): see _create_chat_sync for why."""
+    with get_db() as con:
+        # Guard + UPDATE + re-SELECT in one write txn (v1.1 FB3): the bare
+        # SELECT ran in autocommit, so a racing delete made the re-SELECT
+        # return None and _chat_to_dict(None) raise a TypeError 500 instead of
+        # a clean 404.
+        con.execute("BEGIN IMMEDIATE")
+        existing = con.execute(
+            "SELECT 1 FROM chats WHERE id = ?", (chat_id,)
+        ).fetchone()
+        if existing is None:
+            raise HTTPException(404, "chat_not_found")
+
+        con.execute(
+            "UPDATE chats SET title = ?, updated_at = datetime('now') WHERE id = ?",
+            (title, chat_id),
+        )
+        row = con.execute(
+            _CHAT_SELECT + "WHERE c.id = ?", (chat_id,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, "chat_not_found")
+
+    logger.info("Chat renamed: id=%d", chat_id)
+    return _chat_to_dict(row)
 
 
 @router.patch("/{chat_id}")
@@ -208,23 +249,7 @@ async def rename_chat(chat_id: int, body: ChatPatch) -> dict:
     if len(title) > _MAX_TITLE_LEN:
         raise HTTPException(400, "title_too_long")
 
-    with get_db() as con:
-        existing = con.execute(
-            "SELECT 1 FROM chats WHERE id = ?", (chat_id,)
-        ).fetchone()
-        if existing is None:
-            raise HTTPException(404, "chat_not_found")
-
-        con.execute(
-            "UPDATE chats SET title = ?, updated_at = datetime('now') WHERE id = ?",
-            (title, chat_id),
-        )
-        row = con.execute(
-            _CHAT_SELECT + "WHERE c.id = ?", (chat_id,)
-        ).fetchone()
-
-    logger.info("Chat renamed: id=%d", chat_id)
-    return _chat_to_dict(row)
+    return await anyio.to_thread.run_sync(_rename_chat_sync, chat_id, title)
 
 
 # ---------------------------------------------------------------------------
@@ -272,9 +297,11 @@ async def list_messages(chat_id: int) -> list[dict]:
 # DELETE /chats/{chat_id}
 # ---------------------------------------------------------------------------
 
-@router.delete("/{chat_id}")
-async def delete_chat(chat_id: int) -> dict:
-    """Delete a chat and all its messages."""
+def _delete_chat_sync(chat_id: int) -> None:
+    """Worker-thread body (v1.1 FB2/I7): own connection, whole txn in this
+    thread. An image-heavy cascade holds the writer for a while - on the event
+    loop it would stall every live SSE stream. Refactor only, no behavior
+    change. Raises HTTPException (propagates cleanly through run_sync)."""
     with get_db() as con:
         # One write txn from the first read: the id-list must be computed on
         # the same snapshot the DELETE runs on, or a message linked
@@ -296,6 +323,11 @@ async def delete_chat(chat_id: int) -> dict:
         con.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
         con.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
 
+
+@router.delete("/{chat_id}")
+async def delete_chat(chat_id: int) -> dict:
+    """Delete a chat and all its messages."""
+    await anyio.to_thread.run_sync(_delete_chat_sync, chat_id)
     logger.info("Chat deleted: id=%d", chat_id)
     return {"ok": True}
 
@@ -304,9 +336,8 @@ async def delete_chat(chat_id: int) -> dict:
 # POST /chats/{chat_id}/clear
 # ---------------------------------------------------------------------------
 
-@router.post("/{chat_id}/clear")
-async def clear_chat(chat_id: int) -> dict:
-    """Delete all messages in a chat. The chat itself is preserved."""
+def _clear_chat_sync(chat_id: int) -> int:
+    """Worker-thread body (v1.1 FB2/I7): own connection; see _delete_chat_sync."""
     with get_db() as con:
         # One write txn (TOCTOU - same rationale as delete_chat).
         con.execute("BEGIN IMMEDIATE")
@@ -327,7 +358,13 @@ async def clear_chat(chat_id: int) -> dict:
             "UPDATE chats SET updated_at = datetime('now') WHERE id = ?",
             (chat_id,),
         )
+    return deleted
 
+
+@router.post("/{chat_id}/clear")
+async def clear_chat(chat_id: int) -> dict:
+    """Delete all messages in a chat. The chat itself is preserved."""
+    deleted = await anyio.to_thread.run_sync(_clear_chat_sync, chat_id)
     logger.info("Chat cleared: id=%d deleted_count=%d", chat_id, deleted)
     return {"ok": True, "deleted_count": deleted}
 
@@ -336,9 +373,8 @@ async def clear_chat(chat_id: int) -> dict:
 # DELETE /chats/{chat_id}/messages/{message_id}
 # ---------------------------------------------------------------------------
 
-@router.delete("/{chat_id}/messages/{message_id}")
-async def delete_message(chat_id: int, message_id: int) -> dict:
-    """Delete a message and all following messages in the same chat."""
+def _delete_message_sync(chat_id: int, message_id: int) -> int:
+    """Worker-thread body (v1.1 FB2/I7): own connection; see _delete_chat_sync."""
     with get_db() as con:
         # Single write txn from the first read: the sweep set must be computed
         # against the same snapshot the DELETE runs on (see completions.py's
@@ -376,7 +412,15 @@ async def delete_message(chat_id: int, message_id: int) -> dict:
             "UPDATE chats SET updated_at = datetime('now') WHERE id = ?",
             (chat_id,),
         )
+    return deleted
 
+
+@router.delete("/{chat_id}/messages/{message_id}")
+async def delete_message(chat_id: int, message_id: int) -> dict:
+    """Delete a message and all following messages in the same chat."""
+    deleted = await anyio.to_thread.run_sync(
+        _delete_message_sync, chat_id, message_id,
+    )
     logger.info("Messages deleted: chat_id=%d from_msg_id=%d count=%d",
                 chat_id, message_id, deleted)
     return {"ok": True, "deleted_count": deleted}
@@ -386,18 +430,8 @@ async def delete_message(chat_id: int, message_id: int) -> dict:
 # POST /chats/{chat_id}/messages/{message_id}/activate
 # ---------------------------------------------------------------------------
 
-@router.post("/{chat_id}/messages/{message_id}/activate")
-async def activate_variant(chat_id: int, message_id: int) -> dict:
-    """Make one variant of the chat's LAST assistant group the active row.
-
-    No provider call - a pure view/state switch driving the carousel arrows.
-    v1 restricts navigation to the last active group (matching where new
-    variants can be generated). chats.updated_at is deliberately untouched:
-    flipping a view is not new content and must not reorder the chat list.
-
-    Stable error codes: chat_not_found, message_not_found,
-    not_a_variant_target (role != assistant), variant_group_not_last.
-    """
+def _activate_variant_sync(chat_id: int, message_id: int) -> dict:
+    """Worker-thread body (KÖK 8): see _create_chat_sync for why."""
     with get_db() as con:
         # Guard + flip in one write txn (TOCTOU - see completions.py). Without
         # this, a racing delete between guard and UPDATE could leave the flip
@@ -422,15 +456,7 @@ async def activate_variant(chat_id: int, message_id: int) -> dict:
 
         anchor = row["variant_group"] or row["id"]
 
-        last_active = con.execute(
-            "SELECT id, variant_group FROM messages "
-            "WHERE chat_id = ? AND active = 1 ORDER BY id DESC LIMIT 1",
-            (chat_id,),
-        ).fetchone()
-        if (
-            last_active is None
-            or (last_active["variant_group"] or last_active["id"]) != anchor
-        ):
+        if last_active_anchor(con, chat_id) != anchor:
             raise HTTPException(409, "variant_group_not_last")
 
         prev_row = con.execute(
@@ -480,5 +506,22 @@ async def activate_variant(chat_id: int, message_id: int) -> dict:
             prev_active_id if prev_active_id != message_id else None
         ),
     }
+
+
+@router.post("/{chat_id}/messages/{message_id}/activate")
+async def activate_variant(chat_id: int, message_id: int) -> dict:
+    """Make one variant of the chat's LAST assistant group the active row.
+
+    No provider call - a pure view/state switch driving the carousel arrows.
+    v1 restricts navigation to the last active group (matching where new
+    variants can be generated). chats.updated_at is deliberately untouched:
+    flipping a view is not new content and must not reorder the chat list.
+
+    Stable error codes: chat_not_found, message_not_found,
+    not_a_variant_target (role != assistant), variant_group_not_last.
+    """
+    return await anyio.to_thread.run_sync(
+        _activate_variant_sync, chat_id, message_id,
+    )
 
 

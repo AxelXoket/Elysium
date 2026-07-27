@@ -264,6 +264,168 @@ describe("Proxy Section Tests", () => {
   });
 
   // FIX-3: proxy save failure shows a safe mapped message, never raw detail
+  // ── Audit HIGH: the kill-switch had no write path of its own ───────────
+  //
+  // proxy_required could only ride along with a full POST /settings/proxy,
+  // which requires a non-empty URL - and the URL field is write-only. So
+  // flipping the switch moved it, left "Save Proxy" disabled, wrote nothing,
+  // and completions kept going out direct on an unhealthy proxy while the user
+  // believed the block was armed.
+
+  it("the toggle alone can be saved once a proxy is configured", async () => {
+    const user = userEvent.setup();
+    const mock = mockFetch({
+      "/settings/proxy/health": { body: proxyHealthFixture },
+      "/settings": {
+        body: {
+          ...settingsFixture,
+          proxy_configured: true,
+          proxy_required: false,
+        },
+      },
+    });
+
+    render(<ProxySection />, { wrapper });
+    await waitFor(() => {
+      expect(screen.getByLabelText("Proxy required toggle")).not.toBeChecked();
+    });
+
+    const save = screen.getByRole("button", { name: /save proxy/i });
+    expect(save).toBeDisabled(); // nothing changed yet
+
+    await user.click(screen.getByLabelText("Proxy required toggle"));
+    expect(save).toBeEnabled(); // URL box still empty - this is the whole fix
+
+    mock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    await user.click(save);
+
+    await waitFor(() => {
+      const posts = mock.mock.calls.filter(
+        (call) =>
+          typeof call[0] === "string" &&
+          call[0].includes("/settings/proxy/required") &&
+          call[1]?.method === "POST",
+      );
+      expect(posts).toHaveLength(1);
+      expect(JSON.parse(posts[0][1]?.body as string)).toEqual({
+        proxy_required: true,
+      });
+    });
+  });
+
+  it("the toggle alone cannot be saved before any proxy exists", async () => {
+    // Arming with no URL would block every completion behind proxy_missing,
+    // and this screen is the only way out - so the full save is the path.
+    const user = userEvent.setup();
+    mockFetch({
+      "/settings/proxy/health": { body: proxyHealthFixture },
+      "/settings": {
+        body: {
+          ...settingsFixture,
+          proxy_configured: false,
+          proxy_required: false,
+        },
+      },
+    });
+
+    render(<ProxySection />, { wrapper });
+    await waitFor(() => {
+      expect(screen.getByLabelText("Proxy required toggle")).toBeInTheDocument();
+    });
+    await user.click(screen.getByLabelText("Proxy required toggle"));
+    expect(screen.getByRole("button", { name: /save proxy/i })).toBeDisabled();
+  });
+
+  // ── Audit LOW: a URL-only update used to erase the stored alias ─────────
+
+  it("an untouched alias box preserves the stored alias", async () => {
+    const user = userEvent.setup();
+    const mock = mockFetch({
+      "/settings/proxy/health": { body: proxyHealthFixture },
+      "/settings": {
+        body: {
+          ...settingsFixture,
+          proxy_configured: true,
+          proxy_alias: "work",
+        },
+      },
+    });
+
+    render(<ProxySection />, { wrapper });
+    await waitFor(() =>
+      expect(screen.getByLabelText("Proxy URL input")).toBeInTheDocument(),
+    );
+    await user.type(
+      screen.getByLabelText("Proxy URL input"),
+      "https://new.proxy.test",
+    );
+    mock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: /save proxy/i }));
+
+    await waitFor(() => {
+      const posts = mock.mock.calls.filter(
+        (call) =>
+          typeof call[0] === "string" &&
+          call[0].endsWith("/settings/proxy") &&
+          call[1]?.method === "POST",
+      );
+      expect(posts).toHaveLength(1);
+      expect(JSON.parse(posts[0][1]?.body as string).proxy_alias).toBe("work");
+    });
+  });
+
+  it("a cleared alias box still clears the stored alias", async () => {
+    const user = userEvent.setup();
+    const mock = mockFetch({
+      "/settings/proxy/health": { body: proxyHealthFixture },
+      "/settings": {
+        body: {
+          ...settingsFixture,
+          proxy_configured: true,
+          proxy_alias: "work",
+        },
+      },
+    });
+
+    render(<ProxySection />, { wrapper });
+    const alias = await screen.findByLabelText("Proxy alias input");
+    // Touch it, then leave it empty - an explicit clear.
+    await user.type(alias, "x");
+    await user.clear(alias);
+    await user.type(
+      screen.getByLabelText("Proxy URL input"),
+      "https://new.proxy.test",
+    );
+    mock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: /save proxy/i }));
+
+    await waitFor(() => {
+      const posts = mock.mock.calls.filter(
+        (call) =>
+          typeof call[0] === "string" &&
+          call[0].endsWith("/settings/proxy") &&
+          call[1]?.method === "POST",
+      );
+      expect(posts).toHaveLength(1);
+      expect(JSON.parse(posts[0][1]?.body as string).proxy_alias).toBeNull();
+    });
+  });
+
   it("FIX-3: save error shows mapped message instead of raw detail", async () => {
     const user = userEvent.setup();
 

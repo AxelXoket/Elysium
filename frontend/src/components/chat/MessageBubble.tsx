@@ -1,16 +1,19 @@
-import { memo, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import type { Attachment, Message } from "@/lib/schemas/chats";
 import { FadeIn } from "@/components/motion/FadeIn";
 import { VariantCarousel } from "@/components/motion/VariantCarousel";
 import { MessageText } from "./MessageText";
+import { SpeakButton } from "./SpeakButton";
+import { SpeakLiveButton } from "./SpeakLiveButton";
 import { useDeleteMessageAndFollowing } from "@/lib/query/chats";
-import { canRegenerateMessage } from "@/lib/chat";
+import { canRegenerateMessage, parseServerDate, serverDateTimeAttr } from "@/lib/chat";
 import { useUiStore } from "@/lib/store/uiStore";
 import { imageUrl } from "@/lib/api/uploads";
 import { ImageLightbox } from "./ImageLightbox";
 import {
   Loader2,
   Trash2,
+  Pencil,
   ImageOff,
   ChevronLeft,
   ChevronRight,
@@ -31,6 +34,9 @@ interface MessageBubbleProps {
   onActivateVariant?: (messageId: number) => void;
   /** Aborts the in-flight variant generation (left arrow during streaming). */
   onAbortGeneration?: () => void;
+  /** Called with (messageId, newText) when a user-message edit is saved -
+   * the tail is discarded and the assistant rewrites (v1.1 C3). */
+  onEditMessage?: (messageId: number, newText: string) => void;
   /** True when a regenerate for this chat is in flight (spinner). */
   regenerating?: boolean;
   /** True when a send or regenerate for this chat is in flight - mutual
@@ -57,12 +63,15 @@ export const MessageBubble = memo(function MessageBubble({
   onRegenerate,
   onActivateVariant,
   onAbortGeneration,
+  onEditMessage,
   regenerating,
   pendingForChat,
   streamingText,
   isStreamingTarget = false,
 }: MessageBubbleProps) {
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editDraft, setEditDraft] = useState("");
   const [lightboxAttachment, setLightboxAttachment] = useState<Attachment | null>(
     null,
   );
@@ -89,20 +98,157 @@ export const MessageBubble = memo(function MessageBubble({
   );
   const variantCount = siblings.length;
   const atNewest = displayIndex === variantCount - 1;
-  // Arrows live on the bubble that can grow new variants: the last active
-  // group. Older groups show only a static counter when they hold variants.
-  const showNav = !isUser && isPersisted && canRegenerate;
+
+  // I1 (v1.1): older groups (not the last active group) are VIEW-ONLY -
+  // arrows page a LOCAL index and never touch the persisted active flag.
+  // Activating a non-last group would desync the visible chain from the
+  // provider history (context assembly follows `active`), so the backend
+  // keeps its 409 and this UI never calls /activate for such groups.
+  const isViewOnly = !isUser && isPersisted && !canRegenerate && variantCount > 1;
+  const [viewIndex, setViewIndex] = useState<number | null>(null);
+  const shownIndex = isViewOnly
+    ? Math.min(viewIndex ?? displayIndex, variantCount - 1)
+    : displayIndex;
+  const shownMessage = siblings[shownIndex] ?? message;
+
+  // Arrows live on the last active group (regenerate + activate) OR an older
+  // group in view-only paging mode. Groups with a single variant show nothing.
+  const showNav = !isUser && isPersisted && (canRegenerate || isViewOnly);
   const showCounter = variantCount > 1 || isStreamingTarget;
 
+
+  // FF10 a11y for the delete confirm: refs for autofocus (destructive
+  // button, like ChatList's inline confirm), Escape-close with focus return,
+  // and outside-click close.
+  const deleteTriggerRef = useRef<HTMLButtonElement>(null);
+  const confirmPanelRef = useRef<HTMLDivElement>(null);
+  const confirmDeleteButtonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!confirmDelete) return;
+    confirmDeleteButtonRef.current?.focus();
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        // The Escape that closes this panel must not ALSO reach Composer's
+        // window-level "Escape = stop generating" binding. document bubbles to
+        // window, so a single press dismissed the confirm box and killed the
+        // reply that was streaming behind it. The edit textarea's handler two
+        // hundred lines down already had this; the confirm panel did not.
+        event.stopPropagation();
+        event.preventDefault();
+        setConfirmDelete(false);
+        deleteTriggerRef.current?.focus();
+      }
+    };
+    const handlePointerDown = (event: PointerEvent) => {
+      const panel = confirmPanelRef.current;
+      if (
+        event.target instanceof Node &&
+        !(panel && panel.contains(event.target)) &&
+        event.target !== deleteTriggerRef.current
+      ) {
+        setConfirmDelete(false);
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [confirmDelete]);
 
   const handleDelete = () => {
     deleteMessage.mutate(
       { chatId, messageId: message.id },
-      { onSuccess: () => setConfirmDelete(false) },
+      // onSettled, not onSuccess (v1.1 D2): a 404 must ALSO close the panel -
+      // the mutation's own onError already dropped the ghost row from the
+      // cache, and a panel stuck open on a vanished bubble was the reported
+      // "kargacık burgacık" end state.
+      { onSettled: () => setConfirmDelete(false) },
     );
   };
 
+  // ── Inline edit (v1.1 C3): user rows only, composer conventions ─────────
+  const editTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const startEditing = () => {
+    setConfirmDelete(false);
+    setEditDraft(message.content);
+    setEditing(true);
+  };
+
+  // Focus + select on entry; auto-grow to fit the existing text.
+  useEffect(() => {
+    if (!editing) return;
+    const ta = editTextareaRef.current;
+    if (ta) {
+      ta.focus();
+      ta.select();
+      ta.style.height = "auto";
+      ta.style.height = `${ta.scrollHeight}px`;
+    }
+  }, [editing]);
+
+  /**
+   * Whether a save can actually land right now.
+   *
+   * The Edit TRIGGER is disabled while the chat is busy or no model is
+   * selected - but the box can also become un-savable while it is already
+   * open (a regenerate started from another bubble, a second edit box saved
+   * first, the model deselected). saveEdit used to close the box first and
+   * discover that afterwards: startEdit early-returns with no error and no
+   * callback, handleEditMessage bails on a missing model, so the retyped text
+   * was destroyed with no request, no toast and nothing to diagnose.
+   */
+  const editBlockedReason = !selectedModelId
+    ? "Select a model to save this edit"
+    : isBusy
+      ? "Wait for the current reply to finish"
+      : null;
+
+  const saveEdit = () => {
+    // Keep the box - and the retyped text - open when the save cannot be
+    // dispatched. Closing first is what made the text vanish.
+    if (editBlockedReason != null) return;
+    const trimmed = editDraft.trim();
+    setEditing(false);
+    // Empty or unchanged → cancel silently (mirror of the rename rules).
+    if (trimmed.length === 0 || trimmed === message.content) return;
+    onEditMessage?.(message.id, trimmed);
+  };
+
+  const cancelEdit = () => setEditing(false);
+
+  const handleEditInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setEditDraft(e.target.value);
+    const ta = editTextareaRef.current;
+    if (ta) {
+      ta.style.height = "auto";
+      ta.style.height = `${ta.scrollHeight}px`;
+    }
+  };
+
+  const handleEditKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      saveEdit();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      cancelEdit();
+    }
+  };
+
   const handleNext = () => {
+    if (isViewOnly) {
+      // View-only paging: local index, NO activate/regenerate.
+      setDirection(1);
+      setHasNavigated(true);
+      setViewIndex(Math.min(shownIndex + 1, variantCount - 1));
+      return;
+    }
     if (isStreamingTarget || isBusy) return;
     setDirection(1);
     setHasNavigated(true);
@@ -114,6 +260,12 @@ export const MessageBubble = memo(function MessageBubble({
   };
 
   const handlePrev = () => {
+    if (isViewOnly) {
+      setDirection(-1);
+      setHasNavigated(true);
+      setViewIndex(Math.max(shownIndex - 1, 0));
+      return;
+    }
     setDirection(-1);
     setHasNavigated(true);
     if (isStreamingTarget) {
@@ -131,16 +283,21 @@ export const MessageBubble = memo(function MessageBubble({
   // The Previous button is ALWAYS rendered when nav shows (disabled at the
   // left edge) - unmounting it would drop keyboard focus to <body> mid-
   // navigation and shift the bubble sideways as the flex sibling appears.
-  const prevDisabled = !isStreamingTarget && (displayIndex === 0 || isBusy);
-  const nextDisabled =
-    isStreamingTarget || isBusy || (atNewest && !selectedModelId);
-  const nextTitle = isStreamingTarget
-    ? "Generating…"
-    : !atNewest
-      ? "Next reply"
-      : selectedModelId
-        ? "Generate a new reply"
-        : "Select a model to generate";
+  const prevDisabled = isViewOnly
+    ? shownIndex === 0
+    : !isStreamingTarget && (displayIndex === 0 || isBusy);
+  const nextDisabled = isViewOnly
+    ? shownIndex === variantCount - 1
+    : isStreamingTarget || isBusy || (atNewest && !selectedModelId);
+  const nextTitle = isViewOnly
+    ? "Next reply"
+    : isStreamingTarget
+      ? "Generating…"
+      : !atNewest
+        ? "Next reply"
+        : selectedModelId
+          ? "Generate a new reply"
+          : "Select a model to generate";
 
   // Pane key = position within the group, NOT the row id. The streaming pane
   // takes the position the new variant will land on, so when the stream
@@ -148,8 +305,8 @@ export const MessageBubble = memo(function MessageBubble({
   // never re-animates. Arrow navigation changes the position → slide.
   const paneKey = isStreamingTarget
     ? String(variantCount)
-    : String(displayIndex);
-  const paneText = streamingText ?? message.content;
+    : String(shownIndex);
+  const paneText = streamingText ?? shownMessage.content;
   const showDots = isStreamingTarget && streamingText == null;
 
   return (
@@ -183,18 +340,24 @@ export const MessageBubble = memo(function MessageBubble({
         <div
           className={`message-bubble-shell max-w-[75%] rounded-xl px-5 py-3 text-sm leading-relaxed ${
             isUser ? "is-user" : "is-assistant"
-          } ${isPersisted ? "has-actions" : ""}`}
+          } ${isPersisted ? "has-actions" : ""} ${editing ? "is-editing" : ""}`}
           style={
+            // v1.1 E2: layered surface vars. A contrast preset sets --msg-*;
+            // Default sets nothing, so the fallbacks reproduce today's pixels
+            // bit-for-bit (zero-change contract). box-shadow stays owned by
+            // chat-bg-dark, never the presets (orthogonality).
             isUser
               ? {
-                  backgroundColor: "var(--color-es-user-bubble)",
-                  color: "var(--color-es-user-bubble-text)",
+                  backgroundColor:
+                    "var(--msg-user-bg, var(--color-es-user-bubble))",
+                  color: "var(--msg-user-fg, var(--color-es-user-bubble-text))",
                   borderBottomRightRadius: "2px",
                   boxShadow: "var(--shadow-bubble)",
                 }
               : {
-                  backgroundColor: "var(--color-es-asst-bubble)",
-                  color: "var(--color-es-asst-bubble-text)",
+                  backgroundColor:
+                    "var(--msg-asst-bg, var(--color-es-asst-bubble))",
+                  color: "var(--msg-asst-fg, var(--color-es-asst-bubble-text))",
                   borderBottomLeftRadius: "2px",
                   boxShadow: "var(--shadow-bubble)",
                 }
@@ -202,7 +365,45 @@ export const MessageBubble = memo(function MessageBubble({
         >
           {isPersisted && (
             <div className="message-actions" aria-label="Message actions">
+              {/* V5: hear this reply. Renders only when a voice model is
+                  selected; speaks by message_id so the raw delivery tags -
+                  stripped from the visible text - reach the engine. */}
+              {/* KÖK 15: while a NEW variant streams into this bubble the
+                  pane shows streamingText, but shownMessage.id is still the
+                  OLD row - so Speak read out text B while the user was
+                  reading text A, with nothing to say they differed. The live
+                  button speaks what is actually arriving, and it is also the
+                  alternative regenerate never had (SpeakLiveButton lived only
+                  in StreamingBubble, which send and edit render but
+                  regenerate does not). */}
+              {!isUser &&
+                (isStreamingTarget ? (
+                  <SpeakLiveButton chatId={chatId} />
+                ) : (
+                  <SpeakButton messageId={shownMessage.id} />
+                ))}
+              {isUser && onEditMessage != null && !editing && (
+                <button
+                  type="button"
+                  className="message-action-button"
+                  aria-label="Edit message"
+                  // v1.1 audit L1: gate on a selected model like send/regenerate.
+                  // An edit rewrites the following reply, so with no model the
+                  // save is a no-op (handleEditMessage bails) - disabling here
+                  // stops the user's retyped text from vanishing silently.
+                  title={
+                    selectedModelId
+                      ? "Edit message (the reply after it is rewritten)"
+                      : "Select a model to edit"
+                  }
+                  onClick={startEditing}
+                  disabled={isBusy || !selectedModelId}
+                >
+                  <Pencil size={13} />
+                </button>
+              )}
               <button
+                ref={deleteTriggerRef}
                 type="button"
                 className="message-action-button is-danger"
                 aria-label="Delete message"
@@ -234,9 +435,46 @@ export const MessageBubble = memo(function MessageBubble({
           )}
 
           {isUser ? (
-            <p className="message-text whitespace-pre-wrap break-words">
-              <MessageText text={message.content} />
-            </p>
+            editing ? (
+              <div className="message-edit-area">
+                <textarea
+                  ref={editTextareaRef}
+                  value={editDraft}
+                  onChange={handleEditInput}
+                  onKeyDown={handleEditKeyDown}
+                  aria-label="Edit message text"
+                  rows={1}
+                  className="message-edit-textarea"
+                />
+                <div className="mt-2 flex justify-end gap-1.5">
+                  <button
+                    type="button"
+                    className="inline-confirm-button"
+                    onClick={cancelEdit}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="inline-confirm-button"
+                    onClick={saveEdit}
+                    disabled={
+                      editDraft.trim().length === 0 || editBlockedReason != null
+                    }
+                    title={
+                      editBlockedReason ??
+                      "Save and rewrite the reply (Enter)"
+                    }
+                  >
+                    Save
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <p className="message-text whitespace-pre-wrap break-words">
+                <MessageText text={message.content} />
+              </p>
+            )
           ) : (
             <VariantCarousel
               paneKey={paneKey}
@@ -281,9 +519,9 @@ export const MessageBubble = memo(function MessageBubble({
           <span className="mt-1.5 flex items-center gap-2">
             <time
               className="block text-[9px] opacity-70"
-              dateTime={message.created_at}
+              dateTime={serverDateTimeAttr(shownMessage.created_at)}
             >
-              {new Date(message.created_at).toLocaleTimeString([], {
+              {parseServerDate(shownMessage.created_at).toLocaleTimeString([], {
                 hour: "2-digit",
                 minute: "2-digit",
               })}
@@ -293,18 +531,19 @@ export const MessageBubble = memo(function MessageBubble({
                 className="variant-counter"
                 aria-live="polite"
                 aria-label={`Reply ${
-                  isStreamingTarget ? variantCount + 1 : displayIndex + 1
+                  isStreamingTarget ? variantCount + 1 : shownIndex + 1
                 } of ${isStreamingTarget ? variantCount + 1 : variantCount}`}
               >
                 {isStreamingTarget
                   ? `${variantCount + 1}/${variantCount + 1}`
-                  : `${displayIndex + 1}/${variantCount}`}
+                  : `${shownIndex + 1}/${variantCount}`}
               </span>
             )}
           </span>
 
           {confirmDelete && (
             <div
+              ref={confirmPanelRef}
               className="message-action-confirm"
               role="dialog"
               aria-label="Confirm delete message"
@@ -314,12 +553,16 @@ export const MessageBubble = memo(function MessageBubble({
                 <button
                   type="button"
                   className="inline-confirm-button"
-                  onClick={() => setConfirmDelete(false)}
+                  onClick={() => {
+                    setConfirmDelete(false);
+                    deleteTriggerRef.current?.focus();
+                  }}
                   disabled={isBusy}
                 >
                   Cancel
                 </button>
                 <button
+                  ref={confirmDeleteButtonRef}
                   type="button"
                   className="inline-confirm-button is-danger"
                   onClick={handleDelete}
@@ -360,10 +603,23 @@ export const MessageBubble = memo(function MessageBubble({
   );
 });
 
+/** Thumbnail box caps. The box is computed from the attachment's REAL
+ * metadata so layout height is right before a single byte loads. */
+const THUMB_MAX_H = 200;
+const THUMB_MAX_W = 320;
+
 /**
  * One attachment thumbnail that opens the lightbox on click. Falls back to a
  * graceful "image unavailable" placeholder if the binary 404s (a real backend
  * state, attachment_not_found) instead of the browser's broken-image glyph.
+ *
+ * Reserved box (v1.1 A1): the old `h-auto w-auto max-h-[200px]` classes
+ * OVERRODE the width/height attributes, so an unloaded img laid out at ~0px -
+ * the send-time scrollTo measured a short list and the page then grew under
+ * the user (~208px per image) with no follow-up scroll. Explicit style
+ * width/height reserves the final box up front; the error placeholder uses
+ * the SAME box so an error swap cannot shift layout either. Kills the
+ * image-CLS class of bugs wholesale.
  */
 function AttachmentThumbnail({
   attachment,
@@ -377,6 +633,13 @@ function AttachmentThumbnail({
   onOpen: (attachment: Attachment) => void;
 }) {
   const [errored, setErrored] = useState(false);
+  const scale = Math.min(
+    1,
+    THUMB_MAX_H / attachment.height,
+    THUMB_MAX_W / attachment.width,
+  );
+  const boxW = Math.round(attachment.width * scale);
+  const boxH = Math.round(attachment.height * scale);
 
   return (
     <button
@@ -388,8 +651,10 @@ function AttachmentThumbnail({
     >
       {errored ? (
         <span
-          className="flex h-[120px] w-[120px] flex-col items-center justify-center gap-1.5 rounded-xl px-2 text-center"
+          className="flex flex-col items-center justify-center gap-1.5 rounded-xl px-2 text-center"
           style={{
+            width: boxW,
+            height: boxH,
             backgroundColor: "rgba(28, 38, 50, 0.06)",
             border: "1px solid rgba(28, 38, 50, 0.14)",
             color: "var(--color-es-asst-bubble-text)",
@@ -406,9 +671,11 @@ function AttachmentThumbnail({
           alt="attached image"
           width={attachment.width}
           height={attachment.height}
+          style={{ width: boxW, height: boxH }}
           loading="lazy"
+          decoding="async"
           onError={() => setErrored(true)}
-          className="block h-auto max-h-[200px] w-auto max-w-full rounded-xl object-contain"
+          className="block max-w-full rounded-xl object-contain"
         />
       )}
     </button>

@@ -28,19 +28,64 @@ import { nextOptimisticId } from "../query/completions";
 import {
   streamChatCompletion,
   streamRegenerateMessage,
+  streamEditMessage,
   isAbortError,
 } from "../api/stream";
+import { deleteMessageAndFollowing } from "../api/chats";
+import {
+  noteFirstDelta,
+  registerStream,
+  unregisterStream,
+} from "./streamRegistry";
 import type { StreamEvent } from "../api/stream";
-import { buildCompletionPayload, buildRegeneratePayload } from "../generation";
+import { createStreamVoice } from "../voice/streamVoice";
+import { useTagPrefs } from "../query/tts";
+import { useUiStore } from "../store/uiStore";
+import {
+  buildCompletionPayload,
+  buildRegeneratePayload,
+  buildEditPayload,
+} from "../generation";
 import { getErrorMessage, useErrorStore } from "../errors";
 import type { ApiError } from "../api/client";
 import type { GenerationParams } from "../schemas/completions";
 import type { Model } from "../schemas/models";
 import type { Message } from "../schemas/chats";
 
+/** The terminal `error` event, kept until the stream body closes. */
+interface StreamErrorEvent {
+  status: number;
+  code: string;
+  /**
+   * The server kept the text that had already arrived (KÖK 16). It still
+   * failed - the toast is unchanged - but the rows are committed, so rolling
+   * the optimistic ones back would delete a reply the user is looking at.
+   */
+  partialSaved: boolean;
+}
+
+/**
+ * Something the request had to disclose, arriving before the first delta.
+ *
+ * A warning, not an error: the reply is on its way. It is the answer that is
+ * different from the one the user asked for - a model that never received the
+ * picture will write as though there were no picture, and only this says so.
+ */
+function reportStreamNotice(event: { code: string; count?: number }): void {
+  const count = event.count ?? 0;
+  const message =
+    event.code === "images_omitted"
+      ? count === 1
+        ? "One image could not be sent with this message; the model answered without seeing it."
+        : `${count} images could not be sent with this message; the model answered without seeing them.`
+      : getErrorMessage(event.code);
+  useErrorStore.getState().pushErrorDirect(event.code, message, "warning");
+}
+
 export interface StreamingEntry {
-  kind: "send" | "regenerate";
-  /** Set for kind="regenerate": the assistant row regenerate was pressed on. */
+  kind: "send" | "regenerate" | "edit";
+  /** Set for kind="regenerate": the assistant row regenerate was pressed on.
+   * Set for kind="edit": the user row being edited. */
   targetMessageId?: number;
   /** Set for kind="regenerate": the variant-group anchor of that row. The
    * UI routes streaming text by ANCHOR (bubbles are group-keyed) - matching
@@ -79,11 +124,32 @@ export interface StreamRegenerateVars {
   model?: ModelInfo;
 }
 
+export interface StreamEditVars {
+  chatId: number;
+  /** The USER row being edited. */
+  messageId: number;
+  /** Replacement text. */
+  message: string;
+  modelId: string;
+  generationParams?: GenerationParams;
+  personaId?: number | null;
+  contextBudgetTokens?: number | null;
+  model?: ModelInfo;
+}
+
 export interface StreamSendCallbacks {
   /** Send failed (HTTP, network, or in-stream error event). */
   onError?: (err: unknown) => void;
-  /** User aborted before any text streamed - message was not sent. */
-  onAbortedEmpty?: () => void;
+  /** User aborted before any text streamed - message was not sent.
+   *
+   * `attachmentsSurvived` says whether the staged images are still usable.
+   * The two abort-empty cleanups do DIFFERENT things: the server's own
+   * disconnect handler UNLINKS attachments back to staged (so a retry can
+   * carry them), while the authoritative client-side
+   * DELETE /chats/{id}/messages/{id} deletes the attachment rows outright.
+   * Restoring the strip on that second path put entries with dead ids back in
+   * the composer - blank 56px tiles whose retry got 404 attachment_not_found. */
+  onAbortedEmpty?: (info: { attachmentsSurvived: boolean }) => void;
   /** The user row (with its attachments) is persisted and visible in the
    * chat - fired at the user_message event, i.e. the START of streaming.
    * Callers clear staged attachment thumbnails here: from this moment the
@@ -103,6 +169,17 @@ export interface StreamSendCallbacks {
 function makeApiError(status: number, detail: string): ApiError {
   return { status, detail, message: getErrorMessage(detail) };
 }
+
+/**
+ * Last-resort resync delay for the blind abort window (stop before the
+ * user_message event): the server HAS persisted a user row but the client
+ * never learned its id, so it cannot delete it authoritatively. The server's
+ * own disconnect cleanup deletes the row shortly after - this one-shot
+ * delayed refetch settles the cache once that cleanup has landed. (v1.1
+ * D1/I8: the authoritative client-side delete is the primary mechanism; this
+ * timer only covers the id-less window.)
+ */
+const ABORT_RESYNC_DELAY_MS = 750;
 
 /**
  * Batches per-delta state flushes into one animation frame.
@@ -142,9 +219,44 @@ function createFrameFlusher(apply: () => void) {
   };
 }
 
+
+/**
+ * What to tell the server about speaking this reply.
+ *
+ * Deliberately a function, not a hook value: it must be read at REQUEST-BUILD
+ * time rather than at render time. A render-time snapshot would speak - or
+ * fail to - according to whatever the toggle was when the component last drew,
+ * which is precisely the surprise the toggle rule exists to prevent.
+ */
+function speakOptions(): {
+  speak?: boolean;
+  speakNarrative?: "same" | "narrator" | "skip";
+} {
+  const { continuousVoice, narrationVoice } = useUiStore.getState();
+  // The narration mode travels EVEN WHEN continuous is off.
+  //
+  // The server arms a dormant speaker on every stream so the per-message Speak
+  // button can wake it mid-reply - and it configures that speaker from THIS
+  // request. Sending the mode only when continuous was on left speak-live
+  // permanently on the default, so the narration setting silently did nothing
+  // for exactly the people who had not turned continuous on. Regression:
+  // test_speak_live_honours_the_narration_setting.
+  return {
+    ...(continuousVoice ? { speak: true } : {}),
+    speakNarrative: narrationVoice,
+  };
+}
+
 export function useStreamingCompletion() {
   const qc = useQueryClient();
   const pushError = useErrorStore((s) => s.pushError);
+  // The sentence-pause dial. Read HERE, in the hook, because the player is
+  // built inside a callback: a value only the open Delivery page knew is
+  // exactly why this dial did nothing at all for its three production callers.
+  // Through a ref so a mid-stream change cannot re-create the send callback.
+  const gapSeconds = useTagPrefs().data?.gap ?? 0;
+  const gapRef = useRef(gapSeconds);
+  gapRef.current = gapSeconds;
 
   const [streamingByChat, setStreamingByChat] = useState<
     ReadonlyMap<number, StreamingEntry>
@@ -155,6 +267,13 @@ export function useStreamingCompletion() {
   const flushersRef = useRef<Set<ReturnType<typeof createFrameFlusher>>>(
     new Set(),
   );
+  // Pending abort-resync timers (see ABORT_RESYNC_DELAY_MS), keyed by chat.
+  const resyncTimersRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(
+    new Map(),
+  );
+  // Chats whose stream has seen `done` but whose SSE body is still open while
+  // the backend drains voice events (see claimChat).
+  const drainingRef = useRef<Set<number>>(new Set());
 
   // Unmount: abort every in-flight stream and cancel any pending frame. Without
   // this an SSE request keeps running (and its rAF keeps firing) after the hook
@@ -162,12 +281,42 @@ export function useStreamingCompletion() {
   useEffect(() => {
     const controllers = controllersRef.current;
     const flushers = flushersRef.current;
+    const resyncTimers = resyncTimersRef.current;
     return () => {
       for (const controller of controllers.values()) controller.abort();
       controllers.clear();
       for (const flusher of flushers) flusher.cancel();
       flushers.clear();
+      for (const timer of resyncTimers.values()) clearTimeout(timer);
+      resyncTimers.clear();
     };
+  }, []);
+
+  /** One-shot delayed invalidate for the blind abort window (I8: cancellable,
+   * re-armed per chat, cleared on unmount and when a new stream starts). */
+  const scheduleAbortResync = useCallback(
+    (chatId: number) => {
+      const timers = resyncTimersRef.current;
+      const existing = timers.get(chatId);
+      if (existing != null) clearTimeout(existing);
+      timers.set(
+        chatId,
+        setTimeout(() => {
+          timers.delete(chatId);
+          void qc.invalidateQueries({ queryKey: keys.messages(chatId) });
+        }, ABORT_RESYNC_DELAY_MS),
+      );
+    },
+    [qc],
+  );
+
+  const cancelAbortResync = useCallback((chatId: number) => {
+    const timers = resyncTimersRef.current;
+    const existing = timers.get(chatId);
+    if (existing != null) {
+      clearTimeout(existing);
+      timers.delete(chatId);
+    }
   }, []);
 
   const setEntry = useCallback((chatId: number, entry: StreamingEntry) => {
@@ -192,22 +341,45 @@ export function useStreamingCompletion() {
     controllersRef.current.get(chatId)?.abort();
   }, []);
 
+  /**
+   * Claim the chat's single stream slot. False = a LIVE stream owns it.
+   *
+   * The controller map is NOT a faithful mirror of "the UI is busy". After
+   * `done` the backend deliberately holds the SSE body open to drain voice
+   * events (up to DRAIN_TIMEOUT_S = 120s), while `done` has already cleared the
+   * streaming entry - so the composer is enabled, the Stop button is gone, and
+   * the chat reads as idle for the user. A bare `controllersRef.has(chatId)`
+   * guard turned every send/regenerate/edit in that window into a silent
+   * no-op: no request, no callback, no error, and the typed text destroyed.
+   *
+   * A new request in the drain window supersedes the tail audio instead: the
+   * drain is aborted (which stops playback, see the finally blocks) and the
+   * caller proceeds. The superseded stream's teardown is identity-guarded so
+   * it cannot evict the newcomer it just handed the chat to.
+   */
+  const claimChat = useCallback((chatId: number) => {
+    const existing = controllersRef.current.get(chatId);
+    if (existing == null) return true;
+    if (!drainingRef.current.has(chatId)) return false;
+    drainingRef.current.delete(chatId);
+    existing.abort();
+    return true;
+  }, []);
+
   const startSend = useCallback(
     async (vars: StreamSendVars, callbacks?: StreamSendCallbacks) => {
       const { chatId } = vars;
-      // One active stream per chat - the UI enforces this; guard defensively.
-      if (controllersRef.current.has(chatId)) return;
+      // One LIVE stream per chat - the UI enforces this; guard defensively.
+      // A post-`done` voice drain is not live: claimChat supersedes it.
+      if (!claimChat(chatId)) return;
 
       const controller = new AbortController();
       controllersRef.current.set(chatId, controller);
+      registerStream(chatId, controller);
+      // A fresh stream supersedes any pending abort-resync for this chat -
+      // its refetch would land mid-stream with pre-append state (I8).
+      cancelAbortResync(chatId);
       setEntry(chatId, { kind: "send", text: "" });
-
-      // History-at-risk marker: if this chat's messages were NEVER loaded
-      // (first GET still in flight - most likely right after app boot with a
-      // persisted selection), the cancel below kills that GET and the cache
-      // gets seeded with only this exchange. The done handler resyncs then.
-      const historyWasUnloaded =
-        qc.getQueryData<Message[]>(keys.messages(chatId)) === undefined;
 
       // Cancel in-flight refetches so they don't clobber our cache writes
       await qc.cancelQueries({ queryKey: keys.messages(chatId) });
@@ -230,8 +402,10 @@ export function useStreamingCompletion() {
 
       let realUserMessageId: number | null = null;
       let streamedText = "";
+      // Voice rides along; nothing is built unless audio actually arrives.
+      const voice = createStreamVoice({ gapSeconds: gapRef.current });
       let sawDone = false;
-      let errorEvent: { status: number; code: string } | null = null;
+      let errorEvent: StreamErrorEvent | null = null;
       // rAF batching: deltas accumulate in streamedText; one frame per batch
       // flushes them into the streaming entry (see createFrameFlusher).
       const flusher = createFrameFlusher(() => {
@@ -240,6 +414,7 @@ export function useStreamingCompletion() {
       flushersRef.current.add(flusher);
 
       const handleEvent = (event: StreamEvent) => {
+        voice.handle(event);
         switch (event.type) {
           case "user_message":
             // Backend persisted the user row - swap the optimistic one out
@@ -254,6 +429,9 @@ export function useStreamingCompletion() {
             callbacks?.onUserMessagePersisted?.();
             break;
           case "delta":
+            // The reply is on screen now: switching the toggle on from here
+            // must not go back and read it (S15).
+            noteFirstDelta(chatId);
             streamedText += event.content;
             flusher.schedule();
             break;
@@ -274,24 +452,32 @@ export function useStreamingCompletion() {
               return [...without, ...toAdd];
             });
             qc.invalidateQueries({ queryKey: keys.chats() });
-            // Resync net: if this send raced the chat's FIRST messages GET
-            // (cancelled at send start), the cache now holds only this
-            // exchange and the prior history would stay invisible. Refetch -
-            // the backend has persisted the rows by `done`, so the response
-            // includes them plus the missing history. Skipped on the normal
-            // path (history present) to avoid a pointless GET per send.
-            if (historyWasUnloaded) {
-              void qc.invalidateQueries({ queryKey: keys.messages(chatId) });
-            }
+            // Resync net - UNCONDITIONAL (v1.1 D3/H20): the synchronous
+            // setQueryData above keeps the UI instant; this background GET
+            // settles the cache on server truth every send. It closes both
+            // the raced-first-GET seeding case AND any ghost row a previous
+            // aborted exchange left behind - one cheap GET per send.
+            void qc.invalidateQueries({ queryKey: keys.messages(chatId) });
             // Same-batch teardown: the transient streaming bubble must vanish
             // in the SAME commit the cached rows land, or React paints an
             // intermediate frame showing the reply twice. The finally-block
             // clear stays as the idempotent safety net.
             clearEntry(chatId);
+            // From here the chat READS as idle but the SSE body is still open
+            // for the voice drain - mark it so a new request supersedes the
+            // drain instead of being swallowed (claimChat).
+            drainingRef.current.add(chatId);
             break;
           case "error":
-            errorEvent = { status: event.status, code: event.code };
+            errorEvent = {
+              status: event.status,
+              code: event.code,
+              partialSaved: event.partial_saved === true,
+            };
             flusher.flushNow();
+            break;
+          case "notice":
+            reportStreamNotice(event);
             break;
         }
       };
@@ -317,6 +503,24 @@ export function useStreamingCompletion() {
         callbacks?.onError?.(err);
       };
 
+      /**
+       * The provider failed, but AFTER text had arrived, and the server kept
+       * it (KÖK 16). Mirroring failSend here would delete the exchange the
+       * server just committed - so this keeps the rows and resyncs instead,
+       * exactly like the abort-with-partial branch. The error still surfaces:
+       * the user keeps what they read AND learns why it stopped.
+       *
+       * No scheduleAbortResync: unlike the abort path, this write happens
+       * BEFORE the error event is sent, so the immediate refetch already
+       * answers with the saved rows.
+       */
+      const failSendKeepingPartial = (err: unknown) => {
+        qc.invalidateQueries({ queryKey: keys.messages(chatId) });
+        qc.invalidateQueries({ queryKey: keys.chats() });
+        callbacks?.onError?.(err);
+        callbacks?.onPersisted?.();
+      };
+
       // Attachments ride alongside the payload builder's output - the builder
       // lives in lib/generation and stays attachment-agnostic. The key is
       // omitted entirely when the message has no images.
@@ -327,6 +531,11 @@ export function useStreamingCompletion() {
         personaId: vars.personaId,
         contextBudgetTokens: vars.contextBudgetTokens,
         model: vars.model,
+        // Read HERE, when the request is BUILT - which is what makes
+        // the toggle's rule fall out for free: flipping it mid-stream
+        // cannot retro-fit the reply already arriving, and the next
+        // send picks it up with no extra state to keep in sync.
+        ...speakOptions(),
       });
       if (vars.attachments != null && vars.attachments.length > 0) {
         payload.attachments = [...vars.attachments];
@@ -343,8 +552,12 @@ export function useStreamingCompletion() {
         flusher.flushNow();
 
         if (errorEvent != null) {
-          const evt = errorEvent as { status: number; code: string };
-          failSend(makeApiError(evt.status, evt.code));
+          // Cast because the assignment happens inside the event callback,
+          // which control-flow analysis does not follow: without it TS narrows
+          // the checked variable to .
+          const evt = errorEvent as StreamErrorEvent;
+          const fail = evt.partialSaved ? failSendKeepingPartial : failSend;
+          fail(makeApiError(evt.status, evt.code));
         } else if (!sawDone) {
           // Stream ended without a terminal event - malformed response
           failSend(makeApiError(0, "invalid_response_shape"));
@@ -355,41 +568,105 @@ export function useStreamingCompletion() {
         // Abort/failure mid-batch: flush first so the terminal logic (and any
         // UI between here and clearEntry) sees the full accumulated text.
         flusher.flushNow();
-        if (isAbortError(err) || controller.signal.aborted) {
+        if (sawDone) {
+          // The body was torn down INSIDE the post-`done` voice drain (Stop,
+          // unmount, or a newer request claiming the chat). The exchange is
+          // already persisted server-side and already written to the cache -
+          // the abort branches below would delete a completed exchange.
+          callbacks?.onPersisted?.();
+        } else if (isAbortError(err) || controller.signal.aborted) {
           if (streamedText.length > 0) {
             // Backend persisted the partial as the assistant message - the
             // refetch swaps it in (user row stays, attachments consumed).
+            //
+            // Same LATE-propagation premise as the abort-empty branch below:
+            // the server writes the partial inside its `except GeneratorExit`
+            // handler, which runs AFTER our disconnect, so this immediate
+            // refetch usually answers with the pre-insert list - and the
+            // finally-block clearEntry then removes the transient bubble. The
+            // partial the user watched arrive was invisible until they
+            // switched chats or sent again. The delayed second refetch is what
+            // actually lands it (I8), and chats() carries the new preview.
             qc.invalidateQueries({ queryKey: keys.messages(chatId) });
+            scheduleAbortResync(chatId);
+            qc.invalidateQueries({ queryKey: keys.chats() });
             callbacks?.onPersisted?.();
           } else {
-            // Nothing streamed: backend deleted the user row. Same cleanup
-            // as error, but user-initiated - no error surface.
+            // Nothing streamed. The server's own disconnect cleanup deletes
+            // the user row, but its GeneratorExit propagates LATE - our
+            // refetch below usually answers BEFORE that delete and writes
+            // the row back into the cache as an undeletable ghost (v1.1 D1).
+            // The server's cleanup UNLINKS attachments back to staged; our
+            // own delete removes the rows. Which one ran decides whether the
+            // caller may restore the staged strip.
+            let attachmentsSurvived = true;
+            if (realUserMessageId != null) {
+              // The client saw the persisted id - become the authority and
+              // delete it BEFORE reconciling. Raw API call, no toast (H11):
+              // a 404 just means the server's cleanup won the race - same
+              // outcome; any other failure is settled by the invalidate.
+              try {
+                await deleteMessageAndFollowing(chatId, realUserMessageId);
+                attachmentsSurvived = false;
+              } catch {
+                /* intentionally swallowed - see above. A failure here means
+                   the server's own cleanup won, which unlinks rather than
+                   deletes, so the staged ids are still good. */
+              }
+            } else {
+              // Blind window: a row may exist server-side under an id we
+              // never learned. Arm the delayed second refetch (I8).
+              scheduleAbortResync(chatId);
+            }
             removeUserRows();
             qc.invalidateQueries({ queryKey: keys.messages(chatId) });
-            callbacks?.onAbortedEmpty?.();
+            callbacks?.onAbortedEmpty?.({ attachmentsSurvived });
           }
         } else {
           failSend(err);
         }
       } finally {
+        // Aborted, failed or finished: playback must not outlive
+        // the stream it belongs to. `voice_done` is what ends it
+        // normally; this is the net under every other path.
+        // `sawDone` alone was the wrong test. The backend holds the SSE body
+        // open through the whole post-`done` voice-drain window, so pressing
+        // stop in that window aborts a stream that HAS seen `done` - and the
+        // audio played on for a reply the user had already dismissed. Abort is
+        // what decides; a stream that finished cleanly keeps playing on purpose.
+        if (!sawDone || controller.signal.aborted) voice.stop();
         // Guard: no queued frame may fire after clearEntry, or it would
         // resurrect a ghost streaming entry.
         flusher.cancel();
         flushersRef.current.delete(flusher);
-        controllersRef.current.delete(chatId);
-        clearEntry(chatId);
+        unregisterStream(chatId, controller);
+        // Identity-guarded: a request issued during our post-`done` voice
+        // drain has already claimed this chat (claimChat). Deleting the slot
+        // blindly would strip the NEWCOMER's controller - making its Stop
+        // button a no-op - and clear the streaming entry it just set.
+        if (controllersRef.current.get(chatId) === controller) {
+          controllersRef.current.delete(chatId);
+          drainingRef.current.delete(chatId);
+          clearEntry(chatId);
+        }
       }
     },
-    [qc, setEntry, clearEntry],
+    [qc, setEntry, clearEntry, scheduleAbortResync, cancelAbortResync, claimChat],
   );
 
   const startRegenerate = useCallback(
     async (vars: StreamRegenerateVars) => {
       const { chatId, messageId } = vars;
-      if (controllersRef.current.has(chatId)) return;
+      if (!claimChat(chatId)) return;
 
       const controller = new AbortController();
       controllersRef.current.set(chatId, controller);
+      registerStream(chatId, controller);
+      // A fresh stream supersedes any pending abort-resync for this chat -
+      // its refetch would land mid-stream with pre-append state (I8). Same
+      // rule as startSend/startEdit; regenerate is reachable straight after
+      // an aborted send, which is exactly when one is armed.
+      cancelAbortResync(chatId);
       // NO optimistic cache change - the old assistant variant stays visible
       // and the target bubble renders the accumulating text.
       setEntry(chatId, {
@@ -402,8 +679,10 @@ export function useStreamingCompletion() {
       await qc.cancelQueries({ queryKey: keys.messages(chatId) });
 
       let streamedText = "";
+      // Voice rides along; nothing is built unless audio actually arrives.
+      const voice = createStreamVoice({ gapSeconds: gapRef.current });
       let sawDone = false;
-      let errorEvent: { status: number; code: string } | null = null;
+      let errorEvent: StreamErrorEvent | null = null;
       // rAF batching - same scheme as startSend.
       const flusher = createFrameFlusher(() => {
         setEntry(chatId, {
@@ -416,11 +695,15 @@ export function useStreamingCompletion() {
       flushersRef.current.add(flusher);
 
       const handleEvent = (event: StreamEvent) => {
+        voice.handle(event);
         switch (event.type) {
           case "user_message":
             // Existing preceding user row - already in the cache; ignore.
             break;
           case "delta":
+            // The reply is on screen now: switching the toggle on from here
+            // must not go back and read it (S15).
+            noteFirstDelta(chatId);
             streamedText += event.content;
             flusher.schedule();
             break;
@@ -458,11 +741,20 @@ export function useStreamingCompletion() {
             // while isStreamingTarget is still true - the pane re-slides and
             // the counter flashes (n+2)/(n+2). finally stays as safety net.
             clearEntry(chatId);
+            // Idle-looking chat, still-open body: see startSend's `done`.
+            drainingRef.current.add(chatId);
             break;
           }
           case "error":
-            errorEvent = { status: event.status, code: event.code };
+            errorEvent = {
+              status: event.status,
+              code: event.code,
+              partialSaved: event.partial_saved === true,
+            };
             flusher.flushNow();
+            break;
+          case "notice":
+            reportStreamNotice(event);
             break;
         }
       };
@@ -477,6 +769,11 @@ export function useStreamingCompletion() {
             personaId: vars.personaId,
             contextBudgetTokens: vars.contextBudgetTokens,
             model: vars.model,
+            // Read HERE, when the request is BUILT - which is what makes
+            // the toggle's rule fall out for free: flipping it mid-stream
+            // cannot retro-fit the reply already arriving, and the next
+            // send picks it up with no extra state to keep in sync.
+            ...speakOptions(),
           }),
           { signal: controller.signal, onEvent: handleEvent },
         );
@@ -488,28 +785,228 @@ export function useStreamingCompletion() {
         // Regenerate errors surface as a toast (single surface for regenerate).
         // Old assistant row is intact server-side - no cache change needed.
         if (errorEvent != null) {
-          const evt = errorEvent as { status: number; code: string };
+          // Cast because the assignment happens inside the event callback,
+          // which control-flow analysis does not follow: without it TS narrows
+          // the checked variable to .
+          const evt = errorEvent as StreamErrorEvent;
           pushError(makeApiError(evt.status, evt.code));
         } else if (!sawDone) {
           pushError(makeApiError(0, "invalid_response_shape"));
         }
       } catch (err) {
         flusher.flushNow();
-        if (isAbortError(err) || controller.signal.aborted) {
+        if (sawDone || isAbortError(err) || controller.signal.aborted) {
           // User-initiated stop: old message intact, partial discarded - silent.
+          // `sawDone`: the body broke during the voice drain, AFTER the variant
+          // was persisted and swapped in - a toast there would blame a reply
+          // that succeeded.
         } else {
           pushError(err);
         }
       } finally {
+        // Aborted, failed or finished: playback must not outlive
+        // the stream it belongs to. `voice_done` is what ends it
+        // normally; this is the net under every other path.
+        // `sawDone` alone was the wrong test. The backend holds the SSE body
+        // open through the whole post-`done` voice-drain window, so pressing
+        // stop in that window aborts a stream that HAS seen `done` - and the
+        // audio played on for a reply the user had already dismissed. Abort is
+        // what decides; a stream that finished cleanly keeps playing on purpose.
+        if (!sawDone || controller.signal.aborted) voice.stop();
         // Guard: no queued frame may fire after clearEntry (ghost entry).
         flusher.cancel();
         flushersRef.current.delete(flusher);
-        controllersRef.current.delete(chatId);
-        clearEntry(chatId);
+        unregisterStream(chatId, controller);
+        // Identity-guarded: a request issued during our post-`done` voice
+        // drain has already claimed this chat (claimChat). Deleting the slot
+        // blindly would strip the NEWCOMER's controller - making its Stop
+        // button a no-op - and clear the streaming entry it just set.
+        if (controllersRef.current.get(chatId) === controller) {
+          controllersRef.current.delete(chatId);
+          drainingRef.current.delete(chatId);
+          clearEntry(chatId);
+        }
       }
     },
-    [qc, pushError, setEntry, clearEntry],
+    [qc, pushError, setEntry, clearEntry, cancelAbortResync, claimChat],
   );
 
-  return { streamingByChat, startSend, startRegenerate, stop };
+  const startEdit = useCallback(
+    async (vars: StreamEditVars) => {
+      const { chatId, messageId } = vars;
+      if (!claimChat(chatId)) return;
+
+      const controller = new AbortController();
+      controllersRef.current.set(chatId, controller);
+      registerStream(chatId, controller);
+      cancelAbortResync(chatId);
+      setEntry(chatId, { kind: "edit", targetMessageId: messageId, text: "" });
+
+      await qc.cancelQueries({ queryKey: keys.messages(chatId) });
+
+      // Snapshot for rollback: the server writes NOTHING until the atomic
+      // swap at done, so on abort/error the pre-edit list is the truth.
+      const snapshot = qc.getQueryData<Message[]>(keys.messages(chatId));
+
+      // Optimistic: replace the edited row's text and hide the tail - the
+      // "everything after rewrites" outcome is visible immediately.
+      qc.setQueryData<Message[]>(keys.messages(chatId), (prev) =>
+        prev
+          ?.filter((m) => m.id <= messageId)
+          .map((m) =>
+            m.id === messageId ? { ...m, content: vars.message } : m,
+          ),
+      );
+      // I14: restore only if OUR write is still the latest cache revision -
+      // a mid-stream foreign write (refetch, another mutation) must not be
+      // clobbered by this stale snapshot; invalidate settles those instead.
+      let ownRevision =
+        qc.getQueryState(keys.messages(chatId))?.dataUpdatedAt ?? 0;
+
+      const restoreSnapshot = () => {
+        const current =
+          qc.getQueryState(keys.messages(chatId))?.dataUpdatedAt ?? 0;
+        if (current === ownRevision && snapshot != null) {
+          qc.setQueryData(keys.messages(chatId), snapshot);
+        }
+        qc.invalidateQueries({ queryKey: keys.messages(chatId) });
+      };
+
+      let streamedText = "";
+      // Voice rides along; nothing is built unless audio actually arrives.
+      const voice = createStreamVoice({ gapSeconds: gapRef.current });
+      let sawDone = false;
+      let errorEvent: StreamErrorEvent | null = null;
+      const flusher = createFrameFlusher(() => {
+        setEntry(chatId, {
+          kind: "edit",
+          targetMessageId: messageId,
+          text: streamedText,
+        });
+      });
+      flushersRef.current.add(flusher);
+
+      const handleEvent = (event: StreamEvent) => {
+        voice.handle(event);
+        switch (event.type) {
+          case "user_message":
+            // Server preview of the edited row (same id, new content) -
+            // replace in place; the optimistic filter already hid the tail.
+            qc.setQueryData<Message[]>(keys.messages(chatId), (prev) =>
+              prev?.map((m) => (m.id === event.message.id ? event.message : m)),
+            );
+            ownRevision =
+              qc.getQueryState(keys.messages(chatId))?.dataUpdatedAt ?? 0;
+            break;
+          case "delta":
+            // The reply is on screen now: switching the toggle on from here
+            // must not go back and read it (S15).
+            noteFirstDelta(chatId);
+            streamedText += event.content;
+            flusher.schedule();
+            break;
+          case "done":
+            sawDone = true;
+            flusher.flushNow();
+            void qc.cancelQueries({ queryKey: keys.messages(chatId) });
+            qc.setQueryData<Message[]>(keys.messages(chatId), (prev) => {
+              const kept = (prev ?? []).filter(
+                (m) => m.id < messageId,
+              );
+              return [...kept, event.user_message, event.assistant_message];
+            });
+            qc.invalidateQueries({ queryKey: keys.chats() });
+            // D3 discipline: settle on server truth in the background.
+            void qc.invalidateQueries({ queryKey: keys.messages(chatId) });
+            clearEntry(chatId);
+            // Idle-looking chat, still-open body: see startSend's `done`.
+            drainingRef.current.add(chatId);
+            break;
+          case "error":
+            errorEvent = {
+              status: event.status,
+              code: event.code,
+              partialSaved: event.partial_saved === true,
+            };
+            flusher.flushNow();
+            break;
+          case "notice":
+            reportStreamNotice(event);
+            break;
+        }
+      };
+
+      try {
+        await streamEditMessage(
+          chatId,
+          messageId,
+          buildEditPayload({
+            message: vars.message,
+            modelId: vars.modelId,
+            generationParams: vars.generationParams,
+            personaId: vars.personaId,
+            contextBudgetTokens: vars.contextBudgetTokens,
+            model: vars.model,
+            // Read HERE, when the request is BUILT - which is what makes
+            // the toggle's rule fall out for free: flipping it mid-stream
+            // cannot retro-fit the reply already arriving, and the next
+            // send picks it up with no extra state to keep in sync.
+            ...speakOptions(),
+          }),
+          { signal: controller.signal, onEvent: handleEvent },
+        );
+
+        flusher.flushNow();
+
+        // Edit errors surface as a toast (like regenerate - the composer is
+        // not involved). Server wrote nothing - restore the pre-edit list.
+        if (errorEvent != null) {
+          // Cast because the assignment happens inside the event callback,
+          // which control-flow analysis does not follow: without it TS narrows
+          // the checked variable to .
+          const evt = errorEvent as StreamErrorEvent;
+          restoreSnapshot();
+          pushError(makeApiError(evt.status, evt.code));
+        } else if (!sawDone) {
+          restoreSnapshot();
+          pushError(makeApiError(0, "invalid_response_shape"));
+        }
+      } catch (err) {
+        flusher.flushNow();
+        // A tear-down inside the post-`done` voice drain must NOT roll back:
+        // the atomic swap already landed server-side and in the cache.
+        if (!sawDone) restoreSnapshot();
+        if (sawDone || isAbortError(err) || controller.signal.aborted) {
+          // User-initiated stop: old content + tail intact - silent.
+        } else {
+          pushError(err);
+        }
+      } finally {
+        // Aborted, failed or finished: playback must not outlive
+        // the stream it belongs to. `voice_done` is what ends it
+        // normally; this is the net under every other path.
+        // `sawDone` alone was the wrong test. The backend holds the SSE body
+        // open through the whole post-`done` voice-drain window, so pressing
+        // stop in that window aborts a stream that HAS seen `done` - and the
+        // audio played on for a reply the user had already dismissed. Abort is
+        // what decides; a stream that finished cleanly keeps playing on purpose.
+        if (!sawDone || controller.signal.aborted) voice.stop();
+        flusher.cancel();
+        flushersRef.current.delete(flusher);
+        unregisterStream(chatId, controller);
+        // Identity-guarded: a request issued during our post-`done` voice
+        // drain has already claimed this chat (claimChat). Deleting the slot
+        // blindly would strip the NEWCOMER's controller - making its Stop
+        // button a no-op - and clear the streaming entry it just set.
+        if (controllersRef.current.get(chatId) === controller) {
+          controllersRef.current.delete(chatId);
+          drainingRef.current.delete(chatId);
+          clearEntry(chatId);
+        }
+      }
+    },
+    [qc, pushError, setEntry, clearEntry, cancelAbortResync, claimChat],
+  );
+
+  return { streamingByChat, startSend, startRegenerate, startEdit, stop };
 }
