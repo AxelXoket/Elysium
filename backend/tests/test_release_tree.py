@@ -108,8 +108,13 @@ def test_the_published_suite_collects_what_this_one_does(published_tree):
         [sys.executable, "-m", "pytest", "tests", "-q", "--collect-only"],
         cwd=backend, capture_output=True, text=True,
     )
-    assert "error" not in published.stdout.lower(), (
-        "the published suite cannot be collected:\n" + published.stdout[-1500:]
+    # pytest's OWN verdict, not a substring of its output. `"error" not in
+    # stdout` matched the collected test NAMES - test_error_vocabulary.py is
+    # enough to fail it - so the check reported a broken collection on a tree
+    # that had collected perfectly.
+    assert published.returncode == 0, (
+        "the published suite cannot be collected:\n"
+        + (published.stdout + published.stderr)[-1500:]
     )
 
     here = len(list((REPO / "backend" / "tests").glob("test_*.py")))
