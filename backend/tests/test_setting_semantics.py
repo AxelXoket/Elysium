@@ -244,3 +244,179 @@ def test_saving_one_dial_does_not_disturb_the_others(client):
     assert body["narrative"] == "skip"
     assert body["tone"] == "warm"
     assert body["density"] == 4
+
+
+# ---------------------------------------------------------------------------
+# narration does not spend the density the dial reserves for the MODEL
+# ---------------------------------------------------------------------------
+
+import speech_prep  # noqa: E402
+
+#: What both call sites exempt: the tags the APP injects, not the model.
+_FREE = (speech_prep.DEFAULT_NARRATOR_TAG, speech_prep.DEFAULT_SPEECH_TAG)
+
+
+#: Long enough that narration plus dialogue EXCEEDS the default allowance -
+#: fourteen tags against a cap of eight. A shorter sample fits inside the
+#: budget and passes whether or not narration is charged for, which is a test
+#: that cannot fail.
+RP = [
+    "*She steps closer, the floorboards complaining.*",
+    "[whisper] You came back.",
+    "*Her hand finds the edge of the table.*",
+    "[soft] I did not think you would.",
+    "*The lamp gutters once and holds.*",
+    "[laughing] Look at your face.",
+    "*She pulls out the other chair with her foot.*",
+    "[warm] Sit down before you fall down.",
+    "*Outside, a car passes and the light sweeps the ceiling.*",
+    "[sad] I waited a long time.",
+    "*She does not look up when she says it.*",
+    "[cold, clipped tone] Do not apologise.",
+    "*The kettle starts somewhere behind her.*",
+    "[teasing] You never could stand still.",
+]
+
+
+def _spoken(sentences, mode, cap=voice_tags.MAX_TAGS_PER_REPLY):
+    """One reply through the real pipeline, the way both paths run it:
+    prepare() decides narration, sanitize_for_tts() spends the budget."""
+    budget = voice_tags.TagBudget(cap)
+    opts = speech_prep.PrepOptions(engine_supports_tags=True, narrative=mode)
+    return [
+        voice_tags.sanitize_for_tts(
+            speech_prep.prepare(s, opts), engine_supports_tags=True,
+            budget=budget, free_tags=_FREE)
+        for s in sentences
+    ]
+
+
+def _dialogue_tags(spoken: list[str]) -> list[str]:
+    narrator = speech_prep.DEFAULT_NARRATOR_TAG
+    return [t for line in spoken for t in _tags(line) if t != narrator]
+
+
+def test_narration_mode_does_not_cost_the_model_its_delivery_tags():
+    """MEASURED: on a roleplay reply in "narrator" mode the injected narration
+    tags ate the allowance and 3 of 7 dialogue tags went out plain - all of
+    them at the end, so the reply flattened as it went. A comparison, not a
+    hard-coded count: whatever the model asked for in "same" mode it must
+    still get when the user chooses how narration is read."""
+    plain = _dialogue_tags(_spoken(RP, "same"))
+    narrated = _dialogue_tags(_spoken(RP, "narrator"))
+    assert narrated == plain
+
+
+def test_the_narration_tag_itself_is_still_placed_on_every_span():
+    """Exempting it from the budget must not make it optional."""
+    spoken = _spoken(RP, "narrator")
+    narrator = speech_prep.DEFAULT_NARRATOR_TAG
+    tagged = [line for line in spoken if narrator in _tags(line)]
+    assert len(tagged) == 7
+
+
+def test_a_dialogue_tag_after_narration_is_not_swallowed_as_a_duplicate():
+    """The exempt tag still takes part in the duplicate collapse, so it has to
+    update `last_tag` - but that must not eat the NEXT direction."""
+    budget = voice_tags.TagBudget(8)
+    narrator = speech_prep.DEFAULT_NARRATOR_TAG
+    first = voice_tags.sanitize_for_tts(
+        "[warm] Come in.", engine_supports_tags=True, budget=budget,
+        free_tags=_FREE)
+    middle = voice_tags.sanitize_for_tts(
+        f"[{narrator}] She closed the door.", engine_supports_tags=True,
+        budget=budget, free_tags=_FREE)
+    third = voice_tags.sanitize_for_tts(
+        "[warm] Sit anywhere.", engine_supports_tags=True, budget=budget,
+        free_tags=_FREE)
+    assert _tags(first) == ["warm"]
+    assert _tags(middle) == [narrator]
+    assert _tags(third) == ["warm"], "narration interrupted, so restate it"
+
+
+def test_consecutive_narration_still_collapses_into_one_instruction():
+    budget = voice_tags.TagBudget(8)
+    narrator = speech_prep.DEFAULT_NARRATOR_TAG
+    first = voice_tags.sanitize_for_tts(
+        f"[{narrator}] She closed the door.", engine_supports_tags=True,
+        budget=budget, free_tags=_FREE)
+    second = voice_tags.sanitize_for_tts(
+        f"[{narrator}] The lamp guttered.", engine_supports_tags=True,
+        budget=budget, free_tags=_FREE)
+    assert _tags(first) == [narrator]
+    assert _tags(second) == []
+    assert budget.remaining == 8, "narration never touches the allowance"
+
+
+# ---------------------------------------------------------------------------
+# the standing tone closes its own narration
+# ---------------------------------------------------------------------------
+
+def _through_the_pipeline(text, tone, mode="narrator"):
+    """Both halves the way production runs them: prepare() injects, then
+    sanitize_for_tts filters, then the standing tone is prefixed."""
+    import routers.tts_runtime as runtime
+
+    closing = runtime._closing_tag(tone)
+    opts = speech_prep.PrepOptions(engine_supports_tags=True, narrative=mode,
+                                   speech_tag=closing)
+    budget = voice_tags.TagBudget(voice_tags.MAX_TAGS_PER_REPLY)
+    spoken = voice_tags.sanitize_for_tts(
+        speech_prep.prepare(text, opts), engine_supports_tags=True,
+        budget=budget, free_tags=speech_prep.injected_tags(closing))
+    return voice_tags.apply_default_tone(spoken, tone,
+                                         engine_supports_tags=True)
+
+
+TONE = "deep, slow, close to the ear"
+
+
+def test_the_standing_tone_is_what_ends_a_narration_span():
+    """MEASURED BUG: the closing direction was a hard-coded "in character,
+    natural", so the voice the user configured was replaced by a generic one
+    for every clause following a `*...*` span."""
+    out = _through_the_pipeline("I said nothing. *She looks away.* Really.", TONE)
+    assert out.count(f"[{TONE}]") == 2, out
+    assert speech_prep.DEFAULT_SPEECH_TAG not in out
+
+
+def test_a_reply_that_opens_with_narration_still_reaches_the_tone():
+    """The worst case: apply_default_tone only prefixes text that does not
+    already start with a tag, so with narration first the standing tone never
+    reached the engine at all."""
+    out = _through_the_pipeline("*She looks away.* Really, I mean it.", TONE)
+    assert TONE in out, out
+
+
+def test_a_tone_too_long_to_be_a_tag_falls_back_instead_of_vanishing():
+    """sanitize_tone allows 60 characters; _looks_like_tag allows 40 and six
+    words. Injecting an unusable span drops it as malformed and leaves the
+    narrator's direction standing over the dialogue."""
+    long_tone = "a very long standing tone that goes on and on past the limit"
+    assert not voice_tags.usable_as_tag(long_tone)
+    out = _through_the_pipeline("*She waits.* Say it.", long_tone)
+    assert f"[{speech_prep.DEFAULT_SPEECH_TAG}]" in out, out
+
+
+def test_with_no_tone_set_nothing_changes():
+    out = _through_the_pipeline("*She waits.* Say it.", "")
+    assert f"[{speech_prep.DEFAULT_SPEECH_TAG}]" in out
+
+
+def test_the_closing_tag_is_never_charged_to_the_density_budget():
+    """It is the app's rendering choice, not the model's enthusiasm - and now
+    that it can BE the tone, a constant exempt list would have started charging
+    for it silently."""
+    import routers.tts_runtime as runtime
+
+    closing = runtime._closing_tag(TONE)
+    budget = voice_tags.TagBudget(2)
+    opts = speech_prep.PrepOptions(engine_supports_tags=True,
+                                   narrative="narrator", speech_tag=closing)
+    for sentence in ["*She waits.* [whisper] Say it.",
+                     "*He turns.* [soft] Again.",
+                     "*They stop.* [warm] Once more."]:
+        voice_tags.sanitize_for_tts(
+            speech_prep.prepare(sentence, opts), engine_supports_tags=True,
+            budget=budget, free_tags=speech_prep.injected_tags(closing))
+    assert budget.remaining == 0, "the model spent its two"

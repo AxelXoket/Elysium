@@ -18,7 +18,10 @@ from tts.pacing import (
 )
 
 #: Measured on an RTX 5080 by verify/verify_tts_latency.py: (audio, wall).
-MEASURED = [(3.20, 1.96), (7.38, 4.46), (12.77, 6.55), (19.69, 9.29)]
+#: Re-taken after fish_s2._codec_need stopped reserving three times what the
+#: codec costs - before that, text2semantic was parked to system RAM and pulled
+#: back for every sentence, and these numbers carried that round trip in them.
+MEASURED = [(3.25, 2.91), (6.64, 4.46), (13.70, 7.25), (22.62, 10.90)]
 
 
 def _trained(repeats=12):
@@ -33,10 +36,21 @@ def _trained(repeats=12):
 
 class TestItLearnsTheRealEngine:
     def test_it_recovers_the_measured_coefficients(self):
-        """c ~ 0.9 s and RTF ~ 0.44 are what the hardware actually did."""
+        """Whatever MEASURED says, the fit has to say it back. Stated as a
+        least-squares solve of the same four points rather than as a literal,
+        because a literal here is a second copy of the data that goes stale the
+        next time the engine is measured - which is exactly what happened."""
+        n = len(MEASURED)
+        sx = sum(a for a, _w in MEASURED)
+        sy = sum(w for _a, w in MEASURED)
+        sxy = sum(a * w for a, w in MEASURED)
+        sxx = sum(a * a for a, _w in MEASURED)
+        want_rtf = (n * sxy - sx * sy) / (n * sxx - sx * sx)
+        want_fixed = (sy - want_rtf * sx) / n
+
         fixed, rtf = _trained()._time.fit()
-        assert fixed == pytest.approx(0.9, abs=0.4)
-        assert rtf == pytest.approx(0.44, abs=0.06)
+        assert fixed == pytest.approx(want_fixed, abs=0.05)
+        assert rtf == pytest.approx(want_rtf, abs=0.02)
 
     def test_before_measuring_it_answers_from_the_seed(self):
         """A cold engine still has to decide something, and the seed is a
@@ -118,8 +132,10 @@ class TestTheChunkCapOnceSpeechIsRunning:
 class TestTheFirstChunkWindowIsDerivedNotChosen:
     def test_the_measured_engine_lands_on_the_agreed_window(self):
         """40-100 characters was agreed before this was measured. At the real
-        c and RTF a 3 second budget works out at 60-70, inside that window and
-        near its centre - the window was right for a reason, not by luck."""
+        c and RTF a 3 second budget works out at ~47, inside that window - the
+        bounds were right for a reason, not by luck. Asserted as the range and
+        not as 50, because the exact figure moves with the engine and a literal
+        here would be a second copy of the measurement."""
         chars = _trained().first_chunk_chars(budget_seconds=3.0)
         assert 40 <= chars <= 100
 
@@ -174,3 +190,84 @@ class TestTheMarginsAreDeliberatelyAsymmetric:
         p = _trained()
         fixed, rtf = p._time.fit()
         assert p.gen_seconds_for(10.0, k=K_START) > fixed + rtf * 10.0
+
+
+class TestTheWindowOpensWhileTheSessionIsStillYoung:
+    """The sub-3s start is worth nothing if it arrives on the fourth reply.
+
+    `first_chunk_window()` needs `dev` to come down before it will answer, and
+    `dev` used to be re-seeded on the SECOND sample at half the estimate - which
+    at the mean audio length is about 2.9 s, four times the 0.75 s Pacing had
+    declared. At beta = 0.25 that took twelve chunks to decay, so the mechanism
+    the whole module exists for stayed shut for most of a session.
+    """
+
+    def _observe(self, p, n):
+        for i in range(n):
+            audio, wall = MEASURED[i % len(MEASURED)]
+            p.observe(chars=int(audio / SECONDS_PER_CHAR),
+                      audio_seconds=audio, gen_seconds=wall)
+
+    def test_the_declared_seed_is_not_replaced_by_a_larger_guess(self):
+        p = Pacing()
+        declared = p._time.dev
+        self._observe(p, 2)
+        assert p._time.dev <= declared, (
+            "the second sample overwrote a seed the caller stood behind"
+        )
+
+    def _chunks_until_it_answers(self, p):
+        for n in range(1, 40):
+            self._observe(p, 1)
+            if p.first_chunk_window() is not None:
+                return n
+        return None
+
+    def test_honouring_the_seed_opens_the_window_sooner_than_bootstrapping(self):
+        """A COMPARISON, not a threshold. "under N chunks" is a number that
+        drifts with the engine and passes for the wrong reason the moment the
+        hardware changes; what has to hold is that keeping the declared seed
+        beats replacing it, which is the mechanism itself."""
+        honoured = Pacing()
+        bootstrapped = Pacing()
+        # Exactly what `observe` used to do to every line: forget that the
+        # caller declared anything, so the second sample re-seeds from the level.
+        bootstrapped._time.seed_dev = None
+
+        fast = self._chunks_until_it_answers(honoured)
+        slow = self._chunks_until_it_answers(bootstrapped)
+        assert fast is not None, "the window never opened at all"
+        assert slow is not None, "the comparison needs both to open"
+        assert fast < slow, f"honoured {fast}, bootstrapped {slow}"
+
+    def test_it_answers_inside_a_session_rather_than_after_one(self):
+        """The absolute bound still matters - "sooner" would be satisfied by
+        39 chunks against 40. A reply is about four sentences here."""
+        assert self._chunks_until_it_answers(Pacing()) <= 8
+
+    def test_a_cold_estimator_still_refuses_rather_than_guessing(self):
+        """Not a regression: at c = 1.6 s with honest uncertainty, no first
+        chunk fits inside 3 s. Answering anyway would promise what the hardware
+        has not yet shown it can do."""
+        assert Pacing().first_chunk_window() is None
+
+    def test_the_seed_still_bootstraps_when_the_caller_declared_nothing(self):
+        """The VRAM lines pass no seed_dev, and their margin comes entirely
+        from this. Narrowing it there would trade an eviction for an OOM."""
+        from tts.worker._fit import Line
+
+        line = Line(seed_slope=0.004)
+        line.observe(100, 0.4)
+        line.observe(200, 0.8)
+        assert line.dev > 0.0
+
+    def test_a_declared_zero_is_a_declaration_and_not_a_silence(self):
+        """`seed_dev=0.0` used to be indistinguishable from "unset", so a
+        caller asking for no margin got the bootstrap instead - the same
+        sentinel confusion that let the seed be overwritten at all."""
+        from tts.worker._fit import Line
+
+        line = Line(seed_slope=0.004, seed_dev=0.0)
+        line.observe(100, 0.4)
+        line.observe(200, 0.8)
+        assert line.dev == 0.0

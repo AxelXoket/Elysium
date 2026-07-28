@@ -147,7 +147,8 @@ def main() -> int:
         print("VRAM, measured per operation:")
         for f in cost_frames:
             print(f"  {f.get('kind'):9s} units={f.get('units'):5} "
-                  f"peak={f.get('peak_gb')} GB  predicted={f.get('predict_gb')} GB "
+                  f"peak={f.get('peak_gb')} GB  retained={f.get('retained_gb')} GB  "
+                  f"predicted={f.get('predict_gb')} GB "
                   f"(samples {f.get('samples')})")
     else:
         print("no cost frames - a build without the measurement probe, or no CUDA.")

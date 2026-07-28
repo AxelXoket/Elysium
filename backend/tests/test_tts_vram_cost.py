@@ -505,3 +505,204 @@ class TestTheFirstRunIsNotATrustFall:
         mod._observe_cost("decode", units=800, gb=0.4)
         assert mod._predict_cost("decode", 800) == pytest.approx(0.4)
         assert mod._predict_cost("decode", 800) < seeded
+
+
+#: Six consecutive codec loads on an RTX 5080, from verify/verify_tts_latency.py.
+#: Every one of them is the SAME indivisible object, which is the whole point:
+#: there is no size to learn from, so a margin can only come from the level.
+MEASURED_CODEC = [5.22, 4.915, 4.913, 4.913, 4.913, 4.913]
+
+
+class TestAFixedSizeCostIsNotGivenAMarginItCannotJustify:
+    """MEASURED BUG: text2semantic was parked to system RAM and pulled back for
+    every sentence, ~1.2 s of the 2.29 s fixed cost per call, for a shortage
+    that was arithmetic rather than real.
+
+    `Line.predict` answers `fit + 4 * dev`, and `dev` is seeded at half the
+    estimate on the second sample (RFC 6298). For the decode that is honest -
+    its cost really does vary with the work. The codec is one object loaded the
+    same way every time, so the margin was bootstrapped from its own level:
+    15.2 GB reserved for a 4.9 GB load, decaying over ~10 samples.
+    """
+
+    def _observed(self, mod):
+        for gb in MEASURED_CODEC:
+            mod._observe_cost("codec", 1, gb)
+        return mod
+
+    def test_the_reserve_settles_on_what_the_codec_steadily_costs(self):
+        """5.22 GB is the first load, from disk; every restore since has been
+        4.91. A running maximum would hold the reserve at the one-off forever,
+        so the ceiling decays and the figure that keeps being re-confirmed is
+        the one that ends up being reserved."""
+        mod = self._observed(_mod(codec_resident=False))
+        assert mod._codec_need() == pytest.approx(MEASURED_CODEC[-1], abs=0.01)
+        assert mod._codec_need() < max(MEASURED_CODEC)
+
+    def test_a_freak_sample_is_covered_at_once_and_then_forgotten(self):
+        """Both halves matter. A cost that has actually been seen must be
+        reserved for immediately - being wrong low is the OOM direction. But a
+        fragmented allocator or a process that arrived mid-load must not pin
+        the reserve there for the life of the worker, which is what a plain
+        maximum does: the eviction it causes never goes away."""
+        mod = self._observed(_mod(codec_resident=False))
+        steady = mod._codec_need()
+
+        mod._observe_cost("codec", 1, 9.0)
+        assert mod._codec_need() == pytest.approx(9.0), "an outlier is covered"
+
+        for _ in range(20):
+            mod._observe_cost("codec", 1, MEASURED_CODEC[-1])
+        assert mod._codec_need() == pytest.approx(steady, abs=0.01), (
+            "and then forgotten"
+        )
+
+    def test_it_does_not_ask_for_three_times_the_measurement(self):
+        """The regression as a number: six samples of ~4.9 GB, and the answer
+        was 8.4 GB and still falling."""
+        mod = self._observed(_mod(codec_resident=False))
+        assert mod._codec_need() < 1.2 * max(MEASURED_CODEC)
+
+    def test_the_second_sentence_costs_about_what_the_twentieth_does(self):
+        """It used to take ~10 loads for the margin to decay out, so a short
+        session never reached the steady state and paid the eviction every
+        time. The answer must not depend on how long the session has run - not
+        to the last megabyte, since the samples themselves differ by that much,
+        but nowhere near the 15.2-to-8.4 GB slide it used to be."""
+        early = _mod(codec_resident=False)
+        for gb in MEASURED_CODEC[:2]:
+            early._observe_cost("codec", 1, gb)
+        late = self._observed(_mod(codec_resident=False))
+        assert early._codec_need() == pytest.approx(late._codec_need(), abs=0.05)
+
+    def test_a_codec_already_on_the_card_costs_nothing_to_put_there(self):
+        mod = self._observed(_mod(codec_resident=True))
+        assert mod._codec_need() == 0.0
+
+    def test_with_nothing_measured_it_reserves_the_prior(self):
+        """The first load has no evidence, and it is the load least able to
+        recover from being wrong."""
+        mod = _mod(codec_resident=False)
+        assert mod._codec_need() == pytest.approx(mod._SEED_CODEC_GB)
+        assert mod._SEED_CODEC_GB >= max(MEASURED_CODEC) * 0.9, (
+            "the prior has to cover the load peak, not the file size"
+        )
+
+    def test_a_larger_codec_than_the_prior_still_moves_the_answer(self):
+        """Evidence beats the prior in BOTH directions - a prior that could
+        only ever be raised would be a threshold wearing a measurement's hat."""
+        mod = _mod(codec_resident=False)
+        mod._observe_cost("codec", 1, 1.4)
+        assert mod._codec_need() == pytest.approx(1.4)
+
+
+class TestTheEvictionDecisionItself:
+    """`_fits` is where the arithmetic became a park/restore round trip."""
+
+    def _card(self, mod, free_gb):
+        mod._free_gb = lambda: free_gb
+        return mod
+
+    def test_a_decode_fits_beside_a_resident_model_on_a_16gb_card(self):
+        """The measured working set: fp8 text2semantic ~3.9 GB, KV cache at
+        kv_cache_len=2048 ~0.28 GB, codec load peak ~5.2 GB, decode of 450
+        frames ~2.3 GB. That leaves room, and the eviction was never needed.
+        """
+        mod = _mod(codec_resident=False)
+        for gb in MEASURED_CODEC:
+            mod._observe_cost("codec", 1, gb)
+        for units, gb in MEASURED_DECODE:
+            mod._observe_cost("decode", units, gb)
+        self._card(mod, free_gb=11.0)
+        assert mod._fits(450, "decode") is True
+
+    def test_a_card_that_really_is_tight_still_refuses(self):
+        """The check has to keep working. Being wrong high costs one needless
+        eviction; being wrong low costs an OOM."""
+        mod = _mod(codec_resident=False)
+        for gb in MEASURED_CODEC:
+            mod._observe_cost("codec", 1, gb)
+        for units, gb in MEASURED_DECODE:
+            mod._observe_cost("decode", units, gb)
+        self._card(mod, free_gb=6.0)
+        assert mod._fits(450, "decode") is False
+
+
+class TestPeakAndRetainedAreMeasuredSeparately:
+    """`_fits` MAXes the work terms and ADDS the codec, and that asymmetry is
+    only correct if the codec really does stay on the card while the decode
+    runs. Reasoning from `codec.pth` (1.74 GB on disk) said it was mostly a
+    load-time transient and the addition was over-reserving by ~3 GB. The
+    measurement said otherwise: 4.915 GB peak AND 4.915 GB retained, no
+    transient at all, while a decode retains nothing.
+    """
+
+    def _run(self, mod, kind, units, *, allocated, peak, ends_at):
+        """One measured operation. `ends_at` is what is still allocated when it
+        returns - the whole point of the second number."""
+        sent = []
+        _with_torch(mod, allocated=allocated, peak=peak)
+        with mod._measure(kind, units, sent.append):
+            mod._ENGINE["torch"].cuda._allocated = ends_at * 1e9
+        assert len(sent) == 1, "one operation reports once"
+        return sent[0]
+
+    def test_an_operation_that_frees_everything_retains_nothing(self):
+        """A decode's whole cost is its peak: 2.3 GB while it runs, nothing
+        afterwards. `_fits` MAXes these against each other for that reason."""
+        mod = _mod()
+        event = self._run(mod, "decode", 400,
+                          allocated=4.0, peak=6.3, ends_at=4.0)
+        assert event["peak_gb"] == pytest.approx(2.3)
+        assert event["retained_gb"] == pytest.approx(0.0, abs=1e-9)
+        # Reported, never fitted: a second estimator nothing consults would be
+        # a fit kept warm for a reader that does not exist.
+        assert not [k for k in mod._COSTS if "resident" in k]
+
+    def test_an_operation_that_keeps_its_allocation_says_so(self):
+        """The codec: 4.915 GB peak and 4.915 GB still there afterwards. That
+        is what licenses `_fits` to ADD it rather than MAX it."""
+        mod = _mod()
+        event = self._run(mod, "codec", 1,
+                          allocated=4.0, peak=8.915, ends_at=8.915)
+        assert event["peak_gb"] == pytest.approx(4.915)
+        assert event["retained_gb"] == pytest.approx(4.915)
+
+    def test_a_failed_operation_teaches_nothing(self):
+        mod = _mod()
+        _with_torch(mod, allocated=1.0, peak=9.0)
+        try:
+            with mod._measure("decode", 400):
+                raise RuntimeError("engine died")
+        except RuntimeError:
+            pass
+        assert "decode" not in mod._COSTS
+
+
+class TestTheReportAgreesWithThePolicy:
+    """The progress frame is where every policy regression in this file was
+    caught, so a number printed there has to be the number being acted on.
+    After the codec's reserve moved to `worst`, the frame still printed
+    `predict` - 15.2 GB beside a decision made on 4.9."""
+
+    def test_the_reported_codec_cost_is_the_one_the_reserve_uses(self):
+        mod = _mod(codec_resident=False)
+        for gb in MEASURED_CODEC:
+            mod._observe_cost("codec", 1, gb)
+        assert mod._planning_cost("codec", 1) == pytest.approx(mod._codec_need())
+
+    def test_a_work_scaled_cost_still_reports_its_pessimistic_prediction(self):
+        """Only the fixed-size line changed. A decode's margin is what keeps an
+        OOM from being the way we find out the estimate was low."""
+        mod = _mod()
+        for units, gb in MEASURED_DECODE:
+            mod._observe_cost("decode", units, gb)
+        assert (mod._planning_cost("decode", 428)
+                == pytest.approx(mod._predict_cost("decode", 428)))
+        fixed, slope = mod._COSTS["decode"].fit()
+        assert mod._planning_cost("decode", 428) > fixed + slope * 428
+
+    def test_nothing_measured_reports_nothing_rather_than_zero(self):
+        mod = _mod()
+        assert mod._planning_cost("codec", 1) is None
+        assert mod._planning_cost("decode", 400) is None

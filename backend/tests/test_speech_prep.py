@@ -114,6 +114,48 @@ def test_narrator_mode_falls_back_to_plain_when_tags_unsupported():
     assert "She leans closer." in out
 
 
+def test_the_narration_tone_stops_where_the_asterisks_stop():
+    """MEASURED BUG: a direction stands until the next tag or the end of the
+    sentence, and narration was opened without ever being closed. So
+
+        *She smiles and waves.* "It is good to see you again."
+
+    went to the engine as ONE measured, detached line - the greeting performed
+    in the narrator's voice. The asterisks end; the direction has to end too.
+    """
+    out = prep(NARR, narrative="narrator", engine_supports_tags=True)
+    narration_at = out.index(sp.DEFAULT_NARRATOR_TAG)
+    speech_at = out.index(sp.DEFAULT_SPEECH_TAG)
+    assert narration_at < out.index("She leans closer.") < speech_at
+    assert speech_at < out.index("Come here")
+
+
+def test_dialogue_before_any_narration_is_not_given_a_direction():
+    """Nothing has been opened yet, so there is nothing to close. An unasked-for
+    tag on ordinary speech is the caricature the prompt works to avoid."""
+    out = prep("I missed you. *She looks away.* Really.",
+               narrative="narrator", engine_supports_tags=True)
+    assert out.index("I missed you.") < out.index(sp.DEFAULT_NARRATOR_TAG)
+    assert out.count(sp.DEFAULT_SPEECH_TAG) == 1
+
+
+def test_the_models_own_direction_closes_the_narration_by_itself():
+    """Two directions on one clause muddy both. The model chose this one for
+    THIS line, which is more specific than our generic return-to-voice."""
+    out = prep("*She steps closer.* [whisper] You came back.",
+               narrative="narrator", engine_supports_tags=True)
+    assert "[whisper]" in out
+    assert sp.DEFAULT_SPEECH_TAG not in out
+
+
+def test_narration_is_not_closed_in_the_modes_that_never_opened_it():
+    for mode in ("same", "skip"):
+        out = prep(NARR, narrative=mode, engine_supports_tags=True)
+        assert sp.DEFAULT_SPEECH_TAG not in out, mode
+    plain = prep(NARR, narrative="narrator", engine_supports_tags=False)
+    assert sp.DEFAULT_SPEECH_TAG not in plain
+
+
 def test_bold_is_not_narrative():
     out = prep("This is **really** important.", narrative="skip")
     assert "really" in out and "*" not in out

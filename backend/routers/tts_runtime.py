@@ -470,6 +470,10 @@ def _prepare_speech_text(body: SpeakBody) -> PreparedSpeech:
     text = speech_prep.prepare(text, speech_prep.PrepOptions(
         engine_supports_tags=supports_tags,
         narrative=_narrative_pref(),
+        # The user's standing tone closes its own narration; see _closing_tag.
+        # Read here rather than defaulted, so the Speak button and the live
+        # stream perform the clause after a `*...*` span the same way.
+        speech_tag=_closing_tag(_tag_prefs()[1]),
         # The replay path preps the whole message itself, so the rules are
         # resolved here rather than handed to a queue. Same table either way -
         # a name has to be said the same whether the reply is arriving or
@@ -726,10 +730,14 @@ def _speak_in_sentences(host, text: str, values: dict, extra: dict | None,
     budget = voice_tags.TagBudget(
         voice_tags.MAX_TAGS_PER_REPLY if density is None else density,
     )
+    free_tags = speech_prep.injected_tags(_closing_tag(tone))
 
     def _dress(sentence: str) -> str:
         spoken = voice_tags.sanitize_for_tts(
-            sentence, engine_supports_tags=supports_tags, budget=budget)
+            sentence, engine_supports_tags=supports_tags, budget=budget,
+            # The narration tags came from prepare(), not from the model, so
+            # they do not spend the model's allowance - see sanitize_for_tts.
+            free_tags=free_tags)
         return voice_tags.apply_default_tone(
             spoken, tone, engine_supports_tags=supports_tags)
 
@@ -803,6 +811,45 @@ def _dsp_noop(rate: float) -> bool:
     return abs(speed.clamp(rate) - 1.0) < 0.02
 
 
+def _closing_tag(tone: str) -> str:
+    """What ENDS a narration span - the standing tone when there is one.
+
+    A direction stands until the next tag, so tagging narration means the
+    dialogue after it needs a direction of its own or it inherits the
+    narrator's measured, detached delivery. The obvious closing tag is a
+    generic "in character, natural", and that is what this returned first -
+    which quietly OVERRODE the voice the user had configured. Worse where the
+    sentence opened with narration: `apply_default_tone` only prefixes text
+    that does not already start with a tag, so the standing tone never reached
+    the engine at all. The app replacing a user's setting with a hard-coded
+    default is the same failure the tag budget had, one layer up.
+
+    So: the tone closes its own narration. Falling back only when it is unset,
+    or when it is unusable AS A TAG - `sanitize_tone` allows 60 characters and
+    `_looks_like_tag` allows 40 and six words, so a long tone is a perfectly
+    good setting that would be dropped as a malformed span, leaving the
+    narrator's direction standing over the dialogue with nothing to say why.
+
+    WHAT IT COSTS, measured rather than waved away: on a four-span roleplay
+    reply whose dialogue is mostly untagged, three closing directions are
+    emitted and the text handed to the engine grows 26% - 93 characters on 356.
+    None of it is SPOKEN, so the audio is the same length and the fitted
+    `c + RTF * audio` model does not see it at all; it lands on the prefill and
+    on `_fit_tokens`, where a longer prompt leaves fewer tokens to generate
+    with. Against a 2048-token cache and an 800-token budget that is not
+    binding, and it is well under the +-0.3 s spread `verify_tts_latency`
+    already shows between identical runs - which is to say the instrument
+    cannot resolve it, not that it is zero. Nothing is emitted where the model
+    supplied its own direction, which is the common case for tagged dialogue.
+    """
+    import voice_tags
+
+    clean = voice_tags.sanitize_tone(tone or "")
+    if clean and voice_tags.usable_as_tag(clean):
+        return clean
+    return speech_prep.DEFAULT_SPEECH_TAG
+
+
 def make_stream_synth(uid: str | None = None, *, rate: float | None = None):
     """A `synth(text) -> {path, seconds}` callable for the streaming speaker.
 
@@ -844,9 +891,16 @@ def make_stream_synth(uid: str | None = None, *, rate: float | None = None):
     # same six-tag message came out with six tags live and three on replay.
     budget = voice_tags.TagBudget(density)
 
+    closing = _closing_tag(tone)
+    free_tags = speech_prep.injected_tags(closing)
+
     def synth(text: str) -> dict:
         spoken = voice_tags.sanitize_for_tts(
-            text, engine_supports_tags=supports_tags, budget=budget)
+            text, engine_supports_tags=supports_tags, budget=budget,
+            # Same exemption the replay path makes, for the same reason: two
+            # answers to "does narration cost the model a tag" would be the
+            # audible drift this factory exists to prevent.
+            free_tags=free_tags)
         spoken = voice_tags.apply_default_tone(
             spoken, tone, engine_supports_tags=supports_tags)
         if not spoken.strip():
@@ -868,6 +922,10 @@ def make_stream_synth(uid: str | None = None, *, rate: float | None = None):
         }
 
     synth.engine_supports_tags = supports_tags
+    # Carried ON THE SYNTH, the way `uid` and `engine_supports_tags` already
+    # are: StreamSpeaker builds the queue and would otherwise need this
+    # threaded through open_speaker and SpeakHook to reach PrepOptions.
+    synth.speech_tag = closing
     synth.uid = model.uid
     return synth
 

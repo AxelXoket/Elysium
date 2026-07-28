@@ -43,6 +43,13 @@ Elysium is a privacy-first AI character chat client that routes **all model traf
 - **Image metadata stripped** - Every attached image is re-encoded on upload so EXIF/GPS and other embedded metadata are dropped before it is stored or sent - your camera and location never ride along with the picture
 - **Hardened by a full-system audit** - An 8-dimension adversarial code audit swept the whole codebase before release (no critical/high/medium issues); the low-severity findings it surfaced are all fixed and regression-tested
 
+## Fixed since v1.1.0
+
+- **Spoken replies no longer stop short** - a reply could go quiet a few words before the end, with no error and nothing to explain it. The last sentence was being dropped while it was still being made
+- **Narration no longer flattens the speech next to it** - with narration voice set to *Narrator*, dialogue that shared a sentence with a `*narrated action*` was performed in the narrator's flat tone too. Narration is told; the speech after it now returns to the character's voice, including your standing tone if you have set one
+- **Delivery holds up over a long reply** - the tag density dial is a budget for the model's own cues, and narration was quietly spending it. On a long roleplay reply the delivery used to go plainer the further it ran
+- **Faster first word** - the voice engine was shuffling its model in and out of the graphics card before nearly every sentence, to make room it already had. Removing that roughly halved the fixed cost per sentence and brought the first sound in well under three seconds
+
 ## Features
 
 - **Passphrase Vault** - The whole database (characters, chats, messages, personas, settings, attached image bytes, and your OpenRouter API key + proxy URL) is a SQLCipher-encrypted file. The app starts locked; a passphrase unlocks it (scrypt-derived raw key, held only in RAM). Change the passphrase from the Secrets tab; closing the desktop app locks the vault. The decorative chat wallpaper is the one exception - it lives in local browser storage, not the vault

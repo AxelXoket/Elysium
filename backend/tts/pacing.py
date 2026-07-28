@@ -27,7 +27,7 @@ THE RULE
 
 WHY IT GENERALISES
     Everything above is in terms of RTF - compute time per second of audio -
-    which is how every TTS engine is characterised. Fish S2 measures ~0.44 on
+    which is how every TTS engine is characterised. Fish S2 measures ~0.41 on
     this machine; XTTS-v2 is around 0.3, Piper around 0.04. Nothing here is
     specific to one of them: an engine declares a nominal figure, and the
     runtime measures the real one and overwrites it.
@@ -50,13 +50,28 @@ import threading as _threading
 
 from tts.worker import _fit
 
-#: Measured on an RTX 5080 by `verify/verify_tts_latency.py`, two runs:
-#: c = 0.89 / 1.35 s, RTF = 0.435 / 0.418, 14.3 / 15.2 characters per second.
+#: Measured on an RTX 5080 by `verify/verify_tts_latency.py`, four consecutive
+#: runs of the code as it stands:
+#:
+#:     c    1.44  1.57  1.62  1.65      median 1.60
+#:     RTF  0.41  0.42  0.45  0.46      median 0.43
+#:     s/ch 0.0647  0.0648  0.0656  0.0718
+#:
+#: An earlier table here quoted five runs and one of them also carried a
+#: `_sweep()` change that was measured and reverted - a contaminated sample in
+#: a set presented as controlled. These four share one build.
+#:
+#: `c` and RTF trade off against each other inside the fit, so a run that lands
+#: high on one lands low on the other and neither is worth more precision than
+#: this. For the record, before `fish_s2._codec_need` stopped reserving three
+#: times what the codec costs: c = 2.292, with text2semantic parked to system
+#: RAM and pulled back for EVERY sentence.
+#:
 #: These are SEEDS, not settings - the first few real chunks replace them, and
 #: an adapter for another engine is expected to supply its own.
-FISH_S2_FIXED_SECONDS = 1.2       # the cautious end of what was measured
-FISH_S2_RTF = 0.44
-SECONDS_PER_CHAR = 0.070          # ~14.3 characters of speech per second
+FISH_S2_FIXED_SECONDS = 1.6       # the cautious end of what was measured
+FISH_S2_RTF = 0.46
+SECONDS_PER_CHAR = 0.066          # ~15.1 characters of speech per second
 
 #: How pessimistic each decision is, in deviations. Deliberately different.
 #: At the start every 100 ms is heard, so a smaller margin is worth the risk of
@@ -79,14 +94,14 @@ MIN_CHUNK_SECONDS = 1.5
 FIRST_CHUNK_BUDGET_SECONDS = 3.0
 
 #: The floor is arithmetic, not taste. Chunk one has to keep playing while
-#: chunk two is made, so at ~2.3x realtime a first chunk of N seconds covers a
-#: second chunk of about 2.3N. Forty characters is roughly three seconds of
-#: speech, which covers an ordinary seven second sentence; go much below it and
-#: the fast start is paid back as a gap two seconds later.
+#: chunk two is made, so at ~2.44x realtime a first chunk of N seconds covers a
+#: second chunk of about 2.44N. Forty characters is 2.6 seconds of speech,
+#: which covers an ordinary six second sentence; go much below it and the fast
+#: start is paid back as a gap two seconds later.
 #:
-#: The ceiling keeps the budget honest. At the measured c and RTF, 100
-#: characters is already ~7 seconds of speech and ~4 seconds of work - past the
-#: point where starting early was the goal.
+#: The ceiling keeps the budget honest. At the trained c and RTF, 100
+#: characters is already 6.6 seconds of speech and 4.4 seconds of work - past
+#: the point where starting early was the goal.
 FIRST_CHUNK_MIN_CHARS = 40
 FIRST_CHUNK_MAX_CHARS = 100
 
@@ -193,10 +208,10 @@ class Pacing:
         inside `budget_seconds`.
 
         This is where the 40-100 character window comes from. It is not a
-        constant anybody chose: at the measured c = 0.89-1.35 s and RTF = 0.44
-        a 3 second budget leaves about 4 seconds of speech, which at ~14.3
-        characters a second is 60-70 characters. On a faster engine the same
-        call returns a bigger number without anyone editing it.
+        constant anybody chose: at the trained c = 1.650 s and RTF = 0.409 a
+        3 second budget leaves about 3.1 seconds of speech, which at ~15.1
+        characters a second is 47 characters. On a faster engine the same call
+        returns a bigger number without anyone editing it.
         """
         fixed, rtf = self._time.fit()
         margin = (K_START + self._penalty) * self._time.dev
@@ -231,15 +246,24 @@ class Pacing:
 # ── shared instances ─────────────────────────────────────────────────────────
 # A Pacing that lives for ONE reply can never answer the question it exists to
 # answer. SpeechQueue built a fresh one per utterance, so `measured` was always
-# False, `first_chunk_window()` read a seeded-not-measured estimate, and
-# first_chunk_chars(3.0) came out at 19 - under FIRST_CHUNK_MIN_CHARS, so the
-# window was None every single time. speech_prep.first_chunk() was therefore
-# never called in production: the "<3 s to first audio" mechanism the whole
-# module is built around had no path to fire, on any machine, ever.
+# False, `first_chunk_window()` read a seeded-not-measured estimate that landed
+# under FIRST_CHUNK_MIN_CHARS, and the window was None every single time.
+# speech_prep.first_chunk() was therefore never called in production: the
+# "<3 s to first audio" mechanism the whole module is built around had no path
+# to fire, on any machine, ever.
 #
-# Measured on this machine: an 86-character opening sentence reached first
-# audio in 3.98 s with a fresh Pacing and 2.70 s with a trained one. The
-# numbers were always there to be learned; nothing kept them.
+# WHERE IT STANDS NOW, at the seeds above and the measurements behind them:
+#
+#   fresh      window None - and that is the honest answer, not a leftover of
+#              the bug. At c = 1.6 s with the uncertainty a cold estimator is
+#              entitled to, no first chunk fits inside 3 s.
+#   ~6 chunks  the window opens; by a dozen it is (40, 47).
+#
+# An 86-character opening sentence, computed from the trained fit (c = 1.650,
+# RTF = 0.409, 15.1 characters a second): 5.68 s of speech, first audio at
+# 3.98 s if it is spoken whole, 2.92 s if the opening 47 characters are cut off
+# and sent first. That gap is the entire mechanism, and keeping the timings is
+# what lets it fire at all.
 #
 # Keyed per MODEL, because that is the thing whose speed is being learned -
 # and so that swapping models does not carry the old model's timings over.

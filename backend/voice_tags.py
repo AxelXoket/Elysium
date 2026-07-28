@@ -396,7 +396,8 @@ class TagBudget:
 
 def sanitize_for_tts(text: str, *, engine_supports_tags: bool,
                      max_tags: int | None = None,
-                     budget: TagBudget | None = None) -> str:
+                     budget: TagBudget | None = None,
+                     free_tags: tuple[str, ...] = ()) -> str:
     """What the ENGINE gets to read.
 
     An engine without inline-tag support would speak the brackets out loud
@@ -409,6 +410,28 @@ def sanitize_for_tts(text: str, *, engine_supports_tags: bool,
     budget: share one across every sentence of a reply so the cap is a
     per-reply allowance. Omitted, the call gets its own - which is right for
     a caller that really is handling the whole message at once.
+
+    free_tags: tags THIS APP injected, kept without spending the allowance.
+    MEASURED BUG: in "narrator" narration mode speech_prep puts a narrator tag
+    in front of every `*...*` span and a closing one after it, and this
+    function - which runs afterwards - could not tell either from a tag the
+    model chose. On a roleplay reply the narration ate the budget and the
+    dialogue further down went out plain: 4 of 7 delivery tags survived
+    instead of 7, and the ones lost were all at the end. The dial means "how
+    enthusiastic may the MODEL be" (see MAX_TAGS_PER_REPLY); a rendering
+    decision the user made in settings is not the model being enthusiastic.
+    They still take part in the duplicate collapse, so consecutive narration
+    reads as one continuing instruction.
+
+    NOT CAPPED, and that asymmetry is deliberate rather than an oversight. The
+    dial exists because a model left to itself tags every sentence and the
+    voice becomes a caricature - it is a limit on ENTHUSIASM, and enthusiasm is
+    not what produces these. An app tag is emitted once per `*...*` span, so
+    the count is a fact about how the reply is written, not a number anybody
+    chose; a reply that alternates narration and speech thirty times needs
+    thirty direction changes to be read correctly. Capping them would silently
+    stop switching voices partway down exactly the replies that need it most,
+    which is the failure this exemption was added to fix.
     """
     if not text:
         return ""
@@ -438,14 +461,17 @@ def sanitize_for_tts(text: str, *, engine_supports_tags: bool,
             out.append(span)
             buf = after
             continue
-        if malformed or state.remaining <= 0 or inner == state.last_tag:
+        free = inner in free_tags
+        if malformed or inner == state.last_tag or (
+                not free and state.remaining <= 0):
             # Drop the span but keep the words around it; swallow one
             # following space so the seam does not double.
             buf = after[1:] if after.startswith(" ") and (
                 not out or not out[-1] or out[-1][-1].isspace()) else after
             continue
         out.append(span)
-        state.remaining -= 1
+        if not free:
+            state.remaining -= 1
         state.last_tag = inner
         buf = after
     result = "".join(out)
@@ -612,6 +638,19 @@ def sanitize_pronunciations(table: object) -> dict[str, str]:
             continue
         out[src[:MAX_PRONUNCIATION_CHARS]] = dst[:MAX_PRONUNCIATION_CHARS]
     return out
+
+
+def usable_as_tag(inner: str) -> bool:
+    """Would this survive `sanitize_for_tts` as a delivery direction?
+
+    Public because a CALLER that injects a tag has to know: a span failing the
+    shape rule is dropped as malformed, silently, and the words around it are
+    performed under whatever direction was standing before. The standing tone
+    is the case that made this necessary - `sanitize_tone` allows 60
+    characters, `_looks_like_tag` allows 40 and six words, so a long tone is
+    a perfectly good SETTING and an unusable TAG.
+    """
+    return _looks_like_tag(inner)
 
 
 def sanitize_tone(text: str) -> str:

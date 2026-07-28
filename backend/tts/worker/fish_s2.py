@@ -127,10 +127,15 @@ _VRAM_RESERVE_GB = 1.0
 #: the proven-safe old code instead of trusting a check with nothing to check.
 _SEED_DECODE_GB = 3.0
 _SEED_DECODE_FRAMES = 800     # the default max_new_tokens the seed refers to
-#: What the DAC codec weighs on the card before anything has measured it.
-#: Taken from the bake-off: the observed restore is ~1.9 GB. A prior, like
-#: _SEED_DECODE_GB - the first real load replaces it.
-_SEED_CODEC_GB = 1.9
+#: What bringing the DAC codec onto the card costs before anything has measured
+#: it. NOT the file size: `codec.pth` is 1.74 GB on disk and 1.9 was that plus
+#: a little, but the thing is 4.915 GB once it is on the card - measured, peak
+#: and retained alike (5.22 on the very first load from disk, 4.915 on every
+#: restore since). Seeding at 1.9 under-reserved by a factor of two and a half
+#: on the one load where nothing is known yet, which is the load least able to
+#: recover from being wrong. A prior, like _SEED_DECODE_GB: the first real load
+#: replaces it.
+_SEED_CODEC_GB = 5.2
 _WARMUP_TEXT = "<|speaker:0|>Ready."
 _WARMUP_TOKENS = 16
 _REF_MIN_SECONDS = 0.6
@@ -367,6 +372,24 @@ def _observe_cost(kind: str, units: int, gb: float) -> None:
     _cost_line(kind).observe(float(units), gb)
 
 
+def _planning_cost(kind: str, units: int) -> float | None:
+    """What the reserve check will ACTUALLY be told this operation costs.
+
+    One function so the policy and the report cannot disagree. They did: the
+    codec's reserve moved to `worst` (see `_codec_need`) while the progress
+    frame kept printing `predict`, so the diagnostic still showed 15.2 GB for a
+    decision that was by then being made on 4.9. A number nobody consults, in
+    the one place people go to read the decisions, is worse than no number.
+    """
+    line = _COSTS.get(kind)
+    if line is None or not line.measured or units < 0:
+        return None
+    if kind.startswith("codec"):
+        # Fixed-size: the largest ever seen, never an extrapolation.
+        return line.worst
+    return line.predict(float(units))
+
+
 def _predict_cost(kind: str, units: int) -> float | None:
     """Pessimistic GB this operation will want, or None if never measured.
 
@@ -394,7 +417,7 @@ def _codec_need() -> float:
     The missing term (audit KÖK 9). Every caller of `_fits` is on its way to
     the codec, and `_free_gb()` is read while the codec is OFF the card -
     `_decode_to_audio` calls `_codec(send)` immediately after, which brings
-    ~1.9 GB back. So the check compared today's free memory against a cost
+    ~4.9 GB back. So the check compared today's free memory against a cost
     that provably excluded the one thing about to be loaded, and with a 1.0 GB
     reserve the gate could pass with less headroom than the codec alone needs.
 
@@ -404,11 +427,35 @@ def _codec_need() -> float:
 
     Measured once loaded (see `_codec`), constant until then. Units are 1
     because the codec is one indivisible object: it does not scale with frames.
+
+    THE WORST SEEN, NOT A PREDICTION (measured on an RTX 5080). `Line.predict`
+    answers `fit + k * dev` with k = 4, and `dev` is seeded at HALF the estimate
+    on the second sample the way RFC 6298 seeds its variance. That is right for
+    a quantity with real spread - a network round trip, a decode whose size
+    varies - and wrong for this one: every sample is the same indivisible
+    object, so the margin is bootstrapped from the level rather than from any
+    observed variation. The arithmetic came out at 4.9 + 4 x 2.53 = 15.2 GB for
+    a 4.9 GB load, and `beta` = 0.25 needs about ten samples to decay it back:
+
+        samples   2      3      4      5      6
+        peak     4.9    4.9    4.9    4.9    4.9
+        predict 15.2   12.8   10.9    9.5    8.4
+
+    On a 16 GB card that meant `_fits` refused for the first ~10 sentences
+    after every load, so text2semantic was parked to system RAM and pulled back
+    for each one: about 1.2 s of the 2.29 s fixed cost per call, paid for a
+    shortage that was arithmetic rather than real.
+
+    The honest pessimistic answer for a fixed-size object is the worst value
+    actually seen, `Line.worst` - which decays, so one freak sample cannot pin
+    the reserve there for the life of the worker the way a plain running
+    maximum would. Headroom is not lost: `_fits` still holds
+    `_VRAM_RESERVE_GB` back on top of this.
     """
     if STATE.get("codec") is not None:
         return 0.0
-    predicted = _predict_cost("codec", 1)
-    return _SEED_CODEC_GB if predicted is None else predicted
+    planned = _planning_cost("codec", 1)
+    return _SEED_CODEC_GB if planned is None else planned
 
 
 def _fits(units: int, *kinds: str) -> bool:
@@ -473,6 +520,22 @@ class _measure:
             return False
         used = max(0.0, peak - self.base)
         _observe_cost(self.kind, self.units, used)
+        # PEAK and RETAINED are two different questions. The peak is the
+        # high-water mark the operation has to be able to reach; what it LEAVES
+        # BEHIND is what still occupies the card while the next one runs.
+        #
+        # REPORTED, not fitted. It answered one question and answering it was
+        # the point: `codec.pth` is 1.74 GB on disk, so reasoning from the file
+        # said the 5 GB was mostly a load-time transient and `_fits` was
+        # over-reserving by three gigabytes. It is not - the codec measures
+        # 4.915 GB peak AND 4.915 GB retained, while a decode retains 0.0. That
+        # is what licenses `_fits` to ADD the codec's term and MAX the others.
+        # Folding it into a second estimator nothing consults would be a fit
+        # kept warm for a reader that does not exist; the frame is enough.
+        try:
+            retained = max(0.0, torch.cuda.memory_allocated() / 1e9 - self.base)
+        except Exception:  # noqa: BLE001
+            return False
         if self.send is not None:
             line = _COSTS.get(self.kind)
             # Reported, not just recorded. Every policy regression in this file
@@ -480,7 +543,8 @@ class _measure:
             _progress(self.send, "cost", kind=self.kind, units=self.units,
                       peak_gb=round(used, 3),
                       samples=int(line.n) if line is not None else 0,
-                      predict_gb=round(_predict_cost(self.kind, self.units) or 0.0, 3))
+                      predict_gb=round(_planning_cost(self.kind, self.units) or 0.0, 3),
+                      retained_gb=round(retained, 3))
         return False
 
 
@@ -705,7 +769,7 @@ def _unload_everything() -> None:
     """Give back everything, including what is parked in system RAM.
 
     The parked copies were a leak: unloading cleared the three VRAM slots and
-    left `codec_parked` holding ~1.9 GB of host memory with nothing able to
+    left `codec_parked` holding ~4.9 GB of host memory with nothing able to
     reach it, for the whole life of the worker. Nobody noticed because the
     number that gets watched is VRAM. Now that the model can park too the same
     oversight would hold ~7 GB, and the lock-time eject exists precisely to
@@ -779,7 +843,7 @@ def _ensure_model(send) -> None:
     # graph, and the inductor cache on disk already makes that the cheap path.
 
 
-# ── the codec (DAC): ~1.9 GB, so it is a guest, not a resident ───────────────
+# ── the codec (DAC): ~4.9 GB, so it is a guest, not a resident ───────────────
 def _codec(send):
     if STATE["codec"] is not None:
         return STATE["codec"]
@@ -839,12 +903,12 @@ def _prewarm_codec(send) -> None:
 
 
 def _drop_codec() -> bool:
-    """Give the codec's ~1.9 GB of VRAM back - by PARKING it in system RAM, not
+    """Give the codec's ~4.9 GB of VRAM back - by PARKING it in system RAM, not
     by throwing it away.
 
     MEASURED: after a decode this card reports 1.76-2.02 GB free, so the codec
     genuinely cannot stay resident; that part of the old policy was right. What
-    was wrong was HOW it left. Setting it to None meant reloading 1.9 GB from
+    was wrong was HOW it left. Setting it to None meant reloading it from
     disk for the next sentence - about five seconds, every single time, which is
     most of the gap between the engine's own reported 3.2 s and the 8.3 s the
     app measured. A CPU park frees exactly the same VRAM and costs one PCIe copy
@@ -864,7 +928,7 @@ def _drop_codec() -> bool:
 
 
 def _should_keep_codec(free_gb: float) -> bool:  # noqa: D401
-    """After a decode, is there room to keep the ~1.9 GB codec resident?
+    """After a decode, is there room to keep the ~4.9 GB codec resident?
 
     The ONE place that decides it - the decode asks here, and so does every
     path that borrowed the codec to encode a reference clip.
@@ -1087,7 +1151,7 @@ def _prompt(req: dict, values: dict, send):
                 _wire.CODE_REFERENCE_INVALID,
                 "the cached prompt tokens are unreadable and there is no clip to "
                 "rebuild them from")
-        # Encoding needs the codec, which is 1.9 GB: make room the same way the
+        # Encoding needs the codec, which is ~4.9 GB: make room the same way the
         # decode path does, then hand the memory straight back.
         _progress(send, "encoding_reference", 0.05, detail=str(clip.name))
         had_codec = STATE["codec"] is not None
@@ -1348,7 +1412,7 @@ def _op_synthesize(req: dict, send) -> dict:
     max_new = _fit_tokens(ref_frames, prompt_cost, knobs["max_new_tokens"], budget, send)
     _ensure_capacity(ref_frames + prompt_cost + _PROMPT_OVERHEAD + max_new, send)
 
-    # The codec is a 1.9 GB guest. It stays unless the work about to run would
+    # The codec is a ~4.9 GB guest. It stays unless the work about to run would
     # eat into the reserve with it resident.
     #
     # This guard used to sit ABOVE the block that computes `max_new`, which

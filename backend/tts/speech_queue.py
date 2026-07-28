@@ -7,7 +7,7 @@ paragraphs of silence and then a wall of audio.
 
 So the reply is cut into sentences and synthesised one at a time: the first
 sentence starts playing while the second is still being made. The measured
-production rate is ~1.6x realtime, which is the whole reason this works - once
+production rate is ~2.44x realtime, which is the whole reason this works - once
 the queue is ahead it cannot fall behind again. Getting ahead is what the
 pre-roll is for; the user set it at about two seconds.
 
@@ -39,7 +39,7 @@ class QueueFailed(RuntimeError):
 
 
 #: How many synthesised-but-unplayed chunks to hold. Two is deliberate: at
-#: 1.6x realtime a single spare chunk already covers the next one's synthesis,
+#: 2.44x realtime a single spare chunk already covers the next one's synthesis,
 #: and a deeper buffer only adds latency at the START, which is the one place
 #: the delay is actually heard.
 DEFAULT_LOOKAHEAD = 2
@@ -89,7 +89,14 @@ class SpeechQueue:
         pacing: Pacing | None = None,
         engine_supports_tags: bool = False,
         narrative: str = "same",
-        narrator_tag: str = speech_prep.DEFAULT_NARRATOR_TAG,
+        #: What CLOSES a narration span - the user's standing tone when they
+        #: have one. Set by StreamSpeaker off the synth, which is where the
+        #: tone is read; the same value goes to speech_prep.injected_tags() so
+        #: the tag this queue INJECTS is one sanitize_for_tts is told to keep
+        #: for free. There is deliberately no narrator_tag twin: nothing ever
+        #: set it, and a tag outside that pairing would be charged to the
+        #: density budget and the reply would go plainer the longer it ran.
+        speech_tag: str = speech_prep.DEFAULT_SPEECH_TAG,
         pronunciations: Mapping[str, str] | None = None,
     ) -> None:
         self._synth = synth
@@ -111,7 +118,7 @@ class SpeechQueue:
         self._opts = speech_prep.PrepOptions(
             engine_supports_tags=engine_supports_tags,
             narrative=narrative,
-            narrator_tag=narrator_tag,
+            speech_tag=speech_tag,
             pronunciations=dict(pronunciations or {}),
         )
 
@@ -127,6 +134,10 @@ class SpeechQueue:
         self.failed = False
         self._error: BaseException | None = None
         self._spoken = 0
+        #: A sentence is out of _pending and not yet in _chunks - see pump().
+        #: Written by the synthesis worker, read by the event loop; a plain
+        #: bool is enough because only one worker synthesises one utterance.
+        self._in_flight = False
 
     # ── input ────────────────────────────────────────────────────────────────
 
@@ -185,61 +196,83 @@ class SpeechQueue:
             or (not self._started and not self._may_start())
         ):
             text = self._pending.popleft()
-            # ONLY the opening piece, and only when a sentence is long enough
-            # to be worth cutting. Every seam after the first buys nothing -
-            # speech is already running by then - so a reply carries at most
-            # one, and it lands where a reader would pause anyway.
-            if self._spoken == 0 and not self._chunks:
-                window = self._pacing.first_chunk_window()
-                if window is not None:
-                    split = speech_prep.first_chunk(
-                        text, min_chars=window[0], max_chars=window[1])
-                    if split is not None:
-                        text, tail = split
-                        self._pending.appendleft(tail)
-            spoken = speech_prep.prepare(text, self._opts)
-            if not spoken and _has_words(text):
-                # It had words going in and none coming out. That is the text
-                # pipeline DELETING something the reader can still see, not a
-                # fence with nothing in it - count it so the endpoint can say
-                # so rather than letting the audio quietly skip a line.
-                self.dropped += 1
-                if len(self.dropped_samples) < MAX_DROPPED_SAMPLES:
-                    self.dropped_samples.append(text.strip()[:80])
-            if not spoken:
-                # A code fence or a bare divider prepares to nothing. There is
-                # no audio to make and no error to report - it simply had no
-                # words in it.
-                continue
-            started = self._now()
+            # THE FLAG GOES UP HERE, not at the synth call. From this line the
+            # sentence is in no collection at all - popleft took it out of
+            # _pending and the append below has not put it in _chunks - and
+            # `finished` is exactly "all three are empty", read from the event
+            # loop while this runs on the synthesis worker. On the LAST sentence
+            # that emptiness is indistinguishable from being done, so
+            # drain_events sent voice_done and the tail was never spoken.
+            # Silently: a clean ending and a lost ending looked identical.
+            #
+            # Raising the flag any later leaves a hole exactly as wide as
+            # whatever runs first - and `prepare()` is not free: regex passes
+            # over the sentence plus the user's pronunciation table, per
+            # sentence. A narrower hole is still a hole.
+            self._in_flight = True
             try:
-                result = self._synth(spoken)
-            except Exception as exc:            # noqa: BLE001 - re-raised below
-                self.failed = True
-                self._error = exc
-                raise QueueFailed("synthesis failed") from exc
-            # Everything the engine returned travels, then our bookkeeping is
-            # laid over it. Cherry-picking known keys here silently dropped
-            # `audio_id` once - the field the client needs to actually FETCH
-            # the audio - and nothing failed; the chunk simply arrived with a
-            # null id. What an engine reports is not this module's to edit.
-            seconds = float(result.get("seconds") or 0.0)
-            synth_seconds = self._now() - started
-            # Every finished chunk is a free measurement of this engine on this
-            # machine right now - warm or cold, contended or idle. The policy
-            # calibrates itself out of ordinary work; nothing has to be
-            # benchmarked separately or configured by hand.
-            self._pacing.observe(chars=len(spoken), audio_seconds=seconds,
-                                 gen_seconds=synth_seconds)
-            self._chunks.append({
-                **dict(result),
-                "text": spoken,
-                "source": text,
-                "seconds": seconds,
-                "synth_seconds": synth_seconds,
-                "index": self._spoken + len(self._chunks),
-            })
-            made += 1
+                # ONLY the opening piece, and only when a sentence is long
+                # enough to be worth cutting. Every seam after the first buys
+                # nothing - speech is already running by then - so a reply
+                # carries at most one, and it lands where a reader would pause.
+                if self._spoken == 0 and not self._chunks:
+                    window = self._pacing.first_chunk_window()
+                    if window is not None:
+                        split = speech_prep.first_chunk(
+                            text, min_chars=window[0], max_chars=window[1])
+                        if split is not None:
+                            text, tail = split
+                            self._pending.appendleft(tail)
+                spoken = speech_prep.prepare(text, self._opts)
+                if not spoken and _has_words(text):
+                    # It had words going in and none coming out. That is the
+                    # text pipeline DELETING something the reader can still
+                    # see, not a fence with nothing in it - count it so the
+                    # endpoint can say so rather than letting the audio quietly
+                    # skip a line.
+                    self.dropped += 1
+                    if len(self.dropped_samples) < MAX_DROPPED_SAMPLES:
+                        self.dropped_samples.append(text.strip()[:80])
+                if not spoken:
+                    # A code fence or a bare divider prepares to nothing. There
+                    # is no audio to make and no error to report - it simply had
+                    # no words in it. `finished` may go true the moment the
+                    # flag drops, and that is correct: nothing is coming.
+                    continue
+                started = self._now()
+                try:
+                    result = self._synth(spoken)
+                except Exception as exc:        # noqa: BLE001 - re-raised below
+                    self.failed = True
+                    self._error = exc
+                    raise QueueFailed("synthesis failed") from exc
+                # Everything the engine returned travels, then our bookkeeping
+                # is laid over it. Cherry-picking known keys here silently
+                # dropped `audio_id` once - the field the client needs to
+                # actually FETCH the audio - and nothing failed; the chunk
+                # simply arrived with a null id. What an engine reports is not
+                # this module's to edit.
+                seconds = float(result.get("seconds") or 0.0)
+                synth_seconds = self._now() - started
+                # Every finished chunk is a free measurement of this engine on
+                # this machine right now - warm or cold, contended or idle. The
+                # policy calibrates itself out of ordinary work; nothing has to
+                # be benchmarked separately or configured by hand.
+                self._pacing.observe(chars=len(spoken), audio_seconds=seconds,
+                                     gen_seconds=synth_seconds)
+                self._chunks.append({
+                    **dict(result),
+                    "text": spoken,
+                    "source": text,
+                    "seconds": seconds,
+                    "synth_seconds": synth_seconds,
+                    "index": self._spoken + len(self._chunks),
+                })
+                made += 1
+            finally:
+                # After the append, never between it and the flag: the chunk has
+                # to be visible before the queue stops claiming to be busy.
+                self._in_flight = False
         return made
 
     # ── output ───────────────────────────────────────────────────────────────
@@ -322,6 +355,12 @@ class SpeechQueue:
 
     @property
     def finished(self) -> bool:
-        """Everything that was ever going to be said has been handed over."""
-        return (self._closed and not self._buffer
-                and not self._pending and not self._chunks)
+        """Everything that was ever going to be said has been handed over.
+
+        `_in_flight` is part of the answer, not a detail: a sentence being
+        synthesised RIGHT NOW is in neither _pending nor _chunks, and without
+        it the last sentence of every reply reported itself finished while it
+        was still being made.
+        """
+        return (self._closed and not self._buffer and not self._pending
+                and not self._chunks and not self._in_flight)

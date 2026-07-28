@@ -47,6 +47,15 @@ DEFAULT_BETA = 0.25
 #: Deviations of headroom a prediction carries. RFC 6298's K.
 DEFAULT_K = 4.0
 
+#: How fast `worst` forgets. A plain running maximum never comes down, so one
+#: freak sample - a fragmented allocator, a process that arrived mid-load -
+#: pins the ceiling there for the life of the worker and every decision made
+#: from it stays wrong. Decaying on each new sample lets an outlier fade over
+#: roughly ten observations while a figure that is genuinely the ceiling is
+#: re-confirmed by every one of them. It still jumps UP instantly: nothing here
+#: may under-report a cost that has actually been seen.
+DEFAULT_WORST_DECAY = 0.9
+
 
 class Line:
     """`y = fixed + slope * x`, fitted incrementally, predicted pessimistically.
@@ -54,18 +63,32 @@ class Line:
     Before anything has been measured the seed answers instead, so a caller
     never has to special-case "no data" - it only has to supply a seed it is
     willing to stand behind.
+
+    Three answers, for three different questions:
+      fit()      the line itself, for reading the shape of a cost
+      predict()  pessimistic, `fit + k * dev`, for work that scales
+      worst      a decaying ceiling, for a cost with no size to extrapolate
+                 along - where `k * dev` is a margin bootstrapped from the
+                 level rather than from any observed spread
     """
 
     __slots__ = ("n", "_sx", "_sy", "_sxx", "_sxy", "dev", "worst",
-                 "k", "beta", "seed_fixed", "seed_slope")
+                 "k", "beta", "seed_fixed", "seed_slope", "seed_dev",
+                 "worst_decay")
 
     def __init__(self, *, seed_fixed: float = 0.0, seed_slope: float = 0.0,
-                 seed_dev: float = 0.0, k: float = DEFAULT_K,
-                 beta: float = DEFAULT_BETA) -> None:
+                 seed_dev: float | None = None, k: float = DEFAULT_K,
+                 beta: float = DEFAULT_BETA,
+                 worst_decay: float = DEFAULT_WORST_DECAY) -> None:
         self.n = 0.0
         self._sx = self._sy = self._sxx = self._sxy = 0.0
-        self.dev = max(0.0, seed_dev)
+        # None, not 0.0: "the caller said nothing" and "the caller said zero"
+        # are different claims, and collapsing them is what let `observe`
+        # overwrite a declared seed in the first place.
+        self.seed_dev = None if seed_dev is None else max(0.0, seed_dev)
+        self.dev = self.seed_dev or 0.0
         self.worst = 0.0
+        self.worst_decay = min(1.0, max(0.0, worst_decay))
         self.k = k
         self.beta = beta
         self.seed_fixed = max(0.0, seed_fixed)
@@ -133,11 +156,21 @@ class Line:
         self._sy += y
         self._sxx += x * x
         self._sxy += x * y
-        self.worst = max(self.worst, y)
-        if self.n == 2.0:
+        self.worst = max(y, self.worst * self.worst_decay)
+        if self.n == 2.0 and self.seed_dev is None:
             # The first fit worth anything. Seed the deviation at half the
             # estimate, the way RFC 6298 seeds its variance, so the margin
             # starts cautious rather than at zero.
+            #
+            # ONLY when the caller declared nothing. This used to run
+            # unconditionally and OVERWRITE a considered seed with a bigger
+            # guess: Pacing hands over `fixed / 2` = 0.75 s and the second
+            # sample replaced it with 2.86 s - half the estimate at the mean
+            # audio length, which is a claim about the level rather than about
+            # any observed spread. `beta` = 0.25 then needed twelve chunks to
+            # decay it, and `first_chunk_window()` stays shut the whole time,
+            # so the sub-3s start did not arrive until the third or fourth
+            # reply of a session. A seed somebody stood behind is evidence too.
             fixed, slope = self.fit()
             self.dev = (fixed + slope * (self._sx / self.n)) / 2.0
 

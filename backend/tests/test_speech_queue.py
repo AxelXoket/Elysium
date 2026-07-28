@@ -87,8 +87,15 @@ def test_the_tail_is_released_when_the_stream_closes():
     assert synth.calls == ["No terminal here"]
 
 
+# The bank is PINNED in these two. pump() deliberately runs past the lookahead
+# while `_may_start()` is still false - getting to a safe start beats the cap,
+# or short sentences deadlock the pre-roll - so a count asserted against the
+# lookahead alone is really asserting where the seeded Pacing happens to think
+# a safe start is. That is a coincidence of three constants, and it broke the
+# first time they were re-measured. `preroll_seconds` exists for exactly this.
+
 def test_lookahead_is_bounded_so_a_long_reply_does_not_run_away():
-    q, synth, _ = make(lookahead=2)
+    q, synth, _ = make(lookahead=2, preroll_seconds=0.0)
     q.push(" ".join(f"Sentence {i}." for i in range(1, 9)))
     q.pump()
     # Nothing has been consumed by a player yet, so only the buffer depth runs.
@@ -96,7 +103,7 @@ def test_lookahead_is_bounded_so_a_long_reply_does_not_run_away():
 
 
 def test_taking_a_chunk_lets_the_next_one_be_prepared():
-    q, synth, _ = make(lookahead=2)
+    q, synth, _ = make(lookahead=2, preroll_seconds=0.0)
     q.push("A one. B two. C three. D four.")
     q.pump()
     assert len(synth.calls) == 2
@@ -394,3 +401,149 @@ class TestPlaybackStartsWhenItIsSafeNotAfterAFixedBank:
             q.take()
         _fixed, rtf = q._pacing._time.fit()
         assert rtf == pytest.approx(0.25, abs=0.1)    # 1s of work per 4s audio
+
+
+# ── the tail ─────────────────────────────────────────────────────────────────
+
+class TestNothingFinishesWhileItIsStillBeingMade:
+    """MEASURED BUG: a continuous reply stopped 6-7 words early, with no error.
+
+    `drain_events` ends the audio stream on `hook.finished`, which asks the
+    queue whether _buffer, _pending and _chunks are all empty. pump() takes a
+    sentence OUT of _pending and only puts it in _chunks once the engine has
+    answered - roughly fifteen seconds later on the machine this was found on.
+    For the last sentence of a reply every clause was therefore True while it
+    was still being synthesised, so the drain sent voice_done and threw the
+    tail away. Silently, which is the worst part: a reply that ended and a
+    reply that lost its ending looked identical on the wire.
+    """
+
+    def _sampling_synth(self, box):
+        """A synth that answers the finished question from INSIDE the engine
+        call - the exact window the event loop was reading during."""
+        def synth(text):
+            while box["queue"].take() is not None:
+                pass            # the player consumes as it goes
+            box["seen"].append((text, box["queue"].finished))
+            return {"path": "/audio/x.wav", "seconds": 2.0}
+        return synth
+
+    def test_the_last_sentence_is_not_reported_finished_mid_synthesis(self):
+        box = {"queue": None, "seen": []}
+        q = SpeechQueue(synth=self._sampling_synth(box), now=FakeClock())
+        box["queue"] = q
+        q.push("One sentence. Two sentence. The very last one.")
+        q.close()
+        drain(q)
+
+        assert [text for text, _ in box["seen"]] == [
+            "One sentence.", "Two sentence.", "The very last one."]
+        premature = [text for text, finished in box["seen"] if finished]
+        assert premature == [], f"reported finished while making {premature}"
+
+    def test_the_reply_does_not_lose_its_last_sentence(self):
+        """The user-visible shape of the bug, end to end.
+
+        drain_events polls from the event loop while pump() runs on the
+        synthesis worker, so it can read `finished` DURING an engine call.
+        Standing in for that observer here: the queue is asked mid-synthesis,
+        and if it says finished the drain stops - exactly what production did.
+        What is left is what the listener actually heard.
+        """
+        box = {"queue": None, "heard": [], "stopped_early": False}
+
+        def synth(text):
+            q = box["queue"]
+            while True:
+                chunk = q.take()
+                if chunk is None:
+                    break
+                box["heard"].append(chunk["text"])
+            # The observer's poll lands here, inside the engine call.
+            if q.finished:
+                box["stopped_early"] = True
+            return {"path": "/audio/x.wav", "seconds": 2.0}
+
+        q = SpeechQueue(synth=synth, now=FakeClock())
+        box["queue"] = q
+        q.push("First line. Second line. Third and final line.")
+        q.close()
+        # Every take() in this test goes through box["heard"], including the
+        # ones the synth makes: split accounting would hide a lost chunk.
+        while True:
+            q.pump()
+            chunk = q.take()
+            if chunk is None:
+                break
+            box["heard"].append(chunk["text"])
+
+        assert box["stopped_early"] is False, "the drain would have cut the tail"
+        assert box["heard"] == [
+            "First line.", "Second line.", "Third and final line."]
+
+    def test_a_failed_sentence_does_not_leave_the_queue_claiming_to_be_busy(self):
+        """The flag is cleared on the error path too - otherwise a broken
+        engine would keep `finished` False forever and the drain would spin
+        until its wall-clock backstop instead of reporting the failure."""
+        def boom(text):
+            raise RuntimeError("engine died")
+
+        q = SpeechQueue(synth=boom, now=FakeClock())
+        q.push("Only sentence.")
+        q.close()
+        with pytest.raises(QueueFailed):
+            q.pump()
+        assert q._in_flight is False
+
+
+def test_every_tag_the_queue_injects_is_one_the_budget_exempts():
+    """The pairing, asserted rather than assumed.
+
+    `narrator_tag` used to be a constructor knob nothing passed. Had anything
+    passed it, the tag would have landed in the text while sanitize_for_tts was
+    exempting a different string - so it would have been charged to the density
+    budget and the reply would have gone plainer the longer it ran. `speech_tag`
+    IS passed, from the standing tone, which is exactly why the exempt set is
+    derived from the same value instead of being a constant.
+    """
+    import inspect
+
+    import speech_prep
+
+    params = inspect.signature(SpeechQueue.__init__).parameters
+    assert "narrator_tag" not in params, "the knob with no source came back"
+
+    for tone in ("deep, slow", speech_prep.DEFAULT_SPEECH_TAG):
+        opts = speech_prep.PrepOptions(engine_supports_tags=True,
+                                       narrative="narrator", speech_tag=tone)
+        exempt = speech_prep.injected_tags(tone)
+        out = speech_prep.prepare("*She waits.* Say it again.", opts)
+        for tag in (opts.narrator_tag, opts.speech_tag):
+            assert f"[{tag}]" in out, tag
+            assert tag in exempt, f"{tag} is injected but not exempt"
+
+
+def test_the_queue_is_busy_from_the_moment_it_takes_the_sentence(monkeypatch):
+    """The window is popleft-to-append, not synth-to-append.
+
+    `prepare()` runs between the two: regex passes over the sentence plus the
+    user's pronunciation table. A flag raised at the engine call leaves that
+    stretch uncovered, and it is the same failure - `finished` reads true while
+    the last sentence of the reply is still on its way to the engine.
+    """
+    import speech_prep
+
+    real_prepare = speech_prep.prepare
+    seen = []
+
+    def watched(text, opts):
+        seen.append(q.finished)          # exactly where the old flag was blind
+        return real_prepare(text, opts)
+
+    monkeypatch.setattr(speech_prep, "prepare", watched)
+    q, _synth, _clock = make()
+    q.push("Only sentence here.")
+    q.close()
+    drain(q)
+
+    assert seen == [False], "reported finished while preparing the last sentence"

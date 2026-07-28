@@ -47,6 +47,33 @@ NARRATIVE_MODES = ("same", "narrator", "skip")
 #: Free-form on purpose - this engine takes natural language, not an enum.
 DEFAULT_NARRATOR_TAG = "narrator, measured, detached"
 
+#: What CLOSES a narration span. A direction stands until the next tag or the
+#: end of the sentence, so tagging narration without closing it handed the
+#: narrator's tone to the dialogue that followed in the same breath:
+#:     *She smiles and waves.* "It is good to see you again."
+#: became one measured, detached line instead of a told action and a spoken
+#: greeting. The asterisks end; the direction has to end with them.
+DEFAULT_SPEECH_TAG = "in character, natural"
+
+def injected_tags(speech_tag: str = DEFAULT_SPEECH_TAG) -> tuple[str, ...]:
+    """Every tag THIS MODULE puts in the text, as opposed to the ones the model
+    wrote. `voice_tags.sanitize_for_tts` is handed these so it can keep them
+    without charging them to the density dial, which is a budget for the
+    model's enthusiasm and not for a rendering choice the user made in
+    settings.
+
+    DERIVED, not a constant, because the closing direction is not fixed: it is
+    the user's standing tone when they have set one. A constant tuple was
+    right for exactly as long as both tags were hard-coded, and would have
+    started silently charging the tone to the budget the moment it was not -
+    the reply going plainer as it runs on, which reads as the model being dull
+    rather than as an allowance running out.
+
+    Takes the SAME value that goes into `PrepOptions.speech_tag`, so the
+    injection and the exemption cannot name different strings.
+    """
+    return (DEFAULT_NARRATOR_TAG, speech_tag or DEFAULT_SPEECH_TAG)
+
 
 @dataclass(frozen=True)
 class PrepOptions:
@@ -59,6 +86,7 @@ class PrepOptions:
     engine_supports_tags: bool = False
     narrative: str = "same"
     narrator_tag: str = DEFAULT_NARRATOR_TAG
+    speech_tag: str = DEFAULT_SPEECH_TAG
     pronunciations: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -281,8 +309,26 @@ def _apply_narrative(text: str, opts: PrepOptions) -> str:
 
     tag_narration = (opts.narrative == "narrator" and opts.engine_supports_tags)
     out: list[str] = []
+    #: The narrator direction is still standing and has to be closed before
+    #: anything that is NOT narration is performed under it.
+    narrating = False
     for seg in segs:
         if not seg.em:
+            if narrating and seg.text.strip():
+                narrating = False
+                lead = seg.text[:len(seg.text) - len(seg.text.lstrip())]
+                body = seg.text.lstrip()
+                # A direction the model chose for this very clause already
+                # closes the narration and is more specific than ours, so two
+                # are never stacked - the same rule apply_default_tone follows.
+                # `[` is not what to look for: _mask_tags runs BEFORE this step
+                # (see prepare), so the model's tag is already a sentinel
+                # marker by now and a bracket test silently never matched.
+                if not body.startswith((_SENTINEL, "[")):
+                    out.append(f"{lead}[{opts.speech_tag}] {body}")
+                    continue
+                out.append(f"{lead}{body}")
+                continue
             out.append(seg.text)
             continue
         if opts.narrative == "skip":
@@ -292,6 +338,7 @@ def _apply_narrative(text: str, opts: PrepOptions) -> str:
             continue
         if tag_narration:
             out.append(f"[{opts.narrator_tag}] {seg.text.strip()} ")
+            narrating = True
         else:
             out.append(seg.text)
     return "".join(out)

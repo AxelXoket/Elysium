@@ -39,6 +39,8 @@ from collections import deque
 from typing import Any, Callable, Mapping
 
 from . import pacing as pacing_module
+import speech_prep
+
 from .pacing import Pacing
 from .speech_queue import QueueFailed, SpeechQueue
 
@@ -67,6 +69,13 @@ class StreamSpeaker:
             "engine_supports_tags": engine_supports_tags,
             "narrative": narrative,
             "pronunciations": pronunciations,
+            # Off the synth, exactly like `uid` below and like
+            # `engine_supports_tags` at SpeakHook.enable. make_stream_synth is
+            # where the standing tone is read, and threading it through
+            # open_speaker and SpeakHook to reach PrepOptions would be three
+            # signatures carrying a value none of them has an opinion about.
+            "speech_tag": getattr(synth, "speech_tag",
+                                  speech_prep.DEFAULT_SPEECH_TAG),
         }
         if preroll_seconds is not None:
             kwargs["preroll_seconds"] = preroll_seconds
