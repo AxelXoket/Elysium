@@ -251,23 +251,54 @@ class StreamSpeaker:
                     self._queue.push(self._inbox.popleft())
                 if self._closing:
                     self._queue.close()
+                # ONE CHUNK AT A TIME, publishing between them.
+                #
+                # `pump()` on its own fills the lookahead before it returns, and
+                # this loop only published after it returned - so the opening
+                # chunk was held until the SECOND one finished, every time. It
+                # is the one delay a listener experiences in full: nothing is
+                # playing yet to cover it.
+                #
+                # Measured on the real app, from the Speak button: chunk one was
+                # written at 06:27:29.041 and the first sound did not leave
+                # until 06:27:32.999, when chunk two completed. 3.96 s of
+                # finished audio waiting on work the listener had no need of
+                # yet, inside a 10.46 s wait.
+                #
+                # DEFAULT_LOOKAHEAD's own comment says a deeper buffer "only
+                # adds latency at the START, which is the one place the delay is
+                # actually heard". The depth was never the problem - paying for
+                # all of it before handing over any of it was.
                 self._synthesising = True
                 try:
-                    self._queue.pump()
+                    # `not self._stop` is the whole reason this reads a flag
+                    # rather than looping freely. Pumping one chunk at a time
+                    # moved the loop that used to be OUT here - where the outer
+                    # `while not self._stop` caught an abort between sentences -
+                    # to in here, and the first version did not carry the check
+                    # with it. A cancelled reply went on synthesising every
+                    # sentence it had left, holding the engine's turn, so the
+                    # NEXT press queued behind an utterance nobody was listening
+                    # to any more. Observed live: one reply spoke in 5.64 s and
+                    # every press after it did nothing at all.
+                    while not self._stop:
+                        made = self._queue.pump(limit=1)
+                        # Only hand chunks over once the pre-roll is banked: the
+                        # client starts playing on the first one it receives,
+                        # and starting before there is a cushion is how a reply
+                        # ends up stuttering between sentences.
+                        if self._queue.ready():
+                            while True:
+                                chunk = self._queue.take()
+                                if chunk is None:
+                                    break
+                                with self._lock:
+                                    self._out.append(chunk)
+                                worked = True
+                        if not made:
+                            break
                 finally:
                     self._synthesising = False
-                # Only hand chunks over once the pre-roll is banked: the client
-                # starts playing on the first one it receives, and starting
-                # before there is a cushion is how a reply ends up stuttering
-                # between sentences.
-                if self._queue.ready():
-                    while True:
-                        chunk = self._queue.take()
-                        if chunk is None:
-                            break
-                        with self._lock:
-                            self._out.append(chunk)
-                        worked = True
             except QueueFailed as exc:
                 logger.warning("tts stream speech failed: %s", exc.__cause__ or exc)
                 self.error = exc.__cause__ or exc

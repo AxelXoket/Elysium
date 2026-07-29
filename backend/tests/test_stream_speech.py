@@ -303,3 +303,124 @@ def test_cancel_returns_immediately_while_a_sentence_is_being_synthesised():
     finally:
         gate.set()
         sp.close()
+
+
+class TestTheFirstChunkIsNotHeldForTheSecond:
+    """MEASURED BUG: 3.96 s of finished audio waiting on work nobody needed yet.
+
+    `pump()` fills the lookahead before it returns, and the worker only
+    published after it returned - so the opening chunk sat until the SECOND one
+    was synthesised. It is the one delay a listener experiences in full,
+    because nothing is playing yet to cover it.
+
+    From the real app, one press of Speak: chunk one was written at
+    06:27:29.041 and the first sound did not leave until 06:27:32.999, when
+    chunk two finished. Inside a 10.46 s wait, 3.96 s of it was this.
+
+    DEFAULT_LOOKAHEAD's own comment already said a deeper buffer "only adds
+    latency at the START, which is the one place the delay is actually heard".
+    The depth was never the problem; paying all of it before handing over any
+    of it was.
+    """
+
+    def _blocking_after_first(self):
+        """A synth that makes the first chunk, then parks inside the second."""
+        started_second = threading.Event()
+        release_second = threading.Event()
+        calls = []
+        lock = threading.Lock()
+
+        def synth(text):
+            with lock:
+                calls.append(text)
+                n = len(calls)
+            if n >= 2:
+                started_second.set()
+                assert release_second.wait(5.0), "second synth never released"
+            return {"path": f"/a/{n}.wav", "seconds": 3.0}
+
+        synth.calls = calls
+        synth.started_second = started_second
+        synth.release_second = release_second
+        return synth
+
+    def test_the_opening_chunk_arrives_while_the_next_is_still_being_made(self):
+        synth = self._blocking_after_first()
+        sp = StreamSpeaker(synth, preroll_seconds=0.0)
+        try:
+            sp.feed("First sentence here. Second sentence here. Third one.")
+            sp.finish()
+
+            assert synth.started_second.wait(5.0), "the second synth never ran"
+            # The engine is now BLOCKED inside chunk two. Chunk one has been
+            # finished for as long as that has been true, and the listener is
+            # entitled to it.
+            deadline = time.monotonic() + 5.0
+            out = []
+            while not out and time.monotonic() < deadline:
+                out = sp.drain()
+                if not out:
+                    time.sleep(0.01)
+
+            assert out, (
+                "the first chunk was still being withheld while the engine was "
+                "busy with the second - which is the whole bug"
+            )
+            assert len(out) == 1
+        finally:
+            synth.release_second.set()
+            sp.close()
+
+    def test_every_chunk_still_arrives_in_order(self):
+        """The fix must not cost the ordering the queue exists to guarantee."""
+        sp, synth = speaker(preroll_seconds=0.0)
+        try:
+            sp.feed("One here. Two here. Three here. Four here.")
+            sp.finish()
+            assert sp.wait_idle(5.0)
+            got = []
+            deadline = time.monotonic() + 5.0
+            while len(got) < 4 and time.monotonic() < deadline:
+                got.extend(sp.drain())
+                if len(got) < 4:
+                    time.sleep(0.01)
+            assert [c["text"] for c in got] == [
+                "One here.", "Two here.", "Three here.", "Four here."]
+        finally:
+            sp.close()
+
+    def test_cancelling_stops_the_engine_instead_of_finishing_the_reply(self):
+        """REGRESSION, and a live one: pumping a chunk at a time moved the loop
+        that used to sit outside this block - where `while not self._stop`
+        caught an abort between sentences - inside it, and the check did not
+        come along. A cancelled reply kept synthesising every sentence it had
+        left, holding the engine's turn, so the next press queued behind an
+        utterance nobody was listening to. Observed live: one reply spoke and
+        every press after it did nothing at all.
+        """
+        synth = self._blocking_after_first()
+        sp = StreamSpeaker(synth, preroll_seconds=0.0)
+        try:
+            # Eight sentences, so "kept going to the end" is unmistakable.
+            sp.feed("One here. Two here. Three here. Four here. Five here. "
+                    "Six here. Seven here. Eight here.")
+            sp.finish()
+            assert synth.started_second.wait(5.0)
+
+            sp.cancel()
+            synth.release_second.set()      # let the in-flight sentence finish
+
+            deadline = time.monotonic() + 5.0
+            while sp._thread.is_alive() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert not sp._thread.is_alive(), "the worker ignored the abort"
+
+            # Two: the one that was already in flight when cancel landed, and
+            # the one before it. Not the whole reply.
+            assert len(synth.calls) <= 2, (
+                f"synthesised {len(synth.calls)} sentences after being "
+                "cancelled - the abort is not being read between chunks"
+            )
+        finally:
+            synth.release_second.set()
+            sp.close()

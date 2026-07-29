@@ -34,6 +34,7 @@ Privacy notes specific to this file:
 import json
 import logging
 import re
+import time
 from pathlib import Path
 from typing import NamedTuple
 
@@ -572,6 +573,20 @@ async def voice_speak_stream(body: SpeakBody) -> StreamingResponse:
     """
     import anyio
 
+    requested_at = time.perf_counter()
+    # Recorded BEFORE anything runs, because the two ways this endpoint can be
+    # slow are indistinguishable from the outside: a press that lands on a ready
+    # engine waits for synthesis, and a press that lands while the model is
+    # still loading waits for the load first and then for synthesis. Both are
+    # silence. The log carried neither, so "why did that take twelve seconds"
+    # could not be answered from a log file at all - only guessed at, and a
+    # guess about where time goes is how the last two wrong diagnoses started.
+    try:
+        engine_was_ready = _host().snapshot().get("state") == "loaded"
+    except Exception:                                    # noqa: BLE001
+        # Diagnostics must never be the reason a reply is not spoken.
+        engine_was_ready = False
+
     def _prepare():
         """Both halves of the set-up, in ONE worker-thread hop.
 
@@ -604,6 +619,7 @@ async def voice_speak_stream(body: SpeakBody) -> StreamingResponse:
         # written for this endpoint's failure contract (KÖK 13).
         logger.warning("tts: speak_stream setup failed", exc_info=True)
         raise HTTPException(_STATUS[TTS_WORKER_FAILED], TTS_WORKER_FAILED)
+    prepared_at = time.perf_counter()
 
     async def event_source():
         speaker = stream_hook.StreamSpeaker(
@@ -637,6 +653,17 @@ async def voice_speak_stream(body: SpeakBody) -> StreamingResponse:
                     yield _tts_sse({"type": "voice_notice", "note": note})
                     sent_any = True
                 for chunk in speaker.drain():
+                    if index == 0:
+                        # The ONE number a listener actually experiences, split
+                        # into the two halves that have different fixes: setup
+                        # is vault reads and model resolution, synthesis is the
+                        # engine (and any load it had to wait for). Logged once
+                        # per utterance, at the moment the first sound becomes
+                        # available - every later chunk is covered by playback
+                        # of this one.
+                        _log_first_audio(
+                            requested_at, prepared_at, engine_was_ready,
+                            len(text), chunk.get("seconds"))
                     yield _tts_sse({
                         "type": "voice_chunk",
                         "audio_id": chunk.get("audio_id") or stream_hook._stem(chunk.get("path")),
@@ -687,6 +714,36 @@ async def voice_speak_stream(body: SpeakBody) -> StreamingResponse:
 
     return StreamingResponse(event_source(), media_type="text/event-stream",
                              headers=_STREAM_SSE_HEADERS)
+
+
+def _log_first_audio(requested_at: float, prepared_at: float,
+                     engine_was_ready: bool, chars: int,
+                     audio_seconds: float | None) -> None:
+    """Report how long the listener waited, and which half of the path it went to.
+
+    `setup` is the vault read, the model resolution and the settings; `engine`
+    is synthesis plus any model load the request had to sit behind. They have
+    entirely different fixes, and a single elapsed figure cannot tell them
+    apart - which is why "engine was ready / not loaded" is on the line as
+    well. The speech length is there so the ratio can be read directly: the
+    same 5 seconds means something different in front of 3 seconds of audio
+    than in front of 15.
+
+    Best-effort by construction. This runs inside the streaming generator,
+    where a raised exception ends the utterance, and a diagnostic must never be
+    the reason somebody's reply stopped talking.
+    """
+    try:
+        now = time.perf_counter()
+        logger.info(
+            "tts: first audio in %.2fs (setup %.2fs, engine %.2fs, "
+            "%d chars in, %.2fs of speech out, engine was %s)",
+            now - requested_at, prepared_at - requested_at, now - prepared_at,
+            chars, float(audio_seconds or 0.0),
+            "ready" if engine_was_ready else "not loaded",
+        )
+    except Exception:                                    # noqa: BLE001
+        pass
 
 
 def _tts_sse(obj: dict) -> str:

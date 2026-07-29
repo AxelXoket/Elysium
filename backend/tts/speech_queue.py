@@ -177,8 +177,15 @@ class SpeechQueue:
 
     # ── work ─────────────────────────────────────────────────────────────────
 
-    def pump(self) -> int:
+    def pump(self, limit: int | None = None) -> int:
         """Synthesise up to the lookahead. Returns how many chunks were made.
+
+        `limit` caps how many chunks ONE call will make, so a caller can get
+        control back between them. StreamSpeaker uses `limit=1` and hands each
+        finished chunk to the client before asking for the next: the lookahead
+        exists to keep the player fed, and paying for all of it before handing
+        over any of it is silence the listener hears in full. Default None is
+        the old behaviour - fill the lookahead and return.
 
         Raises `QueueFailed` if the engine fails - and keeps raising, so a
         caller that swallows the first one cannot accidentally half-speak the
@@ -202,6 +209,8 @@ class SpeechQueue:
             len(self._chunks) < self._lookahead
             or (not self._started and not self._may_start())
         ):
+            if limit is not None and made >= limit:
+                break
             text = self._pending.popleft()
             # THE FLAG GOES UP HERE, not at the synth call. From this line the
             # sentence is in no collection at all - popleft took it out of
