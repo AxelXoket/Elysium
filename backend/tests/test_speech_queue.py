@@ -547,3 +547,82 @@ def test_the_queue_is_busy_from_the_moment_it_takes_the_sentence(monkeypatch):
     drain(q)
 
     assert seen == [False], "reported finished while preparing the last sentence"
+
+
+class TestNoChunkOutgrowsTheBankBehindIt:
+    """MEASURED BUG: the fast start was cut and then thrown away.
+
+    `first_chunk_window` makes the opening piece small so speech can begin
+    early. Nothing capped the SECOND piece, and a first chunk cannot cover a
+    second that takes longer to make than the first takes to play - so
+    `may_start` correctly refused and playback sat waiting for a chunk the
+    early cut was supposed to have made unnecessary.
+
+    On a real reply: 114 characters then 264, which is 7.5 s of audio against
+    10.8 s of work. Playback waited 3.3 s after the first chunk was already
+    made, on top of the 4.3 s it took to make it. `Pacing.max_chunk_chars` had
+    been able to answer this since it was written and nothing ever asked.
+    """
+
+    #: One long narration span, the shape that produced the measurement: the
+    #: sentence split lands early and leaves a much bigger remainder.
+    REPLY = (
+        "Your nails trailing along my throat make my whole body go tight, "
+        "breath catching sharp in my chest. My eyes close completely this "
+        "time, head tilting slightly into your hand without meaning to, and "
+        "for a moment neither of us says anything at all, because there is "
+        "nothing either of us could say that would be better than this is."
+    )
+
+    def _run(self):
+        from tts import pacing as pacing_module
+
+        pacing_module.reset_shared()
+        clock = FakeClock()
+        calls = []
+
+        def synth(text):
+            audio = len(text) * 0.066          # the measured seconds per char
+            clock.advance(0.58 + 0.50 * audio)  # the measured c and RTF
+            calls.append(len(text))
+            return {"path": "/a.wav", "seconds": audio}
+
+        q = SpeechQueue(synth=synth, now=clock,
+                        pacing=pacing_module.for_model("test-model"))
+        q.push(self.REPLY)
+        q.close()
+        drain(q)
+        return q, calls
+
+    def test_the_second_chunk_is_cut_to_what_the_first_one_covers(self):
+        _q, calls = self._run()
+        assert len(calls) >= 2, "the reply has to reach the engine in pieces"
+        assert calls[1] <= calls[0], (
+            f"chunk two ({calls[1]}) outgrew chunk one ({calls[0]}), which is "
+            "exactly the shape that makes playback wait"
+        )
+
+    def test_playback_no_longer_waits_after_the_first_chunk(self):
+        """The property the sizes exist to produce, asserted through the
+        pacing policy itself rather than through a chunk count."""
+        from tts import pacing as pacing_module
+
+        _q, calls = self._run()
+        p = pacing_module.for_model("test-model")
+        banked = calls[0] * 0.066
+        assert p.start_delay(banked, "x" * calls[1]) == 0.0
+
+    def test_a_reply_that_already_fits_is_not_cut_further(self):
+        """The cap only binds when it has to. Extra seams cost a fixed engine
+        call each and buy nothing once the queue is ahead."""
+        from tts import pacing as pacing_module
+
+        pacing_module.reset_shared()
+        clock = FakeClock()
+        q, synth, _ = make(clock=clock, synth=synth_ok(seconds=2.0),
+                           pacing=pacing_module.for_model("test-model"))
+        q.push("One sentence. Two sentence. Three sentence.")
+        q.close()
+        drain(q)
+        assert synth.calls == ["One sentence.", "Two sentence.",
+                               "Three sentence."]

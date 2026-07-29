@@ -44,6 +44,13 @@ class QueueFailed(RuntimeError):
 #: the delay is actually heard.
 DEFAULT_LOOKAHEAD = 2
 
+#: A capped chunk is never cut shorter than this. The cap answers "how much
+#: can the bank cover", which on a thin bank is a small number - and a seam
+#: two words in buys nothing while costing a fixed engine call. Below it the
+#: chunk is left whole and the queue accepts being briefly behind, which is
+#: the same trade `first_chunk`'s own floor makes.
+MIN_SPLIT_CHARS = 40
+
 #: How many dropped-sentence excerpts to keep. The list is 80-character
 #: extracts of the USER'S conversation, so it is both a memory question and a
 #: privacy one - it used to grow without any bound at all, for the whole life
@@ -220,6 +227,32 @@ class SpeechQueue:
                     if window is not None:
                         split = speech_prep.first_chunk(
                             text, min_chars=window[0], max_chars=window[1])
+                        if split is not None:
+                            text, tail = split
+                            self._pending.appendleft(tail)
+                else:
+                    # AND EVERY OTHER CHUNK IS CAPPED, which is the half that
+                    # was missing. `first_chunk_window` cuts the opening piece
+                    # small so speech starts early; nothing then stopped the
+                    # SECOND piece from being three times its size, and a first
+                    # chunk cannot cover a second that takes longer to make
+                    # than the first takes to play. `may_start` sees that and
+                    # correctly refuses - so the fast start was cut and then
+                    # thrown away by the wait it caused.
+                    #
+                    # Measured on a real reply: 114 characters then 264, which
+                    # is 7.5 s of audio against 10.8 s of work, so playback sat
+                    # for 3.3 s after the first chunk was already made. Capping
+                    # the second at what the bank covers removes the wait
+                    # entirely - the same seams, just more of them.
+                    #
+                    # `max_chunk_chars` has been able to answer this since it
+                    # was written and nothing ever asked it.
+                    cap = self._pacing.max_chunk_chars(self.buffered_seconds())
+                    if cap and len(text) > cap:
+                        split = speech_prep.first_chunk(
+                            text, min_chars=min(cap, MIN_SPLIT_CHARS),
+                            max_chars=cap)
                         if split is not None:
                             text, tail = split
                             self._pending.appendleft(tail)
