@@ -8,7 +8,10 @@ import {
 } from "react";
 import { useMutationState } from "@tanstack/react-query";
 import { useUiStore } from "@/lib/store/uiStore";
-import { useChatBackground } from "@/lib/appearance/useChatBackground";
+import {
+  useAreaAspect,
+  useChatBackground,
+} from "@/lib/appearance/useChatBackground";
 import { useChats, useMessages, useActivateVariant } from "@/lib/query/chats";
 import { messageAnchor } from "@/lib/chat";
 import {
@@ -90,7 +93,21 @@ export function ChatCanvas() {
   const surfaceFinish = useUiStore((s) => s.surfaceFinish);
   // Chat wallpaper: layers + adaptive-chrome flag. Only painted while a chat
   // is open (EmptyState keeps the plain warm canvas).
-  const chatBg = useChatBackground();
+  //
+  // The scroller is measured because it is the surface the picture is painted
+  // on, and its shape moves with the window, the sidebar and the right panel.
+  // A crop chosen at one shape has to hold at every other, which is what the
+  // ratio is for; see useAreaAspect.
+  const { ref: bgAreaRef, aspect: bgAreaAspect } = useAreaAspect<HTMLDivElement>();
+  const chatBg = useChatBackground(bgAreaAspect);
+  // Published so the framing preview in Settings can be drawn at the shape
+  // the picture is really seen in. Measured here because this is the element
+  // that has it; a dialog floating over the app cannot ask the window, which
+  // is a different shape once the sidebar and right panel are counted.
+  const setChatAreaAspect = useUiStore((s) => s.setChatAreaAspect);
+  useEffect(() => {
+    setChatAreaAspect(bgAreaAspect);
+  }, [bgAreaAspect, setChatAreaAspect]);
   const { streamingByChat, startSend, startRegenerate, startEdit, stop } =
     useStreamingCompletion();
   const { data: messages } = useMessages(selectedChatId);
@@ -99,6 +116,17 @@ export function ChatCanvas() {
   const { data: models } = useModels();
   const generationSettings = useGenerationSettings();
   const scrollRef = useRef<HTMLDivElement>(null);
+  // One node, two readers: the scroll logic keeps the ref it has always had,
+  // and the wallpaper gets the same element to measure. Merged here rather
+  // than by wrapping the div, because an extra box between the scroller and
+  // its content is a scroll bug waiting to happen.
+  const setScrollNode = useCallback(
+    (node: HTMLDivElement | null) => {
+      scrollRef.current = node;
+      bgAreaRef(node);
+    },
+    [bgAreaRef],
+  );
   const reduced = useReducedMotion();
 
   // Per-chat pending state: a request for chat A must not show indicators
@@ -857,7 +885,7 @@ export function ChatCanvas() {
           classes. */}
       <div className="relative flex min-h-0 flex-1 flex-col">
         <div
-          ref={scrollRef}
+          ref={setScrollNode}
           // v1.1 E2: msg-contrast-{level} retunes bubble-surface vars only;
           // it is orthogonal to chat-bg-dark (bare-canvas chrome) and applied
           // unconditionally (inert without bubbles - a global reader pref).

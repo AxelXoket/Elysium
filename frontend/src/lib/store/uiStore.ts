@@ -1,6 +1,13 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
+import {
+  CHAT_BG_FOCUS_DEFAULT,
+  CHAT_BG_ZOOM_MIN,
+  clampFraming,
+  type ChatBgFraming,
+} from "@/lib/appearance/chatBackground";
+
 // ── Tab type (Phase 6E-A: renamed from "model|info|settings") ──────────────
 // Old persisted values ("model", "info", "settings") are migrated in the
 // persist config below. Any stale localStorage is normalized on first load.
@@ -15,6 +22,23 @@ export const MSG_FONT_MAX = 19;
 export const MSG_LINE_DEFAULT = 1.625;
 export const MSG_LINE_MIN = 1.3;
 export const MSG_LINE_MAX = 1.95;
+
+/** Bubble solidity. 1 is today's look and the default, so nobody's chat
+ * changes on update. The floor is not 0: a bubble you cannot find is not a
+ * setting anyone wants, and the sliders in this app stop at the last value
+ * that still works rather than at the last one that parses. */
+export const MSG_OPACITY_DEFAULT = 1;
+export const MSG_OPACITY_MIN = 0.35;
+export const MSG_OPACITY_MAX = 1;
+
+/** The framing half of the chat-background state, as stored. Kept next to the
+ * defaults it belongs with so "a new picture starts unframed" and "a fresh
+ * profile starts unframed" cannot drift apart. */
+const CHAT_BG_FRAMING_DEFAULT_STATE = {
+  chatBgFocusX: CHAT_BG_FOCUS_DEFAULT,
+  chatBgFocusY: CHAT_BG_FOCUS_DEFAULT,
+  chatBgZoom: CHAT_BG_ZOOM_MIN,
+};
 
 // v1.1 E2: message contrast preset. Default is the zero-change baseline.
 /** How a message bubble's surface catches light. Matte is today's look. */
@@ -142,6 +166,11 @@ interface UiState {
   /** Bubble surface finish. Bubbles only - never controls (V11). */
   surfaceFinish: SurfaceFinish;
 
+  /** How solid a message bubble is, 0.35..1. Applies to the BUBBLE only -
+   * the text on it stays fully opaque, because a translucent bubble is a
+   * design choice and unreadable text is not. */
+  msgOpacity: number;
+
   // Chat background (image blob lives in the appearance blob store, NOT
   // here - persisting only flat scalars keeps localStorage writes tiny).
   chatBgOn: boolean;
@@ -151,9 +180,27 @@ interface UiState {
   chatBgContrast: number;
   /** 'auto' or a '#rrggbb' tint. */
   chatBgTint: string;
+  /** Which part of the picture to show, 0..100 each. Percentages rather than
+   * a pixel rectangle on purpose: the chat area is a different size in every
+   * window, and a rectangle measured against one of them is wrong in all the
+   * others. See lib/appearance/chatBackground.ts. */
+  chatBgFocusX: number;
+  chatBgFocusY: number;
+  /** 1 = the whole picture (cover), higher crops in. */
+  chatBgZoom: number;
+  /** width / height of the stored image, recorded when it is set. Needed to
+   * know which axis a zoom hangs off; null until an image has been chosen
+   * under a build that records it. */
+  chatBgAspect: number | null;
   /** Session-only refresh signal: bumped when the image blob is replaced so
    * the object-URL hook reloads. Deliberately NOT persisted. */
   chatBgRev: number;
+  /** width / height of the live chat area, published by ChatCanvas so the
+   * framing preview in Settings can be drawn at the shape the picture will
+   * actually be seen in. Session-only: it is a measurement of this window,
+   * not a preference, and restoring a stale one would frame the preview for
+   * a window size that no longer exists. */
+  chatAreaAspect: number | null;
 
   /** Animated mist backdrop behind the app frame (WebGL; falls back to the
    * static gradient wherever it cannot or should not run). */
@@ -186,11 +233,18 @@ interface UiState {
   setMsgInk: (hex: string | null) => void;
   setSurfaceFinish: (finish: SurfaceFinish) => void;
   /** Image stored → mark on + record its luminance (contrast/tint kept). */
-  setChatBgMeta: (meta: { lum: number }) => void;
+  setChatBgMeta: (meta: { lum: number; aspect?: number }) => void;
   /** Image removed → mark off (contrast/tint kept for the next image). */
   clearChatBg: () => void;
   setChatBgContrast: (contrast: number) => void;
   setChatBgTint: (tint: string) => void;
+  /** Move and/or crop the picture. Partial so the preview can drag the focus
+   * without restating the zoom. */
+  setChatBgFraming: (framing: Partial<ChatBgFraming>) => void;
+  setChatAreaAspect: (aspect: number | null) => void;
+  /** Back to the whole picture, centred. */
+  resetChatBgFraming: () => void;
+  setMsgOpacity: (opacity: number) => void;
   setAmbientFogOn: (on: boolean) => void;
   /** Bulk write-through for persisted generation scalars (FF7). */
   setGenSettings: (values: Partial<GenPersistedSettings>) => void;
@@ -230,11 +284,15 @@ export const useUiStore = create<UiState>()(
       settingsInitialPage: null,
       msgInk: null,
       surfaceFinish: "matte",
+      msgOpacity: MSG_OPACITY_DEFAULT,
+      ...CHAT_BG_FRAMING_DEFAULT_STATE,
+      chatBgAspect: null,
       chatBgOn: false,
       chatBgLum: 0.5,
       chatBgContrast: 0.35,
       chatBgTint: "auto",
       chatBgRev: 0,
+      chatAreaAspect: null,
       ambientFogOn: true,
       ...GEN_PERSISTED_DEFAULTS,
 
@@ -270,13 +328,49 @@ export const useUiStore = create<UiState>()(
       markNarrationMigrated: () => set({ narrationMigrated: true }),
       setMsgInk: (hex) => set({ msgInk: hex }),
       setSurfaceFinish: (finish) => set({ surfaceFinish: finish }),
-      setChatBgMeta: ({ lum }) =>
+      setChatBgMeta: ({ lum, aspect }) =>
         set((s) => ({
           chatBgOn: true,
           chatBgLum: Number.isFinite(lum) ? Math.min(1, Math.max(0, lum)) : 0.5,
+          chatBgAspect:
+            typeof aspect === "number" && Number.isFinite(aspect) && aspect > 0
+              ? aspect
+              : null,
+          // A NEW PICTURE STARTS UNFRAMED. Carrying the old framing over would
+          // apply a crop chosen for a different photo - a portrait's framing
+          // on a landscape lands somewhere nobody picked, and the user would
+          // have to undo a choice they never made.
+          ...CHAT_BG_FRAMING_DEFAULT_STATE,
           chatBgRev: s.chatBgRev + 1,
         })),
       clearChatBg: () => set({ chatBgOn: false }),
+      setChatBgFraming: (framing) =>
+        set((s) => {
+          const next = clampFraming({
+            focusX: framing.focusX ?? s.chatBgFocusX,
+            focusY: framing.focusY ?? s.chatBgFocusY,
+            zoom: framing.zoom ?? s.chatBgZoom,
+          });
+          return {
+            chatBgFocusX: next.focusX,
+            chatBgFocusY: next.focusY,
+            chatBgZoom: next.zoom,
+          };
+        }),
+      resetChatBgFraming: () => set({ ...CHAT_BG_FRAMING_DEFAULT_STATE }),
+      setChatAreaAspect: (aspect) =>
+        set({
+          chatAreaAspect:
+            typeof aspect === "number" && Number.isFinite(aspect) && aspect > 0
+              ? aspect
+              : null,
+        }),
+      setMsgOpacity: (opacity) =>
+        set({
+          msgOpacity: Number.isFinite(opacity)
+            ? Math.min(MSG_OPACITY_MAX, Math.max(MSG_OPACITY_MIN, opacity))
+            : MSG_OPACITY_MAX,
+        }),
       setChatBgContrast: (contrast) =>
         set({
           chatBgContrast: Number.isFinite(contrast)
@@ -327,10 +421,15 @@ export const useUiStore = create<UiState>()(
         narrationMigrated: state.narrationMigrated,
         msgInk: state.msgInk,
         surfaceFinish: state.surfaceFinish,
+        msgOpacity: state.msgOpacity,
         chatBgOn: state.chatBgOn,
         chatBgLum: state.chatBgLum,
         chatBgContrast: state.chatBgContrast,
         chatBgTint: state.chatBgTint,
+        chatBgFocusX: state.chatBgFocusX,
+        chatBgFocusY: state.chatBgFocusY,
+        chatBgZoom: state.chatBgZoom,
+        chatBgAspect: state.chatBgAspect,
         ambientFogOn: state.ambientFogOn,
         // v1.1 (FF7) generation sampling scalars - neutral names, never
         // stopSequences (those are user content).

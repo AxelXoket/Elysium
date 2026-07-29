@@ -8,6 +8,7 @@ import { SpeakLiveButton } from "./SpeakLiveButton";
 import { useDeleteMessageAndFollowing } from "@/lib/query/chats";
 import { canRegenerateMessage, parseServerDate, serverDateTimeAttr } from "@/lib/chat";
 import { useUiStore } from "@/lib/store/uiStore";
+import { bubbleSurface } from "@/lib/appearance/bubbleSurface";
 import { imageUrl } from "@/lib/api/uploads";
 import { ImageLightbox } from "./ImageLightbox";
 import {
@@ -82,6 +83,7 @@ export const MessageBubble = memo(function MessageBubble({
   // mounts (chat open, refetch) must not play an entrance shift.
   const [hasNavigated, setHasNavigated] = useState(false);
   const selectedModelId = useUiStore((s) => s.selectedModelId);
+  const msgOpacity = useUiStore((s) => s.msgOpacity);
   const deleteMessage = useDeleteMessageAndFollowing();
   const isUser = message.role === "user";
   const isPersisted = message.id > 0;
@@ -346,17 +348,26 @@ export const MessageBubble = memo(function MessageBubble({
             // Default sets nothing, so the fallbacks reproduce today's pixels
             // bit-for-bit (zero-change contract). box-shadow stays owned by
             // chat-bg-dark, never the presets (orthogonality).
+            // The SURFACE takes the opacity, never the element: `opacity` on
+            // the bubble would fade the words with it, and text you cannot
+            // read is not a translucency setting. `color-mix` thins the fill
+            // and leaves `color` untouched, so the ink stays solid at every
+            // setting - see bubbleSurface.
             isUser
               ? {
-                  backgroundColor:
+                  backgroundColor: bubbleSurface(
                     "var(--msg-user-bg, var(--color-es-user-bubble))",
+                    msgOpacity,
+                  ),
                   color: "var(--msg-user-fg, var(--color-es-user-bubble-text))",
                   borderBottomRightRadius: "2px",
                   boxShadow: "var(--shadow-bubble)",
                 }
               : {
-                  backgroundColor:
+                  backgroundColor: bubbleSurface(
                     "var(--msg-asst-bg, var(--color-es-asst-bubble))",
+                    msgOpacity,
+                  ),
                   color: "var(--msg-asst-fg, var(--color-es-asst-bubble-text))",
                   borderBottomLeftRadius: "2px",
                   boxShadow: "var(--shadow-bubble)",

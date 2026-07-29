@@ -2229,6 +2229,97 @@
   cursor: not-allowed;
 }
 
+/* Wallpaper framing preview: a viewport onto the picture, drawn at the live
+   chat area's ratio so the crop shown is the crop delivered. Borrows the tint
+   chip's border and selected-ring recipe so it reads as the same family of
+   control rather than as a photo widget dropped into the panel. */
+.chat-bg-framing-preview {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  border-radius: var(--radius-input);
+  border: 1px solid rgba(200, 216, 236, 0.28);
+  background-color: rgba(200, 216, 236, 0.05);
+  /* `grab` rather than `move`: the picture is what the pointer takes hold of,
+     and the cursor is the only affordance saying the box can be dragged. */
+  cursor: grab;
+  touch-action: none;
+  transition:
+    box-shadow var(--duration-fast) var(--ease-smooth),
+    border-color var(--duration-fast) var(--ease-smooth);
+}
+
+.chat-bg-framing-preview:active {
+  cursor: grabbing;
+}
+
+.chat-bg-framing-preview:focus-visible {
+  outline: none;
+  border-color: rgba(62, 114, 176, 0.95);
+  box-shadow: 0 0 0 2px rgba(62, 114, 176, 0.25);
+}
+
+.chat-bg-framing-preview[aria-disabled="true"],
+.chat-bg-framing-preview[data-empty="true"] {
+  cursor: default;
+}
+
+.chat-bg-framing-preview[aria-disabled="true"] {
+  opacity: 0.35;
+}
+
+/* Thirds, drawn faintly over the picture. They are what makes the box read as
+   a frame you are moving rather than a thumbnail of the finished thing. */
+.chat-bg-framing-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right,
+      transparent calc(33.333% - 0.5px), rgba(240, 246, 252, 0.22) calc(33.333% - 0.5px),
+      rgba(240, 246, 252, 0.22) calc(33.333% + 0.5px), transparent calc(33.333% + 0.5px),
+      transparent calc(66.667% - 0.5px), rgba(240, 246, 252, 0.22) calc(66.667% - 0.5px),
+      rgba(240, 246, 252, 0.22) calc(66.667% + 0.5px), transparent calc(66.667% + 0.5px)),
+    linear-gradient(to bottom,
+      transparent calc(33.333% - 0.5px), rgba(240, 246, 252, 0.22) calc(33.333% - 0.5px),
+      rgba(240, 246, 252, 0.22) calc(33.333% + 0.5px), transparent calc(33.333% + 0.5px),
+      transparent calc(66.667% - 0.5px), rgba(240, 246, 252, 0.22) calc(66.667% - 0.5px),
+      rgba(240, 246, 252, 0.22) calc(66.667% + 0.5px), transparent calc(66.667% + 0.5px));
+}
+
+.chat-bg-framing-preview[data-empty="true"] .chat-bg-framing-grid {
+  display: none;
+}
+
+.chat-bg-framing-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(202, 212, 224, 0.55);
+  font-size: 11px;
+}
+
+/* A text button that sits on a control's own header row, next to its label -
+   quieter than the dialog's footer buttons, which are decisions about the
+   whole panel rather than about one setting. */
+.settings-inline-reset {
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(202, 212, 224, 0.72);
+  transition: color var(--duration-fast) var(--ease-smooth);
+}
+
+.settings-inline-reset:hover:not(:disabled) {
+  color: rgba(238, 243, 249, 0.98);
+}
+
+.settings-inline-reset:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
 /* Text-pill segments (Message contrast) - the .settings-tint-chip state
    recipe as a labelled pill. */
 .settings-segment-option {

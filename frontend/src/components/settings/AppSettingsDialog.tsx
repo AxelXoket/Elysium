@@ -32,9 +32,13 @@ import { ACCEPTED_IMAGE_ACCEPT } from "@/components/chat/attachments";
 import {
   CHAT_BG_CONTRAST_MAX,
   CHAT_BG_CONTRAST_MIN,
+  CHAT_BG_FOCUS_DEFAULT,
   CHAT_BG_TINTS,
+  CHAT_BG_ZOOM_MAX,
+  CHAT_BG_ZOOM_MIN,
   processChatBgImage,
 } from "@/lib/appearance/chatBackground";
+import { ChatBgFramingPreview } from "@/components/settings/ChatBgFramingPreview";
 import { deleteChatBgBlob, putChatBgBlob } from "@/lib/store/chatBgDb";
 import {
   useUiStore,
@@ -44,6 +48,9 @@ import {
   MSG_LINE_DEFAULT,
   MSG_LINE_MIN,
   MSG_LINE_MAX,
+  MSG_OPACITY_DEFAULT,
+  MSG_OPACITY_MIN,
+  MSG_OPACITY_MAX,
 } from "@/lib/store/uiStore";
 import { useQueryClient } from "@tanstack/react-query";
 import { keys } from "@/lib/query/keys";
@@ -287,6 +294,8 @@ function TextSettingsPage() {
   const setSurfaceFinish = useUiStore((s) => s.setSurfaceFinish);
   const setMsgLineHeight = useUiStore((s) => s.setMsgLineHeight);
   const setMsgContrast = useUiStore((s) => s.setMsgContrast);
+  const msgOpacity = useUiStore((s) => s.msgOpacity);
+  const setMsgOpacity = useUiStore((s) => s.setMsgOpacity);
   // EVERY setting the reset handler clears. It used to check only font, line
   // height and contrast while the handler also cleared msgInk and
   // surfaceFinish, so the button disagreed with itself in both directions: a
@@ -298,7 +307,8 @@ function TextSettingsPage() {
     msgLineHeight === MSG_LINE_DEFAULT &&
     msgContrast === "default" &&
     msgInk == null &&
-    surfaceFinish === "matte";
+    surfaceFinish === "matte" &&
+    msgOpacity === MSG_OPACITY_DEFAULT;
 
   return (
     <div className="space-y-4">
@@ -321,6 +331,20 @@ function TextSettingsPage() {
         display={msgLineHeight.toFixed(2)}
         helper="Room between lines in a message."
         onChange={setMsgLineHeight}
+      />
+
+      {/* Below the two text sliders and above contrast: it is a property of
+          the bubble rather than of the words, and it is the setting people
+          reach for right after putting a picture behind the chat. */}
+      <SliderRow
+        label="Bubble solidity"
+        value={msgOpacity}
+        min={MSG_OPACITY_MIN}
+        max={MSG_OPACITY_MAX}
+        step={0.05}
+        display={`${Math.round(msgOpacity * 100)}%`}
+        helper="Let the background show through the message bubbles. The text stays fully solid."
+        onChange={setMsgOpacity}
       />
 
       <div className="generation-control">
@@ -388,6 +412,7 @@ function TextSettingsPage() {
             setMsgContrast("default");
             setMsgInk(null);
             setSurfaceFinish("matte");
+            setMsgOpacity(MSG_OPACITY_DEFAULT);
           }}
         >
           Reset to defaults
@@ -651,6 +676,17 @@ function BackgroundSettingsPage() {
   const clearChatBg = useUiStore((s) => s.clearChatBg);
   const setChatBgContrast = useUiStore((s) => s.setChatBgContrast);
   const setChatBgTint = useUiStore((s) => s.setChatBgTint);
+  const chatBgZoom = useUiStore((s) => s.chatBgZoom);
+  const chatBgFocusX = useUiStore((s) => s.chatBgFocusX);
+  const chatBgFocusY = useUiStore((s) => s.chatBgFocusY);
+  const setChatBgFraming = useUiStore((s) => s.setChatBgFraming);
+  const resetChatBgFraming = useUiStore((s) => s.resetChatBgFraming);
+  // Reset stays disabled while there is nothing to undo, so the button never
+  // invites a click that does nothing.
+  const framingUntouched =
+    chatBgZoom === CHAT_BG_ZOOM_MIN &&
+    chatBgFocusX === CHAT_BG_FOCUS_DEFAULT &&
+    chatBgFocusY === CHAT_BG_FOCUS_DEFAULT;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -667,7 +703,7 @@ function BackgroundSettingsPage() {
     // full browser profile told the user their PNG was unreadable and sent
     // them round an endless loop of re-exporting a perfectly good image -
     // while the real error reached nothing at all.
-    let processed: { blob: Blob; lum: number };
+    let processed: { blob: Blob; lum: number; aspect: number };
     try {
       processed = await processChatBgImage(file);
     } catch (err) {
@@ -678,7 +714,7 @@ function BackgroundSettingsPage() {
     }
     try {
       await putChatBgBlob(processed.blob);
-      setChatBgMeta({ lum: processed.lum });
+      setChatBgMeta({ lum: processed.lum, aspect: processed.aspect });
     } catch (err) {
       setError(
         "The image could not be saved - this browser profile is out of space.",
@@ -747,6 +783,40 @@ function BackgroundSettingsPage() {
       {/* Dim-only class: generation-control's padding/border must not appear
           and vanish with the toggle, or the page reflows on image add/remove. */}
       <div className={chatBgOn ? "" : "settings-section-disabled"}>
+        <div className="generation-control">
+          <div className="flex items-center justify-between gap-3">
+            <label className="settings-label">Framing</label>
+            <button
+              type="button"
+              className="settings-inline-reset"
+              disabled={!chatBgOn || framingUntouched}
+              onClick={resetChatBgFraming}
+            >
+              Reset
+            </button>
+          </div>
+          <div className="mt-2">
+            <ChatBgFramingPreview disabled={!chatBgOn} />
+          </div>
+          <p className="generation-helper">
+            Drag the picture to choose what shows. The frame is the shape of
+            your chat area right now, so this is the crop you will get - and
+            it follows the window when you resize it.
+          </p>
+        </div>
+
+        <SliderRow
+          label="Zoom"
+          value={chatBgZoom}
+          min={CHAT_BG_ZOOM_MIN}
+          max={CHAT_BG_ZOOM_MAX}
+          step={0.05}
+          display={`${chatBgZoom.toFixed(2)}×`}
+          helper="1× fits the whole picture. Higher crops in closer."
+          onChange={(zoom) => setChatBgFraming({ zoom })}
+          disabled={!chatBgOn}
+        />
+
         <SliderRow
           label="Contrast"
           value={chatBgContrast}

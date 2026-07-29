@@ -264,12 +264,25 @@ describe("Static safety tests", () => {
       // finish names. Neither is content, an id, or anything about a person.
       "msgInk",
       "surfaceFinish",
+      // How solid a message bubble's fill is, 0.35..1. A number about paint,
+      // in the same family as msgInk and surfaceFinish above it.
+      "msgOpacity",
       // Chat background scalars - the image itself lives as a Blob in the
       // approved appearance store (see S-13), never in localStorage.
       "chatBgOn",
       "chatBgLum",
       "chatBgContrast",
       "chatBgTint",
+      // Framing: which part of that Blob to show, as percentages, plus how
+      // far in it is cropped and the picture's own width-to-height ratio.
+      // Four numbers describing a rectangle over an image the user chose -
+      // no filename, no path, nothing about the picture's contents. The LIVE
+      // chat-area ratio (chatAreaAspect) is deliberately absent: it measures
+      // this window rather than stating a preference, so it is session-only.
+      "chatBgFocusX",
+      "chatBgFocusY",
+      "chatBgZoom",
+      "chatBgAspect",
       "ambientFogOn",
       // Generation sampling scalars (v1.1 FF7) - neutral names, no user
       // content. stopSequences (character names) are deliberately NOT here:

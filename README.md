@@ -43,6 +43,11 @@ Elysium is a privacy-first AI character chat client that routes **all model traf
 - **Image metadata stripped** - Every attached image is re-encoded on upload so EXIF/GPS and other embedded metadata are dropped before it is stored or sent - your camera and location never ride along with the picture
 - **Hardened by a full-system audit** - An 8-dimension adversarial code audit swept the whole codebase before release (no critical/high/medium issues); the low-severity findings it surfaced are all fixed and regression-tested
 
+## Added since v1.1.0
+
+- **Frame the wallpaper yourself** - the picture used to be centred and cropped for you, with no say in which part survived. Settings › Chat background now has a preview drawn in the shape of your chat area right now: drag the picture to choose what shows, or zoom in to crop closer. The framing is stored as a position on the picture rather than as a fixed rectangle, so it holds when you resize the window instead of needing to be set again
+- **See through the message bubbles** - a solidity dial in Settings › Text & readability lets the wallpaper come through behind what is being said. Only the bubble thins; the words stay fully solid at every setting
+
 ## Fixed since v1.1.0
 
 - **Spoken replies no longer stop short** - a reply could go quiet a few words before the end, with no error and nothing to explain it. The last sentence was being dropped while it was still being made
@@ -65,11 +70,11 @@ Elysium is a privacy-first AI character chat client that routes **all model traf
 - **Message Lifecycle** - Send (streaming + optimistic UI), regenerate with variant history, delete (target + all following), clear chat, and rename chats inline from the sidebar
 - **Stop Sequences** - Up to 4 stop sequences (with `\n` support) managed as chips in Generation Settings; always forwarded to the provider, mirroring the backend rule
 - **Image Attachments** - Attach up to 4 images (PNG/JPEG/WebP) per message to vision-capable models; drag-in/paste/pick, thumbnail strip, full-size lightbox. The attach UI is gated by the model's image modality, images are downscaled and content-addressed server-side, and the backend builds the provider payload (the frontend never constructs image URLs)
-- **Reading & Ambience Settings** - In-app settings for message font size and line height, `*narration*` styling, an optional chat wallpaper with contrast/tint controls and adaptive text, and a living WebGL mist backdrop (with a static fallback)
+- **Reading & Ambience Settings** - In-app settings for message font size and line height, `*narration*` styling, an optional chat wallpaper with framing, zoom, contrast/tint controls and adaptive text, message-bubble solidity, and a living WebGL mist backdrop (with a static fallback)
 - **Sidebar Navigation** - Persona strip with a switcher, client-side character search, and New Chat / New Character docks
 - **Active Context Preview + live context meter** - Local-only collapsible card in the Models tab showing what the next request will include (model, persona, character, message count, generation params, context budget) plus a live "≈ used / capacity tokens" gauge on the selected model; approximate estimates, never the exact provider payload
 - **Error Toast System** - Centralized safe error notifications over the chat canvas; auto-dismiss after 4.5 s, max 5 visible, extras queued
-- **Privacy by Design** - ZDR, data\_collection=deny, allow\_fallbacks=false are hardcoded in the backend and cannot be overridden
+- **Privacy by Design** - the provider policy is hardcoded backend-side and cannot be overridden from anywhere; see [Privacy Contract](#privacy-contract) for the exact fields and the full list of what is and is not sent
 - **Sealed Secrets** - API key and proxy URL live inside the encrypted vault (unreadable while locked); a one-time migration moves them out of the OS keyring and deletes the old entries - never sent to the frontend
 - **Strict CORS + Host allowlist** - Backend accepts browser requests from `http://127.0.0.1:5173` only and rejects foreign `Host` headers (DNS-rebinding shield)
 - **Desktop App** - PyInstaller build (one-folder for development, a single ~33 MB exe for release) with a native window (pywebview + WebView2); the exe serves the built frontend same-origin on a random loopback port and locks the vault when the window closes
@@ -131,9 +136,8 @@ Additional guarantees:
 
 - `context_budget_tokens` is **never** forwarded to OpenRouter - app-level history trimming only
 - `raw_json`, `avatar_path`, `tools`, `tool_choice`, `response_format` - **never** sent. `image_url` parts are built server-side **only** for images the user explicitly attached (vision models); the frontend never constructs them
-- Streaming uses the same hardcoded provider policy; deltas are relayed to the client but raw upstream error frames are mapped to safe codes, never forwarded
+- Raw upstream OpenRouter error bodies are never forwarded to the client - safe mapped codes only, on the streaming path as well as the plain one. Streaming otherwise uses the same hardcoded provider policy, relaying deltas untouched
 - API key is sealed inside the encrypted vault (unreachable while locked); never returned by any endpoint, never logged
-- Raw upstream OpenRouter error bodies are never forwarded to the client - safe mapped messages only
 - Browser storage holds only UI preferences - never messages, personas, characters, API keys, or proxy URLs
 - Frontend never emits an `Authorization` header - all provider auth happens backend-side
 - Logs carry ids, counts, and status codes only - never message content, passphrases, or key material
@@ -241,7 +245,7 @@ them from drifting apart.
 | Secrets | Sealed in the encrypted vault DB (one-time migration out of the OS keyring) |
 | Frontend | React 19 · Vite · TypeScript (strict) · TanStack Query v5 · Zustand · Zod v4 |
 | Frontend UI | Base UI primitives · Lucide icons · Tailwind CSS v4 · motion |
-| Desktop | pywebview (WebView2) · PyInstaller one-folder build |
+| Desktop | pywebview (WebView2) · PyInstaller (one-folder to develop, one-file to ship) |
 
 ## Repository Layout
 
@@ -305,7 +309,7 @@ elysium/
 │       │   └── vault/        Lock/create/unlock screens (VaultGate)
 │       ├── lib/
 │       │   ├── api/          REST + SSE + upload client functions
-│       │   ├── appearance/   Chat wallpaper pipeline
+│       │   ├── appearance/   Wallpaper pipeline + framing, bubble surface
 │       │   ├── characters/   Character helpers
 │       │   ├── chat/         Chat action helpers + message parser
 │       │   ├── errors/       Error parser, mapper, store
@@ -428,7 +432,7 @@ The frontend is built on a layer of pure logic helpers - no browser storage of s
 
 ```powershell
 cd backend
-.venv\Scripts\python -m pytest tests -q   # TestClient regression suite (1221 tests)
+.venv\Scripts\python -m pytest tests -q   # TestClient regression suite (1278 tests, 76 files)
 ```
 
 The `tests/` suite covers the completion/regenerate flows (including the
@@ -446,11 +450,11 @@ uvicorn main:app --host 127.0.0.1 --port 8787
 
 The legacy `verify_*.py` scripts remain for reference.
 
-### Frontend (1163 tests)
+### Frontend (1201 tests)
 
 ```powershell
 cd frontend
-npm test                          # full suite - 1163 tests, 84 files
+npm test                          # full suite - 1201 tests, 89 files
 npm test -- src/test/static-safety.test.ts   # static privacy checks
 npm run typecheck                 # tsc strict - app + test configs
 ```
@@ -459,11 +463,10 @@ npm run typecheck                 # tsc strict - app + test configs
 
 - **Plaintext migration backup** - upgrading an older unencrypted database keeps a plaintext `app.db.plain.bak-<timestamp>` copy next to the vault; delete it once you have verified the migration
 - **No idle auto-lock** - lock manually with the sidebar button, or by closing the app
-- **UI preferences are not encrypted** - font size, wallpaper image, and last-open ids persist in the desktop app's local WebView profile (no chat content)
+- **UI preferences are not encrypted** - type size, bubble solidity, the wallpaper image and how it is framed, and last-open ids persist in the desktop app's local WebView profile (no chat content)
 - **No local/offline models** - OpenRouter only
 - **No PDF/file upload** - images are supported (vision models); documents are not
-- **No Compatibility Mode** - strict ZDR privacy routing always enforced
-- **No ZDR toggle** - privacy settings cannot be relaxed in the UI
+- **Privacy routing cannot be relaxed** - strict ZDR is always enforced; there is no compatibility mode and no toggle in the UI
 - **No multi-branch chat** - linear conversation with per-message variants; the latest reply can be regenerated and continued from any variant, while older variant groups are view-only (browsable but the conversation always continues from their active take); delete-forward or edit-a-message to rewind
 - **Single instance** - running two copies of the desktop app against the same data folder is unsupported
 - **Voice needs a one-time engine setup** - the speech engines are multi-GB and are not bundled in the exe; Settings › Voice installs one on request. An NVIDIA GPU is required to run them

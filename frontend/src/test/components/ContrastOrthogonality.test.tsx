@@ -20,6 +20,11 @@ vi.mock("@/lib/appearance/useChatBackground", () => ({
     style: { backgroundImage: 'linear-gradient(#000,#000), url("blob:x")' },
     dark: true,
   }),
+  // ChatCanvas measures the scroller so a zoomed wallpaper crops against the
+  // shape it is really painted on. This case is about class orthogonality,
+  // not framing, so the stub reports "not measured" - which is also the
+  // honest answer in jsdom, where nothing has a size.
+  useAreaAspect: () => ({ ref: () => {}, aspect: null }),
 }));
 
 // Import AFTER the mock is registered.
