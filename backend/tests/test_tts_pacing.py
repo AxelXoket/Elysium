@@ -18,10 +18,10 @@ from tts.pacing import (
 )
 
 #: Measured on an RTX 5080 by verify/verify_tts_latency.py: (audio, wall).
-#: Re-taken after fish_s2._codec_need stopped reserving three times what the
-#: codec costs - before that, text2semantic was parked to system RAM and pulled
-#: back for every sentence, and these numbers carried that round trip in them.
-MEASURED = [(3.25, 2.91), (6.64, 4.46), (13.70, 7.25), (22.62, 10.90)]
+#: Re-taken after fish_s2._expected_frames stopped forecasting the length
+#: CEILING - before that the codec was parked before every generation and
+#: pulled back for the decode, and these numbers carried that round trip.
+MEASURED = [(2.88, 1.82), (6.59, 3.57), (11.94, 6.46), (20.53, 10.62)]
 
 
 def _trained(repeats=12):
@@ -132,7 +132,7 @@ class TestTheChunkCapOnceSpeechIsRunning:
 class TestTheFirstChunkWindowIsDerivedNotChosen:
     def test_the_measured_engine_lands_on_the_agreed_window(self):
         """40-100 characters was agreed before this was measured. At the real
-        c and RTF a 3 second budget works out at ~47, inside that window - the
+        c and RTF a 3 second budget works out at ~75, inside that window - the
         bounds were right for a reason, not by luck. Asserted as the range and
         not as 50, because the exact figure moves with the engine and a literal
         here would be a second copy of the measurement."""
@@ -223,13 +223,20 @@ class TestTheWindowOpensWhileTheSessionIsStillYoung:
                 return n
         return None
 
+    #: An engine slow enough that the window starts SHUT. Fish S2 is no longer
+    #: one - at c = 0.6 s it answers before a single chunk - so the property
+    #: has to be measured somewhere it is still observable, or the test passes
+    #: because there was nothing to wait for rather than because the seed was
+    #: kept. Roughly the hardware Fish was on before the VRAM policy was fixed.
+    SLOW = {"rtf": 0.45, "fixed_seconds": 1.6}
+
     def test_honouring_the_seed_opens_the_window_sooner_than_bootstrapping(self):
         """A COMPARISON, not a threshold. "under N chunks" is a number that
         drifts with the engine and passes for the wrong reason the moment the
         hardware changes; what has to hold is that keeping the declared seed
         beats replacing it, which is the mechanism itself."""
-        honoured = Pacing()
-        bootstrapped = Pacing()
+        honoured = Pacing(**self.SLOW)
+        bootstrapped = Pacing(**self.SLOW)
         # Exactly what `observe` used to do to every line: forget that the
         # caller declared anything, so the second sample re-seeds from the level.
         bootstrapped._time.seed_dev = None
@@ -243,13 +250,19 @@ class TestTheWindowOpensWhileTheSessionIsStillYoung:
     def test_it_answers_inside_a_session_rather_than_after_one(self):
         """The absolute bound still matters - "sooner" would be satisfied by
         39 chunks against 40. A reply is about four sentences here."""
-        assert self._chunks_until_it_answers(Pacing()) <= 8
+        assert self._chunks_until_it_answers(Pacing(**self.SLOW)) <= 8
 
-    def test_a_cold_estimator_still_refuses_rather_than_guessing(self):
-        """Not a regression: at c = 1.6 s with honest uncertainty, no first
-        chunk fits inside 3 s. Answering anyway would promise what the hardware
-        has not yet shown it can do."""
-        assert Pacing().first_chunk_window() is None
+    def test_a_slow_engine_still_refuses_rather_than_guessing(self):
+        """Zero is a real answer. The refusal has to survive the engine getting
+        fast enough not to need it."""
+        assert Pacing(rtf=8.0, fixed_seconds=20.0).first_chunk_window() is None
+
+    def test_a_cold_estimator_can_now_promise_a_fast_start(self):
+        """It DOES answer now, and that is the whole point of the work behind the
+        seeds: at c = 0.6 s a first chunk fits inside 3 s even before anything
+        has been measured. It answered None for as long as the fixed cost was
+        1.6 s, which was honest then and would be a lie now."""
+        assert Pacing().first_chunk_window() is not None
 
     def test_the_seed_still_bootstraps_when_the_caller_declared_nothing(self):
         """The VRAM lines pass no seed_dev, and their margin comes entirely

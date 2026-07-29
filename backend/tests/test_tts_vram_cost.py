@@ -79,6 +79,13 @@ MEASURED_DECODE = [(24, 0.126), (63, 0.327), (143, 0.738),
 MEASURED_GENERATE = [(24, 0.168), (63, 0.169), (143, 0.171),
                      (264, 0.175), (428, 0.181)]    # ~flat: the KV cache
 
+#: (characters, semantic frames produced) from ONE verify run - paired, which
+#: matters: the warm-up utterance emits a decode row of its own, and reading the
+#: table off by that row gives ratios of 0.6 against the real 1.4 and a fit with
+#: a negative intercept. 442 frames over 20.53 s of audio is 21.5 Hz, which is
+#: the codec's documented rate and the check that these two columns line up.
+MEASURED_FRAMES = [(42, 62), (95, 142), (190, 257), (334, 442)]
+
 
 class TestTheEstimatorLearnsTheRealShape:
     """The two operations sit at opposite ends of `fixed + slope * units`, and
@@ -706,3 +713,79 @@ class TestTheReportAgreesWithThePolicy:
         mod = _mod()
         assert mod._planning_cost("codec", 1) is None
         assert mod._planning_cost("decode", 400) is None
+
+
+class TestTheGuardForecastsTheWorkNotTheCeiling:
+    """MEASURED BUG: with the codec resident the pre-generation check refused
+    on every single sentence, so the codec was parked and copied back for each
+    one. It was forecasting `max_new_tokens` - the user's "Max length" dial,
+    800 frames, ~4.4 GB - while the sentences the queue hands over measured
+    25-435 frames. 800 is about 37 seconds of speech; sentence-level chunking
+    makes it unreachable.
+
+    The dial is untouched: it still bounds the generation. Only the forecast
+    changed, and the forecast is now learnt from what generations actually
+    produce.
+    """
+
+    def _taught(self, mod, samples=MEASURED_FRAMES):
+        for chars, frames in samples:
+            mod._observe_cost("frames", chars, float(frames))
+        return mod
+
+    def test_it_says_nothing_until_it_has_seen_something(self):
+        """Run one keeps the old worst case rather than a guess - there is no
+        measurement yet, and inventing one is how a guard starts firing after
+        the OOM instead of before it."""
+        assert _mod()._expected_frames(200) is None
+
+    def test_a_short_sentence_is_not_forecast_as_a_long_one(self):
+        """Against the CEILING, which is what it used to be measured against.
+        A 42-character line produces ~62 frames and was being forecast at 800;
+        it lands near 200 now, margin included. The absolute figure moves with
+        the engine, so what is pinned is that it is a fraction of the cap and
+        that it tracks the text."""
+        mod = self._taught(_mod())
+        short, long = mod._expected_frames(42), mod._expected_frames(334)
+        assert short < 800 / 3, f"still forecasting near the ceiling: {short}"
+        assert short < long
+
+    def test_the_forecast_leans_high_rather_than_low(self):
+        """Being wrong high costs one eviction. Being wrong low costs a decode
+        that has to free memory and retry, which IS the eviction - so the
+        margin points the same way here as everywhere else in this file."""
+        mod = self._taught(_mod())
+        assert mod._expected_frames(190) >= 126
+
+    def test_the_codec_survives_a_sentence_it_used_to_be_evicted_for(self):
+        """The whole point, as the arithmetic that produced the bug: 3.59 GB
+        free, a 1.0 GB reserve, and a decode forecast that has to fit in what
+        is left."""
+        mod = self._taught(_mod(codec_resident=True))
+        for units, gb in MEASURED_DECODE:
+            mod._observe_cost("decode", units, gb)
+        mod._free_gb = lambda: 3.59
+
+        assert mod._fits(800, "generate", "decode") is False, "the old forecast"
+        assert mod._fits(mod._expected_frames(95), "generate", "decode") is True
+
+    def test_a_long_sentence_may_still_lose_the_codec_and_that_is_correct(self):
+        """The card is 16 GB and the codec is 4.9 of it. Honest forecasting was
+        the goal, not keeping the codec at any cost - a decode that genuinely
+        does not fit still has to say so."""
+        mod = self._taught(_mod(codec_resident=True))
+        for units, gb in MEASURED_DECODE:
+            mod._observe_cost("decode", units, gb)
+        mod._free_gb = lambda: 3.59
+        assert mod._fits(mod._expected_frames(334), "generate", "decode") is False
+
+    def test_a_run_that_hit_the_ceiling_does_not_teach_the_estimator(self):
+        """A capped run says how long the budget was, not how long the text
+        wanted to be. Folding it in drags every later forecast towards the cap,
+        which is a slow way back to the bug."""
+        import inspect
+
+        src = inspect.getsource(_mod()._op_synthesize)
+        observe = src.index('_observe_cost("frames"')
+        guard = src.rindex("if produced and not", 0, observe)
+        assert "max_new" in src[guard:observe]

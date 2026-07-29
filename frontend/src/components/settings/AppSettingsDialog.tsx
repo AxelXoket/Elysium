@@ -45,7 +45,9 @@ import {
   MSG_LINE_MIN,
   MSG_LINE_MAX,
 } from "@/lib/store/uiStore";
-import { useTtsActive } from "@/lib/query/tts";
+import { useQueryClient } from "@tanstack/react-query";
+import { keys } from "@/lib/query/keys";
+import { useTagPrefs, useTtsActive } from "@/lib/query/tts";
 import { saveTagPrefs } from "@/lib/api/tts";
 import { useErrorStore } from "@/lib/errors";
 import { InkPicker } from "./InkPicker";
@@ -551,18 +553,25 @@ function SurfaceFinishRow() {
 
 function NarrationVoiceRow() {
   const active = useTtsActive();
-  const mode = useUiStore((s) => s.narrationVoice);
-  const setMode = useUiStore((s) => s.setNarrationVoice);
+  // KÖK 6 stored the choice as well as sending it, because the replay path had
+  // read tts_narrative all along and nothing wrote it. Two copies is one too
+  // many: they were only ever written together HERE, so a value chosen before
+  // that wiring - or a write that failed once - left the live stream and the
+  // Speak button performing the same message two different ways, permanently.
+  // The vault is the single source now and this reads it back.
+  const prefs = useTagPrefs();
+  const qc = useQueryClient();
+  const mode = prefs.data?.narrative ?? "same";
 
-  // KÖK 6: the choice ALSO has to be stored, not just carried on the live
-  // request. The replay path has read tts_narrative all along and nothing
-  // wrote it, so "Skip" was honoured while a reply streamed and silently
-  // ignored when the Speak button repeated the very same message. Best-effort:
-  // the live path still works from the store if this write fails, and a toast
-  // about a preference that did apply would be its own kind of lie.
   const choose = (next: "same" | "narrator" | "skip") => {
-    setMode(next);
-    void saveTagPrefs({ narrative: next }).catch(() => undefined);
+    // Optimistic so the row does not lag a round trip behind the click, and
+    // invalidated after so a failed write corrects itself rather than leaving
+    // the UI claiming something the vault never accepted.
+    qc.setQueryData(keys.ttsTagPrefs(), (old: unknown) =>
+      old && typeof old === "object" ? { ...old, narrative: next } : old);
+    void saveTagPrefs({ narrative: next })
+      .catch(() => undefined)
+      .finally(() => void qc.invalidateQueries({ queryKey: keys.ttsTagPrefs() }));
   };
 
   if (!active.data?.uid) return null;

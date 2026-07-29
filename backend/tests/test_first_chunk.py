@@ -147,10 +147,16 @@ class TestTheWindowIsMeasuredNotChosen:
         budget that cannot be met would pay the seam and get nothing."""
         assert Pacing(rtf=8.0, fixed_seconds=20.0).first_chunk_window() is None
 
-    def test_a_cold_engine_does_not_cut_before_it_knows_anything(self):
+    def test_a_cold_engine_cuts_only_when_its_seed_says_it_can(self):
         """The seed is cautious on purpose, and the first reply of a session is
-        exactly where a needless seam would be most noticed."""
-        assert Pacing().first_chunk_window() is None
+        exactly where a needless seam would be most noticed - so the answer has
+        to come from the seed's arithmetic rather than from optimism.
+
+        Pinned as the RULE. This read `Pacing() is None`, which held while the
+        seeded fixed cost was 1.6 s and quietly became a false claim about the
+        hardware when it dropped to 0.6."""
+        assert Pacing(rtf=8.0, fixed_seconds=20.0).first_chunk_window() is None
+        assert Pacing().first_chunk_window() is not None
 
 
 class TestOnlyTheOpeningPieceIsCut:

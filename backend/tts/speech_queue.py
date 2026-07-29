@@ -7,7 +7,7 @@ paragraphs of silence and then a wall of audio.
 
 So the reply is cut into sentences and synthesised one at a time: the first
 sentence starts playing while the second is still being made. The measured
-production rate is ~2.44x realtime, which is the whole reason this works - once
+production rate is ~2x realtime, which is the whole reason this works - once
 the queue is ahead it cannot fall behind again. Getting ahead is what the
 pre-roll is for; the user set it at about two seconds.
 
@@ -39,7 +39,7 @@ class QueueFailed(RuntimeError):
 
 
 #: How many synthesised-but-unplayed chunks to hold. Two is deliberate: at
-#: 2.44x realtime a single spare chunk already covers the next one's synthesis,
+#: 2x realtime a single spare chunk already covers the next one's synthesis,
 #: and a deeper buffer only adds latency at the START, which is the one place
 #: the delay is actually heard.
 DEFAULT_LOOKAHEAD = 2

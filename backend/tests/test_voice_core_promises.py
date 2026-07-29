@@ -39,10 +39,19 @@ def _clean_registry():
 # 1. a fresh Pacing cannot answer, which is why it must not be fresh
 # ---------------------------------------------------------------------------
 
-def test_an_unmeasured_pacing_refuses_to_size_a_first_chunk():
-    """Not a bug in Pacing - the honest answer for an engine it has never
-    seen. The bug was arranging for it to be asked in this state every time."""
-    assert Pacing().first_chunk_window(FIRST_CHUNK_BUDGET_SECONDS) is None
+def test_an_unmeasured_pacing_answers_only_when_the_arithmetic_allows_it():
+    """Not a bug in Pacing either way - the honest answer for an engine it has
+    never seen. The bug was arranging for it to be asked in this state every
+    time.
+
+    This asserted `is None` for the seeded Fish engine, which was true while
+    its fixed cost was 1.6 s and stopped being true when that came down to 0.6.
+    It was pinning a fact about one machine, not the rule - so the rule is what
+    is pinned now: an engine too slow to start inside the budget says so, and
+    one fast enough answers."""
+    glacial = Pacing(rtf=8.0, fixed_seconds=20.0)
+    assert glacial.first_chunk_window(FIRST_CHUNK_BUDGET_SECONDS) is None
+    assert Pacing().first_chunk_window(FIRST_CHUNK_BUDGET_SECONDS) is not None
 
 
 def test_a_measured_pacing_does_answer():

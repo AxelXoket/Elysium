@@ -143,6 +143,18 @@ def main() -> int:
     _line()
     client = getattr(host, "_client", None)
     cost_frames = _costs(client) if client is not None else []
+    pol = [f for f in list(getattr(client, "_events", []))
+           if f.get("event") == "progress"
+           and f.get("stage") == "codec_policy"] if client is not None else []
+    if pol:
+        print("codec retention decisions:")
+        for f in pol:
+            print(f"  {f.get('where'):15s} keep={str(f.get('keep')):5s} "
+                  f"driver_free={f.get('free_gb')} reserved={f.get('reserved_gb')} "
+                  f"allocated={f.get('allocated_gb')} "
+                  f"cached_free={f.get('cached_free_gb')} "
+                  f"frames={f.get('budget_frames')} "
+                  f"forecast={f.get('forecast_gb')}")
     if cost_frames:
         print("VRAM, measured per operation:")
         for f in cost_frames:

@@ -27,16 +27,18 @@ THE RULE
 
 WHY IT GENERALISES
     Everything above is in terms of RTF - compute time per second of audio -
-    which is how every TTS engine is characterised. Fish S2 measures ~0.41 on
+    which is how every TTS engine is characterised. Fish S2 measures ~0.50 on
     this machine; XTTS-v2 is around 0.3, Piper around 0.04. Nothing here is
     specific to one of them: an engine declares a nominal figure, and the
     runtime measures the real one and overwrites it.
 
 WHY THE COST MODEL HAS TWO TERMS
-    `c + RTF * d` and not `RTF * d`. Measured, this engine spends about a
-    second per call before it produces any audio at all - worker round trip,
-    prompt encode, codec restore - and that fixed cost is what decides how
-    short the FIRST chunk can usefully be. An engine can easily be fast per
+    `c + RTF * d` and not `RTF * d`. Measured, this engine spends a few
+    hundred milliseconds per call before it produces any audio at all - worker
+    round trip, prompt encode, codec restore - and that fixed cost is what
+    decides how short the FIRST chunk can usefully be. It was 2.3 s once, all
+    of it VRAM policy rather than engine, and the difference is the whole
+    reason the first chunk can now be cut at all. An engine can easily be fast per
     second of speech and slow to start; a single ratio cannot say so.
 
 WHAT IT DOES NOT DO
@@ -51,26 +53,29 @@ import threading as _threading
 from tts.worker import _fit
 
 #: Measured on an RTX 5080 by `verify/verify_tts_latency.py`, four consecutive
-#: runs of the code as it stands:
+#: runs after `fish_s2._expected_frames` stopped forecasting the length CEILING
+#: and the codec stopped being parked before every generation:
 #:
-#:     c    1.44  1.57  1.62  1.65      median 1.60
-#:     RTF  0.41  0.42  0.45  0.46      median 0.43
-#:     s/ch 0.0647  0.0648  0.0656  0.0718
+#:     c    -0.24  0.15  0.58  1.01      median 0.36
+#:     RTF   0.47  0.55  0.62            median 0.55
+#:     s/ch  0.0648 .. 0.0656
 #:
-#: An earlier table here quoted five runs and one of them also carried a
-#: `_sweep()` change that was measured and reverted - a contaminated sample in
-#: a set presented as controlled. These four share one build.
+#: The negative one is not a typo and not discarded: with the fixed cost now
+#: down at a few hundred milliseconds it is the same size as the run-to-run
+#: noise, so the two-term fit is ill-conditioned and `c` and RTF trade off hard
+#: enough to push the intercept below zero. That is worth saying rather than
+#: hiding - it means this instrument can no longer resolve `c`, which it could
+#: when `c` was 1.6. Both seeds therefore take the CAUTIOUS end rather than the
+#: middle.
 #:
-#: `c` and RTF trade off against each other inside the fit, so a run that lands
-#: high on one lands low on the other and neither is worth more precision than
-#: this. For the record, before `fish_s2._codec_need` stopped reserving three
-#: times what the codec costs: c = 2.292, with text2semantic parked to system
-#: RAM and pulled back for EVERY sentence.
+#: The road here, for the record: c = 2.29 with the codec reserve inflated
+#: threefold, 1.60 once that was fixed, and this once the guard stopped
+#: forecasting 800 frames for a 42-character sentence.
 #:
 #: These are SEEDS, not settings - the first few real chunks replace them, and
 #: an adapter for another engine is expected to supply its own.
-FISH_S2_FIXED_SECONDS = 1.6       # the cautious end of what was measured
-FISH_S2_RTF = 0.46
+FISH_S2_FIXED_SECONDS = 0.6       # the cautious end of what could be resolved
+FISH_S2_RTF = 0.55
 SECONDS_PER_CHAR = 0.066          # ~15.1 characters of speech per second
 
 #: How pessimistic each decision is, in deviations. Deliberately different.
@@ -94,13 +99,13 @@ MIN_CHUNK_SECONDS = 1.5
 FIRST_CHUNK_BUDGET_SECONDS = 3.0
 
 #: The floor is arithmetic, not taste. Chunk one has to keep playing while
-#: chunk two is made, so at ~2.44x realtime a first chunk of N seconds covers a
-#: second chunk of about 2.44N. Forty characters is 2.6 seconds of speech,
-#: which covers an ordinary six second sentence; go much below it and the fast
-#: start is paid back as a gap two seconds later.
+#: chunk two is made, so at ~2x realtime a first chunk of N seconds covers a
+#: second chunk of about 2N. Forty characters is 2.6 seconds of speech, which
+#: covers an ordinary five second sentence; go much below it and the fast start
+#: is paid back as a gap two seconds later.
 #:
 #: The ceiling keeps the budget honest. At the trained c and RTF, 100
-#: characters is already 6.6 seconds of speech and 4.4 seconds of work - past
+#: characters is already 6.6 seconds of speech and 3.7 seconds of work - past
 #: the point where starting early was the goal.
 FIRST_CHUNK_MIN_CHARS = 40
 FIRST_CHUNK_MAX_CHARS = 100
@@ -208,9 +213,9 @@ class Pacing:
         inside `budget_seconds`.
 
         This is where the 40-100 character window comes from. It is not a
-        constant anybody chose: at the trained c = 1.650 s and RTF = 0.409 a
-        3 second budget leaves about 3.1 seconds of speech, which at ~15.1
-        characters a second is 47 characters. On a faster engine the same call
+        constant anybody chose: at the trained c = 0.356 s and RTF = 0.502 a
+        3 second budget leaves about 5.0 seconds of speech, which at ~15.2
+        characters a second is 75 characters. On a faster engine the same call
         returns a bigger number without anyone editing it.
         """
         fixed, rtf = self._time.fit()
@@ -254,16 +259,18 @@ class Pacing:
 #
 # WHERE IT STANDS NOW, at the seeds above and the measurements behind them:
 #
-#   fresh      window None - and that is the honest answer, not a leftover of
-#              the bug. At c = 1.6 s with the uncertainty a cold estimator is
-#              entitled to, no first chunk fits inside 3 s.
-#   ~6 chunks  the window opens; by a dozen it is (40, 47).
+#   fresh      (40, 49). It answered None for as long as the fixed cost was
+#              1.6 s, which was honest then: no first chunk fitted inside 3 s
+#              however short it was cut. At 0.6 s one does.
+#   trained    (40, 75), by about a dozen chunks.
 #
-# An 86-character opening sentence, computed from the trained fit (c = 1.650,
-# RTF = 0.409, 15.1 characters a second): 5.68 s of speech, first audio at
-# 3.98 s if it is spoken whole, 2.92 s if the opening 47 characters are cut off
-# and sent first. That gap is the entire mechanism, and keeping the timings is
-# what lets it fire at all.
+# An 86-character opening sentence, computed from the trained fit (c = 0.356,
+# RTF = 0.502, 15.2 characters a second): 5.66 s of speech, first audio at
+# 3.20 s if it is spoken whole, 2.83 s if the opening 75 characters are cut off
+# and sent first. The gap is narrower than it was because the engine now beats
+# the budget on its own - which is the mechanism succeeding, not becoming
+# pointless: the whole-sentence figure grows with the sentence and the cut one
+# does not.
 #
 # Keyed per MODEL, because that is the thing whose speed is being learned -
 # and so that swapping models does not carry the old model's timings over.

@@ -117,17 +117,17 @@ interface UiState {
   settingsInitialPage: string | null;
 
   /**
-   * How *asterisk narration* is SPOKEN (V9-3).
+   * Has the device-local narration mode been moved into the vault?
    *
-   * "same" keeps today's behaviour. "narrator" hands the span to the engine
-   * with a delivery tag so stage direction sounds like stage direction rather
-   * than the character talking about themselves. "skip" reads only dialogue.
-   *
-   * Deliberately mirrors `narrationEnabled` - the same spans the screen
-   * italicises are the ones the ear hears differently, and a divergence there
-   * is the kind of bug nobody thinks to look for.
+   * A migration flag, and the only reason it is in the store: the narration
+   * mode now lives in the vault alone, and the stale localStorage copy has to
+   * be cleared or a later change through Settings is silently reverted by it
+   * on the next launch. Writing this flag is what clears it - zustand rewrites
+   * the persisted blob from `partialize`, and `narrationVoice` is no longer in
+   * there, so it goes in the same write. Deletable with
+   * lib/voice/narrationMigration.ts once no install can still carry one.
    */
-  narrationVoice: NarrationVoice;
+  narrationMigrated: boolean;
 
   /**
    * Custom message ink, or null to follow the contrast preset (V11).
@@ -182,7 +182,7 @@ interface UiState {
   dismissVoiceHint: () => void;
   openSettings: (page?: string) => void;
   setSettingsOpen: (open: boolean) => void;
-  setNarrationVoice: (mode: NarrationVoice) => void;
+  markNarrationMigrated: () => void;
   setMsgInk: (hex: string | null) => void;
   setSurfaceFinish: (finish: SurfaceFinish) => void;
   /** Image stored → mark on + record its luminance (contrast/tint kept). */
@@ -225,9 +225,9 @@ export const useUiStore = create<UiState>()(
       quoteTintEnabled: true,
       continuousVoice: false,
       voiceHintDismissed: false,
+      narrationMigrated: false,
       settingsOpen: false,
       settingsInitialPage: null,
-      narrationVoice: "same",
       msgInk: null,
       surfaceFinish: "matte",
       chatBgOn: false,
@@ -267,7 +267,7 @@ export const useUiStore = create<UiState>()(
         set({ settingsOpen: true, settingsInitialPage: page ?? null }),
       setSettingsOpen: (open) =>
         set(open ? { settingsOpen: true } : { settingsOpen: false, settingsInitialPage: null }),
-      setNarrationVoice: (mode) => set({ narrationVoice: mode }),
+      markNarrationMigrated: () => set({ narrationMigrated: true }),
       setMsgInk: (hex) => set({ msgInk: hex }),
       setSurfaceFinish: (finish) => set({ surfaceFinish: finish }),
       setChatBgMeta: ({ lum }) =>
@@ -324,7 +324,7 @@ export const useUiStore = create<UiState>()(
         quoteTintEnabled: state.quoteTintEnabled,
         continuousVoice: state.continuousVoice,
         voiceHintDismissed: state.voiceHintDismissed,
-        narrationVoice: state.narrationVoice,
+        narrationMigrated: state.narrationMigrated,
         msgInk: state.msgInk,
         surfaceFinish: state.surfaceFinish,
         chatBgOn: state.chatBgOn,

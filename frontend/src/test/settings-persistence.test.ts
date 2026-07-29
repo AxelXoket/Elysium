@@ -99,9 +99,19 @@ describe("every preference survives a restart", () => {
   });
 
   it("keeps the voice preferences", () => {
-    for (const key of ["continuousVoice", "narrationVoice", "voiceHintDismissed"]) {
+    for (const key of ["continuousVoice", "voiceHintDismissed"]) {
       expect(persisted.has(key), `${key} is not persisted`).toBe(true);
     }
+  });
+
+  it("does NOT keep the narration mode - the vault owns that one", () => {
+    // It lived here AND in the vault, written together only when the dropdown
+    // was touched, so the two could disagree forever: one performance while a
+    // reply streamed and another when the Speak button repeated it. A device
+    // copy is the wrong home for a setting the server also has to know.
+    expect(persisted.has("narrationVoice")).toBe(false);
+    // The flag that clears the old copy is device state, and does belong here.
+    expect(persisted.has("narrationMigrated")).toBe(true);
   });
 
   it("does NOT persist transient UI state", () => {

@@ -40,6 +40,8 @@ import {
 import type { StreamEvent } from "../api/stream";
 import { createStreamVoice } from "../voice/streamVoice";
 import { useTagPrefs } from "../query/tts";
+import type { NarrationMode } from "../api/tts";
+import { migrateDeviceNarration } from "../voice/narrationMigration";
 import { useUiStore } from "../store/uiStore";
 import {
   buildCompletionPayload,
@@ -228,11 +230,11 @@ function createFrameFlusher(apply: () => void) {
  * fail to - according to whatever the toggle was when the component last drew,
  * which is precisely the surprise the toggle rule exists to prevent.
  */
-function speakOptions(): {
+function speakOptions(narrationVoice: NarrationMode): {
   speak?: boolean;
   speakNarrative?: "same" | "narrator" | "skip";
 } {
-  const { continuousVoice, narrationVoice } = useUiStore.getState();
+  const { continuousVoice } = useUiStore.getState();
   // The narration mode travels EVEN WHEN continuous is off.
   //
   // The server arms a dormant speaker on every stream so the per-message Speak
@@ -254,9 +256,20 @@ export function useStreamingCompletion() {
   // built inside a callback: a value only the open Delivery page knew is
   // exactly why this dial did nothing at all for its three production callers.
   // Through a ref so a mid-stream change cannot re-create the send callback.
-  const gapSeconds = useTagPrefs().data?.gap ?? 0;
+  const tagPrefs = useTagPrefs().data;
+  const gapSeconds = tagPrefs?.gap ?? 0;
   const gapRef = useRef(gapSeconds);
   gapRef.current = gapSeconds;
+  // The narration mode, from the SAME place - it used to come off the device
+  // instead, so the mode the Speak button read and the mode the live stream
+  // sent could disagree and the same message was performed two ways. Through a
+  // ref for the same reason `gap` is: the send callbacks must not be rebuilt
+  // when a dial moves mid-reply.
+  const narrativeRef = useRef<NarrationMode>("same");
+  narrativeRef.current = tagPrefs?.narrative ?? "same";
+  useEffect(() => {
+    if (tagPrefs) void migrateDeviceNarration(tagPrefs.narrative);
+  }, [tagPrefs]);
 
   const [streamingByChat, setStreamingByChat] = useState<
     ReadonlyMap<number, StreamingEntry>
@@ -535,7 +548,7 @@ export function useStreamingCompletion() {
         // the toggle's rule fall out for free: flipping it mid-stream
         // cannot retro-fit the reply already arriving, and the next
         // send picks it up with no extra state to keep in sync.
-        ...speakOptions(),
+        ...speakOptions(narrativeRef.current),
       });
       if (vars.attachments != null && vars.attachments.length > 0) {
         payload.attachments = [...vars.attachments];
@@ -773,7 +786,7 @@ export function useStreamingCompletion() {
             // the toggle's rule fall out for free: flipping it mid-stream
             // cannot retro-fit the reply already arriving, and the next
             // send picks it up with no extra state to keep in sync.
-            ...speakOptions(),
+            ...speakOptions(narrativeRef.current),
           }),
           { signal: controller.signal, onEvent: handleEvent },
         );
@@ -951,7 +964,7 @@ export function useStreamingCompletion() {
             // the toggle's rule fall out for free: flipping it mid-stream
             // cannot retro-fit the reply already arriving, and the next
             // send picks it up with no extra state to keep in sync.
-            ...speakOptions(),
+            ...speakOptions(narrativeRef.current),
           }),
           { signal: controller.signal, onEvent: handleEvent },
         );

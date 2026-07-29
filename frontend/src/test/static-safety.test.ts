@@ -251,9 +251,10 @@ describe("Static safety tests", () => {
       // somebody who turned it on meant to leave it on; it defaults to false
       // so a fresh profile is silent.
       "continuousVoice",
-      // How narration is SPOKEN (V9-3) - one of three enum strings, mirroring
-      // the narrationEnabled display flag above it. No content either way.
-      "narrationVoice",
+      // "The device-local narration mode has been moved into the vault." One
+      // boolean, and the reason the old `narrationVoice` key is gone from this
+      // list: a setting the server also reads cannot have a second home here.
+      "narrationMigrated",
       // "I closed the 'voice is set up but nothing is chosen' hint." One
       // boolean about a piece of UI chrome - no content, no id. Persisted
       // because a hint that returns every launch is a nag; the dialog's own

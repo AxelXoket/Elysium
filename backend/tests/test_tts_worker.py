@@ -541,12 +541,31 @@ def test_the_pre_generation_guard_measures_the_work_that_is_coming():
     `max_new`, so it could not have used the size even if it had wanted to.
     Both showed up in the same crash: a card sitting comfortably over 3.0 GB
     kept the codec, then OOMed on a maximal decode.
+
+    Asserted as BEHAVIOUR. This used to read the source and look for the
+    literal `_fits(max_new, ...)`, which pinned the spelling rather than the
+    property - and then failed the day the forecast got better, because the
+    call now passes the size of the work rather than the largest size allowed.
     """
-    source = _fish_source()
-    guard = source[source.index('where="pre-generation"') - 600:]
-    guard = guard[: guard.index('where="pre-generation"')]
-    assert '_fits(max_new, "generate", "decode")' in guard
-    assert "_DECODE_FLOOR_GB" not in guard
+    import importlib.util
+    import sys
+
+    spec = importlib.util.spec_from_file_location(
+        "fish_s2_guard", Path(__file__).resolve().parents[1] / "tts" / "worker" / "fish_s2.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules.setdefault("fish_s2_guard", mod)
+    spec.loader.exec_module(mod)
+    mod._COSTS.clear()
+    mod.STATE["codec"] = object()
+    for units, gb in [(24, 0.126), (143, 0.738), (428, 2.200)]:
+        mod._observe_cost("decode", units, gb)
+    mod._free_gb = lambda: 4.0
+
+    # The property: one card, one moment, two different sizes of work, two
+    # different answers. A fixed floor cannot produce that.
+    assert mod._fits(50, "generate", "decode") is True
+    assert mod._fits(1200, "generate", "decode") is False
+    assert not hasattr(mod, "_DECODE_FLOOR_GB"), "the fixed floor came back"
 
 
 def test_the_guard_runs_after_the_budget_is_known():

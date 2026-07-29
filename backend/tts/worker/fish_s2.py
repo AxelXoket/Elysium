@@ -316,6 +316,27 @@ def _knobs(values: dict) -> dict:
     }
 
 
+def _vram_snapshot() -> dict:
+    """What the allocator is holding, for the retention decisions to report.
+
+    `_free_gb` reads the DRIVER's free memory, which counts torch's own cached
+    blocks as used - so the obvious theory for a needless eviction is that the
+    check is mistaking its own cache for somebody else's memory. Measured here,
+    that cache is 0.32 GB: the theory is wrong and the numbers say so, which is
+    why they are printed rather than reasoned about.
+    """
+    torch = _ENGINE.get("torch")
+    if torch is None:
+        return {}
+    try:
+        res = torch.cuda.memory_reserved() / 1e9
+        alloc = torch.cuda.memory_allocated() / 1e9
+    except Exception:  # noqa: BLE001
+        return {}
+    return {"reserved_gb": round(res, 2), "allocated_gb": round(alloc, 2),
+            "cached_free_gb": round(res - alloc, 2)}
+
+
 def _free_gb() -> float:
     torch = _ENGINE.get("torch")
     if torch is None or not torch.cuda.is_available():
@@ -354,7 +375,14 @@ _COSTS: dict[str, _fit.Line] = {}
 def _cost_line(kind: str) -> _fit.Line:
     line = _COSTS.get(kind)
     if line is None:
-        if kind == "codec":
+        if kind == "frames":
+            # Semantic frames per character. Measured on an RTX 5080 across the
+            # four verify samples: 22.6 s of audio from 334 characters at the
+            # codec's ~21.5 Hz is 1.42. Declared only so that ONE sample can be
+            # placed on a line - with two the data determines the slope itself,
+            # and `_expected_frames` answers nothing at all until then.
+            line = _fit.Line(seed_slope=1.42)
+        elif kind == "codec":
             # A fixed-size object: it does not grow with frames, so declaring a
             # per-frame slope for it would be a claim the data can never
             # contradict (every sample is units=1).
@@ -370,6 +398,28 @@ def _observe_cost(kind: str, units: int, gb: float) -> None:
     if units <= 0 or gb <= 0.0:
         return                       # an unsized or unmeasured op teaches nothing
     _cost_line(kind).observe(float(units), gb)
+
+
+def _expected_frames(chars: int) -> int | None:
+    """How many semantic frames THIS text will probably need, or None.
+
+    The reserve guard wants the size of the work it is about to do. What it had
+    was `max_new_tokens`, the user's "Max length" dial - a CEILING for one
+    utterance, and on a 16 GB card a ruinous forecast: 800 frames reads as
+    ~4.4 GB, so with the codec resident the check failed and the codec was
+    parked before every single generation. Measured, the sentences the queue
+    actually hands over run 25-435 frames; 800 is about 37 seconds of speech
+    and sentence-level chunking makes it unreachable.
+
+    Learnt rather than declared - `produced` is counted after every generation
+    anyway, so the ratio is free. None until something has been measured, and
+    then the caller keeps its old worst case, which is why run one behaves
+    exactly as before.
+    """
+    line = _COSTS.get("frames")
+    if line is None or not line.measured or chars <= 0:
+        return None
+    return int(line.predict(float(chars)))
 
 
 def _planning_cost(kind: str, units: int) -> float | None:
@@ -1375,7 +1425,7 @@ def _decode_to_audio(codes, send):
     free_after = _free_gb()
     keep = _should_keep_codec(free_after)
     _progress(send, "codec_policy", 0.85, free_gb=round(free_after, 2),
-              keep=keep, where="post-decode")
+              keep=keep, where="post-decode", **_vram_snapshot())
     if not keep:
         _drop_codec()
     return audio, sr
@@ -1422,9 +1472,22 @@ def _op_synthesize(req: dict, send) -> dict:
     # right input for a forecast: a guard that is optimistic about size is a
     # guard that fires after the OOM.
     if STATE["codec"] is not None:
-        keep = _fits(max_new, "generate", "decode")
+        # The user's ceiling still bounds the GENERATION - `max_new` below is
+        # untouched, and a dial that silently stopped applying would be its own
+        # bug. It is only the FORECAST that gets the honest number: the guard
+        # should size the work it is about to do, not the largest work it is
+        # permitted to do. Under-forecasting is survivable and over-forecasting
+        # is not free - a decode that runs out of room retries through
+        # `_free_for_codec(force=True)`, which is precisely the eviction this
+        # avoids, so the worst case of being wrong here IS the old behaviour.
+        expected = _expected_frames(len(spoken))
+        forecast = max_new if expected is None else min(max_new, expected)
+        keep = _fits(forecast, "generate", "decode")
         _progress(send, "codec_policy", 0.15, free_gb=round(_free_gb(), 2),
-                  keep=keep, where="pre-generation", budget_frames=max_new)
+                  keep=keep, where="pre-generation", budget_frames=max_new,
+                  forecast_frames=forecast,
+                  forecast_gb=round(_predict_cost("decode", forecast) or 0.0, 2),
+                  **_vram_snapshot())
         if not keep:
             _drop_codec()
 
@@ -1472,6 +1535,13 @@ def _op_synthesize(req: dict, send) -> dict:
     # reachable in normal use. Saying so anyway is the point: the failure this
     # guards against was invisible precisely because nobody was looking.
     produced = int(codes.shape[1]) if hasattr(codes, "shape") else 0
+    # Free measurement, taken from work that had to happen anyway - the same
+    # bargain `_measure` strikes for VRAM. A run that hit the ceiling is NOT
+    # folded in: it was cut short, so it says how long the budget was rather
+    # than how long the text wanted to be, and teaching the estimator that
+    # would drag every later forecast down towards the cap.
+    if produced and not (max_new and produced >= int(max_new) - 1):
+        _observe_cost("frames", len(spoken), float(produced))
     capped = bool(produced and max_new and produced >= int(max_new) - 1)
     if capped:
         _progress(send, "length_capped", 0.78,
