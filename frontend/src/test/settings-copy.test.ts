@@ -112,7 +112,7 @@ describe("Settings copy conventions", () => {
     // middle dot in three places is the inconsistency, not the fix.
     for (const file of FILES) {
       for (const text of stringsIn(file)) {
-        expect(text, `${file}: em dash in "${text}"`).not.toMatch(/—/);
+        expect(text, `${file}: em dash in "${text}"`).not.toMatch(/\u2014/);
         expect(text, `${file}: middle dot separator in "${text}"`)
           .not.toMatch(/\s·\s/);
       }

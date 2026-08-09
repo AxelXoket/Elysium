@@ -1,66 +1,23 @@
 /**
- * V10 - the motion vocabulary, and the two accessibility switches.
+ * V10 - the stagger budget, and the two accessibility switches.
  *
- * These are asserted as CONTRACTS rather than as rendering, because both
- * failures are invisible in a screenshot: a spring that quietly ignores
- * inherited velocity looks fine until somebody flicks something, and a
- * transparency preference the app never reads looks fine to everyone who does
- * not have it turned on.
+ * These are asserted as CONTRACTS rather than as rendering, because the
+ * failure is invisible in a screenshot: a transparency preference the app
+ * never reads looks fine to everyone who does not have it turned on.
+ *
+ * This file also held four tests for five spring presets. Both the presets and
+ * those tests were deleted on 2026-08-09: nothing in the app ever imported a
+ * preset, so the tests proved the constants were consistent with each other
+ * and nothing else. The reasoning is kept in `lib/motion/stagger.ts`, next to
+ * what survived.
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import path from "path";
 
-import {
-  SPRING_SNAP,
-  SPRING_SURFACE,
-  SPRING_PANEL,
-  SPRING_CINEMATIC,
-  SPRING_GESTURE,
-  staggerStep,
-} from "@/lib/motion/springs";
+import { staggerStep } from "@/lib/motion/stagger";
 
 const SRC = path.resolve(__dirname, "../..");
-
-describe("spring tokens", () => {
-  const DISCRETE = [SPRING_SNAP, SPRING_SURFACE, SPRING_PANEL, SPRING_CINEMATIC];
-
-  it("uses the duration form for discrete state changes", () => {
-    // `visualDuration` is the time the movement LOOKS finished, which is what
-    // lets a spring be coordinated with a plain CSS transition.
-    for (const spring of DISCRETE) {
-      expect(spring).toHaveProperty("visualDuration");
-      expect(spring).not.toHaveProperty("stiffness");
-    }
-  });
-
-  it("keeps every discrete spring inside the duration bands", () => {
-    // Nothing repeated should exceed ~400ms; the cinematic one is the single
-    // deliberate exception and still stops at half a second.
-    for (const spring of DISCRETE) {
-      const d = (spring as { visualDuration: number }).visualDuration;
-      expect(d).toBeGreaterThan(0);
-      expect(d).toBeLessThanOrEqual(0.5);
-    }
-    expect((SPRING_SNAP as { visualDuration: number }).visualDuration)
-      .toBeLessThanOrEqual(0.15);
-  });
-
-  it("uses the PHYSICS form for gesture continuation", () => {
-    // The whole point: `visualDuration`/`bounce` discards inherited velocity,
-    // so a flicked element would visibly restart from zero. Only the physics
-    // form carries momentum.
-    expect(SPRING_GESTURE).toHaveProperty("stiffness");
-    expect(SPRING_GESTURE).not.toHaveProperty("visualDuration");
-  });
-
-  it("scales the whole surface with a single bounce vocabulary", () => {
-    // Larger surface, less overshoot - bounce at panel scale reads as toy-like.
-    const bounce = (s: unknown) => (s as { bounce: number }).bounce;
-    expect(bounce(SPRING_SNAP)).toBe(0);
-    expect(bounce(SPRING_PANEL)).toBeLessThan(bounce(SPRING_CINEMATIC));
-  });
-});
 
 describe("stagger budget", () => {
   it("never lets a long list take longer just for being long", () => {
@@ -81,8 +38,16 @@ describe("stagger budget", () => {
 describe("accessibility preferences the app must actually read", () => {
   it("honours reduced motion at the root, not per component", () => {
     // `reducedMotion="user"` strips transform/layout while KEEPING opacity and
-    // colour - the split the guidance asks for. A per-component branch is a
-    // correctness bug waiting for the one place somebody forgets.
+    // colour - the split the guidance asks for.
+    //
+    // It is NOT the whole answer, and an earlier version of this comment said
+    // it was. Measured against the installed motion-dom: `shouldReduceMotion`
+    // is consulted for positional keys only (width/height/top/left/right/
+    // bottom plus the transform props) and for layout animations. It never
+    // reaches `staggerChildren`, an opacity duration, whether a canvas effect
+    // runs at all, or a native `scrollIntoView` behaviour. Those are what the
+    // shared `useReducedMotion` hook in components/motion covers, and removing
+    // it in favour of this prop would have been a regression, not a cleanup.
     const providers = readFileSync(
       path.join(SRC, "app", "providers.tsx"), "utf-8",
     );

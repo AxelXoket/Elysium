@@ -1,6 +1,6 @@
 import { Children, useMemo, type ReactNode } from "react";
 import { motion as m, type Variants } from "motion/react";
-import { staggerStep } from "@/lib/motion/springs";
+import { staggerStep } from "@/lib/motion/stagger";
 import { useReducedMotion } from "./ReducedMotion";
 
 interface AnimatedListProps {

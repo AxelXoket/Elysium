@@ -12,6 +12,11 @@ export const settingsFixture: Settings = {
   proxy_configured: false,
   proxy_alias: null,
   selected_persona_id: null,
+  // Two fields the schema grew and this fixture did not, until the typecheck
+  // said so. The defaults are the shipped ones: image output off, auto-lock at
+  // five minutes.
+  image_output_enabled: false,
+  auto_lock_minutes: 5,
 };
 
 export const proxyHealthFixture: ProxyHealth = {

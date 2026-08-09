@@ -20,9 +20,18 @@ export function Providers({ children }: ProvidersProps) {
         common mistake, and it removes the state-change feedback that people
         with vestibular sensitivity still need.
 
-        At the root rather than per component: a hand-rolled useReducedMotion
-        branch in each place is a correctness bug waiting for the one component
-        somebody forgets.
+        What it does NOT reach, and an earlier version of this comment claimed
+        otherwise: a staggerChildren delay, an opacity duration, whether a
+        canvas effect runs at all, a native scrollIntoView behaviour. The only
+        two things `shouldReduceMotion` is consulted for are positional keys
+        (width/height/top/left/right/bottom plus the transform props) and
+        layout animations. Everything else animates at full length with this
+        prop set.
+
+        So the shared useReducedMotion hook in components/motion is not the
+        per-component anti-pattern this comment used to call it. It is one
+        module every consumer imports, covering the part this prop structurally
+        cannot. Both are needed; removing either is a regression.
       */}
       <MotionConfig reducedMotion="user">
         <TooltipProvider>{children}</TooltipProvider>

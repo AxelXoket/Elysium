@@ -7,7 +7,7 @@
  * silence with no explanation - the one failure mode voice is not allowed to
  * have - so this is what watches them.
  */
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 
 import { createStreamVoice } from "@/lib/voice/streamVoice";
 import { useErrorStore } from "@/lib/errors/errorStore";
