@@ -8,7 +8,7 @@
  *  - Privacy: no raw upstream text leakage
  */
 import { describe, it, expect, beforeEach } from "vitest";
-import { getErrorMessage, isKnownErrorCode } from "@/lib/errors/errorMessages";
+import { getErrorMessage, isKnownErrorCode, knownErrorCodes } from "@/lib/errors/errorMessages";
 import { parseApiError } from "@/lib/errors/parseApiError";
 import { useErrorStore } from "@/lib/errors/errorStore";
 import type { ApiError } from "@/lib/api/client";
@@ -16,137 +16,22 @@ import type { ApiError } from "@/lib/api/client";
 // ─── errorMessages ───────────────────────────────────────────────────────────
 
 describe("errorMessages", () => {
-  const KNOWN_CODES = [
-    "api_key_missing",
-    "api_key_invalid",
-    "validation_unavailable",
-    "auth_failed",
-    "proxy_missing",
-    "proxy_unreachable",
-    "proxy_auth_failed",
-    "proxy_unhealthy",
-    "proxy_url_required",
-    "invalid_proxy_scheme",
-    "proxy_url_invalid",
-    "openrouter_timeout",
-    "openrouter_rate_limited",
-    "openrouter_insufficient_credits",
-    "openrouter_no_provider_meets_privacy",
-    "openrouter_completion_error",
-    "openrouter_moderation_blocked",
-    "api_key_required_by_openrouter",
-    "invalid_openrouter_models_response",
-    "openrouter_models_error",
-    "context_too_large",
-    "invalid_generation_params",
-    "invalid_gen_params",
-    "unsupported_generation_params",
-    "chat_not_found",
-    "character_not_found",
-    "persona_not_found",
-    "message_not_found",
-    "not_last_assistant_message",
-    "no_preceding_user_message",
-    "regenerate_conflict",
-    "title_required",
-    "title_too_long",
-    "attachment_invalid",
-    "attachment_too_large",
-    "attachment_not_found",
-    "attachment_unavailable",
-    "too_many_attachments",
-    "model_no_image_input",
-    "invalid_response_shape",
-    "invalid_openrouter_completion_response",
-    "network_error",
-    "timeout",
-    "character_json_too_large",
-    "invalid_character_json",
-    "character_name_required",
-    "internal_error",
-    "unknown_error",
-    // v1.1 audit L4: the conflict/edit codes the backend actually emits.
-    "variant_group_not_last",
-    "not_a_variant_target",
-    "edit_conflict",
-    "exchange_stale",
-    "not_editable",
-    "model_id_too_long",
-  ];
-
-  it("maps every known code to its OWN sentence", () => {
-    // The old assertions were truthy / typeof string / length > 5, and the
-    // fallback ("Something went wrong. Please try again.", 39 characters)
-    // passes all three - so deleting any entry in the map left this green
-    // (audit KÖK 13). The TTS block below already asserted the right two
-    // things; they were never carried up here.
-    const FALLBACK = "Something went wrong. Please try again.";
-    //: The one code whose message IS the fallback, on purpose - it is the
-    //: backend saying "we do not know either", so a more specific sentence
-    //: would be an invention.
-    const DELIBERATELY_GENERIC = new Set(["unknown_error"]);
-    for (const code of KNOWN_CODES) {
-      expect(isKnownErrorCode(code), code).toBe(true);
-      if (DELIBERATELY_GENERIC.has(code)) continue;
-      expect(getErrorMessage(code), code).not.toBe(FALLBACK);
-    }
-  });
-
-  it("returns fallback for unknown codes", () => {
-    expect(getErrorMessage("totally_unknown_xyz")).toBe(
-      "Something went wrong. Please try again.",
-    );
-  });
+  // KNOWN_CODES and TTS_ERROR_CODES used to live here: two hand-typed arrays,
+  // 56 and 31 entries, asserting that every code in them had a sentence. They
+  // did. What they could not do is notice a code that was never added to them,
+  // which is how four backend-reachable codes shipped rendering the generic
+  // fallback and why errorMappingG10.test.ts had to be written.
+  //
+  // Both loops moved to src/test/lib/errorCatalogue.test.ts on 2026-08-10,
+  // where the list comes from shared/error_catalogue.json and the backend is
+  // measured against the same file. Nothing about the assertions changed; the
+  // source of the list did, from memory to machine.
+  //
+  // Everything below this point is behaviour and stays.
 
   // ── Voice / TTS (V0): the contract is that EVERY tts_* code the backend can
   // emit has a real message. The generic loop above only checks length, which
   // the fallback also passes - so assert explicitly that none fall through.
-  const TTS_ERROR_CODES = [
-    "tts_model_not_found",
-    "tts_model_unknown",
-    "tts_model_unrecognized",
-    "tts_model_incomplete",
-    "tts_engine_unknown",
-    "tts_runtime_missing",
-    "tts_runtime_broken",
-    "tts_gpu_unavailable",
-    "tts_language_unsupported",
-    "tts_runtime_installing",
-    "tts_runtime_install_failed",
-    "tts_python_not_found",
-    "tts_insufficient_disk",
-    "tts_param_invalid",
-    "tts_sidecar_write_failed",
-    "tts_values_too_large",
-    "tts_insufficient_vram",
-    "tts_model_already_loading",
-    "tts_load_timeout",
-    "tts_worker_failed",
-    "tts_worker_crashed",
-    "tts_worker_unavailable",
-    "tts_out_of_memory",
-    "tts_synthesis_failed",
-    "tts_reference_invalid",
-    "tts_reference_too_short",
-    "tts_transcript_required",
-    "tts_transcribe_unsupported",
-    "tts_nothing_to_speak",
-    "tts_audio_expired",
-    "tts_audio_device_error",
-    "tts_nothing_streaming",
-  ];
-
-  it("V0: every TTS error code maps to a real message, never the fallback", () => {
-    const FALLBACK = "Something went wrong. Please try again.";
-    for (const code of TTS_ERROR_CODES) {
-      const msg = getErrorMessage(code);
-      expect(msg, `code ${code} fell through to the fallback`).not.toBe(
-        FALLBACK,
-      );
-      expect(msg.length).toBeGreaterThan(5);
-      expect(isKnownErrorCode(code)).toBe(true);
-    }
-  });
 
   it("V0: TTS messages name the actual problem", () => {
     expect(getErrorMessage("tts_insufficient_vram")).toMatch(/memory|VRAM/i);
@@ -239,7 +124,9 @@ describe("errorMessages", () => {
   it("no mapped message contains upstream domain", () => {
     // Construct the forbidden string dynamically to avoid triggering S-01 static safety
     const forbidden = ["openrouter", "ai"].join(".");
-    for (const code of KNOWN_CODES) {
+    // Every sentence in the map now, not a hand-picked subset: the list
+    // this used to walk could not name a message it had never heard of.
+    for (const code of knownErrorCodes()) {
       const msg = getErrorMessage(code);
       expect(msg.toLowerCase()).not.toContain(forbidden);
     }

@@ -65,8 +65,24 @@ const ERROR_MESSAGES: Record<string, string> = {
     "One or more generation parameters are invalid.",
   invalid_gen_params:
     "One or more generation parameters are invalid.",
-  unsupported_generation_params:
-    "Some generation parameters are not supported by the selected model.",
+  // `unsupported_generation_params` lived here with a sentence and no sender.
+  // Removed 2026-08-10: the catalogue's producer check found zero raise sites
+  // in Python and zero throw sites in TypeScript. It existed only here and in
+  // one hand-written test array that asserted it had a sentence, which it did,
+  // for an event that cannot happen.
+
+  // Stream notices. Not failures: the reply is on its way, and the user is
+  // being told what was dropped from it on the way there. Written as full
+  // sentences rather than the fallback because all three reached the reader as
+  // "Something went wrong. Please try again." until 2026-08-10 - including the
+  // one below that reports this app REFUSING to make a second network request,
+  // which is the promise the whole design is built on and read as a shrug.
+  images_omitted:
+    "Some images were left out because the selected model cannot read them. The rest of your message was sent.",
+  image_output_rejected:
+    "The model sent back a picture this app would not open. Nothing was saved, and the reply itself is unaffected.",
+  image_output_remote_url_refused:
+    "The model answered with a link to a picture on another server instead of the picture itself. Elysium talks to one address only, so the link was not followed.",
 
   // Not found
   chat_not_found:
@@ -300,4 +316,19 @@ export function getErrorMessage(code: string | undefined | null): string {
  */
 export function isKnownErrorCode(code: string): boolean {
   return code in ERROR_MESSAGES;
+}
+
+/**
+ * Every code this file has a sentence for.
+ *
+ * Exists so the catalogue gate can check the direction nothing checked before:
+ * a sentence here for a code the backend cannot send. That is what a rename
+ * leaves behind - the old key keeps its sentence, the new key has none, and
+ * every other assertion stays green.
+ *
+ * A function rather than exporting the map, so the map stays private and
+ * nobody can reach in and mutate a user-facing string at runtime.
+ */
+export function knownErrorCodes(): string[] {
+  return Object.keys(ERROR_MESSAGES);
 }

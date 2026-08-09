@@ -1,0 +1,904 @@
+{
+  "_why": "One test saw 51 of the 102 codes this backend can put in front of a person. The regex it replaces could only ever read a string literal, so proxy_health.py relayed six reasons and models_router.py relayed six more that nothing in this repository had ever counted. A code with no record renders as 'Something went wrong. Please try again.', and the UI cannot tell that apart from a code nobody has ever heard of.",
+  "_shape": "code: the exact detail string the client receives. statuses: every HTTP status a LITERAL raise site pairs with this code, machine-derived, and [] when only a computed site produces it. channels: which exits carry it, machine-derived - http, sse, voice_sse, notice. no_backend_producer: the ONE escape hatch, a written reason why the backend enumerator will never find this code. A record without it that the enumerator cannot find is an orphan and fails. Both statuses and channels are checked for set EQUALITY in both directions, so neither is decoration. Nothing here holds the English sentence: that stays in frontend/src/lib/errors/errorMessages.ts, where 56 lines of comment explain why one code is not its neighbour, and generating one from the other would make the check that they agree true by construction.",
+  "codes": [
+    {
+      "code": "api_key_invalid",
+      "statuses": [
+        422
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "api_key_missing",
+      "statuses": [
+        401
+      ],
+      "channels": [
+        "http",
+        "sse"
+      ]
+    },
+    {
+      "code": "api_key_required_by_openrouter",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "attachment_invalid",
+      "statuses": [
+        400,
+        411
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "attachment_not_found",
+      "statuses": [
+        404
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "attachment_too_large",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "attachment_unavailable",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "auth_failed",
+      "statuses": [],
+      "channels": [
+        "http",
+        "sse"
+      ]
+    },
+    {
+      "code": "change_passphrase_failed",
+      "statuses": [
+        500
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "character_json_too_large",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "character_name_required",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "character_not_found",
+      "statuses": [
+        404
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "chat_not_found",
+      "statuses": [
+        404
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "context_too_large",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "cross_origin_denied",
+      "statuses": [
+        403
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "edit_conflict",
+      "statuses": [
+        409
+      ],
+      "channels": [
+        "http",
+        "sse"
+      ]
+    },
+    {
+      "code": "encrypted_db_without_identity",
+      "statuses": [
+        409
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "exchange_stale",
+      "statuses": [],
+      "channels": [
+        "sse"
+      ]
+    },
+    {
+      "code": "image_output_rejected",
+      "statuses": [],
+      "channels": [
+        "notice"
+      ]
+    },
+    {
+      "code": "image_output_remote_url_refused",
+      "statuses": [],
+      "channels": [
+        "notice"
+      ]
+    },
+    {
+      "code": "images_omitted",
+      "statuses": [],
+      "channels": [
+        "notice"
+      ]
+    },
+    {
+      "code": "internal_error",
+      "statuses": [],
+      "channels": [
+        "sse"
+      ]
+    },
+    {
+      "code": "invalid_character_json",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "invalid_gen_params",
+      "statuses": [
+        422
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "invalid_generation_params",
+      "statuses": [],
+      "channels": [],
+      "no_backend_producer": "Synthesised by the frontend, never sent by the backend. lib/api/client.ts:88 and lib/api/stream.ts:242 produce it when a 422 body carries a structured detail object instead of a code string, and lib/errors/parseApiError.ts:77 does the same for a ZodError."
+    },
+    {
+      "code": "invalid_openrouter_completion_response",
+      "statuses": [
+        502
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "invalid_openrouter_models_response",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "invalid_proxy_scheme",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "invalid_response_shape",
+      "statuses": [],
+      "channels": [],
+      "no_backend_producer": "Synthesised by the frontend when a response parses as JSON but is not the shape the schema expects (lib/api/client.ts:103), and by the stream reader when a stream ends with no terminal event at all (lib/api/stream.ts:250). The backend never sends it because a backend that could name this failure would not have made it."
+    },
+    {
+      "code": "launch_token_invalid",
+      "statuses": [
+        403
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "message_not_found",
+      "statuses": [
+        404
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "model_id_too_long",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "model_no_image_input",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "network_error",
+      "statuses": [],
+      "channels": [
+        "http",
+        "sse"
+      ]
+    },
+    {
+      "code": "no_preceding_user_message",
+      "statuses": [
+        422
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "not_a_variant_target",
+      "statuses": [
+        422
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "not_editable",
+      "statuses": [
+        422
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "not_last_assistant_message",
+      "statuses": [
+        422
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "openrouter_completion_error",
+      "statuses": [],
+      "channels": [
+        "http",
+        "sse"
+      ]
+    },
+    {
+      "code": "openrouter_insufficient_credits",
+      "statuses": [],
+      "channels": [
+        "http",
+        "sse"
+      ]
+    },
+    {
+      "code": "openrouter_models_error",
+      "statuses": [
+        502
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "openrouter_moderation_blocked",
+      "statuses": [],
+      "channels": [
+        "http",
+        "sse"
+      ]
+    },
+    {
+      "code": "openrouter_no_provider_meets_privacy",
+      "statuses": [],
+      "channels": [
+        "http",
+        "sse"
+      ]
+    },
+    {
+      "code": "openrouter_rate_limited",
+      "statuses": [],
+      "channels": [
+        "http",
+        "sse"
+      ]
+    },
+    {
+      "code": "openrouter_timeout",
+      "statuses": [],
+      "channels": [
+        "http",
+        "sse"
+      ]
+    },
+    {
+      "code": "passphrase_invalid",
+      "statuses": [
+        422
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "passphrase_too_common",
+      "statuses": [
+        422
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "passphrase_too_long",
+      "statuses": [
+        422
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "passphrase_too_short",
+      "statuses": [
+        422
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "passphrase_too_simple",
+      "statuses": [
+        422
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "persona_not_found",
+      "statuses": [
+        404
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "proxy_auth_failed",
+      "statuses": [],
+      "channels": [
+        "http",
+        "sse"
+      ]
+    },
+    {
+      "code": "proxy_missing",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "proxy_unhealthy",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "proxy_unreachable",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "proxy_url_invalid",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "proxy_url_required",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "regenerate_conflict",
+      "statuses": [
+        409
+      ],
+      "channels": [
+        "http",
+        "sse"
+      ]
+    },
+    {
+      "code": "timeout",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "title_required",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "title_too_long",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "too_many_attachments",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "tts_audio_device_error",
+      "statuses": [],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_audio_expired",
+      "statuses": [
+        404
+      ],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_engine_unknown",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_gpu_unavailable",
+      "statuses": [],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_insufficient_disk",
+      "statuses": [],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_insufficient_vram",
+      "statuses": [],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_invalid_narrative",
+      "statuses": [
+        422
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "tts_language_unsupported",
+      "statuses": [],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_load_timeout",
+      "statuses": [],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_model_already_loading",
+      "statuses": [],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_model_incomplete",
+      "statuses": [
+        422
+      ],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_model_not_found",
+      "statuses": [],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_model_unknown",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_model_unrecognized",
+      "statuses": [],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_nothing_streaming",
+      "statuses": [
+        404
+      ],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_nothing_to_speak",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_out_of_memory",
+      "statuses": [],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_param_invalid",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_python_not_found",
+      "statuses": [],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_reference_invalid",
+      "statuses": [],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_reference_too_short",
+      "statuses": [],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_runtime_broken",
+      "statuses": [],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_runtime_install_failed",
+      "statuses": [],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_runtime_installing",
+      "statuses": [],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_runtime_missing",
+      "statuses": [],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_sidecar_write_failed",
+      "statuses": [
+        500
+      ],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_synthesis_failed",
+      "statuses": [
+        500
+      ],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_transcribe_unsupported",
+      "statuses": [
+        409
+      ],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_transcript_required",
+      "statuses": [],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_values_too_large",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_worker_crashed",
+      "statuses": [],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_worker_failed",
+      "statuses": [],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_worker_unavailable",
+      "statuses": [],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "unknown_error",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "unsupported_media_type",
+      "statuses": [
+        415
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "validation_unavailable",
+      "statuses": [],
+      "channels": [],
+      "no_backend_producer": "Not an error detail at all. It is one of the values the key_status field can take in the POST /settings/api-key body (lib/schemas/settings.ts:46), and the settings UI happens to render it through getErrorMessage. It is catalogued because it reaches a reader as a sentence, and a sentence with no record is how the orphan check gets weakened later to accommodate one."
+    },
+    {
+      "code": "variant_group_not_last",
+      "statuses": [
+        409
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "vault_already_initialized",
+      "statuses": [
+        409
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "vault_init_failed",
+      "statuses": [
+        500
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "vault_locked",
+      "statuses": [
+        423
+      ],
+      "channels": [
+        "http",
+        "sse"
+      ]
+    },
+    {
+      "code": "vault_not_initialized",
+      "statuses": [
+        409
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "vault_unlock_failed",
+      "statuses": [
+        500
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "wrong_passphrase",
+      "statuses": [
+        401
+      ],
+      "channels": [
+        "http"
+      ]
+    }
+  ]
+}

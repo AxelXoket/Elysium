@@ -20,9 +20,7 @@ import pytest
 from tts.errors import ALL_CODES
 
 REPO = Path(__file__).resolve().parents[2]
-MESSAGES = REPO / "frontend" / "src" / "lib" / "errors" / "errorMessages.ts"
 CONTRACT = REPO / "docs" / "frontend_contract.md"
-FE_TEST = REPO / "frontend" / "src" / "test" / "components" / "ErrorHandling.test.ts"
 
 
 def _read(path: Path) -> str:
@@ -31,10 +29,12 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def test_every_code_has_a_human_sentence():
-    body = _read(MESSAGES)
-    missing = sorted(c for c in ALL_CODES if f"{c}:" not in body)
-    assert not missing, f"no message for: {missing}"
+# `test_every_code_has_a_human_sentence` stood here and asserted `f"{c}:" in
+# body` against errorMessages.ts, which is a substring scan over TypeScript
+# source: it passed for a code that appeared only inside a comment. Superseded
+# on 2026-08-10 by shared/error_catalogue.json, whose frontend half calls
+# getErrorMessage for real and refuses the generic fallback, and whose backend
+# half covers all 102 codes rather than these 32.
 
 
 def test_every_code_is_in_the_contract_as_a_table_row():
@@ -50,10 +50,11 @@ def test_every_code_is_in_the_contract_as_a_table_row():
     assert not missing, f"codes without a contract table row: {missing}"
 
 
-def test_every_code_is_covered_by_the_frontend_fallback_test():
-    body = _read(FE_TEST)
-    missing = sorted(c for c in ALL_CODES if f'"{c}"' not in body)
-    assert not missing, f"not asserted against the fallback: {missing}"
+# `test_every_code_is_covered_by_the_frontend_fallback_test` stood here. It
+# checked that each code appeared as a quoted literal inside
+# ErrorHandling.test.ts - that is, that somebody had remembered to type it into
+# a hand-maintained array. Both arrays are gone; the frontend now reads the
+# catalogue. Same reason as above.
 
 
 def test_no_code_is_defined_and_then_forgotten():

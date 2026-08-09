@@ -109,7 +109,7 @@ def test_the_published_suite_collects_what_this_one_does(published_tree):
         cwd=backend, capture_output=True, text=True,
     )
     # pytest's OWN verdict, not a substring of its output. `"error" not in
-    # stdout` matched the collected test NAMES - test_error_vocabulary.py is
+    # stdout` matched the collected test NAMES - test_error_catalogue.py is
     # enough to fail it - so the check reported a broken collection on a tree
     # that had collected perfectly.
     assert published.returncode == 0, (

@@ -101,6 +101,26 @@ async def enforce_proxy_gate() -> None:
         raise HTTPException(503, health.get("reason") or "proxy_unhealthy")
 
 
+#: Every value the raise above can put in front of a user.
+#:
+#: `_evaluate` and `_probe` below build these; the raise relays whichever came
+#: back. So a reader of the raise site sees `health.get("reason")` and nothing
+#: else, which is why `timeout` and `unknown_error` were believed for months to
+#: be client-side codes with no backend producer. They are 503s from here.
+#:
+#: `proxy_unhealthy` is the `or` fallback on that same line. Every unhealthy
+#: branch already sets a reason, so it should be unreachable, and it stays in
+#: the alphabet precisely because "should be" is not a thing a test can assume.
+PROXY_REASONS: frozenset[str] = frozenset({
+    "proxy_missing",
+    "proxy_auth_failed",
+    "proxy_unreachable",
+    "timeout",
+    "unknown_error",
+    "proxy_unhealthy",
+})
+
+
 # ---------------------------------------------------------------------------
 # Internal
 # ---------------------------------------------------------------------------

@@ -52,6 +52,22 @@ _PIL_FORMAT_BY_MIME = {
 }
 
 
+#: Every reason an AttachmentError can carry.
+#:
+#: The routers relay `exc.reason` straight into an HTTPException detail, so
+#: these are user-facing codes even though no raise site in a router spells one
+#: out. `tests/error_enumeration.py` reads this to enumerate those sites; a new
+#: reason that is not added here fails that test rather than reaching a user as
+#: "Something went wrong. Please try again."
+ATTACHMENT_REASONS: frozenset[str] = frozenset({
+    "attachment_invalid",
+    "attachment_too_large",
+    "attachment_not_found",
+    "attachment_unavailable",
+    "too_many_attachments",
+})
+
+
 class AttachmentError(Exception):
     """Raised with a sanitized reason code (attachment_invalid, ...)."""
 

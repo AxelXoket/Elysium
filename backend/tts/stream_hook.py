@@ -29,7 +29,7 @@ from typing import Any, Callable, Iterator, Mapping
 
 import anyio.to_thread
 
-from .errors import TTS_SYNTHESIS_FAILED
+from .errors import ALL_CODES, TTS_SYNTHESIS_FAILED
 from .stream_speech import StreamSpeaker
 
 logger = logging.getLogger(__name__)
@@ -345,11 +345,22 @@ def _stem(path: Any) -> str | None:
 
 def _code_for(err: BaseException) -> str:
     """The frontend already has a sentence for every tts_* code; reuse them
-    rather than inventing a message the error map has never heard of."""
+    rather than inventing a message the error map has never heard of.
+
+    Membership in ALL_CODES, not a `tts_` prefix. The prefix test was the whole
+    check until 2026-08-10, and it let any string an exception happened to
+    carry through to the client as long as it started with four right
+    characters. That made this funnel's vocabulary unbounded by construction:
+    the error catalogue declares that this site draws from ALL_CODES, and with
+    a prefix test that declaration was simply untrue. A code the map has never
+    heard of reaches the reader as "Something went wrong. Please try again.",
+    which is the one outcome the sentence above says this function exists to
+    prevent.
+    """
     code = getattr(err, "code", None)
-    if isinstance(code, str) and code.startswith("tts_"):
+    if isinstance(code, str) and code in ALL_CODES:
         return code
-    return "tts_synthesis_failed"
+    return TTS_SYNTHESIS_FAILED
 
 
 # ── the live registry ────────────────────────────────────────────────────────

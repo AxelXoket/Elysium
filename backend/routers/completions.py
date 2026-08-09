@@ -540,6 +540,22 @@ _ERROR_MAP: dict[str, tuple[int, str]] = {
     "openrouter_timeout":                    (504, "openrouter_timeout"),
 }
 
+#: Every detail this module can relay from a provider failure, as a set.
+#:
+#: Derived from the map above rather than typed out again, so the two cannot
+#: disagree. `openrouter_completion_error` is added by hand because it is also
+#: the fallback for a reason the map has never heard of, and a fallback that
+#: appears in no alphabet is exactly the code nobody writes a sentence for.
+#:
+#: This exists so `tests/error_enumeration.py` can read the vocabulary of the
+#: two sites that build a detail from a variable (the raise below and the SSE
+#: error event in the streaming generator). Before it, twelve relayed codes
+#: across this file and models_router.py had never been counted by anything.
+RELAY_DETAILS: frozenset[str] = (
+    frozenset(detail for _, detail in _ERROR_MAP.values())
+    | {"openrouter_completion_error"}
+)
+
 
 # ---------------------------------------------------------------------------
 # Internal: shared provider-call logic (used by complete and regenerate)
@@ -1404,6 +1420,12 @@ _CONFLICT_CODES: dict[type, str] = {
     RegenerateConflictError: "regenerate_conflict",
     EditConflictError: "edit_conflict",
 }
+
+#: The same three codes as a set, for `tests/error_enumeration.py`. The SSE
+#: error event below looks its code up from the dict by exception type, so a
+#: reader of the source sees the name `code` and never the three values behind
+#: it. Derived, not retyped.
+CONFLICT_DETAILS: frozenset[str] = frozenset(_CONFLICT_CODES.values())
 
 
 def _visible_view(raw: str) -> str:
