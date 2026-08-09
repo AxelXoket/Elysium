@@ -165,15 +165,59 @@ Why: your database is encrypted, but `salt.bin` and `verifier.bin` beside it are
 exactly what an offline passphrase attack needs. A second account on the same
 computer should not be able to copy them.
 
-What it does **not** do: it does not touch SYSTEM, Administrators or you, it does
-not walk into subfolders, and it does not touch any folder above its own. On a
-normal install it finds nothing to do and changes nothing at all.
+What it does **not** do: it does not touch SYSTEM, Administrators or you, it
+never names any folder except its own, and it makes no second pass over the
+files inside. On a normal install it finds nothing to do and changes nothing at
+all.
+
+One clarification, because the earlier wording here was easy to misread. Not
+walking into subfolders is about what the app *does*, not about what the change
+*reaches*. Windows propagates a folder's permissions down to everything inside
+that inherits them, so `salt.bin` and `verifier.bin` do lose the wider access
+even though nothing touched them directly. That is the point of the change, and
+it is measured by a test rather than assumed.
 
 To undo it, in an Administrator prompt:
 
 ```
-icacls "%LOCALAPPDATA%\Elysium" /inheritance:e
+icacls "%LOCALAPPDATA%\Elysium" /reset
 ```
+
+`/reset` is the honest undo. `/inheritance:e`, which this document recommended
+before, switches inheritance back on but leaves behind the explicit copies of
+the permissions that breaking it created, so the folder ends up in a state that
+is neither the old one nor the new one. `/reset` discards the folder's own
+entries and puts it back under its parent's, which is where it started.
+
+### Your folders are yours, and this is the line
+
+Elysium narrows **one folder: its own.** It does not look at your Desktop, your
+user profile, your Documents, or anywhere else, and it will not widen or narrow
+a folder it did not create. That is a deliberate limit, not an omission. Folder
+permissions outside an application's own directory are the operating system's
+business and yours, and an app that quietly adjusts them is doing something you
+did not ask for and cannot see.
+
+The same rule applies to us while we are building it. Elysium is developed in a
+folder on a Desktop, and a Desktop grants the local `Users` group read and write
+by default, which every folder underneath then inherits. That folder was
+narrowed **by hand, on that one machine**, and the Desktop above it was left
+exactly as Windows made it. Nothing about that change is in this repository, is
+shipped, or happens to you: a permission is a property of a folder on a disk,
+not something a program carries with it.
+
+If you keep your own checkout somewhere other accounts on your PC can reach and
+you would rather they could not, the same command works on any folder you own:
+
+```
+icacls "C:\path\to\your\folder" /inheritance:d
+icacls "C:\path\to\your\folder" /remove:g *S-1-5-32-545
+```
+
+The first line stops the folder inheriting from its parent; the second removes
+the `Users` group. `icacls "C:\path\to\your\folder" /reset` puts it back. Do it
+if you want it. We are not going to do it for you, and we are not going to
+touch anything above the folder we own.
 
 ---
 

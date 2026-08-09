@@ -306,6 +306,26 @@ class TestDataFolderIsNotShared:
         assert win_hardening.data_dir_shared_with(tmp_path / "missing") == []
 
 
+def _sddl(target: Path) -> str:
+    """The folder's DACL as text, for before/after comparison."""
+    return win_hardening._dacl_sddl(target) or ""
+
+
+def _icacls(target: Path, *args: str) -> None:
+    """Run icacls for a test's own setup or teardown, not for the app.
+
+    Deliberately separate from win_hardening._icacls: a test that reached into
+    the module for its fixtures would go green when both the module and the
+    expectation drifted the same way.
+    """
+    result = subprocess.run(
+        ["icacls", str(target), *args],
+        capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"icacls refused: {result.stdout or result.stderr}")
+
+
 def _widen(target: Path, sid: str) -> None:
     """Hand a broad group full access, the way a careless share does."""
     result = subprocess.run(
@@ -329,6 +349,47 @@ class TestTheDataFolderIsNarrowed:
     salt.bin and verifier.bin, and that this has to hold on every install
     rather than on a machine somebody audited by hand.
     """
+
+    def test_the_undo_command_in_security_md_actually_undoes_it(
+        self, tmp_path: Path,
+    ) -> None:
+        """SECURITY.md promises a way back. This is that promise, executed.
+
+        The document recommended `/inheritance:e` for years and it does not do
+        what the sentence next to it claimed. Breaking inheritance COPIES the
+        parent's entries onto the folder as its own; switching inheritance back
+        on adds the parent's entries again but leaves those copies in place,
+        minus whatever was removed in between. The folder ends up in a third
+        state that is neither where it started nor where narrowing left it, and
+        a reader following the document would believe they had restored it.
+
+        Written as one test with both commands in it, because the point is not
+        that `/reset` works. The point is that the two differ, and no test
+        existed that could tell them apart.
+        """
+        parent = tmp_path / "parent"
+        parent.mkdir()
+        _widen(parent, "S-1-1-0")                       # Everyone, on the PARENT
+        child = parent / "data"
+        child.mkdir()                                   # inherits, no entries of its own
+        before = _sddl(child)
+        assert win_hardening.data_dir_shared_with(child) == ["Everyone"]
+
+        assert win_hardening.narrow_data_dir(child) == ["Everyone"]
+        assert _sddl(child) != before
+
+        _icacls(child, "/inheritance:e")
+        assert _sddl(child) != before, (
+            "if this ever passes, the documented command was fine after all "
+            "and this test should be simplified rather than deleted"
+        )
+
+        _icacls(child, "/reset")
+        assert _sddl(child) == before
+        assert win_hardening.data_dir_shared_with(child) == ["Everyone"], (
+            "restored means restored: the wide access is back, which is the "
+            "whole point of an undo the reader can trust"
+        )
 
     def test_a_widened_folder_is_taken_back(self, tmp_path: Path) -> None:
         target = tmp_path / "widened"
