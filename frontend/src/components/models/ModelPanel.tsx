@@ -493,7 +493,7 @@ export function ModelPanel() {
             style={{ color: "var(--color-es-text-muted)" }}
             data-testid="model-search-empty"
           >
-            No models match &ldquo;{search}&rdquo;
+            No models match "{search}"
           </p>
         )}
 

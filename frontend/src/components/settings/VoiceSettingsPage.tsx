@@ -1010,7 +1010,7 @@ function VoiceRow({
             {transcribe.isPending ? (
               <Loader2 size={12} className="animate-spin" />
             ) : null}
-            Listen &amp; fill in
+            Listen & fill in
           </button>
         ) : null}
       </div>

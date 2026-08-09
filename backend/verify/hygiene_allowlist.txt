@@ -1,0 +1,58 @@
+# Waivers for verify_hygiene.py.
+#
+# An entry says: this rule fired on this exact line, a human looked at it, and
+# the line is right. Nothing else. It is not a way to turn a rule off for a
+# file, and there is deliberately no syntax for that.
+#
+# Format - three parts, blank line between records:
+#
+#     [RULE-ID] repo/relative/path.ext
+#     reason: why THIS line is correct. Continuation lines are indented.
+#     line: the exact text of the line, stripped of leading whitespace
+#
+# The `line:` anchor is the whole design. Edit that line and this waiver stops
+# matching, the rule fires again, and somebody re-decides against the new text.
+# A waiver that matches nothing is reported as a FAILURE, not ignored, because
+# that is the only force that ever makes this file shorter. If you see that
+# failure, the answer is usually to delete the record.
+#
+# Line numbers are deliberately absent. An anchor on file:line moves the moment
+# anything is inserted above it, and then it either blocks a clean commit or
+# silently excuses whatever slid into that slot.
+
+[H-03] frontend/src/test/settings-copy.test.ts
+reason: this is the test that forbids the entity, and it cannot assert on a
+  pattern without containing the pattern. The same file already fell into the
+  mirror of this trap once, holding a literal em dash inside its own em dash
+  regex, so the shape is known here.
+line: // `&apos;` in one option label while every other string uses a real
+
+[H-03] frontend/src/test/settings-copy.test.ts
+reason: the regex itself. See the record above.
+line: expect(copyOf(file), `${file} uses &apos;`).not.toMatch(/&apos;/);
+
+[H-04] backend/tests/test_privacy_promises.py
+reason: the path is the INPUT to the assertion, not a leak. This case proves
+  that an avatar_path never reaches the wire, so it has to hand the app a path
+  that would be damaging if it did. A rule that removes this line removes the
+  proof that the rule matters. The account name in it is the literal word
+  "someone" and belongs to no machine.
+line: ("avatar_path", "C:/Users/someone/secret.png"),
+
+[H-05] backend/speech_prep.py
+reason: this regex is the code that NORMALISES these characters for speech. It
+  has to name the range it collapses, so the rule and the fix for the rule are
+  the same line. Removing it would not remove a dash from the tree, it would
+  stop the tree from turning dashes into pauses the listener can hear.
+line: _SPACED_DASH = re.compile(r"\s+[-‐-―]+\s+")
+
+[H-04] backend/tests/test_hygiene_gate.py
+reason: parametrize cases for H-04 itself. Each one is a path shape the rule
+  was found blind to, so the test proving the rule now sees it has to hold the
+  shape. Same family as the test_privacy_promises entry above: the enforcer
+  cannot assert on a pattern without containing the pattern.
+line: "D:" + "/Users/bob/build.log",          # any drive, not just C
+
+[H-04] backend/tests/test_hygiene_gate.py
+reason: the UNC case. See the record above.
+line: "\\\\" + "workstation\\Users\\bob\\x",  # UNC: a machine AND a person

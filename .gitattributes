@@ -1,0 +1,15 @@
+# The git hook is a shell script and must keep LF endings everywhere.
+#
+# core.autocrlf is true on the machine this repository is developed on and
+# there was no .gitattributes at all, so git announced it would rewrite this
+# file's endings to CRLF on the next checkout. A shell script with CRLF is not
+# a cosmetic problem: a POSIX shell reads the carriage return as part of the
+# interpreter path and refuses the whole file with "bad interpreter". Git does
+# not run a hook it cannot execute and says nothing when it skips one, so this
+# would join the list of ways the guard reports itself armed while doing
+# nothing.
+#
+# Scoped to the one path deliberately. A blanket `* text=auto` would renormalise
+# every file in the tree in a single commit and bury the change it was added
+# for.
+backend/verify/hooks/pre-commit text eol=lf

@@ -1,0 +1,42 @@
+#!/bin/sh
+#
+# Elysium pre-commit hook. THIS is the versioned copy; the one git runs lives
+# at .git/hooks/pre-commit and is a copy of this file.
+#
+# That split is the whole reason this file exists. .git/hooks is not tracked,
+# is not cloned, and is not restored from a backup of the repository, so a hook
+# that lived only there would be absent on every fresh clone and its absence
+# would look exactly like its presence: no diff, no failing test, no signal of
+# any kind. So the source of truth is here, in the tree, and
+# verify_hygiene.py compares what is installed against this file and reports a
+# failure when they differ or when nothing is installed at all.
+#
+# To install or repair:
+#     cp backend/verify/hooks/pre-commit .git/hooks/pre-commit
+#
+# Deliberately thin. Everything it knows is in verify_hygiene.py, so changing a
+# rule does not mean reinstalling anything.
+#
+# --staged, not the default: at this moment the only content that matters is
+# what is about to become a commit. The working tree may hold half-finished
+# edits that are nobody's business yet.
+
+set -e
+
+for candidate in \
+    backend/.venv/Scripts/python.exe \
+    backend/.venv/bin/python \
+    python3 \
+    python
+do
+    if command -v "$candidate" >/dev/null 2>&1; then
+        exec "$candidate" backend/verify/verify_hygiene.py --staged
+    fi
+done
+
+# Reached only when no interpreter was found. Refuse rather than wave the
+# commit through: a guard that fails open is a guard that reports nothing on
+# exactly the machine where something is already misconfigured.
+echo "pre-commit: no python interpreter found, cannot run the hygiene gate" >&2
+echo "pre-commit: looked for backend/.venv, python3, python" >&2
+exit 1
