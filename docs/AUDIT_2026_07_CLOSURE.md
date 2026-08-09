@@ -98,26 +98,31 @@ behaviour.
 
 ---
 
-## The one open finding
+## The one open finding, and how it closed
 
-`backend/keyring_service.py` has never been committed. Nor has
-`backend/tts/` (the whole voice subsystem), `speech_prep.py`, `voice_tags.py`,
+`backend/keyring_service.py` had never been committed. Nor had `backend/tts/`
+(the whole voice subsystem), `speech_prep.py`, `voice_tags.py`,
 `messages_common.py`, or 99 other source files - 172 in total.
 
-Measured, not inferred. `git archive HEAD` into a temp directory:
+Measured, not inferred. `git archive HEAD` into a temp directory, in July:
 
 ```
 import main   ->  ModuleNotFoundError: No module named 'keyring_service'
 pytest        ->  83 tests collected, 1 collection error
-                  (this working tree collects 1221)
+                  (that working tree collected 1221)
 ```
 
-So the committed tree cannot start the app, cannot run its own suite, and does
-not contain v1.1's headline feature.
+So the committed tree could not start the app, could not run its own suite, and
+did not contain v1.1's headline feature.
 
 No test run from inside the working tree can catch this class: the suite reads
 the working tree, which is the copy that HAS the files.
 `backend/tests/test_release_tree.py` is the gate that can - it builds the
-published tree and tries to use it - and it currently **skips**, printing the
-list of untracked files. Committing them turns it into a real gate with no edit
-needed.
+published tree and tries to use it - and it **skipped**, printing the list of
+untracked files instead of failing.
+
+Closed on 2026-08-09. The remaining 79 untracked files were committed in
+`Update : publish the working tree`, and that same test went from skipping to
+**4 passed** with no edit to the test itself. That transition is the proof, not
+the file count: a gate that skips proves nothing, and this one had been proving
+nothing since it was written.
