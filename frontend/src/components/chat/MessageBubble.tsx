@@ -6,7 +6,12 @@ import { MessageText } from "./MessageText";
 import { SpeakButton } from "./SpeakButton";
 import { SpeakLiveButton } from "./SpeakLiveButton";
 import { useDeleteMessageAndFollowing } from "@/lib/query/chats";
-import { canRegenerateMessage, parseServerDate, serverDateTimeAttr } from "@/lib/chat";
+import {
+  canRegenerateMessage,
+  isMessageActive,
+  parseServerDate,
+  serverDateTimeAttr,
+} from "@/lib/chat";
 import { useUiStore } from "@/lib/store/uiStore";
 import { bubbleSurface } from "@/lib/appearance/bubbleSurface";
 import { imageUrl } from "@/lib/api/uploads";
@@ -18,6 +23,7 @@ import {
   ImageOff,
   ChevronLeft,
   ChevronRight,
+  CornerDownLeft,
 } from "lucide-react";
 
 interface MessageBubbleProps {
@@ -89,10 +95,6 @@ export const MessageBubble = memo(function MessageBubble({
   const isPersisted = message.id > 0;
   const canRegenerate = canRegenerateMessage(messages, message);
   const isBusy = deleteMessage.isPending || Boolean(pendingForChat);
-  // Parsed rows always carry the array (schema default); optimistic cache
-  // entries may omit it - treat missing as empty.
-  const attachments = message.attachments ?? [];
-
   const siblings = group ?? [message];
   const displayIndex = Math.max(
     0,
@@ -112,6 +114,26 @@ export const MessageBubble = memo(function MessageBubble({
     ? Math.min(viewIndex ?? displayIndex, variantCount - 1)
     : displayIndex;
   const shownMessage = siblings[shownIndex] ?? message;
+
+  /** A persisted user message with nothing after it - so nobody answered it. */
+  const awaitingReply =
+    isUser &&
+    isPersisted &&
+    !pendingForChat &&
+    messages.every((m) => m.id <= message.id || !isMessageActive(m));
+
+  // From shownMessage, NOT from message. `message` is the group's ACTIVE row
+  // while shownMessage is the row the reader has actually paged to, and every
+  // other visible field (text, timestamp, the Speak target) already comes from
+  // shownMessage. Reading attachments from the active row instead put one
+  // variant's picture above another variant's words, and opened the wrong image
+  // in the lightbox. Latent while only user rows had attachments - user rows
+  // never form variant groups - and reachable the moment a reply can carry a
+  // generated picture.
+  //
+  // Parsed rows always carry the array (schema default); optimistic cache
+  // entries may omit it - treat missing as empty.
+  const attachments = shownMessage.attachments ?? [];
 
   // Arrows live on the last active group (regenerate + activate) OR an older
   // group in view-only paging mode. Groups with a single variant show nothing.
@@ -249,6 +271,12 @@ export const MessageBubble = memo(function MessageBubble({
       setDirection(1);
       setHasNavigated(true);
       setViewIndex(Math.min(shownIndex + 1, variantCount - 1));
+      // The open lightbox belongs to the variant being left behind. Defence
+      // only: the lightbox is a modal that removes the rest of the page from
+      // the tree, so the arrows are unreachable while it is open and this
+      // cannot fire today. It is one line, and it stops the ordering from
+      // mattering if the lightbox ever stops trapping.
+      setLightboxAttachment(null);
       return;
     }
     if (isStreamingTarget || isBusy) return;
@@ -266,6 +294,7 @@ export const MessageBubble = memo(function MessageBubble({
       setDirection(-1);
       setHasNavigated(true);
       setViewIndex(Math.max(shownIndex - 1, 0));
+      setLightboxAttachment(null);
       return;
     }
     setDirection(-1);
@@ -393,6 +422,34 @@ export const MessageBubble = memo(function MessageBubble({
                 ) : (
                   <SpeakButton messageId={shownMessage.id} />
                 ))}
+              {/* Deleting a reply leaves its question standing with nothing
+                  after it, and no way to ask again: the regenerate arrow lives
+                  on the assistant bubble, which is the row that was just
+                  deleted, and the composer's Send needs new text - so an empty
+                  composer reads as a dead button. The only route back was to
+                  press Edit and Save without changing a word, which is a trick
+                  rather than an affordance.
+
+                  It calls the edit endpoint with the text UNCHANGED, which is
+                  exactly what that trick did: the backend only requires the row
+                  to be a user row, and with nothing after it there is nothing
+                  to sweep - it just writes a fresh reply. */}
+              {isUser && awaitingReply && onEditMessage != null && !editing && (
+                <button
+                  type="button"
+                  className="message-action-button"
+                  aria-label="Get a reply"
+                  title={
+                    selectedModelId
+                      ? "Get a reply to this message"
+                      : "Select a model to get a reply"
+                  }
+                  onClick={() => onEditMessage(message.id, message.content)}
+                  disabled={isBusy || !selectedModelId}
+                >
+                  <CornerDownLeft size={13} />
+                </button>
+              )}
               {isUser && onEditMessage != null && !editing && (
                 <button
                   type="button"

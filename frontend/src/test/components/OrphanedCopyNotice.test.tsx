@@ -1,0 +1,197 @@
+/**
+ * A second, complete copy of the vault - reported since it was added, and
+ * rendered nowhere.
+ *
+ * `/vault/status` has carried `orphaned_copy` for a while. A grep across the
+ * frontend found it in the schema, in tests, and in no component at all. So
+ * an interrupted migration left a full duplicate on disk and the only trace
+ * was a log line.
+ *
+ * The design question is not "show it" but "may the user delete it". This
+ * copy is ENCRYPTED, so it is not a leak - it is either a duplicate of the
+ * live database, or a vault under a passphrase we do not have. These tests
+ * are mostly about that fork.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactNode } from "react";
+
+import { OrphanedCopyNotice } from "@/components/settings/OrphanedCopyNotice";
+import { mockFetch } from "@/test/mocks/api";
+
+function wrapper({ children }: { children: ReactNode }) {
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 0 } },
+  });
+  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
+}
+
+function withStatus(
+  orphan: boolean,
+  readable: boolean | null,
+  discard?: unknown,
+) {
+  mockFetch({
+    "/vault/status": {
+      body: {
+        initialized: true,
+        unlocked: true,
+        orphaned_copy: orphan,
+        orphaned_copy_readable: readable,
+        plaintext_backups: [],
+      },
+    },
+    "/vault/discard-orphaned-copy": {
+      body: discard ?? { removed: true, reason: "" },
+    },
+  });
+}
+
+const DELETE = { name: /delete the duplicate/i } as const;
+
+describe("the duplicate is visible at all", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("says so when one is on disk", async () => {
+    withStatus(true, true);
+    render(<OrphanedCopyNotice />, { wrapper });
+    expect(await screen.findByTestId("orphaned-copy-notice")).toBeInTheDocument();
+  });
+
+  it("stays out of the way when there is none", async () => {
+    withStatus(false, null);
+    render(<OrphanedCopyNotice />, { wrapper });
+    await waitFor(() => {
+      expect(screen.queryByTestId("orphaned-copy-notice")).toBeNull();
+    });
+  });
+
+  it("does not frighten anyone: the copy is encrypted, and it says so", async () => {
+    // Unlike the plaintext backup this is NOT a leak. Copy that reads like a
+    // breach would push people into deleting something they may need.
+    withStatus(true, true);
+    render(<OrphanedCopyNotice />, { wrapper });
+    expect(
+      await screen.findByText(/not readable by anyone else/i),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("a copy this vault can read", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("offers to remove it", async () => {
+    withStatus(true, true);
+    render(<OrphanedCopyNotice />, { wrapper });
+    expect(await screen.findByRole("button", DELETE)).toBeInTheDocument();
+  });
+
+  it("asks once before doing anything irreversible", async () => {
+    withStatus(true, true);
+    render(<OrphanedCopyNotice />, { wrapper });
+    await userEvent.click(await screen.findByRole("button", DELETE));
+
+    expect(screen.getByText(/permanently delete it\?/i)).toBeInTheDocument();
+    expect(
+      vi.mocked(globalThis.fetch).mock.calls.some(([url]) =>
+        String(url).includes("/vault/discard-orphaned-copy"),
+      ),
+    ).toBe(false);
+  });
+
+  it("asks the backend once confirmed", async () => {
+    withStatus(true, true);
+    render(<OrphanedCopyNotice />, { wrapper });
+    await userEvent.click(await screen.findByRole("button", DELETE));
+    await userEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+
+    await waitFor(() => {
+      expect(
+        vi.mocked(globalThis.fetch).mock.calls.some(([url]) =>
+          String(url).includes("/vault/discard-orphaned-copy"),
+        ),
+      ).toBe(true);
+    });
+  });
+});
+
+describe("a copy this vault CANNOT read", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("offers no delete button at all", async () => {
+    // Not a disabled button with a tooltip. There is no safe version of this
+    // action: the file may be the only copy of chats under an older
+    // passphrase, and a button implies a decision the user cannot yet make.
+    withStatus(true, false);
+    render(<OrphanedCopyNotice />, { wrapper });
+
+    expect(await screen.findByTestId("orphaned-copy-notice")).toBeInTheDocument();
+    expect(screen.queryByRole("button", DELETE)).toBeNull();
+  });
+
+  it("says what it might be instead of what to click", async () => {
+    withStatus(true, false);
+    render(<OrphanedCopyNotice />, { wrapper });
+    expect(
+      await screen.findByText(/only copy of chats this vault cannot show you/i),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("a locked vault", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("admits it does not know yet, and offers nothing", async () => {
+    // null means "we did not look", which must not be shown as either answer.
+    withStatus(true, null);
+    render(<OrphanedCopyNotice />, { wrapper });
+
+    expect(await screen.findByText(/unlock the vault to find out/i))
+      .toBeInTheDocument();
+    expect(screen.queryByRole("button", DELETE)).toBeNull();
+  });
+
+  it("survives a backend that does not know the field yet", async () => {
+    mockFetch({
+      "/vault/status": {
+        body: { initialized: true, unlocked: true, orphaned_copy: true },
+      },
+    });
+    render(<OrphanedCopyNotice />, { wrapper });
+
+    expect(await screen.findByTestId("orphaned-copy-notice")).toBeInTheDocument();
+    expect(screen.queryByRole("button", DELETE)).toBeNull();
+  });
+});
+
+describe("a deletion that did not happen", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("does not claim success when the file is held open", async () => {
+    withStatus(true, true, { removed: false, reason: "in_use" });
+    render(<OrphanedCopyNotice />, { wrapper });
+    await userEvent.click(await screen.findByRole("button", DELETE));
+    await userEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/still on disk/i);
+  });
+
+  it("stays quiet when it worked", async () => {
+    withStatus(true, true, { removed: true, reason: "" });
+    render(<OrphanedCopyNotice />, { wrapper });
+    await userEvent.click(await screen.findByRole("button", DELETE));
+    await userEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+  });
+});

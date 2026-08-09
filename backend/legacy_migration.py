@@ -39,6 +39,7 @@ import config
 import database
 import keyring_service
 import secrets_service
+import secure_delete
 from database import get_db, iter_chunks
 
 logger = logging.getLogger(__name__)
@@ -163,8 +164,9 @@ def migrate_upload_files_to_blobs() -> tuple[int, set[str], int]:
             if entry.is_symlink() or not entry.is_file():
                 continue  # irregular entry: never touched
             if entry.name.endswith(".tmp"):
-                entry.unlink(missing_ok=True)
-                removed += 1
+                # A half-written upload is still a piece of the user's image.
+                if secure_delete.discard(entry):
+                    removed += 1
                 continue
             if sha is None:
                 continue  # foreign filename: never touched
@@ -182,8 +184,8 @@ def migrate_upload_files_to_blobs() -> tuple[int, set[str], int]:
             if hashlib.sha256(data).hexdigest() != sha:
                 # Content does not match its content-address: corrupt or
                 # tampered - controlled delete, nothing written to the DB.
-                entry.unlink(missing_ok=True)
-                removed += 1
+                if secure_delete.discard(entry):
+                    removed += 1
                 logger.warning(
                     "uploads-migration: content hash mismatch for %s...; "
                     "file removed.", sha[:12],
@@ -207,8 +209,11 @@ def migrate_upload_files_to_blobs() -> tuple[int, set[str], int]:
             # get_db context exit above == COMMIT.
 
             if not referenced:
-                entry.unlink(missing_ok=True)  # orphan plaintext: policy delete
-                removed += 1
+                # Counting a file that is still on disk as removed made the
+                # summary line a lie, and left a readable orphan nobody would
+                # look for again.
+                if secure_delete.discard(entry):
+                    removed += 1
                 continue
 
             # Durability proof on a FRESH connection: recompute the full
@@ -234,7 +239,12 @@ def migrate_upload_files_to_blobs() -> tuple[int, set[str], int]:
             # the verified blob stays, the next unlock retries the delete
             # (INSERT OR IGNORE no-ops, verify passes, unlink runs again).
             try:
-                entry.unlink()
+                # The plaintext original of a picture now sealed in the vault.
+                # A plain unlink left it recoverable, so the migration that
+                # exists to get these bytes INTO the vault left a readable copy
+                # of every one of them outside it.
+                if not secure_delete.shred(entry):
+                    raise OSError("not removed")
             except OSError:
                 logger.warning(
                     "uploads-migration: unlink failed for %s...; will retry "
@@ -363,6 +373,7 @@ def discard_premigrate_backup() -> None:
     """Remove the snapshot - call ONLY after a fully clean pass (migration
     completed with zero failures and reconcile ran)."""
     try:
-        premigrate_backup_path().unlink(missing_ok=True)
+        # A pre-migration snapshot of the whole attachments state.
+        secure_delete.discard(premigrate_backup_path())
     except OSError:
         logger.warning("uploads-migration: premigrate backup delete failed.")

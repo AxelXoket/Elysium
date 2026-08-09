@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 
 import config
+import secure_delete
 
 from .base import DetectedModel
 from .errors import (
@@ -408,7 +409,8 @@ class VoiceHost:
             try:
                 if path.stat().st_mtime >= cutoff:
                     continue
-                path.unlink()
+                if not secure_delete.shred(path):
+                    continue
                 removed += 1
             except OSError:
                 # A file the player still holds open (Windows) is not an error:
@@ -469,31 +471,12 @@ class VoiceHost:
         A cache of wav files is the user's conversation in audible form, sitting
         in the clear next to a database that went to the trouble of being
         encrypted. It exists for the length of a session and no longer.
+
+        The work lives in wipe_audio_cache() because the launch path needs the
+        same deletion before any host exists. Two copies of a deletion this
+        sensitive would drift.
         """
-        removed = 0
-        left: list[str] = []
-        try:
-            cache = Path(config.TTS_CACHE_DIR)
-            for wav in cache.glob("*.wav"):
-                try:
-                    wav.unlink()
-                    removed += 1
-                except OSError:
-                    # On Windows a wav the browser is still streaming (or a
-                    # worker still holds) raises PermissionError, and skipping
-                    # it silently left the user's spoken conversation sitting
-                    # in the clear while the vault showed locked - the exact
-                    # thing the caller's docstring promises does not happen.
-                    left.append(wav.name)
-        except Exception:                       # noqa: BLE001
-            logger.warning("tts: could not wipe the audio cache", exc_info=True)
-        if left:
-            # Same standard as _rekey_sidecars: a file we failed to secure MUST
-            # be named, because it is exactly the one the promise did not cover.
-            logger.warning(
-                "tts: %d audio file(s) could not be deleted and are still "
-                "readable on disk: %s", len(left), ", ".join(left[:5]),
-            )
+        removed, left = wipe_audio_cache()
         # The names, not the count. `removed` told the caller how well this
         # went and nothing about what is still lying around, so /vault/lock
         # could only ever answer {"ok": true} - while the user's conversation
@@ -642,3 +625,58 @@ def get_host() -> VoiceHost:
             register_teardown(_module_teardown)
             _TEARDOWN_HOOKED = True
         return _HOST
+
+
+def wipe_audio_cache() -> tuple[int, list[str]]:
+    """Delete every generated wav. Returns (deleted, names it could not).
+
+    The audio cache is the conversation in audible form, in the clear, beside
+    a database that went to the trouble of being encrypted. It gets emptied on
+    three edges now: the vault lock, shutdown, and - added later - launch.
+
+    Launch is the one that closes the hole the other two left. Both of the
+    original callers are graceful exits, so a crash, a kill, or a power cut
+    left the spoken conversation on disk with nothing coming to remove it: the
+    30-minute age trim only runs during the NEXT synthesis, which never
+    happens if the user does not use voice again.
+
+    Module level, not a method, because at launch there is no host yet and
+    building one to delete files would start a health thread for nothing.
+    """
+    removed = 0
+    left: list[str] = []
+    try:
+        cache = Path(config.TTS_CACHE_DIR)
+        if secure_delete.is_redirected(cache):
+            # Same trap the browser purge and the vault discard already refuse.
+            # This was the one deletion left that walked straight through it:
+            # junction the cache folder at somebody's Music library and every
+            # launch swept it. Reproduced before this line existed.
+            logger.warning(
+                "tts: the audio cache path is a redirected name - not swept")
+            return 0, []
+        for wav in cache.glob("*.wav"):
+            if secure_delete.is_redirected(wav) or secure_delete.is_shared(wav):
+                left.append(wav.name)
+                continue
+            try:
+                if not secure_delete.shred(wav):
+                    raise OSError("not removed")
+                removed += 1
+            except OSError:
+                # On Windows a wav the browser is still streaming (or a worker
+                # still holds) raises PermissionError, and skipping it
+                # silently left the user's spoken conversation sitting in the
+                # clear while the vault showed locked - the exact thing the
+                # caller's docstring promises does not happen.
+                left.append(wav.name)
+    except Exception:                           # noqa: BLE001
+        logger.warning("tts: could not wipe the audio cache", exc_info=True)
+    if left:
+        # Same standard as _rekey_sidecars: a file we failed to secure MUST be
+        # named, because it is exactly the one the promise did not cover.
+        logger.warning(
+            "tts: %d audio file(s) could not be deleted and are still "
+            "readable on disk: %s", len(left), ", ".join(left[:5]),
+        )
+    return removed, left

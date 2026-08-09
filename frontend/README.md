@@ -34,9 +34,11 @@ src/
 │   ├── models/       Model panel (catalogue, search, selection)
 │   ├── persona/      Persona panel
 │   ├── preview/      Active context preview card
-│   ├── settings/     API key + proxy sections
+│   ├── settings/     API key + proxy sections, auto-lock, at-rest notices
 │   ├── sidebar/      Sidebar layout
-│   └── layout/, motion/, ui/   Shell, animation, and base UI primitives
+│   ├── vault/        VaultGate - the lock screen that fronts the whole app
+│   └── backdrop/, brand/, layout/, motion/, ui/   Shell, wallpaper, wordmark,
+│                     animation, and base UI primitives
 ├── lib/
 │   ├── api/          REST client + SSE stream client (stream.ts)
 │   ├── query/        TanStack Query hooks (all resources)
@@ -44,13 +46,21 @@ src/
 │   ├── generation/   Param filtering, clamping, payload builders
 │   ├── errors/       Safe error parser, code→message mapper, error store
 │   ├── store/        Zustand UI store
-│   └── chat/, characters/, models/, personas/, preview/, theme/
+│   ├── voice/        Narration playback, chunk scheduling, voice tag handling
+│   ├── zodJitless.ts Zod without eval - imported first in main.tsx, before CSP
+│   ├── navigationGuard.ts   Blocks top-level navigation away from the app
+│   └── appearance/, chat/, characters/, context/, models/, motion/, personas/,
+│       preview/, theme/, utils.ts, vaultLockUi.ts
 └── test/
     ├── components/   Focused suites per feature slice
     ├── helpers/      streamMocks.ts - SSE-aware fetch stub for streaming tests
     ├── mocks/        API mocks + shared fixtures
+    ├── lib/          Suites for the lib/ modules above
+    ├── setup.ts      Vitest environment setup, loaded before every suite
     ├── static-safety.test.ts   Static privacy checks (no direct provider calls, no secret storage)
-    └── fe0-contract.test.ts    API contract shape tests
+    ├── fe0-contract.test.ts    API contract shape tests
+    └── css-contract, palette-guard, settings-copy, settings-persistence,
+        narrationMigration, navigationGuard   Cross-cutting suites
 ```
 
 ## Contract of record

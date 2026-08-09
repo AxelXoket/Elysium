@@ -173,11 +173,21 @@ def privacy_check(pid: str, desc: str, pattern: str,
                   expect_absent: bool = True,
                   case_insensitive: bool = False,
                   exclude_files: set[str] | None = None,
-                  skip_comments: bool = False) -> bool:
-    """Run a privacy grep check. Returns True if check passes."""
+                  skip_comments: bool = False,
+                  exclude_lines: tuple[str, ...] = ()) -> bool:
+    """Run a privacy grep check. Returns True if check passes.
+
+    exclude_lines exempts individual LINES by substring, for the case where a
+    whole-file exemption would be too coarse: a rule about what this app SENDS
+    should not be switched off for a file merely because that file also reads
+    something the provider sent us. Every entry must be justified at its use.
+    """
     hits = grep_backend(pattern, case_insensitive, skip_prose=skip_comments)
     if exclude_files:
         hits = [(f, l, c) for f, l, c in hits if f not in exclude_files]
+    if exclude_lines:
+        hits = [(f, l, c) for f, l, c in hits
+                if not any(frag in c for frag in exclude_lines)]
     ok = (len(hits) == 0) if expect_absent else (len(hits) > 0)
     tag = PASS if ok else FAIL
     detail = ""
@@ -220,9 +230,21 @@ privacy_results.append(("P-02 context_budget_tokens not in openrouter.py", ok_p0
 # an image_url literal anywhere else is a second path that neither the
 # attachment gate nor the model-capability rule (_model_accepts_images) covers.
 # Pattern requires quotes around image_url to match code usage, not docstrings.
+#
+# AMENDED, consciously, when generated image output shipped. The check is about
+# the OUTBOUND direction: what this app puts INTO a provider payload. Generated
+# images arrive the other way round - `choices[].message.images[].image_url.url`
+# is something the provider sent US - and that has to be read somewhere.
+# openrouter.image_urls_from is the single reader, it CONSTRUCTS nothing, and the
+# rule it upholds is the mirror of this one: one place, and only one.
+#
+# Weakening the pattern to "image_url outside these two files" would have made
+# the check unable to see a new outbound builder in openrouter.py, so the
+# exemption is scoped to the one function name instead of the whole file.
 privacy_check("P-03", "image_url built only in attachments_service",
               r'["\']image_url["\']',
-              exclude_files=VERIFY_FILES | {"attachments_service.py"})
+              exclude_files=VERIFY_FILES | {"attachments_service.py"},
+              exclude_lines=('entry.get("image_url")',))
 
 # P-04: no tools/tool_choice/response_format in payload
 privacy_check("P-04", "no tools/tool_choice/response_format",

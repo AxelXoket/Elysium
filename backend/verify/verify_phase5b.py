@@ -1,4 +1,23 @@
 """
+KNOWN BROKEN - reference only. Do not run this expecting a pass, and do not
+"repair" it (owner's decision, 8 August 2026).
+
+It was measured against the current tree: of its 152 checks, ~85-90 are already
+covered by the pytest suite in backend/tests, most of them more strongly (its
+static "is httpx imported" grep, for instance, versus the suite refusing egress
+at the real socket layer). The only two genuinely unique gaps it held -
+generation-parameter validation and the CORS/Host contract - were lifted into
+tests/test_generation_params.py and tests/test_cors_contract.py, with red-green
+proof. What is left is a second, more fragile copy of things already proven.
+
+It no longer runs, either: the vault is SQLCipher-encrypted now and this opens
+app.db with the stdlib sqlite3, and it asserts "exactly 18 routes" where the
+app now serves 65. Both are the app growing correctly, not the app breaking.
+
+README already files backend/verify as "Legacy regression scripts (reference
+only)"; tests/ is the gate. Kept for its readable descriptions of what each
+check once meant.
+
 Phase 5B verification script (Text-only OpenRouter Completion Router).
 Run from backend/ with the virtual environment active:
     .venv/Scripts/python verify_phase5b.py
@@ -235,6 +254,14 @@ class _FakeHandler(http.server.BaseHTTPRequestHandler):
             self._json(401, {"error": "unauthorized"})
         elif _fake_mode == "auth_403":
             self._json(403, {"error": "forbidden"})
+        elif _fake_mode == "moderation_403":
+            # The documented ModerationErrorMetadata shape. See V-Err-9.
+            self._json(403, {"error": {
+                "message": "flagged by the provider's moderation",
+                "code": 403,
+                "metadata": {"reasons": ["harassment"],
+                             "flagged_input": "RAW_PROMPT_MUST_NOT_LEAK"},
+            }})
         elif _fake_mode == "server_500":
             self._json(500, {"error": "internal server error"})
         elif _fake_mode == "rate_429":
@@ -1335,18 +1362,34 @@ try:
           and err8.get("detail") == "auth_failed"
           and _total_msg_count() == msgs_before_e8)
 
-    # V-Err-9: fake 403
-    _fake_mode = "auth_403"
+    # V-Err-9: fake 403. NOT an auth failure - OpenRouter answers a moderation
+    # block with 403, and folding it into auth_failed sent people to fix an API
+    # key that worked. A moderation-shaped body earns its own code; anything
+    # else answering 403 (a proxy, a CDN) stays generic.
+    _fake_mode = "moderation_403"
     _reset_fake()
     msgs_before_e9 = _total_msg_count()
     code, err9 = http_post(f"/api/v1/chats/{test_chat_id}/complete", {
-        "message": "auth fail 403",
+        "message": "moderation 403",
         "model_id": "openai/gpt-4",
     })
-    check("V-Err-9  fake 403 -> 401 auth_failed",
-          code == 401 and isinstance(err9, dict)
-          and err9.get("detail") == "auth_failed"
+    check("V-Err-9a  moderation 403 -> 403 openrouter_moderation_blocked",
+          code == 403 and isinstance(err9, dict)
+          and err9.get("detail") == "openrouter_moderation_blocked"
+          and "RAW_PROMPT_MUST_NOT_LEAK" not in json.dumps(err9)
           and _total_msg_count() == msgs_before_e9)
+
+    _fake_mode = "auth_403"
+    _reset_fake()
+    msgs_before_e9b = _total_msg_count()
+    code, err9b = http_post(f"/api/v1/chats/{test_chat_id}/complete", {
+        "message": "unrecognised 403",
+        "model_id": "openai/gpt-4",
+    })
+    check("V-Err-9b  unrecognised 403 -> 502 openrouter_completion_error",
+          code == 502 and isinstance(err9b, dict)
+          and err9b.get("detail") == "openrouter_completion_error"
+          and _total_msg_count() == msgs_before_e9b)
 
     # V-Err-10: malformed response (no choices)
     _fake_mode = "malformed"

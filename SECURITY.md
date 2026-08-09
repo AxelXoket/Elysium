@@ -1,0 +1,277 @@
+# Elysium: what protects your data, and what does not
+
+This document exists so you never have to take a claim on trust. Every
+protection below says what it does, whether it is on by default, and what it
+does **not** cover. The limits are here on purpose: a security page that only
+lists wins is a marketing page.
+
+Written against version 1.1.0.
+
+---
+
+## The short version
+
+- Everything you write lives in **one encrypted file**. Without your passphrase
+  it cannot be opened, not even as a plain database.
+- Your passphrase is **never stored**. Lose it and the data is gone. That is the
+  design, not a bug.
+- The app talks to **one address on the internet** (OpenRouter), and refuses
+  every other destination at the connection layer. The one exception is the
+  optional voice engine installer, which you start by hand.
+- Elysium writes **nothing to the Windows registry**. Deleting one folder
+  removes everything it ever created, with four caveats listed at the end.
+
+---
+
+## Where your data lives
+
+Everything is under one folder:
+
+```
+%LOCALAPPDATA%\Elysium
+```
+
+| What | Encrypted? |
+|---|---|
+| `app.db` - messages, characters, personas, images, your API key, proxy URL | **Yes**, AES-256 (SQLCipher), including the journal files |
+| `salt.bin`, `verifier.bin`, `kdf.json` - passphrase machinery | No, and they are not secret. Knowing them does not reveal your key |
+| `app.db.plain.bak-*` - a pre-vault copy kept after a one-time upgrade | **No, plaintext.** Settings > Secrets lists it and deletes it on request |
+| `voice/models`, `voice/refs` - voice model weights, your reference recordings | No |
+| `voice/cache` - generated speech, your conversation as audio | No. Cleared at every lock, every launch and every shutdown; anything older than 30 minutes is cleared as the next reply is spoken |
+| `webview/` - the app window's browser profile | No. Cache, history and session files are wiped at every launch and exit; only cosmetic settings and your wallpaper are kept |
+| `elysium.log` - application log | No. It carries no message text, no keys and no passphrases |
+| `port` - the port the server last used | No. One number |
+
+In a development checkout this folder is the source tree instead, which is why
+you may see these files beside the code.
+
+---
+
+## What protects it
+
+### Your passphrase
+
+Turned into a key with scrypt, a deliberately slow and memory-hungry function
+(128 MB per attempt). That cost is what makes guessing expensive. There is no
+login screen to rate-limit an attacker: somebody who copies your folder guesses
+offline, as fast as their hardware allows, forever. So the passphrase floor is
+**12 characters**, with a few shape checks (no keyboard walks, no one idea
+repeated, no single character filling half of it).
+
+There are deliberately **no composition rules**. Forcing an uppercase, a digit
+and a symbol is how you get `Password1!`. Three unrelated words beat it.
+
+### The database
+
+The whole file is encrypted, not just the fields. Opening it with an ordinary
+SQLite tool fails; it does not show you a table with scrambled cells, it does
+not open at all.
+
+### Idle auto-lock
+
+**On by default, 5 minutes.** Locking clears the key from memory, tears down the
+voice engine (giving the GPU memory back) and drops the network client. Idle
+means nothing in flight and nothing finished recently, so a reply that is still
+streaming holds the vault open however long it takes. Change the delay or turn
+it off in Settings > Secrets.
+
+### The key in memory
+
+While unlocked, the key is in RAM. On lock, the buffer is overwritten rather
+than merely dropped. **This is not "the key is wiped from memory"** and the code
+says so: copies exist that Python cannot reach, including anything Windows
+paged to disk. Overwriting one buffer is worth doing; claiming more would be a
+lie.
+
+### Deleting things
+
+Anything sensitive is overwritten with random bytes before being unlinked, by a
+single shared routine that also refuses to delete through a junction, a symlink
+or a hardlink. **It is not a guarantee against physical recovery**: on an SSD,
+wear levelling can leave the original blocks readable to firmware-level
+analysis. Full-disk encryption (BitLocker) is the only answer to that, and it is
+yours to enable.
+
+### The local server
+
+Elysium runs a small web server on `127.0.0.1` so the window can talk to it.
+Loopback is not a permission boundary: any program running as you could
+otherwise read every conversation with one command. So the server requires a
+secret generated at launch and given only to the app window.
+
+**This is only armed in the packaged app.** A developer running the backend by
+hand has no token and the gate is open.
+
+Two routes are exempt because a browser cannot attach a header to an image or an
+audio element. They are narrowed rather than opened: the browser must send
+`Sec-Fetch-Site: same-origin`, which a command-line tool does not.
+
+### Where it connects
+
+One provider host, enforced by refusing any other destination before the
+connection opens. System proxy environment variables are ignored on purpose.
+Every request forces `zdr: true`, `data_collection: deny`, `allow_fallbacks:
+false`, and the app window **cannot** override those three.
+
+The one other egress is the optional voice engine setup, which you start
+yourself. It downloads from GitHub and PyPI, uploads nothing, and no chat,
+persona or voice data is in scope.
+
+Once installed, the voice engine runs as a separate process that talks to the
+app over pipes and is given no reason to reach the network: proxy and hub
+variables are stripped from its environment and `HF_HUB_OFFLINE=1` is set, so
+the model loader reads from disk instead of calling out. Be precise about what
+that is, though. It is a configured boundary, not an enforced one. The engine
+is an ordinary child process, so nothing at the operating-system level stops it
+from opening a socket, and the app's own single-host check does not extend into
+it. If you want a hard guarantee for this one component, add a firewall rule
+for it; the app cannot make that promise on your behalf, so it does not.
+
+Pictures a model returns are accepted only when they arrive inline. A link to a
+remote image is refused rather than fetched, because fetching it would add a
+second place your data goes.
+
+### The app window
+
+Browser caches are the reason this section exists: the window used to write
+whole conversations to disk as plain readable JSON, surviving every lock. Those
+caches are now wiped at launch and exit, API responses are marked no-store, and
+the browser's crash reporter is prevented from starting at all so a crash cannot
+write a memory dump and send it to Microsoft.
+
+---
+
+## Does Elysium change my Windows settings?
+
+**It writes nothing to the registry.** The only registry access anywhere in the
+code is a read, to detect whether the WebView2 runtime is installed.
+
+| Change | Scope | Survives the app closing? |
+|---|---|---|
+| Excluding the process heap from crash dumps | This process only | No, re-applied at every launch |
+| Marking the data folder "do not index" | A file attribute on that folder | Yes, until the folder is deleted |
+| Hiding the window from screen capture | That window | No, and **off by default** (set `ELYSIUM_SCREEN_PRIVACY=1` to enable) |
+| Blocking the browser crash reporter | A file inside the data folder | Deleted with the folder |
+| Resetting the DLL search path | This process and its children | No, re-applied at every launch |
+| **Narrowing the data folder's permissions** | That folder | **Yes** - see below |
+
+### The one that is worth reading twice
+
+At launch, Elysium checks whether groups beyond you can reach its data folder
+(Everyone, Users, Guests, and similar). If any can, it **removes their access**
+and writes what it removed to the log.
+
+Why: your database is encrypted, but `salt.bin` and `verifier.bin` beside it are
+exactly what an offline passphrase attack needs. A second account on the same
+computer should not be able to copy them.
+
+What it does **not** do: it does not touch SYSTEM, Administrators or you, it does
+not walk into subfolders, and it does not touch any folder above its own. On a
+normal install it finds nothing to do and changes nothing at all.
+
+To undo it, in an Administrator prompt:
+
+```
+icacls "%LOCALAPPDATA%\Elysium" /inheritance:e
+```
+
+---
+
+## What is NOT protected
+
+Stated plainly, because these are the things people assume. Grouped by topic so
+you can find the one you care about.
+
+### Who else sees your words
+
+- **Your provider reads your prompts.** Elysium forces zero-data-retention
+  routing, but the model still reads what you send it. Encryption at rest is not
+  encryption in transit to a third party you chose to use.
+- **A running unlocked app is unlocked.** Anything with your user account, or
+  administrator rights, can reach a running process's memory. The vault protects
+  the file at rest and the window once it locks.
+
+### What is written outside the vault
+
+- **UI preferences are not encrypted.** Text size, bubble solidity, the
+  wallpaper, sampling numbers and the model you last picked live in the window's
+  local storage. No chat content is there.
+- **Voice is not encrypted.** Generated speech is written as ordinary `.wav`
+  files while the vault is open. They are wiped on lock, on exit and on the next
+  launch, but a hard kill can leave one until then.
+- **The search index remembers.** Marking the folder not-indexed is a promise
+  about the future. Anything Windows already extracted stays in its index.
+
+### Limits of secure deletion
+
+- **Deleted is not shredded on an SSD.** Overwriting defeats undelete tools, not
+  a controller that quietly moved the original blocks. Full-disk encryption is
+  the answer, and it is yours to enable.
+- **Hidden extra streams are not overwritten.** NTFS lets a file carry hidden
+  side-channels, and shredding rewrites only the main one. We scanned 34,200
+  files across every folder Elysium deletes from and found **none**, so this is
+  a mechanism without an instance here - and realistically it would hold a
+  "downloaded from the internet" tag, not conversation.
+- **Files with names Windows cannot open stay put.** A name ending in a dot or
+  space, or a reserved device name, cannot be opened the ordinary way, so it
+  cannot be overwritten either; Elysium reports such a file rather than
+  pretending it deleted it. Also scanned, also **no instances** - the browser
+  names its cache files from hashes, which cannot produce one.
+
+### Windows crash dumps
+
+When a program crashes, Windows can write a memory dump to
+`%LOCALAPPDATA%\CrashDumps`, a system-wide folder outside Elysium's reach. We
+measured this both ways: an ordinary program does get a dump written, but
+crashing Elysium's own browser window on purpose produced no dump at all, in
+three different configurations. So the path we were worried about did not
+reproduce.
+
+What we cannot claim: we crashed the window one way. **A different kind of
+failure - a graphics driver fault, an out-of-memory kill - might behave
+differently, and we have not tested those.** If you want certainty rather than
+a measurement, turn crash dumps off in Windows and delete that folder; it is not
+inside `%LOCALAPPDATA%\Elysium`, so removing the app leaves it behind. On most
+machines it was some other program that switched this on in the first place.
+
+### The download itself
+
+- **Elysium.exe is not code-signed.** Nothing cryptographic ties the file you
+  downloaded to its author, so Windows shows a SmartScreen warning and Smart App
+  Control may refuse it outright. Until that changes, the integrity of your copy
+  rests on the transport you fetched it over. A signing certificate is a cost
+  decision that has not been made yet, and saying so is better than letting the
+  absence pass unmentioned.
+- **A voice model you download is code.** Some engines load checkpoints in a
+  format that can execute code as it is read. Elysium runs them in a separate
+  process, but that process is yours: treat a model folder like an executable
+  and take it only from a source you trust.
+
+---
+
+## If I delete Elysium, what is left?
+
+Delete `%LOCALAPPDATA%\Elysium` and the encrypted database, the passphrase
+files, the voice models, the browser profile and the log all go with it. The
+application files are separate and hold no user data.
+
+Four things that folder does not cover:
+
+1. Crash dumps in `%LOCALAPPDATA%\CrashDumps` from before this version, or from
+   a window crash. Delete that folder yourself if you want to be sure.
+2. Whatever the Windows search index extracted before the no-index attribute was
+   set. Rebuild the index from Indexing Options to clear it.
+3. A Windows Credential Manager entry named `chatbot_interface`, if you upgraded
+   from a very old version and never unlocked the vault afterwards. New installs
+   never write there. **Not verified as impossible** - check Credential Manager
+   if you are being thorough.
+4. The permission change described above, if it ran. The command to undo it is
+   there.
+
+---
+
+## Reporting something
+
+This is a single-developer, local-first project. If you find a problem, open an
+issue with what you did and what you expected. Do not include your passphrase,
+your API key, or a log you have not read.

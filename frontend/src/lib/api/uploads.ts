@@ -18,6 +18,7 @@ import { getErrorMessage } from "../errors";
 import type { ApiError } from "./client";
 import { notifyVaultLocked } from "./client";
 import { API_BASE as BASE } from "./base";
+import { launchTokenHeader } from "./launchToken";
 
 // Exact match of the uploads contract 201 body
 export const UploadedImageSchema = z.object({
@@ -53,6 +54,9 @@ export async function uploadImage(file: File): Promise<UploadedImage> {
     // from the FormData body.
     res = await fetch(`${BASE}/uploads/images`, {
       method: "POST",
+      // Still no Content-Type - fetch derives multipart/form-data + boundary
+      // from the FormData body, and setting it by hand loses the boundary.
+      headers: { ...launchTokenHeader() },
       body: form,
     });
   } catch {
@@ -107,7 +111,10 @@ export async function uploadImage(file: File): Promise<UploadedImage> {
 export async function unstageImage(id: number): Promise<boolean> {
   let res: Response;
   try {
-    res = await fetch(`${BASE}/uploads/images/${id}`, { method: "DELETE" });
+    res = await fetch(`${BASE}/uploads/images/${id}`, {
+      method: "DELETE",
+      headers: { ...launchTokenHeader() },
+    });
   } catch {
     return false;
   }

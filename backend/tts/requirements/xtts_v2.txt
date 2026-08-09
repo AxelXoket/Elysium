@@ -1,3 +1,18 @@
+# HASH PINNING: measured 2026-08-09, NOT applied. Unlike its two siblings this
+# file DOES compile: `uv pip compile --generate-hashes --torch-backend=cu128`
+# produced 2161 hashes cleanly. It is left alone anyway, for a different reason.
+#
+# A compile RE-RESOLVES, so the lockfile it produces pins whatever is newest
+# today rather than the versions this engine was tested against - and there is
+# no installed environment to constrain it to, because engines are only built
+# when the user asks for one. Shipping one hash-pinned engine whose versions
+# nobody has run, beside two that could not be pinned at all, buys asymmetry
+# rather than safety.
+#
+# When this is picked up: pin to the versions already in this file and attach
+# hashes to them, then install one engine end to end on a GPU machine before
+# trusting it. backend/requirements.lock.txt is the worked example.
+#
 # Coqui XTTS-v2 - captured with `uv pip freeze` from the bake-off env.
 # Self-contained: coqui-tts is a real package, so nothing else is needed.
 # numpy 2.4.6 here and 1.26.4 for the others is exactly why these engines

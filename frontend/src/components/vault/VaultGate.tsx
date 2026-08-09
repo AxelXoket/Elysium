@@ -31,7 +31,7 @@ import {
   useUnlockVault,
 } from "@/lib/query/vault";
 
-const MIN_PASSPHRASE_LEN = 8;
+const MIN_PASSPHRASE_LEN = 12;
 
 /** Passphrase input with a show/hide reveal toggle. The visibility state is
  * per-field and local; the plaintext never leaves component state. */

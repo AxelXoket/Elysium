@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import config
+import secure_delete
 
 from .errors import (
     TTS_REFERENCE_INVALID,
@@ -234,12 +235,16 @@ def save_upload(voice_id: str, filename: str, data: bytes, *,
         )
         validate(candidate)
     except BaseException:
-        staged.unlink(missing_ok=True)
+        secure_delete.discard(staged)
         raise
 
     for old in list(folder.iterdir()):
         if old.is_file() and old.suffix.lower() in AUDIO_SUFFIXES:
-            old.unlink()                       # one clip per voice
+            # A reference clip is the user's own recorded voice. Replacing it
+            # with a plain unlink left the previous take on disk, so a person
+            # who re-recorded BECAUSE the first take said something they did
+            # not want kept still had it.
+            secure_delete.shred(old)           # one clip per voice
     staged.replace(folder / ("ref" + suffix))
 
     # The transcript belongs to the RECORDING, not to the voice id. Writing it
@@ -252,7 +257,9 @@ def save_upload(voice_id: str, filename: str, data: bytes, *,
     if transcript.strip():
         tpath.write_text(transcript.strip(), encoding="utf-8")
     else:
-        tpath.unlink(missing_ok=True)
+        # The words that were said, which belong to the user exactly like the
+        # audio shredded a few lines above.
+        secure_delete.discard(tpath)
 
     _write_meta(folder, {
         "label": label or voice_id,
@@ -290,6 +297,22 @@ def delete(voice_id: str) -> bool:
     folder = _voice_dir(voice_id)
     if not folder.is_dir():
         return True
+    if secure_delete.is_redirected(folder):
+        logger.warning("voice %s is a redirected name - not deleted", voice_id)
+        return False
+    # rglob + a per-FILE redirect check is not a guard: a file reached through
+    # a junction has an ordinary path of its own, so the check passes and the
+    # overwrite lands outside this folder. The prune has to happen at the
+    # ancestor, which is what shred_tree does.
+    _, stuck, pruned = secure_delete.shred_tree(folder)
+    if stuck:
+        logger.warning("voice %s: %d file(s) could not be removed",
+                       voice_id, len(stuck))
+    if pruned:
+        # rmtree would walk straight into what was just refused.
+        logger.warning("voice %s contains a redirected folder - left in place",
+                       voice_id)
+        return False
     shutil.rmtree(folder, ignore_errors=True)
     return not folder.exists()
 

@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import config
+import launch_token
 
 from . import runtimes
 from ._which import which_trusted
@@ -227,8 +228,12 @@ def find_uv() -> str | None:
     return str(home) if home.is_file() else None
 
 
-def _proxy_url() -> str | None:
-    """The user's configured proxy, or None.
+class ProxyUnreadable(Exception):
+    """The vault could not answer whether a proxy is configured."""
+
+
+def _read_proxy() -> str | None:
+    """The user's configured proxy, or None - raising when it cannot be read.
 
     Provisioning makes MULTI-GIGABYTE outbound connections - GitHub for the uv
     binary, then PyPI and download.pytorch.org through uv - and none of them
@@ -237,37 +242,106 @@ def _proxy_url() -> str | None:
     had their real IP contact three third-party hosts the moment they pressed
     "Set up voice", with nothing anywhere saying the proxy was not used.
 
-    Never raises: a locked vault or an unreadable secret means "no proxy", and
-    the caller decides whether that is allowed (see _proxy_required).
+    The distinction this raise exists to keep: "no proxy is configured" and
+    "the vault is locked so nobody knows" are different answers, and collapsing
+    them into None is how the second one silently became the first.
     """
     try:
         from config import SECRET_PROXY_URL
         from secrets_service import get_secret
 
         return (get_secret(SECRET_PROXY_URL) or "").strip() or None
-    except Exception:                                    # noqa: BLE001
+    except Exception as exc:                             # noqa: BLE001
+        raise ProxyUnreadable(str(exc)[:200]) from exc
+
+
+def _proxy_url() -> str | None:
+    """_read_proxy for the callers that must not raise (env, opener)."""
+    try:
+        return _read_proxy()
+    except ProxyUnreadable:
         return None
 
 
 def _proxy_required() -> bool:
+    """Whether the user made the proxy mandatory. FAILS CLOSED.
+
+    This used to answer False on any exception, which is the wrong direction
+    for a switch whose whole purpose is "do not go out without the proxy": an
+    unreadable setting became permission to download 2.6 GB direct, from the
+    one code path where the user is least able to see it happen. Not knowing
+    has to mean "assume it is required" - the cost is a refusal with a clear
+    message, and the cost of the other answer is the leak the setting exists
+    to prevent.
+    """
     try:
         from database import get_setting
 
         return (get_setting("proxy_required") or "") == "1"
     except Exception:                                    # noqa: BLE001
-        return False
+        logger.warning("provision: cannot read proxy_required - "
+                       "treating the proxy as mandatory")
+        return True
+
+
+#: Ambient variables that redirect where a child downloads from, or let it
+#: skip the proxy. uv and pip read all of these, and _run hands the child a
+#: copy of os.environ, so every one of them was in force.
+_ENV_NETWORK_STRIP = (
+    # A wildcard here makes uv ignore the proxy for every host - the exact
+    # bypass the proxy exists to prevent, spelled in one variable.
+    "NO_PROXY", "no_proxy",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+    "http_proxy", "https_proxy", "all_proxy",
+    # Where the packages come from. Redirecting these points a multi-gigabyte
+    # install at somebody else's host: a privacy leak and a supply-chain one
+    # in the same variable.
+    "UV_INDEX", "UV_INDEX_URL", "UV_EXTRA_INDEX_URL", "UV_DEFAULT_INDEX",
+    "UV_FIND_LINKS", "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL",
+    # The PIP_* half is defensive rather than known-necessary: the installer
+    # only ever runs `uv pip install`, and uv does not read pip's own config
+    # the way pip does. Stripping them anyway means a future switch back to
+    # pip cannot quietly reintroduce the redirect.
+    "PIP_TRUSTED_HOST", "PIP_FIND_LINKS", "PIP_CONFIG_FILE",
+)
+
+
+def ambient_proxy_names() -> list[str]:
+    """Proxy variables the SHELL has set, which the child will not inherit.
+
+    Stripping them is right - everything else in this app builds its clients
+    with trust_env=False, and an exported proxy is a host the user never chose
+    here. But there is a real population it costs: someone on a corporate
+    network whose machine routes everything through a system proxy and who has
+    therefore never opened Elysium's proxy setting. Their install used to work
+    by inheritance and now cannot reach anything.
+
+    Refusing to trust the shell and refusing to SAY SO are separate decisions.
+    This is what lets the failure read as "your proxy was not used, here is
+    where to set it" instead of a timeout that looks like a broken network.
+    """
+    return [name for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                              "http_proxy", "https_proxy", "all_proxy")
+            if os.environ.get(name)]
 
 
 def _proxy_env(base: dict) -> dict:
-    """`base` plus the proxy variables uv and its resolver read."""
+    """`base`, with the ambient network environment removed and ours applied.
+
+    Stripping happens whether or not a proxy is configured. Everywhere else in
+    this app builds its clients with trust_env=False; the installer was the one
+    place that inherited the user's shell, so a machine with HTTP_PROXY
+    exported sent the whole download through a host this app never chose, and
+    a machine with NO_PROXY=* sent it through none.
+    """
+    env = {**base, **{name: None for name in _ENV_NETWORK_STRIP}}
     proxy = _proxy_url()
-    if not proxy:
-        return base
-    return {
-        **base,
-        "HTTP_PROXY": proxy, "HTTPS_PROXY": proxy, "ALL_PROXY": proxy,
-        "http_proxy": proxy, "https_proxy": proxy, "all_proxy": proxy,
-    }
+    if proxy:
+        env.update({
+            "HTTP_PROXY": proxy, "HTTPS_PROXY": proxy, "ALL_PROXY": proxy,
+            "http_proxy": proxy, "https_proxy": proxy, "all_proxy": proxy,
+        })
+    return env
 
 
 def _url_opener():
@@ -282,6 +356,12 @@ def _url_opener():
     import urllib.request
 
     proxy = _proxy_url()
+    if not proxy and _proxy_required():
+        # The gate in start_install runs before the job is queued; this one
+        # runs at the moment of the connection. Between them the vault can
+        # lock, and this is the ~25 MB request to GitHub that would otherwise
+        # go out bare from a machine whose user made the proxy mandatory.
+        raise ProxyUnreadable("a proxy is required but none is available")
     handler = urllib.request.ProxyHandler(
         {"http": proxy, "https": proxy} if proxy else {}
     )
@@ -398,7 +478,18 @@ def _run(argv, *, on_line, cancel: threading.Event, timeout: float,
     strict decode would raise inside the drain and hang the whole install.
     """
     full_env = dict(os.environ)
-    full_env.update(env or {})
+    # Same reason the engine worker strips it: uv runs setup code from wheels
+    # this app did not write, and the launch token is the one credential that
+    # would let such code ask the local API for the whole conversation.
+    full_env.pop(launch_token.ENV_VAR, None)
+    for name, value in (env or {}).items():
+        # None means REMOVE. _proxy_env uses it to take the user's ambient
+        # proxy and index variables away from the child; without this branch
+        # they would survive as the string "None" and be worse than inherited.
+        if value is None:
+            full_env.pop(name, None)
+        else:
+            full_env[name] = value
     flags = CREATE_NO_WINDOW if IS_WINDOWS else 0
     try:
         proc = subprocess.Popen(
@@ -536,11 +627,33 @@ def start_install(engine_id: str) -> dict:
         # A proxy the user made MANDATORY must not be silently bypassed by a
         # multi-gigabyte download - the request where it matters most. Same
         # state completions and /models refuse outright.
-        if _proxy_required() and not _proxy_url():
-            raise ProvisionError(
-                TTS_RUNTIME_INSTALL_FAILED,
-                "a proxy is required but none is configured - set one in "
-                "Settings before installing a voice engine",
+        if _proxy_required():
+            try:
+                configured = _read_proxy()
+            except ProxyUnreadable:
+                # Not the same as "none configured", and it must not resolve
+                # to "go ahead": the vault holds the proxy, so being unable to
+                # read it is exactly when a download would go out bare.
+                raise ProvisionError(
+                    TTS_RUNTIME_INSTALL_FAILED,
+                    "a proxy is required but the vault could not be read - "
+                    "unlock it and try again",
+                ) from None
+            if not configured:
+                raise ProvisionError(
+                    TTS_RUNTIME_INSTALL_FAILED,
+                    "a proxy is required but none is configured - set one in "
+                    "Settings before installing a voice engine",
+                )
+        elif not _proxy_url() and ambient_proxy_names():
+            # Not an error: the user has not asked for a proxy here. But their
+            # machine has one, this download will not use it, and finding that
+            # out from a connection timeout would be the wrong way.
+            logger.warning(
+                "provision: %s is set in the environment and will NOT be used "
+                "- Elysium only uses the proxy configured in Settings. If this "
+                "machine needs a proxy to reach the internet, set it there.",
+                ", ".join(ambient_proxy_names()),
             )
 
         # NOT downloaded here. start_install is documented as "Begin. Returns

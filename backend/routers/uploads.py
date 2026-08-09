@@ -23,7 +23,7 @@ from fastapi.responses import Response
 
 from starlette.formparsers import MultiPartParser
 
-from config import MAX_UPLOAD_BYTES, UPLOAD_SPOOL_LIMIT
+from config import ALLOWED_IMAGE_MIMES, MAX_UPLOAD_BYTES, UPLOAD_SPOOL_LIMIT
 from attachments_service import (
     AttachmentError,
     save_upload,
@@ -118,6 +118,18 @@ async def serve_image(attachment_id: int) -> Response:
     if result is None:
         raise HTTPException(404, "attachment_not_found")
     mime, data = result
+    if mime not in ALLOWED_IMAGE_MIMES:
+        # Defence in depth on the ONE value in this response that a browser
+        # will act on. save_upload derives the mime from the bytes Pillow
+        # actually decoded, so today a row cannot hold anything else - but this
+        # URL is same-origin with the SPA and with the whole unauthenticated
+        # local API, so "image/svg+xml got into the column somehow" must not be
+        # one edit away from a scripted same-origin document. Checking here
+        # means the guarantee does not depend on every future writer
+        # remembering. 415, not 404: the row exists and the bytes are there.
+        logger.warning("Refusing to serve an unexpected media type: id=%d",
+                       attachment_id)
+        raise HTTPException(415, "unsupported_media_type")
     return Response(
         content=data,
         media_type=mime,

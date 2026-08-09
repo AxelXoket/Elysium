@@ -150,7 +150,8 @@ def test_regenerate_reports_sibling_deactivated_at_swap_time(
     d1 = _regen(client, chat_id, v0, "variant one", provider)
     v1 = d1["assistant_message"]["id"]  # active going into the next regen
 
-    async def flipping_complete(messages, model_id, gen_params, provider_dict):
+    async def flipping_complete(messages, model_id, gen_params, provider_dict,
+                                **kwargs):
         # Mid-provider-call: another client switches the group back to v0
         # (mirrors POST .../activate without a nested TestClient call).
         with get_db() as con:
@@ -246,7 +247,7 @@ def test_stream_regenerate_done_has_variant_fields(client, provider, monkeypatch
 
     chat_id, v0 = _seed_exchange(client, provider)
 
-    def fake_stream(messages, model_id, gen_params, provider_dict):
+    def fake_stream(messages, model_id, gen_params, provider_dict, **kwargs):
         async def gen():
             yield "streamed "
             yield "variant"

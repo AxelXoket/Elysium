@@ -25,6 +25,23 @@ from tts.errors import (
     TTS_RUNTIME_INSTALLING,
     TTS_RUNTIME_INSTALL_FAILED,
 )
+@pytest.fixture(autouse=True)
+def _vault_is_readable(monkeypatch):
+    """The only state start_install can actually be reached in.
+
+    vault_gate answers 423 for every data route while the vault is locked, so
+    by the time the install route runs, the settings table is readable. These
+    tests call provision.start_install() directly, with no database behind it,
+    which made get_setting raise - and _proxy_required now fails CLOSED on
+    that, correctly refusing to start a multi-gigabyte download when it cannot
+    tell whether a proxy is mandatory. This fixture supplies the readable
+    settings the route guarantees; the fail-closed behaviour itself is tested
+    in test_provision_proxy.py, where it belongs.
+    """
+    import database
+    monkeypatch.setattr(database, "get_setting", lambda name: None)
+
+
 
 
 @pytest.fixture
@@ -334,10 +351,18 @@ class TestProvisioningHonoursTheProxy:
                     "http_proxy", "https_proxy", "all_proxy"):
             assert env[key] == "http://proxy:8080"
 
-    def test_no_proxy_configured_leaves_the_env_untouched(self, monkeypatch):
+    def test_no_proxy_configured_still_strips_the_ambient_one(self,
+                                                              monkeypatch):
+        # This used to assert the env came back untouched, which is what made
+        # the installer the one place in the app that trusted the user's
+        # shell: with no proxy configured, an exported HTTPS_PROXY was still
+        # in force for a multi-gigabyte download. The caller's own variables
+        # are the only thing that survives.
         monkeypatch.setattr(provision, "_proxy_url", lambda: None)
-        base = {"UV_CACHE_DIR": "C:/cache"}
-        assert provision._proxy_env(base) == base
+        env = provision._proxy_env({"UV_CACHE_DIR": "C:/cache"})
+        assert env["UV_CACHE_DIR"] == "C:/cache"
+        assert env["HTTPS_PROXY"] is None
+        assert env["NO_PROXY"] is None
 
     def test_the_downloader_opens_through_the_proxy(self, monkeypatch):
         monkeypatch.setattr(provision, "_proxy_url", lambda: "http://proxy:8080")
@@ -378,6 +403,10 @@ class TestProvisioningHonoursTheProxy:
         _fake_uv(monkeypatch, tmp_path)
         monkeypatch.setattr(provision, "_proxy_required", lambda: True)
         monkeypatch.setattr(provision, "_proxy_url", lambda: "http://proxy:8080")
+        # The gate reads _read_proxy, which distinguishes "none configured"
+        # from "the vault could not answer". _proxy_url is the non-raising
+        # wrapper used for the environment.
+        monkeypatch.setattr(provision, "_read_proxy", lambda: "http://proxy:8080")
         monkeypatch.setattr(provision, "_run", _Recorder())
         monkeypatch.setattr(provision, "_verify_env", lambda *a, **k: None)
         provision.start_install("fish_s2")

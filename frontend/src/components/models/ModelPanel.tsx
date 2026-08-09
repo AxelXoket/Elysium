@@ -5,6 +5,15 @@ import { useChats, useMessages } from "@/lib/query/chats";
 import { useCharacters } from "@/lib/query/characters";
 import { usePersonas } from "@/lib/query/personas";
 import { ModelCard } from "./ModelCard";
+import {
+  EMPTY_FILTER,
+  ModelFilters,
+  capabilityScore,
+  isFilterActive,
+  matchesFilter,
+  type ModalityFilter,
+  type SortMode,
+} from "./ModelFilters";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -48,6 +57,8 @@ export function ModelPanel() {
   const { data, isLoading, error } = useModels();
   const refresh = useRefreshModels();
   const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<ModalityFilter>(EMPTY_FILTER);
+  const [sort, setSort] = useState<SortMode>("catalogue");
   const [sourceOpen, setSourceOpen] = useState(false);
   const selectedModelId = useUiStore((s) => s.selectedModelId);
   const selectedChatId = useUiStore((s) => s.selectedChatId);
@@ -68,13 +79,21 @@ export function ModelPanel() {
   const filteredModels = useMemo(() => {
     if (!models) return [];
     const q = search.trim().toLowerCase();
-    if (!q) return models;
-    return models.filter((m) => {
-      const id   = (m.id   ?? "").toLowerCase();
-      const name = (m.name ?? "").toLowerCase();
-      return id.includes(q) || name.includes(q);
-    });
-  }, [models, search]);
+    const capabilityFiltered = isFilterActive(filter)
+      ? models.filter((m) => matchesFilter(m, filter))
+      : models;
+    const named = q
+      ? capabilityFiltered.filter((m) => {
+          const id   = (m.id   ?? "").toLowerCase();
+          const name = (m.name ?? "").toLowerCase();
+          return id.includes(q) || name.includes(q);
+        })
+      : capabilityFiltered;
+    if (sort !== "capable") return named;
+    // A COPY: `named` can be the query-cache array itself when nothing is
+    // filtered, and sorting that in place would mutate the cache.
+    return [...named].sort((a, b) => capabilityScore(b) - capabilityScore(a));
+  }, [models, search, filter, sort]);
 
   // Staged mounting: the tab-switch commit builds ONLY the cascade rows; the
   // long tail mounts in idle-time chunks after the entrance settles. Building
@@ -380,6 +399,17 @@ export function ModelPanel() {
           </div>
         )}
 
+        {data && (
+          <ModelFilters
+            models={models}
+            filter={filter}
+            onFilterChange={setFilter}
+            sort={sort}
+            onSortChange={setSort}
+            matchCount={filteredModels.length}
+          />
+        )}
+
         {/* Selected model chip - shown when filtered out of results */}
         {selectedIsFiltered && selectedModel && (
           <div
@@ -466,6 +496,22 @@ export function ModelPanel() {
             No models match &ldquo;{search}&rdquo;
           </p>
         )}
+
+        {/* Emptied by the capability filter alone - a separate message, because
+            "no models match your search" when the search box is empty reads as
+            a bug rather than as a filter doing its job. */}
+        {data &&
+          filteredModels.length === 0 &&
+          search.trim().length === 0 &&
+          data.models.length > 0 && (
+            <p
+              className="py-4 text-center text-xs"
+              style={{ color: "var(--color-es-text-muted)" }}
+              data-testid="model-filter-empty"
+            >
+              No models have every capability you picked
+            </p>
+          )}
 
         {/* No models at all */}
         {data && data.models.length === 0 && search.trim().length === 0 && (

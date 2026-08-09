@@ -31,12 +31,14 @@ Rules:
 
 import contextlib
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Generator
 
 from sqlcipher3 import dbapi2 as sqlite3
 
+import secure_delete
 from config import DB_PATH
 from vault_state import VaultLockedError, get_key  # noqa: F401 - re-exported
 
@@ -402,12 +404,30 @@ def adopt_orphaned_enc_tmp(key: bytes) -> bool:
         live_present = False
 
     if live_present and live_size > 0:
-        # P4: a full second copy of the vault sitting beside the live one is
-        # never allowed to be silent, whether or not we act on it.
+        # P4: a second database file sitting beside the live one is never
+        # allowed to be silent, whether or not we act on it.
+        #
+        # The wording is careful about what this branch actually checked, which
+        # is only that both files are non-empty. It used to assert "It is a full
+        # copy of the vault" without calling check_key at all - and the live
+        # file is not necessarily a vault either: a still-plaintext app.db
+        # awaiting migration lands here too, where a stranded .enc-tmp is far
+        # more likely to be a previous migration's own scratch file than a
+        # second vault. Stating more than was measured is how a log line sends
+        # somebody to the wrong conclusion at the worst moment.
+        # The wording is careful about what this branch actually checked, which
+        # is only that both files are non-empty. It used to assert "It is a full
+        # copy of the vault" without calling check_key at all - and the live
+        # file is not necessarily a vault either: a still-plaintext app.db
+        # awaiting migration lands here too, where a stranded .enc-tmp is far
+        # more likely to be a previous migration's own scratch file than a
+        # second vault. Stating more than was measured is how a log line sends
+        # somebody to the wrong conclusion at the worst moment.
         logger.error(
-            "An orphaned encrypted DB is present at %s beside a live database "
-            "and was NOT adopted. It is a full copy of the vault; it will not "
-            "be removed automatically. Inspect both before deleting either.",
+            "An encrypted DB is present at %s beside a live database and was "
+            "NOT adopted. Neither file was opened, so which one holds what is "
+            "unknown here; it will not be removed automatically. Inspect both "
+            "before deleting either.",
             enc_tmp.name,
         )
         return False
@@ -443,14 +463,173 @@ def adopt_orphaned_enc_tmp(key: bytes) -> bool:
     return True
 
 
+#: Every stranded encrypted copy, not just the one at the canonical name.
+#: migrate_plaintext_to_encrypted moves a copy it finds in its way to
+#: app.db.enc-tmp.orphan-bak-<ts> rather than deleting it, and a family that
+#: only the migration knew about would be a copy of the vault that /vault/status
+#: cannot see and /vault/discard-orphaned-copy cannot remove - which is the
+#: shape of bug this whole group of fields exists to end.
+ORPHAN_GLOB = ".enc-tmp*"
+
+
+def orphaned_enc_tmp_paths() -> list[Path]:
+    """Every stranded encrypted copy beside the vault, in a stable order."""
+    src = Path(DB_PATH)
+    try:
+        return sorted(src.parent.glob(src.name + ORPHAN_GLOB))
+    except OSError:
+        return []
+
+
 def orphaned_enc_tmp_present() -> bool:
     """True while a full encrypted copy of the vault is stranded on disk.
 
     Surfaced through /vault/status so an un-adopted orphan is visible in the
     UI rather than only in a log line nobody opens.
     """
+    return bool(orphaned_enc_tmp_paths())
+
+
+def orphaned_enc_tmp_opens_with(key: bytes) -> bool:
+    """Whether EVERY stranded copy is THIS vault, under the key we hold.
+
+    The distinction decides whether they may be deleted at all. Adoption
+    already declined them, and there are only two ways that happens (see
+    adopt_orphaned_enc_tmp): the live database is fine and this is a redundant
+    second copy, or it does not open under this key - in which case it may be
+    a vault keyed to a DIFFERENT passphrase, and deleting it would destroy the
+    only copy of something this user cannot currently read.
+
+    all(), deliberately: one unreadable copy among several is the case that
+    must not be reported as "these are duplicates, here is a delete button".
+    """
+    paths = orphaned_enc_tmp_paths()
+    if not paths:
+        return False
+    return all(check_key(key, str(path)) for path in paths)
+
+
+def discard_orphaned_enc_tmp(key: bytes) -> tuple[bool, str]:
+    """Shred the stranded encrypted copies. Returns (removed, reason if not).
+
+    REFUSES a copy that does not open under the current key. That is the
+    whole safety property: an encrypted file nobody here can read is not junk
+    to be tidied away, it is data whose passphrase we do not have. Every other
+    deletion in this app removes something the user can already read; this one
+    would not, so it does not get to guess.
+
+    All or nothing when there is more than one, and checked BEFORE anything is
+    destroyed: a run that shredded the readable copies and then refused the
+    rest would answer False about work it had already done.
+    """
+    paths = orphaned_enc_tmp_paths()
+    if not paths:
+        return False, "not_present"
+    for path in paths:
+        if not check_key(key, str(path)):
+            logger.warning(
+                "Refusing to delete %s: it does not open with the current key, "
+                "so it may be a vault under a different passphrase.", path.name)
+            return False, "different_key"
+    for path in paths:
+        if not secure_delete.shred(path):
+            logger.warning(
+                "%s could not be deleted and is still on disk.", path.name)
+            return False, "in_use"
+    logger.info("Discarded %d orphaned encrypted copy(ies).", len(paths))
+    return True, ""
+
+
+def plaintext_backups() -> list[Path]:
+    """Every pre-vault copy of the database still lying about, unencrypted.
+
+    Migration renames the old plaintext app.db to app.db.plain.bak-<ts> and
+    keeps it - deliberately, because a migration that verified wrong would
+    otherwise have destroyed the only copy. But nothing ever removed it, and
+    nothing reported it either: the user saw one banner on the single launch
+    that migrated, and after that the file was invisible.
+
+    It is a complete SQLite database. Every message, every character card,
+    every system prompt, in the clear, beside a vault the UI calls encrypted.
+    Sorted so the caller shows them in a stable order.
+    """
     src = Path(DB_PATH)
-    return src.with_name(src.name + ".enc-tmp").exists()
+    try:
+        return sorted(src.parent.glob(src.name + ".plain.bak-*"))
+    except OSError:
+        return []
+
+
+def empty_stub_present() -> bool:
+    """True while the stub adoption moved aside is still on disk.
+
+    adopt_orphaned_enc_tmp renames a 0-byte live app.db to .empty-stub-bak
+    rather than unlinking it, so that no one diagnosing a recovery ever has to
+    read the sentence "the recovery path deleted a file". Sound - but nothing
+    then reported the result. The name appears in no route, no response field
+    and no screen, and there is no way to remove it from inside the app: an
+    unexplained file next to the vault, permanently, whose only mention is one
+    log line from the launch that produced it.
+    """
+    src = Path(DB_PATH)
+    return src.with_name(src.name + ".empty-stub-bak").exists()
+
+
+def discard_empty_stub() -> tuple[bool, str]:
+    """Remove the moved-aside stub. Returns (removed, reason if not).
+
+    REFUSES anything that is not zero bytes. Adoption can only create this name
+    from a file it measured at zero, so a non-empty one means something else
+    put it there, and this is the one deletion in the app whose safety rests
+    entirely on "there is provably nothing in it". Re-measuring costs one stat
+    and turns that from an assumption into a check.
+
+    shred rather than unlink even at zero bytes: a name can be a junction or a
+    hardlink whatever its length, and secure_delete is what knows to refuse
+    those.
+    """
+    src = Path(DB_PATH)
+    stub = src.with_name(src.name + ".empty-stub-bak")
+    try:
+        size = stub.stat().st_size
+    except OSError:
+        return False, "not_present"
+    if size != 0:
+        logger.error(
+            "%s is %d bytes, not the empty stub adoption leaves behind. It was "
+            "NOT removed; something else wrote to that name.", stub.name, size,
+        )
+        return False, "not_empty"
+    if not secure_delete.shred(stub):
+        return False, "not_removed"
+    logger.info("Discarded the empty stub left by an earlier recovery.")
+    return True, ""
+
+
+def discard_plaintext_backups() -> tuple[int, list[str]]:
+    """Shred the pre-vault copies. Returns (removed, names it could not).
+
+    Overwritten before unlinking, because the point is that the content stops
+    existing, not that the directory entry does.
+
+    The names of failures are returned rather than swallowed: a route that
+    answered a flat "done" while a full plaintext database stayed readable
+    would be making exactly the promise this whole feature exists to keep.
+    """
+    removed = 0
+    left: list[str] = []
+    for backup in plaintext_backups():
+        if secure_delete.shred(backup):
+            removed += 1
+        else:
+            left.append(backup.name)
+    if left:
+        logger.warning(
+            "%d plaintext backup(s) could not be deleted and are still "
+            "readable on disk: %s", len(left), ", ".join(left))
+    elif removed:
+        logger.info("Discarded %d plaintext pre-vault backup(s).", removed)
+    return removed, left
 
 
 def _rename_with_retry(src: Path, dest: Path, attempts: int = 5) -> None:
@@ -493,6 +672,55 @@ def is_plaintext_db(db_path: str | None = None) -> bool:
         con.close()
 
 
+#: The four things that can be sitting at DB_PATH. Strings rather than an enum
+#: because these travel straight into log lines and test assertions, and a
+#: repr like <DbKind.EMPTY: 2> in a failure message helps nobody.
+DB_ABSENT = "absent"
+DB_EMPTY = "empty"
+DB_PLAINTEXT = "plaintext"
+DB_ENCRYPTED = "encrypted"
+
+
+def classify_db_file(db_path: str | None = None) -> str:
+    """What is actually at db_path: absent, empty, plaintext, or encrypted.
+
+    Callers used to compose this answer themselves, as `path.exists() and not
+    is_plaintext_db(path)`. That is two questions about a file that can change
+    between them, and worse, it folds three unrelated answers into one False:
+    is_plaintext_db() returns False for an encrypted database, for a file that
+    vanished, AND for a 0-byte one.
+
+    The 0-byte case is not hypothetical. check_key()'s docstring above spells
+    out how it is reached in one step, and both callers of the old expression
+    then treated it as "an encrypted database is present": /vault/status
+    answered initialized=true and offered the unlock screen, while /vault/init
+    answered 409 encrypted_db_without_identity. So an empty file produced an
+    app that insisted the data was merely locked, refused to set itself up, and
+    could not unlock either - DB-validated recovery refuses 0-byte files by
+    design, so every passphrase came back "wrong". A locked door to an empty
+    room, with the setup path walled off behind it.
+
+    The handle is deliberately held open across the probe. On Windows a file
+    opened this way cannot be renamed or deleted until it closes, so the file
+    the probe reads is provably the one this size came from, which is the
+    present-vs-readable race closed rather than narrowed. It also stops the
+    probe from CREATING the file it was asked about: sqlite3.connect() on a
+    missing path makes a fresh empty database and then cheerfully reports it as
+    readable plaintext, which is how a lost app.db could have come back as a
+    migration candidate.
+    """
+    path = Path(db_path or DB_PATH)
+    try:
+        with open(path, "rb") as handle:
+            if os.fstat(handle.fileno()).st_size == 0:
+                return DB_EMPTY
+            return DB_PLAINTEXT if is_plaintext_db(str(path)) else DB_ENCRYPTED
+    except OSError:
+        # Missing, a directory, or unreadable. All three mean the same thing to
+        # every caller: there is no database here to reason about.
+        return DB_ABSENT
+
+
 def migrate_plaintext_to_encrypted(key: bytes) -> str:
     """One-shot migration of a plaintext app.db into the vault.
 
@@ -503,10 +731,70 @@ def migrate_plaintext_to_encrypted(key: bytes) -> str:
     """
     src = Path(DB_PATH)
     ts = int(time.time())
-    enc_tmp = src.with_name(src.name + ".enc-tmp")
     backup = src.with_name(src.name + f".plain.bak-{ts}")
+
+    # The scratch name is normally app.db.enc-tmp, because that is the name
+    # adopt_orphaned_enc_tmp watches for and this function's crash window is
+    # what adoption exists to recover.
+    #
+    # If something is ALREADY there, it is not ours to remove. This used to be
+    # `if enc_tmp.exists(): enc_tmp.unlink()`, three lines after the same
+    # request flow ran adoption - which looks at that identical file and, when
+    # it declines, logs "It is a full copy of the vault; it will not be removed
+    # automatically. Inspect both before deleting either." The promise and its
+    # breach were in the same unlock. Worse, discard_orphaned_enc_tmp REFUSES to
+    # delete a copy that does not open under the current key, on the grounds
+    # that an encrypted file nobody here can read is not junk but data whose
+    # passphrase we do not have - and this unlink did not even ask.
+    #
+    # Deleting nothing and stepping aside is what fixes it. The stranded file
+    # stays exactly where it was, /vault/status keeps reporting it as
+    # orphaned_copy, and /vault/discard-orphaned-copy is still the only thing
+    # that may remove it - a decision the user makes, with the key in hand.
+    # Refusing to migrate at all was the other candidate and is a trap: that
+    # route needs an unlocked vault, so a refusal here would leave the one file
+    # blocking the unlock removable only by an unlock.
+    # The scratch name is normally app.db.enc-tmp, because that is the name
+    # adopt_orphaned_enc_tmp watches for and this function's crash window is
+    # what adoption exists to recover.
+    #
+    # If something is ALREADY there, it is not ours to remove. This used to be
+    # `if enc_tmp.exists(): enc_tmp.unlink()`, three lines after the same
+    # request flow ran adoption - which looks at that identical file and, when
+    # it declines, logs "It is a full copy of the vault; it will not be removed
+    # automatically. Inspect both before deleting either." The promise and its
+    # breach were in the same unlock. Worse, discard_orphaned_enc_tmp REFUSES to
+    # delete a copy that does not open under the current key, on the grounds
+    # that an encrypted file nobody here can read is not junk but data whose
+    # passphrase we do not have - and this unlink did not even ask.
+    #
+    # Deleting nothing and moving it ASIDE is what fixes it. Renaming keeps
+    # every byte, and the new name is chosen to stay inside two nets it must
+    # not fall out of: ORPHAN_GLOB, so /vault/status keeps reporting it and
+    # /vault/discard-orphaned-copy can still remove it on the user's word, and
+    # the ".bak" family that _rekey_sidecars scans, so a passphrase rotation
+    # re-keys it instead of leaving a complete vault readable under the
+    # passphrase being rotated away from.
+    #
+    # Refusing to migrate at all was the first candidate and is a trap: the
+    # refusal propagates out of _bootstrap_unlocked, /vault/unlock turns it
+    # into a 500 and re-locks, and the route that could remove the blocking
+    # file needs an unlocked vault.
+    #
+    # Migrating to a DIFFERENT scratch name was the second, and it is worse
+    # than it looks: adopt_orphaned_enc_tmp watches this exact name, so a crash
+    # in the two-rename window below would leave the stranger sitting where
+    # recovery looks and the freshly exported vault under a name nothing knows.
+    # The stranger has to move; the scratch name has to stay canonical.
+    enc_tmp = src.with_name(src.name + ".enc-tmp")
     if enc_tmp.exists():
-        enc_tmp.unlink()
+        aside = src.with_name(src.name + f".enc-tmp.orphan.bak-{ts}")
+        logger.error(
+            "An encrypted copy was already stranded at %s. It was NOT deleted; "
+            "it is moved aside to %s and stays visible in the vault status.",
+            enc_tmp.name, aside.name,
+        )
+        _rename_with_retry(enc_tmp, aside)
 
     con = sqlite3.connect(str(src))  # unkeyed: reads the plaintext source
     try:
@@ -528,7 +816,17 @@ def migrate_plaintext_to_encrypted(key: bytes) -> str:
         con.close()
 
     if not check_key(key, str(enc_tmp)):
-        enc_tmp.unlink(missing_ok=True)
+        # shred, not unlink: this is a failed but possibly PARTIAL encrypted
+        # export of the user's whole database, and the file this app deletes is
+        # the file whose bytes have to stop existing. secure_delete is the one
+        # deletion primitive for exactly that reason - it also refuses a
+        # redirected or hardlinked name, which a bare unlink does not.
+        # shred, not unlink: this is a failed but possibly PARTIAL encrypted
+        # export of the user's whole database, and the file this app deletes is
+        # the file whose bytes have to stop existing. secure_delete is the one
+        # deletion primitive for exactly that reason - it also refuses a
+        # redirected or hardlinked name, which a bare unlink does not.
+        secure_delete.discard(enc_tmp)
         raise RuntimeError("migration_verify_failed")
 
     # Swap: plaintext → backup, encrypted copy → live path (retry the renames
@@ -538,7 +836,14 @@ def migrate_plaintext_to_encrypted(key: bytes) -> str:
     _rename_with_retry(src, backup)
     _rename_with_retry(enc_tmp, src)
     for suffix in ("-wal", "-shm", "-journal"):
-        src.with_name(src.name + suffix).unlink(missing_ok=True)
+        # PLAINTEXT pages, not bookkeeping. wal_checkpoint(TRUNCATE) above
+        # folds the WAL into the main file, but it does not raise when it
+        # cannot finish - a reader still holding the file (an antivirus scan,
+        # a leftover connection from a crash) makes it return without
+        # truncating, and committed chat pages stay in -wal. Unlinking that
+        # left them recoverable immediately after the migration whose entire
+        # purpose was to get them into the vault.
+        secure_delete.discard(src.with_name(src.name + suffix))
     logger.info("Plaintext DB migrated into vault; backup at %s", backup.name)
     return str(backup)
 

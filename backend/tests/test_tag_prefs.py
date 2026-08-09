@@ -81,8 +81,11 @@ def test_the_default_cap_still_applies_when_none_is_passed():
     # Digit-free and all different: a digit disqualifies a span from being a
     # tag at all, and consecutive duplicates collapse before the cap is
     # reached - either would test the wrong thing.
-    words = ("soft", "warm", "low", "close", "slow", "bright", "dry", "sharp",
-             "calm", "tense", "airy", "flat")
+    # Derived from the cap rather than a fixed list, so raising the ceiling
+    # cannot leave this passing for the wrong reason: with fewer tags than the
+    # cap every one survives and the assertion would be vacuous.
+    words = [f"{chr(ord('a') + i // 26)}{chr(ord('a') + i % 26)}"
+             for i in range(vt.MAX_TAGS_PER_REPLY + 5)]
     text = " ".join(f"[{w} tone] w{i}" for i, w in enumerate(words))
     out = vt.sanitize_for_tts(text, engine_supports_tags=True)
     assert out.count("[") == vt.MAX_TAGS_PER_REPLY

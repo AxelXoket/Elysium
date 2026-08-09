@@ -70,17 +70,40 @@ def test_the_budget_runs_out_and_stays_out():
     assert kept == [["whisper"], [], []]
 
 
-def test_a_repeated_direction_collapses_across_a_sentence_boundary_too():
-    """"[warm] ... [warm] ..." is one continuing instruction. Within a single
-    call that already collapsed; across two calls it did not, so the live path
-    re-stated a tag the replay path had absorbed."""
+def test_a_repeated_direction_survives_the_next_sentence():
+    """REVERSED, and the old assertion was the bug.
+
+    This used to require the second "[warm]" to be swallowed, on the reasoning
+    that a repeated direction is "one continuing instruction". Nothing in this
+    app continues it. Each sentence is a separate host.speak() and therefore a
+    separate autoregressive generation with its own KV cache - there is no
+    acoustic history for sentence two to inherit a tone from. Dropping its tag
+    did not sustain the warmth; it removed the only thing that would have
+    produced it, and that sentence came out in the baseline voice. It is the
+    "delivery goes plain the further a long reply runs" complaint, in code.
+
+    Within ONE sentence the collapse is still right - see the next test.
+    """
     budget = voice_tags.TagBudget(5)
     first = voice_tags.sanitize_for_tts(
         "[warm] Come in. ", engine_supports_tags=True, budget=budget)
     second = voice_tags.sanitize_for_tts(
         "[warm] Sit down. ", engine_supports_tags=True, budget=budget)
     assert _tags(first) == ["warm"]
-    assert _tags(second) == []
+    assert _tags(second) == ["warm"], (
+        "the second sentence is its own generation and needs its own direction"
+    )
+    assert budget.remaining == 3, "and it costs the reply an allowance each"
+
+
+def test_a_direction_repeated_inside_one_sentence_still_collapses():
+    """The half that stays. Two identical directions in one breath are one
+    instruction - here there IS a continuing generation to carry it."""
+    budget = voice_tags.TagBudget(5)
+    out = voice_tags.sanitize_for_tts(
+        "[warm] Come in. [warm] Sit down.",
+        engine_supports_tags=True, budget=budget)
+    assert _tags(out) == ["warm"]
 
 
 def test_a_caller_without_a_budget_is_unchanged():
@@ -334,7 +357,12 @@ def test_a_dialogue_tag_after_narration_is_not_swallowed_as_a_duplicate():
     assert _tags(third) == ["warm"], "narration interrupted, so restate it"
 
 
-def test_consecutive_narration_still_collapses_into_one_instruction():
+def test_every_narration_sentence_keeps_its_own_narrator_tag():
+    """REVERSED for the same reason as the dialogue case above, and this one
+    is worse: swallowing the second narrator tag meant the second sentence of
+    a two-sentence narration span was performed in the CHARACTER's voice.
+    Narration mode appeared to work and then quietly stopped one sentence in.
+    """
     budget = voice_tags.TagBudget(8)
     narrator = speech_prep.DEFAULT_NARRATOR_TAG
     first = voice_tags.sanitize_for_tts(
@@ -344,7 +372,7 @@ def test_consecutive_narration_still_collapses_into_one_instruction():
         f"[{narrator}] The lamp guttered.", engine_supports_tags=True,
         budget=budget, free_tags=_FREE)
     assert _tags(first) == [narrator]
-    assert _tags(second) == []
+    assert _tags(second) == [narrator]
     assert budget.remaining == 8, "narration never touches the allowance"
 
 
@@ -420,3 +448,29 @@ def test_the_closing_tag_is_never_charged_to_the_density_budget():
             speech_prep.prepare(sentence, opts), engine_supports_tags=True,
             budget=budget, free_tags=speech_prep.injected_tags(closing))
     assert budget.remaining == 0, "the model spent its two"
+
+
+def test_a_long_reply_keeps_its_direction_all_the_way_down():
+    """MEASURED: a real reply from this app split into 13 sentences.
+
+    With the prompt asking for a tone tag on each sentence that needs one, the
+    old ceiling of 8 stripped every direction from the ninth sentence on -
+    silently, and always at the END, so the reply started performed and
+    finished flat. That is the complaint this ceiling was raised to answer, and
+    the ceiling is the thing that has to be tested: the prompt can ask for
+    whatever it likes, this module is what binds.
+    """
+    budget = voice_tags.TagBudget(voice_tags.MAX_TAGS_PER_REPLY)
+    moods = ["warm", "soft", "amused", "quiet, hurt", "low voice", "teasing",
+             "tired", "urgent", "seductive", "firm", "sad", "playful", "flat"]
+    kept = []
+    for i, mood in enumerate(moods):
+        out = voice_tags.sanitize_for_tts(
+            f"[{mood}] Sentence number {i}.", engine_supports_tags=True,
+            budget=budget)
+        kept.append(_tags(out))
+
+    assert all(k for k in kept), (
+        f"sentence {[i for i, k in enumerate(kept) if not k]} lost its "
+        "direction - a long reply still goes flat before it ends"
+    )

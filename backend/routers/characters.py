@@ -99,9 +99,9 @@ def _text(data: dict, key: str) -> str:
 # GET /characters
 # ---------------------------------------------------------------------------
 
-@router.get("")
-async def list_characters() -> list[dict]:
-    """Return all characters ordered by id. raw_json is excluded."""
+def _list_characters_sync() -> list[dict]:
+    """Worker-thread body (audit KÖK 8). A read still pays a SQLCipher open and
+    can still queue behind a writer; on the loop that freezes live streams."""
     with get_db() as con:
         rows = con.execute(
             f"SELECT {_SELECT_COLS} FROM characters ORDER BY id ASC"
@@ -109,13 +109,19 @@ async def list_characters() -> list[dict]:
     return [_row_to_dict(r) for r in rows]
 
 
+@router.get("")
+async def list_characters() -> list[dict]:
+    """Return all characters ordered by id. raw_json is excluded."""
+    return await anyio.to_thread.run_sync(_list_characters_sync)
+
+
 # ---------------------------------------------------------------------------
 # POST /characters
 # ---------------------------------------------------------------------------
 
-@router.post("", status_code=201)
-async def create_character(body: CharacterCreate) -> dict:
-    """Create a character from validated fields. raw_json stored as '{}'."""
+def _create_character_sync(body: "CharacterCreate") -> dict:
+    """Worker-thread body (audit KÖK 8): INSERT plus the re-SELECT of its own
+    new row. No guard of prior state, so no BEGIN IMMEDIATE needed."""
     with get_db() as con:
         cur = con.execute(
             "INSERT INTO characters (name, description, personality, scenario, "
@@ -132,6 +138,12 @@ async def create_character(body: CharacterCreate) -> dict:
         ).fetchone()
     logger.info("Character created: id=%d", row["id"])
     return _row_to_dict(row)
+
+
+@router.post("", status_code=201)
+async def create_character(body: CharacterCreate) -> dict:
+    """Create a character from validated fields. raw_json stored as '{}'."""
+    return await anyio.to_thread.run_sync(_create_character_sync, body)
 
 
 # ---------------------------------------------------------------------------
@@ -169,11 +181,18 @@ async def _read_capped_body(request: Request) -> bytes:
     return b"".join(chunks)
 
 
-@router.post("/import", status_code=201)
-async def import_character(request: Request) -> dict:
-    """Import a character from a raw JSON body (direct or CharCard V2)."""
-    raw = await _read_capped_body(request)
+def _import_character_sync(raw: bytes) -> dict:
+    """Worker-thread body (audit KÖK 8): parse, validate and insert.
 
+    Takes the already-read bytes rather than the Request, because the body
+    read CANNOT move: _read_capped_body iterates request.stream(), an async
+    generator bound to the ASGI connection, and a worker thread has no event
+    loop to iterate it on. So the split is: read on the loop, everything after
+    it here. The size cap and its two refusals stay on the loop with the read,
+    where they have always been.
+
+    The HTTPExceptions raised below travel out of the thread unchanged.
+    """
     try:
         payload = json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError):
@@ -225,13 +244,19 @@ async def import_character(request: Request) -> dict:
     return _row_to_dict(row)
 
 
+@router.post("/import", status_code=201)
+async def import_character(request: Request) -> dict:
+    """Import a character from a raw JSON body (direct or CharCard V2)."""
+    raw = await _read_capped_body(request)
+    return await anyio.to_thread.run_sync(_import_character_sync, raw)
+
+
 # ---------------------------------------------------------------------------
 # GET /characters/{character_id}
 # ---------------------------------------------------------------------------
 
-@router.get("/{character_id}")
-async def get_character(character_id: int) -> dict:
-    """Return a single character by ID. raw_json is excluded."""
+def _get_character_sync(character_id: int) -> dict:
+    """Worker-thread body (audit KÖK 8): one read plus its 404."""
     with get_db() as con:
         row = con.execute(
             f"SELECT {_SELECT_COLS} FROM characters WHERE id = ?",
@@ -240,6 +265,12 @@ async def get_character(character_id: int) -> dict:
     if row is None:
         raise HTTPException(404, "character_not_found")
     return _row_to_dict(row)
+
+
+@router.get("/{character_id}")
+async def get_character(character_id: int) -> dict:
+    """Return a single character by ID. raw_json is excluded."""
+    return await anyio.to_thread.run_sync(_get_character_sync, character_id)
 
 
 # ---------------------------------------------------------------------------

@@ -45,6 +45,8 @@ from ctypes import wintypes
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import launch_token
+
 from .errors import (
     ALL_CODES,
     TTS_LOAD_TIMEOUT,
@@ -80,8 +82,17 @@ EXIT_CODE_MAP = {
 
 # Secrets and telemetry switches that must never reach an engine subprocess.
 # The engines are a pile of third-party code; the deal is that they run LOCAL.
+#
+# ELYSIUM_LAUNCH_TOKEN is on this list and it is the most important entry.
+# The launch token exists precisely to stop another process on this machine
+# from reading the conversation over HTTP - and `env = dict(os.environ)` was
+# handing it to the one subprocess this app spawns that runs somebody else's
+# code. A compromised engine dependency, or a model checkpoint that gets
+# execution during load, could have read it out of its own environment and
+# asked the local API for everything, with the vault unlocked by definition.
 _ENV_STRIP = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_TOKEN",
-              "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "WANDB_API_KEY")
+              "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "WANDB_API_KEY",
+              launch_token.ENV_VAR)
 _ENV_FORCE = {
     # Forced, not setdefault: an inherited HF_HUB_OFFLINE=0 from the user's
     # shell would silently re-enable Hub access inside the worker.
@@ -307,8 +318,12 @@ class WorkerClient:
         # engine inherits the guarantee instead of each remembering to.
         for key in _ENV_STRIP:
             env.pop(key, None)
-        env.update(_ENV_FORCE)
         env.update(self._env)
+        # LAST, on purpose. These went in before the per-worker overrides once,
+        # which made the guarantee advisory: any caller that passed an env dict
+        # could hand the engine HF_HUB_OFFLINE=0 back. No caller does today, and
+        # that is exactly the kind of fact that stops being true quietly.
+        env.update(_ENV_FORCE)
         # Both are needed. Without them the child's redirected stdio falls back
         # to the ANSI code page and a single accented byte in a warning kills
         # the drain thread, which deadlocks a worker holding the GPU.

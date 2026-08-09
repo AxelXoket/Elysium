@@ -1,7 +1,7 @@
 # Elysium Frontend-Backend Contract
 
 > **Created:** Part A (scaffold)
-> **Last updated:** v0.5.0 release pass (vault + variants + packaging reflected)
+> **Last updated:** 2026-08-09, checked route by route against the source.
 > **Status:** Living contract of record
 
 ---
@@ -13,7 +13,7 @@
 - CORS: only `http://127.0.0.1:5173` accepted (irrelevant same-origin in the
   packaged app)
 - All endpoints return JSON
-- Streaming: SSE on `/complete/stream` and `/regenerate/stream` (Part F)
+- Streaming: SSE on `/complete/stream`, `/regenerate/stream` and `/edit/stream`
 - Vault gate: the database is passphrase-encrypted (SQLCipher). While locked,
   every data route answers `423 {"detail": "vault_locked"}`; only `/vault/*`
   and root-level `/healthz` respond. The frontend treats any data-route 423
@@ -41,6 +41,9 @@
 | POST | /vault/unlock | Unlock with the passphrase | Part K (vault) |
 | POST | /vault/lock | Lock (drop the in-RAM key) | Part K (vault) |
 | POST | /vault/change-passphrase | Re-key the database | Part K (vault) |
+| POST | /vault/discard-plaintext-backup | Shred the pre-vault plaintext copies | Part K (vault) |
+| POST | /vault/discard-orphaned-copy | Shred an encrypted copy stranded mid-migration | Part K (vault) |
+| POST | /vault/discard-empty-stub | Remove the 0-byte stub crash recovery moved aside (refuses a non-empty file) | Part K (vault) |
 | GET | /settings | Current config state (no secrets) | Existing |
 | POST | /settings/api-key | Store API key (validates first) | Modified Part B |
 | DELETE | /settings/api-key | Remove API key | Existing |
@@ -48,6 +51,8 @@
 | POST | /settings/proxy/alias | `{proxy_alias}` - rename the configured proxy without rewriting its URL (the URL is write-only and never displayed). 400 `proxy_url_required` when none is configured. |
 | POST | /settings/proxy/required | Arm/disarm the proxy kill-switch alone (400 `proxy_url_required` when no proxy is configured) | Existing |
 | DELETE | /settings/proxy | Remove proxy config | Existing |
+| POST | /settings/image-output | `{image_output_enabled}` - allow a model to answer with a generated picture. Off by default. Stored in the vault, not browser storage, because it changes the outgoing request. No capability check on write: whether the model selected right now can draw is decided per request from the cached catalogue. |
+| POST | /settings/auto-lock | `{auto_lock_minutes}` - lock the vault after this many minutes with nothing happening; 0 disables it. Refuses anything outside 0-1440. Stored in the vault, not browser storage: a protection setting somebody can read and change without the passphrase is not one. A request in flight counts as activity, so a streamed reply is never interrupted. |
 | POST | /settings/stop-sequences | `{stop_sequences}` - up to 4, 100 chars each, clamped rather than rejected so a stale UI cannot 422 a save. |
 | GET | /settings/proxy/health | Proxy health status | Existing |
 | GET | /characters | List all characters | Existing |
@@ -90,6 +95,7 @@
 |-------------|---------------|---------|----------------------|
 | 401 | auth_failed | OpenRouter auth failure | Prompt user to check API key |
 | 401 | api_key_missing | No API key configured | Show settings panel |
+| 403 | openrouter_moderation_blocked | The model's moderation refused the input. Distinct from `auth_failed` on purpose: the key is valid, the message was rejected | Suggest rewording or another model; do NOT point at the API key |
 | 402 | openrouter_insufficient_credits | OpenRouter account has no credits | Show credit warning |
 | 404 | chat_not_found | Chat ID does not exist | Navigate away from chat |
 | 404 | character_not_found | Character ID does not exist | Refresh character list |
@@ -120,9 +126,6 @@
 | 400 | model_no_image_input | Attachments sent to a text-only model | Gate attach UI by modality |
 | 422 | not_a_variant_target | Activate target is not an assistant message | Hide the variant control |
 | 409 | variant_group_not_last | Activate/regenerate on an older group (older groups are view-only) | Refresh messages |
-| 409 | edit_conflict | Chat changed while an edit streamed - nothing written | Restore pre-edit view, refresh |
-| 409 | exchange_stale | Chat cleared/deleted while the reply streamed - no orphan written | Refresh messages |
-| 422 | not_editable | Edit target is not a user message | Hide the edit affordance |
 | 403 | cross_origin_denied | Cross-origin mutating request rejected by the CSRF shield | (Never reaches the trusted frontend) |
 
 **Voice / TTS (`/tts/*`).** Voice is fully local: the model runs on this machine and no
@@ -261,7 +264,7 @@ JSON always carries a `type` field:
 | user_message | `message`: full message row | First event. For /complete/stream this is the just-persisted user row; for /regenerate/stream the existing preceding user row. |
 | delta | `content`: string | One streamed content fragment. Repeated. |
 | done | `chat_id`, `model_id`, `user_message`, `assistant_message` | Terminal success event. Rows are persisted. |
-| notice | `code`: string, `count`: int? | Something the request has to disclose, sent BEFORE the first delta. Today: `images_omitted` - the model never received one or more attached pictures and answered as if they were not there. A warning, not a failure; the reply still arrives. |
+| notice | `code`: string, `count`: int? | Something the request has to disclose, sent BEFORE the first delta. Today: `images_omitted` (the model never received one or more attached pictures and answered as if they were not there), `image_output_rejected` (a picture came back but failed validation and was dropped), `image_output_remote_url_refused` (the model answered with a LINK to a picture; fetching it would be a second egress host, so it is refused rather than followed). All three are warnings, not failures; the reply still arrives. |
 | error | `status`: int, `code`: string, `partial_saved`: bool? | Terminal failure event. Codes match the table above. `partial_saved` means the provider failed AFTER text had arrived and the backend KEPT it - the rows are committed, so the client must not roll its optimistic rows back. |
 | voice_chunk | `audio_id`, `seconds`?, `index` | Spoken audio for one sentence. Arrives AFTER `done` - reading never waits on speaking. Fetch from `GET /tts/audio/{audio_id}`. |
 | voice_notice | `note`: string | The worker telling the person something actionable (a compile that fell back to eager decoding, a cold cache). The speech is fine, just slower or different. |
@@ -534,8 +537,10 @@ Cascades to delete all chats and messages for that character.
 
 Key contract points:
 - `user_message.id` is the **existing** row ID (unchanged, not re-inserted)
-- `assistant_message.id` is a **new** row ID (old assistant deleted, new one inserted)
-- Total message count stays the same (1 deleted + 1 added)
+- `assistant_message.id` is a **new** row ID. The previous reply is NOT deleted:
+  since Part J it is deactivated and stays navigable as a sibling variant
+- Total message count GROWS by one per regenerate. The response also carries
+  `deactivated_message_id` (the take that just stepped aside) and `notices`
 - No duplicate user message is ever created
 - Only the **latest** message in the chat can be regenerated, and it must be `role=assistant`
 
@@ -550,7 +555,7 @@ Key contract points:
 { "ok": true, "deleted_count": 3 }
 ```
 
-Deletes the target message **and all following messages** in the same chat (WHERE chat_id=? AND id>=?). This preserves context consistency. Does not affect other chats.
+Deletes the target message **and all following messages** in the same chat. The cut starts at the target's VARIANT GROUP, not at the target's own id (`start_id = variant_group or id`), so deleting one take of a reply removes its siblings too - including ones with a lower id. Deleting half a group would leave the survivors pointing at an anchor that is gone. Does not affect other chats.
 
 **Errors:**
 - `404 chat_not_found`

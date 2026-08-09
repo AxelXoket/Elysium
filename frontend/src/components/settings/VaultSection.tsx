@@ -9,10 +9,14 @@
 import { useState, type FormEvent } from "react";
 import { KeyRound, Loader2 } from "lucide-react";
 import { useChangeVaultPassphrase } from "@/lib/query/vault";
+import { PlaintextBackupNotice } from "./PlaintextBackupNotice";
+import { OrphanedCopyNotice } from "./OrphanedCopyNotice";
+import { EmptyStubNotice } from "./EmptyStubNotice";
+import { AutoLockControl } from "./AutoLockControl";
 import { isApiError } from "@/lib/api/client";
 import { getErrorMessage } from "@/lib/errors/errorMessages";
 
-const MIN_PASSPHRASE_LEN = 8;
+const MIN_PASSPHRASE_LEN = 12;
 
 export function VaultSection() {
   const change = useChangeVaultPassphrase();
@@ -62,6 +66,15 @@ export function VaultSection() {
 
   return (
     <section className="space-y-3">
+      {/* Above the passphrase form on purpose: an unencrypted copy of the
+          whole database outranks anything else on this screen, and the form
+          under it is the one that promises encryption. */}
+      <PlaintextBackupNotice />
+      <OrphanedCopyNotice />
+      {/* Last of the three, because it is the least: the other two are copies
+          of the user's data and this one is provably an empty file. */}
+      <EmptyStubNotice />
+      <AutoLockControl />
       <div className="flex items-center gap-2">
         <KeyRound size={13} style={{ color: "var(--color-es-primary-sage)" }} />
         <h4

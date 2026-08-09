@@ -28,10 +28,18 @@ Privacy: response body is never read or logged.
 
 import time
 import logging
+
+import anyio.to_thread
 import httpx
 from fastapi import HTTPException
 
 from config import OPENROUTER_BASE_URL, PROXY_HEALTH_TTL, HEALTH_PROBE_TIMEOUT, SECRET_PROXY_URL
+# Hoisted out of _read_proxy_required's body. It was a function-local import,
+# which meant the name was resolved fresh from `database` on every call and
+# this module had no reference of its own to patch or to reason about. There
+# is no import cycle to avoid: secrets_service, imported just below, already
+# pulls database in.
+from database import get_db
 from network_client import get_client
 from secrets_service import get_secret
 
@@ -86,7 +94,7 @@ async def enforce_proxy_gate() -> None:
     refuses outright) the user's API key and real IP went out unproxied from
     the very screen where they typed the key.
     """
-    if not _read_proxy_required():
+    if not await _read_proxy_required():
         return
     health = await check_proxy_health()
     if not health.get("healthy"):
@@ -99,8 +107,12 @@ async def enforce_proxy_gate() -> None:
 
 async def _evaluate() -> dict:
     """Determine health state based on proxy_required and proxy URL presence."""
-    proxy_url = get_secret(SECRET_PROXY_URL)
-    proxy_required = _read_proxy_required()
+    # Both reads off the loop (audit KÖK 8). get_secret itself is left alone on
+    # purpose: it is genuinely dual-context, called from worker-thread bodies in
+    # routers/settings.py that have no event loop to await on. Wrapping happens
+    # at the call site, never inside the function.
+    proxy_url = await anyio.to_thread.run_sync(get_secret, SECRET_PROXY_URL)
+    proxy_required = await _read_proxy_required()
 
     if not proxy_url:
         if proxy_required:
@@ -161,11 +173,23 @@ async def _probe() -> dict:
         return {"healthy": False, "latency_ms": None, "reason": "unknown_error"}
 
 
-def _read_proxy_required() -> bool:
+def _read_proxy_required_sync() -> bool:
     """Read proxy_required from the settings table. Defaults to False."""
-    from database import get_db
     with get_db() as con:
         row = con.execute(
             "SELECT value FROM settings WHERE key = 'proxy_required'"
         ).fetchone()
     return row is not None and row["value"] == "1"
+
+
+async def _read_proxy_required() -> bool:
+    """The same read, off the event loop (audit KÖK 8).
+
+    This one is on the hot path in a way the settings handlers are not:
+    enforce_proxy_gate() calls it at the top of EVERY completion, regenerate
+    and edit, streaming or not. Opening the SQLCipher database pays the KDF and
+    can queue behind a writer for the full busy_timeout, and doing that on the
+    loop freezes every other live SSE stream in the process - including the one
+    the user is currently reading.
+    """
+    return await anyio.to_thread.run_sync(_read_proxy_required_sync)

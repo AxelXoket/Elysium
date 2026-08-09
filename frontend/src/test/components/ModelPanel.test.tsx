@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { mockFetch } from "@/test/mocks/api";
@@ -162,8 +162,14 @@ describe("Model Panel Tests", () => {
       expect(screen.getByText("GPT-4o")).toBeInTheDocument();
     });
 
-    // Image modality badge exists (informational)
-    expect(screen.getByText("Image")).toBeInTheDocument();
+    // Image modality badge exists (informational), and says WHICH WAY it goes.
+    // Scoped to the card: the capability filter row above the list offers an
+    // "Image" chip too, and the plain text lookup could not tell them apart -
+    // which is the same ambiguity the direction arrow was added to remove.
+    const card = screen.getByRole("button", { name: /select model gpt-4o/i });
+    expect(
+      within(card).getByTitle(/this model reads image/i),
+    ).toBeInTheDocument();
 
     // No upload-related UI
     expect(screen.queryByText(/upload/i)).not.toBeInTheDocument();

@@ -45,7 +45,7 @@ from test_streaming import BODY, read_events, stream_provider  # noqa: F401
 def _install_stream(monkeypatch, deltas, *, fail_after=None, error=None):
     import routers.completions as cr
 
-    def fake_stream(messages, model_id, gen_params, provider):
+    def fake_stream(messages, model_id, gen_params, provider, **kwargs):
         async def gen():
             try:
                 for i, d in enumerate(deltas):
@@ -135,7 +135,7 @@ def _install_hanging_stream(monkeypatch, deltas):
     """
     import routers.completions as cr
 
-    def fake_stream(messages, model_id, gen_params, provider):
+    def fake_stream(messages, model_id, gen_params, provider, **kwargs):
         async def gen():
             for d in deltas:
                 yield d

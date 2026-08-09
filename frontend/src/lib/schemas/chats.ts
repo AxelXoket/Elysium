@@ -28,7 +28,10 @@ export const MessageSchema = z.object({
   role: z.enum(["user", "assistant"]), // system role not inserted via chats router
   content: z.string(),
   created_at: z.string(),
-  // Empty array default; only ever non-empty on role="user" rows.
+  // Empty array default. Non-empty on a user row (images the person attached)
+  // and, once image output is switched on, on an assistant row too (a picture
+  // the model produced). The backend never replays an assistant row's images to
+  // the provider - see _IMAGE_REPLAY_ROLES - so they are display-only.
   attachments: z.array(AttachmentSchema).default([]),
   // Response variants ("swipes"). variant_group = id of the group's FIRST
   // row (null = never regenerated); one active row per group. index/count

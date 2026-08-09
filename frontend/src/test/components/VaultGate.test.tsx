@@ -252,7 +252,26 @@ describe("VaultGate - the states nobody rendered", () => {
     stubInitFailure("passphrase_too_short", 400);
     await attemptCreate();
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      /at least 8 characters/i,
+      /at least 12 characters/i,
+    );
+  });
+
+  it("explains a passphrase that is long but repetitive", async () => {
+    // Long enough to pass the length check and no harder to guess than its
+    // shortest piece. "Too short" would be wrong and unhelpful here, so the
+    // backend sends a different code and the screen has to carry it.
+    stubInitFailure("passphrase_too_simple", 422);
+    await attemptCreate();
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /repetitive|unrelated words/i,
+    );
+  });
+
+  it("explains a passphrase anyone would guess first", async () => {
+    stubInitFailure("passphrase_too_common", 422);
+    await attemptCreate();
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /anyone guessing would try/i,
     );
   });
 

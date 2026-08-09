@@ -212,9 +212,12 @@ describe("estimateContextUsage", () => {
     // One attachment adds 1100 * 3 = 3300 chars to that message:
     // used = ceil((195 + 1000 + 1000 + 3300) / 3) = ceil(5495 / 3) = 1832.
     // 1832 - 732 = 1100 tokens, exactly IMAGE_TOKEN_ESTIMATE.
+    // On a USER row: those are the only images that get re-sent, so those are
+    // the only ones that cost anything. (plain[1] is an assistant row - see the
+    // test below.)
     const withImage = [
-      plain[0],
-      { ...plain[1], attachments: [{ id: 7 }] } as Message,
+      { ...plain[0], attachments: [{ id: 7 }] } as Message,
+      plain[1],
     ];
     const withAttachment = estimateContextUsage({
       model: ctx4000,
@@ -225,6 +228,36 @@ describe("estimateContextUsage", () => {
     expect(withAttachment!.usedTokens).toBe(1832);
     expect(withAttachment!.usedTokens - without!.usedTokens).toBe(1100);
     expect(withAttachment!.includedMessages).toBe(2);
+  });
+
+  it("charges nothing for a picture the model produced", () => {
+    // A generated image is display-only: the backend's role gate keeps it out
+    // of every later payload and charges 0 budget for it, so charging here
+    // would over-report the gauge the moment image output is used. Mirrors
+    // completions.py's _entry_chars.
+    const ctx4000 = makeModel({
+      id: "test/ctx-4000",
+      context_length: 4000,
+      max_completion_tokens: 100,
+    });
+    const plain = [msg(1, "a".repeat(1000)), msg(2, "b".repeat(1000))];
+    const baseline = estimateContextUsage({
+      model: ctx4000,
+      character: character100,
+      personas: persona50,
+      messages: plain,
+    });
+    const withGenerated = estimateContextUsage({
+      model: ctx4000,
+      character: character100,
+      personas: persona50,
+      messages: [
+        plain[0],
+        { ...plain[1], attachments: [{ id: 9 }] } as Message,
+      ],
+    });
+    expect(plain[1].role).toBe("assistant");
+    expect(withGenerated!.usedTokens).toBe(baseline!.usedTokens);
   });
 
   it("uses min(budget, model context) when a budget is set", () => {

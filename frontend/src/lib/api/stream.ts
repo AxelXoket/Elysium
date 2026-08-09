@@ -16,6 +16,7 @@ import { getErrorMessage } from "../errors";
 import type { ApiError } from "./client";
 import { notifyVaultLocked } from "./client";
 import { API_BASE as BASE } from "./base";
+import { launchTokenHeader } from "./launchToken";
 
 // ── Event schemas ────────────────────────────────────────────────
 
@@ -223,6 +224,7 @@ export async function streamCompletion(
       headers: {
         "Content-Type": "application/json",
         Accept: "text/event-stream",
+        ...launchTokenHeader(),
       },
       body: JSON.stringify(body),
       signal,

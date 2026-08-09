@@ -27,11 +27,13 @@ Privacy rules:
     The raw response body is never included.
 """
 
+import hashlib
 import json
 import time
 import logging
 from typing import Any, AsyncIterator
 
+import anyio.to_thread
 import httpx
 
 from config import (
@@ -59,7 +61,8 @@ class OpenRouterError(Exception):
     """Raised when the OpenRouter API call fails.
 
     reason is a sanitized code safe to return to the frontend:
-      api_key_invalid, openrouter_auth_failed, openrouter_rate_limited,
+      api_key_invalid, openrouter_auth_failed, openrouter_moderation_blocked,
+      openrouter_insufficient_credits, openrouter_rate_limited,
       openrouter_server_error, openrouter_timeout, openrouter_error.
     """
     def __init__(self, reason: str) -> None:
@@ -345,19 +348,194 @@ async def validate_api_key(candidate_key: str) -> str:
 # Chat completion
 # ---------------------------------------------------------------------------
 
+#: The only value this app ever sends for `modalities`, built once so the two
+#: payloads cannot drift. Asking for image output is asking for BOTH: dropping
+#: "text" would tell the provider to answer with a picture and no words.
+MODALITIES_WITH_IMAGE: tuple[str, ...] = ("text", "image")
+
+
+def image_urls_from(container: object) -> list[str]:
+    """Pull generated-image URLs out of a delta or an assistant message.
+
+    The shape is a list under `images`, each entry holding an image_url object
+    whose url is a data: URL, optionally with a `type` discriminator naming it.
+    (Written in prose rather than as a literal so the release gate that confines
+    OUTBOUND image_url construction has only real code to look at - see P-03.)
+
+    Unrecognised entries are IGNORED rather than rejected, and that is a
+    deliberate choice with a known failure mode on the other side: OpenRouter's
+    own AI-SDK provider requires the `type` discriminator and silently filters
+    entries that lack it - while their published schema for the item omits
+    `type` entirely. A parser strict about shape would report "the model
+    returned no images" on a reply that did return some. So anything that yields
+    a usable string url is accepted, and anything else is skipped quietly
+    because a malformed entry is the provider's problem, not the reader's.
+
+    Nothing is validated about the URL here beyond it being a non-empty string.
+    Whether it is a `data:` URL we may decode - as opposed to a third-party
+    https:// host we must refuse - is a privacy decision, and it belongs to the
+    caller that knows the egress rules.
+    """
+    if not isinstance(container, dict):
+        return []
+    entries = container.get("images")
+    if not isinstance(entries, list):
+        return []
+    out: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        holder = entry.get("image_url")
+        url = holder.get("url") if isinstance(holder, dict) else None
+        if isinstance(url, str) and url:
+            out.append(url)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Upstream failure -> sanitized reason
+# ---------------------------------------------------------------------------
+
+#: How much of an error body we are willing to look at. The body is INSPECTED
+#: for a shape and then dropped; nothing in it is forwarded or logged, so this
+#: cap is not about privacy but about refusing to buffer megabytes of a reply
+#: we have already decided to throw away.
+_ERROR_BODY_PEEK_LIMIT = 64 * 1024
+
+
+def _is_moderation_error(payload: object) -> bool:
+    """True when an OpenRouter error envelope carries ModerationErrorMetadata.
+
+    Only the SHAPE is read. That distinction is the whole reason this is a
+    predicate returning a bool rather than a parser returning fields: the
+    metadata holds `flagged_input`, a verbatim copy of what the reader just
+    typed, and `reasons`, a moderation label applied to them. Neither leaves
+    this function, neither reaches a log line, and the caller learns exactly
+    one bit.
+
+    `reasons` being a list is what separates this from ProviderErrorMetadata,
+    which is the other documented metadata shape and carries `{provider_name,
+    raw}` instead.
+    """
+    if not isinstance(payload, dict):
+        return False
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return False
+    metadata = error.get("metadata")
+    if not isinstance(metadata, dict):
+        return False
+    return isinstance(metadata.get("reasons"), list)
+
+
+def _parse_error_payload(body: bytes | None) -> object | None:
+    """Decode an error body far enough to tell its shape, or None.
+
+    Returns None rather than raising for every way this can go wrong (absent,
+    oversized, not UTF-8, not JSON) because every caller wants the same thing
+    from a body it cannot read: fall back to classifying on the status alone.
+    """
+    if not body or len(body) > _ERROR_BODY_PEEK_LIMIT:
+        return None
+    try:
+        return json.loads(body)
+    except ValueError:
+        # Covers JSONDecodeError and UnicodeDecodeError, both ValueError
+        # subclasses. An HTML error page from a proxy lands here.
+        return None
+
+
+async def _peek_error_body(response: httpx.Response) -> bytes:
+    """Read at most _ERROR_BODY_PEEK_LIMIT bytes of a streaming error response.
+
+    aread() would be shorter and is deliberately not used: it has no ceiling,
+    and this runs on a response we already know is a failure, from a host that
+    is by definition not behaving as expected. Reading in chunks and stopping
+    is the difference between a bounded peek and letting the far end decide how
+    much memory this process spends on an error it will not repeat.
+    """
+    buf = b""
+    try:
+        async for chunk in response.aiter_bytes():
+            buf += chunk
+            if len(buf) > _ERROR_BODY_PEEK_LIMIT:
+                break
+    except Exception:  # pragma: no cover - the body is optional information
+        # A truncated or reset error body must never turn into a different
+        # exception than the status already earned. Classify on status alone.
+        pass
+    return buf
+
+
+def _status_to_reason(status_code: int, payload: object | None = None) -> str:
+    """Map an upstream HTTP status to the sanitized OpenRouterError reasons.
+
+    payload is the decoded error envelope when one could be read, and is used
+    for exactly one decision - see the 403 branch. Callers that have no body
+    (or could not decode it) pass nothing and get the status-only answer.
+    """
+    if status_code == 401:
+        return "openrouter_auth_failed"
+    if status_code == 403:
+        # 401 and 403 used to share openrouter_auth_failed. OpenRouter documents
+        # 403 as exactly one thing - "your chosen model requires moderation and
+        # your input was flagged" - so that mapping told a reader whose prompt
+        # was refused to go and check an API key that was never the problem, and
+        # sent them off rotating a working key.
+        #
+        # The body is parsed but NOT forwarded. The module rule above ("the raw
+        # response body is never read or forwarded") is about handing the
+        # provider's prose to the reader; recognising a documented shape and
+        # dropping every field of it does not break that, and this is the one
+        # place where the status alone genuinely is ambiguous.
+        #
+        # Ambiguous because a 403 on this route need not come from OpenRouter at
+        # all: a corporate proxy or a CDN in front of it answers 403 with an
+        # HTML page. Announcing "your message was blocked by moderation" there
+        # would be the same lie pointing the other way, so an unrecognised body
+        # falls through to the generic code rather than guessing.
+        if _is_moderation_error(payload):
+            return "openrouter_moderation_blocked"
+        return "openrouter_error"
+    if status_code == 402:
+        return "openrouter_insufficient_credits"
+    if status_code == 429:
+        return "openrouter_rate_limited"
+    if status_code >= 500:
+        return "openrouter_server_error"
+    return "openrouter_error"
+
+
 async def complete(
     messages: list[dict],
     model_id: str,
     gen_params: dict,
     provider: dict,
+    modalities: tuple[str, ...] | list[str] | None = None,
 ) -> dict:
     """Send a non-streaming completion request. Returns the raw OpenRouter response.
 
     gen_params must already be validated by validate_and_filter_gen_params().
     provider dict is passed through as-is under the "provider" key.
     Raises OpenRouterError with a sanitized reason on any failure (μ8).
+
+    modalities is an EXPLICIT parameter and deliberately not a gen_param.
+    validate_and_filter_gen_params is a numeric allow-list: it would drop the
+    key silently, and widening _PARAM_SPEC to carry a list would break a guard
+    whose whole value is that it only understands numbers. Absent by default, so
+    every existing caller sends exactly the bytes it sent before.
     """
-    api_key = get_secret(SECRET_API_KEY)
+    # Off the event loop (audit KÖK 8). This is a SQLCipher open, and it used
+    # to happen here on the loop for EVERY message sent - immediately before
+    # the outbound request, which is the worst possible moment: any writer
+    # holding the lock stalls it for up to the busy_timeout, and every other
+    # live SSE stream in the process freezes with it.
+    #
+    # run_sync's default is abandon_on_cancel=False, so a client that
+    # disconnects during this read has its CancelledError delivered after the
+    # read returns rather than mid-query. completions.py:1489 already relies on
+    # that same property and says so.
+    api_key = await anyio.to_thread.run_sync(get_secret, SECRET_API_KEY)
     if not api_key:
         raise OpenRouterError("api_key_not_set")
 
@@ -368,6 +546,10 @@ async def complete(
         "stream": False,
         **gen_params,
     }
+    if modalities:
+        # AFTER the gen_params spread so a stray key of the same name in a
+        # validated param dict could never decide this.
+        payload["modalities"] = list(modalities)
 
     timeout = httpx.Timeout(COMPLETION_TIMEOUT)
     client = get_client()
@@ -390,18 +572,16 @@ async def complete(
         logger.info("Completion response: model=%s status=%d latency_ms=%d",
                     model_id, response.status_code, latency_ms)
 
-        # Map HTTP error status to sanitized reason codes (μ8).
-        # Raw response body is NEVER read or forwarded.
-        if response.status_code in (401, 403):
-            raise OpenRouterError("openrouter_auth_failed")
-        if response.status_code == 402:
-            raise OpenRouterError("openrouter_insufficient_credits")
-        if response.status_code == 429:
-            raise OpenRouterError("openrouter_rate_limited")
-        if response.status_code >= 500:
-            raise OpenRouterError("openrouter_server_error")
+        # Map HTTP error status to sanitized reason codes (μ8). The raw body is
+        # NEVER forwarded; _status_to_reason inspects it for one documented
+        # shape and keeps nothing. This branch used to carry its own copy of the
+        # status table, kept in sync with _status_to_reason by hand across three
+        # call sites - the drift that copy invited is the reason there is now
+        # one table.
         if not response.is_success:
-            raise OpenRouterError("openrouter_error")
+            raise OpenRouterError(_status_to_reason(
+                response.status_code, _parse_error_payload(response.content),
+            ))
 
         return response.json()
 
@@ -428,17 +608,69 @@ async def complete(
 # Streaming chat completion
 # ---------------------------------------------------------------------------
 
-def _status_to_reason(status_code: int) -> str:
-    """Map an HTTP status to the sanitized OpenRouterError reason codes."""
-    if status_code in (401, 403):
-        return "openrouter_auth_failed"
-    if status_code == 402:
-        return "openrouter_insufficient_credits"
-    if status_code == 429:
-        return "openrouter_rate_limited"
-    if status_code >= 500:
-        return "openrouter_server_error"
-    return "openrouter_error"
+async def _aiter_sse_lines(response: httpx.Response) -> AsyncIterator[str]:
+    """Yield SSE lines, splitting only on CRLF, LF or CR.
+
+    A drop-in replacement for `response.aiter_lines()`, which cannot be used
+    here. httpx's LineDecoder was deliberately changed in 0.24.0 to mirror
+    `str.splitlines()` (encode/httpx#2423, "resulting in significant speed up"),
+    so it also breaks on U+0085 NEL, U+2028 LINE SEPARATOR and U+2029 PARAGRAPH
+    SEPARATOR. The WHATWG event-stream format allows exactly three terminators:
+    CRLF, LF, CR. And RFC 8259 section 7 only requires a JSON writer to escape
+    U+0000-U+001F, so those three arrive literally - JavaScript's
+    JSON.stringify escapes none of them, and OpenRouter serialises in
+    TypeScript. One of them inside a content delta therefore tore the frame in
+    two: the first half failed json.loads and was logged-and-skipped, the second
+    half failed the "data:" prefix test and was dropped without even that. The
+    reader lost that piece of the reply from the screen, from the vault AND from
+    the voice, with no error anywhere. httpx does not consider its behaviour a
+    bug, so there is no upstream fix to wait for.
+
+    Splitting on BYTES is what fixes it: `bytes.splitlines()` knows only CR, LF
+    and CRLF, and no UTF-8 continuation byte (0x80-0xBF) can be mistaken for
+    either, so a boundary can never fall inside a multi-byte character - which
+    is why decoding per finished line is safe. This is the same approach the
+    official openai and anthropic SDKs take, both with the same one-line comment
+    ("Split before decoding so splitlines() only uses \\r and \\n"); both
+    abandoned aiter_lines for it.
+
+    Deliberately line-level rather than event-level (httpx-sse, or an SDK-style
+    SSEDecoder). The caller's timeout tick fires on EVERY line including
+    keepalive comments, and its comment explains that this is the whole point:
+    the comments are what buy a queued request time. An event decoder yields
+    nothing at all for a comment-only stream, which would silently delete
+    STREAM_FIRST_TOKEN_TIMEOUT.
+    """
+    # aiter_bytes(), NOT aiter_raw(): httpx advertises Accept-Encoding, so the
+    # raw stream may be gzip-framed and the splitter would see compressed
+    # bytes - an outage that only reproduces against providers that compress.
+    # chunk_size is left unset on purpose: ByteChunker is then a pass-through,
+    # so this adds no buffering to a first-token-critical path.
+    buf = b""
+    async for chunk in response.aiter_bytes():
+        if not chunk:
+            continue
+        buf += chunk
+        if buf.endswith(b"\r"):
+            # That CR may be the first half of a CRLF straddling two network
+            # reads. Hold it back rather than emit a phantom blank line - a
+            # blank line is SSE's event-dispatch signal.
+            head, buf = buf[:-1], b"\r"
+        else:
+            head, buf = buf, b""
+        if not head:
+            continue
+        lines = head.splitlines()
+        if lines and not head.endswith((b"\n", b"\r")):
+            # The last segment has no terminator yet; re-buffer it, keeping any
+            # held-back CR after it.
+            buf = lines.pop() + buf
+        for line in lines:
+            yield line.decode("utf-8", "replace")
+    # Whatever is left: an unterminated final line and/or a lone held-back CR.
+    # splitlines() here strips that CR instead of leaking it into the payload.
+    for line in buf.splitlines():
+        yield line.decode("utf-8", "replace")
 
 
 async def complete_stream(
@@ -446,6 +678,8 @@ async def complete_stream(
     model_id: str,
     gen_params: dict,
     provider: dict,
+    modalities: tuple[str, ...] | list[str] | None = None,
+    on_image=None,
 ) -> AsyncIterator[str]:
     """Send a streaming completion request; yield content deltas as they arrive.
 
@@ -458,8 +692,25 @@ async def complete_stream(
 
     Privacy rules match complete(): request/response bodies are never logged;
     only model_id, HTTP status, and latency are logged.
+
+    modalities: see complete(). Absent by default.
+
+    on_image: an optional sink for generated images. THIS GENERATOR ONLY EVER
+    YIELDS `str`. Every consumer of the yielded value assumes that - the text
+    accumulator, the tag stripper, the TTS speaker, the SSE encoder and the
+    final "".join - so an image element travelling down the same channel would
+    either raise a TypeError mid-reply or, worse, be treated as text: stored in
+    messages.content, painted into the bubble, and read aloud. Splitting the
+    channel HERE, at the one place that knows the difference, is what keeps all
+    of that impossible instead of merely unlikely. The sink is called with a raw
+    `data:` URL string and must not raise.
     """
-    api_key = get_secret(SECRET_API_KEY)
+    # Off the event loop (audit KÖK 8). See complete() for the full reasoning;
+    # this is the streaming twin and the more damaging of the two, because the
+    # freeze it caused landed on a path whose whole purpose is to keep other
+    # streams flowing. The read sits before the first yield, so an async
+    # generator that is never iterated still never pays for it.
+    api_key = await anyio.to_thread.run_sync(get_secret, SECRET_API_KEY)
     if not api_key:
         raise OpenRouterError("api_key_not_set")
 
@@ -470,6 +721,8 @@ async def complete_stream(
         "stream": True,
         **gen_params,
     }
+    if modalities:
+        payload["modalities"] = list(modalities)
 
     timeout = httpx.Timeout(
         connect=STREAM_CONNECT_TIMEOUT,
@@ -494,15 +747,27 @@ async def complete_stream(
             timeout=timeout,
         ) as response:
             if response.status_code != 200:
-                # Error body is never read or forwarded (μ8).
-                logger.warning(
-                    "Streaming completion HTTP error: model=%s status=%d",
-                    model_id, response.status_code,
+                # The body is peeked at, bounded, and never forwarded or logged
+                # (μ8) - only the sanitized reason reaches the log line below.
+                # It has to be read here rather than skipped: a 403 means one of
+                # two unrelated things and the body is the only thing that tells
+                # them apart. See _status_to_reason.
+                reason = _status_to_reason(
+                    response.status_code,
+                    _parse_error_payload(await _peek_error_body(response)),
                 )
-                raise OpenRouterError(_status_to_reason(response.status_code))
+                logger.warning(
+                    "Streaming completion HTTP error: model=%s status=%d reason=%s",
+                    model_id, response.status_code, reason,
+                )
+                raise OpenRouterError(reason)
 
             saw_token = False
-            async for line in response.aiter_lines():
+            dropped_frames = 0
+            #: sha256 of every image url already handed to the sink. See the
+            #: dedup comment in the loop below.
+            seen_images: set[bytes] = set()
+            async for line in _aiter_sse_lines(response):
                 # The only bound that survives a keepalive. Everything below
                 # `continue`s on a comment line, and each of those comments
                 # reset httpx's per-read timeout - so a queued request with a
@@ -531,11 +796,33 @@ async def complete_stream(
                 data = line[len("data:"):].strip()
                 if data == "[DONE]":
                     break
+                if not data:
+                    # A `data:` with no value is legal SSE and json.loads("")
+                    # raises - which would now be reported as a protocol
+                    # violation. It is not one.
+                    continue
 
                 try:
                     chunk = json.loads(data)
                 except json.JSONDecodeError:
-                    logger.warning("Skipping malformed stream chunk: model=%s", model_id)
+                    # With a spec-correct splitter above, this is no longer a
+                    # frame we tore in half: it is the provider sending
+                    # something that is not JSON. Counted and logged at ERROR
+                    # with a BOUNDED repr - the payload is model output, so it
+                    # never goes to the log whole.
+                    #
+                    # Deliberately not fatal. Failing the turn here would skip
+                    # finalize(), voice.finish() and drain_events, so a reply the
+                    # reader had already finished reading would come back as an
+                    # error banner with trim_broken_tail-shortened stored text
+                    # and truncated audio. completions.py's KÖK 16 comment
+                    # rejects exactly that trade for exactly this reason. One
+                    # frame is a hole; the whole turn is a loss.
+                    dropped_frames += 1
+                    logger.error(
+                        "Malformed stream frame: model=%s len=%d head=%.60r",
+                        model_id, len(data), data,
+                    )
                     continue
 
                 error_obj = chunk.get("error")
@@ -544,8 +831,13 @@ async def complete_stream(
 
                 if error_obj is not None or choice.get("finish_reason") == "error":
                     code = error_obj.get("code") if isinstance(error_obj, dict) else None
+                    # `chunk` IS the error envelope here, already decoded, so
+                    # the 403 branch gets the same evidence it gets on the HTTP
+                    # path. A moderation block can arrive either way: refused
+                    # before the stream opens, or mid-reply once a provider has
+                    # seen enough of what it is generating.
                     reason = (
-                        _status_to_reason(code)
+                        _status_to_reason(code, chunk)
                         if isinstance(code, int)
                         else "openrouter_error"
                     )
@@ -556,6 +848,31 @@ async def complete_stream(
                     raise OpenRouterError(reason)
 
                 delta = choice.get("delta") or {}
+                # Images may ride the delta, or arrive only on a final
+                # aggregated `message` - the live spec declares neither, so both
+                # are read and neither is assumed. They leave through the sink,
+                # never through the yield: see the docstring.
+                if on_image is not None:
+                    for url in image_urls_from(delta) + image_urls_from(
+                        choice.get("message")
+                    ):
+                        # Deduplicated, and this is the ORDINARY case rather than
+                        # a pathological one: the documented shape is images on
+                        # each delta plus a final aggregated `message`, so every
+                        # picture is seen at least twice and this loop runs on
+                        # every chunk. Without the check each one became two
+                        # attachment rows sharing one blob - which also halved
+                        # the per-message cap, because that counts rows.
+                        #
+                        # Hashing the url rather than keeping it: these strings
+                        # are megabytes, and the set only needs identity.
+                        digest = hashlib.sha256(url.encode("utf-8")).digest()
+                        if digest in seen_images:
+                            continue
+                        seen_images.add(digest)
+                        saw_token = True
+                        on_image(url)
+
                 content = delta.get("content")
                 if isinstance(content, str) and content:
                     # Past this point the provider has demonstrably started,
@@ -564,6 +881,11 @@ async def complete_stream(
                     yield content
 
         latency_ms = int((time.monotonic() - start) * 1000)
+        if dropped_frames:
+            logger.error(
+                "Stream completed with %d unparseable frame(s): model=%s",
+                dropped_frames, model_id,
+            )
         logger.info(
             "Streaming completion finished: model=%s latency_ms=%d",
             model_id, latency_ms,

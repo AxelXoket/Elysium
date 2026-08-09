@@ -172,6 +172,12 @@ class _FakeVault:
     def unlock(self, passphrase: str) -> bytes:
         return bytes(range(32))
 
+    def needs_kdf_upgrade(self) -> bool:
+        # Already current. The KDF upgrade runs on this same path and would
+        # re-key the database; this test is about the bootstrap's return
+        # value, and a fake that re-keys nothing keeps it about that.
+        return False
+
 
 # ---------------------------------------------------------------------------
 # 4. lock must admit audio it could not delete

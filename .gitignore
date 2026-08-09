@@ -21,12 +21,19 @@ verifier.bin
 # Crash-recovery copies, named during the KÖK 18 work: app.db.enc-tmp is a
 # COMPLETE encrypted copy of the vault left by an interrupted migration,
 # and app.db.empty-stub-bak is the 0-byte live file adoption moves aside.
-*.enc-tmp
+# The trailing * covers app.db.enc-tmp.orphan.bak-<ts>: migration moves a copy
+# it finds in its way ASIDE rather than deleting it, and a complete vault that
+# git could pick up is the last thing this list may miss.
+*.enc-tmp*
 *.empty-stub-bak
 
 # Environment
 .env
 .env.*
+# ...except the template. `.env.*` was swallowing .env.example, so the one file
+# whose whole job is to show a new clone what to create could never reach the
+# clone. It holds a commented-out default URL and nothing else.
+!.env.example
 
 # OS
 .DS_Store
@@ -49,6 +56,12 @@ frontend/dist/
 build/
 build_log*.txt
 .pytest_cache/
+
+# The constraint snapshot used to regenerate requirements.lock.txt. It is a
+# freeze of one machine's venv, not a fact about the project, and uv writes
+# whatever path it is given into 45 provenance comments in the lockfile - so it
+# has to live here, beside requirements.txt, and never be committed.
+backend/current.txt
 
 # Backend debug tools (dumps DB content - never commit)
 backend/_show_db.py
@@ -86,6 +99,11 @@ backend/webview/
 backend/app.db*
 backend/logs/
 *.log
+# The port the server last bound to. Not a secret - it is one integer - but it
+# is written by run_app into DATA_DIR like everything above, and the rule for
+# this block is "whatever the running app writes", not "whatever looks
+# dangerous". It was the one runtime artefact sitting outside the net.
+backend/port
 
 # Voice / TTS data dir (dev runs resolve DATA_DIR to backend/). Holds the
 # user's downloaded model weights, their reference voice recordings and the

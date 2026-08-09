@@ -8,6 +8,8 @@ import {
   setProxyAlias,
   setProxyRequired,
   setStopSequences,
+  setAutoLock,
+  setImageOutput,
   deleteProxy,
   getProxyHealth,
 } from "../api/settings";
@@ -130,6 +132,41 @@ export function useSetStopSequences() {
       // dedupes, so echoing what we sent would let the UI drift from the vault.
       qc.setQueryData<Settings>(keys.settings(), (prev) =>
         prev ? { ...prev, stop_sequences: data.stop_sequences } : prev,
+      );
+    },
+  });
+}
+
+/**
+ * Toggle generated image output.
+ *
+ * The server's answer is written through rather than the value we sent, for the
+ * same reason the stop-sequence mutation does it: the vault is the truth and the
+ * UI must not drift from it.
+ */
+export function useSetImageOutput() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (enabled: boolean) => setImageOutput(enabled),
+    onSuccess: (data) => {
+      qc.setQueryData<Settings>(keys.settings(), (prev) =>
+        prev ? { ...prev, image_output_enabled: data.image_output_enabled } : prev,
+      );
+    },
+  });
+}
+
+/**
+ * Set the idle timeout. Writes the server's answer through, like its
+ * neighbours: the vault is the truth and the UI must not drift from it.
+ */
+export function useSetAutoLock() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (minutes: number) => setAutoLock(minutes),
+    onSuccess: (data) => {
+      qc.setQueryData<Settings>(keys.settings(), (prev) =>
+        prev ? { ...prev, auto_lock_minutes: data.auto_lock_minutes } : prev,
       );
     },
   });

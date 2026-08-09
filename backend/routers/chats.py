@@ -87,14 +87,30 @@ from messages_common import msg_to_dict as _msg_to_dict, last_active_anchor
 # GET /chats
 # ---------------------------------------------------------------------------
 
-@router.get("")
-async def list_chats() -> list[dict]:
-    """Return all chats ordered by updated_at DESC, id DESC."""
+def _list_chats_sync() -> list[dict]:
+    """Worker-thread body - the READ half of audit KÖK 8.
+
+    Every WRITE handler in this file was moved off the event loop because
+    holding SQLite's writer lock there freezes every live SSE stream in the
+    process. The reads were left behind, and that was the wrong half to leave:
+    SQLCipher decrypts page by page on the calling thread, so a read is not
+    cheap merely because it takes no lock. `_CHAT_SELECT` also carries a
+    correlated COUNT(*) over `messages` per chat, so this grows with the whole
+    vault, not with the page being drawn.
+
+    Nothing about the query changes; only the thread it runs on.
+    """
     with get_db() as con:
         rows = con.execute(
             _CHAT_SELECT + "ORDER BY c.updated_at DESC, c.id DESC"
         ).fetchall()
     return [_chat_to_dict(r) for r in rows]
+
+
+@router.get("")
+async def list_chats() -> list[dict]:
+    """Return all chats ordered by updated_at DESC, id DESC."""
+    return await anyio.to_thread.run_sync(_list_chats_sync)
 
 
 # ---------------------------------------------------------------------------
@@ -187,9 +203,8 @@ async def create_chat(body: ChatCreate) -> dict:
 # GET /chats/{chat_id}
 # ---------------------------------------------------------------------------
 
-@router.get("/{chat_id}")
-async def get_chat(chat_id: int) -> dict:
-    """Return a single chat by ID."""
+def _get_chat_sync(chat_id: int) -> dict:
+    """Worker-thread body; see _list_chats_sync for why reads count too."""
     with get_db() as con:
         row = con.execute(
             _CHAT_SELECT + "WHERE c.id = ?", (chat_id,)
@@ -197,6 +212,12 @@ async def get_chat(chat_id: int) -> dict:
     if row is None:
         raise HTTPException(404, "chat_not_found")
     return _chat_to_dict(row)
+
+
+@router.get("/{chat_id}")
+async def get_chat(chat_id: int) -> dict:
+    """Return a single chat by ID."""
+    return await anyio.to_thread.run_sync(_get_chat_sync, chat_id)
 
 
 # ---------------------------------------------------------------------------
@@ -256,13 +277,15 @@ async def rename_chat(chat_id: int, body: ChatPatch) -> dict:
 # GET /chats/{chat_id}/messages
 # ---------------------------------------------------------------------------
 
-@router.get("/{chat_id}/messages")
-async def list_messages(chat_id: int) -> list[dict]:
-    """Return ALL messages for a chat (active and inactive variants), id ASC.
+def _list_messages_sync(chat_id: int) -> list[dict]:
+    """Worker-thread body; see _list_chats_sync for why reads count too.
 
-    Inactive variant rows ride along so the client can flip between them
-    without a fetch inside the carousel animation; each row carries its
-    variant_index/variant_count within its group.
+    This is the heaviest read in the app and the one that mattered most: the
+    client refetches it unconditionally at the end of every exchange, so it
+    used to decrypt an entire transcript on the event loop at the exact moment
+    the streaming generator for that same chat was trying to ship its next
+    sentence of audio. Two connections' worth of work (the rows here, the
+    attachments in `load_for_messages`) now happen off the loop together.
     """
     with get_db() as con:
         # Verify chat exists first
@@ -278,6 +301,19 @@ async def list_messages(chat_id: int) -> list[dict]:
             "FROM messages WHERE chat_id = ? ORDER BY id ASC",
             (chat_id,),
         ).fetchall()
+        # The character's greeting is card prose, not model output, so it is
+        # exempt from tag stripping (see voice_tags.strip_for_display). It is
+        # identifiable without a schema column: a completion always writes the
+        # user row BEFORE the assistant row, and regenerate refuses a reply with
+        # no preceding user message, so the chat's oldest row can only be an
+        # assistant row if first_mes seeded it. Asked as MIN(id) rather than
+        # taken as rows[0] so that adding pagination here cannot silently start
+        # stripping the greeting again. On a chat that opens with a user row the
+        # id matches that row instead, which is harmless - strip_for_display
+        # returns user text untouched either way.
+        oldest_id = con.execute(
+            "SELECT MIN(id) FROM messages WHERE chat_id = ?", (chat_id,)
+        ).fetchone()[0]
     att_map = load_for_messages([r["id"] for r in rows])
     group_ids: dict[int, list[int]] = {}
     for r in rows:
@@ -289,8 +325,20 @@ async def list_messages(chat_id: int) -> list[dict]:
             r, att_map.get(r["id"]),
             variant_index=ids.index(r["id"]),
             variant_count=len(ids),
+            card_authored=(r["id"] == oldest_id),
         ))
     return out
+
+
+@router.get("/{chat_id}/messages")
+async def list_messages(chat_id: int) -> list[dict]:
+    """Return ALL messages for a chat (active and inactive variants), id ASC.
+
+    Inactive variant rows ride along so the client can flip between them
+    without a fetch inside the carousel animation; each row carries its
+    variant_index/variant_count within its group.
+    """
+    return await anyio.to_thread.run_sync(_list_messages_sync, chat_id)
 
 
 # ---------------------------------------------------------------------------
@@ -489,6 +537,14 @@ def _activate_variant_sync(chat_id: int, message_id: int) -> dict:
             (message_id,),
         ).fetchone()
 
+    # The activated row's OWN attachments. Not decoration: the client merges
+    # this dict over its cached message and deliberately does not refetch
+    # afterwards (a refetch there would race a fast second arrow press), so an
+    # empty array here would overwrite the cache and the picture would vanish -
+    # and stay vanished, because nothing invalidates. A variant carrying a
+    # generated image is exactly the case that makes this reachable.
+    atts = load_for_messages([message_id]).get(message_id, [])
+
     logger.info(
         "Variant activated: chat_id=%d group=%d active=%d",
         chat_id, anchor, message_id,
@@ -498,7 +554,7 @@ def _activate_variant_sync(chat_id: int, message_id: int) -> dict:
         "chat_id": chat_id,
         "variant_group": anchor,
         "message": _msg_to_dict(
-            fresh,
+            fresh, atts,
             variant_index=ids.index(message_id),
             variant_count=len(ids),
         ),

@@ -23,6 +23,9 @@ import {
   type GenerationSettingsValues,
 } from "./GenerationSettingsContext";
 import { isParamSupportedByModel } from "@/lib/generation";
+import { hasOutputModality } from "@/lib/models/modelHelpers";
+import { useSettings, useSetImageOutput } from "@/lib/query/settings";
+import { ImageOutputSetting } from "./ImageOutputSetting";
 import type { Model } from "@/lib/schemas/models";
 import { SlidersHorizontal, X } from "lucide-react";
 
@@ -56,6 +59,10 @@ export function GenerationSettingsDialog({
   const [open, setOpen] = useState(false);
   const { settings, setSetting, stopSequences, setStopSequences, resetAll } =
     useGenerationSettings();
+  // The VAULT settings, distinct from the generation values above: this one
+  // lives server-side because it changes the outgoing request.
+  const vaultSettings = useSettings();
+  const setImageOutput = useSetImageOutput();
   const maxTokensMax = getMaxTokensUiMax(selectedModel);
   const contextBudgetMax = getContextBudgetUiMax(selectedModel);
   const supportKnown = (selectedModel?.supported_parameters.length ?? 0) > 0;
@@ -256,6 +263,19 @@ export function GenerationSettingsDialog({
             <StopSequencesSetting
               sequences={stopSequences}
               onChange={setStopSequences}
+            />
+          </GenerationSection>
+
+          {/* A REQUEST-shaping setting, so it belongs here and not with the
+              appearance preferences, and it is stored in the vault for the same
+              reason. Not gated on the selected model: the switch is a standing
+              preference and the per-request decision is made server-side. */}
+          <GenerationSection title="Pictures in replies">
+            <ImageOutputSetting
+              enabled={vaultSettings.data?.image_output_enabled ?? false}
+              supported={hasOutputModality(selectedModel, "image")}
+              busy={setImageOutput.isPending}
+              onChange={(next) => setImageOutput.mutate(next)}
             />
           </GenerationSection>
         </div>

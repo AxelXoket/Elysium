@@ -6,6 +6,9 @@ import {
   unlockVault,
   lockVault,
   changeVaultPassphrase,
+  discardPlaintextBackup,
+  discardOrphanedCopy,
+  discardEmptyStub,
 } from "@/lib/api/vault";
 
 /** Vault status drives the boot gate (create → unlock → app). */
@@ -64,5 +67,41 @@ export function useChangeVaultPassphrase() {
   return useMutation({
     mutationFn: (vars: { oldPassphrase: string; newPassphrase: string }) =>
       changeVaultPassphrase(vars.oldPassphrase, vars.newPassphrase),
+  });
+}
+
+/** Removing the plaintext copy changes what /vault/status reports, so the
+ *  status query has to be refetched or the warning stays on screen after the
+ *  file is gone. */
+export function useDiscardPlaintextBackup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: discardPlaintextBackup,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.vault() });
+    },
+  });
+}
+
+/** Same refetch reason as the plaintext discard: the warning has to disappear
+ *  once the file does. */
+export function useDiscardOrphanedCopy() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: discardOrphanedCopy,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.vault() });
+    },
+  });
+}
+
+/** Same refetch reason again. */
+export function useDiscardEmptyStub() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: discardEmptyStub,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.vault() });
+    },
   });
 }

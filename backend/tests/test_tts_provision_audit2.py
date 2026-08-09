@@ -16,6 +16,23 @@ import pytest
 import config
 from tts import provision, runtimes
 from tts.errors import TTS_RUNTIME_INSTALLING, TTS_RUNTIME_INSTALL_FAILED
+@pytest.fixture(autouse=True)
+def _vault_is_readable(monkeypatch):
+    """The only state start_install can actually be reached in.
+
+    vault_gate answers 423 for every data route while the vault is locked, so
+    by the time the install route runs, the settings table is readable. These
+    tests call provision.start_install() directly, with no database behind it,
+    which made get_setting raise - and _proxy_required now fails CLOSED on
+    that, correctly refusing to start a multi-gigabyte download when it cannot
+    tell whether a proxy is mandatory. This fixture supplies the readable
+    settings the route guarantees; the fail-closed behaviour itself is tested
+    in test_provision_proxy.py, where it belongs.
+    """
+    import database
+    monkeypatch.setattr(database, "get_setting", lambda name: None)
+
+
 
 
 @pytest.fixture

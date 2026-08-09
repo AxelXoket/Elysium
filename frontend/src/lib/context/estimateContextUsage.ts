@@ -178,16 +178,27 @@ export function buildPersonaBlock(
 
 /**
  * Character cost of one history message: content length plus a flat
- * IMAGE_TOKEN_ESTIMATE * CHARS_PER_TOKEN per attachment.
+ * IMAGE_TOKEN_ESTIMATE * CHARS_PER_TOKEN per attachment - but only for
+ * attachments that are actually re-sent.
  *
- * `attachments` is read defensively - the Message schema may gain an optional
- * attachments array; until then the safe optional read yields 0.
+ * A picture the MODEL produced is display-only: the backend's role gate keeps it
+ * out of every later payload, and its budget accounting charges 0 for the same
+ * reason (charging would make the history trim evict real turns to reserve room
+ * for bytes that are never sent). This file mirrors that math, so it has to
+ * mirror this too or the gauge over-reports the moment image output is used.
+ *
+ * IMAGE_TOKEN_ESTIMATE is calibrated for an image sent as INPUT, which is the
+ * only kind this now counts.
+ *
+ * `attachments` is read defensively - older cached Message objects may predate
+ * the field; the safe optional read yields 0.
  */
 function messageChars(message: Message): number {
   const attachments = (
     message as Message & { attachments?: readonly { id: number }[] }
   ).attachments;
-  const attachmentCount = attachments?.length ?? 0;
+  const replayed = message.role === "user";
+  const attachmentCount = replayed ? attachments?.length ?? 0 : 0;
   return (
     message.content.length +
     attachmentCount * IMAGE_TOKEN_ESTIMATE * CHARS_PER_TOKEN

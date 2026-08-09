@@ -19,12 +19,15 @@ import json
 import logging
 from urllib.parse import urlparse
 
+import anyio.to_thread
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
+import auto_lock
 import keyring_service
 from config import SECRET_API_KEY, SECRET_PROXY_URL
-from database import get_db, get_setting, set_setting
+from database import get_db, set_setting
+from generated_images import set_image_output_enabled
 from secrets_service import get_secret, set_secret, delete_secret
 from network_client import reset_client
 from proxy_health import (
@@ -149,9 +152,15 @@ def _validate_proxy_url(url: str) -> None:
 # GET /settings
 # ---------------------------------------------------------------------------
 
-@router.get("")
-async def get_settings() -> dict:
-    """Return current configuration state. No secrets are included."""
+def _get_settings_sync() -> dict:
+    """Worker-thread body (audit KÖK 8): own connection, one read snapshot.
+
+    A read is not free here. Opening the SQLCipher database pays the KDF, and
+    the connection can still queue behind a writer holding the lock for the
+    full busy_timeout. On the event loop that freezes every live SSE stream,
+    so the settings panel loading could stall a reply mid-sentence. The query
+    below is unchanged; only the thread it runs on is.
+    """
     # Settings rows AND secret presence read on ONE connection = one snapshot
     # (the previous code opened two, contradicting its own comment). (v1.1 FB11.)
     with get_db() as con:
@@ -160,7 +169,8 @@ async def get_settings() -> dict:
             for r in con.execute(
                 "SELECT key, value FROM settings "
                 "WHERE key IN ('proxy_required', 'proxy_alias', "
-                "'selected_persona_id', 'stop_sequences')"
+                "'selected_persona_id', 'stop_sequences', "
+                "'image_output_enabled', 'auto_lock_minutes')"
             ).fetchall()
         }
         api_key_set = get_secret(SECRET_API_KEY, conn=con) is not None
@@ -182,12 +192,54 @@ async def get_settings() -> dict:
         "proxy_configured": proxy_configured,
         "proxy_alias": proxy_alias_raw if proxy_alias_raw else None,
         "selected_persona_id": selected_persona_id,
+        # Off unless the row says otherwise, which is how every existing vault
+        # and every fresh install both read.
+        "image_output_enabled": rows.get("image_output_enabled") in ("1", "true"),
+        # Minutes of inactivity before the vault locks itself; 0 means never.
+        # An unlocked vault is a decrypted vault for as long as the window is
+        # open, and windows stay open for days.
+        "auto_lock_minutes": _read_auto_lock(rows.get("auto_lock_minutes")),
     }
+
+
+@router.get("")
+async def get_settings() -> dict:
+    """Return current configuration state. No secrets are included."""
+    return await anyio.to_thread.run_sync(_get_settings_sync)
+
+
+def _read_auto_lock(raw: str | None) -> int:
+    """What the screen shows, from the same function the watchdog obeys.
+
+    This used to be a second copy of auto_lock's parsing. Two copies agreeing
+    that "absent means off" was harmless; the moment a default existed they
+    would have disagreed about a vault nobody has configured, and the settings
+    panel would have read "never" while the vault locked itself every five
+    minutes.
+    """
+    return auto_lock.minutes_from_raw(raw)
 
 
 # ---------------------------------------------------------------------------
 # POST /settings/api-key
 # ---------------------------------------------------------------------------
+
+def _store_api_key_sync(api_key: str) -> None:
+    """Worker-thread body (audit KÖK 8): the vault write plus the legacy
+    keyring delete, which is a blocking call into the Windows credential store
+    and not a fast one.
+
+    Only the storage moves. enforce_proxy_gate() and validate_api_key() stay on
+    the loop above because they are coroutines - a worker thread has no loop to
+    await them on - and because their ORDER is the protection: the gate has to
+    refuse before the key is put on the wire.
+    """
+    set_secret(SECRET_API_KEY, api_key)
+    # Saving through the app is the user's resolution path for any stale
+    # or conflicting LEGACY keyring copy: best-effort delete it now (the
+    # unlock migration warns about conflicts but never auto-deletes).
+    keyring_service.delete_legacy(SECRET_API_KEY)
+
 
 @router.post("/api-key")
 async def save_api_key(body: ApiKeyBody) -> dict:
@@ -208,11 +260,11 @@ async def save_api_key(body: ApiKeyBody) -> dict:
     status = await validate_api_key(body.api_key)
 
     if status == "valid":
-        set_secret(SECRET_API_KEY, body.api_key)
-        # Saving through the app is the user's resolution path for any stale
-        # or conflicting LEGACY keyring copy: best-effort delete it now (the
-        # unlock migration warns about conflicts but never auto-deletes).
-        keyring_service.delete_legacy(SECRET_API_KEY)
+        await anyio.to_thread.run_sync(_store_api_key_sync, body.api_key)
+        # Stays on the loop: _model_cache is a bare module dict with no lock,
+        # safe today only because every mutation happens on the single loop
+        # thread. Moving it into the worker pool would make two concurrent
+        # settings writes race for real, and nothing here is blocking anyway.
         invalidate_model_cache()
         logger.info("API key validated and saved.")
         return {"ok": True, "key_status": "valid"}
@@ -229,6 +281,13 @@ async def save_api_key(body: ApiKeyBody) -> dict:
 # DELETE /settings/api-key
 # ---------------------------------------------------------------------------
 
+def _delete_api_key_sync() -> None:
+    """Worker-thread body (audit KÖK 8): vault delete plus legacy keyring
+    delete, both blocking. See _store_api_key_sync."""
+    delete_secret(SECRET_API_KEY)
+    keyring_service.delete_legacy(SECRET_API_KEY)
+
+
 @router.delete("/api-key")
 async def delete_api_key() -> dict:
     """Remove the API key from the vault AND from any legacy keyring copy.
@@ -240,9 +299,8 @@ async def delete_api_key() -> dict:
     and it came back - silently, and specifically for the one action people
     take when a key has leaked.
     """
-    delete_secret(SECRET_API_KEY)
-    keyring_service.delete_legacy(SECRET_API_KEY)
-    invalidate_model_cache()
+    await anyio.to_thread.run_sync(_delete_api_key_sync)
+    invalidate_model_cache()  # loop-only, see save_api_key
     logger.info("API key deleted.")
     return {"ok": True}
 
@@ -251,18 +309,35 @@ async def delete_api_key() -> dict:
 # POST /settings/proxy
 # ---------------------------------------------------------------------------
 
+def _save_proxy_sync(proxy_url: str, proxy_required: bool,
+                     proxy_alias: str) -> None:
+    """Worker-thread body (audit KÖK 8): the write transaction and the legacy
+    keyring delete. The URL is already validated - that has to fail on the loop
+    before anything opens the database, exactly as it did before."""
+    with get_db() as con:
+        set_secret(SECRET_PROXY_URL, proxy_url, conn=con)
+        _set_setting_on(con, "proxy_required", "1" if proxy_required else "0")
+        _set_setting_on(con, "proxy_alias", proxy_alias)
+    # Same resolution path as the API key: clear any stale legacy copy. Kept
+    # OUTSIDE the transaction, where it has always been: it is a different
+    # store with its own failure mode, and holding the writer lock across a
+    # Windows credential-store call would widen the stall this whole change
+    # exists to remove.
+    keyring_service.delete_legacy(SECRET_PROXY_URL)
+
+
 @router.post("/proxy")
 async def save_proxy(body: ProxyBody) -> dict:
     """Store proxy config atomically: secret + flags in ONE transaction (E5 -
     everything is DB rows now, so the old two-store split is gone)."""
     _validate_proxy_url(body.proxy_url)
 
-    with get_db() as con:
-        set_secret(SECRET_PROXY_URL, body.proxy_url.strip(), conn=con)
-        _set_setting_on(con, "proxy_required", "1" if body.proxy_required else "0")
-        _set_setting_on(con, "proxy_alias", (body.proxy_alias or "").strip())
-    # Same resolution path as the API key: clear any stale legacy copy.
-    keyring_service.delete_legacy(SECRET_PROXY_URL)
+    await anyio.to_thread.run_sync(
+        _save_proxy_sync,
+        body.proxy_url.strip(),
+        body.proxy_required,
+        (body.proxy_alias or "").strip(),
+    )
 
     # Side effects only after the commit above.
     await reset_client()
@@ -299,7 +374,11 @@ async def save_stop_sequences(body: StopSequencesBody) -> dict:
         if len(cleaned) >= MAX_STOP_SEQUENCES:
             break
 
-    set_setting("stop_sequences", json.dumps(cleaned, ensure_ascii=False))
+    # The cleaning above is pure Python and stays on the loop; only the write
+    # is worth a thread hop (audit KÖK 8).
+    await anyio.to_thread.run_sync(
+        set_setting, "stop_sequences", json.dumps(cleaned, ensure_ascii=False)
+    )
     logger.info("Stop sequences saved (%d).", len(cleaned))
     return {"ok": True, "stop_sequences": cleaned}
 
@@ -307,6 +386,25 @@ async def save_stop_sequences(body: StopSequencesBody) -> dict:
 # ---------------------------------------------------------------------------
 # POST /settings/proxy/required
 # ---------------------------------------------------------------------------
+
+def _set_proxy_required_sync(required: bool) -> None:
+    """Worker-thread body (audit KÖK 8), and the guard read moves INTO the
+    write transaction while it is being moved off the loop.
+
+    The two statements used to run in autocommit on two separate connections,
+    so a DELETE /settings/proxy landing between them armed the kill-switch
+    against a proxy that no longer existed - and the screen that could disarm
+    it is the one that just told the user it worked, while every completion
+    started refusing with proxy_missing. BEGIN IMMEDIATE serializes this
+    against delete_proxy's own transaction (v1.1 FB3, same shape as
+    _rename_chat_sync).
+    """
+    with get_db() as con:
+        con.execute("BEGIN IMMEDIATE")
+        if required and not get_secret(SECRET_PROXY_URL, conn=con):
+            raise HTTPException(400, "proxy_url_required")
+        _set_setting_on(con, "proxy_required", "1" if required else "0")
+
 
 @router.post("/proxy/required")
 async def set_proxy_required(body: ProxyRequiredBody) -> dict:
@@ -322,20 +420,91 @@ async def set_proxy_required(body: ProxyRequiredBody) -> dict:
     Arming with no proxy configured is refused: it would put every completion
     behind "proxy_missing", and the screen that could undo it is this one.
     """
-    if body.proxy_required and not get_secret(SECRET_PROXY_URL):
-        raise HTTPException(400, "proxy_url_required")
-
-    set_setting("proxy_required", "1" if body.proxy_required else "0")
+    await anyio.to_thread.run_sync(_set_proxy_required_sync, body.proxy_required)
     # The gate reads the flag live, but a cached "healthy" verdict from before
-    # the switch was armed would still be served for up to the TTL.
+    # the switch was armed would still be served for up to the TTL. In-memory,
+    # so it stays on the loop; only blocking work is worth a thread hop.
     invalidate_health_cache()
     logger.info("Proxy required set to %s.", body.proxy_required)
     return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
+# POST /settings/auto-lock
+# ---------------------------------------------------------------------------
+
+class AutoLockBody(BaseModel):
+    # 0 is off. The upper bound is a day: past that the setting is a promise
+    # nobody is relying on, and a typo like 100000 should read as a mistake
+    # rather than as "effectively never" wearing the label of a timeout.
+    auto_lock_minutes: int = Field(ge=0, le=1440)
+
+
+@router.post("/auto-lock")
+async def set_auto_lock(body: AutoLockBody) -> dict:
+    """Lock the vault after this many minutes of doing nothing. 0 disables it.
+
+    Stored in the vault rather than in browser storage, like every other
+    setting that is about protection rather than appearance: browser storage
+    is readable without the passphrase, and a security setting somebody else
+    can read and change is not one.
+
+    One minute is a legitimate setting for somebody who wants it, so the only
+    values refused are the ones that are not timeouts at all: negative, and
+    beyond a day. Past a day the number is a promise nobody is relying on, and
+    a typo like 100000 should read as a mistake rather than as "effectively
+    never" wearing the label of a timeout.
+    """
+    minutes = body.auto_lock_minutes
+    await anyio.to_thread.run_sync(set_setting, auto_lock.SETTING, str(minutes))
+    logger.info("Auto-lock set to %d minute(s).", minutes)
+    return {"ok": True, "auto_lock_minutes": minutes}
+
+
+# ---------------------------------------------------------------------------
+# POST /settings/image-output
+# ---------------------------------------------------------------------------
+
+class ImageOutputBody(BaseModel):
+    image_output_enabled: bool
+
+
+@router.post("/image-output")
+async def set_image_output(body: ImageOutputBody) -> dict:
+    """Allow (or stop allowing) a model to answer with a picture.
+
+    Off by default and stored in the vault, not in browser storage: it changes
+    what is sent to the provider, so it belongs with the other request-shaping
+    settings rather than with the appearance preferences.
+
+    There is deliberately no capability check here. Whether a given model can
+    draw is decided per request, from the cached catalogue, in exactly one place
+    (_model_emits_images) - and refusing to store the preference because the
+    model selected RIGHT NOW cannot draw would make the switch mean something
+    different from what it says.
+    """
+    await anyio.to_thread.run_sync(
+        set_image_output_enabled, body.image_output_enabled
+    )
+    logger.info("Image output set to %s.", body.image_output_enabled)
+    return {"ok": True, "image_output_enabled": body.image_output_enabled}
+
+
+# ---------------------------------------------------------------------------
 # POST /settings/proxy/alias
 # ---------------------------------------------------------------------------
+
+def _set_proxy_alias_sync(alias: str) -> None:
+    """Worker-thread body (audit KÖK 8). Guard and write in one transaction,
+    for the same reason as _set_proxy_required_sync: a proxy delete landing
+    between an autocommit guard read and the write would leave a label naming
+    a proxy that no longer exists."""
+    with get_db() as con:
+        con.execute("BEGIN IMMEDIATE")
+        if not get_secret(SECRET_PROXY_URL, conn=con):
+            raise HTTPException(400, "proxy_url_required")
+        _set_setting_on(con, "proxy_alias", alias)
+
 
 @router.post("/proxy/alias")
 async def set_proxy_alias(body: ProxyAliasBody) -> dict:
@@ -344,10 +513,8 @@ async def set_proxy_alias(body: ProxyAliasBody) -> dict:
     Refused when no proxy is configured: a label for a thing that does not
     exist would show up in the panel as a proxy that is not there.
     """
-    if not get_secret(SECRET_PROXY_URL):
-        raise HTTPException(400, "proxy_url_required")
     alias = (body.proxy_alias or "").strip()
-    set_setting("proxy_alias", alias)
+    await anyio.to_thread.run_sync(_set_proxy_alias_sync, alias)
     logger.info("Proxy alias %s.", "set" if alias else "cleared")
     return {"ok": True, "proxy_alias": alias or None}
 
@@ -356,9 +523,9 @@ async def set_proxy_alias(body: ProxyAliasBody) -> dict:
 # DELETE /settings/proxy
 # ---------------------------------------------------------------------------
 
-@router.delete("/proxy")
-async def delete_proxy() -> dict:
-    """Remove proxy config atomically (secret + flags, one transaction)."""
+def _delete_proxy_sync() -> None:
+    """Worker-thread body (audit KÖK 8): the delete transaction and the legacy
+    keyring delete. See _save_proxy_sync."""
     with get_db() as con:
         delete_secret(SECRET_PROXY_URL, conn=con)
         _set_setting_on(con, "proxy_required", "0")
@@ -367,6 +534,12 @@ async def delete_proxy() -> dict:
     # copy left behind here is re-migrated into the vault on the next unlock,
     # so "deleted" would mean "back tomorrow".
     keyring_service.delete_legacy(SECRET_PROXY_URL)
+
+
+@router.delete("/proxy")
+async def delete_proxy() -> dict:
+    """Remove proxy config atomically (secret + flags, one transaction)."""
+    await anyio.to_thread.run_sync(_delete_proxy_sync)
 
     # Side effects only after the commit above.
     await reset_client()

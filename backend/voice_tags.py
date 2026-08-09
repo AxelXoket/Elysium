@@ -60,16 +60,22 @@ logger = logging.getLogger(__name__)
 
 # A real delivery tag is short. Anything past this is prose with a bracket.
 MAX_TAG_CHARS = 40
-# The prompt asks for 1-3; past this hard cap the extras are noise that
-# distorts delivery. Words are always kept - only the excess tags go.
-MAX_TAGS_PER_REPLY = 8
+#: A RUNAWAY GUARD, not a routine limiter - and it used to be the latter by
+#: accident. The prompt now asks for at most one tone tag per SENTENCE (Fish's
+#: own guidance: "sentence-level emotion cues usually work best at the
+#: beginning of sentences", and up to three combined emotions per sentence).
+#: A real reply from this app measured 13 sentences, so the old ceiling of 8
+#: silently stripped every direction from the ninth sentence on - the reply
+#: audibly going plain the further it ran, which is the exact complaint this
+#: was raised to answer. 24 sits far enough above a normal reply that only a
+#: model tagging every clause can reach it.
+MAX_TAGS_PER_REPLY = 24
 
 #: How many delivery tags a single reply may keep, as a user-facing dial.
-#: The prompt asks the model for 1-3; the cap only ever removes EXCESS tags,
-#: never words, so turning it down makes the delivery plainer and can never
-#: make a reply shorter.
+#: The cap only ever removes EXCESS tags, never words, so turning it down
+#: makes the delivery plainer and can never make a reply shorter.
 TAG_DENSITY_MIN = 0
-TAG_DENSITY_MAX = 16
+TAG_DENSITY_MAX = 24
 
 #: A standing delivery direction for the character, prepended to every spoken
 #: reply. This is the lever for "make the voice deeper / slower / closer"
@@ -114,68 +120,66 @@ SETTING_VOICE_EVER = "tts_voice_ever_enabled"
 # move together, and a vocabulary edit that forgets the prompt (or vice versa)
 # should be impossible by construction.
 
+#: Worked lines. Their DENSITY is itself an instruction: a model copies the
+#: shape of examples more readily than it follows a written count, so these
+#: deliberately show a tag on most sentences, a plain sentence among them, and
+#: a sound tag landing after the words it reacts to.
 PROMPT_EXAMPLE_LINES = (
-    "[seductive] I missed you... [low voice] come here and tell me everything.",
-    "[excited] Wait - you actually did that? I can't believe it!",
-    "[sigh] It's been a long day. [soft] I'm glad you're here.",
+    "[seductive] I missed you... [low voice] Come here and tell me everything.",
+    "[excited] Wait - you actually did that?",
+    "It's been a long day. [sigh] [soft] I'm glad you're here.",
+    "She laughed, helpless. [laugh] You are impossible, you know that.",
     "[whisper] Don't say anything. [pause] Just stay.",
-    "You're impossible. [chuckle] And that is exactly the problem.",
+    "I already told you what I wanted.",
     "[cold, clipped tone] I asked you once. [pause] I will not ask again.",
+    "[whisper] Stay close, [in character, natural] she said, [whisper] and don't look back.",
 )
 
 VOICE_PROMPT = """## VOICE DELIVERY
 
-Your reply is spoken aloud by a text-to-speech engine that reads inline delivery
-directions written in square brackets. Use them to control HOW words are
-performed. They are stripped before display - the reader never sees them and
-they are never spoken literally.
+Your reply is spoken aloud by an engine that reads inline delivery directions
+in square brackets. They are stripped before display - the reader never sees
+them and they are never spoken literally.
 
 ### Syntax
-- Place a tag immediately before the words it affects: [whisper] come closer
-- It stays in effect until the next tag or the end of that sentence.
-- Never nest brackets, never place a tag inside a word, never emit an empty [].
+- A tag is strongest on the words right after it; a tag at the start of a
+  sentence colours that whole sentence. Each sentence is performed on its own,
+  so a tag never carries into the next one.
+- Nothing cancels a tag for you. To return to plain delivery inside a
+  sentence, write [in character, natural].
+- Never nest brackets, never place a tag inside a word, never emit empty [].
 - Tags are always English, always lowercase, even when you speak another
-  language.
+  language. A malformed tag is shown to the reader instead of performed.
 
-### Situation -> tag map
-Intimacy: [whisper] [low voice] [soft] [barely audible] [warm, close to the ear] [hushed] [gentle]
-Seduction: [seductive] [sultry breathy whisper] [slow, intimate, seductive tone] [breathless] [husky] [teasing, playful tone]
-Affection: [warm] [fond] [soft, affectionate tone] [smiling while speaking]
-Joy: [laughing] [laughing tone] [chuckle] [giggling] [amused] [delight]
-Excitement: [excited] [volume up] [breathless with excitement] [rushed]
-Surprise: [surprised] [shocked] [gasp] [stunned] [disbelief]
-Sadness: [sad] [sigh] [voice trembling] [on the verge of tears] [quiet, hurt] [resigned]
-Anger: [angry] [shouting] [cold, clipped tone] [through gritted teeth] [icy calm]
-Fear: [nervous] [shaky] [urgent] [panicked] [whisper, frightened]
-Teasing: [teasing] [playful] [mock-serious] [sing-song] [smirking] [tsk]
-Authority: [firm] [commanding] [measured, deliberate] [emphasis]
-Fatigue: [tired] [sleepy] [yawning] [slurred] [hoarse] [weak]
-Breath: [inhale] [exhale] [sigh] [gasp] [panting] [clearing throat] [sniff]
-Dynamics: [volume up] [volume down] [loud] [low volume] [emphasis] [flat]
-Pacing: [pause] [short pause] [slow] [fast] [hesitant] [interrupting]
-Pitch: [pitch up] [pitch down] [deeper voice] [higher voice]
-Special: [singing] [echo] [muffled] [talking to oneself]
+### Two kinds of tag
+TONE - colours a whole spoken sentence. One at most, at the START of it:
+[whisper] [low voice] [soft] [warm] [seductive] [breathless] [husky] [excited]
+[amused] [surprised] [sad] [quiet, hurt] [angry] [cold, clipped tone] [nervous]
+[urgent] [teasing] [playful] [firm] [commanding] [tired] [flat]
+[in character, natural] - returns to plain delivery
 
-The engine also understands descriptions it has never seen. If nothing above
-fits, invent one: [like sharing a secret], [wry, unimpressed]. Keep it under
-six words.
+SOUND - one event, placed exactly where it happens, before or after the words:
+[laugh] [chuckle] [sigh] [gasp] [inhale] [exhale] [sniff] [pause] [emphasis]
+
+[whisper] [laugh] [sigh] [inhale] [exhale] [angry] [emphasis] are the engine's
+own examples and fire most reliably; others it may silently ignore. If nothing
+fits, a short plain-English direction works ([like sharing a secret]) - but a
+common word fires far more often than an invented phrase.
 
 ### How to use them well
-1. 1-3 tags per reply. Tags are seasoning, not punctuation. An untagged
-   sentence is already spoken in your natural voice - that is the desired
-   default, and most replies need no tag at all.
-2. Tag the moment the delivery CHANGES - into intimacy, a laugh, a flare of
-   anger. Never open every message with a tag out of habit.
-3. Only tag what is genuinely happening in the scene. A forced [seductive] on
-   a neutral line sounds fake and cheapens the ones that matter.
-4. Never double up. Either [seductive] or "she said seductively" - the tag
-   replaces the stage direction, never both.
-5. "..." slows delivery on its own; combine with soft tags for intimate
-   beats: [low voice] stay... just a little longer.
-6. Do not tag action or narration spans (*she leans closer*) - those are
-   handled separately.
-7. Escalate with specificity, not repetition: [sultry breathy whisper] beats
-   writing [seductive] three times.
+1. At most one TONE tag per sentence, at its start. Most sentences need none -
+   untagged is your natural voice, and that is the default you want.
+2. Tag a sentence whose delivery is not plain speech: intimacy, a flare of
+   anger, exhaustion. Opening a reply with a tag is fine when the first line
+   carries that weight.
+3. Only tag what is genuinely happening. A forced [seductive] on a neutral
+   line sounds fake and cheapens the ones that matter; escalate with
+   specificity, not repetition.
+4. Keep your stage directions in the prose. A tag is added on top of the
+   writing, never a replacement for it - the prose is all the reader gets.
+5. Do not tag action spans (*she leans closer*) - those are handled for you.
+6. If two sentences in a row need the same tone, tag BOTH; an untagged one
+   falls back to plain voice.
 
 ### Examples
 """ + "\n".join(PROMPT_EXAMPLE_LINES) + "\n"
@@ -388,9 +392,18 @@ class TagBudget:
 
     def __init__(self, cap: int) -> None:
         self.remaining = max(0, int(cap))
-        #: The previous KEPT tag, so a run of identical directions collapses
-        #: across a sentence boundary too - "[warm] ... [warm] ..." reads as
-        #: one continuing instruction, not two.
+        #: The previous KEPT tag WITHIN the current call, so a direction
+        #: repeated inside one sentence collapses to one.
+        #:
+        #: It used to persist across calls, on the reasoning that
+        #: "[warm] ... [warm] ..." reads as one continuing instruction. That
+        #: premise is false in this app. Every sentence is a separate
+        #: host.speak() - see make_stream_synth and _speak_in_sentences - so it
+        #: is a separate autoregressive generation with its own KV cache and no
+        #: acoustic history to inherit a tone from. Dropping the second [warm]
+        #: did not continue the warmth; it deleted the only thing that would
+        #: have produced it, and that sentence came out in the baseline voice.
+        #: Reset per call by sanitize_for_tts.
         self.last_tag: str | None = None
 
 
@@ -439,6 +452,11 @@ def sanitize_for_tts(text: str, *, engine_supports_tags: bool,
         return strip_tags(text)
     cap = MAX_TAGS_PER_REPLY if max_tags is None else max(0, int(max_tags))
     state = budget if budget is not None else TagBudget(cap)
+    # One call is one sentence on both production paths, and one sentence is
+    # one engine generation. The duplicate collapse is only correct inside
+    # that unit - see TagBudget.last_tag. The remaining allowance is what
+    # crosses the boundary; the last tag is not.
+    state.last_tag = None
 
     out: list[str] = []
     buf = text
@@ -536,11 +554,26 @@ def reset_stripping_cache() -> None:
         _EVER_CACHE = None
 
 
-def strip_for_display(content: str, role: str) -> str:
-    """The one rule for what leaves the API: assistant text, and only once
-    voice has ever been on. User text is NEVER stripped - eating a user's own
-    "[sic]" is display corruption, and the edit round-trip would write it back."""
+def strip_for_display(content: str, role: str, *,
+                      card_authored: bool = False) -> str:
+    """The one rule for what leaves the API: MODEL-authored assistant text, and
+    only once voice has ever been on. User text is NEVER stripped - eating a
+    user's own "[sic]" is display corruption, and the edit round-trip would
+    write it back.
+
+    `card_authored` is the third category the role alone cannot express. A
+    character's `first_mes` is human-authored card prose that took the assistant
+    role by an implementation choice (routers/chats.py seeds it as a real
+    message row), so it never passed through VOICE_PROMPT and never agreed to
+    the tag protocol. `_looks_like_tag` accepts any lowercase 3-40 char span of
+    up to six words, which is a fair description of "[she smiles]" - so a very
+    ordinary greeting was losing words that the model, reading the raw row, went
+    on to see. The exemption is the same argument the user-row exemption above
+    rests on, applied to the same kind of text.
+    """
     if role != "assistant" or not content or "[" not in content:
+        return content
+    if card_authored:
         return content
     if not stripping_active():
         return content

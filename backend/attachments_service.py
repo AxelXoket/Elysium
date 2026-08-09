@@ -30,6 +30,8 @@ from config import (
     ALLOWED_IMAGE_MIMES,
     IMAGE_MAX_DIMENSION,
     IMAGE_PAYLOAD_MAX_TOTAL_BYTES,
+    MAX_ATTACHMENTS_PER_MESSAGE,
+    MAX_UPLOAD_BYTES,
 )
 from database import get_db, iter_chunks
 
@@ -62,21 +64,37 @@ class AttachmentError(Exception):
 # Upload
 # ---------------------------------------------------------------------------
 
-def save_upload(data: bytes, declared_mime: str) -> dict:
-    """Validate, normalise, store an uploaded image; return the API row.
+def normalise_image(data: bytes) -> tuple[bytes, str, int, int]:
+    """Validate and strip an image; return (final_bytes, mime, width, height).
+
+    Every image guard in the app lives in here, and it lives in ONE place
+    on purpose. All of it used to sit inside save_upload, which only the
+    multipart upload route can call - so a second writer (a picture the MODEL
+    produced) would have inherited none of it: not the pixel ceiling, not the
+    byte ceiling, not the format allowlist, not the downscale, not the
+    metadata strip. A 20000x20000 solid PNG is a few KB on the wire and
+    gigabytes once decoded, and provider bytes are no more trustworthy than
+    browser bytes.
 
     - Decode-verifies via Pillow (rejects non-images regardless of mime).
-    - The DECODED format wins over the declared mime (a PNG uploaded as
-      image/jpeg is stored as PNG).
+    - The DECODED format wins over any declared mime (a PNG announced as
+      image/jpeg is stored as PNG). Nothing the caller was TOLD is trusted.
     - Longest side above IMAGE_MAX_DIMENSION is downscaled (cost + provider
       limits); EXIF orientation is applied before measuring.
     - ALWAYS re-encoded through a metadata-free image: EXIF/GPS/ICC/XMP and
       text chunks are stripped so nothing about the uploader leaves with the
       image (L3). The decoded pixels are preserved; only metadata is dropped.
-    - Blob + metadata land in ONE transaction: a failure anywhere rolls both
-      back - no half-persisted state exists.
-    Raises AttachmentError("attachment_invalid") on undecodable input.
+
+    Raises AttachmentError("attachment_invalid") on undecodable input and
+    AttachmentError("attachment_too_large") past MAX_UPLOAD_BYTES. The byte
+    ceiling is checked HERE rather than only in the HTTP handler, because the
+    handler is one of two callers now and the other one is fed by a remote
+    party that chooses its own response size.
     """
+    if len(data) > MAX_UPLOAD_BYTES:
+        logger.warning("Rejected oversized image payload (%d bytes).", len(data))
+        raise AttachmentError("attachment_too_large")
+
     # Deliberately NOT warnings.catch_warnings(). That context manager swaps a
     # PROCESS-GLOBAL filter list and is documented as not thread-safe, while
     # save_upload runs in the anyio worker threadpool - so with two uploads in
@@ -158,8 +176,18 @@ def save_upload(data: bytes, declared_mime: str) -> dict:
         # back to storing the metadata-bearing original (privacy over fidelity).
         raise AttachmentError("attachment_invalid")
     final_bytes = out.getvalue()
-
     width, height = img.size
+    return final_bytes, mime, width, height
+
+
+def save_upload(data: bytes, declared_mime: str) -> dict:
+    """Validate, normalise and STAGE an uploaded image; return the API row.
+
+    Staged means message_id IS NULL: the client holds the id until it sends the
+    message the image belongs to. Blob + metadata land in ONE transaction, so a
+    failure anywhere rolls both back and no half-persisted state exists.
+    """
+    final_bytes, mime, width, height = normalise_image(data)
     sha = hashlib.sha256(final_bytes).hexdigest()
 
     with get_db() as con:
@@ -182,6 +210,63 @@ def save_upload(data: bytes, declared_mime: str) -> dict:
     logger.info(
         "Attachment staged: id=%d %dx%d %d bytes", row_id, width, height, len(final_bytes),
     )
+    return {"id": row_id, "mime": mime, "width": width, "height": height,
+            "byte_size": len(final_bytes)}
+
+
+def store_generated_image(con, prepared: tuple[bytes, str, int, int],
+                          message_id: int) -> dict:
+    """Store an ALREADY-NORMALISED image a model produced, owned by `message_id`.
+
+    Takes the CALLER'S connection, and deliberately opens no transaction of its
+    own: the caller is already inside the BEGIN IMMEDIATE that writes the
+    assistant row, and the bytes must commit with that row or not at all. A
+    generated image is worthless without the reply it belongs to, and a reply
+    that claims an image it does not have renders as a broken thumbnail forever.
+
+    `prepared` comes from normalise_image, and it is a parameter rather than
+    something this function does, because this function runs UNDER THE WRITER
+    LOCK. Decoding here made it the only writer in the backend that does Pillow
+    work inside BEGIN IMMEDIATE - save_upload normalises before it opens its
+    transaction, and that is the shape to match. Measured: twenty 5000x5000
+    solid PNGs, 84 KB each on the wire, held the writer for 4.5 seconds and made
+    a concurrent write fail at its 800ms budget.
+
+    Never staged. save_upload's NULL message_id is right for an upload - the
+    client keeps the id and can retry - but a staged GENERATED row would sit in
+    the pool that validate_staged hands to any subsequent user send, until the
+    24h purge swept it.
+
+    The per-message count cap is checked here as the LAST line of defence (it
+    is one cheap COUNT, no decode). Callers are expected to stop earlier so the
+    surplus is never decoded at all.
+    """
+    final_bytes, mime, width, height = prepared
+
+    already = con.execute(
+        "SELECT COUNT(*) AS c FROM attachments WHERE message_id = ?",
+        (message_id,),
+    ).fetchone()["c"]
+    if already >= MAX_ATTACHMENTS_PER_MESSAGE:
+        logger.warning("Refusing image %d for message %d: cap reached.",
+                       already + 1, message_id)
+        raise AttachmentError("too_many_attachments")
+
+    sha = hashlib.sha256(final_bytes).hexdigest()
+    # Content-addressed on the FINAL bytes, exactly as uploads are, so a model
+    # that returns the same picture twice costs one blob.
+    con.execute(
+        "INSERT OR IGNORE INTO attachment_blobs (sha256, data) VALUES (?, ?)",
+        (sha, final_bytes),
+    )
+    cur = con.execute(
+        "INSERT INTO attachments (message_id, sha256, mime, width, height, byte_size) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (message_id, sha, mime, width, height, len(final_bytes)),
+    )
+    row_id = cur.lastrowid
+    logger.info("Generated image stored: id=%d msg=%d %dx%d %d bytes",
+                row_id, message_id, width, height, len(final_bytes))
     return {"id": row_id, "mime": mime, "width": width, "height": height,
             "byte_size": len(final_bytes)}
 

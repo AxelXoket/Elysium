@@ -5,6 +5,8 @@ import {
   OkResponseSchema,
   ApiKeySaveResponseSchema,
   StopSequencesResponseSchema,
+  AutoLockResponseSchema,
+  ImageOutputResponseSchema,
 } from "../schemas/settings";
 import type {
   Settings,
@@ -12,6 +14,8 @@ import type {
   OkResponse,
   ApiKeySaveResponse,
   StopSequencesResponse,
+  AutoLockResponse,
+  ImageOutputResponse,
 } from "../schemas/settings";
 
 export function getSettings(): Promise<Settings> {
@@ -60,6 +64,36 @@ export function setStopSequences(
   return request("/settings/stop-sequences", StopSequencesResponseSchema, {
     method: "POST",
     body: JSON.stringify({ stop_sequences: stopSequences }),
+  });
+}
+
+/**
+ * Allow (or stop allowing) a model to answer with a generated picture.
+ *
+ * Vault-stored, not a browser preference: it changes the outgoing request. The
+ * server does no capability check on write - whether the model selected right
+ * now can draw is decided per request from the cached catalogue.
+ */
+export function setImageOutput(
+  enabled: boolean,
+): Promise<ImageOutputResponse> {
+  return request("/settings/image-output", ImageOutputResponseSchema, {
+    method: "POST",
+    body: JSON.stringify({ image_output_enabled: enabled }),
+  });
+}
+
+/**
+ * Lock the vault after this many minutes of doing nothing. 0 disables it.
+ *
+ * Vault-stored, not a browser preference, for the same reason the passphrase
+ * is: browser storage is readable without it, and a protection setting
+ * somebody else can read and change is not a protection setting.
+ */
+export function setAutoLock(minutes: number): Promise<AutoLockResponse> {
+  return request("/settings/auto-lock", AutoLockResponseSchema, {
+    method: "POST",
+    body: JSON.stringify({ auto_lock_minutes: minutes }),
   });
 }
 

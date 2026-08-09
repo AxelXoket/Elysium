@@ -33,6 +33,7 @@ describe("errorMessages", () => {
     "openrouter_insufficient_credits",
     "openrouter_no_provider_meets_privacy",
     "openrouter_completion_error",
+    "openrouter_moderation_blocked",
     "api_key_required_by_openrouter",
     "invalid_openrouter_models_response",
     "openrouter_models_error",

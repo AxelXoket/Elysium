@@ -53,7 +53,15 @@ export const ModelCard = memo(function ModelCard({ model }: ModelCardProps) {
       </div>
 
       {/* Details */}
-      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+      {/* min-h reserves the line whether or not this row has anything in it.
+          Every card used to carry at least a "Text" badge, so the row always
+          took its height - and .model-row-lazy's contain-intrinsic-size (78px)
+          was calibrated against that. Dropping the text badge let the row
+          collapse on plain models, which made rows SHORTER than the estimate:
+          scrolling then re-measured the list shorter than the scrollbar
+          promised, scrollTop was clamped back, and the list could not be
+          scrolled down. Reserving the line keeps estimate and reality equal. */}
+      <div className="mt-1.5 flex min-h-[1.125rem] flex-wrap items-center gap-1.5">
         {model.context_length && (
           <span
             className="text-[10px]"
@@ -76,13 +84,19 @@ export const ModelCard = memo(function ModelCard({ model }: ModelCardProps) {
               : model.max_completion_tokens}
           </span>
         )}
-        {model.input_modalities.map((m) => (
-          <ModalityBadge key={`in-${m}`} modality={m} />
-        ))}
+        {/* "Text" is dropped from BOTH sides. Every model reads and writes
+            text, so the badge carried no information while taking the space and
+            the attention of the ones that do: a card now shows a badge only for
+            something worth knowing, and a plain text model shows none at all. */}
+        {model.input_modalities
+          .filter((m) => m !== "text")
+          .map((m) => (
+            <ModalityBadge key={`in-${m}`} modality={m} direction="in" />
+          ))}
         {model.output_modalities
           .filter((m) => m !== "text")
           .map((m) => (
-            <ModalityBadge key={`out-${m}`} modality={m} />
+            <ModalityBadge key={`out-${m}`} modality={m} direction="out" />
           ))}
       </div>
     </button>

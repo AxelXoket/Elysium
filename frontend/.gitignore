@@ -13,6 +13,10 @@ dist-ssr
 *.local
 .env
 .env.*
+# ...except the template. `.env.*` was swallowing .env.example, so the one file
+# whose job is to show a fresh clone what to create could never reach the
+# clone. It holds a commented-out default URL and nothing else.
+!.env.example
 
 # Editor directories and files
 .vscode/*

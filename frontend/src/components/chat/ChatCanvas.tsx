@@ -654,6 +654,41 @@ export function ChatCanvas() {
     el.scrollTo({ top: el.scrollHeight, behavior: "instant" });
   }, [streamingTextLength, bumpUnseen]);
 
+  // An image finishing its decode grows the page without changing any of the
+  // lengths the two effects above watch, so neither of them fires - the reader
+  // silently loses the bottom, and `nearBottom` is only recomputed by the scroll
+  // listener, so JumpToLatest does not appear either. Nothing observes the
+  // scroller's CONTENT size (the app's one ResizeObserver reads a border box,
+  // which content growth does not change).
+  //
+  // `load` does not bubble but it does propagate in the CAPTURE phase, so one
+  // listener on the scroller catches every image inside it without threading a
+  // callback down through the message list. Cheap: it fires once per image, not
+  // per frame, and it does nothing at all unless the reader was at the bottom.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onContentLoad = (event: Event) => {
+      // Checked HERE rather than at attach time: this effect has stable
+      // dependencies, so it runs once at mount and never gets a second chance
+      // the way the message-driven effects above do.
+      if (typeof el.scrollTo !== "function") return;
+      if (!(event.target instanceof HTMLImageElement)) return;
+      const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+      // The image's own height is already in scrollHeight by now, so the
+      // pre-growth distance is what decides - which is why the threshold is
+      // generous rather than exact.
+      if (dist - event.target.clientHeight > BOTTOM_LOCK_PX
+          && !pendingJumpRef.current) {
+        bumpUnseen();
+        return;
+      }
+      el.scrollTo({ top: el.scrollHeight, behavior: "instant" });
+    };
+    el.addEventListener("load", onContentLoad, true);
+    return () => el.removeEventListener("load", onContentLoad, true);
+  }, [bumpUnseen]);
+
   const handleJumpToLatest = useCallback(() => {
     const el = scrollRef.current;
     if (!el || typeof el.scrollTo !== "function") return;

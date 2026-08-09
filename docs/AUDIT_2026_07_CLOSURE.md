@@ -7,8 +7,11 @@ Every fix landed with its own regression test.
 (from 1110 / 1095 at the start of the pass). The real vault (`backend/app.db`)
 was checksummed before and after every suite run and never changed.
 
-**Open: 1.** The published tree is not the working tree - see the last section.
-It is the only finding that cannot be closed by a code change.
+**Open: 0**, as of 2026-08-09. This record closed with one finding open (the
+published tree was not the working tree); `backend/keyring_service.py` and the
+`backend/tts/` package are tracked now, so that finding is closed too. The
+counts above are this pass's measurements and are deliberately left alone: they
+are what was true in July, not what is true today.
 
 ---
 
@@ -84,6 +87,9 @@ behaviour.
 
 - **`MIN_PASSPHRASE_LEN` stays 8.** Raising it would lock out existing users and
   8 is the ordinary floor.
+  *Superseded after this pass: the floor is 12 today (`passphrase_strength.py`,
+  and SECURITY.md says so). The lock-out worry did not survive contact with the
+  fact that there were no existing users to lock out.*
 - **The standing tone stays global.** A per-character column was on the table
   and was not built: the tone is a delivery tag, not the reference clip's
   timbre, and one default is what the user actually wants to set.

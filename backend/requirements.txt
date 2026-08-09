@@ -3,6 +3,12 @@ uvicorn[standard]>=0.29.0
 httpx[socks]>=0.27.0
 keyring>=25.2.0  # legacy-migration reader ONLY (E5 moved secrets into the vault DB)
 pydantic>=2.7.0
+# Pulled in by fastapi, pinned here anyway. Starlette 0.8.3 to 1.0.0 rebuild
+# request.url from the Host header without validating it (CVE-2026-48710),
+# which is the exact value vault_gate and the CSRF shield make decisions on.
+# The installed version is well past it; without a floor, an offline install
+# from an old wheel cache could silently land inside that range.
+starlette>=1.0.1
 pillow>=10.0
 python-multipart>=0.0.9
 # Capped below 0.6: this wheel bundles the SQLCipher native lib, and a major

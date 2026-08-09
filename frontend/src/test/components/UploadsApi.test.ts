@@ -56,8 +56,11 @@ describe("uploads API", () => {
     const [url, init] = mock.mock.calls[0];
     expect(String(url)).toBe("http://127.0.0.1:8787/api/v1/uploads/images");
     expect(init?.method).toBe("POST");
-    // fetch must derive the multipart boundary itself
-    expect(init?.headers).toBeUndefined();
+    // fetch must derive the multipart boundary itself, so Content-Type is
+    // still absent - but the launch token rides here like everywhere else,
+    // and an upload route left ungated would be the one that accepts bytes.
+    expect(init?.headers).not.toHaveProperty("Content-Type");
+    expect(init?.headers).not.toHaveProperty("content-type");
     expect(init?.body).toBeInstanceOf(FormData);
     const sent = (init?.body as FormData).get("file");
     expect(sent).toBeInstanceOf(File);

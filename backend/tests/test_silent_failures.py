@@ -11,6 +11,7 @@ with no error, no event and no log line. Measured at 37.1 s of audio against a
 37.2 s budget.
 """
 
+import os
 import pathlib
 import re
 import time
@@ -272,15 +273,35 @@ class TestUndeletableAudioIsReported:
     Skipping it silently left the user's spoken conversation in the clear while
     the vault showed locked - the opposite of what on_vault_locked promises."""
 
-    def test_the_failure_is_logged_with_the_file_names(self):
-        source = (BACKEND / "tts" / "host.py").read_text(encoding="utf-8")
-        body = source[source.index("def wipe_cache"):]
-        body = body[: body.index("def on_vault_locked")]
-        assert "except OSError:\n                    pass" not in body, (
-            "undeletable audio is still skipped in silence"
-        )
-        assert "left.append(wav.name)" in body
-        assert "still" in body and "readable on disk" in body
+    @pytest.mark.skipif(os.name != "nt", reason="Windows file locking")
+    def test_the_failure_is_logged_with_the_file_names(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Was a source slice, which stopped meaning anything the moment the
+        body moved. This holds a wav open - which on Windows is exactly what
+        the browser does while streaming it - and asks whether the app SAYS
+        so. The promise is that the one file still readable gets named."""
+        import logging as _logging
+
+        import config
+        from tts.host import VoiceHost
+
+        monkeypatch.setattr(config, "TTS_CACHE_DIR", str(tmp_path / "cache"))
+        cache = pathlib.Path(config.TTS_CACHE_DIR)
+        cache.mkdir(parents=True)
+        (cache / "speak-1-1.wav").write_bytes(b"RIFF")
+        stuck = cache / "speak-held-open.wav"
+        stuck.write_bytes(b"RIFF")
+
+        host = VoiceHost()
+        with open(stuck, "rb"), caplog.at_level(_logging.WARNING):
+            removed = host.wipe_cache()
+
+        assert removed == 1, "the deletable file should still have gone"
+        assert stuck.exists(), "fixture failed: the file was not actually held"
+        assert stuck.name in caplog.text, "the surviving file was not named"
+        assert "readable on disk" in caplog.text
+        assert host._last_wipe_left == [stuck.name]
 
     def test_it_still_returns_the_count(self, tmp_path, monkeypatch):
         """Was `assert callable(VoiceHost.wipe_cache)` - which stays true of a

@@ -17,11 +17,32 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from tests import egress_guard
+
 
 # Fixed test key: tests bypass the passphrase→scrypt path entirely (that
 # path has its own unit tests in test_vault.py) and pre-unlock the vault so
 # the existing API tests run unchanged against an encrypted temp DB.
 TEST_VAULT_KEY = bytes(range(32))
+
+
+@pytest.fixture(autouse=True)
+def _no_egress(monkeypatch):
+    """ALWAYS on: nothing in this suite may leave the machine.
+
+    The app promises a single egress host, and until this existed the promise
+    was enforced by nobody. Two tests built their own socket traps around one
+    request each; the other ~1500 could have dialled anywhere in silence.
+
+    Trapped at the socket layer rather than at httpx, because the things most
+    likely to grow a new outbound call - a provisioning download, a subprocess
+    helper, a new dependency - do not go through httpx. They all go through
+    getaddrinfo and connect.
+
+    Safe for the suite as it stands: TestClient runs ASGI in-process and opens
+    no socket at all, and the voice worker talks over stdio pipes.
+    """
+    egress_guard.install(monkeypatch)
 
 
 @pytest.fixture(autouse=True)
@@ -87,7 +108,8 @@ def provider(monkeypatch):
             self.response_text = "fake assistant reply"
             self.error = None  # set to an OpenRouterError to fail the call
 
-        async def _complete(self, messages, model_id, gen_params, provider):
+        async def _complete(self, messages, model_id, gen_params, provider,
+                            **kwargs):
             self.calls.append({
                 "messages": messages,
                 "model_id": model_id,

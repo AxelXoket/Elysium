@@ -164,17 +164,50 @@ def _spec_payload(body: str) -> dict[str, set[str]]:
     body would make every layout change a test failure. What they may never
     differ in is what goes IN.
     """
+    # Both quote styles, and this is not a nicety. These two patterns matched
+    # ONLY single quotes while both spec files are written with double ones,
+    # so every comparison below was set() == set() - a drift guard that could
+    # not fail, sitting under a docstring about catching drift. It stayed
+    # green through a real divergence. `collect_all` had it right all along,
+    # which is what makes the omission visible.
+    quoted = r"['\"]([\w\.]+)['\"]"
+    quoted_dashed = r"['\"]([\w\.\-]+)['\"]"
+
+    def _names(key: str, pattern: str) -> set[str]:
+        blocks = re.findall(rf"{key}\s*=\s*\[(.*?)\]", body, re.S)
+        if not blocks:
+            return set()
+        return set(re.findall(pattern, blocks[0]))
+
+    # Neither spec calls collect_all on a literal - both loop a tuple of
+    # package names and call collect_all(pkg). Matching a literal argument
+    # therefore found nothing, in both files, permanently. These packages
+    # carry the native SQLCipher library and pywebview; adding one to a single
+    # spec ships an exe that cannot open the vault, which is precisely what
+    # this comparison exists to prevent.
+    bundled = re.findall(r"for\s+pkg\s+in\s*\((.*?)\)\s*:", body, re.S)
+
     return {
-        "hiddenimports": set(re.findall(r"hiddenimports\s*=\s*\[(.*?)\]", body, re.S)[0:1]
-                             and re.findall(r"'([\w\.]+)'",
-                                            re.findall(r"hiddenimports\s*=\s*\[(.*?)\]",
-                                                       body, re.S)[0])),
-        "collect_all": set(re.findall(r"collect_all\(\s*['\"]([\w\.]+)['\"]", body)),
-        "excludes": set(re.findall(r"excludes\s*=\s*\[(.*?)\]", body, re.S)[0:1]
-                        and re.findall(r"'([\w\.\-]+)'",
-                                       re.findall(r"excludes\s*=\s*\[(.*?)\]",
-                                                  body, re.S)[0])),
+        "hiddenimports": _names("hiddenimports", quoted),
+        "collect_all": set(re.findall(quoted, bundled[0])) if bundled else set(),
+        "excludes": _names("excludes", quoted_dashed),
     }
+
+
+def test_the_spec_comparison_can_actually_fail():
+    """Guard the guard.
+
+    The comparison below is only worth having if it SEES anything. All three
+    of its keys parsed to nothing and it passed on empty sets - so it stayed
+    green through a real divergence. This asserts the parser finds real names
+    in each key, so the same silence cannot come back unnoticed.
+    """
+    payload = _spec_payload(_read(_SPEC_B))
+    assert "attachments_service" in payload["hiddenimports"]
+    assert "sqlcipher3" in payload["collect_all"], (
+        "the bundled-package list parsed as empty - the exe could ship without "
+        "the native SQLCipher library and nothing here would notice")
+    assert payload["excludes"], "excludes parsed as empty - the regex is blind again"
 
 
 def test_the_two_specs_bundle_the_same_things():

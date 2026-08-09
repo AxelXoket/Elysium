@@ -11,6 +11,27 @@ export const VaultStatusSchema = z.object({
    *  read as "my data is gone" (audit KÖK 18). Optional so an older backend
    *  does not fail the parse. */
   orphaned_copy: z.boolean().optional(),
+  /** Pre-vault copies of the database that migration kept, UNENCRYPTED. Each
+   *  is a complete SQLite file with every message, character card and system
+   *  prompt, readable without the passphrase. Migration keeps one on purpose
+   *  - a verification that went wrong would otherwise have destroyed the only
+   *  copy - but nothing removed it and nothing reported it: one banner on one
+   *  launch was the entire trace. Optional so an older backend still parses. */
+  plaintext_backups: z.array(z.string()).optional(),
+  /** Whether that stranded copy opens under the key we hold. It decides what
+   *  the user may safely do with it: a copy this vault can read is a
+   *  redundant duplicate, one it cannot may be a vault under a DIFFERENT
+   *  passphrase - the only copy of something, not clutter. null while locked,
+   *  because answering needs the key. */
+  orphaned_copy_readable: z.boolean().nullish(),
+  /** A 0-byte app.db that crash recovery moved aside to .empty-stub-bak rather
+   *  than unlinking, so that nobody diagnosing a recovery ever reads "the
+   *  recovery path deleted a file". Nothing then reported the result: the name
+   *  appeared in no route, no field and no screen, and could not be removed
+   *  from inside the app. Not a privacy question - it is provably empty - but
+   *  an unexplained file beside the vault of an app whose pitch is that you
+   *  can see what it keeps. Optional so an older backend still parses. */
+  empty_stub: z.boolean().optional(),
 });
 export type VaultStatus = z.infer<typeof VaultStatusSchema>;
 

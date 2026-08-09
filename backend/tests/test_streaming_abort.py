@@ -24,7 +24,7 @@ def _run(coro):
 def _install_stream(monkeypatch, deltas):
     import routers.completions as cr
 
-    def fake_stream(messages, model_id, gen_params, provider):
+    def fake_stream(messages, model_id, gen_params, provider, **kwargs):
         async def gen():
             try:
                 for d in deltas:
@@ -119,7 +119,7 @@ def test_clear_mid_stream_makes_done_finalize_stale(client, monkeypatch):
     char_id = make_character(client)
     chat_id = make_chat(client, char_id)
 
-    def fake_stream(messages, model_id, gen_params, provider):
+    def fake_stream(messages, model_id, gen_params, provider, **kwargs):
         async def gen():
             yield "Hello "
             # The user clears the chat while text is still streaming.

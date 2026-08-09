@@ -14,12 +14,20 @@ def msg_to_dict(
     attachments: list[dict] | None = None,
     variant_index: int | None = None,
     variant_count: int | None = None,
+    *,
+    card_authored: bool = False,
 ) -> dict:
     """Convert a message DB row to the API response shape.
 
     variant_group/active are read defensively (older SELECTs may not include
     them); variant_index/variant_count are attached only when the caller
     computed them - the frontend schema defaults the rest.
+
+    `card_authored` marks a row whose text a person wrote on the character card
+    rather than a model producing it, and only the caller can know that. It
+    defaults to False so a caller that never heard of it keeps today's
+    behaviour: forgetting it cannot invent a NEW way to leak raw tags, it can
+    only fail to grant an exemption.
     """
     keys = row.keys() if hasattr(row, "keys") else []
     # V4 (audit-2 corrected): delivery tags are stored RAW so re-speak and
@@ -34,7 +42,8 @@ def msg_to_dict(
         "id":         row["id"],
         "chat_id":    row["chat_id"],
         "role":       row["role"],
-        "content":    strip_for_display(row["content"], row["role"]),
+        "content":    strip_for_display(row["content"], row["role"],
+                                        card_authored=card_authored),
         "created_at": row["created_at"],
         "attachments": [attachment_to_api(a) for a in (attachments or [])],
         "variant_group": row["variant_group"] if "variant_group" in keys else None,

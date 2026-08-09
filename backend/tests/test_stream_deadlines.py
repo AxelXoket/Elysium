@@ -25,9 +25,17 @@ class _FakeResponse:
         self.status_code = 200
         self._lines = lines
 
-    async def aiter_lines(self):
+    async def aiter_bytes(self):
+        """Bytes, not lines: complete_stream splits the stream itself now.
+
+        httpx's aiter_lines() breaks on U+2028/U+2029/U+0085, which the SSE
+        spec says are ordinary content, so openrouter._aiter_sse_lines does the
+        splitting on raw bytes instead. The fixtures below stay as str - one
+        logical line each - and the terminator is added here, which is also what
+        the wire looks like.
+        """
         for line in self._lines:
-            yield line
+            yield line.encode("utf-8") + b"\n"
 
 
 class _FakeStreamCtx:

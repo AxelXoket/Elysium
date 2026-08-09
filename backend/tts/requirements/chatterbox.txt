@@ -1,3 +1,26 @@
+# HASH PINNING: measured 2026-08-09, NOT applied here. See the note below
+# before trying again - the obvious command does not work, and the reason is
+# worth knowing.
+#
+# `uv pip compile --generate-hashes --torch-backend=cu128` succeeds on
+# xtts_v2.txt (2161 hashes) and FAILS on this file and fish_s2.txt, because a
+# strict resolver rejects the combination pinned here. These files are a freeze
+# of an install that actually works: pip reached that state through the order it
+# installed things in, and no resolver will reproduce it from scratch.
+#
+# Forcing a resolve would change versions away from the ones the engine was
+# tested with, which trades a supply-chain risk for a "voice no longer starts"
+# risk on a user's machine. Not a good trade to make blind.
+#
+# The path that would work: leave every `==` exactly as it is and ATTACH the
+# hash for that exact version, fetched per package (PyPI JSON API for most,
+# download.pytorch.org for the +cu128 wheels), rather than re-resolving. That is
+# a real piece of work and it needs an end-to-end install test on a GPU machine
+# before it can be trusted.
+#
+# backend/requirements.txt IS hash-pinned (see requirements.lock.txt) - that is
+# the list compiled into the shipped exe, so it was the half that mattered most.
+#
 # Resemble Chatterbox - captured with `uv pip freeze` from the bake-off env.
 # Self-contained: chatterbox-tts is a real package.
 # transformers 5.2.0 here vs 4.56.1 for Fish - another reason for one

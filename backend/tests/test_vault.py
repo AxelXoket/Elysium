@@ -145,6 +145,17 @@ def test_full_passphrase_lifecycle_on_fresh_vault(client, tmp_path, monkeypatch)
         # the vault that is never removed automatically, so status reports it
         # rather than leaving a log line as the only trace (audit KÖK 18).
         "initialized": False, "unlocked": False, "orphaned_copy": False,
+        # A pre-vault plaintext copy is a full unencrypted database. It has
+        # to be a reported STATE, not a one-off banner, or it stays
+        # invisible forever - which is what happened.
+        "plaintext_backups": [],
+        # null, not False: while locked we cannot open the copy to
+        # find out, and "unknown" must not look like "unreadable".
+        "orphaned_copy_readable": None,
+        # The 0-byte file crash recovery moves aside. It appeared in no route,
+        # no field and no screen, and nothing in the app could remove it -
+        # reported here for the same reason as the two above, one size smaller.
+        "empty_stub": False,
     }
     r = client.post("/api/v1/vault/init", json={"passphrase": "seaside-orchid-9"})
     assert r.status_code == 200 and r.json()["migrated"] is False
@@ -535,7 +546,7 @@ def test_lock_mid_stream_yields_423_event_and_ends_cleanly(client, tmp_path, mon
     char_id = make_character(client)
     chat_id = make_chat(client, char_id)
 
-    def _locking_stream(messages, model_id, gen_params, provider):
+    def _locking_stream(messages, model_id, gen_params, provider, **kwargs):
         async def gen():
             yield "Half a "
             yield "reply"

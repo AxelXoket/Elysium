@@ -48,12 +48,12 @@ def _capture_payload(monkeypatch, reply_chunks):
     """Fake the provider at the network seam and keep what it was sent."""
     captured = {}
 
-    async def fake_stream(messages, model_id, gen_params, provider):
+    async def fake_stream(messages, model_id, gen_params, provider, **kwargs):
         captured["messages"] = messages
         for chunk in reply_chunks:
             yield chunk
 
-    async def fake_complete(messages, model_id, gen_params, provider):
+    async def fake_complete(messages, model_id, gen_params, provider, **kwargs):
         captured["messages"] = messages
         return "".join(reply_chunks)
 

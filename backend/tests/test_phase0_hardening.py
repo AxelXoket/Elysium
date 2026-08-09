@@ -76,6 +76,17 @@ def test_get_settings_shape_unchanged(client):
         # and drops the retyping. The frontend schema defaults the field, so an
         # older client reading a newer server still parses.
         "stop_sequences",
+        # Added deliberately: whether a model may answer with a PICTURE changes
+        # what is sent to the provider, so it belongs in the vault with the other
+        # request-shaping settings rather than in browser storage. Off unless the
+        # row says otherwise, so every existing vault reads exactly as before.
+        "image_output_enabled",
+        # Added deliberately: how long the vault stays unlocked with nothing
+        # happening. In the vault rather than in browser storage because it is
+        # a protection setting, and browser storage is readable without the
+        # passphrase - a lock timeout somebody else can read and change is not
+        # a lock timeout. 0 (never) unless the row says otherwise.
+        "auto_lock_minutes",
     }
     # conftest seeds an api key in the vault.
     assert body["api_key_set"] is True

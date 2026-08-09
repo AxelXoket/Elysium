@@ -30,7 +30,7 @@ def stream_provider(monkeypatch):
             self.error_after: int | None = None  # index to fail at
             self.error = OpenRouterError("openrouter_rate_limited")
 
-        def _stream(self, messages, model_id, gen_params, provider):
+        def _stream(self, messages, model_id, gen_params, provider, **kwargs):
             self.calls.append({
                 "messages": messages,
                 "model_id": model_id,

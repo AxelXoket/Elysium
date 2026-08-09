@@ -357,7 +357,7 @@ def test_regenerate_stream_resends_user_images(
 
     captured: list[list[dict]] = []
 
-    def fake_stream(messages, model_id, gen_params, provider_dict):
+    def fake_stream(messages, model_id, gen_params, provider_dict, **kwargs):
         captured.append(messages)
         async def gen():
             yield "regenerated "
@@ -396,7 +396,7 @@ def test_stream_failure_unlinks_attachment_for_retry(client, vision_model, monke
     import routers.completions as completions_router
     from openrouter import OpenRouterError
 
-    def failing_stream(messages, model_id, gen_params, provider):
+    def failing_stream(messages, model_id, gen_params, provider, **kwargs):
         async def gen():
             raise OpenRouterError("openrouter_rate_limited")
             yield  # pragma: no cover

@@ -10,7 +10,7 @@
     <img src="https://img.shields.io/badge/privacy-ZDR_enforced-brightgreen?style=flat-square" alt="Privacy">
     <img src="https://img.shields.io/badge/at--rest-SQLCipher_vault-brightgreen?style=flat-square" alt="Encryption">
     <img src="https://img.shields.io/badge/streaming-SSE-brightgreen?style=flat-square" alt="Streaming">
-    <img src="https://img.shields.io/badge/frontend_tests-1163_passed-success?style=flat-square" alt="Frontend Tests">
+    <img src="https://img.shields.io/badge/frontend_tests-1308_passed-success?style=flat-square" alt="Frontend Tests">
     <img src="https://img.shields.io/badge/frontend-React_19-61DAFB?style=flat-square&logo=react&logoColor=white" alt="React">
   </p>
   <p align="center">
@@ -43,20 +43,12 @@ Elysium is a privacy-first AI character chat client that routes **all model traf
 - **Image metadata stripped** - Every attached image is re-encoded on upload so EXIF/GPS and other embedded metadata are dropped before it is stored or sent - your camera and location never ride along with the picture
 - **Hardened by a full-system audit** - An 8-dimension adversarial code audit swept the whole codebase before release (no critical/high/medium issues); the low-severity findings it surfaced are all fixed and regression-tested
 
-## Added since v1.1.0
+## Since v1.1.0
 
-- **Frame the wallpaper yourself** - the picture used to be centred and cropped for you, with no say in which part survived. Settings › Chat background now has a preview drawn in the shape of your chat area right now: drag the picture to choose what shows, or zoom in to crop closer. The framing is stored as a position on the picture rather than as a fixed rectangle, so it holds when you resize the window instead of needing to be set again
-- **See through the message bubbles** - a solidity dial in Settings › Text & readability lets the wallpaper come through behind what is being said. Only the bubble thins; the words stay fully solid at every setting
-
-## Fixed since v1.1.0
-
-- **Spoken replies no longer stop short** - a reply could go quiet a few words before the end, with no error and nothing to explain it. The last sentence was being dropped while it was still being made
-- **Narration no longer flattens the speech next to it** - with narration voice set to *Narrator*, dialogue that shared a sentence with a `*narrated action*` was performed in the narrator's flat tone too. Narration is told; the speech after it now returns to the character's voice, including your standing tone if you have set one
-- **Delivery holds up over a long reply** - the tag density dial is a budget for the model's own cues, and narration was quietly spending it. On a long roleplay reply the delivery used to go plainer the further it ran
-- **Faster first word** - the voice engine was shuffling its model in and out of the graphics card before nearly every sentence, to make room it already had, and then parking the audio decoder before every one as well. Both were reserving space for the longest reply the settings allow rather than for the sentence actually being spoken. Measured end to end, the fixed cost per sentence went from 2.3 seconds to under 0.6, and speech now starts inside three seconds on the very first reply of a session instead of the third
-- **Speech starts sooner on a long reply** - a reply is spoken sentence by sentence, and the first piece is cut short on purpose so it can start early. Nothing was keeping the NEXT piece small, so a short opener could be followed by one three times its length - and playback then sat waiting for it rather than starting, which threw away the head start it had just been given. The chunks are now sized against what the reply has already banked
-- **The first sentence no longer waits for the second** - a reply is synthesised a piece ahead of what you are hearing, so playback never runs dry. That read-ahead was being paid for before anything was handed over: the opening piece finished, and then sat in memory until the piece behind it was finished too. It is the one delay you experience in full, because nothing is playing yet to cover it. Measured end to end on a real reply, from pressing speak to the first sound: 10.5 seconds, now 5.6
-- **The narration voice setting now means one thing** - it was stored twice, once on this device and once in your vault, and the two were only written together when you touched the dropdown. A choice made before that, or a save that failed once, left replies performed one way as they arrived and another way when the speak button repeated them. Your current choice is moved into the vault on first launch; nothing to do
+Everything added and fixed since the last release is in
+**[CHANGELOG.md](CHANGELOG.md)**. It becomes the v1.2.0 notes when the version
+moves; keeping it out of here is what stops this file growing a new section per
+release and never losing one.
 
 ## Features
 
@@ -77,6 +69,8 @@ Elysium is a privacy-first AI character chat client that routes **all model traf
 - **Privacy by Design** - the provider policy is hardcoded backend-side and cannot be overridden from anywhere; see [Privacy Contract](#privacy-contract) for the exact fields and the full list of what is and is not sent
 - **Sealed Secrets** - API key and proxy URL live inside the encrypted vault (unreadable while locked); a one-time migration moves them out of the OS keyring and deletes the old entries - never sent to the frontend
 - **Strict CORS + Host allowlist** - Backend accepts browser requests from `http://127.0.0.1:5173` only and rejects foreign `Host` headers (DNS-rebinding shield)
+- **Locks itself when idle** - after 5 minutes of doing nothing the vault closes: the key leaves memory, the voice model is unloaded and the GPU memory comes back. Change the delay or turn it off in Settings > Secrets. A reply that is still streaming counts as activity for as long as it runs
+- **Takes its own folder back** - at launch Elysium checks whether other accounts on this PC can reach its data folder and removes that access, naming what it removed in the log. Your database is encrypted, but `salt.bin` and `verifier.bin` beside it are what an offline passphrase attack needs. This is the one change that persists after the app closes; [SECURITY.md](SECURITY.md) says how to undo it
 - **Desktop App** - PyInstaller build (one-folder for development, a single ~33 MB exe for release) with a native window (pywebview + WebView2); the exe serves the built frontend same-origin on a random loopback port and locks the vault when the window closes
 
 ## Architecture
@@ -141,18 +135,43 @@ Additional guarantees:
 - Browser storage holds only UI preferences - never messages, personas, characters, API keys, or proxy URLs
 - Frontend never emits an `Authorization` header - all provider auth happens backend-side
 - Logs carry ids, counts, and status codes only - never message content, passphrases, or key material
+- Every response carries a Content-Security-Policy plus `X-Content-Type-Options: nosniff` and `X-Frame-Options: DENY`, including the 423/403/400 refusals that never reach a route. The policy exists for containment rather than for XSS: the same local origin serves the whole API, so `default-src 'self'` means nothing running there has anywhere to send data. The packaged build additionally sends `Cross-Origin-Resource-Policy: same-origin`, which stops a remote page that guesses the port from probing your attachments through an `<img>` tag
+- A stored image is served only if its recorded type is one the app itself produced (PNG/JPEG/WebP); anything else is refused rather than handed to the browser
+- The key is derived with scrypt at OWASP's current floor (N=2^17, r=8, p=1). The parameters are recorded per vault, so an older vault keeps opening under the ones it was made with and is re-derived to the current ones the next time it is unlocked - the one moment the passphrase exists in memory and a re-key is possible at all
+- A passphrase must be at least 12 characters and must not be a repeated fragment, a keyboard walk, or one of the phrases any guessing attempt starts with. There is no rate limit behind this vault - somebody with the folder guesses offline - so length and variety are what matter, and composition rules (one capital, one digit, one symbol) are deliberately NOT imposed
+- Locking overwrites the key in memory rather than dropping the reference. Optionally the vault locks itself after a chosen idle period; a request still in flight counts as activity, so a streamed reply is never cut short
+- The desktop window is given a secret at launch and every API request carries it. Loopback is not a permission boundary: without this, any program running as your user could read the whole conversation over HTTP while Elysium is open, which is exactly when the vault is unlocked. The secret travels in the URL fragment (never sent to a server, never logged), is read once and stripped from the address, and is kept in memory rather than in browser storage. It is also withheld from every subprocess Elysium starts, since the voice engine and the installer both run code this project did not write. Two routes a browser element must load directly - a stored picture and a spoken reply - accept a browser's own same-origin signal instead, which still refuses a program with `curl`
+- Every outbound request passes one check that refuses any host but the configured provider, before a connection is opened. With a proxy configured it reads the destination rather than the first hop, so the proxy cannot be used to reach elsewhere
+- The app window refuses to navigate off its own origin. It has no address bar, so a page loaded there would wear Elysium's frame with nothing visible to contradict it
 
 **At rest:** the database file is genuine SQLCipher ciphertext - without the
-passphrase it does not open as SQLite at all. Attached images are stored as
-encrypted blobs INSIDE that database (v0.6), and the API key + proxy URL are
-sealed in it too; served images carry `Cache-Control: no-store` so the
+passphrase it does not open as SQLite at all. Images are stored as encrypted
+blobs INSIDE that database (v0.6) - both the ones you attach and the ones a
+model generates, through the same validate-and-re-encode pipeline - and the API
+key + proxy URL are sealed in it too; served images carry `Cache-Control: no-store` so the
 browser keeps no plaintext copies. The scrypt salt and verifier (`salt.bin`,
 `verifier.bin`) sit beside the DB by design (they are not secrets, but never
-publish them). One remaining note lives under Known Limitations: the
-one-time migration from an older plaintext database leaves a plaintext
-backup you should delete once satisfied.
+publish them). The one-time migration from an older plaintext
+database leaves a plaintext backup on purpose - Settings > Secrets lists it
+and deletes it (overwriting first) once you are satisfied the move worked.
 
-> **Note on `proxy_required`:** If set to `false` (default), the app connects to OpenRouter directly. Your IP may be visible to OpenRouter. Set `proxy_required=true` to enforce proxy-only traffic.
+> **Note on `proxy_required`:** If set to `false` (default), the app connects to OpenRouter directly. Your IP may be visible to OpenRouter. Set `proxy_required=true` and every request to the provider goes through your proxy or does not go at all - completions, `/models`, and the voice installer's multi-gigabyte downloads alike. The switch fails CLOSED: if the setting cannot be read, the download refuses rather than proceeding without the proxy, and the installer's child processes are handed an environment with the ambient `HTTP_PROXY`/`NO_PROXY`/index variables stripped, so a proxy exported in your shell can neither capture the traffic nor be used to skip yours.
+>
+> What it does NOT cover: the embedded browser window. WebView2 loads this app's own files from the local server and is not routed through the proxy. It makes no request to any other host - crash reporting is blocked at the filesystem level and every API response carries `no-store` - but "proxy-only" is a statement about the app's outbound requests, not about the browser control.
+
+## Security
+
+A separate page answers the questions this one does not: what exactly is
+encrypted and what is not, which of Elysium's protections change a **persistent
+Windows setting** and how to undo them, and what stays on your disk after you
+delete the app.
+
+**Read it: [SECURITY.md](SECURITY.md).**
+
+The short version: everything you write lives in one encrypted file, the
+passphrase is never stored, the app talks to one host on the internet, and it
+writes nothing to the Windows registry. The page also lists what is *not*
+protected, which is the half worth reading.
 
 ## Quick Start
 
@@ -164,7 +183,8 @@ Everything below is for running from source.
 
 - **Python 3.13** (3.12+ compatible)
 - **Node.js 20+** with npm
-- **OS keyring** - Windows Credential Manager, macOS Keychain, or libsecret
+- **OS keyring** - not needed for a new install. Secrets live in the encrypted
+  vault; the keyring is read once, and only to migrate an older setup out of it
 
 ### Backend
 
@@ -172,7 +192,7 @@ Everything below is for running from source.
 cd backend
 py -3.13 -m venv .venv
 .venv\Scripts\activate
-pip install -r requirements.txt
+pip install --require-hashes -r requirements.lock.txt
 uvicorn main:app --host 127.0.0.1 --port 8787
 ```
 
@@ -250,181 +270,30 @@ them from drifting apart.
 ## Repository Layout
 
 ```
-elysium/
-├── backend/
-│   ├── routers/              API route handlers
-│   │   ├── settings.py       API key, proxy, health
-│   │   ├── characters.py     Character CRUD + import
-│   │   ├── chats.py          Chat + message management + variants
-│   │   ├── completions.py    POST /complete + /regenerate (+ /stream)
-│   │   ├── personas.py       Persona CRUD + select
-│   │   ├── uploads.py        Image attachment staging + serving
-│   │   ├── models_router.py  OpenRouter model catalogue
-│   │   └── vault.py          Vault status/init/unlock/lock/change-passphrase
-│   ├── tts/                  Voice subsystem (host half - never imports torch)
-│   │   ├── adapters/         Per-engine identification, settings, VRAM estimates
-│   │   ├── worker/           The engine-side scripts, run in their own interpreter
-│   │   ├── requirements/     Per-engine dependency pins for the installer
-│   │   ├── host.py           Worker lifecycle, load/unload, the audio cache
-│   │   ├── registry.py       Model discovery and identity
-│   │   ├── readiness.py      Every reason a model will not run, at once
-│   │   ├── speech_queue.py   Sentence-at-a-time synthesis with pacing
-│   │   └── stream_hook.py    The speaker a streaming reply talks to
-│   ├── speech_prep.py        Turning a written reply into something speakable
-│   ├── voice_tags.py         Delivery tags: the prompt, the stripper, the dials
-│   ├── messages_common.py    The message row -> API shape door
-│   ├── secrets_service.py    Vault-sealed secrets (API key, proxy URL)
-│   ├── legacy_migration.py   One-time unlock-time migrations (keyring, uploads)
-│   ├── attachments_service.py  Image validation, downscale, storage, refcounts
-│   ├── config.py             App constants + PROVIDER_POLICY + data dir
-│   ├── crypto.py             scrypt KDF, verifier, rekey (vault identity)
-│   ├── database.py           Keyed SQLCipher connections + migration
-│   ├── vault_state.py        In-RAM vault key holder
-│   ├── keyring_service.py    OS keyring abstraction
-│   ├── network_client.py     Shared httpx client
-│   ├── openrouter.py         OpenRouter API client + model cache + SSE stream
-│   ├── proxy_health.py       Proxy health check with TTL cache
-│   ├── main.py               FastAPI app + vault gate + CORS + router wiring
-│   ├── run_app.py            Desktop launcher (native window + uvicorn)
-│   ├── elysium.spec          PyInstaller build spec (one folder)
-│   ├── elysium_onefile.spec  PyInstaller build spec (single exe - ships)
-│   ├── version_info.txt      Windows version resource for the exe
-│   ├── elysium.ico           App icon
-│   ├── tests/                pytest suite (TestClient + mock provider)
-│   └── verify/               Legacy regression scripts (reference only)
-├── frontend/
-│   └── src/
-│       ├── app/              App entry, providers, stale-selection reconciliation
-│       ├── components/
-│       │   ├── backdrop/     WebGL mist canvases
-│       │   ├── brand/        ElysiumMark + Wordmark
-│       │   ├── chat/         ChatCanvas, Composer, MessageList, MessageBubble
-│       │   ├── characters/   Character list, create/import/edit dialogs
-│       │   ├── chats/        Chat create dialog
-│       │   ├── errors/       ErrorToastStack + ErrorBoundary
-│       │   ├── models/       Model panel
-│       │   ├── persona/      Persona panel area
-│       │   ├── settings/     ApiKeySection, ProxySection, app settings dialog
-│       │   ├── sidebar/      Sidebar layout, search, persona strip
-│       │   └── vault/        Lock/create/unlock screens (VaultGate)
-│       ├── lib/
-│       │   ├── api/          REST + SSE + upload client functions
-│       │   ├── appearance/   Wallpaper pipeline + framing, bubble surface
-│       │   ├── characters/   Character helpers
-│       │   ├── chat/         Chat action helpers + message parser
-│       │   ├── errors/       Error parser, mapper, store
-│       │   ├── generation/   Generation params helpers + payload builders
-│       │   ├── models/       Model metadata + modality helpers
-│       │   ├── personas/     Persona active/id helpers
-│       │   ├── preview/      Active context preview builder
-│       │   ├── query/        TanStack Query hooks (all resources)
-│       │   ├── schemas/      Zod schemas + inferred types
-│       │   └── store/        Zustand UI store + wallpaper IndexedDB
-│       └── test/
-│           ├── components/   Focused test suites
-│           ├── helpers/      SSE-aware fetch stub for streaming tests
-│           ├── static-safety.test.ts   Static privacy checks
-│           └── fe0-contract.test.ts    API contract shape tests
-├── docs/                     Internal planning docs (not committed)
-├── start_backend.bat         Windows quick-start script
-├── .gitignore
-└── README.md
+backend/          FastAPI app: routers/, tts/, vault + hardening modules, tests/
+frontend/         React SPA: src/components, src/lib, src/test
+SECURITY.md       what is protected, what is not, and what persists
+docs/             frontend_contract.md, design notes
+Elysium.exe       packaged desktop build (see Desktop build below)
 ```
+
+A per-file tree used to live here and was wrong within weeks: eight backend
+modules and a whole frontend voice/ directory had appeared without it
+noticing. The directories above are stable; `git ls-files` is accurate.
 
 ## API Endpoints
 
 All endpoints are under `/api/v1` (except `GET /healthz`, which lives at the
 root). While the vault is locked, every data route answers `423 Locked`; only
-`/vault/*` and `/healthz` respond.
+the `/vault/*` routes and `/healthz` pass.
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/healthz` | Liveness probe (root level) |
-| `GET` | `/vault/status` | Vault initialized/unlocked state |
-| `POST` | `/vault/init` | Create the vault (first run; migrates a plaintext DB) |
-| `POST` | `/vault/unlock` | Unlock with the passphrase |
-| `POST` | `/vault/lock` | Lock (drop the in-RAM key) |
-| `POST` | `/vault/change-passphrase` | Re-key the database |
-| `GET` | `/settings` | Current config state (no secrets) |
-| `POST` | `/settings/api-key` | Store + validate API key |
-| `DELETE` | `/settings/api-key` | Remove API key |
-| `POST` | `/settings/proxy` | Store proxy config |
-| `POST` | `/settings/proxy/required` | Arm/disarm the kill-switch without rewriting the URL |
-| `POST` | `/settings/proxy/alias` | Rename the configured proxy (the URL is write-only) |
-| `POST` | `/settings/stop-sequences` | Up to 4 stop sequences |
-| `DELETE` | `/settings/proxy` | Remove proxy config |
-| `GET` | `/settings/proxy/health` | Proxy health status |
-| `GET` | `/characters` | List all characters |
-| `POST` | `/characters` | Create character |
-| `POST` | `/characters/import` | Import JSON character card |
-| `GET` | `/characters/{id}` | Get single character |
-| `PATCH` | `/characters/{id}` | Edit character (partial update) |
-| `DELETE` | `/characters/{id}` | Delete character + cascade chats/messages |
-| `GET` | `/chats` | List all chats |
-| `POST` | `/chats` | Create chat session |
-| `GET` | `/chats/{id}` | Get single chat |
-| `PATCH` | `/chats/{id}` | Rename chat (title only) |
-| `GET` | `/chats/{id}/messages` | List messages |
-| `POST` | `/chats/{id}/complete` | Send message, get completion (non-streaming) |
-| `POST` | `/chats/{id}/complete/stream` | Send message, stream completion (SSE) |
-| `DELETE` | `/chats/{id}` | Delete chat + messages |
-| `POST` | `/chats/{id}/clear` | Clear messages, keep chat |
-| `DELETE` | `/chats/{id}/messages/{msg_id}` | Delete target + all following messages |
-| `POST` | `/chats/{id}/messages/{msg_id}/regenerate` | Regenerate as a new variant |
-| `POST` | `/chats/{id}/messages/{msg_id}/regenerate/stream` | Regenerate as a new variant (SSE) |
-| `POST` | `/chats/{id}/messages/{msg_id}/edit` | Edit a user message and rewrite the tail |
-| `POST` | `/chats/{id}/messages/{msg_id}/edit/stream` | Same, streamed (SSE) |
-| `POST` | `/chats/{id}/messages/{msg_id}/activate` | Make a variant the active reply |
-| `GET` | `/personas` | List personas (includes `is_active`) |
-| `POST` | `/personas` | Create persona |
-| `PATCH` | `/personas/{id}` | Edit persona |
-| `DELETE` | `/personas/{id}` | Delete persona |
-| `POST` | `/personas/{id}/select` | Set active persona |
-| `GET` | `/models/openrouter` | List OpenRouter models (cached) |
-| `POST` | `/uploads/images` | Stage an image attachment (multipart) |
-| `GET` | `/uploads/images/{id}` | Serve a stored image to the frontend |
-| `DELETE` | `/uploads/images/{id}` | Drop a staged attachment |
+The full list, with every error code each route can return, lives in
+**[docs/frontend_contract.md](docs/frontend_contract.md)** and is kept honest
+by a test: `test_every_route_the_app_serves_appears_in_the_contract` fails the
+build if the app grows a route the contract does not mention.
 
-Voice (all local; nothing here contacts anything but this machine, except
-the one-time engine install, which downloads packages and sends nothing):
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| `GET` | `/tts/models` | Discovered voice models, each with its readiness verdict |
-| `POST` | `/tts/rescan` | Re-walk the model folders |
-| `GET\|POST` | `/tts/active` | The selected model, and its live state |
-| `GET\|POST\|DELETE` | `/tts/models/{uid}/settings` | Per-model settings (stored beside the model, not in the vault) |
-| `GET` | `/tts/models/{uid}/schema` | What knobs this engine has, and what it can do |
-| `GET` | `/tts/models/{uid}/readiness` | Every reason it will not run right now, at once |
-| `POST` | `/tts/load` \| `/tts/unload` | Take the card, give it back |
-| `GET` | `/tts/state` | What is loaded, and what went wrong. Polling this is what notices a dead worker |
-| `POST` | `/tts/speak` | Synthesise a whole message into one wav |
-| `POST` | `/tts/speak_stream` | The same, sentence by sentence over SSE - what the speak button uses |
-| `POST` | `/tts/speak_live` | Start speaking the reply that is streaming right now |
-| `GET` | `/tts/audio/{audio_id}` | Fetch a generated wav (no-store; cleared on lock) |
-| `GET\|POST` | `/tts/voice-mode` | The global voice toggle |
-| `GET\|POST` | `/tts/tag-prefs` | The delivery dials: density, tone, speed, narration, pause |
-| `GET\|POST` | `/tts/pronunciations` | Reading rules (the whole table per write) |
-| `GET\|POST\|DELETE` | `/tts/voices/{voice_id}` | Reference clips to clone from |
-| `POST` | `/tts/voices/{voice_id}/transcript` | Type the words spoken in a clip |
-| `GET\|POST\|DELETE` | `/tts/runtimes/...` | Engine install: plan, start, watch, cancel, remove |
-
-## Frontend Logic Foundation
-
-The frontend is built on a layer of pure logic helpers - no browser storage of secrets, no direct OpenRouter calls. The UI is now implemented on top of these slices.
-
-| Slice | Module | Description |
-|-------|--------|-------------|
-| FE-0 | `lib/api/`, `lib/schemas/`, `lib/query/` | API clients, Zod schemas, TanStack Query hooks |
-| FE-1A | `lib/errors/` | Safe error parser, code→message mapper, Zustand error store |
-| FE-1B | `components/errors/ErrorToastStack` | Global toast UI: glass pill, auto-dismiss, queue, accessibility |
-| FE-2 | `lib/query/completions` | Optimistic send, thinking bubble, error rollback, draft restore |
-| FE-3A | `lib/personas/` | Active persona helpers, safe persona ID extraction |
-| FE-4A | `lib/generation/` | Generation param filtering, model compatibility, payload builders |
-| FE-5A | `lib/chat/` | Chat action helpers: delete/clear/regenerate eligibility, cache transforms |
-| FE-6A | `lib/characters/` | Character lookup, safe start-chat builder, cascade warning |
-| FE-7A | `lib/models/` | Model metadata, modality detection, context budget bounds |
-| FE-8A | `lib/preview/` | Active context preview builder (local-only, approximate, privacy-safe) |
+A hand-maintained copy used to sit here and had drifted by eight routes,
+which is the argument for one list rather than two.
 
 ## Verification
 
@@ -432,7 +301,7 @@ The frontend is built on a layer of pure logic helpers - no browser storage of s
 
 ```powershell
 cd backend
-.venv\Scripts\python -m pytest tests -q   # TestClient regression suite (1278 tests, 76 files)
+.venv\Scripts\python -m pytest tests -q   # TestClient regression suite (2087 collected, 2081 pass + 6 skip)
 ```
 
 The `tests/` suite covers the completion/regenerate flows (including the
@@ -450,28 +319,34 @@ uvicorn main:app --host 127.0.0.1 --port 8787
 
 The legacy `verify_*.py` scripts remain for reference.
 
-### Frontend (1201 tests)
+### Frontend (1308 tests)
 
 ```powershell
 cd frontend
-npm test                          # full suite - 1201 tests, 89 files
+npm test                          # full suite - 1308 tests, 102 files
 npm test -- src/test/static-safety.test.ts   # static privacy checks
 npm run typecheck                 # tsc strict - app + test configs
 ```
 
 ## Known Limitations (v1.1.0)
 
-- **Plaintext migration backup** - upgrading an older unencrypted database keeps a plaintext `app.db.plain.bak-<timestamp>` copy next to the vault; delete it once you have verified the migration
-- **No idle auto-lock** - lock manually with the sidebar button, or by closing the app
-- **UI preferences are not encrypted** - type size, bubble solidity, the wallpaper image and how it is framed, and last-open ids persist in the desktop app's local WebView profile (no chat content)
+- **Plaintext migration backup** - upgrading an older unencrypted database keeps a plaintext `app.db.plain.bak-<timestamp>` copy next to the vault, deliberately: if the move had verified wrong it is the only copy left. Settings > Secrets shows it on every visit and removes it on request
+- **A second copy after an interrupted move** - if the one-time migration is cut off midway it can leave a complete ENCRYPTED copy beside the vault. Settings > Secrets shows it, and offers to delete it only when it opens with your current passphrase; a copy it cannot open may belong to an older one, so the app refuses to remove it
+- **The vault locks itself after 5 minutes idle** - Settings > Secrets changes the delay or turns it off. Idle means nothing in flight and nothing finished recently, so a reply that is still streaming holds it open however long it takes. Locking also unloads the voice model and gives the GPU memory back
+- **UI preferences are not encrypted** - type size, bubble solidity, the wallpaper image and how it is framed, last-open ids, the sampling parameters and the model you last picked persist in the desktop app's local WebView profile (no chat content)
 - **No local/offline models** - OpenRouter only
 - **No PDF/file upload** - images are supported (vision models); documents are not
+- **Pictures in replies are not verified against a live model yet** - the whole path is built and covered by tests, but Elysium's privacy routing is strict enough that it is not certain any provider will accept the request. `backend/verify/verify_image_output.py` answers that with your own key in one run: whether a provider will answer at all under the policy, and whether it returns the picture inline (usable) or as a link (refused). Until you run it, treat the feature as untested against the real thing
+- **A model that returns a link cannot be used for pictures** - the reply is kept, the picture is not, and a note says so. Fetching it would mean a second place your data goes
+- **Pictures in replies are shown, not remembered by the model** - the model does not see its own drawing again on the next turn. That is deliberate; making it possible is a separate feature with a real token cost
+- **The vault does not shrink** - deleting an image-heavy chat frees the space inside the database file but does not give it back to the disk
 - **Privacy routing cannot be relaxed** - strict ZDR is always enforced; there is no compatibility mode and no toggle in the UI
 - **No multi-branch chat** - linear conversation with per-message variants; the latest reply can be regenerated and continued from any variant, while older variant groups are view-only (browsable but the conversation always continues from their active take); delete-forward or edit-a-message to rewind
 - **Single instance** - running two copies of the desktop app against the same data folder is unsupported
 - **Voice needs a one-time engine setup** - the speech engines are multi-GB and are not bundled in the exe; Settings › Voice installs one on request. An NVIDIA GPU is required to run them
 - **One voice model at a time** - the card holds one; loading another unloads the first
-- **Generated audio is session-only** - locking the vault or closing the app deletes the cached speech, and anything older than half an hour is cleared as the next reply is spoken
+- **Voice is production quality in English only** - the shipped engines speak Turkish with a heavy foreign accent rather than not at all, which is the worse failure of the two: nothing errors, the reply is simply read out wrong. Cloning from a native Turkish reference clip helps and does not fix it
+- **Generated audio is session-only** - locking the vault or closing the app deletes the cached speech, the next launch clears whatever a crash or a kill left behind, and anything older than half an hour is cleared as the next reply is spoken
 - **No speech recognition** - no shipped engine can listen to a reference clip and write out its words; type them in yourself. The control only appears for an engine that declares the ability
 
 ## Troubleshooting

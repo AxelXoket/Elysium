@@ -172,6 +172,19 @@ class _FakeHandler(http.server.BaseHTTPRequestHandler):
         elif _fake_mode == "auth_403":
             self._json(403, {"error": {"message": "forbidden by provider",
                                         "code": 403}})
+        elif _fake_mode == "moderation_403":
+            # OpenRouter's documented ModerationErrorMetadata. `flagged_input`
+            # is the user's own prompt and must never come back out.
+            self._json(403, {"error": {
+                "message": "flagged by the provider's moderation",
+                "code": 403,
+                "metadata": {
+                    "reasons": ["harassment"],
+                    "flagged_input": "RAW_PROMPT_MUST_NOT_LEAK",
+                    "provider_name": "SomeProvider",
+                    "model_slug": "openai/gpt-4",
+                },
+            }})
         else:
             self._json(200, {
                 "choices": [{"message": {"role": "assistant",
@@ -375,16 +388,36 @@ try:
     # ══════════════════════════════════════════════════════════════════════
     # V-A-3: 403 → sanitized error code
     # ══════════════════════════════════════════════════════════════════════
-    section("V-A-3  403 auth error")
+    # A 403 is NOT an auth failure. OpenRouter documents it as one thing: the
+    # model's moderation refused the input. It used to share auth_failed with
+    # 401, which told a user whose message was rejected to go and fix a working
+    # API key, so the two are now told apart by the error body's shape.
+    section("V-A-3  403 moderation vs unrecognised")
 
+    _fake_mode = "moderation_403"
+    code, body = http_post(f"/api/v1/chats/{test_chat_id}/complete", {
+        "message": "test message",
+        "model_id": "openai/gpt-4",
+    })
+    detail = body.get("detail") if body else None
+    check("V-A-3a  moderation 403 → 403 openrouter_moderation_blocked",
+          code == 403 and detail == "openrouter_moderation_blocked",
+          f"code={code} detail={detail}")
+    check("V-A-3b  the flagged prompt is not echoed back",
+          "RAW_PROMPT_MUST_NOT_LEAK" not in json.dumps(body or {}),
+          f"body={body}")
+
+    # A 403 from something that is not OpenRouter (a proxy, a CDN) carries no
+    # such metadata. Announcing moderation there would be the same wrong answer
+    # pointed the other way, so it stays generic.
     _fake_mode = "auth_403"
     code, body = http_post(f"/api/v1/chats/{test_chat_id}/complete", {
         "message": "test message",
         "model_id": "openai/gpt-4",
     })
     detail = body.get("detail") if body else None
-    check("V-A-3  403 → detail is a short code string (not raw body)",
-          code == 401 and isinstance(detail, str) and len(detail) < 100
+    check("V-A-3c  unrecognised 403 → generic code, not raw body",
+          code == 502 and isinstance(detail, str) and len(detail) < 100
           and "forbidden" not in detail.lower(),
           f"code={code} detail={detail}")
 
@@ -395,15 +428,21 @@ try:
 
     # Already tested above - check that details are code strings
     all_ok = True
-    for mode, expected_status in [("credits_402", 402), ("auth_403", 401)]:
+    for mode, expected_status in [("credits_402", 402), ("auth_403", 502),
+                                  ("moderation_403", 403)]:
         _fake_mode = mode
         code, body = http_post(f"/api/v1/chats/{test_chat_id}/complete", {
             "message": "test msg",
             "model_id": "openai/gpt-4",
         })
         detail = body.get("detail") if body else ""
+        # The status was computed and then never looked at, so this loop
+        # checked half of what its own name claims.
+        if code != expected_status:
+            all_ok = False
         if isinstance(detail, str) and ("insufficient credits" in detail
                                          or "forbidden by provider" in detail
+                                         or "RAW_PROMPT_MUST_NOT_LEAK" in detail
                                          or "{" in detail):
             all_ok = False
 

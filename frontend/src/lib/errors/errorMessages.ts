@@ -44,6 +44,13 @@ const ERROR_MESSAGES: Record<string, string> = {
     "This model may not be available with Elysium's strict privacy routing. Try another model.",
   openrouter_completion_error:
     "The provider returned an error. Please try again.",
+  // This used to arrive as auth_failed, so a refused message read as "check
+  // your API key" and sent people rotating a key that worked. Moderation is
+  // per model and per provider, so "try another model" is real advice here and
+  // not a shrug. Nothing about WHAT was flagged is shown: the backend never
+  // sends it, deliberately.
+  openrouter_moderation_blocked:
+    "The provider refused this message before generating anything. Rewording it, or choosing another model, usually works.",
   api_key_required_by_openrouter:
     "The provider requires an API key. Please add your OpenRouter API key in Settings.",
   invalid_openrouter_models_response:
@@ -106,6 +113,8 @@ const ERROR_MESSAGES: Record<string, string> = {
     "This image is too large. Please use an image under 10 MB.",
   attachment_not_found:
     "An attached image no longer exists. Please remove it and attach it again.",
+  unsupported_media_type:
+    "This stored image has an unexpected format and was not shown, for safety.",
   attachment_unavailable:
     "An attached image was already used by another message. Please attach it again.",
   too_many_attachments:
@@ -230,12 +239,30 @@ const ERROR_MESSAGES: Record<string, string> = {
   wrong_passphrase:
     "Wrong passphrase.",
   passphrase_too_short:
-    "That passphrase is too short.",
+    "That passphrase is too short. Use at least 12 characters - three ordinary words are easier to remember than one mangled one.",
   // Missing from this map entirely, two lines below its own sibling: somebody
   // pasting a long generated passphrase got "Something went wrong. Please try
   // again." and pasted the exact same thing again, forever.
   passphrase_too_long:
-    "That passphrase is too long. Use 1024 characters or fewer.",
+    "That passphrase is too long. Use 512 characters or fewer.",
+  // There is no login box in front of this vault. Somebody who copies the
+  // folder guesses offline with no limit, so a long passphrase made of one
+  // repeated idea buys nothing that its shortest piece did not.
+  passphrase_too_common:
+    "That is one of the first passphrases anyone guessing would try. Pick something that is yours.",
+  // The fallback branch in _check_passphrase: a rule was added on the server
+  // with no sentence written for it here. Reaching this means the list is
+  // stale, so the wording says what to do rather than what happened.
+  // Loopback is not a permission boundary, so the desktop window is given a
+  // secret at launch and every request carries it. Seeing this means the page
+  // was opened some other way - a stale tab, a bookmark to the port - and the
+  // fix is to open Elysium again rather than anything about the vault.
+  launch_token_invalid:
+    "This page was not opened by Elysium. Close it and start Elysium again.",
+  passphrase_invalid:
+    "That passphrase cannot be used. Try a longer one made of a few unrelated words.",
+  passphrase_too_simple:
+    "That passphrase is long but repetitive, so it is no harder to guess than its shortest part. Try a few unrelated words instead.",
   vault_already_initialized:
     "Elysium is already set up on this computer. Unlock it with your passphrase instead.",
   vault_not_initialized:

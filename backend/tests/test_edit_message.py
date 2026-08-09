@@ -34,7 +34,7 @@ def _install_stream(monkeypatch, deltas, mid_stream=None):
     delta - the window where concurrent mutations race the edit."""
     import routers.completions as cr
 
-    def fake_stream(messages, model_id, gen_params, provider):
+    def fake_stream(messages, model_id, gen_params, provider, **kwargs):
         async def gen():
             try:
                 for i, d in enumerate(deltas):
@@ -251,7 +251,7 @@ def test_edit_abort_leaves_chat_untouched(client, monkeypatch):
 def test_edit_non_stream_happy_path(client, monkeypatch):
     import routers.completions as cr
 
-    async def fake_complete(messages, model_id, gen_params, provider):
+    async def fake_complete(messages, model_id, gen_params, provider, **kwargs):
         return {"choices": [{"message": {"role": "assistant",
                                          "content": "Sync reply."}}]}
 

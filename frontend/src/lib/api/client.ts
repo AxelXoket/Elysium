@@ -1,6 +1,7 @@
 import type { ZodType } from "zod/v4";
 
 import { API_BASE as BASE } from "./base";
+import { launchTokenHeader } from "./launchToken";
 
 // Normalized error shape - never expose raw backend stack traces or Zod internals
 export type ApiError = { status: number; detail: string; message: string };
@@ -117,7 +118,11 @@ export async function request<T>(
     // replace the merged headers (which would drop Content-Type).
     res = await fetch(`${BASE}${path}`, {
       ...init,
-      headers: { "Content-Type": "application/json", ...init?.headers },
+      headers: {
+        "Content-Type": "application/json",
+        ...launchTokenHeader(),
+        ...init?.headers,
+      },
     });
   } catch {
     // Network failure (offline, DNS, CORS preflight, etc.)
@@ -137,7 +142,13 @@ export async function rawRequest<T>(
 ): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(`${BASE}${path}`, init);
+    // The token goes on this path too. rawRequest exists so a caller can send
+    // a body as-is; it is not licence to skip the gate, and character import
+    // is exactly the kind of route worth gating.
+    res = await fetch(`${BASE}${path}`, {
+      ...init,
+      headers: { ...launchTokenHeader(), ...init.headers },
+    });
   } catch {
     throw { ...NETWORK_ERROR };
   }

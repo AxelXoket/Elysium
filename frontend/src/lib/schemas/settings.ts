@@ -12,6 +12,16 @@ export const SettingsSchema = z.object({
   proxy_configured: z.boolean(),
   proxy_alias: z.string().nullable(),
   selected_persona_id: z.number().nullable(),
+  /** May a model answer with a generated picture. Off by default, and stored in
+   *  the vault rather than localStorage because it changes what is sent to the
+   *  provider. Defaulted so a newer client against an older server still
+   *  parses - and defaults to the safe answer. */
+  image_output_enabled: z.boolean().default(false),
+  /** Minutes of inactivity before the vault locks itself; 0 means never.
+   *  Defaulted so a newer client against an older server parses, and the
+   *  default is the one that does not lock a session the server never
+   *  promised to keep track of. */
+  auto_lock_minutes: z.number().default(0),
 });
 
 // Exact match of proxy_health.py check_proxy_health() return dict
@@ -43,6 +53,18 @@ export const StopSequencesResponseSchema = z.object({
   ok: z.boolean(),
   stop_sequences: z.array(z.string()),
 });
+
+export const ImageOutputResponseSchema = z.object({
+  ok: z.boolean(),
+  image_output_enabled: z.boolean(),
+});
+export type ImageOutputResponse = z.infer<typeof ImageOutputResponseSchema>;
+
+export const AutoLockResponseSchema = z.object({
+  ok: z.boolean(),
+  auto_lock_minutes: z.number(),
+});
+export type AutoLockResponse = z.infer<typeof AutoLockResponseSchema>;
 
 export type Settings = z.infer<typeof SettingsSchema>;
 export type StopSequencesResponse = z.infer<typeof StopSequencesResponseSchema>;

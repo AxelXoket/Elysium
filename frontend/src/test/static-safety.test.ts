@@ -152,16 +152,10 @@ describe("Static safety tests", () => {
     }
   });
 
-  // S-07: No @fontsource
-  it("S-07: no @fontsource in source", () => {
-    for (const file of allSrcFiles) {
-      const content = readFile(file);
-      expect(
-        content.includes("@fontsource"),
-        `Found "@fontsource" in ${path.relative(SRC_DIR, file)}`,
-      ).toBe(false);
-    }
-  });
+  // S-07 removed: see S-23, which replaces it. @fontsource self-hosts font
+  // files into the bundle and issues no runtime request, so banning it forbade
+  // the privacy-friendlier option while leaving the actual hole (a remote
+  // reference written by hand into index.html) wide open.
 
   // S-08: /complete only in approved completion API files
   it("S-08: /complete only in approved completion API file", () => {
@@ -576,6 +570,53 @@ describe("Static safety tests", () => {
           `Found "${needle}" in ${path.relative(SRC_DIR, file)}`,
         ).toBe(false);
       }
+    }
+  });
+
+  // S-22: The Zod jitless flag has to be set before ANY schema is built.
+  // `allowsEval` is a lazily cached getter and our schema modules read it while
+  // creating schemas at module scope, so importing the side-effect module second
+  // is the same as not importing it: the `new Function("")` probe has already
+  // fired and Chromium has already logged an enforced CSP violation. Ordering is
+  // the whole behaviour here, and ordering is not observable from a unit test -
+  // so it is pinned statically.
+  it("S-22: zodJitless is the first import in main.tsx", () => {
+    const main = readFile(path.resolve(SRC_DIR, "src", "main.tsx"));
+    const firstImport = stripComments(main)
+      .split("\n")
+      .map((l) => l.trim())
+      .find((l) => l.startsWith("import "));
+    expect(firstImport, "main.tsx has no imports at all?").toBeTruthy();
+    expect(firstImport).toContain("zodJitless");
+  });
+
+  // S-23: no remote resource references in HTML. Replaces the deleted S-07.
+  //
+  // Every S-01..S-22 scan globs ts/tsx/css, so index.html - the one file the
+  // browser loads first - was read by nothing at all. The runtime backstop is
+  // the CSP in backend/main.py (`default-src 'self'`), which blocks a remote
+  // stylesheet or font fetch outright, and backend/tests/test_security_headers.py
+  // proves that header ships on every response.
+  //
+  // But CSP has no directive for `<link rel="preconnect">`, because preconnect
+  // transfers no content: it performs DNS, TCP and TLS against the remote host
+  // and stops. Nothing is fetched, nothing is blocked, and the host learns the
+  // user's IP anyway. That is precisely the leak the single-egress promise
+  // forbids, and it is the one shape CSP cannot catch - so it is caught here.
+  it("S-23: no remote href/src in HTML", () => {
+    const htmlFiles = getSourceFiles("**/*.html");
+    expect(htmlFiles.length, "no HTML files found - did the glob break?")
+      .toBeGreaterThan(0);
+    for (const file of htmlFiles) {
+      // Protocol-relative `//host` counts: it inherits the page scheme and
+      // still leaves the machine.
+      const remote = readFile(file).match(
+        /\b(?:href|src|imagesrcset|srcset)\s*=\s*["'](?:https?:)?\/\//gi,
+      );
+      expect(
+        remote,
+        `Remote reference in ${path.relative(SRC_DIR, file)}: ${remote?.join(", ")}`,
+      ).toBeNull();
     }
   });
 });

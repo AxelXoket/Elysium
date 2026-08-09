@@ -35,14 +35,17 @@ import json
 import logging
 import re
 import time
+from functools import partial
 from pathlib import Path
 from typing import NamedTuple
 
+import anyio.to_thread
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 import config
+import secure_delete
 import speech_prep
 from database import get_setting, set_setting
 from vault_state import VaultLockedError
@@ -851,10 +854,20 @@ def _join_wavs(paths: list[str]) -> str | None:
                     out.writeframes(part.readframes(part.getnframes()))
     except Exception:                                    # noqa: BLE001
         logger.warning("tts: could not join the spoken sentences", exc_info=True)
-        out_path.unlink(missing_ok=True)
+        secure_delete.discard(out_path)
         return None
+    left = []
     for src in real:                                     # the parts are spent
-        src.unlink(missing_ok=True)
+        # Same file class as every other speak-*.wav: the conversation, in the
+        # clear, as audio. Spent is not the same as gone.
+        if not secure_delete.discard(src):
+            left.append(src.name)
+    if left:
+        # Every other caller in this app reports what it could not remove.
+        # This one used to be the exception, which is how a locked wav of the
+        # conversation stayed readable with nothing anywhere saying so.
+        logger.warning("tts: %d spoken part(s) could not be removed: %s",
+                       len(left), ", ".join(left[:5]))
     return str(out_path)
 
 
@@ -1254,8 +1267,14 @@ async def upload_voice(voice_id: str, file: UploadFile = File(...),
                        label: str = Form(""), transcript: str = Form("")) -> dict:
     data = await file.read()
     try:
-        voice = refs.save_upload(voice_id, file.filename or "", data,
-                                 label=label, transcript=transcript)
+        # Off the event loop (audit KÖK 8): save_upload makes a directory,
+        # writes the clip, SHREDS the previous one (a full overwrite pass) and
+        # writes two metadata files. A user can do this mid-conversation, and
+        # on the loop all of that froze whatever reply was streaming.
+        voice = await anyio.to_thread.run_sync(
+            partial(refs.save_upload, voice_id, file.filename or "", data,
+                    label=label, transcript=transcript)
+        )
     except refs.RefError as exc:
         _ref_error(exc)
     return voice.to_json()

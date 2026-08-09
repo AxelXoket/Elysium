@@ -22,6 +22,10 @@ import winreg
 import uvicorn
 import webview
 
+import browser_profile
+import launch_token
+import win_hardening
+
 HOST = "127.0.0.1"
 WINDOW_TITLE = "Elysium"
 WEBVIEW2_DOWNLOAD = "https://developer.microsoft.com/microsoft-edge/webview2/"
@@ -213,7 +217,14 @@ def _selftest(base: str) -> None:
     window. Exits 0 on success."""
     healthz = wait_until_ready(base + "/healthz")
     try:
-        status = _LOCAL_OPENER.open(base + "/api/v1/vault/status", timeout=3).read().decode()
+        # With the token gate armed, even our own probe has to present it.
+        # This is the launcher, in the same process that issued it - the point
+        # of the gate is that a DIFFERENT process cannot.
+        probe = urllib.request.Request(
+            base + "/api/v1/vault/status",
+            headers={launch_token.HEADER: launch_token.configured() or ""},
+        )
+        status = _LOCAL_OPENER.open(probe, timeout=3).read().decode()
         root = _LOCAL_OPENER.open(base + "/", timeout=3).read().decode()
         root_ok = 'id="root"' in root
     except Exception as exc:  # pragma: no cover
@@ -330,8 +341,58 @@ def _try_per_monitor_dpi() -> bool:
     return ok
 
 
+def clear_session_residue(profile) -> dict[str, object]:
+    """Everything a session must not leave behind, cleared before the next one.
+
+    All three targets are the same thing in different shapes: the decrypted
+    conversation, sitting in the clear beside a vault that went to the trouble
+    of being encrypted.
+
+      * the browser's disk cache - which held whole /api responses, chats,
+        character cards and personas, as plain readable JSON;
+      * Crashpad - which would dump the renderer's memory, the conversation
+        included, and upload it to Microsoft;
+      * the audio cache - the conversation in audible form.
+
+    Launch is the edge that matters. The vault lock and the shutdown path
+    already cover a graceful exit; a crash, a kill or a power cut reaches
+    neither, and nothing else ever comes back for what they left.
+
+    A function rather than four lines inside main() so the guarantee can be
+    tested. main() cannot be: it binds a socket and opens a window.
+
+    Returns what each step did. Never raises - failing to start is worse than
+    residue, and a caller that wants to know can read the result.
+    """
+    from tts.host import wipe_audio_cache
+
+    purged = browser_profile.purge(profile)
+    # After the purge, so a Crashpad database left by an older build is shred
+    # first and the blocker lands on clean ground.
+    blocked = browser_profile.block_crash_reporting(profile)
+    stale, stuck = wipe_audio_cache()
+
+    log = logging.getLogger(__name__)
+    if purged or stale:
+        log.info("launch: cleared %d cached file(s) and %d audio file(s) "
+                 "from a previous session", purged, stale)
+    if not blocked:
+        log.warning("launch: crash reporting could NOT be blocked")
+    return {"cached_files": purged, "crash_reporting_blocked": blocked,
+            "audio_files": stale, "audio_left": stuck}
+
+
 def main() -> None:
     _setup_frozen_logging()
+    # Before the vault key can exist in this process, and before the data
+    # directory has anything worth indexing: a crash dump that excludes the
+    # heap is only useful if the flag was set before the crash.
+    from config import DATA_DIR as _DATA_DIR
+
+    win_hardening.harden(_DATA_DIR)
+    # BEFORE the server starts. Issuing it after would leave a window - short,
+    # but real - in which the API is live and the gate is unarmed.
+    launch_token.issue()
     _try_per_monitor_dpi()
     # Covers the selftest path too, which returns via sys.exit and would
     # otherwise leave a worker behind on every frozen-exe check.
@@ -362,9 +423,15 @@ def main() -> None:
         logging.getLogger(__name__).error("Backend not ready within timeout; aborting launch.")
         _alert(message)
         raise SystemExit("Elysium backend did not start in time.")
+    # The secret only this window gets. In the FRAGMENT, which is never sent
+    # to a server and never written to a request log - the page reads it once
+    # at boot and keeps it in memory. Without this, any program running as
+    # this user could curl the API and read the whole conversation while the
+    # app is open, which is exactly when the vault is unlocked.
+    token = launch_token.configured()
     window = webview.create_window(
         WINDOW_TITLE,
-        base + "/",
+        f"{base}/#elysium-token={token}",
         width=1200,
         height=820,
         # Floor chosen so the two fixed side panels never squeeze the chat:
@@ -381,6 +448,10 @@ def main() -> None:
     window.events.closed += lambda: threading.Thread(
         target=_stop_voice_worker, args=(0.0,), daemon=True
     ).start()
+    # Capture exclusion needs an actual HWND, which does not exist until the
+    # window is shown. Off unless ELYSIUM_SCREEN_PRIVACY=1, so for everyone
+    # else this handler enumerates nothing and returns.
+    window.events.shown += win_hardening.apply_screen_privacy
     # Persistent WebView2 profile: pywebview's default private mode wipes
     # localStorage/IndexedDB on every close, which would reset font size,
     # narration style, the wallpaper, and the last-open chat each launch.
@@ -389,10 +460,15 @@ def main() -> None:
     # stays in the encrypted DB.
     from config import DATA_DIR
 
+    profile = DATA_DIR / "webview"
+    clear_session_residue(profile)
+
     webview.start(  # blocks until the window closes; then the process exits
         private_mode=False,
-        storage_path=str(DATA_DIR / "webview"),
+        storage_path=str(profile),
     )
+
+    browser_profile.purge(profile)
 
 
 if __name__ == "__main__":

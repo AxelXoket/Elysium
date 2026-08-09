@@ -19,7 +19,10 @@ CORS:
 Routers are added phase by phase. Only GET /healthz is live in Phase 1.
 """
 
+import asyncio
+import contextlib
 import logging
+import re
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -30,6 +33,8 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+import auto_lock
+import launch_token
 import vault_state
 import config as config_module
 from config import FRONTEND_ORIGINS, MAX_UPLOAD_BYTES, UPLOAD_BODY_LIMIT
@@ -56,7 +61,16 @@ async def lifespan(app: FastAPI):
     # (routers/vault.py:_bootstrap_unlocked), not here.
     logger.info("Startup: vault locked - waiting for passphrase.")
 
+    # The idle watchdog. Cheap (one wakeup every AUTO_LOCK_TICK_S) and inert
+    # until the user turns auto-lock on, but started here rather than at
+    # unlock so there is exactly one of it for the process lifetime.
+    watchdog = asyncio.create_task(auto_lock.watch())
+
     yield
+
+    watchdog.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await watchdog
 
     # ── Shutdown ─────────────────────────────────────────────────────────────
     # The voice worker first: it holds gigabytes of VRAM, and this path is the
@@ -114,7 +128,48 @@ async def vault_gate(request: Request, call_next):
         and request.method != "OPTIONS"
     ):
         return JSONResponse({"detail": "vault_locked"}, status_code=423)
-    return await call_next(request)
+    # Idle is measured HERE because this is the one place every API request
+    # passes through. Polling routes would keep the vault open forever if
+    # they counted, so /vault/status - which the frontend asks for on a timer
+    # whether or not anybody is at the keyboard - deliberately does not.
+    if not path.startswith("/api/v1") or path.endswith("/vault/status"):
+        return await call_next(request)
+
+    vault_state.enter_request()
+    try:
+        response = await call_next(request)
+    except BaseException:
+        vault_state.leave_request()
+        raise
+
+    # NOT a `finally` around call_next, and this is the whole point.
+    # BaseHTTPMiddleware returns from call_next the instant the endpoint sends
+    # http.response.start - which StreamingResponse does BEFORE touching its
+    # body iterator. So for every streamed reply the counter went back to zero
+    # while the generation was still running, and the idle clock restarted at
+    # the START of a forty-minute stream. Auto-lock would then clear the key
+    # and close the HTTP client out from under a reply the user was reading.
+    #
+    # The counter has to be released when the BODY finishes, so the release
+    # rides on the iterator that produces it.
+    iterator = getattr(response, "body_iterator", None)
+    if iterator is None:
+        vault_state.leave_request()
+        return response
+
+    async def counted():
+        try:
+            async for chunk in iterator:
+                yield chunk
+        finally:
+            # finally, not after the loop: a client that closes the tab
+            # mid-stream cancels this generator, and a counter that only
+            # decremented on the happy path would stick above zero and
+            # disable auto-lock for the rest of the session.
+            vault_state.leave_request()
+
+    response.body_iterator = counted()
+    return response
 
 
 # ── Oversized body shield ─────────────────────────────────────────────────────
@@ -180,6 +235,52 @@ _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 def _request_own_origin(request: Request) -> str:
     """scheme://host[:port] of the API itself, for same-origin comparison."""
     return f"{request.url.scheme}://{request.url.netloc}"
+
+
+#: Loaded by an element rather than by fetch, so no header can ride along.
+_ELEMENT_LOADED = re.compile(
+    r"^/api/v1/(uploads/images/\d+|tts/audio/[^/]+)$")
+
+
+@app.middleware("http")
+async def launch_token_gate(request: Request, call_next):
+    """Only the window this launch opened may use the API.
+
+    Every other guard on this server assumes the attacker is a web page.
+    Loopback is not a permission boundary: any program running as this user
+    can reach 127.0.0.1 and read the whole conversation while the app is open,
+    which is precisely when the vault is unlocked.
+
+    Registered here, beside csrf_shield, so it runs on the same layer and
+    inside CORS - a 403 from it still carries CORS headers and the frontend
+    sees a catchable error rather than an opaque network failure.
+
+    Unarmed unless run_app issued a token, so a developer running uvicorn by
+    hand is unaffected. GET /healthz stays open: the launcher polls it BEFORE
+    the window exists, so it cannot present a token yet, and it answers a
+    fixed string with nothing of the user's in it.
+    """
+    path = request.url.path
+    if not path.startswith("/api/v1") or request.method == "OPTIONS":
+        return await call_next(request)
+    if launch_token.accepts(request.headers.get(launch_token.HEADER)):
+        return await call_next(request)
+    # Two routes are loaded by the BROWSER ITSELF - <img src> for a stored
+    # picture and the audio element for a spoken reply - and an element load
+    # cannot carry a custom header. Rewriting both to fetch-into-a-blob is the
+    # complete answer and is not this change.
+    #
+    # They are not simply exempted. Sec-Fetch-Site is set by the browser and
+    # cannot be forged from the page, so requiring same-origin still refuses
+    # the attacker this gate is for: a program running as this user with curl
+    # sends no such header and is turned away. What it does NOT stop is that
+    # program driving a browser. Narrower than the rest of the gate, and said
+    # rather than glossed.
+    if (request.method == "GET"
+            and _ELEMENT_LOADED.match(path)
+            and request.headers.get("sec-fetch-site") == "same-origin"):
+        return await call_next(request)
+    return JSONResponse({"detail": "launch_token_invalid"}, status_code=403)
 
 
 @app.middleware("http")
@@ -279,6 +380,85 @@ async def no_store_api(request: Request, call_next):
     return response
 
 
+#: The one policy, built once. Four headers, not the usual dozen: this origin is
+#: http://127.0.0.1:<random> inside a WebView2 window, so most public-web advice
+#: closes nothing here. What is LEFT OUT is deliberate:
+#:   Strict-Transport-Security - ignored over http, and pinning localhost to
+#:                               https would sabotage every other dev server.
+#:   Referrer-Policy           - the Fetch default is already
+#:                               strict-origin-when-cross-origin and this
+#:                               renderer makes zero cross-origin requests.
+#:   Permissions-Policy        - closes nothing without an untrusted-script
+#:                               path; no camera, mic or geolocation is used.
+#:   COOP / COEP               - no cross-origin opener, no SharedArrayBuffer.
+#:   X-XSS-Protection          - the XSS Auditor was removed in Chrome 78.
+#:   upgrade-insecure-requests - NEVER add this. Nothing exempts localhost, so
+#:                               it would rewrite every same-origin fetch to
+#:                               https://127.0.0.1:<port>, where nothing is
+#:                               listening. An instant brick.
+_CSP = (
+    # The point of a CSP here is NOT XSS mitigation - there is no HTML sink in
+    # this SPA (no innerHTML, no dangerouslySetInnerHTML, no markdown-to-HTML).
+    # It is EXFILTRATION CONTAINMENT. The same origin serves the whole
+    # unauthenticated vault API, so if anything ever did execute, this is what
+    # denies it a way out: no fetch to another host, no <img src> beacon, no CSS
+    # url() callback.
+    "default-src 'self'; "
+    "script-src 'self'; "
+    # 'unsafe-inline' is unavoidable for styles, twice over: the SPA uses inline
+    # style attributes throughout, and pywebview injects its own <style> element
+    # on every navigation (its text_select default is False). The tighter
+    # style-src-attr split would silently break the second one. The mitigation
+    # for accepting it is img-src below - that removes the CSS exfil channel,
+    # which is the only thing inline style would otherwise buy an attacker.
+    "style-src 'self' 'unsafe-inline'; "
+    # blob: is required, and by two separate features: attachment previews
+    # before upload, and the chat wallpaper's CSS background-image.
+    "img-src 'self' blob:; "
+    "object-src 'none'; "
+    "frame-src 'none'; "
+    "base-uri 'none'; "
+    # Every <form> in the app calls preventDefault(); none navigates.
+    "form-action 'none'; "
+    # The reason this is a HEADER and not a <meta http-equiv>: frame-ancestors
+    # is one of the directives a meta policy must ignore. StaticFiles could not
+    # template a per-request nonce anyway.
+    "frame-ancestors 'none'"
+)
+
+#: Only in the packaged build. This closes a real gap: csrf_shield exempts GET
+#: by design and TrustedHost allows 127.0.0.1, so a remote page that guesses the
+#: port can <img src> a private attachment or a synthesised audio file. It
+#: cannot read the pixels, but it learns the file exists and its dimensions.
+#: CORP refuses the no-cors load outright.
+#:
+#: Frozen-only because in dev the SPA is on :5173 and the API on :8787, and
+#: measurement (not spec reading) shows Chromium treats same-site exactly like
+#: same-origin across ports on an IP host - so any value strict enough to help
+#: would break dev attachment thumbnails and the voice preview button, the
+#: latter silently. Same convention as config.FRONTEND_ORIGINS, which is also
+#: keyed off `frozen`.
+_CORP = "same-origin" if getattr(sys, "frozen", False) else None
+
+
+# Registered after no_store_api, so THIS is now the outermost layer. That is
+# required, not cosmetic: vault_gate answers 423 and csrf_shield answers 403
+# without calling downstream, and those responses need the headers too.
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    """Baseline response headers for every route, including short-circuits."""
+    response = await call_next(request)
+    h = response.headers
+    # setdefault, not assignment: a route that has deliberately chosen its own
+    # value keeps it, exactly as no_store_api does with Cache-Control.
+    h.setdefault("Content-Security-Policy", _CSP)
+    # The image and audio routes serve bytes whose Content-Type comes from a DB
+    # column. nosniff stops a browser from second-guessing that column.
+    h.setdefault("X-Content-Type-Options", "nosniff")
+    h.setdefault("X-Frame-Options", "DENY")
+    if _CORP:
+        h.setdefault("Cross-Origin-Resource-Policy", _CORP)
+    return response
 
 
 app.include_router(settings_router.router, prefix="/api/v1")

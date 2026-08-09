@@ -172,15 +172,30 @@ class TestThePromptItself:
     def test_the_block_exists_and_is_substantial(self):
         assert len(voice_tags.VOICE_PROMPT) > 1500
 
-    def test_it_teaches_restraint_not_just_syntax(self):
-        """The research finding: without explicit restraint rules the model
-        tags every sentence and the voice turns into a caricature."""
-        prompt = voice_tags.VOICE_PROMPT.lower()
-        assert "1-3" in prompt or "one to three" in prompt
-        assert "never" in prompt
+    def test_it_bounds_density_per_sentence_not_per_reply(self):
+        """The unit changed, and the unit is the point.
 
-    def test_it_forbids_doubling_with_stage_directions(self):
-        assert "she said seductively" in voice_tags.VOICE_PROMPT
+        "1-3 tags per reply" was roughly eight times stricter than the engine
+        vendor's own guidance ("sentence-level emotion cues usually work best
+        at the beginning of sentences", up to three combined emotions per
+        sentence). It was also unenforceable: the model cannot count its own
+        output reliably, and the cap in this module is what actually binds.
+        A positional rule is something a model CAN follow.
+        """
+        prompt = voice_tags.VOICE_PROMPT.lower()
+        assert "per sentence" in prompt
+        assert "1-3 tags per reply" not in prompt
+        assert "most sentences need none" in prompt
+
+    def test_it_tells_the_model_the_prose_is_all_the_reader_gets(self):
+        """REVERSED RULE. It used to say the tag "replaces the stage
+        direction, never both" - which, since tags are stripped before
+        display, instructed the model to delete words the reader would
+        otherwise have read. The tag and the prose serve different audiences.
+        """
+        prompt = voice_tags.VOICE_PROMPT.lower()
+        assert "the prose is all the reader gets" in prompt
+        assert "she said seductively" not in prompt
 
     def test_the_examples_it_gives_would_survive_its_own_pipeline(self):
         """Every example the prompt shows the model must strip cleanly and

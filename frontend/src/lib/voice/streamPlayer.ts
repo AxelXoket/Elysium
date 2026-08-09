@@ -16,6 +16,7 @@
 
 import { ttsAudioUrl } from "../api/tts";
 import { ChunkScheduler, DEFAULT_CROSSFADE_SECONDS } from "./chunkScheduler";
+import { launchTokenHeader } from "../api/launchToken";
 
 export interface StreamPlayerOptions {
   crossfadeSeconds?: number;
@@ -38,7 +39,10 @@ async function defaultFetchChunk(
   // Static import: the dynamic one bought nothing. `api/tts` is already
   // statically imported by the speak buttons and the query layer, so the
   // bundler cannot split it out - all the lazy form did was add an await.
-  const res = await fetch(ttsAudioUrl(audioId), { credentials: "same-origin" });
+  const res = await fetch(ttsAudioUrl(audioId), {
+    credentials: "same-origin",
+    headers: { ...launchTokenHeader() },
+  });
   if (!res.ok) {
     // Carry the backend's own code (KÖK 14). This threw a bare Error, and both
     // consumers answered every failure with `tts_audio_device_error` - "No

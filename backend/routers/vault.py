@@ -7,6 +7,9 @@ gated with HTTP 423 by the middleware in main.py):
     POST /vault/unlock            → passphrase → key; 401 wrong_passphrase
     POST /vault/lock              → drop the key from RAM
     POST /vault/change-passphrase → crash-safe rekey (file backup first)
+    POST /vault/discard-plaintext-backup → shred the pre-vault copies
+    POST /vault/discard-orphaned-copy → shred a stranded encrypted copy
+    POST /vault/discard-empty-stub → remove the 0-byte stub a recovery moved aside
 
 Privacy rules:
     - Passphrases are NEVER logged (mirrors keyring_service's no-log rule).
@@ -29,7 +32,10 @@ from pydantic import BaseModel, Field
 
 import config
 import database
+import passphrase_strength
+import secure_delete
 import vault_state
+import crypto
 from crypto import KeyVault
 
 logger = logging.getLogger(__name__)
@@ -38,8 +44,10 @@ router = APIRouter(prefix="/vault", tags=["vault"])
 
 # Length bounds. min enforced in-handler; max NOT on the pydantic model - a
 # model-level max_length echoes the rejected passphrase back in the 422 body.
-MIN_PASSPHRASE_LEN = 8
-MAX_PASSPHRASE_LEN = 1024
+# Kept as names here because callers and tests import them from this module;
+# the values and the reasoning live in passphrase_strength.py.
+MIN_PASSPHRASE_LEN = passphrase_strength.MIN_PASSPHRASE_LEN
+MAX_PASSPHRASE_LEN = passphrase_strength.MAX_PASSPHRASE_LEN
 
 # Serializes state-changing vault operations. init/unlock/change race each
 # other on the process-global key and the identity files otherwise (two /init
@@ -63,10 +71,30 @@ class ChangePassphraseBody(BaseModel):
 
 
 def _check_length(passphrase: str) -> None:
-    if len(passphrase) < MIN_PASSPHRASE_LEN:
+    """Refuse a passphrase that an offline attack would walk through.
+
+    Applied when a passphrase is SET, never when one is used: raising the bar
+    must not lock out somebody who already has a vault. They meet the new one
+    the next time they change it.
+    """
+    reason = passphrase_strength.assess(passphrase)
+    # Spelled out rather than `raise HTTPException(422, reason)`. The error
+    # vocabulary guard scans this codebase for LITERAL codes and checks each
+    # one has a sentence in errorMessages.ts; a computed detail is invisible
+    # to it, so the concise version would have quietly removed every
+    # passphrase code from the only thing that notices an unmapped one.
+    if reason == "passphrase_too_short":
         raise HTTPException(422, "passphrase_too_short")
-    if len(passphrase) > MAX_PASSPHRASE_LEN:
+    if reason == "passphrase_too_long":
         raise HTTPException(422, "passphrase_too_long")
+    if reason == "passphrase_too_common":
+        raise HTTPException(422, "passphrase_too_common")
+    if reason == "passphrase_too_simple":
+        raise HTTPException(422, "passphrase_too_simple")
+    if reason is not None:                               # pragma: no cover
+        # A new code in passphrase_strength with no branch here. Refusing is
+        # right; the generic detail is the signal that this list is stale.
+        raise HTTPException(422, "passphrase_invalid")
 
 
 def _lock_down_voice_sync() -> list[str]:
@@ -120,7 +148,8 @@ def _purge_voice_cache() -> None:
 
         for wav in _Path(_config.TTS_CACHE_DIR).glob("*.wav"):
             try:
-                wav.unlink()
+                if not secure_delete.shred(wav):
+                    raise OSError("not removed")
             except OSError:
                 # `pass` here made this the only cleanup path in the app that
                 # could not report its own failure, while its sibling
@@ -274,24 +303,136 @@ def _preload_voice_model() -> None:
     threading.Thread(target=work, name="tts-preload", daemon=True).start()
 
 
-@router.get("/status")
-async def vault_status() -> dict:
+def _vault_status_sync() -> dict:
+    """Every disk answer /vault/status needs, in ONE worker-thread hop.
+
+    This ran on the event loop. Each line below opens a file and some of them
+    hand SQLCipher a key to try, which decrypts pages on the calling thread -
+    and the frontend polls this route on a timer whether or not anything is
+    happening, so the loop was being stalled at a fixed cadence for the life of
+    the app. The same reasoning, and the same fix, as _load_completion_context
+    in the completions router.
+    """
     vault = _vault()
-    db_exists = Path(config.DB_PATH).exists()
-    encrypted_db = db_exists and not database.is_plaintext_db()
+    kind = database.classify_db_file()
     # "initialized" = the unlock screen is the right UI: identity files exist,
     # or an encrypted DB + salt survive with a lost verifier (recoverable at
-    # unlock via DB-validated recovery).
-    initialized = vault.is_initialized() or (encrypted_db and vault.can_derive())
+    # unlock via DB-validated recovery). Only a genuinely ENCRYPTED file counts
+    # for that second branch; see classify_db_file for what an empty one used
+    # to do here.
+    initialized = vault.is_initialized() or (
+        kind == database.DB_ENCRYPTED and vault.can_derive()
+    )
+    # One read of the key decides BOTH answers below, and that is the point.
+    # Asking is_unlocked() here and get_key() a few lines later is two reads
+    # with file I/O between them, and the idle watchdog takes the key away on
+    # its own schedule - so a lock landing in that gap made get_key() raise and
+    # turned the one route that must answer while locked into a 423. get_key()
+    # already returns a snapshot under its own lock, so taking it once and
+    # deriving "unlocked" from it closes the window instead of narrowing it.
+    try:
+        key = vault_state.get_key()
+    except vault_state.VaultLockedError:
+        key = None
+    unlocked = key is not None
     return {
         "initialized": initialized,
-        "unlocked": vault_state.is_unlocked(),
+        "unlocked": unlocked,
         # A stranded .enc-tmp is a full, readable copy of the vault. It is
         # never deleted automatically, so without a field here the only trace
         # is a log line - which is how one sat unnoticed beside a freshly
         # created empty vault while the user assumed their data was gone.
         "orphaned_copy": database.orphaned_enc_tmp_present(),
+        # Whether that copy opens under the key we currently hold. It decides
+        # what the user can safely do with it: a copy this vault can read is a
+        # redundant duplicate, while one it cannot may be a vault under a
+        # DIFFERENT passphrase - the only copy of something, not clutter.
+        # null while locked, because the question needs the key to answer.
+        "orphaned_copy_readable": (
+            database.orphaned_enc_tmp_opens_with(key)
+            if key is not None and database.orphaned_enc_tmp_present()
+            else None
+        ),
+        # Same reasoning as orphaned_copy, and a worse file: this one is not
+        # even encrypted. Migration keeps the pre-vault app.db on purpose, in
+        # case the verification was wrong - but it then stayed forever, with
+        # one banner on one launch as its only trace. A field makes it a
+        # STATE the UI can show and act on instead of a log line.
+        "plaintext_backups": [b.name for b in database.plaintext_backups()],
+        # Same reasoning as the two fields above, one step smaller: the stub is
+        # provably 0 bytes, so this is not about data at rest. It is about an
+        # unexplained file appearing beside the vault of an app whose whole
+        # pitch is that you can see what it keeps.
+        "empty_stub": database.empty_stub_present(),
     }
+
+
+@router.get("/status")
+async def vault_status() -> dict:
+    return await anyio.to_thread.run_sync(_vault_status_sync)
+
+
+@router.post("/discard-plaintext-backup")
+async def discard_plaintext_backup() -> dict:
+    """Delete the pre-vault plaintext copies of the database.
+
+    Deliberately not automatic. The backup exists because a migration that
+    verified wrong would otherwise have destroyed the only copy of everything
+    the user ever wrote, so throwing it away is the user's call to make once
+    they trust the vault.
+
+    Needs no unlock: this removes a file that is readable WITHOUT the
+    passphrase, so requiring the passphrase to remove it would protect
+    nothing and strand it for anyone who forgot theirs.
+    """
+    # Under the same lock as init/unlock/change-passphrase, because the
+    # migration those run holds this exact file mid-swap: between renaming
+    # the plaintext database to .plain.bak- and moving the encrypted copy
+    # into place, the backup already matches the glob below.
+    async with _vault_lock:
+        # Off the event loop (audit KÖK 8): this shreds a plaintext copy of the
+        # WHOLE database, overwriting every byte before unlinking it, so the
+        # cost scales with the size of everything the user ever wrote. Its two
+        # siblings below have always run in a thread; this one was the outlier.
+        # The lock stays on the loop side, wrapping the hop, exactly as they do.
+        removed, left = await anyio.to_thread.run_sync(
+            database.discard_plaintext_backups)
+    return {"removed": removed, "left": left}
+
+
+@router.post("/discard-empty-stub")
+async def discard_empty_stub() -> dict:
+    """Remove the 0-byte stub an earlier recovery moved aside.
+
+    Needs no unlock, and for a stronger reason than the plaintext backup does:
+    that file is readable without the passphrase, this one has nothing in it to
+    read. The size is re-checked at removal time rather than assumed - see
+    database.discard_empty_stub.
+    """
+    async with _vault_lock:
+        removed, reason = await anyio.to_thread.run_sync(
+            database.discard_empty_stub)
+    return {"removed": removed, "reason": reason}
+
+
+@router.post("/discard-orphaned-copy")
+async def discard_orphaned_copy() -> dict:
+    """Delete the encrypted copy stranded by an interrupted migration.
+
+    Unlike the plaintext backup, this one REQUIRES an unlocked vault, and the
+    reason is not ceremony. The file is encrypted, so "can this user read it"
+    is a real question with a real answer, and the answer decides whether
+    deleting it is tidying or destroying: adoption only leaves it behind when
+    the live database is healthy (redundant) or when it does not open under
+    this key (possibly a vault under another passphrase). Without the key we
+    cannot tell those apart, so we do not act.
+    """
+    if not vault_state.is_unlocked():
+        raise HTTPException(423, "vault_locked")
+    async with _vault_lock:
+        removed, reason = await anyio.to_thread.run_sync(
+            partial(database.discard_orphaned_enc_tmp, vault_state.get_key()))
+    return {"removed": removed, "reason": reason}
 
 
 @router.post("/init")
@@ -306,7 +447,13 @@ async def vault_init(body: PassphraseBody) -> dict:
         # Refuse to mint a NEW identity over an existing ENCRYPTED database -
         # that combination means identity files were lost; recovery, not init,
         # is the correct path (a fresh salt can never open the old data).
-        if Path(config.DB_PATH).exists() and not database.is_plaintext_db():
+        #
+        # ENCRYPTED, exactly. This used to read `exists() and not
+        # is_plaintext_db()`, which also says yes to a 0-byte file, so the one
+        # state where setup is both safe and the only way forward was the state
+        # that refused it. See database.classify_db_file.
+        kind = await anyio.to_thread.run_sync(database.classify_db_file)
+        if kind == database.DB_ENCRYPTED:
             raise HTTPException(409, "encrypted_db_without_identity")
 
         key = await anyio.to_thread.run_sync(vault.initialize, body.passphrase)
@@ -325,6 +472,52 @@ async def vault_init(body: PassphraseBody) -> dict:
             "migrated": backup is not None,
             "backup": Path(backup).name if backup else None,
         }
+
+
+def _upgrade_kdf_if_needed(vault: KeyVault, passphrase: str,
+                           old_key: bytes) -> bool:
+    """Re-derive this vault's key under the current KDF parameters.
+
+    Only possible HERE. Strengthening the derivation changes the key, so the
+    database has to be re-keyed, and that needs the PASSPHRASE - which this
+    app deliberately never stores. Unlock is the one moment it exists in
+    memory, so an upgrade either happens on this path or asks the user to
+    perform a passphrase change for no reason they can see.
+
+    Every failure is non-fatal and leaves the vault exactly as it was. The
+    user has already unlocked successfully; turning "your cost parameters are
+    a generation old" into "you cannot get in" would be a far worse trade than
+    the one this function exists to make. The next unlock tries again.
+    """
+    if not vault.needs_kdf_upgrade():
+        return False
+    db_path = Path(config.DB_PATH)
+    backup = db_path.with_name(db_path.name + f".rekey.bak-{int(time.time())}")
+    try:
+        if db_path.exists():
+            database.backup_encrypted(str(backup), key=old_key)
+        new_key = vault.change_passphrase(
+            passphrase,
+            partial(database.rekey_db, current_key=old_key),
+            database.check_key,
+        )
+    except Exception:
+        logger.warning("KDF upgrade did not take; the vault is unchanged",
+                       exc_info=True)
+        secure_delete.discard(backup)
+        return False
+    vault_state.set_key(new_key)
+    # The same revocation the passphrase route performs. The passphrase has
+    # not changed, but the KEY has, so every snapshot beside the database is
+    # still readable under the old one.
+    unrevoked = _rekey_sidecars(db_path, backup, old_key, new_key)
+    if unrevoked:
+        logger.warning("KDF upgrade left %d sidecar(s) under the old key: %s",
+                       len(unrevoked), ", ".join(unrevoked))
+    if not secure_delete.discard(backup):
+        logger.warning("KDF upgrade could not remove %s", backup.name)
+    logger.info("Vault KDF upgraded to n=%d", crypto.KDF_CURRENT["n"])
+    return True
 
 
 @router.post("/unlock")
@@ -351,6 +544,9 @@ async def vault_unlock(body: PassphraseBody) -> dict:
             raise HTTPException(401, "wrong_passphrase")
 
         vault_state.set_key(key)
+        # A fresh session starts idle at zero, not at however long the app sat
+        # locked on the passphrase screen.
+        vault_state.reset_idle_clock()
         try:
             migrated_backup = await anyio.to_thread.run_sync(_bootstrap_unlocked)
         except Exception:
@@ -358,6 +554,11 @@ async def vault_unlock(body: PassphraseBody) -> dict:
             await _lock_down_voice()
             logger.exception("Vault unlock bootstrap failed")
             raise HTTPException(500, "vault_unlock_failed")
+        # AFTER the bootstrap, so a vault that could not finish migrating is
+        # not also re-keyed in the same breath.
+        upgraded = await anyio.to_thread.run_sync(
+            partial(_upgrade_kdf_if_needed, vault, body.passphrase, key),
+        )
         logger.info("Vault unlocked")
         # _bootstrap_unlocked has ALWAYS returned this path and this route has
         # always thrown it away. A plaintext pre-vault app.db can be migrated
@@ -370,14 +571,20 @@ async def vault_unlock(body: PassphraseBody) -> dict:
             "ok": True,
             "migrated": migrated_backup is not None,
             "backup": Path(migrated_backup).name if migrated_backup else None,
+            # Reported rather than silent: this unlock re-encrypted the whole
+            # database, which is worth being able to see in a log or a test.
+            "kdf_upgraded": upgraded,
         }
 
 
-@router.post("/lock")
-async def vault_lock() -> dict:
-    # Serialized with init/unlock/change: clearing the key mid-bootstrap
-    # would make the in-flight unlock fail with a spurious 500 (self-healing,
-    # but avoidable by simply waiting our turn).
+async def lock_vault_now(reason: str = "request") -> list[str]:
+    """Everything a lock is, callable from somewhere other than the route.
+
+    The idle watchdog has to perform exactly the same lock as the button - the
+    key cleared, the voice worker torn down, the HTTP client dropped so the
+    proxy URL it snapshotted does not stay in RAM. A second, slightly
+    different lock would be a second, slightly weaker one.
+    """
     async with _vault_lock:
         vault_state.clear_key()
         audio_left = await _lock_down_voice()
@@ -386,7 +593,16 @@ async def vault_lock() -> dict:
         # next unlocked request lazily rebuilds from fresh vault values.
         from network_client import close_client
         await close_client()
-    logger.info("Vault locked")
+    logger.info("Vault locked (%s)", reason)
+    return audio_left
+
+
+@router.post("/lock")
+async def vault_lock() -> dict:
+    # Serialized with init/unlock/change: clearing the key mid-bootstrap
+    # would make the in-flight unlock fail with a spurious 500 (self-healing,
+    # but avoidable by simply waiting our turn).
+    audio_left = await lock_vault_now()
     # The key is gone either way, so this is still ok: true. But "locked" is a
     # promise about what is readable, and generated speech is the user's
     # conversation in audible form sitting in the clear. When some of it
@@ -397,7 +613,7 @@ async def vault_lock() -> dict:
 
 def _rekey_sidecars(db_path: Path, skip: Path, old_key: bytes,
                     new_key: bytes) -> list[str]:
-    """Re-encrypt every encrypted sidecar copy of the DB under the new key.
+    """Re-encrypt every encrypted copy of the DB beside it under the new key.
 
     Returns the names of the files it could NOT re-key.
 
@@ -412,8 +628,35 @@ def _rekey_sidecars(db_path: Path, skip: Path, old_key: bytes,
     one. Naming the files here is what lets the route say so.
     """
     unrevoked: list[str] = []
-    for path in sorted(db_path.parent.glob(db_path.name + "*.bak*")):
-        if path == skip or not path.is_file():
+    # The .bak glob was the whole list, and it missed the one copy that is not
+    # named like a backup: app.db.enc-tmp, left by a migration interrupted
+    # between its two renames. It is a COMPLETE vault, so a rotation that
+    # skipped it answered {"unrevoked": []} while every chat stayed readable
+    # under the passphrase the user was rotating away from - which is the
+    # precise failure this function's docstring says it exists to prevent.
+    candidates = list(db_path.parent.glob(db_path.name + "*.bak*"))
+    # The whole orphan family, from database, rather than the one canonical
+    # name spelled out here. Migration can move a stranded copy aside under a
+    # different suffix, and a name this glob does not know is a complete vault
+    # the rotation silently fails to revoke - which is the failure the
+    # paragraph above is about.
+    candidates += database.orphaned_enc_tmp_paths()
+
+    for path in sorted(set(candidates)):
+        try:
+            interesting = path != skip and path.is_file()
+        except OSError:
+            # The glob and the stat are separate moments, and a cleanup or an
+            # antivirus pass can remove a snapshot between them. Raising here
+            # would turn a rotation that ALREADY SUCCEEDED into a 500, after
+            # which the user retries with a passphrase that no longer works.
+            continue
+        if not interesting:
+            continue
+        if path.stat().st_size == 0:
+            # app.db.empty-stub-bak: the 0-byte live file adoption moves
+            # aside. There is no ciphertext to re-key, and reporting it as
+            # unrevoked would raise an alarm about a file holding nothing.
             continue
         if ".plain.bak" in path.name:
             # A PLAINTEXT pre-vault copy - no key to rotate. It is reported to
@@ -498,7 +741,18 @@ async def vault_change_passphrase(body: ChangePassphraseBody) -> dict:
                 vault_state.clear_key()
                 await _lock_down_voice()
                 logger.exception("Post-change bootstrap failed; vault re-locked")
-        backup.unlink(missing_ok=True)
+        # A COMPLETE database still encrypted under the passphrase being
+        # rotated away from - deliberately excluded from the sidecar re-key so
+        # it stays readable across the change. Unlinking it left every chat
+        # recoverable under the revoked passphrase, which is the one outcome a
+        # rotation exists to prevent.
+        if not secure_delete.discard(backup):
+            # Every other file this rotation touches is checked and reported.
+            # This one - a COMPLETE vault under the passphrase being revoked -
+            # was the one whose failure returned {"unrevoked": []}: a clean
+            # rotation, reported honestly, that had revoked nothing about it.
+            unrevoked.append(backup.name)
+            logger.warning("Vault rotation could not remove %s", backup.name)
         logger.info("Vault passphrase changed")
         return {
             "ok": True,
