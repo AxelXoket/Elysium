@@ -17,6 +17,7 @@ timings are machine-specific, the plumbing is not.
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import pytest
 
@@ -26,6 +27,12 @@ from tts.pacing import (
     FIRST_CHUNK_MIN_CHARS,
     Pacing,
 )
+
+#: Absolute, because a test that only passes from one directory is a test that
+#: will surprise somebody. Running `pytest backend/` from the repo root used to
+#: fail eleven tests across four files with FileNotFoundError on a relative
+#: path like 'tts/provision.py'. Measured 2026-08-10 and fixed here.
+BACKEND = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture(autouse=True)
@@ -179,9 +186,25 @@ def test_the_first_chunk_path_is_reachable_once_the_model_is_known(monkeypatch):
             "the far end of the pier, and the wind carried salt with it."
         )
         speaker.finish()
+        # Wait for the thing this test is about, not for `speaker.finished`.
+        #
+        # This loop used to read `while not speaker.finished`, and it burned
+        # its whole ten second deadline on every single run, measured at 10.01s
+        # and the slowest test in the suite. `finished` requires `not
+        # self._out`, so it cannot go true until something DRAINS the audio,
+        # and this test never drains: it has no consumer, by design, because
+        # what it is checking is that `speech_prep.first_chunk` gets called at
+        # all. The condition was unreachable by construction. Probed on
+        # 2026-08-10 with a thirty second wait: still False, two chunks parked
+        # in `_out`. Nothing is broken in the speaker.
+        #
+        # The spy IS filled off-thread, so some wait is genuinely needed; a
+        # deadline on the real condition gives the same protection at a
+        # thousandth of the cost, and it fails loudly instead of falling
+        # through to a bare `assert calls` if the call never comes.
         deadline = time.monotonic() + 10.0
-        while not speaker.finished and time.monotonic() < deadline:
-            time.sleep(0.02)
+        while not calls and time.monotonic() < deadline:
+            time.sleep(0.005)
     finally:
         speaker.cancel()
         speaker.close()
@@ -203,7 +226,7 @@ def test_the_heartbeat_keeps_talking_through_an_opaque_operation(monkeypatch):
     import sys
     from pathlib import Path
 
-    worker_dir = Path("tts/worker").resolve()
+    worker_dir = BACKEND / "tts" / "worker"
     sys.path.insert(0, str(worker_dir))
     try:
         spec = importlib.util.spec_from_file_location(
@@ -233,7 +256,7 @@ def test_the_heartbeat_stops_before_the_caller_sends_anything_else(monkeypatch):
     import sys
     from pathlib import Path
 
-    worker_dir = Path("tts/worker").resolve()
+    worker_dir = BACKEND / "tts" / "worker"
     sys.path.insert(0, str(worker_dir))
     try:
         spec = importlib.util.spec_from_file_location(
@@ -255,9 +278,7 @@ def test_the_heartbeat_stops_before_the_caller_sends_anything_else(monkeypatch):
 def test_warmup_wraps_both_compile_attempts_in_a_heartbeat():
     """Including the eager retry: it runs on the machine that has just proved
     it is the slow kind."""
-    from pathlib import Path
-
-    source = Path("tts/worker/fish_s2.py").read_text(encoding="utf-8")
+    source = (BACKEND / "tts" / "worker" / "fish_s2.py").read_text(encoding="utf-8")
     warmup = source.split("def _warmup", 1)[1].split("\ndef ", 1)[0]
     assert warmup.count("with _heartbeat(") == 2
 

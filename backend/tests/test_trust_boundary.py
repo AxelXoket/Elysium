@@ -16,9 +16,16 @@ import sys
 from pathlib import Path
 
 import pytest
+
 from PIL import Image
 
 import config
+
+#: Absolute, because a test that only passes from one directory is a test that
+#: will surprise somebody. Running `pytest backend/` from the repo root used to
+#: fail eleven tests across four files with FileNotFoundError on a relative
+#: path like 'tts/provision.py'. Measured 2026-08-10 and fixed here.
+BACKEND = Path(__file__).resolve().parents[1]
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +199,7 @@ def test_the_bomb_check_does_not_touch_the_global_warning_filters():
     as not thread-safe; save_upload runs in the anyio threadpool, so one
     upload's context-manager exit could restore the filters while another was
     still decoding - letting a bomb through the check that exists to stop it."""
-    source = Path("attachments_service.py").read_text(encoding="utf-8")
+    source = (BACKEND / "attachments_service.py").read_text(encoding="utf-8")
     body = source.split("def save_upload", 1)[1]
     code = [ln for ln in body.splitlines()
             if not ln.strip().startswith("#") and "catch_warnings" in ln]
@@ -260,7 +267,7 @@ def test_an_exe_elsewhere_on_path_is_still_returned(tmp_path, monkeypatch):
 
 def test_both_lookups_go_through_the_trusted_helper():
     for module in ("tts/provision.py", "tts/vram.py"):
-        source = Path(module).read_text(encoding="utf-8")
+        source = (BACKEND / module).read_text(encoding="utf-8")
         code = [ln for ln in source.splitlines()
                 if not ln.strip().startswith("#") and "shutil.which(" in ln]
         assert not code, f"{module} still calls shutil.which directly: {code}"
@@ -275,7 +282,7 @@ def test_the_uv_download_uses_a_per_call_temp_name():
     downloads at once - and both wrote bin/uv.zip.partial. They interleaved,
     the SHA-256 pin correctly refused the result, and both installs failed
     with TTS_PYTHON_NOT_FOUND, blaming the machine."""
-    source = Path("tts/provision.py").read_text(encoding="utf-8")
+    source = (BACKEND / "tts" / "provision.py").read_text(encoding="utf-8")
     assert 'bin_dir / "uv.zip.partial"' not in source
     assert 'target.with_suffix(".exe.partial")' not in source
     assert "os.getpid()" in source and "threading.get_ident()" in source

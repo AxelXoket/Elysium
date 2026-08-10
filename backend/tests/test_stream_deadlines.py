@@ -11,6 +11,8 @@ documented why.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import itertools
 
 import pytest
@@ -18,6 +20,12 @@ import pytest
 import config
 import openrouter
 from openrouter import OpenRouterError
+
+#: Absolute, because a test that only passes from one directory is a test that
+#: will surprise somebody. Running `pytest backend/` from the repo root used to
+#: fail eleven tests across four files with FileNotFoundError on a relative
+#: path like 'tts/provision.py'. Measured 2026-08-10 and fixed here.
+BACKEND = Path(__file__).resolve().parents[1]
 
 
 class _FakeResponse:
@@ -139,7 +147,7 @@ def test_the_speak_stream_drain_loop_has_a_deadline():
     response open forever. The same loop next door had no ceiling."""
     from pathlib import Path
 
-    source = Path("routers/tts_runtime.py").read_text(encoding="utf-8")
+    source = (BACKEND / "routers" / "tts_runtime.py").read_text(encoding="utf-8")
     body = source.split("async def event_source", 1)[1]
     assert "DRAIN_TIMEOUT_S" in body
     assert "deadline" in body

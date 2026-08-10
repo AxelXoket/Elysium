@@ -43,6 +43,7 @@ from __future__ import annotations
 import ast
 import importlib
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
@@ -198,6 +199,34 @@ def scan() -> tuple[set[Emission], list[Unresolved]]:
     Three constructs, and only three. Anything else that reaches a client with
     a code in it is a shape this module does not know about, which is a reason
     to teach it rather than to widen a pattern until it matches by accident.
+
+    Cached for the process, because the answer cannot change inside one. The
+    walk parses every .py file under backend/ and ten callers wanted it during
+    a single run: six directly, plus `declared_emissions` and `all_codes`,
+    which call it again on their own. Measured at roughly seven seconds of the
+    suite spent re-deriving a constant.
+
+    The cached value is FROZEN rather than copied. A copy is a promise the next
+    person has to keep; a frozenset and a tuple make poisoning the cache
+    impossible rather than merely discouraged. The mutable set and list handed
+    back here are fresh each call, so a caller may do what it likes with them.
+    """
+    emissions, unresolved = _scan_once()
+    return set(emissions), list(unresolved)
+
+
+@lru_cache(maxsize=1)
+def _scan_once() -> tuple[frozenset[Emission], tuple[Unresolved, ...]]:
+    """The walk itself. `_scan_once.cache_clear()` exists for tests.
+
+    Warmed at the bottom of this module, on purpose. `_resolve` imports the
+    production module that owns each site and reads its constants live, so the
+    answer depends on what those modules hold AT THE MOMENT OF THE FIRST CALL.
+    Without warming, that moment is whichever test happens to ask first, and
+    the suite runs in a randomised order: a test holding a monkeypatch over any
+    of those constants would have its temporary value frozen into the cache for
+    the rest of the session. Importing is the one moment nothing is patched,
+    because collection finishes before the first test body runs.
     """
     emissions: set[Emission] = set()
     unresolved: list[Unresolved] = []
@@ -315,3 +344,13 @@ def all_codes() -> set[str]:
     emissions, _ = scan()
     return ({e.code for e in emissions}
             | {e.code for e in declared_emissions()})
+
+
+#: Warm the walk here, at import, and not on first use.
+#:
+#: See `_scan_once`. The snapshot has to be taken at a moment when no test is
+#: holding a monkeypatch over a production constant, and collection is the only
+#: moment guaranteed to be that: pytest imports every test module before it
+#: runs the first test body. Leaving it lazy would make the answer depend on
+#: which test asked first, under a randomised order.
+_scan_once()

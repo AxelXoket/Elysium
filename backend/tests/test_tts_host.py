@@ -118,11 +118,23 @@ class TestItRefusesBeforeItSpawns:
         import threading
 
         started = threading.Event()
+        second_call_done = threading.Event()
+        held: list[bool] = []
         real_start = tts_host.VoiceHost._start_worker
 
         def slow_start(self, *a, **kw):
+            # Hold the in-flight window open for exactly as long as the second
+            # caller needs, and not a moment more.
+            #
+            # This was `time.sleep(2.0)`, and it cost the suite two full seconds
+            # every run. The sleep was not decoration - the second load has to
+            # arrive while the first is genuinely mid-flight, or the test proves
+            # nothing - so the fix is not a shorter sleep. A shorter sleep is a
+            # narrower race that a loaded machine can lose, which trades two
+            # honest seconds for an occasional false green. An event closes the
+            # window on the exact fact it was waiting for.
             started.set()
-            time.sleep(2.0)
+            held.append(second_call_done.wait(30))
             return real_start(self, *a, **kw)
 
         with pytest.MonkeyPatch.context() as mp:
@@ -130,10 +142,21 @@ class TestItRefusesBeforeItSpawns:
             t = threading.Thread(target=lambda: host.load(_model(), {}), daemon=True)
             t.start()
             assert started.wait(5)
-            with pytest.raises(WorkerFailure) as exc:
-                host.load(_model(uid="uid2"), {})
-            assert exc.value.code == TTS_MODEL_ALREADY_LOADING
+            try:
+                with pytest.raises(WorkerFailure) as exc:
+                    host.load(_model(uid="uid2"), {})
+                assert exc.value.code == TTS_MODEL_ALREADY_LOADING
+            finally:
+                second_call_done.set()
             t.join(timeout=30)
+
+        # Asserted here rather than in the thread: an AssertionError raised in a
+        # worker thread is swallowed, and the test would pass having measured a
+        # first load that had already finished.
+        assert held == [True], (
+            "the first load was not still in flight when the second arrived, so "
+            "this run proved nothing about concurrent loads"
+        )
 
 
 class TestSpeaking:

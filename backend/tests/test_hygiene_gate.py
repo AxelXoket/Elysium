@@ -506,33 +506,45 @@ class TestTheStagedMode:
 
 
 class TestTheCommandLine:
-    def test_a_clean_tree_exits_zero(self, repo, monkeypatch, capsys):
+    """Four exits, one preamble.
+
+    Every test here needs the same three things silenced: the allowlist, and
+    the two hook checks, which answer about the real repository rather than the
+    sandbox and would otherwise decide the exit code before the case under test
+    gets a say. That preamble was written out four times. It is a fixture now.
+
+    Deliberately NOT parametrised into one test. The four reach `main` through
+    four different routes - a clean read, a rule hit, an argv flag, and a
+    decode failure that no text fixture can even express - and folding them
+    into a table would trade four sentences a reader understands for one table
+    plus a discriminator, which is longer and says less.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _quiet_gates(self, repo, monkeypatch):
         monkeypatch.setattr(hygiene, "ALLOWLIST_PATH", str(repo / "none.txt"))
         monkeypatch.setattr(hygiene, "hook_mode_state", lambda *a: (True, "ok"))
         monkeypatch.setattr(hygiene, "hook_state", lambda *a: (True, "ok"))
+
+    def test_a_clean_tree_exits_zero(self, repo):
         write(repo, "a.md", "a - b\n")
         assert hygiene.main([]) == 0
 
-    def test_a_violation_exits_one(self, repo, monkeypatch, capsys):
-        monkeypatch.setattr(hygiene, "ALLOWLIST_PATH", str(repo / "none.txt"))
-        monkeypatch.setattr(hygiene, "hook_mode_state", lambda *a: (True, "ok"))
-        monkeypatch.setattr(hygiene, "hook_state", lambda *a: (True, "ok"))
+    def test_a_violation_exits_one(self, repo):
         write(repo, "a.md", f"a {EM_DASH} b\n")
         assert hygiene.main([]) == 1
 
-    def test_the_staged_flag_selects_the_index(self, repo, monkeypatch, capsys):
+    def test_the_staged_flag_selects_the_index(self, repo, capsys):
         # An argv typo here would silently turn every commit check into a
         # working-tree check, which is the wrong content at that moment.
-        monkeypatch.setattr(hygiene, "ALLOWLIST_PATH", str(repo / "none.txt"))
-        monkeypatch.setattr(hygiene, "hook_mode_state", lambda *a: (True, "ok"))
         write(repo, "a.md", f"a {EM_DASH} b\n")
         assert hygiene.main(["--staged"]) == 0      # nothing staged, so clean
         assert "git index" in capsys.readouterr().out
 
-    def test_an_undecodable_file_fails_the_run(self, repo, monkeypatch):
-        monkeypatch.setattr(hygiene, "ALLOWLIST_PATH", str(repo / "none.txt"))
-        monkeypatch.setattr(hygiene, "hook_mode_state", lambda *a: (True, "ok"))
-        monkeypatch.setattr(hygiene, "hook_state", lambda *a: (True, "ok"))
+    def test_an_undecodable_file_fails_the_run(self, repo):
+        # write_bytes, not write. 0x97 is a cp1252 em dash and invalid UTF-8;
+        # no text fixture can put it on disk, which is why this case cannot be
+        # folded in with the others.
         (repo / "ansi.md").write_bytes(b"a sentence \x97 broken\n")
         assert hygiene.main([]) == 1
 

@@ -102,23 +102,18 @@ def test_changing_the_passphrase_removes_the_shelved_old_identity(tmp_path):
     assert vault.unlock("old-passphrase") is None
 
 
-def test_a_failed_rekey_leaves_the_old_identity_untouched(tmp_path):
-    """Control: the crash-safe ordering still holds - nothing is removed when
-    the rekey did not take."""
-    vault = crypto.KeyVault(tmp_path)
-    old_key = vault.initialize("old-passphrase")
-
-    try:
-        vault.change_passphrase(
-            "new-passphrase", rekey_fn=lambda k: None, verify_fn=lambda k: False,
-        )
-    except RuntimeError:
-        pass
-    else:  # pragma: no cover - the guard must fire
-        raise AssertionError("a no-op rekey must raise")
-
-    assert vault.unlock("old-passphrase") == old_key
-    assert not list(tmp_path.glob("salt.bin.new"))
+#: The control for a failed rekey lives in test_vault.py, not here.
+#:
+#: `test_change_passphrase_aborts_when_rekey_did_not_take` builds the same
+#: scenario and asserts strictly more: it matches the exception message rather
+#: than swallowing any RuntimeError, it checks the salt bytes are unchanged,
+#: it checks the NEW passphrase does not open the vault, and it globs `*.new`
+#: rather than only `salt.bin.new`. A second test that proves a subset of that
+#: is not a second opinion, it is the same opinion said twice, and it costs a
+#: reader the time to work out which of the two is authoritative.
+#:
+#: Removed 2026-08-10 with nothing moved: the design story it rested on is
+#: written where it belongs, in `crypto.change_passphrase`.
 
 
 def test_rekey_file_moves_a_snapshot_to_the_new_key(tmp_path):

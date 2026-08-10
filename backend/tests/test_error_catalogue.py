@@ -290,3 +290,62 @@ def test_the_voice_funnel_can_only_produce_codes_it_declares() -> None:
 
     # And whatever it returns is always something the catalogue knows.
     assert TTS_SYNTHESIS_FAILED in ALL_CODES
+
+
+class TestTheWalkHappensOncePerProcess:
+    """The cache added on 2026-08-10, and the two things that could go wrong.
+
+    Ten callers wanted `scan()` during one run: the six below, plus
+    `declared_emissions` and `all_codes`, which each call it again on their
+    own. Every one of them parsed every .py file under backend/ to re-derive a
+    constant, at roughly seven seconds of suite time.
+
+    Both tests here are behaviour tests on the cache itself, which is a real
+    behaviour and not an implementation detail: the first says the work is not
+    repeated, the second says the saving did not buy a way for one caller to
+    corrupt another's answer.
+    """
+
+    def test_the_tree_is_parsed_once_no_matter_how_many_callers_ask(self):
+        import error_enumeration as ee
+
+        calls = []
+        real_files = ee._files
+
+        def counting_files():
+            calls.append(1)
+            return real_files()
+
+        ee._scan_once.cache_clear()
+        ee._files = counting_files
+        try:
+            first, _ = ee.scan()
+            second, _ = ee.scan()
+            ee.all_codes()
+        finally:
+            ee._files = real_files
+
+        assert len(calls) == 1, (
+            f"the tree was walked {len(calls)} times for three callers; the "
+            f"cache on _scan_once is not holding"
+        )
+        assert first == second, "two calls disagreed about the same tree"
+
+    def test_one_caller_cannot_poison_the_next_ones_answer(self):
+        """The reason the cached value is frozen rather than copied.
+
+        A cache that hands the same mutable set to everyone turns a caller's
+        local edit into everyone else's data. Nothing in this suite does that
+        today, which is exactly the kind of fact that stops being true without
+        anyone noticing, so the container makes it impossible instead.
+        """
+        import error_enumeration as ee
+
+        emissions, unresolved = ee.scan()
+        before = len(emissions)
+        emissions.clear()
+        unresolved.clear()
+
+        again, again_unresolved = ee.scan()
+        assert len(again) == before, "clearing one caller's set emptied the cache"
+        assert again_unresolved, "clearing one caller's list emptied the cache"
