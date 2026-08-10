@@ -79,6 +79,10 @@ def test_the_aggregate_covers_the_whole_verify_directory():
     assert match
     excluded = set(re.findall(r'"([^"]+)"', match.group(1)))
     on_disk = {p.name for p in SCRIPTS}
+    # Floor. A subtraction with an empty left side is empty, so if SCRIPTS ever
+    # globs nothing (the directory moved once already, which is why this file
+    # exists) this would report "every script accounted for" having seen none.
+    assert on_disk, "no scripts on disk - has the verify directory moved?"
     unaccounted = on_disk - set(_aggregated_names()) - excluded
     assert not unaccounted, (
         f"{sorted(unaccounted)} are neither aggregated nor deliberately excluded"
@@ -174,6 +178,9 @@ def test_the_walk_does_not_scan_itself_or_the_tests():
     privacy leaks - letting them turn the suite red is how a gate stops being
     read."""
     parts = {part for p in _scanned_files() for part in p.parts}
+    # Floor. Three "not in" assertions against an empty set all pass, so a walk
+    # that stopped reaching anything would read as perfectly scoped.
+    assert parts, "the walk reached no files at all"
     assert "verify" not in parts
     assert "tests" not in parts
     assert ".venv" not in parts

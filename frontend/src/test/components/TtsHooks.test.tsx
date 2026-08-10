@@ -8,9 +8,7 @@
  * it), install polling stops when the job ends, and the multipart upload never
  * gets a JSON Content-Type forced onto it.
  */
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { renderHook, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { isApiError } from "@/lib/api/client";
@@ -23,6 +21,7 @@ import {
   useVoiceMode,
 } from "@/lib/query/tts";
 import { mockFetch } from "../mocks/api";
+import { renderHookWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 
 const READINESS = {
   uid: "u1",
@@ -55,14 +54,6 @@ const MODEL = {
   readiness: READINESS,
 };
 
-function makeWrapper() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  function wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
-  }
-  return { qc, wrapper };
-}
-
 describe("voice hooks", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -74,8 +65,7 @@ describe("voice hooks", () => {
         body: { models: [MODEL], unrecognized: [], roots: ["C:/voice/models"] },
       },
     });
-    const { wrapper } = makeWrapper();
-    const { result } = renderHook(() => useTtsModels(), { wrapper });
+    const { result } = renderHookWithQueryClient(() => useTtsModels());
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     const model = result.current.data!.models[0];
@@ -159,17 +149,16 @@ describe("voice hooks", () => {
         body: { enabled: false, active: false, prompt_chars: 3200 },
       },
     });
-    const { qc, wrapper } = makeWrapper();
-    const { result } = renderHook(
-      () => ({ mode: useVoiceMode(), set: useSetVoiceMode() }),
-      { wrapper },
-    );
+    const { result, queryClient } = renderHookWithQueryClient(() => ({
+      mode: useVoiceMode(),
+      set: useSetVoiceMode(),
+    }));
     await waitFor(() => expect(result.current.mode.isSuccess).toBe(true));
     expect(result.current.mode.data!.active).toBe(false);
 
     result.current.set.mutate(true);
     await waitFor(() =>
-      expect(qc.getQueryData(keys.ttsVoiceMode())).toMatchObject({
+      expect(queryClient.getQueryData(keys.ttsVoiceMode())).toMatchObject({
         active: true,
         prompt_chars: 3200,
       }),
@@ -186,10 +175,9 @@ describe("voice hooks", () => {
       running: false,
     };
     const fetchMock = mockFetch({ "/tts/runtimes/fish_s2/install": { body: done } });
-    const { wrapper } = makeWrapper();
-    const { result } = renderHook(() => useTtsInstallStatus("fish_s2"), {
-      wrapper,
-    });
+    const { result } = renderHookWithQueryClient(() =>
+      useTtsInstallStatus("fish_s2"),
+    );
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(result.current.data!.state).toBe("done");
 

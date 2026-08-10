@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   CONTEXT_BUDGET_UI_MAX,
@@ -51,16 +51,11 @@ function modelList(model: Model): ModelList {
   };
 }
 
-function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: 0 } },
-  });
+function Extra({ children }: { children: ReactNode }) {
   return (
-    <QueryClientProvider client={qc}>
-      <TooltipProvider>
-        <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
-      </TooltipProvider>
-    </QueryClientProvider>
+    <TooltipProvider>
+      <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
+    </TooltipProvider>
   );
 }
 
@@ -103,7 +98,7 @@ async function renderWithModel(model: Model) {
   useUiStore.setState({ selectedModelId: model.id });
   mockDialogFetch(model);
 
-  render(<ModelPanel />, { wrapper });
+  renderWithQueryClient(<ModelPanel />, { wrapper: Extra });
 
   await waitFor(() => {
     expect(screen.getByTestId("generation-settings-trigger")).toBeInTheDocument();
@@ -134,12 +129,12 @@ async function renderWithModelAndApi(model: Model) {
   useUiStore.setState({ selectedModelId: model.id });
   mockDialogFetch(model);
 
-  render(
+  renderWithQueryClient(
     <>
       <ModelPanel />
       <Probe />
     </>,
-    { wrapper },
+    { wrapper: Extra },
   );
 
   await waitFor(() => {
@@ -403,13 +398,11 @@ function renderSettingsHarness() {
     return null;
   }
 
-  render(
-    <QueryClientProvider client={new QueryClient()}>
-      <GenerationSettingsProvider>
-        <Harness />
-      </GenerationSettingsProvider>
-    </QueryClientProvider>,
-  );
+  function SettingsOnly({ children }: { children: ReactNode }) {
+    return <GenerationSettingsProvider>{children}</GenerationSettingsProvider>;
+  }
+
+  renderWithQueryClient(<Harness />, { wrapper: SettingsOnly });
 
   return api;
 }
@@ -865,14 +858,14 @@ describe("Context budget UI max cap", () => {
       current: ReturnType<typeof useGenerationSettings> | null;
     } = { current: null };
 
+    function SettingsOnly({ children }: { children: ReactNode }) {
+      return <GenerationSettingsProvider>{children}</GenerationSettingsProvider>;
+    }
+
     it("temperature/max output rehydrate after a remount, and so do stop sequences", async () => {
-      const { unmount } = render(
-        <QueryClientProvider client={new QueryClient()}>
-          <GenerationSettingsProvider>
-            <ProbeOnly />
-          </GenerationSettingsProvider>
-        </QueryClientProvider>,
-      );
+      const { unmount } = renderWithQueryClient(<ProbeOnly />, {
+        wrapper: SettingsOnly,
+      });
 
       act(() => {
         probeRef.current!.setSetting("temperature", 1.3);
@@ -897,13 +890,7 @@ describe("Context budget UI max cap", () => {
       // Simulate the VaultGate remounting the provider on lock/unlock.
       unmount();
       probeRef.current = null;
-      render(
-        <QueryClientProvider client={new QueryClient()}>
-          <GenerationSettingsProvider>
-            <ProbeOnly />
-          </GenerationSettingsProvider>
-        </QueryClientProvider>,
-      );
+      renderWithQueryClient(<ProbeOnly />, { wrapper: SettingsOnly });
 
       // Sampling scalars rehydrated from the persisted slice.
       expect(probeRef.current!.settings.temperature).toBe(1.3);
@@ -938,18 +925,18 @@ describe("stop sequences: the vault mirror", () => {
     return null;
   }
 
+  function SettingsOnly({ children }: { children: ReactNode }) {
+    return <GenerationSettingsProvider>{children}</GenerationSettingsProvider>;
+  }
+
   function renderProbe(fetchImpl: typeof fetch) {
     vi.stubGlobal("fetch", fetchImpl);
     const ref: { current: ReturnType<typeof useGenerationSettings> | null } = {
       current: null,
     };
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <GenerationSettingsProvider>
-          <ProbeOnly take={(api) => (ref.current = api)} />
-        </GenerationSettingsProvider>
-      </QueryClientProvider>,
-    );
+    renderWithQueryClient(<ProbeOnly take={(api) => (ref.current = api)} />, {
+      wrapper: SettingsOnly,
+    });
     return ref;
   }
 

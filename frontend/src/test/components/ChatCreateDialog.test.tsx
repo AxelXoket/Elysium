@@ -1,20 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { ChatCreateDialog } from "@/components/chats/ChatCreateDialog";
 import { Button } from "@/components/ui/button";
 import { useUiStore } from "@/lib/store/uiStore";
 import { mockFetch } from "../mocks/api";
 import { chatFixture } from "../mocks/fixtures";
-import type { ReactNode } from "react";
 
-function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
-}
 
 describe("ChatCreateDialog", () => {
   beforeEach(() => {
@@ -36,12 +29,9 @@ describe("ChatCreateDialog", () => {
       "/chats": { body: chatFixture },
     });
 
-    render(
-      <ChatCreateDialog
+    renderWithQueryClient(<ChatCreateDialog
         trigger={<Button>Open</Button>}
-      />,
-      { wrapper },
-    );
+      />);
 
     // Open dialog
     await user.click(screen.getByText("Open"));
@@ -72,12 +62,9 @@ describe("ChatCreateDialog", () => {
       "/chats": { body: chatFixture },
     });
 
-    render(
-      <ChatCreateDialog
+    renderWithQueryClient(<ChatCreateDialog
         trigger={<Button>Open</Button>}
-      />,
-      { wrapper },
-    );
+      />);
 
     await user.click(screen.getByText("Open"));
     await waitFor(() =>
@@ -100,12 +87,9 @@ describe("ChatCreateDialog", () => {
     const user = userEvent.setup();
     useUiStore.setState({ selectedCharacterId: null });
 
-    render(
-      <ChatCreateDialog
+    renderWithQueryClient(<ChatCreateDialog
         trigger={<Button>Open</Button>}
-      />,
-      { wrapper },
-    );
+      />);
 
     await user.click(screen.getByText("Open"));
     await waitFor(() =>
@@ -122,12 +106,9 @@ describe("ChatCreateDialog", () => {
       "/chats": { body: chatFixture },
     });
 
-    render(
-      <ChatCreateDialog
+    renderWithQueryClient(<ChatCreateDialog
         trigger={<Button>Open</Button>}
-      />,
-      { wrapper },
-    );
+      />);
 
     await user.click(screen.getByText("Open"));
     await waitFor(() =>
@@ -160,12 +141,9 @@ describe("ChatCreateDialog", () => {
       "/chats": { status: 500, body: { detail: "RAW_UPSTREAM_DETAIL" } },
     });
 
-    render(
-      <ChatCreateDialog
+    renderWithQueryClient(<ChatCreateDialog
         trigger={<Button>Open</Button>}
-      />,
-      { wrapper },
-    );
+      />);
 
     await user.click(screen.getByText("Open"));
     await waitFor(() =>

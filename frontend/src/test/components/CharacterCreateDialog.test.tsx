@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { mockFetch } from "@/test/mocks/api";
 import { characterFixture } from "@/test/mocks/fixtures";
 import { CharacterCreateDialog } from "@/components/characters/CharacterCreateDialog";
@@ -9,13 +9,10 @@ import { Button } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 function wrapper({ children }: { children: React.ReactNode }) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: 0 } },
-  });
   return (
-    <QueryClientProvider client={qc}>
+    
       <TooltipProvider>{children}</TooltipProvider>
-    </QueryClientProvider>
+    
   );
 }
 
@@ -31,7 +28,7 @@ describe("Character Create Dialog Tests", () => {
     });
 
     const user = userEvent.setup();
-    render(
+    renderWithQueryClient(
       <CharacterCreateDialog trigger={<Button>Create</Button>} />,
       { wrapper },
     );
@@ -83,7 +80,7 @@ describe("Character Create Dialog Tests", () => {
     });
 
     const user = userEvent.setup();
-    render(
+    renderWithQueryClient(
       <CharacterCreateDialog trigger={<Button>Create</Button>} />,
       { wrapper },
     );
@@ -103,7 +100,7 @@ describe("Character Create Dialog Tests", () => {
     const fetchMock = mockFetch({});
 
     const user = userEvent.setup();
-    render(
+    renderWithQueryClient(
       <CharacterCreateDialog trigger={<Button>Create</Button>} />,
       { wrapper },
     );

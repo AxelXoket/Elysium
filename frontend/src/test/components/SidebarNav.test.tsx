@@ -10,9 +10,9 @@
  *    Persona tab
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { CharacterList } from "@/components/sidebar/CharacterList";
 import { PersonaStrip } from "@/components/sidebar/PersonaStrip";
 import { useUiStore } from "@/lib/store/uiStore";
@@ -21,14 +21,7 @@ import { mockFetch } from "../mocks/api";
 import { characterFixture, personaFixture } from "../mocks/fixtures";
 import type { Character } from "@/lib/schemas/characters";
 import type { Persona } from "@/lib/schemas/personas";
-import type { ReactNode } from "react";
 
-function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
-}
 
 function character(id: number, name: string): Character {
   return { ...characterFixture, id, name };
@@ -47,7 +40,7 @@ describe("CharacterList - search filter", () => {
     mockFetch({
       "/characters": { body: [character(1, "Madeline"), character(2, "Selim")] },
     });
-    render(<CharacterList query="" />, { wrapper });
+    renderWithQueryClient(<CharacterList query="" />);
 
     expect(await screen.findByText("Madeline")).toBeInTheDocument();
     expect(screen.getByText("Selim")).toBeInTheDocument();
@@ -57,7 +50,7 @@ describe("CharacterList - search filter", () => {
     mockFetch({
       "/characters": { body: [character(1, "Madeline"), character(2, "Selim")] },
     });
-    render(<CharacterList query="mad" />, { wrapper });
+    renderWithQueryClient(<CharacterList query="mad" />);
 
     expect(await screen.findByText("Madeline")).toBeInTheDocument();
     expect(screen.queryByText("Selim")).not.toBeInTheDocument();
@@ -67,7 +60,7 @@ describe("CharacterList - search filter", () => {
     mockFetch({
       "/characters": { body: [character(1, "Madeline")] },
     });
-    render(<CharacterList query="zzz" />, { wrapper });
+    renderWithQueryClient(<CharacterList query="zzz" />);
 
     expect(
       await screen.findByText('No characters match "zzz"'),
@@ -77,7 +70,7 @@ describe("CharacterList - search filter", () => {
 
   it("pins the New Character action and import affordance at the foot", async () => {
     mockFetch({ "/characters": { body: [] } });
-    render(<CharacterList query="" />, { wrapper });
+    renderWithQueryClient(<CharacterList query="" />);
 
     expect(await screen.findByText("No characters yet")).toBeInTheDocument();
     expect(
@@ -106,7 +99,7 @@ describe("PersonaStrip", () => {
         body: [persona(1, "Selim", true), persona(2, "Ayla", false)],
       },
     });
-    render(<PersonaStrip />, { wrapper });
+    renderWithQueryClient(<PersonaStrip />);
 
     expect(await screen.findByText("Selim")).toBeInTheDocument();
     // The eyebrow label frames it as "Persona", never "Playing as".
@@ -116,7 +109,7 @@ describe("PersonaStrip", () => {
 
   it("falls back to 'No persona' when none is active", async () => {
     mockFetch({ "/personas": { body: [persona(1, "Selim", false)] } });
-    render(<PersonaStrip />, { wrapper });
+    renderWithQueryClient(<PersonaStrip />);
 
     expect(await screen.findByText("No persona")).toBeInTheDocument();
   });
@@ -129,7 +122,7 @@ describe("PersonaStrip", () => {
         body: [persona(1, "Selim", true), persona(2, "Ayla", false)],
       },
     });
-    render(<PersonaStrip />, { wrapper });
+    renderWithQueryClient(<PersonaStrip />);
 
     await screen.findByText("Selim");
     await user.click(screen.getByRole("button", { name: "Change persona" }));
@@ -157,7 +150,7 @@ describe("PersonaStrip", () => {
   it("'Manage personas' routes to the Persona tab", async () => {
     const user = userEvent.setup();
     mockFetch({ "/personas": { body: [persona(1, "Selim", true)] } });
-    render(<PersonaStrip />, { wrapper });
+    renderWithQueryClient(<PersonaStrip />);
 
     await screen.findByText("Selim");
     await user.click(screen.getByRole("button", { name: "Change persona" }));

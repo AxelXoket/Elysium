@@ -11,9 +11,9 @@
  *  - ChatCanvas applies the reader variables to the message scroll area
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { SidebarFooter } from "@/components/sidebar/SidebarFooter";
 import { ChatCanvas } from "@/components/chat/ChatCanvas";
 import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
@@ -27,13 +27,10 @@ import { settingsFixture } from "../mocks/fixtures";
 import type { ReactNode } from "react";
 
 function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
   return (
-    <QueryClientProvider client={qc}>
+    
       <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
-    </QueryClientProvider>
+    
   );
 }
 
@@ -69,7 +66,7 @@ describe("AppSettingsDialog", () => {
   it("opens at the root category list", async () => {
     const user = userEvent.setup();
     mockFetch({});
-    render(<SidebarFooter />, { wrapper });
+    renderWithQueryClient(<SidebarFooter />, { wrapper });
 
     await openSettings(user);
     expect(screen.getByText("Text & readability")).toBeInTheDocument();
@@ -81,7 +78,7 @@ describe("AppSettingsDialog", () => {
   it("navigates into Text and the back arrow returns to the root", async () => {
     const user = userEvent.setup();
     mockFetch({});
-    render(<SidebarFooter />, { wrapper });
+    renderWithQueryClient(<SidebarFooter />, { wrapper });
     await openSettings(user);
 
     await user.click(screen.getByText("Text & readability"));
@@ -101,7 +98,7 @@ describe("AppSettingsDialog", () => {
   it("sliders write the persisted store and reset restores defaults", async () => {
     const user = userEvent.setup();
     mockFetch({});
-    render(<SidebarFooter />, { wrapper });
+    renderWithQueryClient(<SidebarFooter />, { wrapper });
     await openSettings(user);
     await user.click(screen.getByText("Text & readability"));
 
@@ -132,7 +129,7 @@ describe("AppSettingsDialog", () => {
   it("contrast radiogroup writes the store and drives the preview class", async () => {
     const user = userEvent.setup();
     mockFetch({});
-    render(<SidebarFooter />, { wrapper });
+    renderWithQueryClient(<SidebarFooter />, { wrapper });
     await openSettings(user);
     await user.click(screen.getByText("Text & readability"));
 
@@ -162,7 +159,7 @@ describe("AppSettingsDialog", () => {
     const user = userEvent.setup();
     mockFetch({});
     useUiStore.setState({ msgFontPx: 17, msgLineHeight: 1.8, msgContrast: "high" });
-    render(<SidebarFooter />, { wrapper });
+    renderWithQueryClient(<SidebarFooter />, { wrapper });
     await openSettings(user);
     await user.click(screen.getByText("Text & readability"));
 
@@ -182,7 +179,7 @@ describe("AppSettingsDialog", () => {
   it("narration page toggles both store flags and previews the parser", async () => {
     const user = userEvent.setup();
     mockFetch({});
-    render(<SidebarFooter />, { wrapper });
+    renderWithQueryClient(<SidebarFooter />, { wrapper });
     await openSettings(user);
 
     await user.click(screen.getByText("Narration style"));
@@ -218,7 +215,7 @@ describe("AppSettingsDialog", () => {
   it("Secrets row bridges to the secrets tab and closes the dialog", async () => {
     const user = userEvent.setup();
     mockFetch({});
-    render(<SidebarFooter />, { wrapper });
+    renderWithQueryClient(<SidebarFooter />, { wrapper });
     await openSettings(user);
 
     await user.click(screen.getByText("Secrets & API"));
@@ -233,7 +230,7 @@ describe("AppSettingsDialog", () => {
   it("reopening after close starts back at the root page", async () => {
     const user = userEvent.setup();
     mockFetch({});
-    render(<SidebarFooter />, { wrapper });
+    renderWithQueryClient(<SidebarFooter />, { wrapper });
     await openSettings(user);
     await user.click(screen.getByText("Text & readability"));
     await screen.findByRole("slider", { name: "Font size slider" });
@@ -279,7 +276,7 @@ describe("Reader variables on the chat canvas", () => {
   // them; the scroller no longer carries them.
   it("applies --msg-fs/--msg-lh to <main>, not the scroll container", async () => {
     mockFetch({ "/settings": { body: settingsFixture } });
-    const { container } = render(<ChatCanvas />, { wrapper });
+    const { container } = renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     const main = container.querySelector("main") as HTMLElement;
     const scroller = container.querySelector(
@@ -300,7 +297,7 @@ describe("Reader variables on the chat canvas", () => {
   it("applies the msg-contrast preset class to the scroller (E2)", async () => {
     mockFetch({ "/settings": { body: settingsFixture } });
     useUiStore.setState({ msgContrast: "high" });
-    const { container } = render(<ChatCanvas />, { wrapper });
+    const { container } = renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     const scroller = container.querySelector(
       ".flex-1.overflow-y-auto",

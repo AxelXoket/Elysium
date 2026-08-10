@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { useEffect } from "react";
 import { MessageList } from "@/components/chat/MessageList";
 import { ChatCanvas } from "@/components/chat/ChatCanvas";
@@ -28,13 +28,10 @@ import type { Message } from "@/lib/schemas/chats";
 import type { ModelList } from "@/lib/schemas/models";
 
 function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
   return (
-    <QueryClientProvider client={qc}>
+    
       <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
-    </QueryClientProvider>
+    
   );
 }
 
@@ -110,7 +107,7 @@ describe("ChatMessageControls", () => {
       },
     });
 
-    render(<MessageList chatId={1} />, { wrapper });
+    renderWithQueryClient(<MessageList chatId={1} />, { wrapper });
 
     await screen.findByText("Latest answer");
     const bubble = getBubbleByText("Latest answer");
@@ -134,7 +131,7 @@ describe("ChatMessageControls", () => {
       },
     });
 
-    render(<MessageList chatId={1} />, { wrapper });
+    renderWithQueryClient(<MessageList chatId={1} />, { wrapper });
 
     await screen.findByText("Latest answer");
     const userBubble = getBubbleByText("Original question");
@@ -169,7 +166,7 @@ describe("ChatMessageControls", () => {
       },
     });
 
-    render(<MessageList chatId={1} />, { wrapper });
+    renderWithQueryClient(<MessageList chatId={1} />, { wrapper });
 
     await screen.findByText("Newest assistant");
     const olderBubble = getBubbleByText("Older assistant");
@@ -196,7 +193,7 @@ describe("ChatMessageControls", () => {
       },
     });
 
-    render(<MessageList chatId={1} />, { wrapper });
+    renderWithQueryClient(<MessageList chatId={1} />, { wrapper });
 
     await screen.findByText("Answer to delete");
     const bubble = getBubbleByText("Answer to delete");
@@ -228,7 +225,7 @@ describe("ChatMessageControls", () => {
       },
     });
 
-    render(<MessageList chatId={1} />, { wrapper });
+    renderWithQueryClient(<MessageList chatId={1} />, { wrapper });
 
     await screen.findByText("Answer to delete");
     const bubble = getBubbleByText("Answer to delete");
@@ -277,7 +274,7 @@ describe("ChatMessageControls", () => {
       "/chats": { body: [] },
     });
 
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await screen.findByText("Old answer");
     await user.click(
@@ -339,7 +336,7 @@ describe("ChatMessageControls", () => {
       "/chats": { body: [] },
     });
 
-    render(
+    renderWithQueryClient(
       <>
         <SeedGenerationSettings />
         <ModelsReady />
@@ -397,7 +394,7 @@ describe("ChatMessageControls", () => {
       "/chats": { body: [] },
     });
 
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await screen.findByText("Old answer");
     await user.click(
@@ -447,7 +444,7 @@ describe("ChatMessageControls", () => {
       },
     });
 
-    render(<MessageList chatId={1} onRegenerate={onRegenerate} />, { wrapper });
+    renderWithQueryClient(<MessageList chatId={1} onRegenerate={onRegenerate} />, { wrapper });
 
     await screen.findByText("Callback answer");
     await user.click(
@@ -468,7 +465,7 @@ describe("ChatMessageControls", () => {
       },
     });
 
-    render(
+    renderWithQueryClient(
       <MessageList
         chatId={1}
         isPending
@@ -500,7 +497,7 @@ describe("ChatMessageControls", () => {
       },
     });
 
-    render(<MessageList chatId={1} />, { wrapper });
+    renderWithQueryClient(<MessageList chatId={1} />, { wrapper });
 
     await screen.findByText("Latest without model");
     // With no model the chevron's accessible name explains why it can't run.
@@ -517,7 +514,7 @@ describe("ChatMessageControls", () => {
       },
     });
 
-    render(<MessageList chatId={1} />, { wrapper });
+    renderWithQueryClient(<MessageList chatId={1} />, { wrapper });
 
     expect(
       await screen.findByText("Something went wrong. Please try again."),
@@ -535,7 +532,7 @@ describe("ChatMessageControls", () => {
       },
     });
 
-    render(<MessageList chatId={1} />, { wrapper });
+    renderWithQueryClient(<MessageList chatId={1} />, { wrapper });
 
     await screen.findByText("Plain answer");
     // No siblings yet: the Previous button stays MOUNTED (unmounting it
@@ -579,7 +576,7 @@ describe("ChatMessageControls", () => {
       activated.push(String(id));
     });
 
-    render(
+    renderWithQueryClient(
       <MessageList chatId={1} onActivateVariant={onActivateVariant} />,
       { wrapper },
     );
@@ -622,7 +619,7 @@ describe("ChatMessageControls", () => {
     const onActivateVariant = vi.fn();
     const onRegenerate = vi.fn();
 
-    render(
+    renderWithQueryClient(
       <MessageList
         chatId={1}
         onActivateVariant={onActivateVariant}
@@ -646,7 +643,7 @@ describe("ChatMessageControls", () => {
       },
     });
 
-    render(<MessageList chatId={1} />, { wrapper });
+    renderWithQueryClient(<MessageList chatId={1} />, { wrapper });
 
     await screen.findByText("Greeting first_mes");
     // The backend 422s regenerating a greeting (no preceding user message) -
@@ -690,7 +687,7 @@ describe("ChatMessageControls", () => {
     const onActivateVariant = vi.fn();
     mockFetch({ "/chats/1/messages": { body: viewOnlyBody() } });
 
-    render(
+    renderWithQueryClient(
       <MessageList chatId={1} onActivateVariant={onActivateVariant} />,
       { wrapper },
     );
@@ -721,7 +718,7 @@ describe("ChatMessageControls", () => {
     const user = userEvent.setup();
     const mock = mockFetch({ "/chats/1/messages": { body: viewOnlyBody() } });
 
-    render(<MessageList chatId={1} />, { wrapper });
+    renderWithQueryClient(<MessageList chatId={1} />, { wrapper });
     await screen.findByText("Old A");
     const bubble = getBubbleByText("Old A");
     await user.click(
@@ -742,7 +739,7 @@ describe("ChatMessageControls", () => {
     const onRegenerate = vi.fn();
     mockFetch({ "/chats/1/messages": { body: viewOnlyBody() } });
 
-    render(<MessageList chatId={1} onRegenerate={onRegenerate} />, { wrapper });
+    renderWithQueryClient(<MessageList chatId={1} onRegenerate={onRegenerate} />, { wrapper });
     await screen.findByText("Old A");
     let bubble = getBubbleByText("Old A").parentElement as HTMLElement;
 
@@ -776,7 +773,7 @@ describe("ChatMessageControls", () => {
       "/chats": { response: () => jsonResponse([]) },
     });
 
-    render(<MessageList chatId={1} />, { wrapper });
+    renderWithQueryClient(<MessageList chatId={1} />, { wrapper });
 
     await screen.findByText("Ghost row");
     messagesBody = [message(1, "user", "Question to keep")];
@@ -811,7 +808,7 @@ describe("ChatMessageControls", () => {
       },
     });
 
-    render(<MessageList chatId={1} />, { wrapper });
+    renderWithQueryClient(<MessageList chatId={1} />, { wrapper });
 
     await screen.findByText("Answer to delete");
     const bubble = getBubbleByText("Answer to delete");
@@ -845,7 +842,7 @@ describe("ChatMessageControls", () => {
       },
     });
 
-    render(<MessageList chatId={1} />, { wrapper });
+    renderWithQueryClient(<MessageList chatId={1} />, { wrapper });
 
     await screen.findByText("Answer to delete");
     const bubble = getBubbleByText("Answer to delete");
@@ -881,7 +878,7 @@ describe("ChatMessageControls", () => {
       },
     });
 
-    render(<MessageList chatId={1} />, { wrapper });
+    renderWithQueryClient(<MessageList chatId={1} />, { wrapper });
 
     await screen.findByText("Answer to delete");
     const bubble = getBubbleByText("Answer to delete");

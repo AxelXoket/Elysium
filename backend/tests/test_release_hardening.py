@@ -136,15 +136,15 @@ class TestPerMonitorDpi:
         monkeypatch.setenv("ELYSIUM_PER_MONITOR_DPI", "0")
         assert run_app._try_per_monitor_dpi() is False
 
-    def test_the_handle_is_marshalled_as_a_pointer_not_an_int(self):
-        """Regression: without argtypes the call silently returns 0 on 64-bit -
-        a switch that reports success by doing nothing."""
-        import inspect
-
-        import run_app
-
-        src = inspect.getsource(run_app._try_per_monitor_dpi)
-        assert "argtypes" in src and "c_void_p" in src
+    # Removed 2026-08-10: test_the_handle_is_marshalled_as_a_pointer_not_an_int.
+    #
+    # It read the function's source for "argtypes" and "c_void_p". The failure
+    # it guarded against - a missing argtypes making the call silently return 0
+    # on 64-bit - is exactly what the behavioural test above
+    # (test_it_is_on_by_default_now_that_a_real_window_confirmed_it) already
+    # catches, by calling the real function on the real machine and asserting
+    # it returns True. A source match adds nothing there and would pass for a
+    # mention in a comment.
 
     def test_it_runs_before_the_window_is_created(self):
         """A process's DPI awareness can only be set once and the first caller
@@ -167,9 +167,29 @@ class TestApiIsNeverCachedToDisk:
     """
 
     def test_data_routes_are_no_store(self, client):
-        for path in ("/api/v1/settings", "/api/v1/chats", "/api/v1/characters"):
+        """Swept from the route table, not from a list typed here.
+
+        This named three paths: settings, chats, characters. Narrowing the
+        middleware's prefix to miss personas, models, tts or uploads would
+        have left those routers writing plaintext JSON into the WebView2 disk
+        cache with this test still green. The same sweep pattern the CSRF
+        shield already uses on its own route table.
+        """
+        import main
+
+        checked = 0
+        for route in main.app.routes:
+            path = getattr(route, "path", "")
+            methods = getattr(route, "methods", set()) or set()
+            if not path.startswith("/api/v1/") or "GET" not in methods:
+                continue
+            if "{" in path:          # needs an id that may not exist
+                continue
             got = client.get(path).headers.get("cache-control")
             assert got == "no-store", f"{path} -> {got!r}"
+            checked += 1
+        # Floor: an empty sweep would assert nothing at all.
+        assert checked >= 8, f"only {checked} data routes swept"
 
     def test_a_locked_423_is_covered_too(self):
         """The vault gate short-circuits without calling downstream, so this
@@ -211,16 +231,49 @@ class TestAuditRegressions2026_07_25:
         assert exc.value.detail == "proxy_url_invalid"
         _validate_proxy_url("http://host:8080")      # still accepted
 
-    def test_uvicorn_logs_reach_the_file_the_error_dialog_points_at(self):
+    def test_uvicorn_logs_reach_the_file_the_error_dialog_points_at(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch,
+    ):
         """uvicorn installs its own handlers with propagate=False, so a
         windowed build wrote every SERVER log to a stderr that does not exist -
-        while the failure dialog promised the details were in elysium.log."""
-        import inspect
+        while the failure dialog promised the details were in elysium.log.
 
+        Rewritten 2026-08-10: this read the function's SOURCE and looked for
+        the strings "uvicorn.error" and "addHandler". That passes for a
+        mention in a comment and fails for a correct rewrite, on the one path
+        whose whole job is to be readable when nothing else can report. Now it
+        runs the function and reads the file back.
+        """
+        import logging
+
+        import config
         import run_app
 
-        src = inspect.getsource(run_app._setup_frozen_logging)
-        assert "uvicorn.error" in src and "addHandler" in src
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+
+        run_app._setup_frozen_logging()
+        try:
+            logging.getLogger("uvicorn.error").warning("probe-from-uvicorn")
+            logging.getLogger("uvicorn.access").warning("probe-from-access")
+            for handler in logging.getLogger("uvicorn.error").handlers:
+                handler.flush()
+            written = (tmp_path / "elysium.log").read_text(
+                encoding="utf-8", errors="replace")
+        finally:
+            # This function attaches handlers to process-global loggers, so it
+            # cannot be left installed: the next test would write into a
+            # tmp_path that no longer exists.
+            for name in ("", "uvicorn", "uvicorn.error", "uvicorn.access"):
+                logger = logging.getLogger(name)
+                for handler in list(logger.handlers):
+                    logger.removeHandler(handler)
+                    handler.close()
+
+        assert "probe-from-uvicorn" in written, (
+            "a uvicorn server log did not reach the file the dialog names"
+        )
+        assert "probe-from-access" in written
 
     def test_a_refused_load_does_not_orphan_the_resident_model(self):
         """A pre-spawn refusal leaves the running worker untouched, so the
@@ -395,7 +448,17 @@ def test_the_completions_header_describes_what_the_module_does():
     assert "image_url" in scope, "vision support is not stated"
     for route in ("complete/stream", "regenerate/stream", "edit/stream"):
         assert route in header, f"{route} is not in the module header"
-    # And the real endpoints still exist under those names.
+    # And the real endpoints still exist under those names. Asked of the
+    # imported module, not of the text: a text match is happy with the words
+    # inside a comment and blind to a handler that stopped being a coroutine.
+    import inspect
+
+    import routers.completions as completions_module
+
     for fn in ("complete_chat_stream", "regenerate_message_stream",
                "edit_message_stream"):
-        assert f"async def {fn}" in source
+        handler = getattr(completions_module, fn, None)
+        assert handler is not None, f"{fn} is named in the header but gone"
+        assert inspect.iscoroutinefunction(handler), (
+            f"{fn} is no longer an async handler"
+        )

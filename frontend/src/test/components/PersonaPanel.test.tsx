@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { RightPanel } from "@/components/layout/RightPanel";
 import { PersonaPanel } from "@/components/persona/PersonaPanel";
 import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
@@ -29,16 +29,13 @@ const inactivePersona: Persona = {
 };
 
 function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  });
   // GenerationSettingsProvider mirrors production (AppShell provides it):
   // RightPanel keeps every tab mounted, so the Models panel's settings
   // consumers run even when the Persona tab is active.
   return (
-    <QueryClientProvider client={qc}>
+    
       <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
-    </QueryClientProvider>
+    
   );
 }
 
@@ -130,7 +127,7 @@ describe("FE-3B PersonaPanel", () => {
 
   it("renders real Persona Panel UI in the right Persona tab", async () => {
     mockPersonaApi([]);
-    render(<RightPanel />, { wrapper });
+    renderWithQueryClient(<RightPanel />, { wrapper });
 
     expect(screen.getByRole("tab", { name: /persona/i })).toBeInTheDocument();
     expect(
@@ -142,7 +139,7 @@ describe("FE-3B PersonaPanel", () => {
 
   it("renders empty state when no personas exist", async () => {
     mockPersonaApi([]);
-    render(<PersonaPanel />, { wrapper });
+    renderWithQueryClient(<PersonaPanel />, { wrapper });
 
     expect(await screen.findByText("No personas yet")).toBeInTheDocument();
     expect(screen.getByText(/No active persona/i)).toBeInTheDocument();
@@ -150,7 +147,7 @@ describe("FE-3B PersonaPanel", () => {
 
   it("renders persona list and highlights backend active persona", async () => {
     mockPersonaApi([activePersona, inactivePersona]);
-    render(<PersonaPanel />, { wrapper });
+    renderWithQueryClient(<PersonaPanel />, { wrapper });
 
     expect((await screen.findAllByText("Focused Self")).length).toBeGreaterThan(0);
     expect(screen.getByText("Formal Self")).toBeInTheDocument();
@@ -162,7 +159,7 @@ describe("FE-3B PersonaPanel", () => {
 
   it("shows the required privacy note", async () => {
     mockPersonaApi([]);
-    render(<PersonaPanel />, { wrapper });
+    renderWithQueryClient(<PersonaPanel />, { wrapper });
 
     expect(
       await screen.findByText(
@@ -175,7 +172,7 @@ describe("FE-3B PersonaPanel", () => {
     const user = userEvent.setup();
     const mock = mockPersonaApi([]);
     const localSetItem = vi.spyOn(Storage.prototype, "setItem");
-    render(<PersonaPanel />, { wrapper });
+    renderWithQueryClient(<PersonaPanel />, { wrapper });
 
     await user.click(await screen.findByRole("button", { name: /new persona/i }));
     await user.type(screen.getByLabelText(/display name/i), "Quiet Self");
@@ -202,7 +199,7 @@ describe("FE-3B PersonaPanel", () => {
   it("opens edit form inline and patches only changed fields", async () => {
     const user = userEvent.setup();
     const mock = mockPersonaApi([activePersona]);
-    render(<PersonaPanel />, { wrapper });
+    renderWithQueryClient(<PersonaPanel />, { wrapper });
 
     const card = await screen.findByTestId("persona-card-1");
     await user.click(within(card).getByRole("button", { name: /edit/i }));
@@ -225,7 +222,7 @@ describe("FE-3B PersonaPanel", () => {
   it("shows delete confirmation before deleting", async () => {
     const user = userEvent.setup();
     const mock = mockPersonaApi([inactivePersona]);
-    render(<PersonaPanel />, { wrapper });
+    renderWithQueryClient(<PersonaPanel />, { wrapper });
 
     const card = await screen.findByTestId("persona-card-2");
     await user.click(within(card).getByRole("button", { name: /delete/i }));
@@ -243,7 +240,7 @@ describe("FE-3B PersonaPanel", () => {
   it("cancel delete hides confirmation without calling delete", async () => {
     const user = userEvent.setup();
     const mock = mockPersonaApi([inactivePersona]);
-    render(<PersonaPanel />, { wrapper });
+    renderWithQueryClient(<PersonaPanel />, { wrapper });
 
     const card = await screen.findByTestId("persona-card-2");
     await user.click(within(card).getByRole("button", { name: /delete/i }));
@@ -262,7 +259,7 @@ describe("FE-3B PersonaPanel", () => {
   it("confirm delete calls the delete mutation", async () => {
     const user = userEvent.setup();
     const mock = mockPersonaApi([inactivePersona]);
-    render(<PersonaPanel />, { wrapper });
+    renderWithQueryClient(<PersonaPanel />, { wrapper });
 
     const card = await screen.findByTestId("persona-card-2");
     await user.click(within(card).getByRole("button", { name: /delete/i }));
@@ -282,7 +279,7 @@ describe("FE-3B PersonaPanel", () => {
   it("select persona calls select mutation", async () => {
     const user = userEvent.setup();
     const mock = mockPersonaApi([activePersona, inactivePersona]);
-    render(<PersonaPanel />, { wrapper });
+    renderWithQueryClient(<PersonaPanel />, { wrapper });
 
     const card = await screen.findByTestId("persona-card-2");
     await user.click(within(card).getByRole("button", { name: /^select$/i }));
@@ -308,7 +305,7 @@ describe("FE-3B PersonaPanel", () => {
           }),
       ),
     );
-    render(<PersonaPanel />, { wrapper });
+    renderWithQueryClient(<PersonaPanel />, { wrapper });
 
     expect(screen.getByRole("button", { name: /new persona/i })).toBeInTheDocument();
   });

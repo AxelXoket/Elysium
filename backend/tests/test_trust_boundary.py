@@ -194,16 +194,55 @@ def test_a_legal_import_still_works(client):
 # 4. decompression-bomb check must not depend on a process-global filter
 # ---------------------------------------------------------------------------
 
-def test_the_bomb_check_does_not_touch_the_global_warning_filters():
+def test_the_bomb_check_does_not_touch_the_global_warning_filters(client, monkeypatch):
     """warnings.catch_warnings swaps a PROCESS-GLOBAL list and is documented
     as not thread-safe; save_upload runs in the anyio threadpool, so one
     upload's context-manager exit could restore the filters while another was
-    still decoding - letting a bomb through the check that exists to stop it."""
-    source = (BACKEND / "attachments_service.py").read_text(encoding="utf-8")
-    body = source.split("def save_upload", 1)[1]
-    code = [ln for ln in body.splitlines()
-            if not ln.strip().startswith("#") and "catch_warnings" in ln]
-    assert not code, f"the global filter swap is still there: {code}"
+    still decoding - letting a bomb through the check that exists to stop it.
+
+    Behavioural, not textual: monkeypatch warnings.catch_warnings and
+    warnings.simplefilter to recorders, run the REAL save_upload on a valid
+    image, and assert neither was called. `client` is here for its unlocked
+    vault, same as the control below - save_upload writes a blob.
+
+    Honesty about what this proves: it is a seam test, not an exhaustive one.
+    It catches the exact incident this guards against (a context manager
+    around the pixel check) and any direct call to these two names by any
+    spelling. It would NOT catch code that reached the same process-global
+    filter list through some other door - ctypes, a private CPython
+    attribute, or a reference to the original functions captured before this
+    monkeypatch ran. That gap is real but far narrower than the string-split
+    it replaces, which any comment, rename, or reformat would have defeated
+    outright.
+    """
+    import warnings
+    import attachments_service
+
+    calls: list[str] = []
+
+    class _RecordingContext:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+    def _record_catch_warnings(*args, **kwargs):
+        calls.append("catch_warnings")
+        return _RecordingContext()
+
+    def _record_simplefilter(*args, **kwargs):
+        calls.append("simplefilter")
+
+    monkeypatch.setattr(warnings, "catch_warnings", _record_catch_warnings)
+    monkeypatch.setattr(warnings, "simplefilter", _record_simplefilter)
+
+    buf = io.BytesIO()
+    Image.new("RGB", (32, 32), "white").save(buf, format="PNG")
+    result = attachments_service.save_upload(buf.getvalue(), "image/png")
+
+    assert result["id"]
+    assert calls == [], f"the global filter mechanism was touched: {calls}"
 
 
 def test_an_oversized_image_is_rejected_from_its_header_alone(monkeypatch):
@@ -265,24 +304,167 @@ def test_an_exe_elsewhere_on_path_is_still_returned(tmp_path, monkeypatch):
     assert which_trusted("uv.exe") == str(real)
 
 
-def test_both_lookups_go_through_the_trusted_helper():
-    for module in ("tts/provision.py", "tts/vram.py"):
-        source = (BACKEND / module).read_text(encoding="utf-8")
-        code = [ln for ln in source.splitlines()
-                if not ln.strip().startswith("#") and "shutil.which(" in ln]
-        assert not code, f"{module} still calls shutil.which directly: {code}"
+def test_both_lookups_go_through_the_trusted_helper(tmp_path, monkeypatch):
+    """provision.find_uv() and vram.query_gpu() both need an executable by
+    name, and both used to reach shutil.which directly - which searches the
+    working directory FIRST on Windows, the same hole tts/_which.py exists to
+    close. A source grep for the literal `shutil.which(` proved neither call
+    site still spelled it that way, but proved nothing about whether they
+    actually ran through which_trusted: `getattr(shutil, "which")`, an
+    `import shutil as sh`, or any other alias would pass the grep and still
+    execute whatever sits in the cwd.
+
+    Behavioural instead: stub shutil.which itself - exactly like the sibling
+    test test_an_exe_in_the_working_directory_is_not_trusted - to report a
+    file planted in tmp_path as found, chdir into tmp_path, and call the two
+    REAL entry points. If a call site goes through which_trusted, the cwd
+    filter inside it rejects that result and the hostile path is never
+    chosen (find_uv) or never reaches subprocess.run's argv (query_gpu). If a
+    call site regressed to a direct shutil.which(), the filter is skipped and
+    the hostile path comes straight through - which is exactly what would
+    turn each assertion below red.
+    """
+    import subprocess
+
+    from tts import provision, vram
+
+    hostile = tmp_path / "uv.exe"
+    hostile.write_bytes(b"MZ hostile")
+    monkeypatch.chdir(tmp_path)
+    # Simulates shutil.which's documented cwd-first behaviour directly rather
+    # than depending on the real Windows API, which the underlying which_trusted
+    # test already establishes as the right seam for this class of test.
+    monkeypatch.setattr("shutil.which", lambda name: str(hostile))
+
+    # Starve find_uv()'s other two legitimate sources so only the trust
+    # check decides what comes back.
+    own_bin = tmp_path / "own_bin"
+    own_bin.mkdir()
+    monkeypatch.setattr(config, "TTS_BIN_DIR", str(own_bin))
+    fake_home = tmp_path / "fake_home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    found_uv = provision.find_uv()
+    assert found_uv != str(hostile), (
+        "find_uv() returned the executable shutil.which reported from the "
+        "working directory - it is not routing through which_trusted"
+    )
+
+    seen_argv: list[list[str]] = []
+
+    def _spy_run(argv, *args, **kwargs):
+        seen_argv.append(list(argv))
+
+        class _Result:
+            returncode = 1
+            stdout = ""
+
+        return _Result()
+
+    monkeypatch.setattr(subprocess, "run", _spy_run)
+    gpu = vram.query_gpu()
+    assert gpu is None
+    for argv in seen_argv:
+        assert argv[0] != str(hostile), (
+            f"nvidia-smi was invoked with the cwd-shadowed path: {argv}"
+        )
 
 
 # ---------------------------------------------------------------------------
 # 6. two concurrent installs must not share one download path
 # ---------------------------------------------------------------------------
 
-def test_the_uv_download_uses_a_per_call_temp_name():
+def test_the_uv_download_uses_a_per_call_temp_name(tmp_path, monkeypatch):
     """_JOBS is keyed per engine, so two engines set up back to back run two
     downloads at once - and both wrote bin/uv.zip.partial. They interleaved,
     the SHA-256 pin correctly refused the result, and both installs failed
-    with TTS_PYTHON_NOT_FOUND, blaming the machine."""
-    source = (BACKEND / "tts" / "provision.py").read_text(encoding="utf-8")
-    assert 'bin_dir / "uv.zip.partial"' not in source
-    assert 'target.with_suffix(".exe.partial")' not in source
-    assert "os.getpid()" in source and "threading.get_ident()" in source
+    with TTS_PYTHON_NOT_FOUND, blaming the machine.
+
+    The old test grepped for the absent old literal and for the presence of
+    os.getpid() / threading.get_ident() ANYWHERE in a 900-line file - true
+    even if the call that matters never uses them, and broken by a harmless
+    quote-style change.
+
+    Behavioural instead: drive the REAL _download_uv helper from two threads
+    at once, with the network read stubbed to block on a barrier until both
+    threads have started their write - forcing them to genuinely overlap,
+    not just run one after another - and spy on the builtin `open` to record
+    the two paths actually opened for writing. The two threads guarantee two
+    different thread idents, which is what the fix's naming actually keys
+    on: a same-thread sequential rerun of this helper would still collide,
+    since the name is a pure function of (pid, thread ident) with no
+    counter, but that scenario cannot arise from how the app calls it - one
+    thread per install job.
+    """
+    import builtins
+    import threading
+
+    from tts import provision
+
+    monkeypatch.setattr(config, "TTS_BIN_DIR", str(tmp_path / "bin"))
+
+    barrier = threading.Barrier(2, timeout=5)
+
+    class _FakeResponse:
+        def __init__(self):
+            self._sent = False
+
+        def read(self, n):
+            if not self._sent:
+                self._sent = True
+                # Do not release either thread's first chunk until BOTH
+                # threads have reached this point - guaranteeing their
+                # archive files are open at the same time, not merely in
+                # sequence.
+                barrier.wait()
+                return b"not a real uv archive - just enough to hash"
+            return b""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+    class _FakeOpener:
+        def open(self, url, timeout=None):
+            return _FakeResponse()
+
+    monkeypatch.setattr(provision, "_url_opener", lambda: _FakeOpener())
+
+    opened: list[str] = []
+    opened_lock = threading.Lock()
+    real_open = builtins.open
+
+    def _spy_open(file, mode="r", *args, **kwargs):
+        text = str(file)
+        if "uv.zip.partial" in text:
+            with opened_lock:
+                opened.append(text)
+        return real_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", _spy_open)
+
+    errors: list[BaseException] = []
+
+    def _run_one():
+        try:
+            provision._download_uv(lambda line: None, cancel=None)
+        except BaseException as exc:                      # noqa: BLE001
+            errors.append(exc)
+
+    t1 = threading.Thread(target=_run_one)
+    t2 = threading.Thread(target=_run_one)
+    t1.start()
+    t2.start()
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+
+    assert not errors, f"the download helper raised: {errors}"
+    assert len(opened) == 2, f"expected two staged downloads, saw {opened}"
+    assert opened[0] != opened[1], (
+        "two concurrent downloads used the SAME partial path - they would "
+        "interleave into one corrupt file, exactly as in the incident this "
+        "test guards against"
+    )

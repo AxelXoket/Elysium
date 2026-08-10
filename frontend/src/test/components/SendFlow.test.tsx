@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor, act } from "@testing-library/react";
+import { screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { useEffect } from "react";
 import { ChatCanvas } from "@/components/chat/ChatCanvas";
 import { GenerationSettingsProvider, useGenerationSettings } from "@/components/generation/GenerationSettingsContext";
@@ -28,13 +28,10 @@ import type { Message } from "@/lib/schemas/chats";
 import type { ModelList } from "@/lib/schemas/models";
 
 function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
   return (
-    <QueryClientProvider client={qc}>
+    
       <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
-    </QueryClientProvider>
+    
   );
 }
 
@@ -150,7 +147,7 @@ describe("SendFlow", () => {
       "/chats/1/complete/stream": { sse: sseEventsFor(completionFixture) },
       "/chats": { body: [] },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -185,7 +182,7 @@ describe("SendFlow", () => {
       "/chats/1/complete/stream": { sse: sseEventsFor(completionFixture) },
       "/chats": { body: [] },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -238,7 +235,7 @@ describe("SendFlow", () => {
       "/chats/1/complete/stream": { sse: sseEventsFor(completionFixture) },
       "/chats": { body: [] },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(
@@ -287,7 +284,7 @@ describe("SendFlow", () => {
       "/chats": { body: [] },
     });
 
-    render(
+    renderWithQueryClient(
       <>
         <SeedGenerationSettings />
         <ModelsReady />
@@ -342,7 +339,7 @@ describe("SendFlow", () => {
       "/chats": { body: [] },
     });
 
-    render(
+    renderWithQueryClient(
       <>
         <SeedGenerationSettingsWithSeed />
         <ModelsReady />
@@ -394,7 +391,7 @@ describe("SendFlow", () => {
       ...liveSendRoutes(),
       "/chats": { body: [] },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -415,7 +412,7 @@ describe("SendFlow", () => {
       ...liveSendRoutes(),
       "/chats": { body: [] },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -438,7 +435,7 @@ describe("SendFlow", () => {
       "/chats/1/messages": { body: [messageFixture] },
       "/chats/1/complete": { status: 400, body: { detail: "context_too_large" } },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -466,7 +463,7 @@ describe("SendFlow", () => {
       "/chats/1/messages": { body: [messageFixture] },
       "/chats/1/complete": { status: 401, body: { detail: "api_key_missing" } },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -490,7 +487,7 @@ describe("SendFlow", () => {
       "/chats/1/messages": { body: [messageFixture] },
       "/chats/1/complete": { status: 503, body: { detail: "proxy_missing" } },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -513,7 +510,7 @@ describe("SendFlow", () => {
       "/chats/1/messages": { body: [messageFixture] },
       "/chats/1/complete": { status: 400, body: { detail: "context_too_large" } },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -537,7 +534,7 @@ describe("SendFlow", () => {
       // Return an invalid shape that will fail Zod parse
       "/chats/1/complete": { body: { invalid: true } },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -563,7 +560,7 @@ describe("SendFlow", () => {
         body: { detail: "openrouter_completion_error", raw: "UPSTREAM_LEAK_DATA" },
       },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -595,7 +592,7 @@ describe("SendFlow", () => {
         },
       },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -628,7 +625,7 @@ describe("SendFlow", () => {
         },
       },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -677,7 +674,7 @@ describe("SendFlow", () => {
       "/chats": { body: [] },
     });
 
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -714,7 +711,7 @@ describe("SendFlow", () => {
       "/chats/1/messages": { body: [messageFixture] },
       "/chats/1/complete": { status: 500, body: { detail: "openrouter_completion_error" } },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -748,7 +745,7 @@ describe("SendFlow", () => {
       ...liveSendRoutes(),
       "/chats": { body: [] },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -784,7 +781,7 @@ describe("SendFlow", () => {
       "/chats": { body: [] },
     });
 
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -825,7 +822,7 @@ describe("SendFlow", () => {
       "/chats": { body: [] },
     });
 
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -885,7 +882,7 @@ describe("SendFlow", () => {
       "/chats": { body: [] },
     });
 
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -939,7 +936,7 @@ describe("SendFlow", () => {
         body: { detail: "openrouter_completion_error" },
       },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -1002,7 +999,7 @@ describe("SendFlow", () => {
       "/chats": { body: [] },
     });
 
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -1083,7 +1080,7 @@ describe("SendFlow", () => {
       "/chats": { body: [] },
     });
 
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();

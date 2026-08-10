@@ -8,12 +8,15 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, act } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
+import {
+  createTestQueryClient,
+  renderWithQueryClient,
+} from "@/test/helpers/renderWithQueryClient";
 import { MessageList } from "@/components/chat/MessageList";
 import { keys } from "@/lib/query/keys";
 import { mockFetch } from "../mocks/api";
 import type { Message } from "@/lib/schemas/chats";
-import type { ReactNode } from "react";
 import { useEffect } from "react";
 import { AnimatedListItem } from "@/components/motion/AnimatedList";
 
@@ -24,18 +27,6 @@ function msg(id: number, role: "user" | "assistant", content: string): Message {
     role,
     content,
     created_at: "2026-01-01T00:00:00Z",
-  };
-}
-
-function newQueryClient(): QueryClient {
-  return new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
-}
-
-function createWrapper(qc: QueryClient) {
-  return function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
   };
 }
 
@@ -65,13 +56,13 @@ describe("MessageList - stable keys across the optimistic→real swap", () => {
   });
 
   it("keeps the SAME DOM node when the optimistic user message becomes real", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), [
       greeting,
       msg(-1001, "user", "hello there"),
     ]);
 
-    render(<MessageList chatId={1} />, { wrapper: createWrapper(qc) });
+    renderWithQueryClient(<MessageList chatId={1} />, { client: qc });
 
     const optimisticNode = screen.getByText("hello there");
     // Only the persisted greeting has message actions at this point
@@ -90,13 +81,13 @@ describe("MessageList - stable keys across the optimistic→real swap", () => {
   });
 
   it("a genuinely new message (real→real id change) still gets a new node", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), [
       greeting,
       msg(5, "user", "swap me"),
     ]);
 
-    render(<MessageList chatId={1} />, { wrapper: createWrapper(qc) });
+    renderWithQueryClient(<MessageList chatId={1} />, { client: qc });
 
     const originalNode = screen.getByText("swap me");
 
@@ -110,13 +101,13 @@ describe("MessageList - stable keys across the optimistic→real swap", () => {
   });
 
   it("does not reuse the key when content differs at the swap index", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), [
       greeting,
       msg(-1002, "user", "draft text"),
     ]);
 
-    render(<MessageList chatId={1} />, { wrapper: createWrapper(qc) });
+    renderWithQueryClient(<MessageList chatId={1} />, { client: qc });
 
     const draftNode = screen.getByText("draft text");
 

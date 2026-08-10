@@ -225,7 +225,11 @@ def _resolve_backend(node_id: str) -> bool:
         target = getattr(target, part, None)
         if target is None:
             return False
-    return True
+    # Callable, not merely present. Resolving by attribute alone accepted
+    # anything non-None at the leaf, so `test_x = "disabled"` registered as a
+    # proof pytest would never collect - the registry would report a guarantee
+    # as proven by something that cannot run.
+    return callable(target)
 
 
 def _resolve_frontend(node_id: str) -> bool:
@@ -347,6 +351,22 @@ class TestTheRegistryCanActuallyFail:
                         "::test_nothing") is False
         assert _resolve("tests/test_no_such_module.py::test_nothing") is False
         assert _resolve("frontend/src/test/nope.test.ts::S-99") is False
+
+    def test_a_registered_name_that_cannot_run_is_not_a_proof(self) -> None:
+        """Resolving by attribute alone accepted anything non-None.
+
+        A guarantee registered against `test_x = "disabled"` would have read as
+        proven, while pytest collected nothing: the attribute exists, so the
+        walk succeeded. The registry's whole job is to make an unproven promise
+        impossible, and a name that cannot run proves nothing.
+        """
+        assert _resolve(
+            "tests/test_privacy_contract.py::SECTION_DIGEST") is False, (
+            "a string attribute resolved as if it were a test"
+        )
+        # And the walk still accepts the real thing, so this did not simply
+        # break resolution for everyone.
+        assert _resolve("tests/test_privacy_contract.py::_resolve") is True
 
     def test_a_proof_that_does_exist_resolves(self) -> None:
         assert _resolve(

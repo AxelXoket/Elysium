@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { mockFetch } from "@/test/mocks/api";
 import {
   characterFixture,
@@ -19,15 +19,12 @@ import type { Model, ModelList } from "@/lib/schemas/models";
 import type { Message } from "@/lib/schemas/chats";
 
 function wrapper({ children }: { children: React.ReactNode }) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: 0 } },
-  });
   return (
-    <QueryClientProvider client={qc}>
+    
       <TooltipProvider>
         <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
       </TooltipProvider>
-    </QueryClientProvider>
+    
   );
 }
 
@@ -47,7 +44,7 @@ describe("Model Panel Tests", () => {
       "/models/openrouter": { body: modelListFixture },
     });
 
-    render(<ModelPanel />, { wrapper });
+    renderWithQueryClient(<ModelPanel />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByText("GPT-4o")).toBeInTheDocument();
@@ -60,7 +57,7 @@ describe("Model Panel Tests", () => {
       "/models/openrouter": { body: modelListFixture },
     });
 
-    render(<ModelPanel />, { wrapper });
+    renderWithQueryClient(<ModelPanel />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByTestId("model-source-badge")).toHaveTextContent("user");
@@ -74,7 +71,7 @@ describe("Model Panel Tests", () => {
       "/models/openrouter": { body: modelListFallbackFixture },
     });
 
-    render(<ModelPanel />, { wrapper });
+    renderWithQueryClient(<ModelPanel />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByTestId("fallback-reason")).toHaveTextContent(
@@ -94,7 +91,7 @@ describe("Model Panel Tests", () => {
       },
     });
 
-    render(<ModelPanel />, { wrapper });
+    renderWithQueryClient(<ModelPanel />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByTestId("fallback-reason")).toHaveTextContent(
@@ -110,7 +107,7 @@ describe("Model Panel Tests", () => {
       },
     });
 
-    render(<ModelPanel />, { wrapper });
+    renderWithQueryClient(<ModelPanel />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByTestId("fallback-reason")).toHaveTextContent(
@@ -126,7 +123,7 @@ describe("Model Panel Tests", () => {
       "/models/openrouter": { body: modelListFixture },
     });
 
-    render(<ModelPanel />, { wrapper });
+    renderWithQueryClient(<ModelPanel />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByText("GPT-4o")).toBeInTheDocument();
@@ -156,7 +153,7 @@ describe("Model Panel Tests", () => {
       "/models/openrouter": { body: modelListFixture },
     });
 
-    render(<ModelPanel />, { wrapper });
+    renderWithQueryClient(<ModelPanel />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByText("GPT-4o")).toBeInTheDocument();
@@ -185,7 +182,7 @@ describe("Model Panel Tests", () => {
       "/models/openrouter": { body: modelListFixture },
     });
 
-    render(<ModelPanel />, { wrapper });
+    renderWithQueryClient(<ModelPanel />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByText("GPT-4o")).toBeInTheDocument();
@@ -204,7 +201,7 @@ describe("Model Panel Tests", () => {
       "/models/openrouter": { body: modelListFixture },
     });
 
-    render(<ModelPanel />, { wrapper });
+    renderWithQueryClient(<ModelPanel />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByText("GPT-4o")).toBeInTheDocument();
@@ -225,7 +222,7 @@ describe("Model Panel Tests", () => {
       "/models/openrouter": { body: modelListFixture },
     });
 
-    render(<ModelPanel />, { wrapper });
+    renderWithQueryClient(<ModelPanel />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByText("GPT-4o")).toBeInTheDocument();
@@ -352,7 +349,7 @@ describe("Context usage meter", () => {
     // percent = 210 / 775 * 100 = 27.09...% -> normal.
     mockMeterRoutes([meterMsg(1, "x".repeat(600))]);
 
-    render(<ModelPanel />, { wrapper });
+    renderWithQueryClient(<ModelPanel />, { wrapper });
 
     const meter = await screen.findByTestId("context-usage-meter");
     expect(meter).toHaveAttribute("data-state", "normal");
@@ -367,7 +364,7 @@ describe("Context usage meter", () => {
     // 1800 chars: used = ceil((30 + 1800) / 3) = 610 -> 78.7% -> warning.
     mockMeterRoutes([meterMsg(1, "x".repeat(1800))]);
 
-    const { unmount } = render(<ModelPanel />, { wrapper });
+    const { unmount } = renderWithQueryClient(<ModelPanel />, { wrapper });
 
     const meter = await screen.findByTestId("context-usage-meter");
     expect(meter).toHaveTextContent("Context ≈ 610 / 775 tokens · 1 msg");
@@ -379,7 +376,7 @@ describe("Context usage meter", () => {
     // -> 93.8% -> danger (2150 <= 2295, so nothing is dropped).
     mockMeterRoutes([meterMsg(1, "x".repeat(2150))]);
 
-    render(<ModelPanel />, { wrapper });
+    renderWithQueryClient(<ModelPanel />, { wrapper });
 
     const dangerMeter = await screen.findByTestId("context-usage-meter");
     expect(dangerMeter).toHaveTextContent("Context ≈ 727 / 775 tokens · 1 msg");
@@ -391,7 +388,7 @@ describe("Context usage meter", () => {
     // used = ceil((30 + 1200) / 3) = 410 tokens.
     mockMeterRoutes([meterMsg(1, "a".repeat(1200)), meterMsg(2, "b".repeat(1200))]);
 
-    render(<ModelPanel />, { wrapper });
+    renderWithQueryClient(<ModelPanel />, { wrapper });
 
     const meter = await screen.findByTestId("context-usage-meter");
     expect(meter).toHaveTextContent(
@@ -402,7 +399,7 @@ describe("Context usage meter", () => {
   it("updates the numbers live when the selected model changes", async () => {
     mockMeterRoutes([meterMsg(1, "x".repeat(600))]);
 
-    render(<ModelPanel />, { wrapper });
+    renderWithQueryClient(<ModelPanel />, { wrapper });
 
     const meter = await screen.findByTestId("context-usage-meter");
     expect(meter).toHaveTextContent("Context ≈ 210 / 775 tokens · 1 msg");
@@ -424,7 +421,7 @@ describe("Context usage meter", () => {
     // which rounds to an aria-valuenow of 27.
     mockMeterRoutes([meterMsg(1, "x".repeat(600))]);
 
-    render(<ModelPanel />, { wrapper });
+    renderWithQueryClient(<ModelPanel />, { wrapper });
 
     await screen.findByTestId("context-usage-meter");
     const bar = screen.getByRole("progressbar");
@@ -447,7 +444,7 @@ describe("Context usage meter", () => {
     useUiStore.setState({ selectedModelId: null });
     mockMeterRoutes([meterMsg(1, "x".repeat(600))]);
 
-    render(<ModelPanel />, { wrapper });
+    renderWithQueryClient(<ModelPanel />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByText("Meter Model")).toBeInTheDocument();
@@ -460,7 +457,7 @@ describe("Context usage meter", () => {
     useUiStore.setState({ selectedChatId: null });
     mockMeterRoutes([]);
 
-    render(<ModelPanel />, { wrapper });
+    renderWithQueryClient(<ModelPanel />, { wrapper });
 
     const empty = await screen.findByTestId("context-usage-empty");
     expect(empty).toHaveTextContent("Select a chat to see context usage");

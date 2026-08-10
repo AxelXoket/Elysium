@@ -69,6 +69,22 @@ class TestWhenItIsArmed:
                               headers={launch_token.HEADER: armed})
         assert response.status_code == 200
 
+    def test_the_vault_routes_need_it_too(self, client, armed: str) -> None:
+        """The route this gate exists FOR, and the one nothing was checking.
+
+        vault_gate deliberately lets /vault/* through - it has to, or the
+        passphrase screen could never reach unlock. The launch gate sits
+        OUTSIDE it precisely so that exemption does not become a hole. Every
+        other test here uses /settings or /characters, so a future change that
+        exempted /vault/* "for symmetry with vault_gate" would reopen
+        unauthenticated unlock probing with the suite still green.
+        """
+        for path in ("/api/v1/vault/status", "/api/v1/vault/unlock"):
+            response = client.post(path, json={"passphrase": "irrelevant"}) \
+                if path.endswith("unlock") else client.get(path)
+            assert response.status_code == 403, path
+            assert response.json()["detail"] == "launch_token_invalid", path
+
     def test_a_write_without_it_is_refused_too(self, client, armed: str
                                                ) -> None:
         response = client.post("/api/v1/characters",

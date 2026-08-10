@@ -11,13 +11,16 @@
  *    restore) and pushes a toast
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { renderHook, waitFor, act } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { waitFor, act } from "@testing-library/react";
+import type { QueryClient } from "@tanstack/react-query";
+import {
+  createTestQueryClient,
+  renderHookWithQueryClient,
+} from "@/test/helpers/renderWithQueryClient";
 import { useActivateVariant } from "@/lib/query/chats";
 import { keys } from "@/lib/query/keys";
 import { useErrorStore } from "@/lib/errors";
 import type { Message } from "@/lib/schemas/chats";
-import type { ReactNode } from "react";
 
 function variantMsg(
   id: number,
@@ -66,16 +69,6 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-function createWrapper(qc: QueryClient) {
-  return function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
-  };
-}
-
-function newQueryClient(): QueryClient {
-  return new QueryClient({ defaultOptions: { queries: { retry: false } } });
-}
-
 function activeIds(qc: QueryClient): number[] {
   const rows = qc.getQueryData<Message[]>(keys.messages(1)) ?? [];
   return rows
@@ -94,7 +87,7 @@ describe("useActivateVariant", () => {
   });
 
   it("flips the group optimistically and settles from the response", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), seedGroup());
     let release!: (res: Response) => void;
     vi.stubGlobal(
@@ -104,8 +97,8 @@ describe("useActivateVariant", () => {
       ),
     );
 
-    const { result } = renderHook(() => useActivateVariant(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useActivateVariant(), {
+      client: qc,
     });
 
     act(() => {
@@ -126,7 +119,7 @@ describe("useActivateVariant", () => {
   });
 
   it("skips a stale onSuccess while a newer activate is pending", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), seedGroup());
     const pending: Array<(res: Response) => void> = [];
     vi.stubGlobal(
@@ -136,8 +129,8 @@ describe("useActivateVariant", () => {
       ),
     );
 
-    const { result } = renderHook(() => useActivateVariant(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useActivateVariant(), {
+      client: qc,
     });
 
     // Arrow-mash: activate(11), then activate(10) before the first settles.
@@ -169,7 +162,7 @@ describe("useActivateVariant", () => {
   });
 
   it("rolls back ONLY its group on error and pushes a toast", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), seedGroup());
     vi.stubGlobal(
       "fetch",
@@ -178,8 +171,8 @@ describe("useActivateVariant", () => {
       ),
     );
 
-    const { result } = renderHook(() => useActivateVariant(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useActivateVariant(), {
+      client: qc,
     });
 
     act(() => {

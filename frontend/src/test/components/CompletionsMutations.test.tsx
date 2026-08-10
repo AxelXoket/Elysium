@@ -13,14 +13,17 @@
  *  - regenerate errors push a toast and leave the cache intact
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { renderHook, waitFor, act } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { waitFor, act } from "@testing-library/react";
+import type { QueryClient } from "@tanstack/react-query";
+import {
+  createTestQueryClient,
+  renderHookWithQueryClient,
+} from "@/test/helpers/renderWithQueryClient";
 import { useSendMessage, useRegenerateMessage } from "@/lib/query/completions";
 import { keys } from "@/lib/query/keys";
 import { useErrorStore } from "@/lib/errors";
 import { modelFixture, personaFixture } from "../mocks/fixtures";
 import type { Message } from "@/lib/schemas/chats";
-import type { ReactNode } from "react";
 
 function msg(id: number, role: "user" | "assistant", content: string): Message {
   return {
@@ -72,18 +75,6 @@ function deferredFetch(matcher: string) {
   return { fetchMock, pending, bodies };
 }
 
-function createWrapper(qc: QueryClient) {
-  return function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
-  };
-}
-
-function newQueryClient(): QueryClient {
-  return new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  });
-}
-
 function messagesInCache(qc: QueryClient): Message[] {
   return qc.getQueryData<Message[]>(keys.messages(1)) ?? [];
 }
@@ -101,12 +92,12 @@ describe("useSendMessage race behavior", () => {
   });
 
   it("onSuccess removes only its own optimistic message", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), [seedMessage]);
     const { pending } = deferredFetch("/chats/1/complete");
 
-    const { result } = renderHook(() => useSendMessage(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useSendMessage(), {
+      client: qc,
     });
 
     await act(async () => {
@@ -152,12 +143,12 @@ describe("useSendMessage race behavior", () => {
   });
 
   it("onError removes only its own optimistic message and pushes no toast", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), [seedMessage]);
     const { pending } = deferredFetch("/chats/1/complete");
 
-    const { result } = renderHook(() => useSendMessage(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useSendMessage(), {
+      client: qc,
     });
 
     await act(async () => {
@@ -220,12 +211,12 @@ describe("useRegenerateMessage", () => {
   const chatMessages = [msg(1, "user", "prompt"), msg(2, "assistant", "old answer")];
 
   it("builds the body via buildRegeneratePayload and keeps the old message while pending", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), chatMessages);
     const { fetchMock, pending, bodies } = deferredFetch("/regenerate");
 
-    const { result } = renderHook(() => useRegenerateMessage(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useRegenerateMessage(), {
+      client: qc,
     });
 
     await act(async () => {
@@ -295,12 +286,12 @@ describe("useRegenerateMessage", () => {
   });
 
   it("pushes a toast and leaves the cache intact on error", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), chatMessages);
     const { pending } = deferredFetch("/regenerate");
 
-    const { result } = renderHook(() => useRegenerateMessage(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useRegenerateMessage(), {
+      client: qc,
     });
 
     await act(async () => {

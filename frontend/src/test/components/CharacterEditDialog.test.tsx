@@ -10,9 +10,12 @@
  *  - Errors render as safe mapped messages (never raw detail)
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  renderWithQueryClient,
+  createTestQueryClient,
+} from "@/test/helpers/renderWithQueryClient";
 import { mockFetch } from "@/test/mocks/api";
 import { characterFixture } from "@/test/mocks/fixtures";
 import { CharacterEditDialog } from "@/components/characters/CharacterEditDialog";
@@ -22,23 +25,6 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useUiStore } from "@/lib/store/uiStore";
 import { CHARACTER_DELETE_CASCADE_WARNING } from "@/lib/characters";
 import { keys } from "@/lib/query/keys";
-import type { ReactNode } from "react";
-
-function makeWrapper(qc: QueryClient) {
-  return function Wrapper({ children }: { children: ReactNode }) {
-    return (
-      <QueryClientProvider client={qc}>
-        <TooltipProvider>{children}</TooltipProvider>
-      </QueryClientProvider>
-    );
-  };
-}
-
-function newQueryClient() {
-  return new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: 0 } },
-  });
-}
 
 async function openDialog(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("button", { name: "Edit" }));
@@ -59,12 +45,12 @@ describe("Character Edit Dialog Tests", () => {
   it("prefills every field from the character", async () => {
     mockFetch({});
     const user = userEvent.setup();
-    render(
+    renderWithQueryClient(
       <CharacterEditDialog
         character={characterFixture}
         trigger={<Button>Edit</Button>}
       />,
-      { wrapper: makeWrapper(newQueryClient()) },
+      { wrapper: TooltipProvider },
     );
 
     await openDialog(user);
@@ -99,12 +85,12 @@ describe("Character Edit Dialog Tests", () => {
       },
     });
     const user = userEvent.setup();
-    render(
+    renderWithQueryClient(
       <CharacterEditDialog
         character={characterFixture}
         trigger={<Button>Edit</Button>}
       />,
-      { wrapper: makeWrapper(newQueryClient()) },
+      { wrapper: TooltipProvider },
     );
 
     await openDialog(user);
@@ -131,12 +117,12 @@ describe("Character Edit Dialog Tests", () => {
   it("saving with no changes closes without a PATCH request", async () => {
     const fetchMock = mockFetch({});
     const user = userEvent.setup();
-    render(
+    renderWithQueryClient(
       <CharacterEditDialog
         character={characterFixture}
         trigger={<Button>Edit</Button>}
       />,
-      { wrapper: makeWrapper(newQueryClient()) },
+      { wrapper: TooltipProvider },
     );
 
     await openDialog(user);
@@ -154,12 +140,12 @@ describe("Character Edit Dialog Tests", () => {
   it("delete confirm shows CHARACTER_DELETE_CASCADE_WARNING verbatim and focuses confirm", async () => {
     mockFetch({});
     const user = userEvent.setup();
-    render(
+    renderWithQueryClient(
       <CharacterEditDialog
         character={characterFixture}
         trigger={<Button>Edit</Button>}
       />,
-      { wrapper: makeWrapper(newQueryClient()) },
+      { wrapper: TooltipProvider },
     );
 
     await openDialog(user);
@@ -180,12 +166,12 @@ describe("Character Edit Dialog Tests", () => {
   it("cancel backs out of the delete confirm without deleting", async () => {
     const fetchMock = mockFetch({});
     const user = userEvent.setup();
-    render(
+    renderWithQueryClient(
       <CharacterEditDialog
         character={characterFixture}
         trigger={<Button>Edit</Button>}
       />,
-      { wrapper: makeWrapper(newQueryClient()) },
+      { wrapper: TooltipProvider },
     );
 
     await openDialog(user);
@@ -212,17 +198,17 @@ describe("Character Edit Dialog Tests", () => {
     const fetchMock = mockFetch({
       "/characters/1": { body: { ok: true } },
     });
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
     useUiStore.setState({ selectedCharacterId: 1, selectedChatId: 5 });
 
     const user = userEvent.setup();
-    render(
+    renderWithQueryClient(
       <CharacterEditDialog
         character={characterFixture}
         trigger={<Button>Edit</Button>}
       />,
-      { wrapper: makeWrapper(qc) },
+      { client: qc, wrapper: TooltipProvider },
     );
 
     await openDialog(user);
@@ -269,12 +255,12 @@ describe("Character Edit Dialog Tests", () => {
     useUiStore.setState({ selectedCharacterId: 2, selectedChatId: 9 });
 
     const user = userEvent.setup();
-    render(
+    renderWithQueryClient(
       <CharacterEditDialog
         character={characterFixture}
         trigger={<Button>Edit</Button>}
       />,
-      { wrapper: makeWrapper(newQueryClient()) },
+      { wrapper: TooltipProvider },
     );
 
     await openDialog(user);
@@ -295,12 +281,12 @@ describe("Character Edit Dialog Tests", () => {
   it("patch failure renders a safe mapped message, never raw detail", async () => {
     const fetchMock = mockFetch({});
     const user = userEvent.setup();
-    render(
+    renderWithQueryClient(
       <CharacterEditDialog
         character={characterFixture}
         trigger={<Button>Edit</Button>}
       />,
-      { wrapper: makeWrapper(newQueryClient()) },
+      { wrapper: TooltipProvider },
     );
 
     await openDialog(user);
@@ -333,8 +319,8 @@ describe("Character Edit Dialog Tests", () => {
     useUiStore.setState({ selectedCharacterId: 2, selectedChatId: null });
 
     const user = userEvent.setup();
-    render(<CharacterCard character={characterFixture} />, {
-      wrapper: makeWrapper(newQueryClient()),
+    renderWithQueryClient(<CharacterCard character={characterFixture} />, {
+      wrapper: TooltipProvider,
     });
 
     await user.click(
@@ -353,8 +339,8 @@ describe("Character Edit Dialog Tests", () => {
     useUiStore.setState({ selectedCharacterId: null, selectedChatId: null });
 
     const user = userEvent.setup();
-    render(<CharacterCard character={characterFixture} />, {
-      wrapper: makeWrapper(newQueryClient()),
+    renderWithQueryClient(<CharacterCard character={characterFixture} />, {
+      wrapper: TooltipProvider,
     });
 
     await user.click(
@@ -376,12 +362,12 @@ describe("Character Edit Dialog Tests", () => {
       },
     });
     const user = userEvent.setup();
-    render(
+    renderWithQueryClient(
       <CharacterEditDialog
         character={characterFixture}
         trigger={<Button>Edit</Button>}
       />,
-      { wrapper: makeWrapper(newQueryClient()) },
+      { wrapper: TooltipProvider },
     );
 
     await openDialog(user);

@@ -11,9 +11,9 @@
  * easy half.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { ChatCanvas } from "@/components/chat/ChatCanvas";
 import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
 import { useUiStore } from "@/lib/store/uiStore";
@@ -23,13 +23,10 @@ import { settingsFixture, messageFixture } from "../mocks/fixtures";
 import type { ReactNode } from "react";
 
 function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
   return (
-    <QueryClientProvider client={qc}>
+    
       <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
-    </QueryClientProvider>
+    
   );
 }
 
@@ -50,7 +47,7 @@ async function sendAgainst(status: number, detail: string) {
     "/chats/1/messages": { body: [messageFixture] },
     "/chats/1/complete": { status, body: { detail } },
   });
-  render(<ChatCanvas />, { wrapper });
+  renderWithQueryClient(<ChatCanvas />, { wrapper });
 
   await waitFor(() => {
     expect(screen.getByLabelText("Message")).not.toBeDisabled();

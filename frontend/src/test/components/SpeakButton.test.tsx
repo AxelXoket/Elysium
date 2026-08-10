@@ -7,10 +7,9 @@
  * talk over each other; a refusal surfaces through the shared error store
  * with the backend's own code.
  */
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/api/tts", async (importOriginal) => ({
@@ -45,10 +44,6 @@ import { useVoicePlayer } from "@/lib/voice/playerStore";
 import { mockFetch } from "../mocks/api";
 import { stubAudioContext } from "../helpers/fakeAudioContext";
 
-function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
-}
 
 const ACTIVE = {
   uid: "u1", state: "unloaded", engine_id: "fish_s2",
@@ -75,7 +70,7 @@ describe("SpeakButton", () => {
         body: { ...ACTIVE, uid: null, engine_id: null },
       },
     });
-    render(<SpeakButton messageId={5} />, { wrapper });
+    renderWithQueryClient(<SpeakButton messageId={5} />);
     // Settled-query control (audit-2: a raw sleep could not distinguish
     // "correctly hidden" from "query broke"): wait until the active query
     // has actually been fetched, then assert the DELIBERATE absence.
@@ -100,7 +95,7 @@ describe("SpeakButton", () => {
         },
       },
     });
-    render(<SpeakButton messageId={5} />, { wrapper });
+    renderWithQueryClient(<SpeakButton messageId={5} />);
     await waitFor(() =>
       expect(
         fetchMock.mock.calls.some(([url]) => String(url).includes("/tts/active")),
@@ -112,7 +107,7 @@ describe("SpeakButton", () => {
 
   it("speaks by message_id and flips to a stop control while playing", async () => {
     mockFetch({ "/tts/active": { body: ACTIVE } });
-    render(<SpeakButton messageId={9} />, { wrapper });
+    renderWithQueryClient(<SpeakButton messageId={9} />);
 
     await userEvent.click(await screen.findByLabelText("Speak message"));
 
@@ -158,7 +153,7 @@ describe("SpeakButton", () => {
         detail: "tts_insufficient_vram",
       }),
     );
-    render(<SpeakButton messageId={3} />, { wrapper });
+    renderWithQueryClient(<SpeakButton messageId={3} />);
     await userEvent.click(await screen.findByLabelText("Speak message"));
 
     await waitFor(() => {

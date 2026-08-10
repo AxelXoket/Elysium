@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
+import { screen, waitFor, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { ChatCanvas } from "@/components/chat/ChatCanvas";
 import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
 import { useUiStore } from "@/lib/store/uiStore";
@@ -11,13 +11,10 @@ import type { Message } from "@/lib/schemas/chats";
 import type { ReactNode } from "react";
 
 function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
   return (
-    <QueryClientProvider client={qc}>
+    
       <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
-    </QueryClientProvider>
+    
   );
 }
 
@@ -38,7 +35,7 @@ describe("Messages", () => {
   // "Welcome to" label + the Elysium wordmark (two nodes), so assert on the
   // stable instruction copy instead of the split heading.
   it("T-27: shows empty state when no chat selected", () => {
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     expect(
       screen.getByText("Select a character and start a chat to begin."),
     ).toBeInTheDocument();
@@ -52,7 +49,7 @@ describe("Messages", () => {
     });
     useUiStore.setState({ selectedChatId: 1 });
 
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     expect(
       await screen.findByText("Hello! I'm a test character."),
@@ -61,14 +58,14 @@ describe("Messages", () => {
 
   // T-29: Composer send is disabled
   it("T-29: composer send button is disabled", () => {
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     const sendBtn = screen.getByRole("button", { name: /send message/i });
     expect(sendBtn).toBeDisabled();
   });
 
   // T-30: Composer input is disabled when no chat selected
   it("T-30: composer input is disabled", () => {
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     const input = screen.getByLabelText("Message");
     expect(input).toBeDisabled();
   });
@@ -106,7 +103,7 @@ describe("Message attachments", () => {
       },
     });
 
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     expect(await screen.findByText("Look at these")).toBeInTheDocument();
     const thumbs = screen.getAllByAltText("attached image");
@@ -129,7 +126,7 @@ describe("Message attachments", () => {
       },
     });
 
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await screen.findByText("Look at these");
 
     // Two thumbnails; the lightbox is closed
@@ -160,7 +157,7 @@ describe("Message attachments", () => {
       },
     });
 
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await screen.findByText("Look at these");
     const thumbs = screen.getAllByAltText("attached image");
@@ -188,7 +185,7 @@ describe("Message attachments", () => {
       },
     });
 
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await screen.findByText("Look at these");
 
     await user.click(
@@ -207,7 +204,7 @@ describe("Message attachments", () => {
       "/chats/1/messages": { body: [messageFixture] },
     });
 
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     expect(
       await screen.findByText("Hello! I'm a test character."),
@@ -238,7 +235,7 @@ describe("Message attachments", () => {
         ],
       },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     const img = (await screen.findByAltText("attached image")) as HTMLImageElement;
     // The box is styled explicitly - NOT h-auto/w-auto - so the unloaded img
@@ -260,7 +257,7 @@ describe("Message attachments", () => {
       content: `msg ${i + 1}`,
     })) as Message[];
     mockFetch({ "/chats/1/messages": { body: many } });
-    const { container } = render(<ChatCanvas />, { wrapper });
+    const { container } = renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await screen.findByText("msg 40");
     const list = container.querySelector(".space-y-4") as HTMLElement;

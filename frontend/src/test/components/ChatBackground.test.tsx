@@ -7,9 +7,9 @@
  * machine around them are what this file pins.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { screen, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import {
   hexLum,
   resolveTint,
@@ -25,13 +25,10 @@ import { mockFetch } from "../mocks/api";
 import type { ReactNode } from "react";
 
 function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
   return (
-    <QueryClientProvider client={qc}>
+    
       <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
-    </QueryClientProvider>
+    
   );
 }
 
@@ -154,7 +151,7 @@ describe("Background settings page", () => {
   it("without an image: controls disabled, no Remove, interlock note shown", async () => {
     const user = userEvent.setup();
     mockFetch({});
-    render(<SidebarFooter />, { wrapper });
+    renderWithQueryClient(<SidebarFooter />, { wrapper });
     await openBackgroundPage(user);
 
     expect(
@@ -170,7 +167,7 @@ describe("Background settings page", () => {
     const user = userEvent.setup();
     mockFetch({});
     useUiStore.setState({ chatBgOn: true, chatBgLum: 0.3 });
-    render(<SidebarFooter />, { wrapper });
+    renderWithQueryClient(<SidebarFooter />, { wrapper });
     await user.click(screen.getByRole("button", { name: "Open settings" }));
     await user.click(await screen.findByText("Chat background"));
 

@@ -13,9 +13,9 @@
  *       computed from a stale render closure).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, fireEvent, waitFor, act, renderHook } from "@testing-library/react";
+import { screen, fireEvent, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import { ChatCanvas } from "@/components/chat/ChatCanvas";
 import { useStreamingCompletion } from "@/lib/chat/useStreamingCompletion";
 import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
@@ -36,29 +36,24 @@ import {
   modelFixture,
   chatFixture,
 } from "../mocks/fixtures";
-import type { ReactNode } from "react";
 import type { Chat } from "@/lib/schemas/chats";
 import type { ModelList } from "@/lib/schemas/models";
+import {
+  renderWithQueryClient,
+  renderHookWithQueryClient,
+  createTestQueryClient,
+} from "@/test/helpers/renderWithQueryClient";
 
 // Capture the QueryClient a render uses so F3 can mutate the chats query.
 let lastQueryClient: QueryClient;
 
-function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
+function renderChatCanvas() {
+  const qc = createTestQueryClient();
   lastQueryClient = qc;
-  return (
-    <QueryClientProvider client={qc}>
-      <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
-    </QueryClientProvider>
-  );
-}
-
-function hookWrapper(qc: QueryClient) {
-  return function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
-  };
+  return renderWithQueryClient(<ChatCanvas />, {
+    client: qc,
+    wrapper: GenerationSettingsProvider,
+  });
 }
 
 function setupReadyState() {
@@ -185,7 +180,7 @@ describe("Chat layer bug fixes", () => {
       "/chats/2/messages": { body: [] },
       "/chats": { body: [] },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderChatCanvas();
     await waitForComposerReady();
 
     const textarea = () =>
@@ -215,7 +210,7 @@ describe("Chat layer bug fixes", () => {
       "/chats/2/complete/stream": { sse: sseEventsFor(completionFixture) },
       "/chats": { body: [] },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderChatCanvas();
     await waitForComposerReady();
 
     const textarea = () =>
@@ -254,7 +249,7 @@ describe("Chat layer bug fixes", () => {
       "/chats/1/complete/stream": { sse: sseEventsFor(completionFixture) },
       "/chats": { body: [] },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderChatCanvas();
     await waitForComposerReady();
     await waitForAttachReady();
 
@@ -305,7 +300,7 @@ describe("Chat layer bug fixes", () => {
       "/uploads/images": uploadRoute(11),
       "/chats": { body: [chatFixture, chat2] },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderChatCanvas();
     await waitForComposerReady();
     await waitForAttachReady();
 
@@ -341,7 +336,7 @@ describe("Chat layer bug fixes", () => {
       "/uploads/images": uploadRoute(11),
       "/chats": { body: [chatFixture] },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderChatCanvas();
     await waitForComposerReady();
     await waitForAttachReady();
 
@@ -363,18 +358,17 @@ describe("Chat layer bug fixes", () => {
   // ── F4: abort in-flight streams on unmount ─────────────────────
 
   it("F4: unmounting the hook host aborts in-flight streams", async () => {
-    const qc = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
+    const qc = createTestQueryClient();
     const stream = controlledSseResponse();
     mockFetchWithStreams({
       "/chats/1/complete/stream": { response: () => stream.response },
     });
 
     const abortSpy = vi.spyOn(AbortController.prototype, "abort");
-    const { result, unmount } = renderHook(() => useStreamingCompletion(), {
-      wrapper: hookWrapper(qc),
-    });
+    const { result, unmount } = renderHookWithQueryClient(
+      () => useStreamingCompletion(),
+      { client: qc },
+    );
 
     let sendPromise!: Promise<void>;
     await act(async () => {
@@ -408,7 +402,7 @@ describe("Chat layer bug fixes", () => {
       "/uploads/images": uploadRoute(11),
       "/chats": { body: [] },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderChatCanvas();
     await waitForComposerReady();
     await waitForAttachReady();
 

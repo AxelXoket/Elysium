@@ -7,9 +7,9 @@
  * Settings root toggle wiring.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import {
   MistCanvas,
   CanvasMist,
@@ -22,13 +22,10 @@ import { mockFetch } from "../mocks/api";
 import type { ReactNode } from "react";
 
 function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
   return (
-    <QueryClientProvider client={qc}>
+    
       <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
-    </QueryClientProvider>
+    
   );
 }
 
@@ -64,25 +61,25 @@ describe("MistCanvas gating ladder", () => {
   it("renders nothing when the toggle is off", () => {
     stubMatchMedia(["min-width: 901px"]);
     useUiStore.setState({ ambientFogOn: false });
-    const { container } = render(<MistCanvas />);
+    const { container } = renderWithQueryClient(<MistCanvas />);
     expect(container.querySelector("canvas")).toBeNull();
   });
 
   it("renders nothing under prefers-reduced-motion", () => {
     stubMatchMedia(["min-width: 901px", "prefers-reduced-motion"]);
-    const { container } = render(<MistCanvas />);
+    const { container } = renderWithQueryClient(<MistCanvas />);
     expect(container.querySelector("canvas")).toBeNull();
   });
 
   it("renders nothing on small viewports (fog fully covered by the frame)", () => {
     stubMatchMedia([]); // desktop query does not match
-    const { container } = render(<MistCanvas />);
+    const { container } = renderWithQueryClient(<MistCanvas />);
     expect(container.querySelector("canvas")).toBeNull();
   });
 
   it("falls back permanently when WebGL is unavailable (jsdom)", async () => {
     stubMatchMedia(["min-width: 901px"]);
-    const { container } = render(<MistCanvas />);
+    const { container } = renderWithQueryClient(<MistCanvas />);
     // The canvas mounts, getContext("webgl") returns null in jsdom, and the
     // component settles into the static-gradient fallback (no canvas).
     await waitFor(() => {
@@ -106,19 +103,19 @@ describe("CanvasMist (in-canvas frosted-glass fog)", () => {
   it("follows the same toggle as the backdrop fog", () => {
     stubMatchMedia(["min-width: 901px"]);
     useUiStore.setState({ ambientFogOn: false });
-    const { container } = render(<CanvasMist />);
+    const { container } = renderWithQueryClient(<CanvasMist />);
     expect(container.querySelector(".canvas-mist")).toBeNull();
   });
 
   it("renders nothing under prefers-reduced-motion", () => {
     stubMatchMedia(["min-width: 901px", "prefers-reduced-motion"]);
-    const { container } = render(<CanvasMist />);
+    const { container } = renderWithQueryClient(<CanvasMist />);
     expect(container.querySelector(".canvas-mist")).toBeNull();
   });
 
   it("mounts the fog canvas under the milk veil, then falls back cleanly without WebGL (jsdom)", async () => {
     stubMatchMedia(["min-width: 901px"]);
-    const { container } = render(<CanvasMist />);
+    const { container } = renderWithQueryClient(<CanvasMist />);
     // Wrapper + milk render synchronously; jsdom then reports no WebGL and
     // the whole layer unmounts to the static fallback.
     await waitFor(() => {
@@ -143,14 +140,14 @@ describe("PanelMist (frosted side panels)", () => {
   it("follows the shared toggle", () => {
     stubMatchMedia(["min-width: 901px"]);
     useUiStore.setState({ ambientFogOn: false });
-    const { container } = render(<PanelMist side="left" />);
+    const { container } = renderWithQueryClient(<PanelMist side="left" />);
     expect(container.querySelector(".panel-mist")).toBeNull();
   });
 
   it("falls back cleanly without WebGL for both sides (jsdom)", async () => {
     stubMatchMedia(["min-width: 901px"]);
-    const left = render(<PanelMist side="left" />);
-    const right = render(<PanelMist side="right" />);
+    const left = renderWithQueryClient(<PanelMist side="left" />);
+    const right = renderWithQueryClient(<PanelMist side="right" />);
     await waitFor(() => {
       expect(left.container.querySelector(".panel-mist")).toBeNull();
       expect(right.container.querySelector(".panel-mist")).toBeNull();
@@ -167,7 +164,7 @@ describe("Ambient mist settings toggle", () => {
   it("flips the persisted flag from the Settings root page", async () => {
     const user = userEvent.setup();
     mockFetch({});
-    render(<SidebarFooter />, { wrapper });
+    renderWithQueryClient(<SidebarFooter />, { wrapper });
 
     await user.click(screen.getByRole("button", { name: "Open settings" }));
     const toggle = await screen.findByRole("switch", {

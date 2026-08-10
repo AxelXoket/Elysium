@@ -83,10 +83,9 @@ class TestTheSettingIsReadSafely:
             _ for _ in ()).throw(RuntimeError("vault_locked")))
         assert auto_lock.configured_minutes() == 0
 
-    def test_a_value_below_the_floor_is_treated_as_off(self, client) -> None:
-        from database import set_setting
-        set_setting(auto_lock.SETTING, "0")
-        assert auto_lock.configured_minutes() == 0
+    # Removed 2026-08-10: test_a_value_below_the_floor_is_treated_as_off.
+    # It set "0" and asserted 0, which the parametrized case above already
+    # covers ("0" is in its table). Byte-for-byte the same exercise.
 
 
 class TestTheIdleClock:

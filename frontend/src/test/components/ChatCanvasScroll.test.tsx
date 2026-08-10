@@ -8,8 +8,8 @@
  *   own message -> always descends; assistant while away -> pulse, no yank.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor, act, fireEvent } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { screen, waitFor, act, fireEvent } from "@testing-library/react";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { ChatCanvas } from "@/components/chat/ChatCanvas";
 import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
 import { useUiStore } from "@/lib/store/uiStore";
@@ -19,13 +19,10 @@ import type { Message } from "@/lib/schemas/chats";
 import type { ReactNode } from "react";
 
 function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
   return (
-    <QueryClientProvider client={qc}>
+    
       <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
-    </QueryClientProvider>
+    
   );
 }
 
@@ -107,7 +104,7 @@ describe("ChatCanvas scroll + JumpToLatest", () => {
   });
 
   async function renderCanvas() {
-    const utils = render(<ChatCanvas />, { wrapper });
+    const utils = renderWithQueryClient(<ChatCanvas />, { wrapper });
     const stub = stubScroller(utils.container);
     await screen.findByText("question");
     return { ...utils, ...stub };
@@ -276,7 +273,7 @@ describe("first open of an uncached chat", () => {
   });
 
   it("jumps instantly, with scrollTo defined before render", async () => {
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await screen.findByText("question");
     await waitFor(() => expect(protoSpy).toHaveBeenCalled());
 

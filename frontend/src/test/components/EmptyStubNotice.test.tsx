@@ -7,19 +7,12 @@
  * it from repeating that.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { EmptyStubNotice } from "@/components/settings/EmptyStubNotice";
 import { mockFetch } from "../mocks/api";
-import type { ReactNode } from "react";
 
-function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
-}
 
 const BASE = { initialized: true, unlocked: true };
 
@@ -29,7 +22,7 @@ describe("EmptyStubNotice", () => {
 
   it("says nothing when there is no leftover file", async () => {
     mockFetch({ "/vault/status": { body: { ...BASE, empty_stub: false } } });
-    render(<EmptyStubNotice />, { wrapper });
+    renderWithQueryClient(<EmptyStubNotice />);
 
     await waitFor(() => {
       expect(screen.queryByTestId("empty-stub-notice")).not.toBeInTheDocument();
@@ -38,7 +31,7 @@ describe("EmptyStubNotice", () => {
 
   it("names the file when one is there", async () => {
     mockFetch({ "/vault/status": { body: { ...BASE, empty_stub: true } } });
-    render(<EmptyStubNotice />, { wrapper });
+    renderWithQueryClient(<EmptyStubNotice />);
 
     expect(await screen.findByTestId("empty-stub-notice")).toBeInTheDocument();
     // Naming it is the point: the user has to be able to match what the app
@@ -54,7 +47,7 @@ describe("EmptyStubNotice", () => {
       "/vault/status": { body: { ...BASE, empty_stub: true } },
       "/vault/discard-empty-stub": { body: { removed: true, reason: "" } },
     });
-    render(<EmptyStubNotice />, { wrapper });
+    renderWithQueryClient(<EmptyStubNotice />);
 
     await user.click(await screen.findByRole("button", { name: /remove it/i }));
 
@@ -79,7 +72,7 @@ describe("EmptyStubNotice", () => {
         body: { removed: false, reason: "not_empty" },
       },
     });
-    render(<EmptyStubNotice />, { wrapper });
+    renderWithQueryClient(<EmptyStubNotice />);
 
     await user.click(await screen.findByRole("button", { name: /remove it/i }));
 

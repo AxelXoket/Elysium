@@ -7,10 +7,9 @@
  * knowledge in the page); saving sends ONLY what changed; engine setup is one
  * button with a live log line and a cancel; transcripts stay editable.
  */
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { VoiceSettingsPage } from "@/components/settings/VoiceSettingsPage";
@@ -18,10 +17,6 @@ import { getErrorMessage } from "@/lib/errors";
 import { useErrorStore } from "@/lib/errors/errorStore";
 import { mockFetch } from "../mocks/api";
 
-function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
-}
 
 const VOICE_MODE = { enabled: false, active: false, prompt_chars: 3200 };
 
@@ -94,7 +89,7 @@ describe("VoiceSettingsPage", () => {
 
   it("lists a model with EVERY blocker, in the shared error words", async () => {
     mockFetch(baseRoutes());
-    render(<VoiceSettingsPage />, { wrapper });
+    renderWithQueryClient(<VoiceSettingsPage />);
 
     expect(await screen.findByText("s2-pro")).toBeInTheDocument();
     expect(
@@ -109,7 +104,7 @@ describe("VoiceSettingsPage", () => {
 
   it("opens the settings of a model that cannot run - the core promise", async () => {
     mockFetch(baseRoutes());
-    render(<VoiceSettingsPage />, { wrapper });
+    renderWithQueryClient(<VoiceSettingsPage />);
 
     await userEvent.click(await screen.findByLabelText("s2-pro settings"));
     // Schema-driven controls appear even though the model has blockers.
@@ -124,7 +119,7 @@ describe("VoiceSettingsPage", () => {
         body: { uid: "u1", values: { temperature: 1.2, language: "en" }, source_map: {} },
       },
     });
-    render(<VoiceSettingsPage />, { wrapper });
+    renderWithQueryClient(<VoiceSettingsPage />);
 
     await userEvent.click(await screen.findByLabelText("s2-pro settings"));
     const slider = await screen.findByLabelText("Expressiveness slider");
@@ -168,7 +163,7 @@ describe("VoiceSettingsPage", () => {
       return original(url, init);
     });
 
-    render(<VoiceSettingsPage />, { wrapper });
+    renderWithQueryClient(<VoiceSettingsPage />);
     await userEvent.click(await screen.findByLabelText("s2-pro settings"));
 
     fireEvent.change(await screen.findByLabelText("Expressiveness slider"), {
@@ -211,7 +206,7 @@ describe("VoiceSettingsPage", () => {
       },
       ...baseRoutes(),
     });
-    render(<VoiceSettingsPage />, { wrapper });
+    renderWithQueryClient(<VoiceSettingsPage />);
     await userEvent.click(await screen.findByLabelText("s2-pro settings"));
 
     const slider = await screen.findByLabelText("Expressiveness slider");
@@ -241,7 +236,7 @@ describe("VoiceSettingsPage", () => {
         },
       },
     });
-    render(<VoiceSettingsPage />, { wrapper });
+    renderWithQueryClient(<VoiceSettingsPage />);
 
     const nameInput = await screen.findByLabelText("New voice name");
     await userEvent.type(nameInput, "Anna");
@@ -288,7 +283,7 @@ describe("VoiceSettingsPage", () => {
         },
       },
     });
-    render(<VoiceSettingsPage />, { wrapper });
+    renderWithQueryClient(<VoiceSettingsPage />);
 
     await userEvent.type(await screen.findByLabelText("New voice name"), "Anna");
     await userEvent.upload(
@@ -310,7 +305,7 @@ describe("VoiceSettingsPage", () => {
 
   it("a fresh name uploads immediately, with no prompt", async () => {
     const fetchMock = mockFetch(baseRoutes());
-    render(<VoiceSettingsPage />, { wrapper });
+    renderWithQueryClient(<VoiceSettingsPage />);
 
     await userEvent.type(await screen.findByLabelText("New voice name"), "Bella");
     await userEvent.upload(
@@ -340,7 +335,7 @@ describe("VoiceSettingsPage", () => {
       "POST /tts/runtimes/fish_s2/install": { body: runningJob },
       "/tts/runtimes/fish_s2/install": { body: runningJob },
     });
-    render(<VoiceSettingsPage />, { wrapper });
+    renderWithQueryClient(<VoiceSettingsPage />);
 
     const row = await screen.findByTestId("engine-fish_s2");
     expect(row).toHaveTextContent("Fish Audio S2 Pro");
@@ -362,7 +357,7 @@ describe("VoiceSettingsPage", () => {
         },
       },
     });
-    render(<VoiceSettingsPage />, { wrapper });
+    renderWithQueryClient(<VoiceSettingsPage />);
     expect(
       await screen.findByText(getErrorMessage("tts_insufficient_disk")),
     ).toBeInTheDocument();
@@ -383,7 +378,7 @@ describe("VoiceSettingsPage", () => {
         },
       },
     });
-    render(<VoiceSettingsPage />, { wrapper });
+    renderWithQueryClient(<VoiceSettingsPage />);
 
     // The status shares a node with the duration prefix ("8.4s · …").
     expect(
@@ -403,7 +398,7 @@ describe("VoiceSettingsPage", () => {
         body: { enabled: true, active: false, prompt_chars: 3200 },
       },
     });
-    render(<VoiceSettingsPage />, { wrapper });
+    renderWithQueryClient(<VoiceSettingsPage />);
 
     const toggle = await screen.findByRole("switch", { name: "Performed replies" });
     await waitFor(() => expect(toggle).toBeEnabled());
@@ -437,7 +432,7 @@ describe("audit-2 additions", () => {
       },
       ...baseRoutes(),
     });
-    render(<VoiceSettingsPage />, { wrapper });
+    renderWithQueryClient(<VoiceSettingsPage />);
     const toggle = await screen.findByRole("switch", { name: "Performed replies" });
     await waitFor(() => expect(toggle).toBeEnabled());
     await userEvent.click(toggle);
@@ -461,7 +456,7 @@ describe("audit-2 additions", () => {
         },
       },
     });
-    render(<VoiceSettingsPage />, { wrapper });
+    renderWithQueryClient(<VoiceSettingsPage />);
     await userEvent.click(await screen.findByLabelText("s2-pro settings"));
     const select = await screen.findByLabelText("Language");
     expect(select).toHaveValue("legacy-choice");
@@ -475,7 +470,7 @@ describe("audit-2 additions", () => {
       ...baseRoutes(),
       "/tts/models": { status: 500, body: { detail: "internal_error" } },
     });
-    render(<VoiceSettingsPage />, { wrapper });
+    renderWithQueryClient(<VoiceSettingsPage />);
     expect(
       await screen.findByText("Could not scan for voice models. Rescan to retry."),
     ).toBeInTheDocument();
@@ -499,7 +494,7 @@ describe("V6 install presentation", () => {
 
   it("shows the REAL download size before the user commits", async () => {
     mockFetch({ "/tts/runtimes/fish_s2/plan": { body: PLAN }, ...baseRoutes() });
-    render(<VoiceSettingsPage />, { wrapper });
+    renderWithQueryClient(<VoiceSettingsPage />);
     // 4200 MB -> "about 4.1 GB", not the old hand-waved "a few GB".
     expect(await screen.findByText(/about 4\.1 GB to download, once/)).toBeInTheDocument();
   });
@@ -516,7 +511,7 @@ describe("V6 install presentation", () => {
       ...baseRoutes(),
       "/tts/runtimes/fish_s2/install": { body: runningJob },
     });
-    render(<VoiceSettingsPage />, { wrapper });
+    renderWithQueryClient(<VoiceSettingsPage />);
 
     // The phase a person can act on ("do not close this"), not the raw enum.
     expect(
@@ -541,7 +536,7 @@ describe("V6 install presentation", () => {
         },
       },
     });
-    render(<VoiceSettingsPage />, { wrapper });
+    renderWithQueryClient(<VoiceSettingsPage />);
     expect(await screen.findByText("Installed and ready")).toBeInTheDocument();
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
     // No pointless round trip for a size nobody is deciding on.
@@ -569,7 +564,7 @@ describe("VoiceSettingsPage - choosing the voice", () => {
 
   it("selects the model when its NAME is clicked", async () => {
     const fetchMock = mockFetch(baseRoutes());
-    render(<VoiceSettingsPage />, { wrapper });
+    renderWithQueryClient(<VoiceSettingsPage />);
 
     await userEvent.click(await screen.findByText("s2-pro"));
 
@@ -585,7 +580,7 @@ describe("VoiceSettingsPage - choosing the voice", () => {
 
   it("says what selecting will do, before you do it", async () => {
     mockFetch(baseRoutes());
-    render(<VoiceSettingsPage />, { wrapper });
+    renderWithQueryClient(<VoiceSettingsPage />);
     // A model that CAN run but is not chosen must say so in words.
     const runnable = {
       ...BLOCKED_MODEL,
@@ -595,7 +590,7 @@ describe("VoiceSettingsPage - choosing the voice", () => {
       ...baseRoutes(),
       "/tts/models": { body: { models: [runnable], unrecognized: [], roots: [] } },
     });
-    render(<VoiceSettingsPage />, { wrapper });
+    renderWithQueryClient(<VoiceSettingsPage />);
     expect(
       await screen.findAllByText("Ready to use - select it to speak replies"),
     ).not.toHaveLength(0);
@@ -603,7 +598,7 @@ describe("VoiceSettingsPage - choosing the voice", () => {
 
   it("keeps settings behind their own control, not the name", async () => {
     mockFetch(baseRoutes());
-    render(<VoiceSettingsPage />, { wrapper });
+    renderWithQueryClient(<VoiceSettingsPage />);
 
     // The disclosure is a separate target with its own label.
     const disclosure = await screen.findByLabelText("s2-pro settings");
@@ -614,7 +609,7 @@ describe("VoiceSettingsPage - choosing the voice", () => {
 
   it("the pick control carries the radio role and its state", async () => {
     mockFetch(baseRoutes());
-    render(<VoiceSettingsPage />, { wrapper });
+    renderWithQueryClient(<VoiceSettingsPage />);
     const pick = await screen.findByRole("radio", { name: "Use s2-pro" });
     expect(pick).toHaveAttribute("aria-checked", "false");
     expect(pick).toHaveTextContent("s2-pro");
@@ -645,7 +640,7 @@ describe("VoiceSettingsPage - what the voice toggle actually controls", () => {
 
   it("says the prompt injection is what the toggle does", async () => {
     mockFetch(baseRoutes());
-    render(<VoiceSettingsPage />, { wrapper });
+    renderWithQueryClient(<VoiceSettingsPage />);
 
     const hint = await screen.findByText(/added to every request/i);
     expect(hint).toHaveTextContent(/how/i);
@@ -656,7 +651,7 @@ describe("VoiceSettingsPage - what the voice toggle actually controls", () => {
     // Speaking works with this off - the per-message button and the composer's
     // continuous-voice button are both independent of it.
     mockFetch(baseRoutes());
-    render(<VoiceSettingsPage />, { wrapper });
+    renderWithQueryClient(<VoiceSettingsPage />);
 
     await screen.findByText("Performed replies");
     expect(screen.queryByText(/chat stays text-only/i)).not.toBeInTheDocument();
@@ -667,7 +662,7 @@ describe("VoiceSettingsPage - what the voice toggle actually controls", () => {
 
   it("tells the user speaking still works without it", async () => {
     mockFetch(baseRoutes());
-    render(<VoiceSettingsPage />, { wrapper });
+    renderWithQueryClient(<VoiceSettingsPage />);
     expect(
       await screen.findByText(/works with this off too/i),
     ).toBeInTheDocument();

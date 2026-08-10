@@ -3,18 +3,11 @@
  * animation; the two run in parallel and neither depends on the other.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { SidebarHeader } from "@/components/sidebar/SidebarHeader";
 import { setVaultLockAnimationHandler } from "@/lib/vaultLockUi";
-
-function wrapper({ children }: { children: React.ReactNode }) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  });
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
-}
 
 describe("SidebarHeader lock button", () => {
   beforeEach(() => vi.unstubAllGlobals());
@@ -37,7 +30,7 @@ describe("SidebarHeader lock button", () => {
       received = commit;
     });
 
-    render(<SidebarHeader />, { wrapper });
+    renderWithQueryClient(<SidebarHeader />);
     await userEvent.click(screen.getByRole("button", { name: "Lock vault" }));
 
     // The button did NOT fire the API itself - the overlay owns the timing.
@@ -61,7 +54,7 @@ describe("SidebarHeader lock button", () => {
       }),
     );
 
-    render(<SidebarHeader />, { wrapper });
+    renderWithQueryClient(<SidebarHeader />);
     await userEvent.click(screen.getByRole("button", { name: "Lock vault" }));
     await waitFor(() => {
       expect(calls.some((c) => c.includes("/vault/lock"))).toBe(true);

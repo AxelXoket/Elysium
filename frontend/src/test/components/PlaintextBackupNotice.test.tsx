@@ -10,10 +10,9 @@
  * These tests are about the difference between a moment and a state.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 
 import { PlaintextBackupNotice } from "@/components/settings/PlaintextBackupNotice";
 import { mockFetch } from "@/test/mocks/api";
@@ -21,12 +20,6 @@ import { mockFetch } from "@/test/mocks/api";
 const BACKUP = "app.db.plain.bak-20260101120000";
 const SECOND = "app.db.plain.bak-20260202130000";
 
-function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: 0 } },
-  });
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
-}
 
 function withStatus(backups: string[], discard?: unknown) {
   mockFetch({
@@ -50,7 +43,7 @@ describe("the unencrypted copy is a state, not a banner", () => {
 
   it("says so whenever one is on disk", async () => {
     withStatus([BACKUP]);
-    render(<PlaintextBackupNotice />, { wrapper });
+    renderWithQueryClient(<PlaintextBackupNotice />);
 
     expect(await screen.findByTestId("plaintext-backup-notice")).toBeInTheDocument();
     expect(screen.getByText(BACKUP)).toBeInTheDocument();
@@ -58,7 +51,7 @@ describe("the unencrypted copy is a state, not a banner", () => {
 
   it("says the one thing that matters: no passphrase needed to read it", async () => {
     withStatus([BACKUP]);
-    render(<PlaintextBackupNotice />, { wrapper });
+    renderWithQueryClient(<PlaintextBackupNotice />);
 
     expect(
       await screen.findByText(/without your passphrase/i),
@@ -67,7 +60,7 @@ describe("the unencrypted copy is a state, not a banner", () => {
 
   it("stays out of the way when there is nothing to warn about", async () => {
     withStatus([]);
-    render(<PlaintextBackupNotice />, { wrapper });
+    renderWithQueryClient(<PlaintextBackupNotice />);
 
     await waitFor(() => {
       expect(screen.queryByTestId("plaintext-backup-notice")).toBeNull();
@@ -76,7 +69,7 @@ describe("the unencrypted copy is a state, not a banner", () => {
 
   it("names every copy, not just the first", async () => {
     withStatus([BACKUP, SECOND]);
-    render(<PlaintextBackupNotice />, { wrapper });
+    renderWithQueryClient(<PlaintextBackupNotice />);
 
     expect(await screen.findByText(BACKUP)).toBeInTheDocument();
     expect(screen.getByText(SECOND)).toBeInTheDocument();
@@ -90,7 +83,7 @@ describe("the unencrypted copy is a state, not a banner", () => {
         body: { initialized: true, unlocked: true, orphaned_copy: false },
       },
     });
-    render(<PlaintextBackupNotice />, { wrapper });
+    renderWithQueryClient(<PlaintextBackupNotice />);
 
     await waitFor(() => {
       expect(screen.queryByTestId("plaintext-backup-notice")).toBeNull();
@@ -104,7 +97,7 @@ describe("removing it", () => {
 
   it("offers a way out", async () => {
     withStatus([BACKUP]);
-    render(<PlaintextBackupNotice />, { wrapper });
+    renderWithQueryClient(<PlaintextBackupNotice />);
 
     expect(
       await screen.findByRole("button", { name: /delete the unencrypted/i }),
@@ -115,7 +108,7 @@ describe("removing it", () => {
     // The backend overwrites before unlinking. One stray click would destroy
     // the only pre-vault copy with nothing to recover it from.
     withStatus([BACKUP]);
-    render(<PlaintextBackupNotice />, { wrapper });
+    renderWithQueryClient(<PlaintextBackupNotice />);
     await userEvent.click(
       await screen.findByRole("button", { name: /delete the unencrypted/i }),
     );
@@ -131,7 +124,7 @@ describe("removing it", () => {
 
   it("backs out without touching anything", async () => {
     withStatus([BACKUP]);
-    render(<PlaintextBackupNotice />, { wrapper });
+    renderWithQueryClient(<PlaintextBackupNotice />);
     await userEvent.click(
       await screen.findByRole("button", { name: /delete the unencrypted/i }),
     );
@@ -150,7 +143,7 @@ describe("removing it", () => {
 
   it("asks the backend once confirmed", async () => {
     withStatus([BACKUP]);
-    render(<PlaintextBackupNotice />, { wrapper });
+    renderWithQueryClient(<PlaintextBackupNotice />);
     await userEvent.click(
       await screen.findByRole("button", { name: /delete the unencrypted/i }),
     );
@@ -172,7 +165,7 @@ describe("removing it", () => {
     // absence. A permanent "still readable on disk" warning is the opposite
     // of the message this component exists to deliver.
     withStatus([BACKUP], { removed: 1, left: [] });
-    render(<PlaintextBackupNotice />, { wrapper });
+    renderWithQueryClient(<PlaintextBackupNotice />);
     await userEvent.click(
       await screen.findByRole("button", { name: /delete the unencrypted/i }),
     );
@@ -187,7 +180,7 @@ describe("removing it", () => {
     // The route answers with what it failed to remove. Swallowing that would
     // tell the user the unencrypted copy is gone while it is still readable.
     withStatus([BACKUP], { removed: 0, left: [BACKUP] });
-    render(<PlaintextBackupNotice />, { wrapper });
+    renderWithQueryClient(<PlaintextBackupNotice />);
     await userEvent.click(
       await screen.findByRole("button", { name: /delete the unencrypted/i }),
     );

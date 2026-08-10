@@ -60,6 +60,13 @@ def test_the_contract_does_not_promise_parameters_that_are_rejected():
     #: Documented on purpose as NOT forwarded - they are app-level.
     app_level = {"context_budget_tokens", "stop", "Param"}
     listed = set(re.findall(r"^\|\s*([a-z_]+)\s*\|", table, re.M)) - app_level
+    # Floor first. `listed - _PARAM_SPEC` is empty when the table parses to
+    # nothing at all, so a reformatted table (different spacing, a name the
+    # [a-z_]+ class rejects) would report "nothing documented that we reject"
+    # having read zero rows. Its sibling above survives that because it
+    # iterates _PARAM_SPEC, which is real code; this direction has no such
+    # anchor. Same shape as the quote-regex bug recorded further down.
+    assert listed, "no parameter rows parsed - has the contract table moved?"
     unknown = sorted(listed - set(_PARAM_SPEC))
     assert not unknown, f"documented but not accepted: {unknown}"
 
@@ -140,6 +147,11 @@ def test_the_windows_version_resource_matches_package_json():
 
     expected_str = ".".join(str(n) for n in expected_tuple)
     assert quads, "no version strings found - has the file changed shape?"
+    # The sibling floor. `quads` got one and `struct` did not, so if a future
+    # PyInstaller template renames or respaces filevers/prodvers, the loop
+    # below runs zero times and that half of this test checks nothing while
+    # the quads half keeps it green.
+    assert struct, "no filevers/prodvers found - has the file changed shape?"
     assert quads == {expected_str}, (
         f"version_info.txt says {sorted(quads)}, package.json says {version}"
     )
@@ -187,10 +199,22 @@ def _spec_payload(body: str) -> dict[str, set[str]]:
     # this comparison exists to prevent.
     bundled = re.findall(r"for\s+pkg\s+in\s*\((.*?)\)\s*:", body, re.S)
 
+    # datas decides which non-code files land in the exe, and it was the one
+    # part of the payload nobody parsed. Dropping the frontend_dist entry ships
+    # a build whose /healthz answers 200 while every page is a 404, and every
+    # check in this file stayed green for it. The DESTINATION strings are what
+    # matter and what the two specs must agree on; the source paths are built
+    # from os.path.join and legitimately differ in shape.
+    datas_blocks = re.findall(r"datas\s*(?:\+)?=\s*\[(.*?)\]", body, re.S)
+    datas = set()
+    for block in datas_blocks:
+        datas |= set(re.findall(r"['\"]([\w\./\-]+)['\"]", block))
+
     return {
         "hiddenimports": _names("hiddenimports", quoted),
         "collect_all": set(re.findall(quoted, bundled[0])) if bundled else set(),
         "excludes": _names("excludes", quoted_dashed),
+        "datas": datas,
     }
 
 
@@ -208,6 +232,9 @@ def test_the_spec_comparison_can_actually_fail():
         "the bundled-package list parsed as empty - the exe could ship without "
         "the native SQLCipher library and nothing here would notice")
     assert payload["excludes"], "excludes parsed as empty - the regex is blind again"
+    assert "frontend_dist" in payload["datas"], (
+        "the datas list parsed as empty or without the SPA - an exe that "
+        "serves no pages would pass every other check in this file")
 
 
 def test_the_two_specs_bundle_the_same_things():
@@ -216,7 +243,7 @@ def test_the_two_specs_bundle_the_same_things():
     green - while the exe that actually ships is the one nobody tested.
     """
     a, b = _spec_payload(_read(_SPEC_A)), _spec_payload(_read(_SPEC_B))
-    for key in ("hiddenimports", "collect_all", "excludes"):
+    for key in ("hiddenimports", "collect_all", "excludes", "datas"):
         assert a[key] == b[key], (
             f"{key} differs between the two specs: "
             f"only in elysium.spec {sorted(a[key] - b[key])}, "
