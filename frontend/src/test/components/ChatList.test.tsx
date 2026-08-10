@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { ChatList } from "@/components/sidebar/ChatList";
 import { useUiStore } from "@/lib/store/uiStore";
 import { useStreamRegistry } from "@/lib/chat/streamRegistry";
@@ -10,15 +10,6 @@ import { mockFetch } from "../mocks/api";
 import { mockFetchWithStreams, jsonResponse } from "../helpers/streamMocks";
 import { chatFixture } from "../mocks/fixtures";
 import type { Chat } from "@/lib/schemas/chats";
-import type { ReactNode } from "react";
-
-function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
-}
-
 describe("ChatList", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -39,7 +30,7 @@ describe("ChatList", () => {
       "/chats": { body: [chatFixture] },
     });
 
-    render(<ChatList />, { wrapper });
+    renderWithQueryClient(<ChatList />);
 
     expect(await screen.findByText("Chats")).toBeInTheDocument();
     expect(await screen.findByText("Test Chat")).toBeInTheDocument();
@@ -50,7 +41,7 @@ describe("ChatList", () => {
   it("T-25: shows placeholder when no character selected", async () => {
     useUiStore.setState({ selectedCharacterId: null });
 
-    render(<ChatList />, { wrapper });
+    renderWithQueryClient(<ChatList />);
 
     expect(screen.getByText("Select a character first")).toBeInTheDocument();
   });
@@ -61,7 +52,7 @@ describe("ChatList", () => {
       "/chats": { body: [] },
     });
 
-    render(<ChatList />, { wrapper });
+    renderWithQueryClient(<ChatList />);
 
     expect(await screen.findByText("No chats yet")).toBeInTheDocument();
   });
@@ -72,7 +63,7 @@ describe("ChatList", () => {
       "/chats": { body: [chatFixture] },
     });
 
-    render(<ChatList />, { wrapper });
+    renderWithQueryClient(<ChatList />);
 
     await screen.findByText("Test Chat");
     await user.click(
@@ -90,7 +81,7 @@ describe("ChatList", () => {
       "/chats": { body: [chatFixture] },
     });
 
-    render(<ChatList />, { wrapper });
+    renderWithQueryClient(<ChatList />);
 
     await screen.findByText("Test Chat");
     await user.click(
@@ -117,7 +108,7 @@ describe("ChatList", () => {
       "/chats": { body: [chatFixture] },
     });
 
-    render(<ChatList />, { wrapper });
+    renderWithQueryClient(<ChatList />);
 
     await screen.findByText("Test Chat");
     await user.click(
@@ -145,7 +136,7 @@ describe("ChatList", () => {
       "/chats": { body: [chatFixture] },
     });
 
-    render(<ChatList />, { wrapper });
+    renderWithQueryClient(<ChatList />);
 
     await screen.findByText("Test Chat");
     await user.click(
@@ -173,7 +164,7 @@ describe("ChatList", () => {
       "/chats": { status: 500, body: { detail: "UPSTREAM_RAW_SECRET" } },
     });
 
-    render(<ChatList />, { wrapper });
+    renderWithQueryClient(<ChatList />);
 
     expect(
       await screen.findByText("Something went wrong. Please try again."),
@@ -188,7 +179,7 @@ describe("ChatList", () => {
       "/chats": { body: [chatFixture] },
     });
 
-    render(<ChatList />, { wrapper });
+    renderWithQueryClient(<ChatList />);
 
     await screen.findByText("Test Chat");
     const trigger = screen.getByRole("button", {
@@ -210,7 +201,7 @@ describe("ChatList", () => {
       "/chats": { body: [chatFixture] },
     });
 
-    render(<ChatList />, { wrapper });
+    renderWithQueryClient(<ChatList />);
 
     await screen.findByText("Test Chat");
     await user.click(
@@ -233,7 +224,7 @@ describe("ChatList", () => {
       "/chats": { body: [chatFixture] },
     });
 
-    render(<ChatList />, { wrapper });
+    renderWithQueryClient(<ChatList />);
 
     await screen.findByText("Test Chat");
     await user.click(
@@ -255,7 +246,7 @@ describe("ChatList", () => {
       "/chats": { body: [chatFixture] },
     });
 
-    render(<ChatList />, { wrapper });
+    renderWithQueryClient(<ChatList />);
 
     await screen.findByText("Test Chat");
     const trigger = screen.getByRole("button", {
@@ -310,7 +301,7 @@ describe("ChatList", () => {
       "/chats": { body: [chatFixture] },
     });
 
-    render(<ChatList />, { wrapper });
+    renderWithQueryClient(<ChatList />);
 
     await screen.findByText("Test Chat");
     await user.click(
@@ -335,7 +326,7 @@ describe("ChatList", () => {
       "/chats": { body: [chatFixture] },
     });
 
-    render(<ChatList />, { wrapper });
+    renderWithQueryClient(<ChatList />);
 
     const input = await openRenameInput(user);
     // Prefilled with the current title, focused, text selected
@@ -370,7 +361,7 @@ describe("ChatList", () => {
       "/chats": { response: () => jsonResponse(chatsBody) },
     });
 
-    render(<ChatList />, { wrapper });
+    renderWithQueryClient(<ChatList />);
 
     const input = await openRenameInput(user);
     await user.clear(input);
@@ -409,7 +400,7 @@ describe("ChatList", () => {
       "/chats": { body: [chatFixture] },
     });
 
-    render(<ChatList />, { wrapper });
+    renderWithQueryClient(<ChatList />);
 
     const input = await openRenameInput(user);
     await user.clear(input);
@@ -432,7 +423,7 @@ describe("ChatList", () => {
       "/chats": { body: [chatFixture] },
     });
 
-    render(<ChatList />, { wrapper });
+    renderWithQueryClient(<ChatList />);
 
     const input = await openRenameInput(user);
     await user.clear(input);
@@ -456,7 +447,7 @@ describe("ChatList", () => {
       "/chats": { body: [chatFixture] },
     });
 
-    render(<ChatList />, { wrapper });
+    renderWithQueryClient(<ChatList />);
 
     // Empty commit
     let input = await openRenameInput(user);
@@ -487,7 +478,7 @@ describe("ChatList", () => {
       "/chats": { body: [chatFixture] },
     });
 
-    render(<ChatList />, { wrapper });
+    renderWithQueryClient(<ChatList />);
 
     const input = await openRenameInput(user);
     await user.clear(input);
@@ -514,7 +505,7 @@ describe("ChatList", () => {
     });
 
     try {
-      render(<ChatList />, { wrapper });
+      renderWithQueryClient(<ChatList />);
 
       await screen.findByText("Test Chat");
       await user.click(
@@ -537,7 +528,7 @@ describe("ChatList", () => {
       "/chats": { body: [chatFixture] },
     });
 
-    render(<ChatList />, { wrapper });
+    renderWithQueryClient(<ChatList />);
 
     const input = await openRenameInput(user);
     expect(input.value).toBe("Test Chat");

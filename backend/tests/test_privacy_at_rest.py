@@ -104,19 +104,40 @@ class TestUpstreamErrorBodiesAreNotForwarded:
 
     LEAK = "upstream-body-that-must-not-be-relayed"
 
-    def _failing_provider(self, monkeypatch, status: int) -> None:
+    def _failing_provider(self, monkeypatch, status: int,
+                          moderation: bool = False) -> None:
         leak = self.LEAK
+
+        def _body() -> dict:
+            if not moderation:
+                return {"error": {"message": leak}}
+            # The shape a real moderation refusal arrives in. flagged_input is
+            # a verbatim copy of what the reader just typed, which is why
+            # openrouter._is_moderation_error is careful that neither the
+            # reasons nor the input leave the predicate.
+            return {"error": {"message": leak, "code": 403, "metadata": {
+                "reasons": ["harassment"], "flagged_input": leak,
+                "provider_name": "someprovider",
+            }}}
 
         class _Response:
             status_code = status
             is_success = False
 
             def json(self) -> dict:
-                return {"error": {"message": leak}}
+                return _body()
 
             @property
             def text(self) -> str:
                 return json.dumps(self.json())
+
+            @property
+            def content(self) -> bytes:
+                # What the production error path actually reads. The first cut
+                # of this fake carried only .json()/.text, so the body never
+                # reached _parse_error_payload: the 403 branch was never
+                # entered and the moderation test below could not have failed.
+                return self.text.encode()
 
         class _Client:
             async def post(self, url, headers=None, json=None, timeout=None):
@@ -131,7 +152,7 @@ class TestUpstreamErrorBodiesAreNotForwarded:
                             is_success = False
 
                             async def aread(self):
-                                return leak.encode()
+                                return json.dumps(_body()).encode()
 
                             async def aiter_bytes(self):
                                 yield leak.encode()
@@ -146,7 +167,7 @@ class TestUpstreamErrorBodiesAreNotForwarded:
         monkeypatch.setattr(openrouter, "get_client", lambda: _Client())
         monkeypatch.setattr(openrouter, "get_secret", lambda name: "sk-test")
 
-    @pytest.mark.parametrize("status", [400, 402, 429, 500, 503])
+    @pytest.mark.parametrize("status", [400, 402, 403, 429, 500, 503])
     def test_the_plain_path_relays_a_code_and_nothing_else(
         self, client, monkeypatch: pytest.MonkeyPatch, status: int
     ) -> None:
@@ -158,7 +179,7 @@ class TestUpstreamErrorBodiesAreNotForwarded:
         assert response.status_code != 200
         assert self.LEAK not in response.text
 
-    @pytest.mark.parametrize("status", [400, 429, 500])
+    @pytest.mark.parametrize("status", [400, 403, 429, 500])
     def test_the_streaming_path_relays_a_code_and_nothing_else(
         self, client, monkeypatch: pytest.MonkeyPatch, status: int
     ) -> None:
@@ -170,6 +191,43 @@ class TestUpstreamErrorBodiesAreNotForwarded:
                                json={"message": "hi",
                                      "model_id": "test/model-1"})
         assert self.LEAK not in response.text
+
+    @pytest.mark.parametrize("route", ["complete", "complete/stream"])
+    def test_a_moderation_refusal_does_not_relay_what_was_flagged(
+        self, client, monkeypatch: pytest.MonkeyPatch, route: str,
+    ) -> None:
+        """403 is the one branch that reads the body, so it is the one to pin.
+
+        Every other status in this class maps to a constant without looking at
+        the payload; 403 has to look, because it decides whether this was a
+        moderation refusal. The metadata it reads carries `flagged_input`, a
+        verbatim copy of what the reader just typed, and both lists above ran
+        without 403 in them.
+
+        What the red-green measurement then showed is worth writing down,
+        because it is not what the gap looked like from `_status_to_reason`
+        alone. Making that function return the flagged text does NOT reach the
+        reader: the detail a client sees is looked up in `_ERROR_MAP`, whose
+        fallback is a constant, and that lookup happens at TWO independent
+        sites (the raise in the plain path and the helper the SSE path uses).
+        This test only goes red when the closed vocabulary is opened at both.
+        So the promise is not held by any one line that could be edited away
+        by accident; it is held by the vocabulary being closed, and that is
+        the thing this test actually guards.
+
+        The streaming case stayed green even then, which says the SSE error
+        event filters through the vocabulary a third time.
+        """
+        self._failing_provider(monkeypatch, 403, moderation=True)
+        chat_id = make_chat(client, make_character(client))
+        response = client.post(f"/api/v1/chats/{chat_id}/{route}",
+                               json={"message": "hi",
+                                     "model_id": "test/model-1"})
+        assert self.LEAK not in response.text
+        # The refusal must still be sayable, or the app has swapped a leak for
+        # a shrug: the reader needs to learn it was refused, just not with the
+        # provider's own words.
+        assert response.text.strip(), "a refusal with no code at all"
 
 
 class TestTheLogNeverCarriesWhatWasSaid:

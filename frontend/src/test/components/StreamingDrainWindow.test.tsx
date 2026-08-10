@@ -16,18 +16,21 @@
  * superseded is NOT rolled back. A genuinely LIVE stream still blocks.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { renderHook, waitFor, act } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { waitFor, act } from "@testing-library/react";
+import type { QueryClient } from "@tanstack/react-query";
 import { useStreamingCompletion } from "@/lib/chat/useStreamingCompletion";
 import { keys } from "@/lib/query/keys";
 import { useErrorStore } from "@/lib/errors";
+import {
+  createTestQueryClient,
+  renderHookWithQueryClient,
+} from "@/test/helpers/renderWithQueryClient";
 import {
   mockFetchWithStreams,
   controlledSseResponse,
   jsonResponse,
 } from "../helpers/streamMocks";
 import type { Message } from "@/lib/schemas/chats";
-import type { ReactNode } from "react";
 
 function msg(id: number, role: "user" | "assistant", content: string): Message {
   return {
@@ -36,16 +39,6 @@ function msg(id: number, role: "user" | "assistant", content: string): Message {
     role,
     content,
     created_at: "2026-01-01T00:00:00Z",
-  };
-}
-
-function newQueryClient(): QueryClient {
-  return new QueryClient({ defaultOptions: { queries: { retry: false } } });
-}
-
-function createWrapper(qc: QueryClient) {
-  return function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
   };
 }
 
@@ -85,8 +78,8 @@ describe("post-`done` voice-drain window", () => {
       "/edit/stream": { response: () => streams[served++].response },
     });
 
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     let firstSend!: Promise<void>;
@@ -119,7 +112,7 @@ describe("post-`done` voice-drain window", () => {
   }
 
   it("send in the drain window is dispatched, not silently swallowed", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     const { result, streams, fetchMock, firstSend } = await sendToDrainWindow(qc);
 
     const onError = vi.fn();
@@ -165,7 +158,7 @@ describe("post-`done` voice-drain window", () => {
   });
 
   it("regenerate in the drain window is dispatched", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     const { result, streams, fetchMock, firstSend } = await sendToDrainWindow(qc);
 
     let regen!: Promise<void>;
@@ -193,7 +186,7 @@ describe("post-`done` voice-drain window", () => {
   });
 
   it("inline edit in the drain window is dispatched", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     const { result, streams, fetchMock, firstSend } = await sendToDrainWindow(qc);
 
     let edit!: Promise<void>;
@@ -224,14 +217,14 @@ describe("post-`done` voice-drain window", () => {
   });
 
   it("a LIVE stream still blocks a second send", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     const stream = controlledSseResponse();
     const fetchMock = mockFetchWithStreams({
       "/chats/1/complete/stream": { response: () => stream.response },
     });
 
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     let firstSend!: Promise<void>;
@@ -259,7 +252,7 @@ describe("post-`done` voice-drain window", () => {
   });
 
   it("stopping inside the drain window keeps the completed exchange", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     const { result, firstSend } = await sendToDrainWindow(qc);
 
     // Stop during the drain: the abort branches must not treat a persisted
@@ -295,14 +288,14 @@ describe("abort with a partial reply", () => {
   });
 
   it("arms the delayed resync so the late server insert still lands", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), []);
     const stream = controlledSseResponse();
     mockFetchWithStreams({
       "/chats/1/complete/stream": { response: () => stream.response },
     });
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     let sendPromise!: Promise<void>;
@@ -342,7 +335,7 @@ describe("abort with a partial reply", () => {
   });
 
   it("a new stream cancels a pending resync (regenerate included)", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), []);
     const streams = [controlledSseResponse(), controlledSseResponse()];
     let served = 0;
@@ -350,8 +343,8 @@ describe("abort with a partial reply", () => {
       "/chats/1/complete/stream": { response: () => streams[served++].response },
       "/regenerate/stream": { response: () => streams[served++].response },
     });
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     let sendPromise!: Promise<void>;
@@ -416,7 +409,7 @@ describe("abort before the first token, with images", () => {
   });
 
   it("reports the attachments as GONE when the client deleted the row", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), []);
     const stream = controlledSseResponse();
     mockFetchWithStreams({
@@ -425,8 +418,8 @@ describe("abort before the first token, with images", () => {
       },
       "/chats/1/complete/stream": { response: () => stream.response },
     });
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     const onAbortedEmpty = vi.fn();
@@ -458,14 +451,14 @@ describe("abort before the first token, with images", () => {
   it("reports them as SURVIVING in the blind window", async () => {
     // Stopped before the user_message event: the client never learned an id,
     // so the server's own cleanup runs - and that one unlinks.
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), []);
     const stream = controlledSseResponse();
     mockFetchWithStreams({
       "/chats/1/complete/stream": { response: () => stream.response },
     });
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     const onAbortedEmpty = vi.fn();

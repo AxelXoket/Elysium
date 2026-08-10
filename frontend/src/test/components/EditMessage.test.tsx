@@ -7,9 +7,14 @@
  * done replaces the edited row + appends the new reply.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { renderHook, waitFor, act, render, screen, within } from "@testing-library/react";
+import { waitFor, act, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
+import {
+  createTestQueryClient,
+  renderHookWithQueryClient,
+  renderWithQueryClient,
+} from "@/test/helpers/renderWithQueryClient";
 import { useStreamingCompletion } from "@/lib/chat/useStreamingCompletion";
 import { useStreamRegistry } from "@/lib/chat/streamRegistry";
 import { keys } from "@/lib/query/keys";
@@ -22,7 +27,6 @@ import {
   controlledSseResponse,
 } from "../helpers/streamMocks";
 import type { Message } from "@/lib/schemas/chats";
-import type { ReactNode } from "react";
 
 function msg(id: number, role: "user" | "assistant", content: string): Message {
   return {
@@ -31,16 +35,6 @@ function msg(id: number, role: "user" | "assistant", content: string): Message {
     role,
     content,
     created_at: "2026-01-01T00:00:00Z",
-  };
-}
-
-function newQueryClient(): QueryClient {
-  return new QueryClient({ defaultOptions: { queries: { retry: false } } });
-}
-
-function createWrapper(qc: QueryClient) {
-  return function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
   };
 }
 
@@ -74,15 +68,15 @@ describe("useStreamingCompletion - startEdit (v1.1 C3)", () => {
   });
 
   it("optimistically rewrites the row, hides the tail, and done lands the new exchange", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), seed);
     const stream = controlledSseResponse();
     mockFetchWithStreams({
       "/chats/1/messages/2/edit/stream": { response: () => stream.response },
     });
 
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     let editPromise!: Promise<void>;
@@ -127,15 +121,15 @@ describe("useStreamingCompletion - startEdit (v1.1 C3)", () => {
   });
 
   it("abort restores the pre-edit snapshot silently (server wrote nothing)", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), seed);
     const stream = controlledSseResponse();
     mockFetchWithStreams({
       "/chats/1/messages/2/edit/stream": { response: () => stream.response },
     });
 
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     let editPromise!: Promise<void>;
@@ -165,15 +159,15 @@ describe("useStreamingCompletion - startEdit (v1.1 C3)", () => {
   });
 
   it("edit_conflict error event restores the snapshot and pushes a toast", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), seed);
     const stream = controlledSseResponse();
     mockFetchWithStreams({
       "/chats/1/messages/2/edit/stream": { response: () => stream.response },
     });
 
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     let editPromise!: Promise<void>;
@@ -195,15 +189,15 @@ describe("useStreamingCompletion - startEdit (v1.1 C3)", () => {
   });
 
   it("I14: a foreign cache write during the stream is not clobbered by the rollback", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), seed);
     const stream = controlledSseResponse();
     mockFetchWithStreams({
       "/chats/1/messages/2/edit/stream": { response: () => stream.response },
     });
 
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     let editPromise!: Promise<void>;
@@ -233,11 +227,6 @@ describe("useStreamingCompletion - startEdit (v1.1 C3)", () => {
 });
 
 describe("MessageBubble inline edit UI (v1.1 C3)", () => {
-  function wrapper({ children }: { children: ReactNode }) {
-    const qc = newQueryClient();
-    return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
-  }
-
   beforeEach(() => {
     vi.restoreAllMocks();
     // v1.1 audit L1: the edit pencil is now gated on a selected model.
@@ -253,9 +242,8 @@ describe("MessageBubble inline edit UI (v1.1 C3)", () => {
     mockFetch({
       "/chats/1/messages": { body: seed },
     });
-    render(
+    renderWithQueryClient(
       <MessageList chatId={1} onEditMessage={onEditMessage} />,
-      { wrapper },
     );
     return onEditMessage;
   }
@@ -341,9 +329,8 @@ describe("MessageBubble inline edit UI (v1.1 C3)", () => {
     mockFetch({
       "/chats/1/messages": { body: seed },
     });
-    render(
+    renderWithQueryClient(
       <MessageList chatId={1} onEditMessage={vi.fn()} isPending />,
-      { wrapper },
     );
     await screen.findByText("original question");
     const bubble = screen
@@ -365,9 +352,8 @@ describe("MessageBubble inline edit UI (v1.1 C3)", () => {
     const user = userEvent.setup();
     const onEditMessage = vi.fn();
     mockFetch({ "/chats/1/messages": { body: seed } });
-    const view = render(
+    const view = renderWithQueryClient(
       <MessageList chatId={1} onEditMessage={onEditMessage} />,
-      { wrapper },
     );
 
     await screen.findByText("original question");

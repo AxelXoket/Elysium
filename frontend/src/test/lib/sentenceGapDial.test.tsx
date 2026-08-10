@@ -8,9 +8,8 @@
  * what this tests - the stored value arriving at the player the reply plays on.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { renderHook, act, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { act, waitFor } from "@testing-library/react";
+import type { QueryClient } from "@tanstack/react-query";
 
 import { useStreamingCompletion } from "@/lib/chat/useStreamingCompletion";
 import { ChunkScheduler } from "@/lib/voice/chunkScheduler";
@@ -19,6 +18,10 @@ import {
   mockFetchWithStreams,
   controlledSseResponse,
 } from "../helpers/streamMocks";
+import {
+  createTestQueryClient,
+  renderHookWithQueryClient,
+} from "@/test/helpers/renderWithQueryClient";
 
 const PREFS = {
   density: 8,
@@ -35,12 +38,6 @@ const PREFS = {
   gap_max: 1.5,
 };
 
-function wrapperFor(qc: QueryClient) {
-  return function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
-  };
-}
-
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -49,7 +46,7 @@ describe("the sentence-pause dial reaches the player", () => {
   let qc: QueryClient;
 
   beforeEach(() => {
-    qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    qc = createTestQueryClient();
   });
 
   it("hands the stored pause to the voice built for a reply", async () => {
@@ -59,8 +56,8 @@ describe("the sentence-pause dial reaches the player", () => {
       "/chats/1/complete/stream": { response: () => stream.response },
     });
 
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: wrapperFor(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     // The dial has to be KNOWN before the reply starts, which is the whole

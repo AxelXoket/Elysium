@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { ChatCanvas } from "@/components/chat/ChatCanvas";
 import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
 import { useUiStore } from "@/lib/store/uiStore";
@@ -19,13 +19,10 @@ import {
 import type { ReactNode } from "react";
 
 function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
   return (
-    <QueryClientProvider client={qc}>
+    
       <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
-    </QueryClientProvider>
+    
   );
 }
 
@@ -55,7 +52,7 @@ describe("Composer", () => {
   // T-34: Composer disabled when no chat selected
   it("T-34: disabled when no chat selected", () => {
     mockFetch({ "/settings": { body: settingsFixture } });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     const textarea = screen.getByLabelText("Message");
     expect(textarea).toBeDisabled();
   });
@@ -67,7 +64,7 @@ describe("Composer", () => {
       "/settings": { body: settingsFixture },
       "/chats/1/messages": { body: [messageFixture] },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     // Wait for settings to load so the model-missing helper shows
     await waitFor(() => {
@@ -85,7 +82,7 @@ describe("Composer", () => {
       "/settings": { body: { ...settingsFixture, api_key_set: false } },
       "/chats/1/messages": { body: [messageFixture] },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByText(/api key is not set/i)).toBeInTheDocument();
@@ -104,7 +101,7 @@ describe("Composer", () => {
       },
       "/chats/1/messages": { body: [messageFixture] },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByText(/proxy is required/i)).toBeInTheDocument();
@@ -121,7 +118,7 @@ describe("Composer", () => {
       "/settings": { body: settingsFixture },
       "/chats/1/messages": { body: [messageFixture] },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     // Wait for settings to load
     await waitFor(() => {
@@ -142,7 +139,7 @@ describe("Composer", () => {
       "/chats/1/complete/stream": { sse: sseEventsFor(completionFixture) },
       "/chats": { body: [] },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     // Wait for textarea to be enabled
     await waitFor(() => {
@@ -173,7 +170,7 @@ describe("Composer", () => {
       "/settings": { body: settingsFixture },
       "/chats/1/messages": { body: [messageFixture] },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -203,7 +200,7 @@ describe("Composer", () => {
       "/chats/1/complete/stream": { sse: sseEventsFor(completionFixture) },
       "/chats": { body: [] },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -227,7 +224,7 @@ describe("Composer", () => {
       "/chats/1/messages": { body: [messageFixture] },
       "/chats/1/complete": { status: 401, body: { detail: "api_key_missing" } },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -259,7 +256,7 @@ describe("Composer", () => {
       "/chats": { body: [] },
     });
 
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -296,7 +293,7 @@ describe("Composer", () => {
 
   it("links the preflight helper to the textarea via aria-describedby", async () => {
     mockFetch({ "/settings": { body: settingsFixture } });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     const textarea = screen.getByLabelText("Message");
     await waitFor(() => {
@@ -322,7 +319,7 @@ describe("Composer", () => {
       "/chats/1/messages": { body: [messageFixture] },
       "/chats/1/complete": { status: 401, body: { detail: "api_key_missing" } },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -358,7 +355,7 @@ describe("Composer", () => {
       "/chats/1/complete/stream": { response: () => stream.response },
       "/chats": { body: [] },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -397,7 +394,7 @@ describe("Composer", () => {
       "/chats/1/complete/stream": { response: () => stream.response },
       "/chats": { body: [] },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
@@ -434,7 +431,7 @@ describe("Composer", () => {
       "/chats/1/messages": { body: [messageFixture] },
       "/chats": { body: [] },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
     });
@@ -457,7 +454,7 @@ describe("Composer", () => {
       "/chats": { body: [] },
     });
     const user = userEvent.setup();
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
     });
@@ -485,7 +482,7 @@ describe("Composer", () => {
       "/chats/1/messages": { body: [messageFixture] },
       "/chats": { body: [] },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await waitFor(() => {
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
     });

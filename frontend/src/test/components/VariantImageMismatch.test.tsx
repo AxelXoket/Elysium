@@ -11,8 +11,8 @@
  * picture. Found by audit, not by use.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, screen } from "@testing-library/react";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import type { ReactNode } from "react";
 
 import { ChatCanvas } from "@/components/chat/ChatCanvas";
@@ -23,11 +23,10 @@ import { settingsFixture } from "../mocks/fixtures";
 import type { Message } from "@/lib/schemas/chats";
 
 function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return (
-    <QueryClientProvider client={qc}>
+    
       <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
-    </QueryClientProvider>
+    
   );
 }
 
@@ -87,7 +86,7 @@ describe("paging a variant group that owns a picture", () => {
   });
 
   it("shows the picture with the take that owns it", async () => {
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await screen.findByText("TAKE-A-WITH-PICTURE");
     expect(
       screen.getByRole("button", { name: /view attached image/i }),
@@ -95,7 +94,7 @@ describe("paging a variant group that owns a picture", () => {
   });
 
   it("takes the picture away when the reader pages to a take without one", async () => {
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await screen.findByText("TAKE-A-WITH-PICTURE");
 
     const next = screen.getAllByRole("button", { name: /next reply/i })[0];
@@ -109,7 +108,7 @@ describe("paging a variant group that owns a picture", () => {
   });
 
   it("brings it back on the way home", async () => {
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await screen.findByText("TAKE-A-WITH-PICTURE");
     fireEvent.click(screen.getAllByRole("button", { name: /next reply/i })[0]);
     await screen.findByText("TAKE-B-NO-PICTURE");

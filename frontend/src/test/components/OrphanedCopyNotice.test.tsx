@@ -13,20 +13,13 @@
  * are mostly about that fork.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 
 import { OrphanedCopyNotice } from "@/components/settings/OrphanedCopyNotice";
 import { mockFetch } from "@/test/mocks/api";
 
-function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: 0 } },
-  });
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
-}
 
 function withStatus(
   orphan: boolean,
@@ -57,13 +50,13 @@ describe("the duplicate is visible at all", () => {
 
   it("says so when one is on disk", async () => {
     withStatus(true, true);
-    render(<OrphanedCopyNotice />, { wrapper });
+    renderWithQueryClient(<OrphanedCopyNotice />);
     expect(await screen.findByTestId("orphaned-copy-notice")).toBeInTheDocument();
   });
 
   it("stays out of the way when there is none", async () => {
     withStatus(false, null);
-    render(<OrphanedCopyNotice />, { wrapper });
+    renderWithQueryClient(<OrphanedCopyNotice />);
     await waitFor(() => {
       expect(screen.queryByTestId("orphaned-copy-notice")).toBeNull();
     });
@@ -73,7 +66,7 @@ describe("the duplicate is visible at all", () => {
     // Unlike the plaintext backup this is NOT a leak. Copy that reads like a
     // breach would push people into deleting something they may need.
     withStatus(true, true);
-    render(<OrphanedCopyNotice />, { wrapper });
+    renderWithQueryClient(<OrphanedCopyNotice />);
     expect(
       await screen.findByText(/not readable by anyone else/i),
     ).toBeInTheDocument();
@@ -86,13 +79,13 @@ describe("a copy this vault can read", () => {
 
   it("offers to remove it", async () => {
     withStatus(true, true);
-    render(<OrphanedCopyNotice />, { wrapper });
+    renderWithQueryClient(<OrphanedCopyNotice />);
     expect(await screen.findByRole("button", DELETE)).toBeInTheDocument();
   });
 
   it("asks once before doing anything irreversible", async () => {
     withStatus(true, true);
-    render(<OrphanedCopyNotice />, { wrapper });
+    renderWithQueryClient(<OrphanedCopyNotice />);
     await userEvent.click(await screen.findByRole("button", DELETE));
 
     expect(screen.getByText(/permanently delete it\?/i)).toBeInTheDocument();
@@ -105,7 +98,7 @@ describe("a copy this vault can read", () => {
 
   it("asks the backend once confirmed", async () => {
     withStatus(true, true);
-    render(<OrphanedCopyNotice />, { wrapper });
+    renderWithQueryClient(<OrphanedCopyNotice />);
     await userEvent.click(await screen.findByRole("button", DELETE));
     await userEvent.click(screen.getByRole("button", { name: /^delete$/i }));
 
@@ -128,7 +121,7 @@ describe("a copy this vault CANNOT read", () => {
     // action: the file may be the only copy of chats under an older
     // passphrase, and a button implies a decision the user cannot yet make.
     withStatus(true, false);
-    render(<OrphanedCopyNotice />, { wrapper });
+    renderWithQueryClient(<OrphanedCopyNotice />);
 
     expect(await screen.findByTestId("orphaned-copy-notice")).toBeInTheDocument();
     expect(screen.queryByRole("button", DELETE)).toBeNull();
@@ -136,7 +129,7 @@ describe("a copy this vault CANNOT read", () => {
 
   it("says what it might be instead of what to click", async () => {
     withStatus(true, false);
-    render(<OrphanedCopyNotice />, { wrapper });
+    renderWithQueryClient(<OrphanedCopyNotice />);
     expect(
       await screen.findByText(/only copy of chats this vault cannot show you/i),
     ).toBeInTheDocument();
@@ -150,7 +143,7 @@ describe("a locked vault", () => {
   it("admits it does not know yet, and offers nothing", async () => {
     // null means "we did not look", which must not be shown as either answer.
     withStatus(true, null);
-    render(<OrphanedCopyNotice />, { wrapper });
+    renderWithQueryClient(<OrphanedCopyNotice />);
 
     expect(await screen.findByText(/unlock the vault to find out/i))
       .toBeInTheDocument();
@@ -163,7 +156,7 @@ describe("a locked vault", () => {
         body: { initialized: true, unlocked: true, orphaned_copy: true },
       },
     });
-    render(<OrphanedCopyNotice />, { wrapper });
+    renderWithQueryClient(<OrphanedCopyNotice />);
 
     expect(await screen.findByTestId("orphaned-copy-notice")).toBeInTheDocument();
     expect(screen.queryByRole("button", DELETE)).toBeNull();
@@ -176,7 +169,7 @@ describe("a deletion that did not happen", () => {
 
   it("does not claim success when the file is held open", async () => {
     withStatus(true, true, { removed: false, reason: "in_use" });
-    render(<OrphanedCopyNotice />, { wrapper });
+    renderWithQueryClient(<OrphanedCopyNotice />);
     await userEvent.click(await screen.findByRole("button", DELETE));
     await userEvent.click(screen.getByRole("button", { name: /^delete$/i }));
 
@@ -186,7 +179,7 @@ describe("a deletion that did not happen", () => {
 
   it("stays quiet when it worked", async () => {
     withStatus(true, true, { removed: true, reason: "" });
-    render(<OrphanedCopyNotice />, { wrapper });
+    renderWithQueryClient(<OrphanedCopyNotice />);
     await userEvent.click(await screen.findByRole("button", DELETE));
     await userEvent.click(screen.getByRole("button", { name: /^delete$/i }));
 

@@ -10,8 +10,6 @@ Both defects are silent and unrecoverable from the UI:
     beside them.
 """
 
-import sqlite3 as std_sqlite3
-
 import crypto
 import database
 
@@ -59,26 +57,24 @@ def test_recovery_refuses_a_wrong_passphrase_on_an_empty_db(tmp_path):
     assert vault.unlock("correct-passphrase") == real_key
 
 
-def test_recovery_still_works_against_a_real_db(tmp_path):
-    """Control: with a real DB behind it, recovery repairs a lost verifier."""
-    vault = crypto.KeyVault(tmp_path)
-    key = vault.initialize("correct-passphrase")
-
-    db = tmp_path / "app.db"
-    con = std_sqlite3.connect(db)
-    con.execute("CREATE TABLE t (x)")
-    con.commit()
-    con.close()
-
-    vault.verifier_path.write_bytes(b"corrupt")
-    assert vault.unlock("correct-passphrase") is None
-    # A plaintext DB opens under any key, so validate against the identity
-    # instead - the point here is that a NON-empty file reaches the check.
-    recovered = vault.recover_with_db(
-        "correct-passphrase", lambda k: k == key,
-    )
-    assert recovered == key
-    assert vault.unlock("correct-passphrase") == key
+# Removed 2026-08-10: test_recovery_still_works_against_a_real_db.
+#
+# It read as the success-path control for the test above, but it was
+# test_vault.py::test_recover_with_db_uses_db_as_authority with a dead fixture
+# bolted on. Its comment claimed "the point here is that a NON-empty file
+# reaches the check" while its validator was `lambda k: k == key`, which never
+# opens the file at all - so the DB it built was never consulted and the
+# sentence was not true of the code beneath it.
+#
+# The real "a non-empty file reaches database.check_key" case is covered, just
+# not here: test_vault.py::test_recover_through_endpoint_with_corrupt_verifier
+# and ::test_fb5a_change_recovers_from_corrupt_verifier both write a character
+# row, corrupt the verifier, and go through the endpoint, which wires the
+# UNMOCKED database.check_key into recover_with_db against a real encrypted,
+# non-empty database. (An earlier note here claimed that was a gap. It was not;
+# corrected 2026-08-10 after the endpoint tests were read and run.)
+# Same reasoning as the removal below: a second test proving a subset is not a
+# second opinion.
 
 
 # ── a rotation must revoke the old passphrase everywhere ───────────────────

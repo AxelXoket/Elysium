@@ -8,7 +8,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
 import { useUiStore } from "@/lib/store/uiStore";
 import { mockFetch } from "../mocks/api";
@@ -31,11 +31,10 @@ vi.mock("@/lib/appearance/useChatBackground", () => ({
 import { ChatCanvas } from "@/components/chat/ChatCanvas";
 
 function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return (
-    <QueryClientProvider client={qc}>
+    
       <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
-    </QueryClientProvider>
+    
   );
 }
 
@@ -60,7 +59,7 @@ describe("E2 contrast/wallpaper orthogonality", () => {
       "/chats/1/messages": { body: [] },
       "/chats": { body: [{ id: 1, title: "c", character_id: 1, message_count: 0 }] },
     });
-    const { container } = render(<ChatCanvas />, { wrapper });
+    const { container } = renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     const scroller = container.querySelector(
       ".flex-1.overflow-y-auto",

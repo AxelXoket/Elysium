@@ -5,10 +5,12 @@
  * either never asked for it or kept showing the previous one.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { createElement, type ReactNode } from "react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { keys } from "@/lib/query/keys";
+import {
+  createTestQueryClient,
+  renderHookWithQueryClient,
+} from "@/test/helpers/renderWithQueryClient";
 
 // The delete itself is not what is under test; what happens around it is.
 vi.mock("@/lib/api/characters", () => ({
@@ -102,7 +104,7 @@ describe("deleting a character reaches its chats' streams", () => {
     // The same fix useDeleteChat and useClearChat already had (v1.1 FF1/H7)
     // and this path did not: a reply for a chat the user deleted along with
     // its character went on generating and being billed.
-    const { renderHook, act } = await import("@testing-library/react");
+    const { act } = await import("@testing-library/react");
     const { useDeleteCharacter } = await import("@/lib/query/characters");
     const { registerStream, useStreamRegistry } = await import(
       "@/lib/chat/streamRegistry"
@@ -119,7 +121,7 @@ describe("deleting a character reaches its chats' streams", () => {
     registerStream(2, b);
     registerStream(3, other);
 
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const qc = createTestQueryClient();
     qc.setQueryData(keys.chats(), [
       { id: 1, character_id: 7 },
       { id: 2, character_id: 7 },
@@ -127,9 +129,9 @@ describe("deleting a character reaches its chats' streams", () => {
     ]);
     qc.setQueryData(keys.messages(1), [{ id: 10 }]);
 
-    const wrapper = ({ children }: { children: ReactNode }) =>
-      createElement(QueryClientProvider, { client: qc }, children);
-    const { result } = renderHook(() => useDeleteCharacter(), { wrapper });
+    const { result } = renderHookWithQueryClient(() => useDeleteCharacter(), {
+      client: qc,
+    });
 
     await act(async () => {
       await result.current.mutateAsync(7).catch(() => undefined);

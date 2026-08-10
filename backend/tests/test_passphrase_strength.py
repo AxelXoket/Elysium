@@ -84,6 +84,23 @@ class TestShapesThatAreLongButNotSecret:
         assert strength.assess("abcabcabcabcab") == "passphrase_too_simple"
 
     @pytest.mark.parametrize("passphrase", [
+        "xzyxzxyzxzyx",   # 4 distinct, no run, no repeat unit, no dominant char
+        "qzqwqzwqzqzw",   # 4 distinct, arranged so no other rule fires either
+    ])
+    def test_few_distinct_characters_with_no_other_signature_is_refused(
+        self, passphrase: str,
+    ) -> None:
+        """The distinct-character floor, on its own.
+
+        The case above it ("abcabcabcabcab") is ALSO a repeated unit, so it
+        stays refused even if MIN_DISTINCT_CHARS is lowered - measured: with
+        the floor dropped to 3, every literal in this file still failed for
+        some other reason, so the constant had no test that could see it move.
+        These two trip nothing except the distinct count.
+        """
+        assert strength.assess(passphrase) == "passphrase_too_simple"
+
+    @pytest.mark.parametrize("passphrase", [
         "password1234", "iloveyou1234", "qwertyuiopas",
         "correcthorsebatterystaple",
     ])

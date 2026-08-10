@@ -6,18 +6,13 @@
  * exercised end to end (the same path the real app takes).
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  renderWithQueryClient,
+  createTestQueryClient,
+} from "@/test/helpers/renderWithQueryClient";
 import { VaultGate } from "@/components/vault/VaultGate";
-import type { ReactNode } from "react";
-
-function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  });
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
-}
 
 interface VaultSim {
   initialized: boolean;
@@ -65,14 +60,14 @@ describe("VaultGate", () => {
 
   it("renders the app directly when the vault is unlocked", async () => {
     stubVaultFetch({ initialized: true, unlocked: true, passphrase: "x" });
-    render(<VaultGate>{APP_MARKER}</VaultGate>, { wrapper });
+    renderWithQueryClient(<VaultGate>{APP_MARKER}</VaultGate>);
     expect(await screen.findByTestId("app-root")).toBeInTheDocument();
   });
 
   it("walks first-run setup: create passphrase → app", async () => {
     const user = userEvent.setup();
     stubVaultFetch({ initialized: false, unlocked: false, passphrase: null });
-    render(<VaultGate>{APP_MARKER}</VaultGate>, { wrapper });
+    renderWithQueryClient(<VaultGate>{APP_MARKER}</VaultGate>);
 
     await screen.findByText("Protect your world");
     // Exact labels, not /passphrase/i - the reveal buttons carry
@@ -89,7 +84,7 @@ describe("VaultGate", () => {
 
   it("FF15: setup copy names the wallpaper as the encryption exception", async () => {
     stubVaultFetch({ initialized: false, unlocked: false, passphrase: null });
-    render(<VaultGate>{APP_MARKER}</VaultGate>, { wrapper });
+    renderWithQueryClient(<VaultGate>{APP_MARKER}</VaultGate>);
 
     await screen.findByText("Protect your world");
     // The claim is narrowed: the decorative wallpaper is NOT encrypted.
@@ -101,7 +96,7 @@ describe("VaultGate", () => {
   it("rejects mismatched entries locally without calling the API", async () => {
     const user = userEvent.setup();
     stubVaultFetch({ initialized: false, unlocked: false, passphrase: null });
-    render(<VaultGate>{APP_MARKER}</VaultGate>, { wrapper });
+    renderWithQueryClient(<VaultGate>{APP_MARKER}</VaultGate>);
 
     await screen.findByText("Protect your world");
     await user.type(screen.getByLabelText("Passphrase"), "seaside-orchid-9");
@@ -127,7 +122,7 @@ describe("VaultGate", () => {
       unlocked: false,
       passphrase: "right-horse-42",
     });
-    render(<VaultGate>{APP_MARKER}</VaultGate>, { wrapper });
+    renderWithQueryClient(<VaultGate>{APP_MARKER}</VaultGate>);
 
     await screen.findByText("Elysium is locked");
     await user.type(screen.getByLabelText("Passphrase"), "wrong-guess-11");
@@ -152,14 +147,10 @@ describe("VaultGate lock hygiene", () => {
   it("purges every non-vault query from the cache when the vault locks", async () => {
     const sim: VaultSim = { initialized: true, unlocked: true, passphrase: "x" };
     stubVaultFetch(sim);
-    const qc = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
+    const qc = createTestQueryClient();
+    renderWithQueryClient(<VaultGate>{APP_MARKER}</VaultGate>, {
+      client: qc,
     });
-    render(
-      <QueryClientProvider client={qc}>
-        <VaultGate>{APP_MARKER}</VaultGate>
-      </QueryClientProvider>,
-    );
     await screen.findByTestId("app-root");
 
     // Seed user-data caches the way a running app would hold them.
@@ -217,7 +208,7 @@ describe("VaultGate - the states nobody rendered", () => {
 
   async function attemptCreate() {
     const user = userEvent.setup();
-    render(<VaultGate>{APP_MARKER}</VaultGate>, { wrapper });
+    renderWithQueryClient(<VaultGate>{APP_MARKER}</VaultGate>);
     await screen.findByText("Protect your world");
     await user.type(screen.getByLabelText("Passphrase"), "seaside-orchid-9");
     await user.type(
@@ -301,7 +292,7 @@ describe("VaultGate - the states nobody rendered", () => {
       }),
     );
 
-    render(<VaultGate>{APP_MARKER}</VaultGate>, { wrapper });
+    renderWithQueryClient(<VaultGate>{APP_MARKER}</VaultGate>);
     await screen.findByText("Protect your world");
     await user.type(screen.getByLabelText("Passphrase"), "seaside-orchid-9");
     await user.type(

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { mockFetch } from "@/test/mocks/api";
 import { characterFixture } from "@/test/mocks/fixtures";
 import { CharacterImportDialog } from "@/components/characters/CharacterImportDialog";
@@ -9,13 +9,10 @@ import { Button } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 function wrapper({ children }: { children: React.ReactNode }) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: 0 } },
-  });
   return (
-    <QueryClientProvider client={qc}>
+    
       <TooltipProvider>{children}</TooltipProvider>
-    </QueryClientProvider>
+    
   );
 }
 
@@ -29,7 +26,7 @@ describe("Character Import Dialog Tests", () => {
     const fetchMock = mockFetch({});
 
     const user = userEvent.setup();
-    render(
+    renderWithQueryClient(
       <CharacterImportDialog trigger={<Button>Import</Button>} />,
       { wrapper },
     );
@@ -84,7 +81,7 @@ describe("Character Import Dialog Tests", () => {
     const fetchMock = mockFetch({});
 
     const user = userEvent.setup();
-    render(
+    renderWithQueryClient(
       <CharacterImportDialog trigger={<Button>Import</Button>} />,
       { wrapper },
     );
@@ -118,7 +115,7 @@ describe("Character Import Dialog Tests", () => {
   it("FF14: picking a .json file fills the textarea and imports its text", async () => {
     const fetchMock = mockFetch({});
     const user = userEvent.setup();
-    render(
+    renderWithQueryClient(
       <CharacterImportDialog trigger={<Button>Import</Button>} />,
       { wrapper },
     );
@@ -168,7 +165,7 @@ describe("Character Import Dialog Tests", () => {
   it("FF14: the file picker is disabled while an import is pending", async () => {
     mockFetch({});
     const user = userEvent.setup();
-    render(
+    renderWithQueryClient(
       <CharacterImportDialog trigger={<Button>Import</Button>} />,
       { wrapper },
     );

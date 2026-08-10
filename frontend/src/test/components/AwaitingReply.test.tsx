@@ -12,18 +12,13 @@
  * sweep, so it simply writes a fresh reply. This turns the trick into a button.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { fireEvent, screen } from "@testing-library/react";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 
 import { MessageBubble } from "@/components/chat/MessageBubble";
 import { useUiStore } from "@/lib/store/uiStore";
 import type { Message } from "@/lib/schemas/chats";
 
-function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
-}
 
 function msg(id: number, role: "user" | "assistant", content: string): Message {
   return {
@@ -44,15 +39,12 @@ const QUESTION = msg(2, "user", "what happened next?");
 const REPLY = msg(3, "assistant", "and then...");
 
 function show(messages: Message[], message: Message, onEditMessage = vi.fn()) {
-  render(
-    <MessageBubble
+  renderWithQueryClient(<MessageBubble
       chatId={1}
       message={message}
       messages={messages}
       onEditMessage={onEditMessage}
-    />,
-    { wrapper },
-  );
+    />);
   return onEditMessage;
 }
 

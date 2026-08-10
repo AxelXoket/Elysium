@@ -651,3 +651,100 @@ def test_the_preload_skips_when_no_model_is_chosen(client, monkeypatch):
     monkeypatch.setattr(threading, "Thread", inline_thread)
     vault_router._preload_voice_model()
     assert resolved == [], "nothing chosen - nothing to warm"
+
+
+# ---------------------------------------------------------------------------
+# The guards nothing was watching
+#
+# Added 2026-08-10. Each of these pins a line that an adversarial pass found
+# could be deleted with the whole suite staying green. They are not new
+# behaviour: the code already does all three. What was missing was anything
+# that would notice if it stopped.
+# ---------------------------------------------------------------------------
+
+
+def test_a_wrong_old_passphrase_is_refused_even_while_the_vault_is_open(
+    client, tmp_path, monkeypatch,
+):
+    """The old passphrase is CHECKED, not taken from the open session.
+
+    database.rekey_db falls back to the live session key when it is handed
+    current_key=None, so the 401 above it is the only thing between "prove you
+    know the current passphrase" and "anything that can reach this route while
+    the vault is open may rotate it". Every other test in the suite sends a
+    CORRECT old passphrase, so deleting that guard changed nothing anywhere.
+    """
+    import vault_state
+
+    _fresh_vault(client, tmp_path, monkeypatch, "wrongold")
+    assert client.post(
+        "/api/v1/vault/init", json={"passphrase": "first-pass-abc"},
+    ).status_code == 200
+    # The precondition that makes this sharp: a key IS resident, so a fallback
+    # to it would succeed and look like an ordinary rotation.
+    assert vault_state.is_unlocked()
+
+    r = client.post("/api/v1/vault/change-passphrase", json={
+        "old_passphrase": "not-the-passphrase",
+        "new_passphrase": "second-pass-xyz",
+    })
+    assert r.status_code == 401, r.text
+    assert r.json()["detail"] == "wrong_passphrase"
+
+    # And the rotation really did not happen underneath the refusal.
+    client.post("/api/v1/vault/lock")
+    assert client.post(
+        "/api/v1/vault/unlock", json={"passphrase": "second-pass-xyz"},
+    ).status_code == 401, "the passphrase the caller tried to set must not work"
+    assert client.post(
+        "/api/v1/vault/unlock", json={"passphrase": "first-pass-abc"},
+    ).status_code == 200, "the real passphrase must still open it"
+
+
+def test_init_relocks_when_the_bootstrap_fails(client, tmp_path, monkeypatch):
+    """A failed init must not leave the key resident.
+
+    The same shape is already pinned for change-passphrase (FB5c). Init and
+    unlock have the identical except-block and had no test at all, so a 500
+    could have been reported to the user while the vault was in fact open.
+    """
+    import routers.vault as vault_router
+    import vault_state
+
+    _fresh_vault(client, tmp_path, monkeypatch, "initboom")
+    monkeypatch.setattr(
+        vault_router, "_bootstrap_unlocked",
+        lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    r = client.post("/api/v1/vault/init", json={"passphrase": "first-pass-abc"})
+    assert r.status_code == 500, r.text
+    assert not vault_state.is_unlocked(), (
+        "init reported failure while the vault was still open"
+    )
+
+
+def test_unlock_relocks_when_the_bootstrap_fails(client, tmp_path, monkeypatch):
+    """The unlock half of the same guard, and the more dangerous one: it runs
+    on every launch, not only on the one that creates the vault."""
+    import routers.vault as vault_router
+    import vault_state
+
+    _fresh_vault(client, tmp_path, monkeypatch, "unlockboom")
+    assert client.post(
+        "/api/v1/vault/init", json={"passphrase": "first-pass-abc"},
+    ).status_code == 200
+    client.post("/api/v1/vault/lock")
+    assert not vault_state.is_unlocked()
+
+    monkeypatch.setattr(
+        vault_router, "_bootstrap_unlocked",
+        lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    r = client.post(
+        "/api/v1/vault/unlock", json={"passphrase": "first-pass-abc"},
+    )
+    assert r.status_code == 500, r.text
+    assert not vault_state.is_unlocked(), (
+        "unlock reported failure while the key stayed resident"
+    )

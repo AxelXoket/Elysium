@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { mockFetch } from "@/test/mocks/api";
 import {
   settingsFixture,
@@ -11,13 +11,10 @@ import { ProxySection } from "@/components/settings/ProxySection";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 function wrapper({ children }: { children: React.ReactNode }) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: 0 } },
-  });
   return (
-    <QueryClientProvider client={qc}>
+    
       <TooltipProvider>{children}</TooltipProvider>
-    </QueryClientProvider>
+    
   );
 }
 
@@ -38,7 +35,7 @@ describe("Proxy Section Tests", () => {
   // T-10: Proxy save calls POST /settings/proxy with exact backend field names
   it("T-10: proxy save calls POST /settings/proxy", async () => {
     const user = userEvent.setup();
-    render(<ProxySection />, { wrapper });
+    renderWithQueryClient(<ProxySection />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByText("Proxy configured")).toBeInTheDocument();
@@ -80,7 +77,7 @@ describe("Proxy Section Tests", () => {
   // T-11: Proxy delete calls DELETE
   it("T-11: proxy delete calls DELETE /settings/proxy", async () => {
     const user = userEvent.setup();
-    render(<ProxySection />, { wrapper });
+    renderWithQueryClient(<ProxySection />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByText("Proxy configured")).toBeInTheDocument();
@@ -111,7 +108,7 @@ describe("Proxy Section Tests", () => {
   // T-12: Proxy URL not displayed after save
   it("T-12: proxy URL not displayed after save", async () => {
     const user = userEvent.setup();
-    render(<ProxySection />, { wrapper });
+    renderWithQueryClient(<ProxySection />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByText("Proxy configured")).toBeInTheDocument();
@@ -140,7 +137,7 @@ describe("Proxy Section Tests", () => {
 
   // T-13: Proxy health status renders
   it("T-13: proxy health status renders", async () => {
-    render(<ProxySection />, { wrapper });
+    renderWithQueryClient(<ProxySection />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByText(/Healthy/)).toBeInTheDocument();
@@ -161,7 +158,7 @@ describe("Proxy Section Tests", () => {
       },
     });
 
-    render(<ProxySection />, { wrapper });
+    renderWithQueryClient(<ProxySection />, { wrapper });
 
     const toggle = screen.getByLabelText("Proxy required toggle");
     await waitFor(() => {
@@ -184,7 +181,7 @@ describe("Proxy Section Tests", () => {
       },
     });
 
-    render(<ProxySection />, { wrapper });
+    renderWithQueryClient(<ProxySection />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Proxy required toggle")).toBeChecked();
@@ -225,7 +222,7 @@ describe("Proxy Section Tests", () => {
     // Server says proxy_required=false; user switches it on before saving.
     const mock = fetchMock;
 
-    render(<ProxySection />, { wrapper });
+    renderWithQueryClient(<ProxySection />, { wrapper });
 
     const toggle = screen.getByLabelText("Proxy required toggle");
     await waitFor(() => {
@@ -285,7 +282,7 @@ describe("Proxy Section Tests", () => {
       },
     });
 
-    render(<ProxySection />, { wrapper });
+    renderWithQueryClient(<ProxySection />, { wrapper });
     await waitFor(() => {
       expect(screen.getByLabelText("Proxy required toggle")).not.toBeChecked();
     });
@@ -333,7 +330,7 @@ describe("Proxy Section Tests", () => {
       },
     });
 
-    render(<ProxySection />, { wrapper });
+    renderWithQueryClient(<ProxySection />, { wrapper });
     await waitFor(() => {
       expect(screen.getByLabelText("Proxy required toggle")).toBeInTheDocument();
     });
@@ -356,7 +353,7 @@ describe("Proxy Section Tests", () => {
       },
     });
 
-    render(<ProxySection />, { wrapper });
+    renderWithQueryClient(<ProxySection />, { wrapper });
     await waitFor(() =>
       expect(screen.getByLabelText("Proxy URL input")).toBeInTheDocument(),
     );
@@ -397,7 +394,7 @@ describe("Proxy Section Tests", () => {
       },
     });
 
-    render(<ProxySection />, { wrapper });
+    renderWithQueryClient(<ProxySection />, { wrapper });
     const alias = await screen.findByLabelText("Proxy alias input");
     // Touch it, then leave it empty - an explicit clear.
     await user.type(alias, "x");
@@ -429,7 +426,7 @@ describe("Proxy Section Tests", () => {
   it("FIX-3: save error shows mapped message instead of raw detail", async () => {
     const user = userEvent.setup();
 
-    render(<ProxySection />, { wrapper });
+    renderWithQueryClient(<ProxySection />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByText("Proxy configured")).toBeInTheDocument();

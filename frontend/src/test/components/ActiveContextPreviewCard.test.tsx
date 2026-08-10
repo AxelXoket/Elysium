@@ -12,14 +12,13 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { act, render, screen } from "@testing-library/react";
+import { act, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { ReactNode } from "react";
 import {
   GenerationSettingsProvider,
   useGenerationSettings,
 } from "@/components/generation/GenerationSettingsContext";
+import { renderWithQueryClient, createTestQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { ActiveContextPreviewCard } from "@/components/preview/ActiveContextPreviewCard";
 import { NOT_INCLUDED_ITEMS, PREVIEW_DISCLAIMER } from "@/lib/preview";
 import { TEXT_ONLY_NOTE } from "@/lib/models";
@@ -78,9 +77,7 @@ function mockAllRoutes() {
 // ── Harness ──────────────────────────────────────────────────────
 
 function renderCard() {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: 0 } },
-  });
+  const qc = createTestQueryClient();
   const api: { current: ReturnType<typeof useGenerationSettings> | null } = {
     current: null,
   };
@@ -90,20 +87,12 @@ function renderCard() {
     return null;
   }
 
-  function Wrapper({ children }: { children: ReactNode }) {
-    return (
-      <QueryClientProvider client={qc}>
-        <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
-      </QueryClientProvider>
-    );
-  }
-
-  render(
+  renderWithQueryClient(
     <>
       <ActiveContextPreviewCard />
       <Probe />
     </>,
-    { wrapper: Wrapper },
+    { client: qc, wrapper: GenerationSettingsProvider },
   );
 
   return { qc, api };

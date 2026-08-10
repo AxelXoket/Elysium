@@ -7,8 +7,8 @@
  * control that reports a setting the vault does not actually have, which is
  * how somebody ends up believing their vault locks itself when it does not.
  */
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -28,14 +28,7 @@ vi.mock("@/lib/query/settings", () => ({
 }));
 
 function renderIt() {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
-  return render(
-    <QueryClientProvider client={qc}>
-      <AutoLockControl />
-    </QueryClientProvider>,
-  );
+  return renderWithQueryClient(<AutoLockControl />);
 }
 
 describe("AutoLockControl", () => {

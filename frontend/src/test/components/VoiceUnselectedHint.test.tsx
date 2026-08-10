@@ -10,19 +10,14 @@
  * identical to a fresh install with nothing anywhere to explain why.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 
 import { VoiceUnselectedHint } from "@/components/chat/VoiceUnselectedHint";
 import { useUiStore } from "@/lib/store/uiStore";
 import { mockFetch } from "../mocks/api";
 
-function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
-}
 
 const ACTIVE_BASE = {
   uid: null,
@@ -49,7 +44,7 @@ describe("VoiceUnselectedHint", () => {
 
   it("says so when voice is installed but nothing is chosen", async () => {
     stubActive({ voice_installed: true, uid: null });
-    render(<VoiceUnselectedHint />, { wrapper });
+    renderWithQueryClient(<VoiceUnselectedHint />);
 
     const hint = await screen.findByRole("status");
     expect(hint).toHaveTextContent(/no voice is chosen/i);
@@ -58,7 +53,7 @@ describe("VoiceUnselectedHint", () => {
   it("stays silent when no engine is installed", async () => {
     // Nothing to offer - a nag about a feature that does not exist here.
     stubActive({ voice_installed: false, uid: null });
-    const { container } = render(<VoiceUnselectedHint />, { wrapper });
+    const { container } = renderWithQueryClient(<VoiceUnselectedHint />);
     await waitFor(() => expect(container.firstChild).toBeNull());
   });
 
@@ -68,13 +63,13 @@ describe("VoiceUnselectedHint", () => {
       uid: "u1",
       readiness: null,
     });
-    const { container } = render(<VoiceUnselectedHint />, { wrapper });
+    const { container } = renderWithQueryClient(<VoiceUnselectedHint />);
     await waitFor(() => expect(container.firstChild).toBeNull());
   });
 
   it("opens Settings on the Voice page", async () => {
     stubActive({ voice_installed: true, uid: null });
-    render(<VoiceUnselectedHint />, { wrapper });
+    renderWithQueryClient(<VoiceUnselectedHint />);
 
     await userEvent.click(await screen.findByRole("button", { name: "Choose one" }));
 
@@ -86,7 +81,7 @@ describe("VoiceUnselectedHint", () => {
     // A hint that cannot be silenced is a nag; somebody who deliberately keeps
     // voice off should be able to say so once.
     stubActive({ voice_installed: true, uid: null });
-    const view = render(<VoiceUnselectedHint />, { wrapper });
+    const view = renderWithQueryClient(<VoiceUnselectedHint />);
 
     await userEvent.click(
       await screen.findByRole("button", { name: "Dismiss voice hint" }),
@@ -95,7 +90,7 @@ describe("VoiceUnselectedHint", () => {
     expect(useUiStore.getState().voiceHintDismissed).toBe(true);
 
     view.unmount();
-    const again = render(<VoiceUnselectedHint />, { wrapper });
+    const again = renderWithQueryClient(<VoiceUnselectedHint />);
     await waitFor(() => expect(again.container.firstChild).toBeNull());
   });
 });

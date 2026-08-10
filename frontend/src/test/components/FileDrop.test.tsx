@@ -8,8 +8,8 @@
  * Object.defineProperty(dataTransfer) and check defaultPrevented.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { ChatCanvas } from "@/components/chat/ChatCanvas";
 import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
 import { useUiStore } from "@/lib/store/uiStore";
@@ -26,11 +26,10 @@ import type { ModelList } from "@/lib/schemas/models";
 import type { ReactNode } from "react";
 
 function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return (
-    <QueryClientProvider client={qc}>
+    
       <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
-    </QueryClientProvider>
+    
   );
 }
 
@@ -80,7 +79,7 @@ function fileDT(files: File[], itemTypes: string[]) {
 
 async function renderReady(routes = baseRoutes()) {
   mockFetchWithStreams(routes);
-  render(<ChatCanvas />, { wrapper });
+  renderWithQueryClient(<ChatCanvas />, { wrapper });
   await waitFor(() => {
     expect(screen.getByLabelText("Message")).not.toBeDisabled();
   });

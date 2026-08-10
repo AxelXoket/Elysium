@@ -7,9 +7,8 @@
  * recordings. Saving, and saving only what changed, is the contract.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { screen, fireEvent, waitFor } from "@testing-library/react";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 
 import { DeliverySection } from "@/components/settings/DeliverySection";
 import { clearStage, stageOccupied } from "@/lib/voice/stage";
@@ -36,12 +35,6 @@ const PREFS = {
  * STREAM reads these values (useTagPrefs) - not this panel. Rendering it
  * without a provider tests a configuration the app never has.
  */
-function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
-}
 
 describe("DeliverySection", () => {
   beforeEach(() => {
@@ -54,7 +47,7 @@ describe("DeliverySection", () => {
 
   it("renders nothing until the current values are known", () => {
     getTagPrefs.mockReturnValue(new Promise(() => {}));
-    const { container } = render(<DeliverySection />, { wrapper });
+    const { container } = renderWithQueryClient(<DeliverySection />);
     expect(container.firstChild).toBeNull();
   });
 
@@ -62,12 +55,12 @@ describe("DeliverySection", () => {
     // The rest of Settings must keep working; a failed fetch here is not an
     // error worth a toast.
     getTagPrefs.mockRejectedValue(new Error("not configured"));
-    const { container } = render(<DeliverySection />, { wrapper });
+    const { container } = renderWithQueryClient(<DeliverySection />);
     await waitFor(() => expect(container.firstChild).toBeNull());
   });
 
   it("saves a tone picked from the palette immediately", async () => {
-    render(<DeliverySection />, { wrapper });
+    renderWithQueryClient(<DeliverySection />);
     await screen.findByText("Delivery");
     fireEvent.click(screen.getByText("low voice, slow"));
     await waitFor(() =>
@@ -76,7 +69,7 @@ describe("DeliverySection", () => {
   });
 
   it("saves a typed tone on blur, not on every keystroke", async () => {
-    render(<DeliverySection />, { wrapper });
+    renderWithQueryClient(<DeliverySection />);
     const input = await screen.findByPlaceholderText("e.g. low voice, slow");
     fireEvent.change(input, { target: { value: "hushed" } });
     expect(saveTagPrefs).not.toHaveBeenCalled();
@@ -87,14 +80,14 @@ describe("DeliverySection", () => {
   });
 
   it("does not write when the tone was not actually changed", async () => {
-    render(<DeliverySection />, { wrapper });
+    renderWithQueryClient(<DeliverySection />);
     const input = await screen.findByPlaceholderText("e.g. low voice, slow");
     fireEvent.blur(input);
     expect(saveTagPrefs).not.toHaveBeenCalled();
   });
 
   it("saves density when the slider is released, not while dragging", async () => {
-    render(<DeliverySection />, { wrapper });
+    renderWithQueryClient(<DeliverySection />);
     const slider = await screen.findByLabelText("Direction density");
     fireEvent.change(slider, { target: { value: "3" } });
     expect(saveTagPrefs).not.toHaveBeenCalled();
@@ -106,7 +99,7 @@ describe("DeliverySection", () => {
     // A preview rendered by some other route would be a different promise
     // from the one being tuned.
     window.HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
-    render(<DeliverySection />, { wrapper });
+    renderWithQueryClient(<DeliverySection />);
     fireEvent.click(await screen.findByText("Hear it"));
     await waitFor(() => expect(speakText).toHaveBeenCalledTimes(1));
   });
@@ -120,7 +113,7 @@ describe("DeliverySection", () => {
   // that was never built.
 
   it("offers the reading-speed dial the settings panel points at", async () => {
-    render(<DeliverySection />, { wrapper });
+    renderWithQueryClient(<DeliverySection />);
     const slider = await screen.findByLabelText("Reading speed");
     expect(slider).toHaveValue("1");
     expect(slider).toHaveAttribute("min", "0.8");
@@ -128,7 +121,7 @@ describe("DeliverySection", () => {
   });
 
   it("saves the speed when the slider is released, not while dragging", async () => {
-    render(<DeliverySection />, { wrapper });
+    renderWithQueryClient(<DeliverySection />);
     const slider = await screen.findByLabelText("Reading speed");
     fireEvent.change(slider, { target: { value: "1.25" } });
     expect(saveTagPrefs).not.toHaveBeenCalled();
@@ -153,7 +146,7 @@ describe("DeliverySection", () => {
       }),
     );
 
-    const view = render(<DeliverySection />, { wrapper });
+    const view = renderWithQueryClient(<DeliverySection />);
     fireEvent.click(await screen.findByText("Hear it"));
     await waitFor(() => expect(speakText).toHaveBeenCalledTimes(1));
 
@@ -170,7 +163,7 @@ describe("DeliverySection", () => {
     const pause = vi.fn();
     window.HTMLMediaElement.prototype.pause = pause;
 
-    render(<DeliverySection />, { wrapper });
+    renderWithQueryClient(<DeliverySection />);
     fireEvent.click(await screen.findByText("Hear it"));
     await waitFor(() => expect(speakText).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(stageOccupied()).toBe(true));

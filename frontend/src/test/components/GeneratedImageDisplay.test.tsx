@@ -17,8 +17,8 @@
  * ChatCanvasScroll.test.tsx does it.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import type { ReactNode } from "react";
 
 import { ChatCanvas } from "@/components/chat/ChatCanvas";
@@ -29,11 +29,10 @@ import { settingsFixture } from "../mocks/fixtures";
 import type { Message } from "@/lib/schemas/chats";
 
 function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return (
-    <QueryClientProvider client={qc}>
+    
       <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
-    </QueryClientProvider>
+    
   );
 }
 
@@ -115,7 +114,7 @@ describe("a generated image in the transcript", () => {
   });
 
   async function renderCanvas() {
-    const utils = render(<ChatCanvas />, { wrapper });
+    const utils = renderWithQueryClient(<ChatCanvas />, { wrapper });
     const stub = stubScroller(utils.container);
     await screen.findByText("here you go");
     return { ...utils, ...stub };

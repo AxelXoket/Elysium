@@ -14,8 +14,9 @@
  *    and pushes a toast; abort is silent
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { renderHook, waitFor, act } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { waitFor, act } from "@testing-library/react";
+import type { QueryClient } from "@tanstack/react-query";
+import { createTestQueryClient, renderHookWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { useStreamingCompletion } from "@/lib/chat/useStreamingCompletion";
 import { useStreamRegistry, stopChat } from "@/lib/chat/streamRegistry";
 import { useClearChat, useDeleteChat } from "@/lib/query/chats";
@@ -27,7 +28,6 @@ import {
   jsonResponse,
 } from "../helpers/streamMocks";
 import type { Message } from "@/lib/schemas/chats";
-import type { ReactNode } from "react";
 
 function msg(id: number, role: "user" | "assistant", content: string): Message {
   return {
@@ -36,18 +36,6 @@ function msg(id: number, role: "user" | "assistant", content: string): Message {
     role,
     content,
     created_at: "2026-01-01T00:00:00Z",
-  };
-}
-
-function newQueryClient(): QueryClient {
-  return new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
-}
-
-function createWrapper(qc: QueryClient) {
-  return function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
   };
 }
 
@@ -70,15 +58,15 @@ describe("useStreamingCompletion - send", () => {
   });
 
   it("happy path: optimistic → user swap → deltas → done", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]);
     const stream = controlledSseResponse();
     mockFetchWithStreams({
       "/chats/1/complete/stream": { response: () => stream.response },
     });
 
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     let sendPromise!: Promise<void>;
@@ -128,7 +116,7 @@ describe("useStreamingCompletion - send", () => {
   });
 
   it("provider error event: user row removed, onError fired, no toast", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]);
     const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
     const stream = controlledSseResponse();
@@ -136,8 +124,8 @@ describe("useStreamingCompletion - send", () => {
       "/chats/1/complete/stream": { response: () => stream.response },
     });
 
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     const onError = vi.fn();
@@ -173,15 +161,15 @@ describe("useStreamingCompletion - send", () => {
     // The provider failed AFTER text arrived and the server kept it - the
     // same thing pressing Stop at that moment does. Mirroring the old
     // roll-back here would delete a reply the user is still looking at.
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]);
     const stream = controlledSseResponse();
     mockFetchWithStreams({
       "/chats/1/complete/stream": { response: () => stream.response },
     });
 
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     const onError = vi.fn();
@@ -219,15 +207,15 @@ describe("useStreamingCompletion - send", () => {
   });
 
   it("a notice arriving before the reply becomes a warning, not an error", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]);
     const stream = controlledSseResponse();
     mockFetchWithStreams({
       "/chats/1/complete/stream": { response: () => stream.response },
     });
 
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     let sendPromise!: Promise<void>;
@@ -257,7 +245,7 @@ describe("useStreamingCompletion - send", () => {
   });
 
   it("abort with partial text: keeps user row and refetches messages", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]);
     const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
     const stream = controlledSseResponse();
@@ -265,8 +253,8 @@ describe("useStreamingCompletion - send", () => {
       "/chats/1/complete/stream": { response: () => stream.response },
     });
 
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     const onError = vi.fn();
@@ -297,15 +285,15 @@ describe("useStreamingCompletion - send", () => {
   });
 
   it("abort with no text: removes user rows and fires onAbortedEmpty", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]);
     const stream = controlledSseResponse();
     mockFetchWithStreams({
       "/chats/1/complete/stream": { response: () => stream.response },
     });
 
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     const onError = vi.fn();
@@ -349,15 +337,15 @@ describe("useStreamingCompletion - regenerate", () => {
   });
 
   it("done appends the new variant and deactivates the old row in place", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), chatMessages);
     const stream = controlledSseResponse();
     mockFetchWithStreams({
       "/regenerate/stream": { response: () => stream.response },
     });
 
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     let promise!: Promise<void>;
@@ -412,15 +400,15 @@ describe("useStreamingCompletion - regenerate", () => {
   });
 
   it("error event keeps the old row and pushes a toast", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), chatMessages);
     const stream = controlledSseResponse();
     mockFetchWithStreams({
       "/regenerate/stream": { response: () => stream.response },
     });
 
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     let promise!: Promise<void>;
@@ -442,15 +430,15 @@ describe("useStreamingCompletion - regenerate", () => {
   });
 
   it("abort is silent: old row intact, no toast", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), chatMessages);
     const stream = controlledSseResponse();
     mockFetchWithStreams({
       "/regenerate/stream": { response: () => stream.response },
     });
 
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     let promise!: Promise<void>;
@@ -518,7 +506,7 @@ describe("useStreamingCompletion - rAF delta batching", () => {
 
   it("two deltas before a frame flush produce a single combined state update", async () => {
     stubAnimationFrames();
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]);
     const stream = controlledSseResponse();
     mockFetchWithStreams({
@@ -528,7 +516,7 @@ describe("useStreamingCompletion - rAF delta batching", () => {
     // Record every distinct non-empty streaming text a render observed -
     // batching means "Hel" alone must never appear.
     const seenTexts: string[] = [];
-    const { result } = renderHook(
+    const { result } = renderHookWithQueryClient(
       () => {
         const hook = useStreamingCompletion();
         const text = hook.streamingByChat.get(1)?.text;
@@ -541,7 +529,7 @@ describe("useStreamingCompletion - rAF delta batching", () => {
         }
         return hook;
       },
-      { wrapper: createWrapper(qc) },
+      { client: qc },
     );
 
     let sendPromise!: Promise<void>;
@@ -588,7 +576,7 @@ describe("useStreamingCompletion - rAF delta batching", () => {
 
   it("abort mid-batch still persists the full accumulated partial", async () => {
     stubAnimationFrames();
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]);
     const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
     const stream = controlledSseResponse();
@@ -596,8 +584,8 @@ describe("useStreamingCompletion - rAF delta batching", () => {
       "/chats/1/complete/stream": { response: () => stream.response },
     });
 
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     const onError = vi.fn();
@@ -657,15 +645,15 @@ describe("useStreamingCompletion - attachments", () => {
   }
 
   it("send includes attachment ids in the body and fires onPersisted on done", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]);
     const stream = controlledSseResponse();
     const mock = mockFetchWithStreams({
       "/chats/1/complete/stream": { response: () => stream.response },
     });
 
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     const onPersisted = vi.fn();
@@ -702,14 +690,14 @@ describe("useStreamingCompletion - attachments", () => {
   });
 
   it("send omits the attachments key when none are provided", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     const stream = controlledSseResponse();
     const mock = mockFetchWithStreams({
       "/chats/1/complete/stream": { response: () => stream.response },
     });
 
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     let sendPromise!: Promise<void>;
@@ -731,14 +719,14 @@ describe("useStreamingCompletion - attachments", () => {
   });
 
   it("send omits the attachments key for an empty array", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     const stream = controlledSseResponse();
     const mock = mockFetchWithStreams({
       "/chats/1/complete/stream": { response: () => stream.response },
     });
 
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     let sendPromise!: Promise<void>;
@@ -753,15 +741,15 @@ describe("useStreamingCompletion - attachments", () => {
   });
 
   it("abort with partial text fires onPersisted (attachments consumed)", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]);
     const stream = controlledSseResponse();
     mockFetchWithStreams({
       "/chats/1/complete/stream": { response: () => stream.response },
     });
 
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     const onPersisted = vi.fn();
@@ -791,15 +779,15 @@ describe("useStreamingCompletion - attachments", () => {
 
   it("error event and abort-empty do NOT fire onPersisted", async () => {
     // Error event first
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]);
     let stream = controlledSseResponse();
     mockFetchWithStreams({
       "/chats/1/complete/stream": { response: () => stream.response },
     });
 
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     const onPersisted = vi.fn();
@@ -864,7 +852,7 @@ describe("useStreamingCompletion - ghost-message chain (v1.1)", () => {
   });
 
   it("D1: abort-empty deletes the persisted user row BEFORE invalidating; 404 is swallowed", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]);
     const order: string[] = [];
     const invalidateOriginal = qc.invalidateQueries.bind(qc);
@@ -884,8 +872,8 @@ describe("useStreamingCompletion - ghost-message chain (v1.1)", () => {
       },
     });
 
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     const onAbortedEmpty = vi.fn();
@@ -915,7 +903,7 @@ describe("useStreamingCompletion - ghost-message chain (v1.1)", () => {
   });
 
   it("D3: done invalidates messages UNCONDITIONALLY (history already present)", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]); // history loaded
     const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
     const stream = controlledSseResponse();
@@ -923,8 +911,8 @@ describe("useStreamingCompletion - ghost-message chain (v1.1)", () => {
       "/chats/1/complete/stream": { response: () => stream.response },
     });
 
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     let sendPromise!: Promise<void>;
@@ -948,7 +936,7 @@ describe("useStreamingCompletion - ghost-message chain (v1.1)", () => {
 
   it("I8: abort-empty BEFORE user_message arms a 750ms one-shot resync", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]);
     const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
     const stream = controlledSseResponse();
@@ -956,8 +944,8 @@ describe("useStreamingCompletion - ghost-message chain (v1.1)", () => {
       "/chats/1/complete/stream": { response: () => stream.response },
     });
 
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     const onAbortedEmpty = vi.fn();
@@ -998,15 +986,15 @@ describe("useStreamingCompletion - ghost-message chain (v1.1)", () => {
   });
 
   it("FF1/H7: the module registry tracks the stream and stopChat aborts it", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]);
     const stream = controlledSseResponse();
     mockFetchWithStreams({
       "/chats/1/complete/stream": { response: () => stream.response },
     });
 
-    const { result } = renderHook(() => useStreamingCompletion(), {
-      wrapper: createWrapper(qc),
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
     });
 
     const onAbortedEmpty = vi.fn();
@@ -1029,7 +1017,7 @@ describe("useStreamingCompletion - ghost-message chain (v1.1)", () => {
   });
 
   it("FF1: useClearChat/useDeleteChat abort the chat's stream in onMutate", async () => {
-    const qc = newQueryClient();
+    const qc = createTestQueryClient();
     mockFetchWithStreams({
       "/chats/1/clear": { body: { ok: true, deleted_count: 2 } },
       "/chats/2": { body: { ok: true, deleted_count: 1 } },
@@ -1044,9 +1032,9 @@ describe("useStreamingCompletion - ghost-message chain (v1.1)", () => {
       ]),
     });
 
-    const { result } = renderHook(
+    const { result } = renderHookWithQueryClient(
       () => ({ clear: useClearChat(), del: useDeleteChat() }),
-      { wrapper: createWrapper(qc) },
+      { client: qc },
     );
 
     await act(async () => {

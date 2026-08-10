@@ -8,8 +8,7 @@
  *  - loading or error states NEVER clear (e.g. models 401 before API key set)
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { renderHook, waitFor, act } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { waitFor, act } from "@testing-library/react";
 import { useStaleSelectionReconciliation } from "@/app/useStaleSelectionReconciliation";
 import { useUiStore } from "@/lib/store/uiStore";
 import { mockFetch } from "../mocks/api";
@@ -19,15 +18,10 @@ import {
   characterFixture,
   modelListFixture,
 } from "../mocks/fixtures";
-import type { ReactNode } from "react";
-
-function createWrapper(qc?: QueryClient) {
-  const client =
-    qc ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
-  };
-}
+import {
+  createTestQueryClient,
+  renderHookWithQueryClient,
+} from "@/test/helpers/renderWithQueryClient";
 
 /** Valid server data: chat 1, character 1, model "openai/gpt-4o". */
 function mockAllListsValid() {
@@ -60,9 +54,7 @@ describe("useStaleSelectionReconciliation", () => {
       selectedModelId: "openai/gpt-4o",
     });
 
-    renderHook(() => useStaleSelectionReconciliation(), {
-      wrapper: createWrapper(),
-    });
+    renderHookWithQueryClient(() => useStaleSelectionReconciliation());
 
     await waitFor(() => {
       expect(useUiStore.getState().selectedChatId).toBeNull();
@@ -79,9 +71,7 @@ describe("useStaleSelectionReconciliation", () => {
       selectedModelId: "openai/gpt-4o",
     });
 
-    renderHook(() => useStaleSelectionReconciliation(), {
-      wrapper: createWrapper(),
-    });
+    renderHookWithQueryClient(() => useStaleSelectionReconciliation());
 
     await waitFor(() => {
       expect(useUiStore.getState().selectedCharacterId).toBeNull();
@@ -99,9 +89,7 @@ describe("useStaleSelectionReconciliation", () => {
       selectedModelId: "vendor/removed-model",
     });
 
-    renderHook(() => useStaleSelectionReconciliation(), {
-      wrapper: createWrapper(),
-    });
+    renderHookWithQueryClient(() => useStaleSelectionReconciliation());
 
     await waitFor(() => {
       expect(useUiStore.getState().selectedModelId).toBeNull();
@@ -118,9 +106,7 @@ describe("useStaleSelectionReconciliation", () => {
       selectedModelId: "openai/gpt-4o",
     });
 
-    renderHook(() => useStaleSelectionReconciliation(), {
-      wrapper: createWrapper(),
-    });
+    renderHookWithQueryClient(() => useStaleSelectionReconciliation());
 
     await waitFor(() => {
       const urls = fetchMock.mock.calls.map(([url]) => String(url));
@@ -150,9 +136,7 @@ describe("useStaleSelectionReconciliation", () => {
       selectedModelId: "openai/gpt-4o",
     });
 
-    renderHook(() => useStaleSelectionReconciliation(), {
-      wrapper: createWrapper(),
-    });
+    renderHookWithQueryClient(() => useStaleSelectionReconciliation());
 
     // Chats reconciliation ran (stale chat cleared)…
     await waitFor(() => {
@@ -177,9 +161,7 @@ describe("useStaleSelectionReconciliation", () => {
     // …but the cache still holds the STALE list (without 163) and is marked
     // invalidated, so the first render serves stale data with isFetching=true
     // - exactly the create→invalidate→refetch window.
-    const qc = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
+    const qc = createTestQueryClient();
     qc.setQueryData(keys.chats(), [chatFixture]); // stale: only id 1
     await qc.invalidateQueries({ queryKey: keys.chats() });
 
@@ -189,8 +171,8 @@ describe("useStaleSelectionReconciliation", () => {
       selectedModelId: "openai/gpt-4o",
     });
 
-    renderHook(() => useStaleSelectionReconciliation(), {
-      wrapper: createWrapper(qc),
+    renderHookWithQueryClient(() => useStaleSelectionReconciliation(), {
+      client: qc,
     });
 
     // Let the refetch settle and effects run.
@@ -215,9 +197,7 @@ describe("useStaleSelectionReconciliation", () => {
       selectedModelId: "vendor/removed-model",
     });
 
-    renderHook(() => useStaleSelectionReconciliation(), {
-      wrapper: createWrapper(),
-    });
+    renderHookWithQueryClient(() => useStaleSelectionReconciliation());
 
     await act(async () => {
       await new Promise((r) => setTimeout(r, 25));

@@ -10,9 +10,8 @@
  * blamed a perfectly healthy engine that simply was not up yet.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { screen, waitFor } from "@testing-library/react";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 
 import { SpeakButton } from "@/components/chat/SpeakButton";
 import { SpeakLiveButton } from "@/components/chat/SpeakLiveButton";
@@ -21,10 +20,6 @@ import { VOICE_LOADING_HINT } from "@/lib/voice/useVoiceReadiness";
 import { useUiStore } from "@/lib/store/uiStore";
 import { mockFetch } from "../mocks/api";
 
-function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
-}
 
 const READINESS = {
   uid: "u1",
@@ -62,7 +57,7 @@ describe("voice controls while the model loads", () => {
 
   it("the per-message Speak button says so and pulses", async () => {
     stubActive("loading");
-    render(<SpeakButton messageId={7} />, { wrapper });
+    renderWithQueryClient(<SpeakButton messageId={7} />);
 
     const button = await screen.findByRole("button", { name: "Speak message" });
     await waitFor(() => {
@@ -76,7 +71,7 @@ describe("voice controls while the model loads", () => {
 
   it("the live-speak button says so and pulses", async () => {
     stubActive("loading");
-    render(<SpeakLiveButton chatId={1} />, { wrapper });
+    renderWithQueryClient(<SpeakLiveButton chatId={1} />);
 
     const button = await screen.findByRole("button", { name: "Speak this reply" });
     await waitFor(() => {
@@ -90,7 +85,7 @@ describe("voice controls while the model loads", () => {
     // Turning "speak replies" on applies from the NEXT message, so there is
     // nothing to wait for - refusing the press would be the lie here.
     stubActive("loading");
-    render(<ContinuousVoiceToggle />, { wrapper });
+    renderWithQueryClient(<ContinuousVoiceToggle />);
 
     const toggle = await screen.findByRole("switch");
     await waitFor(() => {
@@ -102,7 +97,7 @@ describe("voice controls while the model loads", () => {
 
   it("once loaded, the controls are ordinary again", async () => {
     stubActive("loaded");
-    render(<SpeakButton messageId={7} />, { wrapper });
+    renderWithQueryClient(<SpeakButton messageId={7} />);
 
     const button = await screen.findByRole("button", { name: "Speak message" });
     await waitFor(() => expect(button).toBeEnabled());
@@ -116,13 +111,13 @@ describe("voice controls while the model loads", () => {
     stubActive("unloaded", {
       readiness: { ...READINESS, runnable: false },
     });
-    const { container } = render(<SpeakButton messageId={7} />, { wrapper });
+    const { container } = renderWithQueryClient(<SpeakButton messageId={7} />);
     await waitFor(() => expect(container.firstChild).toBeNull());
   });
 
   it("no model chosen still renders nothing at all", async () => {
     stubActive("unloaded", { uid: null, readiness: null });
-    const { container } = render(<SpeakButton messageId={7} />, { wrapper });
+    const { container } = renderWithQueryClient(<SpeakButton messageId={7} />);
     await waitFor(() => expect(container.firstChild).toBeNull());
   });
 });

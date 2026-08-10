@@ -150,6 +150,39 @@ class TestCrashDumpHeapExclusion:
         assert win_hardening.restrict_crash_dump_contents() is True
         assert win_hardening.restrict_crash_dump_contents() is True
 
+    def test_windows_reports_the_flag_back(self) -> None:
+        """Read the state back, like every other check in this file.
+
+        The two tests above trust an HRESULT. WerSetFlags answers S_OK for any
+        valid flag value, including one that does NOT exclude the heap, so
+        changing the constant to something harmless would keep them green
+        while the crash dump kept the vault key and the decrypted messages.
+        WerGetFlags is the paired export; this asks it.
+        """
+        import ctypes
+
+        assert win_hardening.restrict_crash_dump_contents() is True
+
+        # argtypes/restype are not optional here. GetCurrentProcess returns the
+        # pseudo-handle -1; left as the default c_int it is truncated on 64-bit
+        # and WerGetFlags answers E_HANDLE. That is the same marshalling bug
+        # this suite records for the DPI switch, met again while writing this.
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        kernel32.WerGetFlags.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32),
+        ]
+        kernel32.WerGetFlags.restype = ctypes.c_long
+
+        flags = ctypes.c_uint32(0)
+        hresult = kernel32.WerGetFlags(
+            kernel32.GetCurrentProcess(), ctypes.byref(flags),
+        )
+        assert hresult == 0, f"WerGetFlags refused to answer: {hresult}"
+        assert flags.value & win_hardening._WER_FAULT_REPORTING_FLAG_NOHEAP, (
+            f"the no-heap bit is not set: flags={flags.value:#x}"
+        )
+
     def test_a_refusal_is_reported_as_a_refusal(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

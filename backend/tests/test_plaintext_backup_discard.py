@@ -123,12 +123,18 @@ class TestItRemovesNothingElse:
     def test_the_identity_files_are_never_touched(self, client) -> None:
         # salt.bin and verifier.bin sit in the same folder and a glob one
         # character too greedy would take them - which destroys the vault.
+        # The identity files are written by /vault/init, which the fixtures
+        # deliberately skip - they set the key directly. So this read them
+        # "if they exist", found neither, and looped over an empty dict: the
+        # ONE test standing between a greedy glob and an unopenable vault
+        # asserted nothing at all, on every run. Plant them instead.
         folder = Path(config.DB_PATH).parent
-        neighbours = {}
-        for name in ("salt.bin", "verifier.bin"):
-            candidate = folder / name
-            if candidate.exists():
-                neighbours[name] = candidate.read_bytes()
+        neighbours = {
+            name: f"identity-{name}".encode()
+            for name in ("salt.bin", "verifier.bin", "kdf.json")
+        }
+        for name, content in neighbours.items():
+            (folder / name).write_bytes(content)
         _backup()
 
         client.post("/api/v1/vault/discard-plaintext-backup")

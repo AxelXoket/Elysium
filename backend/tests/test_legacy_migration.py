@@ -159,6 +159,27 @@ def test_unlink_failure_keeps_blob_and_retries_next_pass(client, monkeypatch):
     assert not path.exists()  # retried and completed
 
 
+def test_reconcile_keeps_a_blob_that_is_still_referenced(client):
+    """The sweep runs on EVERY unlock, so its predicate has to be right.
+
+    Added 2026-08-10. Everything here proved what reconcile DELETES; nothing
+    proved what it leaves. Inverting one NOT EXISTS in the blob sweep would
+    remove every attachment that IS still referenced, on every launch, and the
+    whole file stayed green because each test planted an orphan and asked
+    whether the orphan went.
+    """
+    data = make_png_bytes((7, 7, 7))
+    sha = _plant_legacy_file(data)
+    migrated, failed, _removed = legacy_migration.migrate_upload_files_to_blobs()
+    assert migrated == 1 and not failed
+    assert _blob_exists(sha) and _rows_for(sha) == 1   # the floor
+
+    legacy_migration.reconcile_attachments_without_blobs(set())
+
+    assert _blob_exists(sha), "the sweep removed a blob a live row points at"
+    assert _rows_for(sha) == 1
+
+
 def test_reconcile_drops_only_truly_unrecoverable_rows(client):
     # Row without blob and without file: unrecoverable -> dropped.
     with database.get_db() as con:
@@ -355,17 +376,51 @@ def test_bootstrap_survives_migration_crash_and_skips_reconcile(
 # with whatever passphrase was current when it was taken.
 
 
-def test_a_clean_pass_discards_a_snapshot_left_by_an_earlier_dirty_one():
-    from pathlib import Path
+def test_a_clean_pass_discards_a_snapshot_left_by_an_earlier_dirty_one(
+    client, monkeypatch,
+):
+    """The snapshot a dirty pass leaves has to be reachable by a later one.
+
+    Rewritten 2026-08-10: this read routers/vault.py and searched for the
+    string "if pending and not failed_shas:". A source match cannot tell a
+    correct refactor (`if failed_shas == set():`) from a broken one, and it
+    passes for the phrase appearing in a comment. It now drives the real
+    decision twice, which is the only way to show the second pass can reach
+    what the first one left.
+    """
     import legacy_migration
     import routers.vault as vault_router
 
-    source = Path(vault_router.__file__).read_text(encoding="utf-8")
-    assert "if pending and not failed_shas:" not in source, (
-        "the discard is gated on a flag computed before the migration ran"
+    # Pass one: work is pending, so the snapshot is taken, and the pass fails,
+    # so it stays.
+    monkeypatch.setattr(
+        legacy_migration, "uploads_migration_pending", lambda: True)
+    monkeypatch.setattr(
+        legacy_migration, "migrate_upload_files_to_blobs",
+        lambda: (0, {"a" * 64}, 0),
     )
-    assert "if not failed_shas:" in source
-    assert callable(legacy_migration.discard_premigrate_backup)
+    monkeypatch.setattr(
+        legacy_migration, "reconcile_attachments_without_blobs",
+        lambda failed: 0,
+    )
+    vault_router._bootstrap_unlocked()
+    bak = legacy_migration.premigrate_backup_path()
+    assert bak.exists(), "a failed pass did not leave the snapshot"
+
+    # Pass two: the user deleted the stuck file by hand, so nothing is pending
+    # AND the pass is clean. That pair is the state the old code could not act
+    # on, because it gated the discard on the flag computed BEFORE migrating.
+    monkeypatch.setattr(
+        legacy_migration, "uploads_migration_pending", lambda: False)
+    monkeypatch.setattr(
+        legacy_migration, "migrate_upload_files_to_blobs",
+        lambda: (0, set(), 0),
+    )
+    vault_router._bootstrap_unlocked()
+    assert not bak.exists(), (
+        "a clean pass left the earlier snapshot behind: a full encrypted copy "
+        "of the database, orphaned in the data folder, named in no screen"
+    )
 
 
 def test_discarding_a_snapshot_that_is_not_there_is_harmless(tmp_path, monkeypatch):
@@ -377,11 +432,28 @@ def test_discarding_a_snapshot_that_is_not_there_is_harmless(tmp_path, monkeypat
     legacy_migration.discard_premigrate_backup()
 
 
-def test_a_failed_pass_still_keeps_the_snapshot():
-    """The rule that has to survive the fix: ANY failure keeps it."""
-    from pathlib import Path
+def test_a_failed_pass_still_keeps_the_snapshot(client, monkeypatch):
+    """The rule that has to survive the fix: ANY failure keeps it.
+
+    The control for the test above. Without it, a discard that fired
+    unconditionally would pass that one and throw away the only pre-migration
+    copy while something was still unmigrated. Rewritten 2026-08-10 from a
+    source-text search for the same reason.
+    """
+    import legacy_migration
     import routers.vault as vault_router
 
-    source = Path(vault_router.__file__).read_text(encoding="utf-8")
-    body = source[source.index("uploads_migration_pending"):]
-    assert "if not failed_shas:" in body[:2000]
+    monkeypatch.setattr(
+        legacy_migration, "uploads_migration_pending", lambda: True)
+    monkeypatch.setattr(
+        legacy_migration, "migrate_upload_files_to_blobs",
+        lambda: (3, {"b" * 64}, 0),          # some worked, one did not
+    )
+    monkeypatch.setattr(
+        legacy_migration, "reconcile_attachments_without_blobs",
+        lambda failed: 0,
+    )
+    vault_router._bootstrap_unlocked()
+    assert legacy_migration.premigrate_backup_path().exists(), (
+        "the snapshot went while a file was still unmigrated"
+    )

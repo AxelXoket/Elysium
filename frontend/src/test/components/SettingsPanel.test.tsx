@@ -1,20 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { mockFetch } from "@/test/mocks/api";
 import { settingsFixture, proxyHealthFixture } from "@/test/mocks/fixtures";
 import { ApiKeySection } from "@/components/settings/ApiKeySection";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 function wrapper({ children }: { children: React.ReactNode }) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: 0 } },
-  });
   return (
-    <QueryClientProvider client={qc}>
+    
       <TooltipProvider>{children}</TooltipProvider>
-    </QueryClientProvider>
+    
   );
 }
 
@@ -34,7 +31,7 @@ describe("Settings Panel Tests", () => {
 
   // T-06: Settings shows api_key_set=true status
   it("T-06: shows api_key_set status", async () => {
-    render(<ApiKeySection />, { wrapper });
+    renderWithQueryClient(<ApiKeySection />, { wrapper });
     await waitFor(() => {
       expect(screen.getByText("API key is set")).toBeInTheDocument();
     });
@@ -43,7 +40,7 @@ describe("Settings Panel Tests", () => {
   // T-07: API key save calls POST /settings/api-key
   it("T-07: API key save calls POST /settings/api-key", async () => {
     const user = userEvent.setup();
-    render(<ApiKeySection />, { wrapper });
+    renderWithQueryClient(<ApiKeySection />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByText("API key is set")).toBeInTheDocument();
@@ -77,7 +74,7 @@ describe("Settings Panel Tests", () => {
   // T-08: Input clears after successful API key save
   it("T-08: input clears after successful API key save", async () => {
     const user = userEvent.setup();
-    render(<ApiKeySection />, { wrapper });
+    renderWithQueryClient(<ApiKeySection />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByText("API key is set")).toBeInTheDocument();
@@ -104,7 +101,7 @@ describe("Settings Panel Tests", () => {
   // T-09: API key not rendered in DOM after save
   it("T-09: API key value not rendered after save", async () => {
     const user = userEvent.setup();
-    render(<ApiKeySection />, { wrapper });
+    renderWithQueryClient(<ApiKeySection />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByText("API key is set")).toBeInTheDocument();
@@ -136,7 +133,7 @@ describe("Settings Panel Tests", () => {
   // must say so and the input must be kept so the user can retry.
   it("FIX-2: validation_unavailable says key not saved and keeps input", async () => {
     const user = userEvent.setup();
-    render(<ApiKeySection />, { wrapper });
+    renderWithQueryClient(<ApiKeySection />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByText("API key is set")).toBeInTheDocument();
@@ -166,7 +163,7 @@ describe("Settings Panel Tests", () => {
   // FIX-2: settings/models are invalidated (refetched) even when ok=false
   it("FIX-2: invalidates settings even on validation_unavailable", async () => {
     const user = userEvent.setup();
-    render(<ApiKeySection />, { wrapper });
+    renderWithQueryClient(<ApiKeySection />, { wrapper });
 
     await waitFor(() => {
       expect(screen.getByText("API key is set")).toBeInTheDocument();
@@ -202,7 +199,7 @@ describe("Settings Panel Tests", () => {
   // v1.1 FF12: Enter in the key field saves (house convention).
   it("FF12: pressing Enter in the API key field saves", async () => {
     const user = userEvent.setup();
-    render(<ApiKeySection />, { wrapper });
+    renderWithQueryClient(<ApiKeySection />, { wrapper });
     await waitFor(() => {
       expect(screen.getByText("API key is set")).toBeInTheDocument();
     });
@@ -231,7 +228,7 @@ describe("Settings Panel Tests", () => {
   // v1.1 FF13: Remove API Key requires an inline confirmation.
   it("FF13: Remove API Key asks to confirm before deleting", async () => {
     const user = userEvent.setup();
-    render(<ApiKeySection />, { wrapper });
+    renderWithQueryClient(<ApiKeySection />, { wrapper });
     await waitFor(() => {
       expect(screen.getByText("API key is set")).toBeInTheDocument();
     });

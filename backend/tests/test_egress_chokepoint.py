@@ -15,6 +15,8 @@ tested here for that reason.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import httpx
 import pytest
 
@@ -183,3 +185,59 @@ class TestTheHostComparisonFailsInTheSafeDirection:
         request = httpx.Request("GET", "http://[0:0:0:0:0:0:0:2]/x")
         with pytest.raises(network_client.EgressRefused):
             await network_client._one_host_only(request)
+
+
+class TestNothingElseBuildsAClient:
+    """The chokepoint only chokes what routes through it.
+
+    `_one_host_only` is installed by `network_client._build_client`. Any module
+    that constructs its own `httpx.Client`/`AsyncClient` gets no hook, no
+    `trust_env=False` and no vault-configured proxy - it simply leaves by
+    another door, and every test above would still pass.
+
+    Several router modules promise this in their header prose ("This module
+    does NOT import httpx"). The only thing that checked it was one line in
+    `verify/verify_phase5b.py`, which looks at a single file AND is never
+    collected by pytest (nothing under backend/verify matches test_*.py, and
+    the repo has no pytest config to widen that), so it has been running
+    exactly never. Added 2026-08-10.
+    """
+
+    #: The one module allowed to build a client, plus the test tree, which
+    #: fakes clients on purpose.
+    ALLOWED = {"network_client.py"}
+
+    def _sources(self) -> list[Path]:
+        backend = Path(__file__).resolve().parents[1]
+        skip = {"tests", "verify", ".venv", "__pycache__", "build", "dist"}
+        return [
+            p for p in backend.rglob("*.py")
+            if not (skip & set(p.relative_to(backend).parts))
+        ]
+
+    def test_only_the_chokepoint_constructs_an_http_client(self) -> None:
+        import re
+
+        sources = self._sources()
+        # Floor: an empty walk would report perfect compliance.
+        assert len(sources) >= 40, f"only {len(sources)} modules walked"
+
+        builder = re.compile(r"httpx\.(Async)?Client\s*\(")
+        offenders = [
+            str(p.name) for p in sources
+            if p.name not in self.ALLOWED
+            and builder.search(p.read_text(encoding="utf-8", errors="strict"))
+        ]
+        assert not offenders, (
+            f"these build their own httpx client, bypassing the single "
+            f"egress chokepoint: {sorted(offenders)}"
+        )
+
+    def test_the_check_can_actually_fail(self) -> None:
+        """Guard the guard: the pattern must match the thing it forbids."""
+        import re
+
+        builder = re.compile(r"httpx\.(Async)?Client\s*\(")
+        assert builder.search("c = httpx.AsyncClient(timeout=5)")
+        assert builder.search("c = httpx.Client()")
+        assert not builder.search("except httpx.TimeoutException:")

@@ -13,9 +13,9 @@
  *    clears once the message is persisted
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { ChatCanvas } from "@/components/chat/ChatCanvas";
 import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
 import { useUiStore } from "@/lib/store/uiStore";
@@ -37,13 +37,10 @@ import type { ReactNode } from "react";
 import type { ModelList } from "@/lib/schemas/models";
 
 function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
   return (
-    <QueryClientProvider client={qc}>
+    
       <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
-    </QueryClientProvider>
+    
   );
 }
 
@@ -174,7 +171,7 @@ describe("Attachments", () => {
       ...baseRoutes(),
       "/models/openrouter": { body: modelList(["text"]) },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await waitForComposerReady();
 
     const attachButton = screen.getByRole("button", { name: "Attach images" });
@@ -191,7 +188,7 @@ describe("Attachments", () => {
   it("enables the attach button for an image-capable model", async () => {
     setupReadyState();
     mockFetchWithStreams(baseRoutes());
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await waitForComposerReady();
     await waitForAttachReady();
 
@@ -208,7 +205,7 @@ describe("Attachments", () => {
       selectedCharacterId: null,
     });
     mockFetchWithStreams({ "/settings": { body: settingsFixture } });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(
@@ -228,7 +225,7 @@ describe("Attachments", () => {
       "/chats/1/messages": { body: [messageFixture] },
       "/chats": { body: [] },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
       expect(
@@ -241,7 +238,7 @@ describe("Attachments", () => {
   it("U2: send hint asks for a message when images are staged but text is empty", async () => {
     setupReadyState();
     mockFetchWithStreams(baseRoutes());
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await waitForComposerReady();
     await waitForAttachReady();
 
@@ -281,7 +278,7 @@ describe("Attachments", () => {
         },
       },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await waitForComposerReady();
     await waitForAttachReady();
 
@@ -309,7 +306,7 @@ describe("Attachments", () => {
   it("stages image files pasted into the textarea", async () => {
     setupReadyState();
     mockFetchWithStreams(baseRoutes());
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await waitForComposerReady();
     await waitForAttachReady();
 
@@ -326,7 +323,7 @@ describe("Attachments", () => {
   it("rejects a pasted non-image file with a toast and stages nothing", async () => {
     setupReadyState();
     mockFetchWithStreams(baseRoutes());
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await waitForComposerReady();
     await waitForAttachReady();
 
@@ -345,7 +342,7 @@ describe("Attachments", () => {
   it("FF9: pasting a GIF toasts attachment_invalid and stages nothing", async () => {
     setupReadyState();
     mockFetchWithStreams(baseRoutes());
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await waitForComposerReady();
     await waitForAttachReady();
 
@@ -365,7 +362,7 @@ describe("Attachments", () => {
   it("caps staged images at 4 and toasts too_many_attachments (FF9)", async () => {
     setupReadyState();
     mockFetchWithStreams(baseRoutes());
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await waitForComposerReady();
     await waitForAttachReady();
 
@@ -400,7 +397,7 @@ describe("Attachments", () => {
     setupReadyState();
     mockFetchWithStreams(baseRoutes());
     const user = userEvent.setup();
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await waitForComposerReady();
     await waitForAttachReady();
 
@@ -425,7 +422,7 @@ describe("Attachments", () => {
     setupReadyState();
     const mock = mockFetchWithStreams(baseRoutes());
     const user = userEvent.setup();
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await waitForComposerReady();
     await waitForAttachReady();
 
@@ -469,7 +466,7 @@ describe("Attachments", () => {
       },
     });
     const user = userEvent.setup();
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await waitForComposerReady();
     await waitForAttachReady();
 
@@ -524,7 +521,7 @@ describe("Attachments", () => {
       },
     });
     const user = userEvent.setup();
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await waitForComposerReady();
     await waitForAttachReady();
 
@@ -554,7 +551,7 @@ describe("Attachments", () => {
         body: { detail: "attachment_too_large" },
       },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await waitForComposerReady();
     await waitForAttachReady();
 
@@ -598,7 +595,7 @@ describe("Attachments", () => {
         },
       },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await waitForComposerReady();
     await waitForAttachReady();
 
@@ -622,7 +619,7 @@ describe("Attachments", () => {
     setupReadyState();
     const user = userEvent.setup();
     const mock = mockFetchWithStreams(baseRoutes());
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await waitForComposerReady();
     await waitForAttachReady();
 
@@ -663,7 +660,7 @@ describe("Attachments", () => {
       ...baseRoutes(),
       "/chats/1/complete/stream": { response: () => controlled.response },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await waitForComposerReady();
     await waitForAttachReady();
 
@@ -709,7 +706,7 @@ describe("Attachments", () => {
     setupReadyState();
     const user = userEvent.setup();
     const mock = mockFetchWithStreams(baseRoutes());
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await waitForComposerReady();
 
     await user.type(screen.getByLabelText("Message"), "Plain text");
@@ -733,7 +730,7 @@ describe("Attachments", () => {
       ...baseRoutes(),
       "/chats/1/complete/stream": { response: () => controlled.response },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await waitForComposerReady();
     await waitForAttachReady();
 
@@ -790,7 +787,7 @@ describe("Attachments", () => {
         response: () => jsonResponse({ detail: "model_no_image_input" }, 400),
       },
     });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     await waitForComposerReady();
     await waitForAttachReady();
 

@@ -6,8 +6,8 @@
  * it is the one property that cannot be checked by reading the slider: the
  * naive implementation looks correct in the store and unreadable on screen.
  */
-import { render, screen } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { screen } from "@testing-library/react";
+import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 
@@ -18,11 +18,10 @@ import { mockFetch } from "../mocks/api";
 import { messageFixture } from "../mocks/fixtures";
 
 function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return (
-    <QueryClientProvider client={qc}>
+    
       <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
-    </QueryClientProvider>
+    
   );
 }
 
@@ -46,7 +45,7 @@ describe("a chat nobody has restyled looks exactly as it did", () => {
     // THE ZERO-CHANGE CONTRACT at the point it is actually visible. Not a
     // 100% colour mix, which paints the same but makes today's look depend on
     // a colour function being a perfect identity.
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     const shell = await bubbles();
     expect(shell.style.backgroundColor).toBe(
       "var(--msg-asst-bg, var(--color-es-asst-bubble))",
@@ -57,7 +56,7 @@ describe("a chat nobody has restyled looks exactly as it did", () => {
 describe("thinning the bubble leaves the words alone", () => {
   it("mixes the fill towards transparent", async () => {
     useUiStore.setState({ msgOpacity: 0.5 });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     const shell = await bubbles();
     expect(shell.style.backgroundColor).toContain("color-mix");
     expect(shell.style.backgroundColor).toContain("50%");
@@ -68,14 +67,14 @@ describe("thinning the bubble leaves the words alone", () => {
     // a screenshot of an empty bubble and makes the message unreadable in a
     // full one. Half the range would be unusable and nobody would know why.
     useUiStore.setState({ msgOpacity: 0.4 });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     const shell = await bubbles();
     expect(shell.style.opacity).toBe("");
   });
 
   it("leaves the ink colour at full strength", async () => {
     useUiStore.setState({ msgOpacity: 0.4 });
-    render(<ChatCanvas />, { wrapper });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
     const shell = await bubbles();
     expect(shell.style.color).toBe(
       "var(--msg-asst-fg, var(--color-es-asst-bubble-text))",
