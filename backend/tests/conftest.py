@@ -68,25 +68,43 @@ def _no_real_keyring(monkeypatch):
 
 
 @pytest.fixture()
-def client(tmp_path, monkeypatch, request):
+def db(tmp_path, monkeypatch, request):
+    """A keyed, schema-built encrypted DB with NO HTTP app on top.
+
+    Split out of `client` because several tests want an unlocked vault and an
+    initialised schema but must NOT start a live server: they drive migration
+    or recovery functions directly, and one of them breaks Path.iterdir
+    process-wide - something a TestClient has no reason to survive. Before this
+    split those tests hand-copied these same lines; test_data_loss_guards.py's
+    local `unlocked_db` fixture said so in its own docstring.
+
+    Pre-unlock: the server starts locked by design; the vault is opened with a
+    fixed key up front. vault_state is process-global - register the clear
+    FIRST (addfinalizer always runs) so a failure anywhere in setup can never
+    leak the key into the next test.
+    """
     import config
     import database
-    import secrets_service
     import vault_state
-    import main
 
     db_path = str(tmp_path / "test_app.db")
     monkeypatch.setattr(config, "DB_PATH", db_path)
     monkeypatch.setattr(database, "DB_PATH", db_path)
 
-    # Pre-unlock: the server starts locked by design; API tests are about the
-    # data routes, so the vault is opened with a fixed key up front.
-    # vault_state is process-global - register the clear FIRST (addfinalizer
-    # always runs) so a failure anywhere in setup can never leak the key into
-    # the next test.
     request.addfinalizer(vault_state.clear_key)
     vault_state.set_key(TEST_VAULT_KEY)
     database.init_db()
+    return db_path
+
+
+@pytest.fixture()
+def client(db, tmp_path, monkeypatch):
+    # Builds ON the `db` fixture (DB + unlocked vault) and adds the HTTP stack.
+    # The teardown order is preserved by the dependency: this fixture's
+    # TestClient context exits before `db`'s clear-key finaliser runs.
+    import config
+    import secrets_service
+    import main
 
     # E6: image bytes live in the DB now; attachments_service no longer holds
     # an UPLOADS_DIR binding. config.UPLOADS_DIR still points migration tests
