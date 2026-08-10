@@ -38,6 +38,9 @@ sys.modules["verify_hygiene"] = hygiene
 _spec.loader.exec_module(hygiene)
 
 #: Never typed. See the module docstring.
+#: The idle-unload identifier is assembled the same way, so that this
+#: file does not need an H-06 waiver to test H-06.
+IDLE_SETTING = "TTS_IDLE_" + "UNLOAD_S"
 EM_DASH = chr(0x2014)
 EN_DASH = chr(0x2013)
 #: Split so that this file does not itself contain a contiguous user path. The
@@ -152,7 +155,8 @@ class TestTheGapsAnAdversarialPassFound:
     @pytest.mark.parametrize("entity", ["&mdash;", "&#8212;", "&#X27;",
                                         "&nbsp;", "&apos;"])
     def test_any_html_entity_is_caught_not_a_hand_listed_few(self, entity):
-        # &mdash; and &#8212; are em dashes. With the old hand-written list,
+        # The two dash entities in the list above are em dashes. With the old
+        # hand-written list,
         # "fixing" an H-01 hit by HTML-encoding the character defeated every
         # rule at once: the entity rule did not know those names, and the dash
         # rules no longer saw a dash.
@@ -671,3 +675,117 @@ class TestBinaryContentIsSkipped:
         # exception and a waste.
         assert hygiene._is_binary(b"text\x00more", "mystery.dat") is True
         assert hygiene._is_binary(b"plain text", "mystery.dat") is False
+
+
+class TestTheDeletionThatHasToStayDeleted:
+    """H-06, and it is a different shape from every other rule here.
+
+    The others forbid a character or a spelling. This one forbids the RETURN OF
+    A FEATURE: a voice model is never taken off the card by a timer, it goes
+    when the user swaps models or closes the app. The setting that unloaded it
+    after N idle seconds was deleted rather than defaulted off, and a deletion
+    leaves nothing in the tree to point at. Nothing in a diff says "and it must
+    stay gone", so the idea comes back the next time somebody reads the VRAM
+    budget and reaches for the obvious lever.
+    """
+
+    def test_the_setting_name_is_a_hit_wherever_it_appears(self):
+        hits, _, _ = scan_one("backend/config.py", IDLE_SETTING + " = 600\n")
+        assert [h.rule.rid for h in hits] == ["H-06"]
+
+    def test_the_frontend_spelling_is_a_hit_too(self):
+        """Scope is every text file, not backend Python. The setting had a
+        control in the voice settings page, and half a deletion is worse than
+        none: the dial would still be there, wired to nothing."""
+        hits, _, _ = scan_one("frontend/src/settings.ts",
+                              "export const " + IDLE_SETTING + " = 600\n")
+        assert [h.rule.rid for h in hits] == ["H-06"]
+
+    @pytest.mark.parametrize("line", [
+        "phase: 'idle',",                        # the audio player's state
+        "if vault_state.idle_seconds() > 900:",  # the auto lock, unrelated
+        "const IDLE_CHUNK = 24;",                # ModelPanel's list rendering
+        "# closes the idle connection after a minute",
+    ])
+    def test_the_word_idle_on_its_own_is_never_a_hit(self, line):
+        """The rule has to be narrow or it gets waived into uselessness.
+
+        There are dozens of legitimate uses of the word in this tree: the
+        player's phases, the vault auto lock, the model list, half the
+        connection comments. A rule that fired on those would be switched off
+        within a week, and then the one thing it exists for would come back
+        unnoticed.
+        """
+        hits, _, _ = scan_one("backend/anything.py", line + "\n")
+        assert hits == []
+
+
+class TestAnEncodedDashIsStillADash:
+    """H-07, the gap an adversarial pass walked out through.
+
+    H-03 catches every HTML entity, and only in frontend TypeScript. So the way
+    to get an em dash past H-01 was to HTML-encode it in any other file: the
+    character rule saw plain ASCII, the entity rule was out of scope, and the
+    rendered document still showed an em dash to whoever read it. The gate was
+    teaching its own workaround.
+    """
+
+    @pytest.mark.parametrize("entity", [
+        "&" + "mdash;", "&" + "ndash;", "&#" + "8212;", "&#" + "8211;",
+        "&#x" + "2014;", "&#X" + "2013;"])
+    def test_a_dash_entity_outside_the_frontend_is_a_hit(self, entity):
+        hits, _, _ = scan_one("docs/notes.md", "a sentence " + entity + " here\n")
+        assert [h.rule.rid for h in hits] == ["H-07"]
+
+    def test_it_does_not_fire_twice_on_a_frontend_file(self):
+        """H-03 already covers those. Two hits on one line is noise, and noise
+        is what makes a report harder to act on rather than more thorough."""
+        hits, _, _ = scan_one("frontend/src/x.tsx",
+                              "const t = 'a &" + "mdash; b';\n")
+        assert [h.rule.rid for h in hits] == ["H-03"]
+
+    def test_an_ordinary_entity_outside_the_frontend_is_left_alone(self):
+        """Narrow on purpose. A document explaining that the ampersand entity
+        escapes an ampersand is not a violation of anything, and a rule that
+        says it is gets waived until it means nothing."""
+        hits, _, _ = scan_one("docs/notes.md",
+                              "write &" + "amp; for a literal\n")
+        assert hits == []
+
+
+class TestAFileTheGateCannotReadIsNeverSilent:
+    def test_a_utf16_file_is_reported_rather_than_skipped(self, repo):
+        """Found by an adversarial pass, and it is the cp1252 hole in a hat.
+
+        Every ASCII character in UTF-16 carries a null byte, so `_is_binary`
+        called the whole file binary and `worktree_files` dropped it with no
+        entry in the report and none in `problems`. A forbidden character in a
+        UTF-16 document was invisible AND silent, which is strictly worse than
+        the cp1252 case: that one at least fails loudly.
+        """
+        (repo / "notes.md").write_bytes(
+            ("a sentence " + EM_DASH + " broken\n").encode("utf-16"))
+        subprocess.run(["git", "add", "notes.md"], cwd=repo, check=True)
+
+        problems: list[str] = []
+        files = dict(hygiene.worktree_files(problems))
+
+        assert "notes.md" not in files, (
+            "a UTF-16 file cannot be scanned and must not pretend to have been")
+        assert any("notes.md" in p and "UTF-16" in p for p in problems), (
+            "the file was skipped in silence, which is the whole defect: "
+            f"problems={problems}")
+
+    def test_a_real_binary_is_skipped_without_a_complaint(self, repo):
+        """The other half of the same decision.
+
+        Elysium.exe is 33 MB and tracked. A gate that complained about it on
+        every run would train everyone to scroll past the complaints, and then
+        the UTF-16 one above would go past too.
+        """
+        (repo / "logo.png").write_bytes(bytes([0x89]) + b"PNG" + bytes(64))
+        subprocess.run(["git", "add", "logo.png"], cwd=repo, check=True)
+
+        problems: list[str] = []
+        list(hygiene.worktree_files(problems))
+        assert problems == []
