@@ -10,6 +10,8 @@ These tests assert the wire, not the detection: the detection was always fine.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import json
 import sys
 
@@ -21,6 +23,12 @@ from tts.speech_queue import MAX_DROPPED_SAMPLES
 # one the runtime API tests already stand up.
 from test_tts_runtime_api import voice, _fake_gpu  # noqa: F401
 from test_streaming import stream_provider  # noqa: F401
+
+#: Absolute, because a test that only passes from one directory is a test that
+#: will surprise somebody. Running `pytest backend/` from the repo root used to
+#: fail eleven tests across four files with FileNotFoundError on a relative
+#: path like 'tts/provision.py'. Measured 2026-08-10 and fixed here.
+BACKEND = Path(__file__).resolve().parents[1]
 
 
 def _ready_voice(client, monkeypatch) -> str:
@@ -218,7 +226,7 @@ def test_the_stripping_guard_no_longer_swallows_silently():
     [whisper] tags in every bubble, which reads as a model bug."""
     from pathlib import Path
 
-    source = Path("voice_tags.py").read_text(encoding="utf-8")
+    source = (BACKEND / "voice_tags.py").read_text(encoding="utf-8")
     guard = source.split("def stripping_active", 1)[1]
     assert "logger.debug" in guard
     assert "exc_info=True" in guard
@@ -277,10 +285,10 @@ def test_no_worker_means_no_notes_and_no_error():
 def test_the_notice_frame_is_wired_into_both_speech_paths():
     from pathlib import Path
 
-    hook = Path("tts/stream_hook.py").read_text(encoding="utf-8")
+    hook = (BACKEND / "tts" / "stream_hook.py").read_text(encoding="utf-8")
     assert '"type": "voice_notice"' in hook
     assert "_host_notes()" in hook
-    runtime = Path("routers/tts_runtime.py").read_text(encoding="utf-8")
+    runtime = (BACKEND / "routers" / "tts_runtime.py").read_text(encoding="utf-8")
     assert '"type": "voice_notice"' in runtime
 
 
@@ -311,14 +319,14 @@ def test_a_truncated_scan_says_so():
     from tts.base import ScanResult
 
     assert ScanResult().truncated is False
-    source = __import__("pathlib").Path("tts/registry.py").read_text(encoding="utf-8")
+    source = (BACKEND / "tts" / "registry.py").read_text(encoding="utf-8")
     assert "result.truncated = True" in source
 
 
 def test_the_scan_payload_carries_it():
     from pathlib import Path
 
-    source = Path("routers/tts.py").read_text(encoding="utf-8")
+    source = (BACKEND / "routers" / "tts.py").read_text(encoding="utf-8")
     assert '"truncated": result.truncated' in source
 
 
