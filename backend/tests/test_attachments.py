@@ -1013,3 +1013,129 @@ def test_the_ceilings_still_cannot_drift_apart():
     assert MultiPartParser.spool_max_size > UPLOAD_BODY_LIMIT, (
         "anything that survives the body shield can now be spooled to disk"
     )
+
+
+# ---------------------------------------------------------------------------
+# The promise says EXIF and GPS. The tests above said "one text tag".
+# ---------------------------------------------------------------------------
+
+def _jpeg_with_everything() -> bytes:
+    """A JPEG carrying every kind of metadata the promise is about.
+
+    The three strip tests that existed before this one each set a single
+    generic EXIF text tag: UserComment, or Make. That proves the exif blob is
+    dropped and says nothing about the four things a reader of README line 43
+    would actually care about, because they arrive through four different
+    mechanisms:
+
+      GPS   a sub-IFD inside the exif blob, not a tag in it
+      ICC   its own APP2 marker segment, nothing to do with exif
+      XMP   an APP1 segment with its own namespace, nothing to do with exif
+      COM   a JPEG comment segment, older than all of them
+
+    All of them go today, and this is the test that keeps saying so if somebody
+    ever replaces the wholesale re-encode with a tag allowlist.
+
+    NOT COVERED HERE, AND SAID PLAINLY RATHER THAN IMPLIED
+    The embedded thumbnail (IFD1) is the sharpest case of all: crop a face or a
+    document out of a photo in most editors and the ORIGINAL frame survives in
+    the thumbnail, so publishing the file publishes what the crop was hiding.
+    It rides inside the same exif blob this test proves is gone, so it goes
+    too - but that is REASONING, not measurement. Pillow will not write an IFD1
+    thumbnail through `Exif.tobytes()`; probed on 2026-08-10, the entry is
+    accepted and then silently dropped on save. A test with no floor under it
+    is the shape this whole exercise exists to remove, so the claim is written
+    down instead of asserted.
+    """
+    img = Image.new("RGB", (64, 48), (90, 120, 150))
+
+    exif = Image.Exif()
+    exif[0x010F] = "TestCameraBrand"            # Make
+    exif[0x0110] = "TestCameraModel"            # Model
+    exif[0x9003] = "2019:07:14 11:02:33"        # DateTimeOriginal
+    exif[0x9286] = "a private note"             # UserComment
+    # GPS IFD. 51.5074 N, 0.1278 W, as rationals, the way a phone writes it.
+    exif.get_ifd(0x8825).update({
+        1: "N", 2: (51.0, 30.0, 26.64),
+        3: "W", 4: (0.0, 7.0, 40.08),
+    })
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG",
+             exif=exif.tobytes(),
+             icc_profile=b"\x00\x00\x02\x0cICCTESTPROFILEBYTES" + b"\x00" * 512,
+             comment=b"a JPEG COM comment")
+    raw = buf.getvalue()
+    # XMP spliced in as its own APP1 segment, because Pillow writes an XMP
+    # packet for some formats and not for JPEG. The segment is what a phone or
+    # Lightroom actually produces, so this is the real shape rather than a
+    # convenient one.
+    xmp = (b'<?xpacket begin="?"?><x:xmpmeta xmlns:x="adobe:ns:meta/">'
+           b'<photoshop:City>Reykjavik</photoshop:City></x:xmpmeta>')
+    app1 = b"\xff\xe1" + (len(xmp) + 2 + 29).to_bytes(2, "big") + \
+           b"http://ns.adobe.com/xap/1.0/\x00" + xmp
+    return raw[:2] + app1 + raw[2:]
+
+
+class TestEveryKindOfMetadataTheImagePromiseNames:
+    """README line 43: "EXIF/GPS and other embedded metadata are dropped".
+
+    The promise is absolute and it is kept. What was missing was a test that
+    covers the same ground as the sentence: the three that existed set one
+    generic tag each, so a change that stripped the exif blob and kept ICC or
+    XMP would have left every one of them green.
+    """
+
+    def test_the_source_really_carries_all_of_it(self):
+        """The floor, and the reason the rest of this class is not vacuous.
+
+        Every assertion below is of the form "this is absent from the output".
+        Absent is also what you get from an input that never had it, from a
+        Pillow that quietly refused to write it, and from an assertion looking
+        at the wrong field. So the input is checked first, by the same means
+        the output will be.
+        """
+        raw = _jpeg_with_everything()
+        src = Image.open(io.BytesIO(raw))
+        exif = src.getexif()
+
+        assert exif.get(0x010F) == "TestCameraBrand"
+        assert exif.get(0x9003) == "2019:07:14 11:02:33"
+        assert exif.get_ifd(0x8825), "no GPS IFD in the source"
+        assert src.info.get("icc_profile"), "no ICC profile in the source"
+        assert b"Reykjavik" in raw, "no XMP packet in the source"
+        assert b"a JPEG COM comment" in raw, "no COM segment in the source"
+
+    def test_none_of_it_survives_the_upload(self, client):
+        raw = _jpeg_with_everything()
+        meta = upload(client, raw, mime="image/jpeg", name="holiday.jpg")
+        stored = client.get(f"/api/v1/uploads/images/{meta['id']}").content
+
+        out = Image.open(io.BytesIO(stored))
+        exif = out.getexif()
+
+        assert not exif.get_ifd(0x8825), "GPS coordinates survived the upload"
+        assert not exif.get(0x010F), "the camera make survived the upload"
+        assert not exif.get(0x0110), "the camera model survived the upload"
+        assert not exif.get(0x9003), "the capture date survived the upload"
+        assert not out.info.get("icc_profile"), "the ICC profile survived"
+
+        # Searched in the raw bytes, not through Pillow. XMP and COM are their
+        # own marker segments, and a reader that does not know about them
+        # reports nothing rather than reporting what is there.
+        assert b"Reykjavik" not in stored, "the XMP packet survived the upload"
+        assert b"TestCameraBrand" not in stored, "the make survived as bytes"
+        assert b"a JPEG COM comment" not in stored, "the COM segment survived"
+
+    def test_the_picture_itself_is_still_the_picture(self, client):
+        """The control. Stripping everything is easy if you also lose the
+        image, and a test that only checks for absences would not notice."""
+        raw = _jpeg_with_everything()
+        meta = upload(client, raw, mime="image/jpeg", name="holiday.jpg")
+        stored = client.get(f"/api/v1/uploads/images/{meta['id']}").content
+
+        out = Image.open(io.BytesIO(stored))
+        assert out.size == (64, 48)
+        # The colour survives a JPEG round trip within a wide tolerance; the
+        # point is that these are the original pixels and not a blank frame.
+        r, g, b = out.convert("RGB").getpixel((32, 24))
+        assert abs(r - 90) < 24 and abs(g - 120) < 24 and abs(b - 150) < 24

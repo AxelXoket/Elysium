@@ -145,6 +145,12 @@ class TestWhatIsNeverSent:
         # shown.
         bodies = _send(client, monkeypatch, context_budget_tokens=4096)
         assert "context_budget_tokens" not in bodies[0]
+        # The control. "not in" is also true of an empty dict, and this file is
+        # full of absence assertions: if the capture ever stopped seeing the
+        # real payload, every one of them would go quietly green together.
+        # Named fields rather than a length, so that a body which lost its
+        # messages is caught too.
+        assert bodies[0]["model"] and bodies[0]["messages"]
 
     def test_a_smuggled_field_cannot_ride_in_on_generation_params(
         self, client, monkeypatch: pytest.MonkeyPatch
