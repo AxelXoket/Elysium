@@ -1,0 +1,213 @@
+"""The hygiene rules, enforced over THIS tree, from inside the suite.
+
+Separate from test_hygiene_gate.py on purpose. That file opens by promising
+that nothing in it touches the repository, git, or the real allowlist, so that
+its 83 tests keep passing on a machine whose working tree happens to be dirty.
+That promise is worth keeping and it is the exact opposite of what this file
+does, which is to go red precisely when the tree is dirty.
+
+WHY THE HOOK IS NOT ENOUGH, WHICH IS THE WHOLE REASON THIS EXISTS
+
+`backend/verify/hooks/pre-commit` runs the same sweep and runs it faster, on
+the staged content, at the moment it is cheapest to fix. It is still the wrong
+thing to rely on:
+
+  - It is not cloned. `.git/hooks` lives in no repository. Somebody who clones
+    this today has no hook, gets no warning, and their first commit is
+    unchecked. The install is a manual step and a manual step is a step that
+    gets skipped.
+  - It is skippable four legitimate ways. `--no-verify`, `merge`, `rebase` and
+    `cherry-pick` all bypass it (measured, not assumed), and none of them say
+    that a check did not run.
+  - `core.hooksPath` can point somewhere else entirely.
+
+Every one of those failures is silent. A gate whose absence looks identical to
+its success is the shape that left test_release_tree.py dark for months, and
+the answer here is the same as it was there: put it in the suite everybody
+runs, and put a measured floor under it.
+
+WHY THIS IS NOT A BANNED SOURCE SCAN
+
+The house rule bans a test that reads source text AS A SUBSTITUTE for driving
+behaviour. This is the exception the rule names: the text IS the subject. There
+is no behaviour behind "no em dash appears in this repository" to observe
+instead, in the same way there is none behind test_release_tree.py's question
+about what git actually publishes.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+# Loaded by path rather than imported, because backend/verify is not a package
+# and putting it on sys.path would make `verify_elysium_full` importable too -
+# and importing THAT runs the entire regression suite as a side effect.
+_GATE_PATH = Path(__file__).resolve().parent.parent / "verify" / "verify_hygiene.py"
+_spec = importlib.util.spec_from_file_location("verify_hygiene", _GATE_PATH)
+assert _spec and _spec.loader
+hygiene = importlib.util.module_from_spec(_spec)
+# Registered BEFORE exec_module, not after. @dataclass resolves annotations by
+# looking its own class's __module__ up in sys.modules, so a module that runs
+# before it is registered gets None there and dies on the first decorated
+# class. The name has to match the one given to spec_from_file_location.
+sys.modules["verify_hygiene"] = hygiene
+_spec.loader.exec_module(hygiene)
+
+#: Measured 2026-08-10: the sweep reads 509 files in 0.18 s.
+#:
+#: A floor, not a target, and the reason this file is not decoration. Every
+#: assertion below has the shape "the list of problems is empty", and an empty
+#: list is exactly what a sweep that read NOTHING produces. A REPO_ROOT that
+#: resolved somewhere unexpected, a .gitignore that grew a line, a git that is
+#: not on PATH: all three turn this file green while proving nothing.
+#:
+#: 400 leaves room for a hundred files to go before anyone has to think about
+#: this number. If it fires, re-measure. Do not nudge it down.
+_SWEEP_FLOOR = 400
+
+
+@pytest.fixture(scope="module")
+def sweep():
+    """The real tree, read once for the whole file.
+
+    Module scope because the sweep costs 0.18 s and seven tests ask about it.
+    """
+    problems: list[str] = []
+    files = list(hygiene.worktree_files(problems))
+    waivers, errors = hygiene.load_allowlist()
+    return {
+        "files": files,
+        "paths": {rel for rel, _ in files},
+        "hits": hygiene.scan(files, waivers),
+        "waivers": waivers,
+        "errors": errors,
+        "problems": problems,
+    }
+
+
+def test_git_is_how_this_gate_reads_the_tree():
+    """The watchman's watchman, and it fails rather than skips.
+
+    `worktree_files` shells out to `git ls-files`. Without git it answers
+    nothing, and every emptiness assertion below becomes trivially true. A
+    skipped gate and a passing gate are the same line in the summary, which is
+    the entire problem this file was written to solve, so this one is asked
+    first and answered loudly.
+    """
+    proc = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"],
+                          cwd=hygiene.REPO_ROOT, capture_output=True)
+    assert proc.returncode == 0 and proc.stdout.strip() == b"true", (
+        f"git cannot read {hygiene.REPO_ROOT} as a work tree, so the sweep in "
+        f"this file read nothing and proves nothing. Run the suite from a "
+        f"clone rather than an extracted archive, or install git."
+    )
+
+
+def test_the_sweep_reads_the_whole_repository(sweep):
+    """Enough files, and files from every tree that has rules over it.
+
+    Named directories rather than named files: renaming a file should not
+    break this, and losing a whole subtree should.
+    """
+    count = len(sweep["files"])
+    assert count >= _SWEEP_FLOOR, (
+        f"the sweep read {count} files and the floor is {_SWEEP_FLOOR}. Either "
+        f"REPO_ROOT resolved somewhere unexpected (it is {hygiene.REPO_ROOT}), "
+        f"or .gitignore now excludes something it should not. Every other "
+        f"assertion in this file is vacuous until this one is right."
+    )
+    for tree in ("backend/", "frontend/src/", "docs/"):
+        assert any(p.startswith(tree) for p in sweep["paths"]), (
+            f"nothing under {tree} reached the sweep, so no rule is protecting it"
+        )
+
+
+def test_no_rule_has_quietly_stopped_applying_to_anything(sweep):
+    """A rule whose scope matches no file is switched off, and says nothing.
+
+    Two of the five are scoped to `frontend/src/**.ts(x)`. A moved or renamed
+    frontend would leave them enforcing nothing while the report still prints
+    five rules and still says PASS.
+    """
+    dead = [rule.rid for rule in hygiene.RULES
+            if not any(rule.scope(p) for p in sweep["paths"])]
+    assert not dead, (
+        f"these rules matched no file in the tree and are therefore enforcing "
+        f"nothing: {dead}. Their scope predicate in verify_hygiene.py no "
+        f"longer describes where the code actually lives."
+    )
+
+
+def test_the_tree_breaks_no_rule(sweep):
+    """The gate.
+
+    The message is written for somebody who has never opened this file and has
+    just had a green suite turn red: what was found, where, why that rule
+    exists at all, and the two ways forward.
+    """
+    hits = sweep["hits"]
+    if not hits:
+        return
+    lines = ["", f"{len(hits)} hygiene violation(s) in the working tree:", ""]
+    for hit in hits[:20]:
+        lines.append(f"  {hit.path}:{hit.lineno}  [{hit.rule.rid}] {hit.rule.what}")
+        lines.append(f"      {hit.text[:96]}")
+    if len(hits) > 20:
+        lines.append(f"  ... and {len(hits) - 20} more")
+    lines += [
+        "",
+        hits[0].rule.why,
+        "",
+        "Two ways forward.",
+        "",
+        "  1. Fix the line. This is almost always the answer, and it usually",
+        "     means typing a plain hyphen.",
+        "  2. If the line cannot change - a test that asserts on a forbidden",
+        "     pattern has to contain that pattern - add a waiver to",
+        "     backend/verify/hygiene_allowlist.txt with a written reason.",
+        "",
+        "Run `python backend/verify/verify_hygiene.py` for a pasteable waiver",
+        "record for each hit above.",
+    ]
+    raise AssertionError("\n".join(lines))
+
+
+def test_every_file_in_the_tree_is_readable_as_utf8(sweep):
+    """A file this gate cannot decode is a file no rule can inspect.
+
+    Reported, never skipped. The first version of `decode` used
+    errors="replace", so a cp1252 em dash (byte 0x97) was destroyed before any
+    pattern ran and the file came back unreadable AND clean.
+    """
+    assert not sweep["problems"], "\n".join(
+        ["", "these files are not valid UTF-8:", ""]
+        + [f"  {p}" for p in sweep["problems"]])
+
+
+def test_the_waiver_list_has_nothing_dead_in_it(sweep):
+    """An exemption that outlived the thing it excused.
+
+    This is the only run entitled to judge every waiver, because it is the only
+    one that reads every file. A commit-time sweep sees a handful of paths and
+    cannot tell a waiver that is wrong from one whose file it simply did not
+    open. Without this, a list of exceptions only ever grows.
+    """
+    dead = hygiene.stale_waivers(sweep["waivers"], sweep["paths"], full=True)
+    assert not dead, "\n".join(
+        ["", "these waivers matched nothing in the tree:", ""]
+        + [f"  {w.rid} {w.path}\n      line: {w.line[:96]}" for w in dead]
+        + ["",
+           "The line was edited, moved, or deleted. Remove the waiver, or",
+           "re-anchor it to the line as it reads now."])
+
+
+def test_the_waiver_list_itself_parses(sweep):
+    """A malformed allowlist must not silently waive nothing, or everything."""
+    assert not sweep["errors"], "\n".join(
+        ["", "backend/verify/hygiene_allowlist.txt has problems:", ""]
+        + [f"  {e}" for e in sweep["errors"]])

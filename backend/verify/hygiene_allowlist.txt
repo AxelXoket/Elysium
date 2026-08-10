@@ -56,3 +56,29 @@ line: "D:" + "/Users/bob/build.log",          # any drive, not just C
 [H-04] backend/tests/test_hygiene_gate.py
 reason: the UNC case. See the record above.
 line: "\\\\" + "workstation\\Users\\bob\\x",  # UNC: a machine AND a person
+
+[H-06] backend/tests/test_tts_lock_lifecycle.py
+reason: this is the test that proves the setting is gone, and it cannot assert
+  the absence of a name without writing the name. Same family as the H-03
+  waivers above.
+line: assert not hasattr(config, "TTS_IDLE_UNLOAD_S")
+
+[H-06] backend/tests/test_tts_lock_lifecycle.py
+reason: the second half of the same assertion, checking the source of config
+  rather than the imported module.
+line: assert "TTS_IDLE_UNLOAD_S" not in _src("config")
+
+[H-06] backend/tests/test_tts_host.py
+reason: a comment recording what the removed reaper used to do and which code
+  path it came through. Deleting the sentence would delete the reason the rule
+  above exists, which is the opposite of what H-06 is for. It names the old
+  setting in the past tense and defines nothing.
+line: # The idle reaper (TTS_IDLE_UNLOAD_S = 600) comes through unload(), which used
+
+[H-07] backend/tests/test_hygiene_gate.py
+reason: the parametrize table for H-03's own test. It cannot check that the
+  entity rule catches these names without naming them. Same family as the
+  H-03 waivers above, and the only one of the three original H-07 hits that
+  could not simply be reworded: the other two were prose and now describe the
+  entities instead of writing them.
+line: @pytest.mark.parametrize("entity", ["&mdash;", "&#8212;", "&#X27;",

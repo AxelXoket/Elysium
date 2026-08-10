@@ -72,12 +72,36 @@ blocks a clean commit or, worse, silently waives whatever slid into that slot.
 This is the same split `privacy_check` in verify_elysium_full.py already draws
 between the lineno it prints and the substring it matches on.
 
-KNOWN HOLE, WRITTEN DOWN RATHER THAN HALF FIXED
------------------------------------------------
+KNOWN HOLES, WRITTEN DOWN RATHER THAN HALF FIXED
+------------------------------------------------
 A file staged with `git add -N` has an index entry with no real blob, so the
 staged mode reads it as empty and passes it. Committing such a file commits
 nothing of its content either, so nothing unreviewed reaches history through
 this path, but the gate is silent rather than correct about it.
+
+The three below came out of an adversarial pass on 2026-08-10 that was told to
+get a forbidden character past this gate. Two of the five it found are fixed:
+UTF-16 files are now complained about instead of dropped, and the dash
+entities are caught outside frontend source by H-07. These three are not.
+
+*An escape sequence produces no matching byte.* `"\\u2014"`, `chr(0x2014)` and
+`"\\N{EM DASH}"` all put an em dash in front of a user and none of them put one
+in a file. This is not a hole to close, it is the sanctioned way to write about
+a forbidden character, and this file relies on it heavily. Anything that
+reached a user through that route would have to be caught by a test of the
+rendered copy, which is where it belongs.
+
+*The binary check trusts the file name.* A plain text document named `.png` is
+skipped without being read. Closing it means reading every byte of a 33 MB exe
+on every run to learn what is already known from its name. The attack requires
+deliberately misnaming a text file, which is not an accident anybody has.
+
+*A text-anchored waiver covers every identical copy of that line.* If the same
+line appears three times in one file, one record excuses all three, and only
+one of them was ever looked at. The alternative is a line number in the key,
+which was rejected for reasons that have not changed and are set out above. The
+narrower widening is the better trade, and it is recorded here rather than
+discovered later.
 """
 
 from __future__ import annotations
@@ -187,10 +211,12 @@ RULES: tuple[Rule, ...] = (
             "a window title - and the user reads the entity."
         ),
         # Any named or numeric entity, not a hand-listed few. The first version
-        # listed apos/quot/amp/#39/#x27, and an adversarial pass found that
-        # &mdash; and &#8212; slipped through every rule at once: they are em
-        # dashes, so "fixing" an H-01 hit by HTML-encoding it turned a caught
-        # violation into an uncaught one. Uppercase &#X27; missed too.
+        # listed apos/quot/amp and two numeric forms, and an adversarial pass
+        # found that the named and numeric EM DASH entities slipped through
+        # every rule at once: they are em dashes, so "fixing" an H-01 hit by
+        # HTML-encoding it turned a caught violation into an uncaught one. The
+        # uppercase-X numeric form was missed too. H-07 now carries the same
+        # check into every file this one does not cover.
         pattern=re.compile(r"&[A-Za-z][A-Za-z0-9]*;|&#[Xx]?[0-9A-Fa-f]+;"),
         scope=_frontend_source,
     ),
@@ -231,6 +257,52 @@ RULES: tuple[Rule, ...] = (
             "them is not keeping the rule, only passing the check."
         ),
         pattern=re.compile("[" + DASH_LOOKALIKES + "]"),
+        scope=_any_text,
+    ),
+    Rule(
+        rid="H-07",
+        what="an HTML entity that renders as an em or en dash",
+        why=(
+            "The same violation as H-01 and H-02, spelled differently. A "
+            "reader of the rendered document sees an em dash and cannot know "
+            "it was written as six ASCII characters. H-03 already catches this "
+            "in frontend source; everywhere else it was invisible, so the way "
+            "to get an em dash past this gate was to HTML-encode it - which is "
+            "to say, the gate taught the workaround."
+        ),
+        # Only the dash entities, and only outside the files H-03 already
+        # covers. A general entity rule over the whole tree would fire on every
+        # legitimate `&amp;` in a document about escaping, and a rule that
+        # cries wolf gets waived into uselessness. Found by an adversarial pass
+        # on 2026-08-10 that walked out through this exact gap.
+        pattern=re.compile(r"&(?:mdash|ndash);|&#(?:8212|8211);"
+                           r"|&#[Xx](?:2014|2013);", re.IGNORECASE),
+        scope=lambda path: not _frontend_source(path),
+    ),
+    Rule(
+        rid="H-06",
+        what="the idle-unload setting, which was deleted on purpose",
+        why=(
+            "A voice model is never taken off the card by a timer. It goes "
+            "when the user swaps models or closes the app, and at no other "
+            "moment. The setting that unloaded it after N idle seconds was "
+            "removed rather than defaulted off, because a load costs tens of "
+            "seconds and a user who steps away for a coffee should not pay it "
+            "again. This rule exists because a deletion has no shape: nothing "
+            "in a diff says 'and it must stay gone', so the idea comes back "
+            "the next time somebody reads the VRAM budget and reaches for the "
+            "obvious lever."
+        ),
+        # The identifier, not the word. `idle` alone appears legitimately all
+        # over this tree: the player's idle phase, the vault's idle_seconds
+        # auto-lock, ModelPanel's IDLE_CHUNK, half the connection comments. A
+        # rule that fired on all of those would be turned off within a week.
+        #
+        # Assembled from halves so the banned identifier never appears whole on
+        # any line of this file. Same reasoning as EM_DASH = chr(0x2014) above:
+        # a rule whose own definition needs a waiver has already lost, and the
+        # allowlist is not the place to record that a rule exists.
+        pattern=re.compile("TTS_IDLE_" + "UNLOAD" + "|IDLE_" + "UNLOAD_S"),
         scope=_any_text,
     ),
 )
@@ -340,6 +412,23 @@ def _is_binary(data: bytes, path: str) -> bool:
     return path.lower().endswith(BINARY_SUFFIXES) or b"\x00" in data[:8000]
 
 
+def _looks_like_utf16(data: bytes) -> bool:
+    """A file this gate would otherwise drop on the floor without a word.
+
+    Found by an adversarial pass on 2026-08-10, and it is the cp1252 hole
+    wearing a different hat. Every ASCII character in UTF-16 carries a null
+    byte, so `_is_binary` calls the whole file binary, `worktree_files` skips
+    it, and it appears in no report and no problems list. An em dash in a
+    UTF-16 document was invisible AND silent, which is strictly worse than the
+    cp1252 case that gets a loud encoding failure.
+
+    Decoding it here was the other option and was rejected: this repository has
+    no UTF-16 file and should not grow one, so the useful answer is a complaint
+    rather than quiet accommodation.
+    """
+    return data[:2] in (b"\xff\xfe", b"\xfe\xff")
+
+
 def decode(data: bytes, rel: str, problems: list[str] | None = None) -> str:
     """UTF-8, and a loud complaint when it is not.
 
@@ -389,6 +478,11 @@ def worktree_files(problems: list[str] | None = None) -> Iterable[tuple[str, str
             # staged yet. Nothing to scan, and not this gate's business.
             continue
         if _is_binary(data, rel):
+            # Skipped, but not in silence when it is text this gate cannot
+            # read. See _looks_like_utf16.
+            if _looks_like_utf16(data) and problems is not None:
+                problems.append(f"{rel}: UTF-16, which this gate cannot read "
+                                f"and will not scan. Save it as UTF-8.")
             continue
         yield rel, decode(data, rel, problems)
 
@@ -411,6 +505,11 @@ def staged_files(problems: list[str] | None = None) -> Iterable[tuple[str, str]]
         except subprocess.CalledProcessError:
             continue
         if _is_binary(data, rel):
+            # Skipped, but not in silence when it is text this gate cannot
+            # read. See _looks_like_utf16.
+            if _looks_like_utf16(data) and problems is not None:
+                problems.append(f"{rel}: UTF-16, which this gate cannot read "
+                                f"and will not scan. Save it as UTF-8.")
             continue
         yield rel, decode(data, rel, problems)
 
