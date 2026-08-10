@@ -118,25 +118,20 @@ class TestEveryWayOfProducingAReply:
     """The four entry points each assemble their own payload. A fix that lands
     on the streaming path only would leave the button next to it stale."""
 
-    def test_the_non_streaming_path_sees_the_edit(self, client, monkeypatch):
-        import routers.completions as completions_router
-
-        seen: list[list[dict]] = []
-
-        async def fake_complete(messages, model_id, gen_params, provider, **kwargs):
-            seen.append(messages)
-            return {"choices": [{"message": {"content": "ok"}}]}
-
-        monkeypatch.setattr(completions_router, "complete", fake_complete)
-
+    def test_the_non_streaming_path_sees_the_edit(self, client, provider):
+        # Uses conftest's shared `provider` fixture (payload recorder) instead
+        # of a hand-rolled `fake_complete`: this was a plain duplicate of it,
+        # recording messages and returning fixed text. The sibling streaming
+        # test already leans on `stream_provider` the same way.
         char_id = make_character(client)
         chat_id = make_chat(client, char_id)
         _patch(client, char_id, description="Second draft")
         resp = client.post(f"/api/v1/chats/{chat_id}/complete", json=BODY)
         assert resp.status_code == 200, resp.text
 
+        sent = provider.calls[-1]["messages"]
         text = "\n".join(
-            m["content"] for m in seen[-1] if m["role"] == "system"
+            m["content"] for m in sent if m["role"] == "system"
         )
         assert "Second draft" in text
         assert "A test character" not in text

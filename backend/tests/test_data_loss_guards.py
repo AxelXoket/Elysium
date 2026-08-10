@@ -18,14 +18,11 @@ from sqlcipher3 import dbapi2 as sqlite3
 import config
 import database
 import legacy_migration
-import vault_state
 
 
 # ---------------------------------------------------------------------------
 # 1. reconcile must not read "cannot list the uploads dir" as "no files"
 # ---------------------------------------------------------------------------
-
-TEST_VAULT_KEY = bytes(range(32))
 
 
 def _break_iterdir(monkeypatch, target: str):
@@ -45,23 +42,6 @@ def _break_iterdir(monkeypatch, target: str):
 
     monkeypatch.setattr(Path, "iterdir", _boom)
     return real
-
-
-@pytest.fixture
-def unlocked_db(tmp_path, monkeypatch, request):
-    """A keyed, schema-built DB without the HTTP stack.
-
-    conftest's `client` fixture would do, but these tests drive the migration
-    functions directly and one of them breaks Path.iterdir process-wide -
-    something a live TestClient has no reason to survive.
-    """
-    db_path = str(tmp_path / "app.db")
-    monkeypatch.setattr(config, "DB_PATH", db_path)
-    monkeypatch.setattr(database, "DB_PATH", db_path)
-    request.addfinalizer(vault_state.clear_key)
-    vault_state.set_key(TEST_VAULT_KEY)
-    database.init_db()
-    return db_path
 
 
 @pytest.fixture
@@ -91,7 +71,7 @@ def test_a_missing_uploads_dir_is_still_an_ordinary_clean_pass(
 
 
 def test_reconcile_refuses_to_delete_rows_it_could_not_check(
-    _uploads, unlocked_db, monkeypatch,
+    _uploads, db, monkeypatch,
 ):
     """The core of the finding.
 
@@ -121,7 +101,7 @@ def test_reconcile_refuses_to_delete_rows_it_could_not_check(
 
 
 def test_reconcile_still_drops_rows_when_the_dir_is_genuinely_gone(
-    _uploads, unlocked_db,
+    _uploads, db,
 ):
     """The other half: an absent directory really does mean unrecoverable,
     and the guard must not turn reconcile into a no-op."""
@@ -239,7 +219,7 @@ def test_a_stranded_orphan_is_visible_not_just_logged(_db_paths):
 # ---------------------------------------------------------------------------
 
 def test_a_failing_pragma_does_not_leave_the_connection_open(
-    unlocked_db, monkeypatch, tmp_path,
+    db, monkeypatch, tmp_path,
 ):
     """On Windows an open handle blocks the very renames adopt_orphaned_enc_tmp
     performs, so a leak in the read path becomes a failure in the recovery
