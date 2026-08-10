@@ -46,6 +46,16 @@ def handle(op, req, send):
     mode = req.get("mode") or (req.get("values") or {}).get("__fake_mode") or "ok"
 
     if op == _wire.OP_PING:
+        if mode == "env":
+            # Report what THIS process actually sees, for the one question no
+            # mocked Popen can answer: the tests that check the worker's
+            # environment all capture the dict handed to Popen, which proves
+            # what the parent MEANT. A real child is the only thing that can
+            # say what arrived. The caller names the keys, so this file stays
+            # ignorant of production's variable names and nobody's real
+            # environment is echoed into a test log.
+            keys = req.get("keys") or []
+            return {"pong": True, "env": {k: os.environ.get(k) for k in keys}}
         return {"pong": True, "pid": os.getpid()}
 
     if op == _wire.OP_LOAD:

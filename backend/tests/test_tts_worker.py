@@ -611,3 +611,105 @@ def test_an_out_of_memory_decode_retries_instead_of_killing_the_worker():
     assert 'STATE["model"] is None' in body      # nothing left to free: give up
     assert body.count("_decode_once(codes, codec, torch)") == 2
     assert "force=True" in body
+
+
+class TestWhatTheChildProcessActuallySees:
+    """The one question the environment tests upstairs cannot answer.
+
+    Every existing test of the worker's environment mocks `subprocess.Popen`,
+    captures the `env=` dict, and asserts on it. That is the right way to test
+    the stripping rules and it is thorough: the credentials, the proxies, the
+    forced offline flags and the launch token are all covered, each with a
+    dirty parent environment set up first.
+
+    What none of them can show is that any of it ARRIVES. They prove what the
+    parent MEANT. Between the dict and the child sit `Popen`'s own env
+    handling, Windows' case-insensitive variable names, and whatever the rest
+    of `start()` does after the dict is built. A regression in any of those
+    would leave all of those tests green.
+
+    So this one spawns a real child over a real pipe and asks it. It costs one
+    process; the fake worker is already spawned this way by two dozen tests in
+    this file, and answering `ping` with a named slice of `os.environ` is a
+    handful of lines in it.
+    """
+
+    #: What the child is asked about. Read from production rather than
+    #: retyped: a variable added to the strip list and not to this tuple would
+    #: otherwise be tested by nothing at all.
+    def _seen(self, monkeypatch, keys):
+        from tts import worker_client
+
+        client = _client()
+        client.start(timeout=30)
+        try:
+            answer = client.request(_wire.OP_PING,
+                                    {"mode": "env", "keys": list(keys)},
+                                    timeout=30)
+        finally:
+            client.close(grace=0.2)
+        assert answer.get("pong") is True, answer
+        return answer["env"]
+
+    def test_a_credential_in_this_process_does_not_reach_the_child(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The parent is deliberately dirty first.
+
+        Asserting on a clean environment would pass on a machine where the
+        variable was never set, which is most machines, which is exactly how a
+        stripping bug ships.
+        """
+        from tts import worker_client
+
+        for name in worker_client._ENV_STRIP:
+            monkeypatch.setenv(name, "leaked-" + name.lower())
+
+        seen = self._seen(monkeypatch, worker_client._ENV_STRIP)
+        leaked = {k: v for k, v in seen.items() if v is not None}
+        assert not leaked, (
+            f"the child process can read these: {sorted(leaked)}. The env dict "
+            f"handed to Popen is stripped, so something between building it "
+            f"and the child reading it is putting them back."
+        )
+
+    def test_the_offline_flags_are_what_the_child_reads(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """And they are read against a parent that says the opposite.
+
+        `_ENV_FORCE` is applied with update rather than setdefault precisely so
+        an inherited HF_HUB_OFFLINE=0 from a developer's shell cannot re-enable
+        Hub access inside the engine. That ordering is asserted upstairs on the
+        dict; this asserts it on the process.
+        """
+        from tts import worker_client
+
+        for name in worker_client._ENV_FORCE:
+            monkeypatch.setenv(name, "definitely-not-the-forced-value")
+
+        seen = self._seen(monkeypatch, worker_client._ENV_FORCE)
+        wrong = {k: seen.get(k) for k, want in worker_client._ENV_FORCE.items()
+                 if seen.get(k) != want}
+        assert not wrong, (
+            f"the child reads {wrong}, and the parent forced "
+            f"{ {k: worker_client._ENV_FORCE[k] for k in wrong} }"
+        )
+
+    def test_the_probe_can_actually_see_a_variable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The floor under the two tests above.
+
+        Both of them pass if the child reports None for everything, which is
+        also what a broken probe reports: a typo in the op, a `keys` list that
+        never arrives, a fake worker that answers a stale shape. This sets a
+        variable that nothing strips and requires the child to see it, so
+        "nothing leaked" cannot quietly mean "nothing was read".
+        """
+        monkeypatch.setenv("ELYSIUM_ENV_PROBE", "the-child-can-read-this")
+        seen = self._seen(monkeypatch, ["ELYSIUM_ENV_PROBE"])
+        assert seen["ELYSIUM_ENV_PROBE"] == "the-child-can-read-this", (
+            "the child could not read an ordinary variable, so the two tests "
+            "above are asserting over an empty answer and prove nothing"
+        )
