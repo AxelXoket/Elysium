@@ -17,7 +17,16 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests import egress_guard
+from tests import egress_guard, error_wire_recorder
+
+# At import time, not inside a fixture, and deliberately.
+#
+# pytest imports a directory's conftest before its sibling test modules, so
+# this lands before any module-level `from fastapi.testclient import
+# TestClient` binds the original name. Four test files build their own client
+# rather than using the `client` fixture below, and wiring the recorder into
+# that fixture alone would have missed every one of them.
+error_wire_recorder.install()
 
 
 # Fixed test key: tests bypass the passphrase→scrypt path entirely (that
