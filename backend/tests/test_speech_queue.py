@@ -576,10 +576,25 @@ class TestNoChunkOutgrowsTheBankBehindIt:
         "nothing either of us could say that would be better than this is."
     )
 
-    def _run(self):
+    @pytest.fixture(autouse=True)
+    def _clean_registry(self):
+        """`pacing.for_model` writes into a PROCESS GLOBAL keyed by model name.
+
+        These tests train real coefficients into `"test-model"` and used to
+        clear the registry only on the way IN, so the learnt timings outlived
+        the class and sat there for the rest of the session. Harmless only for
+        as long as nobody else picks that key. The pattern one file over
+        (test_voice_core_promises.py) already does it both ways round.
+        """
         from tts import pacing as pacing_module
 
         pacing_module.reset_shared()
+        yield
+        pacing_module.reset_shared()
+
+    def _run(self):
+        from tts import pacing as pacing_module
+
         clock = FakeClock()
         calls = []
 
@@ -619,7 +634,6 @@ class TestNoChunkOutgrowsTheBankBehindIt:
         call each and buy nothing once the queue is ahead."""
         from tts import pacing as pacing_module
 
-        pacing_module.reset_shared()
         clock = FakeClock()
         q, synth, _ = make(clock=clock, synth=synth_ok(seconds=2.0),
                            pacing=pacing_module.for_model("test-model"))

@@ -7,10 +7,6 @@ text, written as the output a listener would actually have heard.
 
 from __future__ import annotations
 
-import re
-from pathlib import Path
-
-import pytest
 
 import speech_prep
 from speech_prep import PrepOptions, first_chunk, prepare, sentences
@@ -51,8 +47,9 @@ def test_an_ambiguous_abbreviation_keeps_its_sentence():
     # below min_chars, so the guard is never consulted - there is simply no
     # legal seam inside the window. Pinned as None rather than left as
     # "None or ...", which was true whatever the code did. The guard itself
-    # is proven in test_speech_prep_audit.py, on _split rather than on
-    # first_chunk, so first_chunk's copy of it remains unprotected.
+    # is proven in test_speech_prep.py (folded in from the audit file in
+    # KADEME 13), on _split rather than on first_chunk, so first_chunk's
+    # own copy of the guard remains unprotected.
     assert head is None
 
 
@@ -78,7 +75,11 @@ def test_a_terminal_glued_to_the_next_word_is_not_a_seam():
     text = ("The file was called notes.final and nobody could remember which "
             "of the three versions that actually was any more.")
     head = _head(text)
-    assert head is None      # MEASURED; see the abbreviation note above
+    # MEASURED, and the same caveat as the abbreviation test: the glued
+    # terminal sits at index 26, below min_chars, so the guard that would
+    # refuse it is never reached. None here means "no seam in the window",
+    # not "the guard said no".
+    assert head is None
 
 
 def test_a_delivery_tag_is_never_split_at_its_comma():
@@ -98,7 +99,9 @@ def test_a_thousands_separator_is_not_a_seam():
     text = ("The final count came to 1,000 signatures which was rather more "
             "than the committee had prepared itself for that morning.")
     head = _head(text)
-    assert head is None      # MEASURED; see the abbreviation note above
+    # MEASURED, same caveat again: the comma in "1,000" is at index 26,
+    # below min_chars. The thousands guard is not what returns None here.
+    assert head is None
 
 
 def test_a_good_seam_is_still_taken():
@@ -179,6 +182,7 @@ def test_a_lone_reopened_marker_is_not_handed_on_as_speech():
     guard never fired and a full engine call - measured fixed cost 0.89 to
     1.43 s - was spent saying nothing at all."""
     out = sentences("*She turned away from the window.*")
+    assert out, "nothing came back - the all() below proves nothing"
     assert all(s.strip("*").strip() for s in out), \
         f"a marker-only chunk survived: {out!r}"
 
@@ -216,8 +220,9 @@ def test_a_pronunciation_entry_still_applies_to_ordinary_words():
 # ---------------------------------------------------------------------------
 #
 # The sweep that used to live here is gone. It was subsumed by the hygiene gate
-# built in KADEME 01 (backend/verify/verify_hygiene.py, rule H-01, run as a
-# pytest test over the real tree by test_hygiene_gate.py), which is strictly
+# built in KADEME 01 (backend/verify/verify_hygiene.py, rule H-01, run over the
+# real working tree by test_tree_hygiene.py - NOT by test_hygiene_gate.py,
+# which deliberately only scans synthetic strings), which is strictly
 # stronger on all four counts: it covers the en dash and the HTML-encoded forms
 # as well, it scans every text file rather than only *.py, it anchors the tree
 # from the repository root rather than from the process working directory, and

@@ -9,7 +9,6 @@ never at the seams under test.
 """
 import json
 
-import pytest
 
 import config
 import voice_tags
@@ -95,6 +94,7 @@ class TestInjection:
         client.post(f"/api/v1/chats/{chat_id}/complete/stream",
                     json={"model_id": "test/model", "message": "hi"})
         messages = client.get(f"/api/v1/chats/{chat_id}/messages").json()
+        assert messages, "no messages came back - all() below proves nothing"
         assert all("VOICE DELIVERY" not in (m.get("content") or "")
                    for m in messages)
 
@@ -105,6 +105,7 @@ class TestInjection:
                     json={"model_id": "test/model", "message": "hi"})
         systems = [m["content"] for m in captured["messages"]
                    if m["role"] == "system"]
+        assert systems, "no system block captured - not any() proves nothing"
         assert not any("VOICE DELIVERY" in s for s in systems)
 
     def test_an_xtts_selection_gets_no_block(self, client, monkeypatch, tmp_path):
@@ -117,6 +118,7 @@ class TestInjection:
                     json={"model_id": "test/model", "message": "hi"})
         systems = [m["content"] for m in captured["messages"]
                    if m["role"] == "system"]
+        assert systems, "no system block captured - not any() proves nothing"
         assert not any("VOICE DELIVERY" in s for s in systems)
 
 
