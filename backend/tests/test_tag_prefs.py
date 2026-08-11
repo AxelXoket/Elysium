@@ -1,4 +1,9 @@
-"""V9-4 - the two delivery dials.
+"""V9-4 - the delivery dials of /api/v1/tts/tag-prefs.
+
+Four now, not the two this file was named for: `density`, `tone`, `speed` and
+the sentence `gap`. The last two arrived later and each has the same story
+attached, told in its own section below - a dial that was built, tested at
+every layer, and then reached by no production caller at all.
 
 `density` caps how many tags one reply may keep; `tone` is a standing direction
 prepended to every spoken reply. The tone is the lever for "make the voice
@@ -78,18 +83,12 @@ def test_density_zero_speaks_the_words_with_no_direction_at_all():
     assert "hello" in out and "there" in out
 
 
-def test_the_default_cap_still_applies_when_none_is_passed():
-    # Digit-free and all different: a digit disqualifies a span from being a
-    # tag at all, and consecutive duplicates collapse before the cap is
-    # reached - either would test the wrong thing.
-    # Derived from the cap rather than a fixed list, so raising the ceiling
-    # cannot leave this passing for the wrong reason: with fewer tags than the
-    # cap every one survives and the assertion would be vacuous.
-    words = [f"{chr(ord('a') + i // 26)}{chr(ord('a') + i % 26)}"
-             for i in range(vt.MAX_TAGS_PER_REPLY + 5)]
-    text = " ".join(f"[{w} tone] w{i}" for i, w in enumerate(words))
-    out = vt.sanitize_for_tts(text, engine_supports_tags=True)
-    assert out.count("[") == vt.MAX_TAGS_PER_REPLY
+# The default-cap test that stood here moved into test_voice_tags.py's
+# test_a_tag_flood_is_capped (KADEME 13). The two were the same claim
+# about the same function, each weak in a different way: this one never
+# checked that the WORDS survived, and that one sent twenty tags at a
+# cap of twenty-four so it never reached the boundary. The merged test
+# carries both strengths and lives next to sanitize_for_tts's own file.
 
 
 # ── the endpoints ────────────────────────────────────────────────────────────
