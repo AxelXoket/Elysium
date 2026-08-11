@@ -165,6 +165,9 @@ def test_edit_empty_message_422(client):
 
 def test_edit_conflict_when_user_row_changed_mid_stream(client, monkeypatch):
     chat_id, user_id, old_asst_id = _seed_conversation(client)
+    asst_ids_before = [
+        m["id"] for m in get_messages(client, chat_id) if m["role"] == "assistant"
+    ]
 
     def concurrent_change():
         with database.get_db() as con:
@@ -180,7 +183,17 @@ def test_edit_conflict_when_user_row_changed_mid_stream(client, monkeypatch):
     assert events[-1] == {"type": "error", "status": 409, "code": "edit_conflict"}
     msgs = get_messages(client, chat_id)
     # NOTHING written: concurrent content stands, old reply intact.
-    assert [m["id"] for m in msgs if m["role"] != "assistant" or m["id"] == old_asst_id]
+    #
+    # This line used to read `assert [m["id"] for m in msgs if m["role"] !=
+    # "assistant" or m["id"] == old_asst_id]`, which is true on any chat that
+    # contains a single user row - and every chat here does. Measured
+    # 2026-08-10: it evaluates to [user_id, old_asst_id] in the conflict case
+    # and would evaluate to a non-empty list just the same if the edit had
+    # wrongly gone through and swept the group, because the user row alone
+    # satisfies it. The claim in the comment above it is "nothing written", so
+    # that is what is asserted now: no assistant row exists that is not the
+    # one we seeded.
+    assert [m["id"] for m in msgs if m["role"] == "assistant"] == asst_ids_before
     assert any(m["id"] == old_asst_id and m["content"] == "old reply" for m in msgs)
     assert any(m["id"] == user_id and m["content"] == "changed elsewhere" for m in msgs)
 
@@ -247,6 +260,39 @@ def test_edit_abort_leaves_chat_untouched(client, monkeypatch):
 
 
 # ── Non-stream twin ──────────────────────────────────────────────────────────
+
+def test_a_message_id_from_another_chat_cannot_be_edited(client, monkeypatch):
+    """The predicate with the largest blast radius in this endpoint, and
+    nothing was watching it.
+
+    `_validate_edit_target` looks the row up with `WHERE id = ? AND chat_id =
+    ?`. Drop the second half and an edit addressed to chat A can be pointed at
+    a row in chat B - and the edit does not merely rewrite that row, it SWEEPS
+    everything after it (`DELETE ... WHERE id > ?`). The sweep is computed
+    against the chat in the URL, so the two chats disagree about which rows are
+    downstream and the delete lands wherever the ids happen to fall. Every
+    other test here works inside a single chat, so a second conversation in the
+    vault was something the suite had never once put on the table.
+
+    Two assertions, and the second is the one that matters: the refusal, and
+    that the other chat is byte-identical afterwards.
+    """
+    _install_stream(monkeypatch, ["Should never be written."])
+    chat_a, user_a, _ = _seed_conversation(client)
+    chat_b, user_b, asst_b = _seed_conversation(client)
+
+    before = get_messages(client, chat_b)
+
+    with pytest.raises(HTTPException) as exc:
+        _run(_drive_edit(chat_a, user_b, "reaching into the other chat"))
+    assert exc.value.status_code == 404
+    assert exc.value.detail == "message_not_found"
+
+    assert get_messages(client, chat_b) == before, "the other chat was touched"
+    assert [m["content"] for m in get_messages(client, chat_a)][1] == (
+        "original question"
+    )
+
 
 def test_edit_non_stream_happy_path(client, monkeypatch):
     import routers.completions as cr

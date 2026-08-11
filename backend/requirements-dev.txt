@@ -1,0 +1,21 @@
+# Test-only dependencies. NOT shipped.
+#
+# requirements.txt is the runtime list, and requirements.lock.txt hash-pins it
+# into the binary PyInstaller builds. Nothing in this file is imported by any
+# module under backend/ outside tests/, so putting these there would bake a
+# package the product never runs into everybody's Elysium.exe - more bytes to
+# ship, one more name in the supply chain, for a guarantee only the test suite
+# needs. Keep the two lists apart and the lock keeps meaning what it says.
+#
+# Install alongside the runtime list, from this directory:
+#     .venv/Scripts/python.exe -m pip install -r requirements-dev.txt
+#
+# Deliberately NOT hash-pinned: the lock file's job is to fix the bytes that
+# get compiled into a shipped artifact, and none of these ever are.
+
+# Builds a JPEG carrying an EXIF thumbnail (IFD1) - the small copy of the
+# frame a camera embeds, which survives a crop in most editors and can show
+# what the crop removed. Pillow READS an IFD1 but will not WRITE one, so the
+# fixture for that test cannot be built with Pillow alone. Used by exactly one
+# test: test_attachments.py::test_a_cropped_photos_original_frame_does_not_ride_along
+piexif>=1.1.3

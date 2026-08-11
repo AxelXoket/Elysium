@@ -261,6 +261,12 @@ def test_text_only_model_strips_history_images(client, provider, text_only_model
     })
     assert resp.status_code == 200
     call = provider.calls[-1]
+    # Floor first: the seeded turn has to BE in the payload. all() over a
+    # payload that had quietly stopped carrying image-bearing history would
+    # pass while the model lost the conversation, which is the opposite of
+    # what this test is for.
+    assert any(m["content"] == "old image message" for m in call["messages"]), (
+        call["messages"])
     # Every content in the payload is a plain string - images silently omitted.
     assert all(isinstance(m["content"], str) for m in call["messages"])
 
@@ -899,20 +905,79 @@ def test_palette_png_keeps_its_transparency(client):
     assert pixel[3] == 0, "transparent pixels were re-encoded opaque"
 
 
-def test_stripping_still_removes_exif(client):
-    """Control: the privacy guarantee the info-wipe exists for is intact."""
+# ── K-18: the tRNS exception is wider than its own justification ───────────
+#
+# normalise_image wipes img.info and then puts ONE key back, with this
+# reasoning written above it: "It carries no uploader information - it is a
+# palette index or a grey level."
+#
+# That is true for the picture the test above builds, and only for it. Pillow
+# collapses a tRNS chunk to a single int only when the raw bytes match
+# ^\xff*\x00\xff*$ - one transparent entry, everything else opaque. Any other
+# pattern is handed back as `bytes`, one byte per palette entry, up to 256 of
+# them, and normalise_image re-attaches that object unexamined. Palette slots
+# no pixel uses still get their byte, so the carrier is invisible on screen.
+# Grey-level images are worse per byte than the comment suggests too: mode L
+# tRNS is a 16 bit value read straight off the chunk, not an index into
+# anything.
+#
+# The two tests below are CHARACTERISATION, not approval. They assert what
+# this app does today so that the day someone narrows the exception, they go
+# red and have to come here. Recorded in KUSUR-DEFTERI as K-18; nothing is
+# repaired during the ladder.
+
+_TRNS_PAYLOAD = bytes([13, 250, 7, 199, 0, 255, 42, 88])
+
+
+def _palette_png_with_trns(trns: bytes) -> bytes:
+    img = Image.new("P", (8, 8), 0)
+    img.putpalette([c for i in range(256) for c in (i, i, i)])
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", transparency=trns)
+    return buf.getvalue()
+
+
+def test_a_palette_transparency_array_rides_through_the_strip_verbatim(client):
+    """K-18. 256 bytes of the uploader's choosing survive a re-encode the
+    README describes as dropping embedded metadata."""
+    from PIL import Image as PILImage
+
+    arr = bytearray(b"\xff" * 256)
+    arr[200:208] = _TRNS_PAYLOAD          # indices no pixel in this image uses
+    src = _palette_png_with_trns(bytes(arr))
+    # Floor: Pillow must actually be handing back the array form, otherwise
+    # this test is measuring the collapsed-int case the guard is fine with.
+    assert isinstance(PILImage.open(io.BytesIO(src)).info["transparency"], bytes)
+
+    row = upload(client, src)
+    stored = client.get(f"/api/v1/uploads/images/{row['id']}").content
+    out = PILImage.open(io.BytesIO(stored)).info.get("transparency")
+
+    assert isinstance(out, bytes) and len(out) == 256, out
+    assert out == bytes(arr), "K-18 changed shape - re-measure before editing"
+    assert _TRNS_PAYLOAD in out
+
+
+def test_a_greyscale_transparency_value_rides_through_the_strip(client):
+    """K-18, the second door: mode L tRNS is 16 bits, not a grey level index."""
     from PIL import Image as PILImage
 
     buf = io.BytesIO()
-    img = Image.new("RGB", (8, 8), (1, 2, 3))
-    exif = img.getexif()
-    exif[271] = "SecretCameraMaker"
-    img.save(buf, format="JPEG", exif=exif)
+    Image.new("L", (8, 8), 128).save(buf, format="PNG", transparency=54321)
 
-    row = upload(client, buf.getvalue(), mime="image/jpeg", name="p.jpg")
+    row = upload(client, buf.getvalue())
     stored = client.get(f"/api/v1/uploads/images/{row['id']}").content
-    assert b"SecretCameraMaker" not in stored
-    assert dict(PILImage.open(io.BytesIO(stored)).getexif()) == {}
+
+    assert PILImage.open(io.BytesIO(stored)).info.get("transparency") == 54321
+
+
+# test_stripping_still_removes_exif lived here: a JPEG carrying EXIF tag 271
+# (Make), uploaded, asserted absent. TestEveryKindOfMetadataTheImagePromiseNames
+# below builds the same format and asserts 0x010F along with Model,
+# DateTimeOriginal, UserComment, the GPS sub-IFD, ICC, XMP and the COM segment,
+# so it fails first on anything this could have caught. The two PNG and WebP
+# strip tests are NOT redundant with it - those exercise tEXt chunks and the
+# WebP EXIF container, which the JPEG class never touches - and they stay.
 
 
 def test_multi_picture_jpeg_is_accepted(client):
@@ -1139,3 +1204,490 @@ class TestEveryKindOfMetadataTheImagePromiseNames:
         # point is that these are the original pixels and not a blank frame.
         r, g, b = out.convert("RGB").getpixel((32, 24))
         assert abs(r - 90) < 24 and abs(g - 120) < 24 and abs(b - 150) < 24
+
+
+# -- the branches nothing walked into ---------------------------------------
+#
+# Every test above this line drives the decode path with either a picture the
+# app accepts or bytes that are not a picture at all. Between those two sits
+# the part of normalise_image that decides which pictures count, and a
+# measurement of the whole file found no test standing in it: the format
+# allowlist, the load-time failure, the two ceilings AT their boundary, and
+# the orientation transpose. Each one below is a distinct branch, and each one
+# is the kind that fails silently rather than loudly.
+
+def _boundary_bytes(target: int) -> bytes:
+    """A decodable PNG padded to exactly `target` bytes.
+
+    Everything after IEND is ignored by every decoder, so this is a real image
+    of an exact size - which is the only way to stand ON a byte ceiling rather
+    than near it.
+    """
+    png = make_png()
+    assert len(png) < target
+    return png + b"\x00" * (target - len(png))
+
+
+def test_a_gif_is_refused_even_though_it_decodes(client):
+    """The format allowlist, which no test had entered.
+
+    "Not an image" and "an image of a format we do not keep" leave
+    normalise_image through different doors: the first dies in Image.open, the
+    second reaches the mime lookup and finds None. Only a real, perfectly
+    valid picture of an unlisted format goes through the second one, and GIF
+    is the format a person is most likely to try.
+    """
+    buf = io.BytesIO()
+    Image.new("P", (8, 8)).save(buf, format="GIF")
+    assert buf.getvalue()[:3] == b"GIF"
+
+    resp = client.post("/api/v1/uploads/images",
+                       files={"file": ("a.gif", buf.getvalue(), "image/gif")})
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == "attachment_invalid"
+
+
+def test_an_svg_is_refused_by_the_upload_endpoint(client):
+    """The provider path has this test; the browser path did not.
+
+    SVG is the one refusal that matters more than the others, because the
+    serve route is same-origin with the whole local API and an SVG is a
+    document that can run script. It must not depend on the client's declared
+    type, so declare it truthfully and watch it be refused on its bytes.
+    """
+    svg = b"<svg xmlns='http://www.w3.org/2000/svg'><script>x()</script></svg>"
+    resp = client.post("/api/v1/uploads/images",
+                       files={"file": ("a.svg", svg, "image/svg+xml")})
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == "attachment_invalid"
+
+
+def test_a_truncated_image_is_refused_and_leaves_nothing_behind(client):
+    """A valid header over a body that stops halfway.
+
+    This is the OTHER half of the same except-clause the garbage test uses:
+    the header parses, so Image.open succeeds and the failure lands in
+    img.load(). The rows assertion is the part worth having - a decode that
+    blew up after a write had started would leave a blob nobody references.
+    """
+    import database
+
+    whole = make_png(64, 64)
+    resp = client.post("/api/v1/uploads/images",
+                       files={"file": ("cut.png", whole[:len(whole) // 2],
+                                       "image/png")})
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == "attachment_invalid"
+    with database.get_db() as con:
+        assert con.execute(
+            "SELECT COUNT(*) c FROM attachments").fetchone()["c"] == 0
+        assert con.execute(
+            "SELECT COUNT(*) c FROM attachment_blobs").fetchone()["c"] == 0
+
+
+def test_the_longest_side_at_the_ceiling_is_left_alone(client):
+    """Measured, and the measurement corrected the intent.
+
+    This was written to separate `>` from `>=` on the downscale test. It does
+    not, and cannot: Image.thumbnail only ever shrinks, so asking it to fit an
+    image into exactly its own size is a no-op and both comparisons produce
+    identical bytes. The mutation is benign, not missed.
+
+    What it does guard is the ceiling VALUE - an image at the documented limit
+    coming back re-encoded to something smaller, which is what a changed
+    constant or a stray -1 would do, and which no other test would see because
+    every other fixture is far from the line.
+    """
+    from config import IMAGE_MAX_DIMENSION
+
+    row = upload(client, make_png(IMAGE_MAX_DIMENSION, 64))
+    assert (row["width"], row["height"]) == (IMAGE_MAX_DIMENSION, 64)
+
+
+def test_one_pixel_past_the_ceiling_is_downscaled(client):
+    """Guard the guard above. Greater-than and greater-or-equal differ by
+    exactly this image, and the existing downscale test sits 1000px clear of
+    the line, so it cannot see the difference."""
+    from config import IMAGE_MAX_DIMENSION
+
+    row = upload(client, make_png(IMAGE_MAX_DIMENSION + 1, 64))
+    assert row["width"] == IMAGE_MAX_DIMENSION
+
+
+def test_an_upload_that_lands_exactly_on_the_byte_ceiling_is_kept(client):
+    """MAX_UPLOAD_BYTES is a limit, not a forbidden value. Two independent
+    checks read it - the handler's bounded read and normalise_image's own -
+    and either one written with the wrong comparison refuses a legal upload
+    while every "too large" test in this file stays green."""
+    from config import MAX_UPLOAD_BYTES
+
+    row = upload(client, _boundary_bytes(MAX_UPLOAD_BYTES))
+    assert row["width"] == 8
+
+
+def test_one_byte_past_the_byte_ceiling_is_refused(client):
+    from config import MAX_UPLOAD_BYTES
+
+    resp = client.post(
+        "/api/v1/uploads/images",
+        files={"file": ("big.png", _boundary_bytes(MAX_UPLOAD_BYTES + 1),
+                        "image/png")},
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == "attachment_too_large"
+
+
+def test_a_sideways_photo_is_stored_the_way_up_it_is_meant_to_be_seen(client):
+    """exif_transpose, which the code says exists "so width/height and the
+    stored pixels agree" - and which nothing measured.
+
+    A phone writes the sensor's landscape frame and an Orientation tag saying
+    to rotate it. If the transpose were dropped, the pixels would come back
+    sideways AND the reported dimensions would still be the sensor's, so the
+    frontend would reserve a box of the wrong shape for every portrait photo
+    ever taken. Both halves are asserted here.
+    """
+    src = Image.new("RGB", (40, 20), (10, 90, 200))
+    exif = src.getexif()
+    exif[274] = 6                      # Orientation: rotate 90 CW to display
+    buf = io.BytesIO()
+    src.save(buf, format="JPEG", exif=exif)
+
+    row = upload(client, buf.getvalue(), mime="image/jpeg", name="p.jpg")
+
+    assert (row["width"], row["height"]) == (20, 40), (
+        "the sensor's frame was stored as-is, tag and all")
+    stored = client.get(f"/api/v1/uploads/images/{row['id']}").content
+    assert Image.open(io.BytesIO(stored)).size == (20, 40)
+
+
+# -- the request-level attachment gate --------------------------------------
+
+def test_the_same_attachment_twice_in_one_send_is_refused(client, vision_model,
+                                                          provider):
+    """The over-cap test sends four distinct ids; nobody sent one id twice.
+
+    Without the duplicate check the list falls through to link_attachments,
+    which links the row once - so the message quietly carries fewer pictures
+    than the sender listed, which is a worse failure than a refusal.
+    """
+    char = make_character(client)
+    chat = make_chat(client, char)
+    att = upload(client, make_png())
+
+    resp = client.post(f"/api/v1/chats/{chat}/complete", json={
+        "message": "look at these", "model_id": "test/model-1",
+        "attachments": [att["id"], att["id"]],
+    })
+
+    assert resp.status_code == 400, resp.text
+    assert provider.calls == []
+
+
+def test_exactly_the_cap_of_attachments_goes_through(client, vision_model,
+                                                     provider):
+    """The refusal is tested at cap+1. Nothing proved cap itself is allowed,
+    so a boundary written one off would reject a legal send and stay green."""
+    from config import MAX_ATTACHMENTS_PER_MESSAGE
+
+    char = make_character(client)
+    chat = make_chat(client, char)
+    ids = [upload(client, make_png(color=(i + 1, 40, 40)))["id"]
+           for i in range(MAX_ATTACHMENTS_PER_MESSAGE)]
+
+    resp = client.post(f"/api/v1/chats/{chat}/complete", json={
+        "message": "look at these", "model_id": "test/model-1",
+        "attachments": ids,
+    })
+
+    assert resp.status_code == 200, resp.text
+    sent = provider.calls[-1]["messages"][-1]["content"]
+    assert sum(1 for p in sent if p.get("type") == "image_url") == (
+        MAX_ATTACHMENTS_PER_MESSAGE)
+
+
+def test_the_payload_ram_ceiling_keeps_the_newest_pictures(client, monkeypatch):
+    """The guard against assembling a chat's whole image history into RAM.
+
+    Every test that touches prefetch_blobs is far under the cap or replaces
+    the function outright, so the admission loop had never run to its second
+    branch. Two things are pinned: newest wins, and the loop CONTINUES past an
+    image it cannot afford rather than stopping - a later, smaller picture
+    still gets in. A break there would look identical under any fixture where
+    the blobs happen to be the same size.
+    """
+    import hashlib
+
+    import attachments_service
+    import database
+
+    blobs = {}
+    # Order matters more than size here. The one that does NOT fit must sit in
+    # the MIDDLE, with an affordable picture after it - otherwise skipping and
+    # stopping produce the same map and the test cannot tell them apart.
+    for label, pad in (("first", 4000), ("unaffordable", 4000), ("last", 400)):
+        data = make_png(color=(len(blobs) + 1, 7, 7)) + b"\x00" * pad
+        blobs[label] = hashlib.sha256(data).hexdigest()
+        with database.get_db() as con:
+            con.execute("INSERT OR IGNORE INTO attachment_blobs (sha256, data) "
+                        "VALUES (?, ?)", (blobs[label], data))
+
+    with database.get_db() as con:
+        sizes = {k: con.execute(
+            "SELECT length(data) n FROM attachment_blobs WHERE sha256 = ?",
+            (v,)).fetchone()["n"] for k, v in blobs.items()}
+    cap = sizes["first"] + sizes["last"]
+    assert cap < sizes["first"] + sizes["unaffordable"], "fixture does not bite"
+    monkeypatch.setattr(attachments_service, "IMAGE_PAYLOAD_MAX_TOTAL_BYTES", cap)
+
+    got = attachments_service.prefetch_blobs(
+        [blobs["first"], blobs["unaffordable"], blobs["last"]])
+
+    assert blobs["first"] in got, "the newest picture was left out"
+    assert blobs["unaffordable"] not in got, (
+        "the cap admitted more than it can hold")
+    assert blobs["last"] in got, (
+        "the admission loop STOPPED at the first picture it could not afford "
+        "instead of skipping it - every older image is now dropped from the "
+        "payload the moment one large one appears")
+
+
+def test_deleting_a_character_takes_its_pictures_and_leaves_the_others(
+    client, vision_model, provider,
+):
+    """The deepest cascade in the app, and the only one with no pytest at all.
+
+    Character -> chats -> messages -> attachments -> blobs, four levels, and
+    the only thing that ever checked it was a verify/ script that walks raw
+    SQL. Two things are asserted, because the cascade can fail in opposite
+    directions and each one looks fine from the other side:
+
+      * everything belonging to the deleted character is gone, blobs
+        included - a cascade that stops at `chats` leaves orphan rows and a
+        vault that only grows;
+      * a picture ANOTHER character's chat still shows is untouched - the
+        shared blob is the discriminating part, because message ids are
+        global here, so an unscoped sweep reaches the whole vault and a test
+        with one character in it would never notice.
+    """
+    import database
+
+    shared = make_png(color=(4, 4, 200))
+    own = make_png(color=(200, 4, 4))
+
+    doomed = make_character(client, name="Doomed")
+    chat_a = make_chat(client, doomed)
+    keeper = make_character(client, name="Keeper")
+    chat_b = make_chat(client, keeper)
+
+    def _send(chat, data, text):
+        att = upload(client, data)
+        resp = client.post(f"/api/v1/chats/{chat}/complete", json={
+            "message": text, "model_id": "test/model-1",
+            "attachments": [att["id"]],
+        })
+        assert resp.status_code == 200, resp.text
+
+    _send(chat_a, shared, "the doomed one")
+    _send(chat_a, own, "and one only it has")
+    _send(chat_b, shared, "the survivor, same picture")
+
+    with database.get_db() as con:
+        assert con.execute(
+            "SELECT COUNT(*) c FROM attachment_blobs").fetchone()["c"] == 2
+
+    assert client.delete(f"/api/v1/characters/{doomed}").status_code == 200
+
+    with database.get_db() as con:
+        assert con.execute(
+            "SELECT COUNT(*) c FROM chats WHERE character_id = ?",
+            (doomed,)).fetchone()["c"] == 0
+        assert con.execute(
+            "SELECT COUNT(*) c FROM messages WHERE chat_id = ?",
+            (chat_a,)).fetchone()["c"] == 0
+        assert con.execute(
+            "SELECT COUNT(*) c FROM attachments").fetchone()["c"] == 1
+        # The picture only the deleted character had is gone; the one its
+        # neighbour still shows is not.
+        assert con.execute(
+            "SELECT COUNT(*) c FROM attachment_blobs").fetchone()["c"] == 1
+
+    kept = [m for m in get_messages(client, chat_b) if m["attachments"]]
+    assert len(kept) == 1, kept
+    served = client.get(
+        f"/api/v1/uploads/images/{kept[0]['attachments'][0]['id']}")
+    assert served.status_code == 200, "the survivor's picture stopped serving"
+
+
+# -- what an adversary would change, given a free hand ----------------------
+
+def test_the_stale_purge_never_touches_a_picture_a_message_owns(client):
+    """The single most destructive line in the attachment code.
+
+    purge_stale_staged runs unattended: on every vault unlock, and again
+    opportunistically after every upload. Its WHERE clause carries two
+    conditions - old enough, and NOT owned by a message. Drop the second and
+    the sweep stops meaning "abandon what nobody sent" and starts meaning
+    "delete every picture in the vault older than a day", rows and bytes, on
+    the next unlock, with no user action and no error.
+
+    Both rows below are backdated past the cutoff, so age cannot be what
+    separates them. The only thing that can is ownership.
+    """
+    import database
+
+    abandoned = upload(client, make_png(color=(9, 9, 9)))
+    char = make_character(client)
+    chat = make_chat(client, char)
+    owned = upload(client, make_png(color=(9, 9, 200)))
+    with database.get_db() as con:
+        con.execute("BEGIN IMMEDIATE")
+        mid = con.execute(
+            "INSERT INTO messages (chat_id, role, content) VALUES (?, 'user', 'x')",
+            (chat,),
+        ).lastrowid
+        con.execute("UPDATE attachments SET message_id = ? WHERE id = ?",
+                    (mid, owned["id"]))
+        con.execute("UPDATE attachments SET created_at = "
+                    "datetime('now', '-48 hours')")
+
+    import attachments_service
+    purged = attachments_service.purge_stale_staged()
+
+    assert purged == 1, f"the sweep took {purged} rows, not just the abandoned one"
+    assert client.get(
+        f"/api/v1/uploads/images/{owned['id']}").status_code == 200, (
+        "the unattended purge deleted a picture a message owns")
+    assert client.get(
+        f"/api/v1/uploads/images/{abandoned['id']}").status_code == 404
+
+
+def test_a_send_gets_back_only_its_own_attachments(client, vision_model,
+                                                   provider):
+    """link_attachments returns the rows the API echoes as this message's
+    pictures. Unscoped, that query returns every attachment row in the vault,
+    and the client renders a thumbnail for each - other conversations'
+    pictures appearing under a message that never had them.
+
+    The existing send test asserts `attachments[0]["id"]`, which is index 0 of
+    a list whose length it never checks, in a vault holding exactly one row.
+    So plant a stranger first: with one, scoped and unscoped agree.
+    """
+    stranger = upload(client, make_png(color=(1, 250, 1)))
+    char = make_character(client)
+    chat = make_chat(client, char)
+    mine = upload(client, make_png(color=(250, 1, 1)))
+
+    resp = client.post(f"/api/v1/chats/{chat}/complete", json={
+        "message": "just this one", "model_id": "test/model-1",
+        "attachments": [mine["id"]],
+    })
+
+    assert resp.status_code == 200, resp.text
+    got = resp.json()["user_message"]["attachments"]
+    assert [a["id"] for a in got] == [mine["id"]], got
+    assert stranger["id"] not in [a["id"] for a in got]
+
+
+def test_the_draw_setting_reads_as_off_when_it_cannot_be_read(monkeypatch):
+    """Fail closed, and say so in a test rather than only in a comment.
+
+    A wrong False costs a feature the user can turn back on. A wrong True is a
+    request they never made, sent to a provider, and billed. Every existing
+    test for this flag sets it explicitly, so the except-branch - the only
+    place the asymmetry is decided - had never been executed.
+    """
+    import database
+    import generated_images
+
+    def _boom(*a, **kw):
+        raise RuntimeError("vault unreadable")
+
+    monkeypatch.setattr(database, "get_setting", _boom)
+    assert generated_images.image_output_enabled() is False
+
+
+def test_an_oversized_data_url_is_refused_before_it_is_decoded(client):
+    """The base64 length ceiling in decode_data_url.
+
+    normalise_image re-checks the byte cap, but only on the DECODED bytes -
+    and decoding is where the memory goes. The provider chooses the size of
+    its own response, so this is the only check standing between a hostile
+    reply and a multi-hundred-megabyte allocation. The byte-ceiling test in
+    test_generated_image_storage.py calls normalise_image directly and never
+    reaches this line.
+    """
+    import generated_images
+    from config import MAX_UPLOAD_BYTES
+
+    huge = "data:image/png;base64," + "A" * (MAX_UPLOAD_BYTES * 2)
+    with pytest.raises(ValueError, match="too large"):
+        generated_images.decode_data_url(huge)
+
+
+def test_a_cropped_photos_original_frame_does_not_ride_along(client):
+    """The EXIF thumbnail (IFD1), which the file next to this one flagged as
+    reasoned-about rather than measured.
+
+    A camera writes a small copy of the frame into the EXIF block. Phones and
+    editors routinely leave it there after a CROP, so the thumbnail can still
+    show what the crop removed - a face, a screen, a street sign. Nothing in
+    this suite looked at it, because Pillow's own Exif.tobytes() will not
+    WRITE an IFD1, so a fixture built with Pillow alone cannot carry one. That
+    is why this is the one test in the file that needs piexif: it exists to
+    build an input Pillow refuses to build.
+
+    WHAT IT GUARDS, measured rather than assumed. Deleting `img.info = {}`
+    leaves this test GREEN while the EXIF test above goes red: Pillow's
+    Exif.tobytes() cannot write an IFD1 back, so the thumbnail dies in the
+    re-encode whether or not anything wipes info. The protection here is
+    INHERITED from a dependency, not implemented by this app - which is
+    precisely why it needs a test rather than a comment. What does turn it red
+    is storing the upload verbatim, i.e. the always-re-encode decision itself
+    (measured: mutate `final_bytes` to `data` and this is the test that
+    catches it). If a future Pillow gains IFD1 write support, the same
+    mutation is no longer needed to break the promise, and this test is what
+    will say so.
+
+    Two assertions, because they fail differently. The structure check would
+    still pass if the bytes were copied somewhere else in the file; the byte
+    check would still pass if the tag survived but happened to be empty.
+
+    The thumbnail is NOISE on purpose. A solid-colour one compresses to long
+    repeated runs that appear in any other JPEG by coincidence - measured, and
+    it produced a false positive. Its entropy-coded scan is compared, not the
+    whole file: the tables before the scan marker are the standard JPEG
+    Huffman tables, identical in every image Pillow writes.
+    """
+    import os
+
+    import piexif
+
+    tbuf = io.BytesIO()
+    Image.frombytes("RGB", (64, 64), os.urandom(64 * 64 * 3)).save(
+        tbuf, format="JPEG", quality=95)
+    thumb = tbuf.getvalue()
+    scan = thumb[thumb.find(b"\xff\xda"):]           # the pixels, not the tables
+    assert len(scan) > 512, "fixture thumbnail has no scan to look for"
+
+    photo = Image.frombytes("RGB", (200, 120), os.urandom(200 * 120 * 3))
+    buf = io.BytesIO()
+    photo.save(buf, format="JPEG", exif=piexif.dump({
+        "0th": {piexif.ImageIFD.Make: b"SecretCam"},
+        "Exif": {}, "GPS": {},
+        "1st": {piexif.ImageIFD.Compression: 6},
+        "thumbnail": thumb,
+    }))
+    raw = buf.getvalue()
+    # The source really carries it, by both measures.
+    assert len(piexif.load(raw)["thumbnail"] or b"") > 0
+    assert scan[:64] in raw
+
+    row = upload(client, raw, mime="image/jpeg", name="cropped.jpg")
+    stored = client.get(f"/api/v1/uploads/images/{row['id']}").content
+
+    after = piexif.load(stored)
+    assert not after["thumbnail"], "the embedded thumbnail survived"
+    assert after["1st"] == {}, after["1st"]
+    assert not any(scan[i:i + 32] in stored for i in range(0, len(scan) - 32, 16)), (
+        "the thumbnail's pixels are still in the file, outside the EXIF block")

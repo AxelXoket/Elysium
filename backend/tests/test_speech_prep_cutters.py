@@ -33,7 +33,11 @@ def test_a_decimal_is_not_a_sentence_end():
     text = ("The programme was eventually costed at 3.5 million pounds, which "
             "nobody in the room had expected to hear said out loud.")
     head = _head(text)
-    assert head is None or not head.rstrip().endswith("3.")
+    # MEASURED: this text IS cut, at the comma. The old assertion read
+    # "None or not ending in 3.", which a build that had stopped cutting
+    # anything at all would have satisfied without doing any work.
+    assert head is not None, "no cut at all - the guard cannot be observed"
+    assert not head.rstrip().endswith("3.")
 
 
 def test_an_ambiguous_abbreviation_keeps_its_sentence():
@@ -41,7 +45,15 @@ def test_an_ambiguous_abbreviation_keeps_its_sentence():
     text = ("She had been waiting for Dr. Smith since the middle of the "
             "afternoon and the corridor had not grown any warmer.")
     head = _head(text)
-    assert head is None or not head.rstrip().endswith("Dr.")
+    # MEASURED (KADEME 13): the answer is None, and NOT because the
+    # abbreviation guard refused. "Dr." is not in AMBIGUOUS_ABBREVIATIONS
+    # (only St./Ave./Mt./Fr./Pl./Ct. are) and its period sits at index 27,
+    # below min_chars, so the guard is never consulted - there is simply no
+    # legal seam inside the window. Pinned as None rather than left as
+    # "None or ...", which was true whatever the code did. The guard itself
+    # is proven in test_speech_prep_audit.py, on _split rather than on
+    # first_chunk, so first_chunk's copy of it remains unprotected.
+    assert head is None
 
 
 def test_a_url_is_never_cut_in_half():
@@ -51,6 +63,10 @@ def test_a_url_is_never_cut_in_half():
     text = ("The whole thing is documented at https://example.com/a.b.c/page "
             "if you want to read the original notes yourself.")
     cut = first_chunk(text, **WINDOW)
+    # MEASURED: None. The entire body used to sit under `if cut is not None`,
+    # so on this text the test executed no assertion whatsoever. The floor
+    # below is what keeps the fixture honest if the window ever widens.
+    assert speech_prep._BARE_URL.search(text), "the fixture has no URL in it"
     if cut is not None:
         head, tail = cut
         for match in speech_prep._BARE_URL.finditer(text):
@@ -62,7 +78,7 @@ def test_a_terminal_glued_to_the_next_word_is_not_a_seam():
     text = ("The file was called notes.final and nobody could remember which "
             "of the three versions that actually was any more.")
     head = _head(text)
-    assert head is None or not head.rstrip().endswith("notes.")
+    assert head is None      # MEASURED; see the abbreviation note above
 
 
 def test_a_delivery_tag_is_never_split_at_its_comma():
@@ -72,15 +88,17 @@ def test_a_delivery_tag_is_never_split_at_its_comma():
     text = ("She put the cup down without looking up at him [cold, clipped "
             "tone] and asked the question again exactly as before.")
     head = _head(text)
-    if head is not None:
-        assert head.count("[") == head.count("]"), f"tag split: {head!r}"
+    # MEASURED: None, and here that IS the guard working - the comma inside
+    # the tag sits at index 52, well inside the window, and it is the only
+    # candidate seam there. Refusing it is the whole point.
+    assert head is None, f"tag split: {head!r}"
 
 
 def test_a_thousands_separator_is_not_a_seam():
     text = ("The final count came to 1,000 signatures which was rather more "
             "than the committee had prepared itself for that morning.")
     head = _head(text)
-    assert head is None or not head.rstrip().endswith("1,")
+    assert head is None      # MEASURED; see the abbreviation note above
 
 
 def test_a_good_seam_is_still_taken():
@@ -196,23 +214,12 @@ def test_a_pronunciation_entry_still_applies_to_ordinary_words():
 # ---------------------------------------------------------------------------
 # 6. P10: no em dash in backend source
 # ---------------------------------------------------------------------------
-
-def test_no_backend_source_file_contains_an_em_dash():
-    """Ledger item 111 records P10 as "verified (test enforces)". The only
-    guard in the repo was frontend/src/test/settings-copy.test.ts, which scans
-    frontend settings copy - so no Python file was checked by anything, and a
-    literal U+2014 sat in speech_prep._CHUNK_BREAKS, the module the rule is
-    most about."""
-    # Written as an escape, or this file would be its own first offender.
-    em_dash = chr(0x2014)
-    root = Path(".").resolve()
-    offenders: list[str] = []
-    for path in root.rglob("*.py"):
-        parts = set(path.parts)
-        if ".venv" in parts or "__pycache__" in parts or "node_modules" in parts:
-            continue
-        text = path.read_text(encoding="utf-8", errors="replace")
-        for number, line in enumerate(text.splitlines(), 1):
-            if em_dash in line:
-                offenders.append(f"{path.relative_to(root)}:{number}")
-    assert not offenders, "em dash in: " + ", ".join(offenders[:10])
+#
+# The sweep that used to live here is gone. It was subsumed by the hygiene gate
+# built in KADEME 01 (backend/verify/verify_hygiene.py, rule H-01, run as a
+# pytest test over the real tree by test_hygiene_gate.py), which is strictly
+# stronger on all four counts: it covers the en dash and the HTML-encoded forms
+# as well, it scans every text file rather than only *.py, it anchors the tree
+# from the repository root rather than from the process working directory, and
+# it carries a waiver list. This copy was also the slowest test in the file.
+# Its story is kept where the rule now lives.

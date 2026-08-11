@@ -7,6 +7,7 @@ SSE generator costs the user their reply, not just the audio.
 """
 import pytest
 
+import speech_prep
 from conftest import make_character, make_chat
 from tests.test_streaming import stream_provider, read_events  # noqa: F401
 from tests.test_streaming_voice import fake_voice  # noqa: F401
@@ -24,13 +25,26 @@ def stream(client, chat_id, **extra):
         return read_events(resp)
 
 
-@pytest.mark.parametrize("mode", ["same", "narrator", "skip"])
-def test_every_documented_mode_is_accepted(client, stream_provider, fake_voice,
-                                           mode):
+@pytest.mark.parametrize("mode", speech_prep.NARRATIVE_MODES)
+def test_every_mode_speech_prep_knows_is_one_the_request_accepts(
+    client, stream_provider, fake_voice, mode,
+):
+    """The two lists have to stay one list.
+
+    The modes are declared twice: as a Literal on the request body
+    (completions.py:182) and as speech_prep.NARRATIVE_MODES, which raises on
+    anything outside it. Parametrizing over the PRODUCTION tuple rather than a
+    copy of it means adding a mode in speech_prep and forgetting the Literal
+    shows up here as a 422 instead of as a setting nobody can select.
+
+    The floor matters as much as the status: without it a build that accepted
+    every value and then voiced nothing would satisfy all three cases.
+    """
     stream_provider.deltas = [NARRATED]
     chat_id = make_chat(client, make_character(client))
     events = stream(client, chat_id, speak=True, speak_narrative=mode)
     assert any(e["type"] == "done" for e in events)
+    assert fake_voice.made, f"mode {mode} was accepted and then spoke nothing"
 
 
 def test_an_unknown_mode_is_refused_before_it_can_break_a_reply(client):
@@ -87,7 +101,7 @@ def test_the_default_is_same_so_nothing_changes_unless_asked(client,
 
 
 def test_speak_live_honours_the_narration_setting(client, stream_provider,
-                                                  fake_voice):
+                                                  fake_voice, monkeypatch):
     """Regression from the V9 audit.
 
     The dormant speaker that the per-message Speak button wakes is configured
@@ -95,10 +109,31 @@ def test_speak_live_honours_the_narration_setting(client, stream_provider,
     mode was on, so speak-live sat permanently on the default - the setting
     silently did nothing for exactly the people who had not turned continuous
     on. The mode now travels regardless of `speak`.
+
+    KADEME 12: this test used to assert only that nothing was synthesised, and
+    that is true whatever mode was passed - it would have stayed green on the
+    broken build it was written for. What has to be observed is the mode the
+    dormant speaker was CONFIGURED with, since by definition it has not spoken
+    yet. The three tests above prove what each mode then does with it.
     """
+    import routers.completions as completions_router
+    from tts import stream_hook
+
+    asked: list[str] = []
+    real_open = stream_hook.open_speaker
+
+    def spy(enabled, **kwargs):
+        asked.append(kwargs.get("narrative"))
+        return real_open(enabled, **kwargs)
+
+    monkeypatch.setattr(completions_router.stream_hook, "open_speaker", spy)
+
     stream_provider.deltas = [NARRATED]
     chat_id = make_chat(client, make_character(client))
     # No `speak` - this is the arming case, not the speaking one.
     events = stream(client, chat_id, speak_narrative="skip")
     assert any(e["type"] == "done" for e in events)
     assert fake_voice.made == []          # dormant: nothing synthesised yet
+    assert asked == ["skip"], (
+        "the speaker was armed with the default, so the setting does nothing "
+        "for anyone who has not turned continuous speech on")

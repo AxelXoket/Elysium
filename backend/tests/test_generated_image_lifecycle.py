@@ -302,3 +302,54 @@ def test_an_edit_sweeps_the_replaced_replys_picture(client, monkeypatch):
     rows, blobs = _counts()
     assert rows == 1, "the replaced reply's picture survived the edit"
     assert blobs == 1
+
+
+def test_an_edit_keeps_the_bytes_an_earlier_reply_still_shows(client, monkeypatch):
+    """KADEME 10 deferred this one here, and it turned out to be the only
+    shape that separates a refcount from a sweep.
+
+    The test above and every other shared-blob test in this suite prove their
+    point on the CHAT delete path, or with a single picture in the whole vault.
+    Neither can tell a correct `NOT EXISTS` apart from an unconditional
+    `DELETE FROM attachment_blobs WHERE sha256 IN (...)`: when only one row
+    ever pointed at the bytes, both answers agree.
+
+    So put the same picture on two replies, then edit a turn that sits
+    BETWEEN them. One row is swept, one row is not, and the bytes belong to
+    both. A sweep that forgets to ask whether anyone else is still looking
+    takes the surviving reply's picture with it - and the row that survives
+    keeps pointing at a blob that is no longer there, so the reader gets a
+    404 on a message that still shows an image.
+    """
+    _enable()
+    twice = _url(colour=(3, 140, 200))
+    _complete_with(monkeypatch, twice)
+    chat = make_chat(client, make_character(client, first_mes="Hi."))
+    for _ in range(2):
+        assert client.post(f"/api/v1/chats/{chat}/complete",
+                           json=BODY).status_code == 200
+    # One picture drawn twice: two links, one blob. Without this the rest of
+    # the test would be measuring two unrelated images.
+    assert _counts() == (2, 1)
+
+    msgs = get_messages(client, chat)
+    drawn = [m for m in msgs if m["role"] == "assistant" and m["attachments"]]
+    assert len(drawn) == 2, msgs
+    keeper = drawn[0]["attachments"][0]["id"]        # the earlier reply's link
+    later_user = [m for m in msgs if m["role"] == "user"][-1]
+    assert later_user["id"] > drawn[0]["id"], "the keeper must precede the edit"
+
+    _complete_with(monkeypatch, _url(colour=(250, 1, 1)), content="different")
+    resp = client.post(
+        f"/api/v1/chats/{chat}/messages/{later_user['id']}/edit",
+        json={"message": "no, draw something else", "model_id": "test/model-1"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    # The later reply's LINK is gone. The bytes are not, and the new reply
+    # brought bytes of its own.
+    assert _counts() == (2, 2), _counts()
+    served = client.get(f"/api/v1/uploads/images/{keeper}")
+    assert served.status_code == 200, (
+        "the surviving reply still shows a picture the edit deleted the bytes of")
+    assert len(served.content) > 0

@@ -1,5 +1,25 @@
 """Proxy health/gate tests - currently the auth-failed reason distinction."""
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _proxy_health_is_not_left_armed():
+    """proxy_health caches its verdict in a PROCESS global, not in the
+    per-test database, so it is the one piece of state here that outlives the
+    test that set it.
+
+    Two tests below arm the kill switch and clear it on their last line - the
+    one line that does not run when an assertion above it fails. A single red
+    test therefore used to hand an armed gate to every test that ran after it
+    in the same process, and the resulting failures would point anywhere but
+    here. Teardown rather than a trailing call: the whole difference is that
+    teardown runs on the way out of a failure too.
+    """
+    yield
+    import proxy_health
+    proxy_health.invalidate_health_cache()
+
 
 def test_proxy_probe_4xx_uses_distinct_reason(monkeypatch):
     """A 4xx from the proxy probe must report `proxy_auth_failed`, not the
@@ -213,6 +233,18 @@ def test_completion_proxy_error_is_not_blamed_on_the_provider(monkeypatch):
 
     with __import__("pytest").raises(openrouter.OpenRouterError) as exc:
         asyncio.run(drain())
+    assert exc.value.reason == "proxy_auth_failed"
+
+    # And the non-streaming door, which has its own copy of the branch twelve
+    # lines away in the same file. The fake above has always had a post() that
+    # raises, and nothing ever called it: complete() was reached by no test at
+    # all on this path, so the two handlers could drift apart silently. Streams
+    # are what the app uses, but /complete is still live and is what the voice
+    # preview and any non-streaming model fall back to.
+    with __import__("pytest").raises(openrouter.OpenRouterError) as exc:
+        asyncio.run(openrouter.complete(
+            [{"role": "user", "content": "hi"}], "test/model-1", {}, None,
+        ))
     assert exc.value.reason == "proxy_auth_failed"
 
 

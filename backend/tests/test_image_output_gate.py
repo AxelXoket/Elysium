@@ -64,13 +64,6 @@ def _enable() -> None:
     generated_images.set_image_output_enabled(True)
 
 
-@pytest.fixture(autouse=True)
-def _clean_model_cache():
-    openrouter.invalidate_model_cache()
-    yield
-    openrouter.invalidate_model_cache()
-
-
 def _stream(monkeypatch, deltas, urls):
     def _s(messages, model_id, gen_params, provider, modalities=None,
            on_image=None, **kwargs):
@@ -122,6 +115,30 @@ def test_an_unsolicited_wordless_reply_is_still_refused_when_off(client, monkeyp
         events = _events(resp)
     assert [e["type"] for e in events][-1] == "error"
     assert _counts() == (0, 0)
+
+
+def test_a_wordless_reply_is_kept_when_the_feature_is_on(client, monkeypatch):
+    """The other half of the sentence above, and the half nobody wrote.
+
+    The emptiness gate reads `not _visible_view(full_text).strip() and not
+    generated`. The test above pins the first clause; the second clause - the
+    one that stops a picture-only reply being thrown away as an
+    `openrouter_error` - had no test at all, on or off. Deleting `and not
+    generated` leaves the whole suite green while the app silently discards an
+    image the model had already produced and the user had already paid for.
+    """
+    _enable()
+    _stream(monkeypatch, [], [_url()])
+    chat = _chat(client)
+    with client.stream("POST", f"/api/v1/chats/{chat}/complete/stream",
+                       json=BODY) as resp:
+        events = _events(resp)
+
+    assert [e["type"] for e in events][-1] == "done", [e["type"] for e in events]
+    done = [e for e in events if e["type"] == "done"][0]
+    assert len(done["assistant_message"]["attachments"]) == 1
+    assert done["assistant_message"]["content"] == ""
+    assert _counts() == (1, 1)
 
 
 def test_nothing_is_stored_when_off_on_the_non_streaming_path(client, monkeypatch):
@@ -270,7 +287,7 @@ def test_the_same_picture_seen_twice_is_one_row(client, monkeypatch):
     assert _counts() == (1, 1)
 
 
-def test_dedup_happens_at_the_source(client):
+def test_dedup_happens_at_the_source():
     """Proven where it lives, so the end-to-end test above cannot be the only
     thing standing between the provider's ordinary shape and duplicate rows."""
     seen: list[str] = []
@@ -370,54 +387,47 @@ def test_the_surplus_is_never_decoded(client, monkeypatch):
 def test_no_pillow_work_happens_under_the_writer_lock(client, monkeypatch):
     """store_generated_image is the one backend writer that used to decode inside
     BEGIN IMMEDIATE. save_upload normalises before it opens its transaction, and
-    this writer now takes bytes that are already final."""
-    import inspect
+    this writer now takes bytes that are already final.
 
-    src = inspect.getsource(svc.store_generated_image)
-    assert "normalise_image(" not in src
-    assert list(inspect.signature(svc.store_generated_image).parameters) == [
-        "con", "prepared", "message_id",
-    ]
+    This used to read the function's SOURCE and assert the string
+    "normalise_image(" was absent, which a rename, an alias or a wrapper walks
+    straight past - and which a harmless parameter rename would fail. So make
+    the decoder a landmine instead: normalise BEFORE arming it, then arm it and
+    do the write. A writer that decodes anything under its own lock steps on it
+    and the test says so; one that only writes bytes it was handed cannot.
+    """
+    chat = _chat(client)
+    with database.get_db() as con:
+        msg = con.execute(
+            "SELECT id FROM messages WHERE chat_id = ? ORDER BY id ASC LIMIT 1",
+            (chat,),
+        ).fetchone()["id"]
+
+    prepared = svc.normalise_image(_png())          # decode happens out here
+
+    def _landmine(_data):
+        raise AssertionError(
+            "store_generated_image decoded an image while holding the writer lock")
+
+    monkeypatch.setattr(svc, "normalise_image", _landmine)
+
+    with database.get_db() as con:
+        con.execute("BEGIN IMMEDIATE")
+        out = svc.store_generated_image(con, prepared, msg)
+
+    assert out["mime"] == "image/png"
+    assert _counts() == (1, 1)
 
 
 # ── egress, trapped where it actually happens ───────────────────────────────
 
-def test_a_remote_url_reaches_no_socket(client, monkeypatch):
-    """A link in a provider reply must not become a request.
-
-    Trapped at the SOCKET, not at the client factory. A name-level guard
-    cannot prove the ABSENCE of egress: any path that builds its own httpx
-    client, or reaches for urllib, walks straight past it. Resolving a host
-    and connecting to an address are what every route to the network shares.
-
-    The trap now lives in tests/conftest.py and covers the whole suite, so
-    this test asserts the app's behaviour and nothing else. Touching the
-    network would raise EgressAttempt and fail the request outright, which is
-    what makes the 200 below an assertion rather than a formality.
-    """
-    async def _c(messages, model_id, gen_params, provider, **kwargs):
-        return {"choices": [{"message": {
-            "content": "see the link",
-            "images": [{"image_url": {"url": "https://evil.example/x.png"}}],
-        }}]}
-
-    monkeypatch.setattr(completions, "complete", _c)
-    _enable()
-    chat = _chat(client)
-    resp = client.post(f"/api/v1/chats/{chat}/complete", json=BODY)
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["assistant_message"]["attachments"] == []
-    assert generated_images.NOTICE_IMAGE_REMOTE_URL in [
-        n["code"] for n in resp.json()["notices"]
-    ]
+# Two tests lived here - a remote provider URL refused rather than fetched,
+# and the guard-of-the-guard proving the socket trap can see a real fetch.
+# Both were the same scenario, the same assertions and (for the second) the
+# same three lines as test_generated_image_ingest.py's pair, which is where a
+# reader looks for what happens to a provider's image URL. The trap itself is
+# installed suite-wide by tests/conftest.py, so it covers this file's tests
+# whether or not this file names it. Nothing about egress is specific to the
+# on/off gate: it is refused identically with the feature on and off.
 
 
-def test_the_socket_trap_can_actually_see_a_fetch(client):
-    """Guards the guard - now the suite-wide one, which is a strictly bigger
-    claim than the local copy this replaced."""
-    import httpx
-
-    from tests.egress_guard import EgressAttempt
-
-    with pytest.raises(EgressAttempt, match="evil.example"):
-        httpx.Client(timeout=1.0).get("https://evil.example/x.png")

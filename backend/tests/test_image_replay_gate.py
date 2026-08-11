@@ -53,11 +53,10 @@ def test_an_assistant_row_never_gets_image_parts():
     assert out == "here is what I drew"
 
 
-def test_a_system_row_never_gets_image_parts():
-    out = completions._content_for(
-        "instructions", [_fake_row()], True, _blobs(), None, role="system",
-    )
-    assert out == "instructions"
+# test_a_system_row_never_gets_image_parts lived here. _IMAGE_REPLAY_ROLES is
+# a one-element frozenset, so "system" and "assistant" take the identical
+# branch - and a system row cannot carry an attachment in the first place.
+# The assistant case is the one this whole file exists for, and it is above.
 
 
 def test_the_default_role_is_the_permissive_one_so_existing_callers_are_unchanged():
@@ -115,6 +114,12 @@ def test_the_payload_carries_no_assistant_image_part(client, provider):
     resp = client.post(f"/api/v1/chats/{chat}/complete", json=BODY)
     assert resp.status_code == 200, resp.text
     sent = provider.calls[0]["messages"]
+    # Floor. Both assertions below iterate the assistant entries, so a change
+    # that dropped the assistant turn from history ALTOGETHER - a worse bug
+    # than the one this file guards - would satisfy an empty loop and an
+    # any() over nothing. The image must be gone because it was stripped,
+    # not because the turn carrying it stopped being sent.
+    assert any(e["role"] == "assistant" for e in sent), sent
     for entry in sent:
         if entry["role"] != "user":
             assert isinstance(entry["content"], str), entry

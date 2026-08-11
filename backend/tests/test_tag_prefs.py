@@ -37,26 +37,27 @@ def test_a_long_tone_is_cut_not_rejected():
 
 # ── applying it ──────────────────────────────────────────────────────────────
 
-def test_the_tone_leads_the_reply():
-    assert vt.apply_default_tone("Hello.", "low voice",
-                                 engine_supports_tags=True) == "[low voice] Hello."
-
-
-def test_the_models_own_opening_tag_wins():
+@pytest.mark.parametrize("text,tone,supports,want", [
+    pytest.param("Hello.", "low voice", True, "[low voice] Hello.",
+                 id="the_tone_leads_the_reply"),
     # A direction the model chose for THIS line is more specific than a
     # standing default, and two stacked directions muddy both.
-    text = "[whisper] Come here."
-    assert vt.apply_default_tone(text, "low voice",
-                                 engine_supports_tags=True) == text
-
-
-def test_nothing_is_added_for_an_engine_that_would_read_brackets_aloud():
-    assert vt.apply_default_tone("Hello.", "low voice",
-                                 engine_supports_tags=False) == "Hello."
-
-
-def test_an_empty_tone_changes_nothing():
-    assert vt.apply_default_tone("Hello.", "", engine_supports_tags=True) == "Hello."
+    pytest.param("[whisper] Come here.", "low voice", True,
+                 "[whisper] Come here.", id="the_models_own_opening_tag_wins"),
+    # ... and it still wins when the delta it arrived in began with a space.
+    # Both branches lstrip; without a case that carries leading whitespace the
+    # stripping is never executed and could be deleted unnoticed.
+    pytest.param("  [whisper] Come here.", "low voice", True,
+                 "  [whisper] Come here.", id="even_after_a_leading_space"),
+    pytest.param("  Hello.", "low voice", True, "[low voice] Hello.",
+                 id="the_prefixed_tone_absorbs_the_leading_space"),
+    pytest.param("Hello.", "low voice", False, "Hello.",
+                 id="an_engine_that_would_read_brackets_aloud_gets_none"),
+    pytest.param("Hello.", "", True, "Hello.", id="an_empty_tone_changes_nothing"),
+])
+def test_the_standing_tone_is_applied_only_where_it_belongs(text, tone, supports,
+                                                            want):
+    assert vt.apply_default_tone(text, tone, engine_supports_tags=supports) == want
 
 
 # ── density ──────────────────────────────────────────────────────────────────
@@ -117,7 +118,9 @@ def test_an_out_of_range_density_is_clamped_not_refused(client):
 def test_a_dangerous_tone_is_stored_already_cleaned(client):
     saved = client.post("/api/v1/tts/tag-prefs",
                         json={"tone": "low] escaped"}).json()
-    assert "]" not in saved["tone"]
+    # Exact, not merely bracket-free: a sanitiser that returned "" on anything
+    # suspicious would pass an absence check and quietly delete the setting.
+    assert saved["tone"] == "low escaped"
 
 
 def test_updating_one_dial_leaves_the_other_alone(client):
@@ -148,10 +151,12 @@ def test_tag_prefs_exposes_the_speed_dial(client):
 
 
 def test_saving_the_speed_dial_round_trips(client):
-    resp = client.post("/api/v1/tts/tag-prefs", json={"speed": 1.25})
+    # 1.1 rather than 1.25: the old value WAS speed.MAX_RATE, so the clamp on
+    # the way in was an identity and dropping it entirely left this green.
+    resp = client.post("/api/v1/tts/tag-prefs", json={"speed": 1.1})
     assert resp.status_code == 200, resp.text
-    assert resp.json()["speed"] == 1.25
-    assert client.get("/api/v1/tts/tag-prefs").json()["speed"] == 1.25
+    assert resp.json()["speed"] == 1.1
+    assert client.get("/api/v1/tts/tag-prefs").json()["speed"] == 1.1
 
 
 def test_an_out_of_range_speed_is_clamped_not_rejected(client):
@@ -171,11 +176,12 @@ def test_saving_only_the_tone_leaves_the_speed_alone(client):
     assert client.get("/api/v1/tts/tag-prefs").json()["speed"] == 0.9
 
 
-def test_stored_rate_survives_a_malformed_setting(client):
+def test_stored_rate_survives_a_malformed_setting(db):
     """Two comfort dials must never be able to cost somebody their audio."""
     import database
     import routers.tts_runtime as runtime
     import voice_tags
+    from tts import speed
 
     database.set_setting(voice_tags.SETTING_SPEED, "not a number")
     assert runtime._stored_rate() is None
@@ -183,3 +189,47 @@ def test_stored_rate_survives_a_malformed_setting(client):
     assert runtime._stored_rate() is None
     database.set_setting(voice_tags.SETTING_SPEED, "1.15")
     assert runtime._stored_rate() == 1.15
+    # A row from an older build, or a hand edit, can hold a rate the endpoint
+    # would never have accepted. Reading it has to clamp as well: 1.15 alone
+    # sits inside the range, so it proves the parse and not the guard.
+    database.set_setting(voice_tags.SETTING_SPEED, "9.0")
+    assert runtime._stored_rate() == speed.MAX_RATE
+
+
+# ── the pause dial: same story again, mechanism shipped and value never did ──
+#
+# Moved here from test_reading_rules.py, which is about pronunciations. `gap`
+# is a field of THIS endpoint's schema, and splitting one response body across
+# two files meant neither of them owned it.
+
+
+def test_the_pause_dial_round_trips(client):
+    """ChunkScheduler's gapSeconds has been implemented and tested all along;
+    all three production callers built the player with no options, so the value
+    was always 0 and the dial existed nowhere."""
+    assert client.get("/api/v1/tts/tag-prefs").json()["gap"] == 0.0
+
+    body = client.post("/api/v1/tts/tag-prefs", json={"gap": 0.35}).json()
+    assert body["gap"] == pytest.approx(0.35)
+    assert client.get("/api/v1/tts/tag-prefs").json()["gap"] == pytest.approx(0.35)
+
+
+@pytest.mark.parametrize("sent,expected", [(-5.0, 0.0), (99.0, 1.5)])
+def test_the_pause_is_clamped_to_something_hearable(client, sent, expected):
+    body = client.post("/api/v1/tts/tag-prefs", json={"gap": sent}).json()
+    assert body["gap"] == pytest.approx(expected)
+    assert body["gap_min"] == 0.0
+    assert body["gap_max"] == 1.5
+
+
+def test_saving_the_pause_leaves_the_other_dials_alone(client):
+    """Every dial on this endpoint is optional and partial. The three that
+    existed before `gap` each got this guard; `gap` arrived without one."""
+    client.post("/api/v1/tts/tag-prefs",
+                json={"density": 2, "tone": "warm", "speed": 0.9})
+    client.post("/api/v1/tts/tag-prefs", json={"gap": 0.5})
+
+    body = client.get("/api/v1/tts/tag-prefs").json()
+    assert body["gap"] == pytest.approx(0.5)
+    assert body["density"] == 2 and body["tone"] == "warm"
+    assert body["speed"] == 0.9

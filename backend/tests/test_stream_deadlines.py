@@ -11,8 +11,6 @@ documented why.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import itertools
 
 import pytest
@@ -20,12 +18,6 @@ import pytest
 import config
 import openrouter
 from openrouter import OpenRouterError
-
-#: Absolute, because a test that only passes from one directory is a test that
-#: will surprise somebody. Running `pytest backend/` from the repo root used to
-#: fail eleven tests across four files with FileNotFoundError on a relative
-#: path like 'tts/provision.py'. Measured 2026-08-10 and fixed here.
-BACKEND = Path(__file__).resolve().parents[1]
 
 
 class _FakeResponse:
@@ -63,6 +55,37 @@ class _FakeClient:
 
     def stream(self, *a, **kw):
         return _FakeStreamCtx(_FakeResponse(self._lines))
+
+
+class _ScriptedClock:
+    """A clock for THIS module only, handing out a written-down sequence.
+
+    `monkeypatch.setattr(openrouter.time, "monotonic", ...)` looks local and is
+    not: openrouter.time IS the shared time module, so the patch lands on
+    everything in the process - including asyncio's own scheduler, which reads
+    the clock several times per await. Measured 2026-08-10 while writing the
+    test below: twenty three readings were taken in one short stream and only
+    twelve of them came from openrouter. A sequence handed out that way is
+    consumed by whoever asks first, and a test that needs reading number four
+    to be the long one gets whatever the event loop left it.
+
+    The fixture underneath survives that because its readings only ever climb;
+    anything that has to place a specific value at a specific line cannot.
+    Everything except monotonic falls through to the real module.
+    """
+
+    def __init__(self, readings):
+        import time as _real_time
+        self._real = _real_time
+        self._readings = iter(readings)
+        self._last = readings[-1]
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def monotonic(self):
+        self._last = next(self._readings, self._last)
+        return self._last
 
 
 @pytest.fixture()
@@ -133,6 +156,44 @@ async def test_a_stream_that_never_ends_still_ends(monkeypatch, fake_clock):
     assert "openrouter_timeout" in str(exc.value)
 
 
+@pytest.mark.anyio
+async def test_a_long_silence_after_the_first_token_is_not_the_first_token_budget(
+    monkeypatch,
+):
+    """The two budgets have to stay told apart, and no test told them apart.
+
+    Both of the timeout tests above assert only that `openrouter_timeout` is
+    raised eventually - neither says WHICH ceiling fired. Drop `not saw_token`
+    from the first-token check and the short budget starts applying to every
+    line for the rest of the stream: a model that thinks for three minutes
+    between paragraphs, which is ordinary for a long reply on a busy provider,
+    gets killed at 120 s with the reply already half written and thrown away.
+    The whole suite stayed green under that change.
+
+    So: one token, then a silence far past the first-token budget and far short
+    of the total one. The stream must finish.
+    """
+    gap = config.STREAM_FIRST_TOKEN_TIMEOUT * 2
+    assert gap < config.STREAM_TOTAL_TIMEOUT, "the fixture must sit between them"
+    # One reading per line, plus the one taken before the loop starts. The last
+    # value repeats so an extra call (a latency log, say) cannot shift the run.
+    monkeypatch.setattr(
+        openrouter, "time", _ScriptedClock([0.0, 1.0, 2.0, gap, gap + 1.0]))
+    lines = [
+        ": OPENROUTER PROCESSING",
+        'data: {"choices":[{"delta":{"content":"Once "}}]}',
+        'data: {"choices":[{"delta":{"content":"upon a time."}}]}',
+        "data: [DONE]",
+    ]
+    monkeypatch.setattr(openrouter, "get_client", lambda: _FakeClient(lines))
+    monkeypatch.setattr(openrouter, "get_secret", lambda name: "sk-test")
+
+    out = await _drain(openrouter.complete_stream(
+        [{"role": "user", "content": "hi"}], "test/model", {}, None,
+    ))
+    assert "".join(out) == "Once upon a time."
+
+
 def test_the_two_budgets_are_ordered_sensibly():
     """A first-token budget above the total one would be unreachable."""
     assert config.STREAM_FIRST_TOKEN_TIMEOUT < config.STREAM_TOTAL_TIMEOUT
@@ -141,17 +202,16 @@ def test_the_two_budgets_are_ordered_sensibly():
     assert config.STREAM_FIRST_TOKEN_TIMEOUT > config.STREAM_READ_TIMEOUT
 
 
-def test_the_speak_stream_drain_loop_has_a_deadline():
-    """Its sibling stream_hook.drain_events has carried DRAIN_TIMEOUT_S all
-    along, with a docstring saying a wedged worker must not hold an HTTP
-    response open forever. The same loop next door had no ceiling."""
-    from pathlib import Path
-
-    source = (BACKEND / "routers" / "tts_runtime.py").read_text(encoding="utf-8")
-    body = source.split("async def event_source", 1)[1]
-    assert "DRAIN_TIMEOUT_S" in body
-    assert "deadline" in body
-    # And it must be a CODED stop, not a silent one: audio that simply stops
-    # is indistinguishable from a reply that had nothing more to say.
-    head = body.split("sent_any = False", 1)[0]
-    assert "voice_error" in head
+# The /speak_stream half of this audit item lived here as a source scan: it
+# split routers/tts_runtime.py on "async def event_source" and looked for the
+# words DRAIN_TIMEOUT_S, deadline and voice_error. A comment carrying those
+# words satisfied it; a deadline computed and never compared would too.
+#
+# The behaviour it was standing in for is now proven for real, one file over,
+# in test_packaging_gate.py::test_a_wedged_worker_does_not_hold_the_response_open
+# - a wedged synth, DRAIN_TIMEOUT_S turned down to half a second, and the
+# assertion that the response closes with a coded voice_error rather than
+# staying open. Measured 2026-08-10: with the `if anyio.current_time() >=
+# deadline` line disabled, that test fails on a 30 s response while the scan
+# above stayed green. So the scan is deleted rather than rewritten; there was
+# nothing left for it to prove.

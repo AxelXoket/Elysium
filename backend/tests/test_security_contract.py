@@ -226,7 +226,11 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("A link to a remote image is refused rather than fetched", (
         "tests/test_generated_image_ingest.py"
         "::test_a_remotely_hosted_image_is_refused_not_fetched",
-        "tests/test_generated_image_ingest.py::test_nothing_is_fetched_for_a_remote_url",
+        # test_nothing_is_fetched_for_a_remote_url was registered here too. It
+        # ran the same scenario with strictly weaker assertions and was folded
+        # into the test above, whose docstring now carries the reason the
+        # socket trap - rather than a patched client factory - is what proves
+        # this claim.
         "tests/test_generated_image_ingest.py"
         "::test_the_socket_trap_in_the_test_above_actually_works",
     )),

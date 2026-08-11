@@ -59,15 +59,6 @@ def _enable(client, *, models=("text", "image")) -> None:
     }
 
 
-@pytest.fixture(autouse=True)
-def _clean_model_cache():
-    import openrouter
-
-    openrouter.invalidate_model_cache()
-    yield
-    openrouter.invalidate_model_cache()
-
-
 def _fake_complete(monkeypatch, *, content="here you go", images=None, calls=None):
     async def _c(messages, model_id, gen_params, provider, **kwargs):
         if calls is not None:
@@ -231,6 +222,22 @@ def test_the_image_and_the_reply_commit_together(client, monkeypatch):
 # ── the refusals ────────────────────────────────────────────────────────────
 
 def test_a_remotely_hosted_image_is_refused_not_fetched(client, monkeypatch):
+    """The only egress host is the provider. A link must not become a request.
+
+    Trapped at the SOCKET, not at network_client.get_client. An earlier
+    version of this guard patched that factory, which any code path that
+    built its own httpx client - or reached for requests, or urllib - would
+    simply walk past: it stayed green while decode_data_url was made to
+    genuinely fetch. A name-level guard cannot prove the ABSENCE of egress.
+    Resolving a host and connecting to an address are what every route to the
+    network shares, and both are trapped.
+
+    The trap is not built here. tests/conftest.py installs it for the whole
+    suite, so this asserts the app's behaviour and the guard is somebody
+    else's job - which is the point: a promise kept by one decorator is kept
+    nowhere. Touching the network would raise EgressAttempt and fail this
+    request outright, so the 200 below is an assertion, not a formality.
+    """
     _fake_complete(monkeypatch, content="see the link",
                    images=[{"image_url": {"url": "https://example.com/a.png"}}])
     _enable(client)
@@ -245,34 +252,7 @@ def test_a_remotely_hosted_image_is_refused_not_fetched(client, monkeypatch):
     assert generated_images.NOTICE_IMAGE_REMOTE_URL in codes
 
 
-def test_nothing_is_fetched_for_a_remote_url(client, monkeypatch):
-    """The only egress host is the provider. A link must not become a request.
-
-    Trapped at the SOCKET, not at network_client.get_client. The earlier version
-    of this test patched that factory, which any code path that built its own
-    httpx client - or used requests, or urllib - would simply walk past: it
-    stayed green while decode_data_url was made to genuinely fetch. A name-level
-    guard cannot prove the absence of egress. This one is library-agnostic:
-    anything that reaches the network must first resolve a host or connect to an
-    address, and both are trapped here.
-    The trap is no longer built here. tests/conftest.py installs it for every
-    test in the suite, so this asserts the app's behaviour and the guard is
-    somebody else's job - which is the point: a promise kept by one decorator
-    is kept nowhere.
-    """
-    _fake_complete(monkeypatch,
-                   images=[{"image_url": {"url": "https://evil.example/x.png"}}])
-    _enable(client)
-    chat = _chat(client)
-    resp = client.post(f"/api/v1/chats/{chat}/complete", json=BODY)
-    assert resp.status_code == 200, resp.text
-    # Reaching the network would have raised EgressAttempt from the guard and
-    # failed this request outright, so a 200 here IS the assertion.
-    # And the picture really was refused rather than quietly succeeding.
-    assert resp.json()["assistant_message"]["attachments"] == []
-
-
-def test_the_socket_trap_in_the_test_above_actually_works(client):
+def test_the_socket_trap_in_the_test_above_actually_works():
     """Guards the guard. If the trap cannot see a real fetch, the test above
     proves nothing - which is exactly how its predecessor failed.
 

@@ -101,6 +101,16 @@ def test_a_whole_number_written_as_a_float_is_accepted(
     ("presence_penalty", 3.0),
     ("max_tokens", 0),
     ("top_k", -1),
+    # These two were in the "not a number" and "fractional" lists but in
+    # neither range list, so their bounds were the only ones in _PARAM_SPEC
+    # that nothing checked. repetition_penalty's floor is 0.001 rather than
+    # 0.0 - a divide-by-something guard, easy to widen by accident - and
+    # seed's ceiling is the signed 32 bit limit, which is exactly the sort of
+    # number a copy-paste turns into the unsigned one.
+    ("repetition_penalty", 2.5),
+    ("repetition_penalty", 0.0),
+    ("seed", 2 ** 31),
+    ("seed", -(2 ** 31) - 1),
 ])
 def test_a_dial_outside_its_range_is_refused(client, chat, provider,
                                              field: str, value):
@@ -119,6 +129,11 @@ def test_a_dial_outside_its_range_is_refused(client, chat, provider,
     ("presence_penalty", 2.0),
     ("max_tokens", 1),
     ("top_k", 0),
+    ("repetition_penalty", 0.001),
+    ("repetition_penalty", 2.0),
+    ("seed", 2 ** 31 - 1),
+    ("top_a", 1.0),
+    ("min_p", 1.0),
 ])
 def test_the_ends_of_each_range_are_inside_it(client, chat, provider,
                                               field: str, value):
