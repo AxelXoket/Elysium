@@ -539,3 +539,75 @@ def voice_on(monkeypatch):
     """
     monkeypatch.setattr(voice_tags, "stripping_active", lambda: True)
     return True
+
+
+# ---------------------------------------------------------------------------
+# The red line: delivery is incremental, not one buffer flushed at the end
+# ---------------------------------------------------------------------------
+
+def test_a_delta_reaches_the_reader_before_the_provider_stops_talking(
+    client, monkeypatch,
+):
+    """The one promise a streaming endpoint exists to make, and the only one
+    its own tests never checked.
+
+    Every other test in this file - and every test in test_streaming.py - reads
+    the body to exhaustion and then asserts on the concatenation. A server that
+    collected the whole reply and flushed it in one piece at the very end would
+    pass all of them, byte for byte, while the reader sat looking at nothing for
+    the length of the reply and then got everything at once. That is the entire
+    difference between these endpoints and the non-streaming /complete, and
+    nothing was watching it.
+
+    So the provider below parks on an event that is only released AFTER a delta
+    has already been handed to this test. Under buffering the release never
+    comes, the pull hits its ceiling, and the failure is a sentence rather than
+    a hung suite - which matters, because the one place buffering WAS
+    detectable today (the abort tests, which park the provider the same way)
+    would have reported it as a job that never finished.
+    """
+    import contextlib
+
+    import routers.completions as cr
+
+    gate: dict = {}
+
+    def fake_stream(messages, model_id, gen_params, provider, **kwargs):
+        async def gen():
+            yield "Once "
+            await gate["released"].wait()
+            yield "upon a time."
+
+        return gen()
+
+    monkeypatch.setattr(cr, "complete_stream", fake_stream)
+
+    async def drive(label, make):
+        # Inside the coroutine: an asyncio.Event binds to the running loop, and
+        # each endpoint here gets its own asyncio.run().
+        gate["released"] = asyncio.Event()
+        resp = await make()
+        agen = resp.body_iterator
+        seen: list[dict] = []
+        try:
+            while not any(e["type"] == "delta" for e in seen):
+                chunk = await asyncio.wait_for(agen.__anext__(), 5.0)
+                seen.append(json.loads(chunk[len("data: "):].strip()))
+        except asyncio.TimeoutError:
+            pytest.fail(
+                f"{label}: not one event reached the reader while the provider "
+                f"was still talking - this body is buffered, not streamed"
+            )
+        finally:
+            gate["released"].set()
+            with contextlib.suppress(Exception):
+                await agen.aclose()
+        return seen
+
+    for label, chat_id, make in _endpoints(client):
+        seen = asyncio.run(drive(label, make))
+        # Exactly the first one: the second is still held behind the event, so
+        # anything more than this would mean the endpoint had waited for it.
+        assert [e["content"] for e in seen if e["type"] == "delta"] == ["Once "], (
+            f"{label}: {seen}"
+        )

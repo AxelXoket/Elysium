@@ -4,6 +4,14 @@ Persistence semantics under test:
 - success: user + assistant rows persisted, done event carries both.
 - provider failure mid-stream: error event; the just-inserted user message is
   rolled back (complete) / the old assistant message survives (regenerate).
+
+What is NOT under test here, and was assumed to be: that any of this arrives
+incrementally. Every test below reads the body to exhaustion and asserts on the
+concatenation, so a server that buffered the whole reply and flushed it in one
+piece at the end passes all of them unchanged - measured 2026-08-10 by doing
+exactly that, and this file stayed green. The delivery promise itself is pinned
+in test_stream_body.py, by
+test_a_delta_reaches_the_reader_before_the_provider_stops_talking.
 """
 
 import json
@@ -66,7 +74,7 @@ def read_events(resp) -> list[dict]:
 # /complete/stream
 # ---------------------------------------------------------------------------
 
-def test_stream_complete_happy_path(client, stream_provider):
+def test_a_streamed_completion_persists_both_turns_and_reports_them(client, stream_provider):
     char_id = make_character(client)
     chat_id = make_chat(client, char_id)
 

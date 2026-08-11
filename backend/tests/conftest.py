@@ -202,6 +202,24 @@ def _voice_tag_caches_reset():
 
 
 @pytest.fixture(autouse=True)
+def _model_cache_reset():
+    """openrouter._model_cache is a module-level dict that outlives the temp
+    vault every test gets, so a test that seeds it hands its answer to
+    whatever runs next.
+
+    This used to be pasted into each file that seeded the cache, which is the
+    same shape as the proxy health-cache bug: correct in the files that
+    remembered, and silently wrong the first time somebody wrote
+    `openrouter._model_cache[...] = ...` in a file that did not. Guarding it
+    once, here, is the only version that cannot be forgotten."""
+    import openrouter
+
+    openrouter.invalidate_model_cache()
+    yield
+    openrouter.invalidate_model_cache()
+
+
+@pytest.fixture(autouse=True)
 def _isolated_voice_registry(tmp_path_factory, monkeypatch):
     """No test may see the DEVELOPER'S real voice registry.
 

@@ -13,6 +13,8 @@ The exemption has to be narrow: the SAME chat's real replies must still be
 stripped, or the bug this all exists to prevent comes back as a visible
 `[low voice]` in a bubble.
 """
+import pytest
+
 import database
 import voice_tags
 from tests.conftest import get_messages, make_character, make_chat
@@ -30,34 +32,22 @@ def _voice_has_been_on(client) -> None:
 
 # ── the greeting keeps its brackets ──────────────────────────────────────────
 
-def test_a_card_greeting_keeps_its_bracketed_prose(client):
+@pytest.mark.parametrize("first_mes", [
+    pytest.param("[she smiles] Hello there, darling.", id="the_bracket_leads"),
+    pytest.param("Come in. [she closes the door]", id="the_bracket_ends_it"),
+    # The cheap early return must not start rewriting ordinary greetings.
+    pytest.param("Seni bekliyordum. Gec kalmadin, iyi.", id="no_bracket_at_all"),
+])
+def test_a_card_greeting_is_returned_byte_for_byte(client, first_mes):
+    """Three shapes, one rule. Only the first of these used to check that the
+    greeting is the only row in a new chat, so the other two would have passed
+    on a build that also invented a second message."""
     _voice_has_been_on(client)
-    char = make_character(client, first_mes="[she smiles] Hello there, darling.")
-    chat = make_chat(client, char)
+    chat = make_chat(client, make_character(client, first_mes=first_mes))
 
     body = get_messages(client, chat)
     assert [m["role"] for m in body] == ["assistant"]
-    assert body[0]["content"] == "[she smiles] Hello there, darling."
-
-
-def test_the_greeting_is_untouched_even_when_the_bracket_ends_it(client):
-    _voice_has_been_on(client)
-    char = make_character(client, first_mes="Come in. [she closes the door]")
-    chat = make_chat(client, char)
-
-    assert get_messages(client, chat)[0]["content"] == (
-        "Come in. [she closes the door]"
-    )
-
-
-def test_a_greeting_with_no_brackets_is_returned_byte_for_byte(client):
-    """The cheap early return must not start rewriting ordinary greetings."""
-    _voice_has_been_on(client)
-    text = "Seni bekliyordum. Gec kalmadin, iyi."
-    char = make_character(client, first_mes=text)
-    chat = make_chat(client, char)
-
-    assert get_messages(client, chat)[0]["content"] == text
+    assert body[0]["content"] == first_mes
 
 
 def test_the_stored_row_was_verbatim_all_along(client):

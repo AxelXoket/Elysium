@@ -90,24 +90,41 @@ class TestItRefusesRatherThanCutBadly:
         """Under the floor the first chunk cannot cover the second one, so the
         fast start is paid back as a gap two seconds later."""
         text = _scannable("Yes, " + "word " * 40)
-        out = first_chunk(text, **W)
-        assert out is None or len(out[0]) >= 40
+        assert first_chunk(text, **W) is None
+        # The positive control. Without it this test reads "the answer was
+        # None", which a splitter that had stopped splitting altogether would
+        # also produce - and every other refusal test in this class would agree
+        # with it. Same shape, break moved past the floor, and now it cuts.
+        moved = _scannable("Yes of course, I can certainly do that for you, "
+                           + "word " * 30)
+        assert first_chunk(moved, **W)[0].endswith("for you,")
 
     def test_it_never_cuts_inside_an_emphasis_span(self):
         """Narrative tone is decided per chunk, so half a `*...*` span is read
-        in the wrong voice with the asterisk still in it."""
+        in the wrong voice with the asterisk still in it.
+
+        The fixture is built so refusing is NOT one of the answers: there are
+        two breaks in the window, the later one inside the span. Everywhere
+        else this splitter takes the last break it can reach, so taking the
+        earlier one is the span guard and nothing else. `out is None or
+        balanced` used to accept both a refusal and a splitter that never cut.
+        """
         text = _scannable(
-            "*She leans in close, her voice dropping to almost nothing, "
-            "and waits.* Then she speaks again at last, more quietly.")
-        out = first_chunk(text, **W)
-        assert out is None or out[0].count("*") % 2 == 0
+            "She paused there for a moment and looked up, *her voice dropping "
+            "to almost nothing, and waits.* Then quiet.")
+        head, tail = first_chunk(text, **W)
+        assert head.count("*") % 2 == 0
+        assert head.endswith("looked up,"), head
 
     def test_it_never_cuts_inside_a_quote(self):
+        """Same construction, and the same reason: the tempting break is the
+        one inside the quotation marks, thirty characters further along."""
         text = _scannable(
-            'He said, "this is the part that matters, the rest is only noise" '
-            'and then he stopped talking entirely for a while.')
-        out = first_chunk(text, **W)
-        assert out is None or out[0].count('"') % 2 == 0
+            'He said this in his considered view just now, "the first half of '
+            'it matters, and the second is noise." So there.')
+        head, tail = first_chunk(text, **W)
+        assert head.count('"') % 2 == 0
+        assert head.endswith("just now,"), head
 
     def test_it_never_returns_an_empty_side(self):
         for text in (",,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,"
@@ -115,6 +132,10 @@ class TestItRefusesRatherThanCutBadly:
                      "." * 120):
             out = first_chunk(_scannable(text), **W)
             assert out is None or (out[0].strip() and out[1].strip())
+        # A floor on the loop above: it is a pair of `None or ...` assertions,
+        # so with both cases refused it would check nothing. Measured
+        # 2026-08-10: the comma run is cut, the dot run is refused.
+        assert first_chunk(_scannable("," * 104), **W) is not None
 
     def test_the_two_halves_lose_nothing_but_whitespace(self):
         text = ("The first clause is here, and the second clause carries on "
@@ -173,9 +194,21 @@ class TestOnlyTheOpeningPieceIsCut:
             return {"path": "/a.wav", "seconds": max(1.0, len(text) * 0.07)}
 
         q = SpeechQueue(synth=synth, now=clock)
-        long_one = ("The first clause runs along here, and the second clause "
-                    "keeps going for quite a while after it. ")
-        q.push(long_one * 4)
+        # The seeded window is narrow - 40 to 49 characters - so a sentence
+        # only gets cut if it has a break inside it. The old fixture's comma
+        # sat at 33 and its sentences were therefore never cut at all, which
+        # made `len(commas) <= 1` an assertion about an empty list: it held on
+        # a queue that had stopped cutting entirely, the one regression this
+        # class exists to catch. Measured 2026-08-10: four pieces out, none of
+        # them a cut. Here the comma is at 43, inside the window, and the three
+        # LATER sentences carry the same comma at the same offset - so one cut
+        # rather than four is the "only the opening piece" rule and nothing
+        # else about the fixture.
+        first = ("The first clause runs along right here now, and then the "
+                 "second clause keeps going for a good while after that. ")
+        rest = ("The next one goes along right here too, and it keeps going "
+                "for a good while as well. ")
+        q.push(first + rest * 3)
         q.close()
         made = []
         while True:
@@ -184,6 +217,6 @@ class TestOnlyTheOpeningPieceIsCut:
             if chunk is None:
                 break
             made.append(chunk["text"])
-        # Whatever the engine learnt, at most one piece is a mid-sentence cut.
         commas = [t for t in made if t.rstrip().endswith(",")]
-        assert len(commas) <= 1
+        assert len(commas) == 1, made
+        assert commas[0] == "The first clause runs along right here now,"

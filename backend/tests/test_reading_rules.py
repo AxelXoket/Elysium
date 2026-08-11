@@ -12,8 +12,6 @@ BOTH the live reply and the Speak button, and means the same on each.
 
 from __future__ import annotations
 
-import pytest
-
 import voice_tags
 # A live voice environment (a registered runtime and a selected model) is what
 # _prepare_speech_text needs to resolve one; the notice-channel tests already
@@ -56,8 +54,10 @@ def test_a_bracket_cannot_be_smuggled_into_every_sentence(client):
     body = client.post("/api/v1/tts/pronunciations", json={
         "pronunciations": {"Aoife": "EE-fa] and [shouting"},
     }).json()
-    assert "[" not in body["pronunciations"]["Aoife"]
-    assert "]" not in body["pronunciations"]["Aoife"]
+    # The exact string, not just "no bracket": blanking the whole replacement
+    # would satisfy an absence check while destroying every good character of
+    # the rule, and the user would never learn why the name went silent.
+    assert body["pronunciations"] == {"Aoife": "EE-fa and shouting"}
 
 
 def test_an_empty_written_form_is_dropped_not_stored(client):
@@ -83,7 +83,7 @@ def test_the_table_is_bounded(client):
     assert len(body["pronunciations"]) == voice_tags.MAX_PRONUNCIATIONS
 
 
-def test_a_corrupt_row_is_ignored_rather_than_breaking_every_reply(client):
+def test_a_corrupt_row_is_ignored_rather_than_breaking_every_reply(db):
     """Hand-edited or left by an older build: reading rules are an improvement
     to speech, never a precondition for it."""
     import routers.tts_runtime as runtime
@@ -116,6 +116,28 @@ def test_the_replay_path_applies_them(client, voice, monkeypatch):
     assert "Aoife" not in prepared
 
 
+def test_no_bracket_reaches_a_sentence_through_a_reading_rule(client, voice,
+                                                              monkeypatch):
+    """The other half of the bracket claim.
+
+    The test above proves the STORED rule is cleaned. This proves the thing
+    that actually matters: a rule saved through the endpoint cannot put a
+    bracket into text on its way to a tag-reading engine, whatever it was typed
+    as. The two are separable - a merge path, an import, or a second writer
+    that forgot to sanitise would leave the storage test green.
+    """
+    import routers.tts_runtime as runtime
+
+    _ready_voice(client, monkeypatch)
+    client.post("/api/v1/tts/pronunciations",
+                json={"pronunciations": {"Aoife": "EE-fa] and [shouting"}})
+
+    prepared, _truncated = runtime._prepare_speech_text(
+        runtime.SpeakBody(text="Aoife opened the door."))
+    assert "EE-fa" in prepared, prepared
+    assert "[" not in prepared and "]" not in prepared, prepared
+
+
 def test_the_live_path_gets_the_same_table(client):
     """The stream hands over a FUNCTION, so the vault is not read on the event
     loop for the many replies that never speak. It still has to be the same
@@ -134,7 +156,7 @@ def test_the_live_path_gets_the_same_table(client):
     hook.close()
 
 
-def test_a_reading_rule_that_cannot_be_read_does_not_cost_the_speech(client):
+def test_a_reading_rule_that_cannot_be_read_does_not_cost_the_speech():
     """It is an improvement to the voice, not a precondition for it."""
     from tts import stream_hook
 
@@ -149,7 +171,7 @@ def test_a_reading_rule_that_cannot_be_read_does_not_cost_the_speech(client):
     hook.close()
 
 
-def test_a_plain_table_still_works(client):
+def test_a_plain_table_still_works():
     """Direct construction (tests, and any caller that already has the answer)
     must not be forced through a callable."""
     from tts import stream_hook
@@ -169,24 +191,6 @@ def _synth():
     return synth
 
 
-# ---------------------------------------------------------------------------
-# the pause dial: mechanism shipped, value never did
-# ---------------------------------------------------------------------------
-
-def test_the_pause_dial_round_trips(client):
-    """ChunkScheduler's gapSeconds has been implemented and tested all along;
-    all three production callers built the player with no options, so the value
-    was always 0 and the dial existed nowhere."""
-    assert client.get("/api/v1/tts/tag-prefs").json()["gap"] == 0.0
-
-    body = client.post("/api/v1/tts/tag-prefs", json={"gap": 0.35}).json()
-    assert body["gap"] == pytest.approx(0.35)
-    assert client.get("/api/v1/tts/tag-prefs").json()["gap"] == pytest.approx(0.35)
-
-
-@pytest.mark.parametrize("sent,expected", [(-5.0, 0.0), (99.0, 1.5)])
-def test_the_pause_is_clamped_to_something_hearable(client, sent, expected):
-    body = client.post("/api/v1/tts/tag-prefs", json={"gap": sent}).json()
-    assert body["gap"] == pytest.approx(expected)
-    assert body["gap_min"] == 0.0
-    assert body["gap_max"] == 1.5
+# The pause dial used to live at the bottom of this file. It is a field of
+# /api/v1/tts/tag-prefs and has nothing to do with pronunciations, so it moved
+# to test_tag_prefs.py, next to the speed dial it shares an audit story with.

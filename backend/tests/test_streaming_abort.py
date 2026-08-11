@@ -160,7 +160,7 @@ def test_clear_mid_stream_abort_discards_partial(client, monkeypatch):
     assert get_messages(client, chat_id) == []  # no orphan partial
 
 
-def test_insert_assistant_message_guard_unit(client):
+def test_an_assistant_row_is_refused_when_its_user_turn_has_vanished(client):
     """Direct guard contract: valid user id inserts; vanished id raises."""
     import pytest
     from routers.completions import _insert_assistant_message, StaleExchangeError
@@ -185,7 +185,7 @@ def test_insert_assistant_message_guard_unit(client):
 
 # ── v1.1 audit L6: abort-path writes must fail fast, never freeze the loop ────
 
-def test_get_db_busy_timeout_is_parameterized(client):
+def test_a_caller_can_ask_for_a_shorter_wait_than_the_default(client):
     """The abort path opens with a SHORT busy_timeout; the default stays 15s."""
     import database
     with database.get_db() as con:

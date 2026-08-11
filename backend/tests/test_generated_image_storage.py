@@ -12,6 +12,7 @@ wire and gigabytes once decoded.
 """
 from __future__ import annotations
 
+import base64
 import io
 
 import pytest
@@ -119,7 +120,7 @@ def test_a_decompression_bomb_is_refused(client):
     assert _counts() == before
 
 
-def test_a_payload_past_the_byte_ceiling_is_refused_before_decoding(client):
+def test_a_payload_past_the_byte_ceiling_is_refused_before_decoding():
     """The ceiling used to live only in the HTTP handler, so a caller fed by a
     remote party that chooses its own response size had none at all.
 
@@ -139,22 +140,31 @@ def test_something_that_is_not_an_image_is_refused(client):
 
 
 def test_the_mime_is_derived_from_the_bytes_not_from_a_claim(client):
-    """Neither function takes a declared type - deliberately. The provider's own
-    media_type is discarded, which is what keeps image/svg+xml out of a row."""
-    import inspect
+    """The provider's own media_type is discarded, which is what keeps
+    image/svg+xml out of a row.
+
+    This used to assert the two functions' PARAMETER NAMES via
+    inspect.signature, on the reasoning that a type they cannot be told cannot
+    be trusted. That is not the claim: a rename would have failed it with no
+    behaviour changed, and an optional declared_mime= added later would have
+    passed it while contradicting it. So state the claim the way a provider
+    can actually make it - a data: URL whose header LIES about the payload -
+    and read back what got stored.
+    """
+    import generated_images
 
     msg = _assistant_row(client)
-    assert list(inspect.signature(svc.normalise_image).parameters) == ["data"]
-    assert list(inspect.signature(svc.store_generated_image).parameters) == [
-        "con", "prepared", "message_id",
-    ]
-
     buf = io.BytesIO()
     Image.new("RGB", (4, 4)).save(buf, format="JPEG")
+    lying_url = ("data:image/png;base64,"
+                 + base64.b64encode(buf.getvalue()).decode("ascii"))
+
+    raw = generated_images.decode_data_url(lying_url)
     with database.get_db() as con:
         con.execute("BEGIN IMMEDIATE")
-        out = _store(con, buf.getvalue(), msg)
-    assert out["mime"] == "image/jpeg"
+        out = _store(con, raw, msg)
+
+    assert out["mime"] == "image/jpeg", "the header's claim was believed"
 
 
 def test_metadata_does_not_survive(client):
@@ -220,21 +230,16 @@ def test_the_per_message_cap_applies_to_generated_images_too(client):
     assert exc.value.reason == "too_many_attachments"
 
 
-def test_the_cap_counts_images_already_on_that_message(client):
-    """Including ones a previous statement in this same transaction wrote."""
-    msg = _assistant_row(client)
-    with database.get_db() as con:
-        con.execute("BEGIN IMMEDIATE")
-        _store(con, _png(colour=(1, 1, 1)), msg)
-        rows = con.execute(
-            "SELECT COUNT(*) AS c FROM attachments WHERE message_id = ?", (msg,),
-        ).fetchone()["c"]
-    assert rows == 1
+# test_the_cap_counts_images_already_on_that_message lived here: store one
+# image inside a transaction, count 1. The cap test above can only reach its
+# raise by counting rows an earlier statement in the SAME open transaction
+# wrote, so it fails first on anything this could have caught - and it fails
+# at the boundary rather than one row in.
 
 
 # ── and the upload path is untouched ────────────────────────────────────────
 
-def test_uploads_still_stage_with_a_null_message_id(client):
+def test_uploads_still_stage_with_a_null_message_id(db):
     out = svc.save_upload(_png(), "image/png")
     with database.get_db() as con:
         row = con.execute("SELECT message_id FROM attachments WHERE id = ?",
@@ -242,6 +247,6 @@ def test_uploads_still_stage_with_a_null_message_id(client):
     assert row["message_id"] is None
 
 
-def test_uploads_still_reject_a_bomb(client):
+def test_uploads_still_reject_a_bomb(db):
     with pytest.raises(svc.AttachmentError):
         svc.save_upload(_png(size=(20000, 20000)), "image/png")

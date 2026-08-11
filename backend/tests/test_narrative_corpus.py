@@ -15,16 +15,21 @@ import speech_prep as sp
 CORPUS = Path(__file__).resolve().parents[2] / "shared" / "narrative_corpus.json"
 
 
+MIN_CASES = 10
+
+
 def _cases():
+    # The floor lives HERE, not in a sibling test, because an empty corpus does
+    # not fail the parametrized test below - pytest turns a zero-length param
+    # set into a SKIP, and a skip reads as "fine" in every summary line. Raising
+    # during collection is the only failure loud enough. A sibling guard would
+    # work only for as long as nobody deleted it as a duplicate.
     data = json.loads(CORPUS.read_text(encoding="utf-8"))
+    if len(data["cases"]) < MIN_CASES:
+        raise AssertionError(
+            f"narrative corpus has {len(data['cases'])} cases, expected at "
+            f"least {MIN_CASES} - the shared contract is asserting nothing")
     return [pytest.param(c, id=c["name"]) for c in data["cases"]]
-
-
-def test_corpus_file_is_present_and_not_empty():
-    # A silently missing corpus would turn every case below into zero tests,
-    # and the contract would be "passing" while asserting nothing.
-    data = json.loads(CORPUS.read_text(encoding="utf-8"))
-    assert len(data["cases"]) >= 10
 
 
 @pytest.mark.parametrize("case", _cases())

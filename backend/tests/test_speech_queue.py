@@ -506,12 +506,14 @@ def test_every_tag_the_queue_injects_is_one_the_budget_exempts():
     IS passed, from the standing tone, which is exactly why the exempt set is
     derived from the same value instead of being a constant.
     """
-    import inspect
-
     import speech_prep
 
-    params = inspect.signature(SpeechQueue.__init__).parameters
-    assert "narrator_tag" not in params, "the knob with no source came back"
+    # Behaviour, not a signature read: the constructor REFUSES the knob. An
+    # `inspect.signature` check on the parameter name passed on a build where
+    # the argument was accepted and silently ignored, which is the shape the
+    # bug had in the first place.
+    with pytest.raises(TypeError):
+        make(narrator_tag="deep, slow")
 
     for tone in ("deep, slow", speech_prep.DEFAULT_SPEECH_TAG):
         opts = speech_prep.PrepOptions(engine_supports_tags=True,
