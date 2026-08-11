@@ -10,7 +10,7 @@
  *  - Privacy: no provider fields, no browser storage
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   canRegenerateMessage,
   removeMessageAndFollowingFromCache,
@@ -144,11 +144,10 @@ describe("removeMessageAndFollowingFromCache", () => {
     expect(original).toHaveLength(originalLength);
   });
 
-  it("preserves all messages when target id does not exist (all ids < target)", () => {
-    // All message ids are 1-5, target is 100 → all are < 100, none removed
-    const result = removeMessageAndFollowingFromCache(conversation, 100);
-    expect(result).toHaveLength(5);
-  });
+  // "preserves all messages when target id does not exist (all ids < target)"
+  // stood here and was character-for-character the same case as "keeps all when
+  // target id is larger than all message ids" below: same call, same argument,
+  // same assertion. Deleted in KADEME 17b.
 
   it("keeps nothing when target id is 0 (no message has id < 0)", () => {
     const result = removeMessageAndFollowingFromCache(conversation, 0);
@@ -161,104 +160,23 @@ describe("removeMessageAndFollowingFromCache", () => {
   });
 });
 
-// ═════════════════════════════════════════════════════════════════
-// Regenerate cache reconciliation (simulate onSuccess logic)
-// ═════════════════════════════════════════════════════════════════
-
-describe("Regenerate cache reconciliation", () => {
-  // Simulate the exact logic from useRegenerateMessage onSuccess
-  function simulateRegenerateOnSuccess(
-    existingMessages: Message[],
-    targetMessageId: number,
-    responseUserMessage: Message,
-    responseAssistantMessage: Message,
-  ): Message[] {
-    const withoutTarget = existingMessages.filter(
-      (m) => m.id !== targetMessageId,
-    );
-    const existingIds = new Set(withoutTarget.map((m) => m.id));
-    const next = [...withoutTarget];
-    if (!existingIds.has(responseUserMessage.id)) {
-      next.push(responseUserMessage);
-    }
-    if (!existingIds.has(responseAssistantMessage.id)) {
-      next.push(responseAssistantMessage);
-    }
-    return next.sort((a, b) => a.id - b.id);
-  }
-
-  it("replaces old assistant with new, keeps existing user message", () => {
-    // Before: [user:3, assistant:4]
-    // Regenerate assistant:4 → response has user:3 (existing) + assistant:5 (new)
-    const before = [userMsg3, assistantMsg4];
-    const responseUser = msg(3, "user", "existing user message");
-    const responseAssistant = msg(5, "assistant", "new assistant reply");
-
-    const after = simulateRegenerateOnSuccess(
-      before,
-      4, // target old assistant
-      responseUser,
-      responseAssistant,
-    );
-
-    expect(after).toHaveLength(2);
-    expect(after[0].id).toBe(3);
-    expect(after[0].role).toBe("user");
-    expect(after[1].id).toBe(5);
-    expect(after[1].role).toBe("assistant");
-  });
-
-  it("does not duplicate user message", () => {
-    const before = [userMsg1, assistantMsg2, userMsg3, assistantMsg4];
-    const responseUser = msg(3, "user"); // same id as existing
-    const responseAssistant = msg(5, "assistant");
-
-    const after = simulateRegenerateOnSuccess(before, 4, responseUser, responseAssistant);
-
-    // user:3 should appear exactly once
-    const user3Count = after.filter((m) => m.id === 3).length;
-    expect(user3Count).toBe(1);
-  });
-
-  it("old assistant message is not left stale", () => {
-    const before = [userMsg3, assistantMsg4];
-    const responseUser = msg(3, "user");
-    const responseAssistant = msg(5, "assistant");
-
-    const after = simulateRegenerateOnSuccess(before, 4, responseUser, responseAssistant);
-
-    // Old assistant (id:4) should be gone
-    expect(after.find((m) => m.id === 4)).toBeUndefined();
-    // New assistant (id:5) should be present
-    expect(after.find((m) => m.id === 5)).toBeDefined();
-  });
-
-  it("result is sorted by id", () => {
-    const before = [userMsg1, assistantMsg2, userMsg3, assistantMsg4];
-    const responseUser = msg(3, "user");
-    const responseAssistant = msg(5, "assistant");
-
-    const after = simulateRegenerateOnSuccess(before, 4, responseUser, responseAssistant);
-
-    for (let i = 1; i < after.length; i++) {
-      expect(after[i].id).toBeGreaterThan(after[i - 1].id);
-    }
-  });
-
-  it("handles regenerate of single assistant message", () => {
-    const before = [msg(10, "assistant")];
-    const responseUser = msg(9, "user");
-    const responseAssistant = msg(11, "assistant");
-
-    const after = simulateRegenerateOnSuccess(before, 10, responseUser, responseAssistant);
-
-    expect(after).toHaveLength(2);
-    expect(after[0].id).toBe(9);
-    expect(after[0].role).toBe("user");
-    expect(after[1].id).toBe(11);
-    expect(after[1].role).toBe("assistant");
-  });
-});
+// Deleted in KADEME 17b: describe("Regenerate cache reconciliation"), five
+// tests over a HAND-WRITTEN copy of production logic named
+// simulateRegenerateOnSuccess, whose own comment called it "the exact logic
+// from useRegenerateMessage onSuccess".
+//
+// It was not, and had not been for a while. The copy did
+// existingMessages.filter(m => m.id !== targetMessageId), that is, it REMOVED
+// the regenerated row. The real onSuccess in lib/query/completions.ts appends
+// a VARIANT: it deactivates the previous sibling in place and dedupe-appends
+// the new active row, deleting nothing, because old variants stay navigable.
+// So those five tests proved a behaviour the app had abandoned, and no edit to
+// production could ever turn them red.
+//
+// The real path is covered where it actually runs, against the real hook:
+// ChatMessageControls.test.tsx "regenerate calls mutation and does not
+// duplicate user message" and "regenerate streams into the target bubble,
+// replacing its stored text".
 
 // ═════════════════════════════════════════════════════════════════
 // DeletedCountResponse schema
@@ -307,64 +225,54 @@ describe("DeletedCountResponse parsing", () => {
 // Error store integration (structural)
 // ═════════════════════════════════════════════════════════════════
 
-describe("Error store integration (structural)", () => {
-  it("useDeleteChat hook is exported and is a function", async () => {
-    const mod = await import("@/lib/query/chats");
-    expect(typeof mod.useDeleteChat).toBe("function");
-  });
+// ═════════════════════════════════════════════════════════════════
+// Deleted in KADEME 17b: nine tests that asserted only
+// `typeof mod.X === "function"`.
+//
+// Six of them ("useDeleteChat hook is exported and is a function" and its
+// five siblings, under describe blocks named "Error store integration
+// (structural)" and "Chat/message action hook exports") proved nothing an
+// import statement does not already prove: if the export were gone this file
+// would not compile. They named the error store and never touched it; a build
+// whose mutations pushed nothing to it passed all six.
+//
+// The other three were worse, because they carried PRIVACY names they did
+// not check. They are rewritten below rather than deleted, since the promises
+// are real and now have real tests.
+// ═════════════════════════════════════════════════════════════════
 
-  it("useClearChat hook is exported and is a function", async () => {
-    const mod = await import("@/lib/query/chats");
-    expect(typeof mod.useClearChat).toBe("function");
-  });
-
-  it("useDeleteMessageAndFollowing hook is exported and is a function", async () => {
-    const mod = await import("@/lib/query/chats");
-    expect(typeof mod.useDeleteMessageAndFollowing).toBe("function");
-  });
-
-  it("useRegenerateMessage hook is exported and is a function", async () => {
-    const mod = await import("@/lib/query/completions");
-    expect(typeof mod.useRegenerateMessage).toBe("function");
-  });
-
-  // Verify error store pushError works with safe parsed error
-  it("pushError safely handles unknown error shapes", async () => {
+describe("the parsed error carries the sentence the reader will get", () => {
+  it("maps each destructive-action failure to its own sentence", async () => {
+    // `toBeTruthy()` on a message string is satisfied by the literal "error",
+    // and by every code returning the SAME text. What matters is that these
+    // three failures read differently, because they call for different moves:
+    // the chat is gone, the row is not the last one, there is nothing above it.
+    //
+    // The version this replaced passed `{ detail }` with no `status`, which
+    // `isApiError` rejects, so all four of its cases fell through to
+    // `unknown_error` and were checked with `toBeTruthy()`. It never once
+    // exercised the codes in its own names.
     const { parseApiError } = await import("@/lib/errors/parseApiError");
+    const { getErrorMessage } = await import("@/lib/errors/errorMessages");
 
-    // Simulate various error shapes
-    const err1 = parseApiError(new Error("network failure"));
-    expect(err1.message).toBeTruthy();
-    expect(typeof err1.detail).toBe("string");
+    const cases = [
+      "chat_not_found",
+      "not_last_assistant_message",
+      "no_preceding_user_message",
+    ];
+    const seen = new Set<string>();
+    for (const detail of cases) {
+      const parsed = parseApiError({ status: 400, detail });
+      expect(parsed.detail).toBe(detail);
+      expect(parsed.message).toBe(getErrorMessage(detail));
+      expect(parsed.message).not.toBe("Something went wrong. Please try again.");
+      seen.add(parsed.message);
+    }
+    expect(seen.size, "two of these failures read identically").toBe(cases.length);
 
-    const err2 = parseApiError({ detail: "chat_not_found" });
-    expect(err2.message).toBeTruthy();
-
-    const err3 = parseApiError({ detail: "not_last_assistant_message" });
-    expect(err3.message).toBeTruthy();
-
-    const err4 = parseApiError({ detail: "no_preceding_user_message" });
-    expect(err4.message).toBeTruthy();
-  });
-});
-
-// ═════════════════════════════════════════════════════════════════
-// Mutation hook exports completeness
-// ═════════════════════════════════════════════════════════════════
-
-describe("Chat/message action hook exports", () => {
-  it("chat action helpers are exported from lib/chat", async () => {
-    const mod = await import("@/lib/chat");
-    expect(typeof mod.canRegenerateMessage).toBe("function");
-    expect(typeof mod.removeMessageAndFollowingFromCache).toBe("function");
-  });
-
-  it("all chat mutation hooks are exported", async () => {
-    const mod = await import("@/lib/query/chats");
-    expect(typeof mod.useDeleteChat).toBe("function");
-    expect(typeof mod.useClearChat).toBe("function");
-    expect(typeof mod.useDeleteMessageAndFollowing).toBe("function");
-    expect(typeof mod.useCreateChat).toBe("function");
+    // A thrown Error is not an API error and must not be dressed up as one.
+    const network = parseApiError(new Error("network failure"));
+    expect(network.message).not.toContain("network failure");
   });
 });
 
@@ -373,20 +281,65 @@ describe("Chat/message action hook exports", () => {
 // ═════════════════════════════════════════════════════════════════
 
 describe("Chat action privacy checks", () => {
-  it("chatActions module is pure - no browser storage imports", async () => {
-    const mod = await import("@/lib/chat/chatActions");
-    expect(typeof mod.canRegenerateMessage).toBe("function");
-    expect(typeof mod.removeMessageAndFollowingFromCache).toBe("function");
+  // "chatActions module is pure - no browser storage imports" stood here and
+  // imported the module to assert two functions existed, which says nothing
+  // about storage. KADEME 17b first replaced it with a real deletion pin that
+  // read the module's source and asserted the storage names were absent.
+  //
+  // That replacement was DELETED too, and the reason is worth keeping: the
+  // repo already owns this promise, repo-wide and better. static-safety.test.ts
+  // scans EVERY source file for the three browser storage sinks (S-09, S-13,
+  // S-14), keeps an allowlist for the one store that is allowed to persist
+  // (S-09b), and carries a file-count floor so a broken glob cannot pass by
+  // matching nothing (S-12). A module-scoped copy of that is strictly weaker.
+  //
+  // It also proved the point by hand. The deleted version listed those sink
+  // names as literal strings in its own array, so the repo's gate failed on
+  // the test file itself, three times, until every spelling was gone from
+  // this comment too. The gate works, and it does not read comments as
+  // exempt, which is the correct choice for a rule about absence.
+
+  it("deletes a message and everything after it without sending a body", async () => {
+    // The name used to promise this and the body checked that the function
+    // existed. A version that posted the whole transcript passed.
+    const { deleteMessageAndFollowing } = await import("@/lib/api/chats");
+    const fetchSpy = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ ok: true, deleted_count: 3 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await deleteMessageAndFollowing(1, 42);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/chats/1/messages/42");
+    expect(init.method).toBe("DELETE");
+    expect(init.body, "a destructive call carried a request body").toBeUndefined();
+    vi.unstubAllGlobals();
   });
 
-  it("deleteMessageAndFollowing API function does not send body", async () => {
-    // The API function uses DELETE with no body - verify the function exists
-    const mod = await import("@/lib/api/chats");
-    expect(typeof mod.deleteMessageAndFollowing).toBe("function");
-  });
+  it("clears a chat without sending a body", async () => {
+    const { clearChat } = await import("@/lib/api/chats");
+    const fetchSpy = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ ok: true, deleted_count: 7 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
 
-  it("clearChat API function does not send body", async () => {
-    const mod = await import("@/lib/api/chats");
-    expect(typeof mod.clearChat).toBe("function");
+    await clearChat(1);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/chats/1/clear");
+    expect(init.method).toBe("POST");
+    expect(init.body, "a destructive call carried a request body").toBeUndefined();
+    vi.unstubAllGlobals();
   });
 });

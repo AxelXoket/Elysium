@@ -40,22 +40,54 @@ def _ready_voice(client, monkeypatch) -> str:
     return uid
 
 
-def _speak_stream(client, text: str) -> list[dict]:
-    res = client.post("/api/v1/tts/speak_stream", json={"text": text})
-    assert res.status_code == 200, res.text
+def _events_of(response) -> list[dict]:
     return [
         json.loads(line[6:])
-        for line in res.text.splitlines()
+        for line in response.text.splitlines()
         if line.startswith("data: ")
     ]
 
 
+def _speak_stream(client, text: str) -> list[dict]:
+    res = client.post("/api/v1/tts/speak_stream", json={"text": text})
+    assert res.status_code == 200, res.text
+    return _events_of(res)
+
+
 class _FakeSpeaker:
-    """Only what done_event reads."""
+    """Only what done_event and events() read."""
 
     def __init__(self, dropped: int = 0, samples: list[str] | None = None):
         self.dropped = dropped
         self.dropped_samples = samples or []
+
+    def drain(self) -> list[dict]:
+        return []
+
+    def take_error(self):
+        return None
+
+
+def _pending_notes(monkeypatch, *notes: str):
+    """Put worker notes where BOTH speech paths go looking for them.
+
+    Handed over once and then gone, which is the host's real contract: the
+    worker's ring buffer keeps its last 200 frames, so a host that re-answered
+    would repeat the same compile note on every utterance for its whole life.
+    """
+    import tts.host
+
+    class _Host:
+        def __init__(self):
+            self.pending = list(notes)
+
+        def take_notes(self) -> list[str]:
+            out, self.pending = self.pending, []
+            return out
+
+    host = _Host()
+    monkeypatch.setattr(tts.host, "get_host", lambda: host)
+    return host
 
 
 def _hook_with(speaker) -> object:
@@ -118,17 +150,16 @@ def test_a_divider_is_not_reported_as_lost_speech():
 # truncation: computed on one path, reported on neither the user can reach
 # ---------------------------------------------------------------------------
 
-def test_the_preparer_reports_truncation_itself():
+def test_speak_stream_puts_truncated_on_the_wire(client, voice, monkeypatch):
     """It was a logger.warning and a field only /speak carried - while the
     Speak button only ever calls /speak_stream. So the reachable path cut the
-    reply at 5000 characters and said nothing."""
-    from routers.tts_runtime import PreparedSpeech
+    reply at 5000 characters and said nothing.
 
-    assert PreparedSpeech._fields == ("text", "truncated")
-
-
-def test_speak_stream_puts_truncated_on_the_wire(client, voice, monkeypatch):
-    """The reachable path cut the reply at 5000 characters and said nothing."""
+    This absorbed `test_the_preparer_reports_truncation_itself`, which asserted
+    `PreparedSpeech._fields == ("text", "truncated")`. That is introspection of
+    a namedtuple's shape, and the flag cannot arrive on the wire below without
+    the field existing above, so the shape test could only ever fail in the
+    company of this one."""
     _ready_voice(client, monkeypatch)
     events = _speak_stream(client, "a" * 6000)
     assert events[-1]["type"] == "voice_done"
@@ -220,16 +251,59 @@ def test_the_sse_handlers_log_a_stack(
     )
 
 
-def test_the_stripping_guard_no_longer_swallows_silently():
+def _reads_raise(monkeypatch, message: str = "the setting could not be read"):
+    """Every settings read fails, the way a locked or damaged vault fails."""
+    import database
+
+    def _unreadable(_name):
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(database, "get_setting", _unreadable)
+
+
+def test_the_stripping_guard_no_longer_swallows_silently(monkeypatch, caplog):
     """A bare `except Exception: return False` written for the locked-vault
     case took every other failure with it - and the visible symptom is raw
-    [whisper] tags in every bubble, which reads as a model bug."""
-    from pathlib import Path
+    [whisper] tags in every bubble, which reads as a model bug.
 
-    source = (BACKEND / "voice_tags.py").read_text(encoding="utf-8")
-    guard = source.split("def stripping_active", 1)[1]
-    assert "logger.debug" in guard
-    assert "exc_info=True" in guard
+    Until KADEME 16a this was a source scan, and a broken one. It sliced
+    voice_tags.py from `def stripping_active` to END OF FILE, so the
+    `exc_info=True` it looked for was also satisfied by voice_block()'s own
+    guard a hundred lines further down. Deleting the traceback from the guard
+    this test is named after would have left it green.
+    """
+    import voice_tags
+
+    voice_tags.reset_stripping_cache()
+    _reads_raise(monkeypatch)
+
+    with caplog.at_level("DEBUG", logger="voice_tags"):
+        assert voice_tags.stripping_active() is False
+
+    told = [r for r in caplog.records
+            if r.name == "voice_tags" and r.exc_info is not None]
+    assert told, "the read failed and nothing anywhere says what went wrong"
+    assert "the setting could not be read" in str(told[-1].exc_info[1]), (
+        "something was logged, but not the failure that actually happened")
+
+
+def test_a_read_that_failed_is_not_remembered_as_a_no(monkeypatch):
+    """The guard's own comment claims the False it returns is deliberately NOT
+    cached, because it is an answer about the lock and not about the vault. If
+    it were cached, one unlucky read would keep stripping off for the rest of
+    the process and the tags would stay visible until a restart."""
+    import voice_tags
+
+    voice_tags.reset_stripping_cache()
+    _reads_raise(monkeypatch)
+    assert voice_tags.stripping_active() is False
+
+    import database
+    monkeypatch.setattr(
+        database, "get_setting",
+        lambda name: "1" if name == voice_tags.SETTING_VOICE_EVER else "")
+    assert voice_tags.stripping_active() is True, (
+        "the failed read was cached, so unlocking the vault changed nothing")
 
 
 # ---------------------------------------------------------------------------
@@ -282,14 +356,35 @@ def test_no_worker_means_no_notes_and_no_error():
     assert host.take_notes() == []
 
 
-def test_the_notice_frame_is_wired_into_both_speech_paths():
-    from pathlib import Path
+def test_the_speak_endpoint_carries_a_worker_note(client, voice, monkeypatch):
+    """Half of "wired into both speech paths". This is the path the Speak
+    button takes.
 
-    hook = (BACKEND / "tts" / "stream_hook.py").read_text(encoding="utf-8")
-    assert '"type": "voice_notice"' in hook
-    assert "_host_notes()" in hook
-    runtime = (BACKEND / "routers" / "tts_runtime.py").read_text(encoding="utf-8")
-    assert '"type": "voice_notice"' in runtime
+    Until KADEME 16a both halves were one test that read the two source files
+    and looked for the string `"type": "voice_notice"`. Commenting out either
+    emission, or moving it behind a branch that never runs, leaves those
+    characters in the file and the old test green.
+    """
+    _ready_voice(client, monkeypatch)
+    _pending_notes(monkeypatch, "falling back to eager decoding")
+
+    events = _speak_stream(client, "One sentence.")
+
+    assert [e["note"] for e in events if e["type"] == "voice_notice"] == [
+        "falling back to eager decoding"]
+
+
+def test_the_streaming_reply_carries_a_worker_note(monkeypatch):
+    """The other half. A note that only reaches the Speak button is a note the
+    listener never gets during an ordinary streamed reply, which is where the
+    slow-compile case actually bites."""
+    _pending_notes(monkeypatch, "first compile is slow")
+    hook = _hook_with(_FakeSpeaker())
+
+    events = hook.events()
+
+    assert [e["note"] for e in events if e["type"] == "voice_notice"] == [
+        "first compile is slow"]
 
 
 def test_a_broken_note_channel_cannot_break_speech():
@@ -315,24 +410,133 @@ def test_a_broken_note_channel_cannot_break_speech():
 # a scan that stopped at the cap must not look complete
 # ---------------------------------------------------------------------------
 
-def test_a_truncated_scan_says_so():
-    from tts.base import ScanResult
+def test_a_walk_that_stopped_at_the_cap_says_so(tmp_path, monkeypatch):
+    """A short list that stopped at a limit must not be presented as a
+    complete one: the missing rows are models the user owns and cannot see.
 
-    assert ScanResult().truncated is False
-    source = (BACKEND / "tts" / "registry.py").read_text(encoding="utf-8")
-    assert "result.truncated = True" in source
+    Both halves used to be substring checks against registry.py and tts.py.
+    `"result.truncated = True" in source` is satisfied by that same line
+    commented out, which is the one edit that would actually break this.
+    """
+    import config
+    from tts import registry
+
+    root = tmp_path / "models"
+    for i in range(4):
+        (root / f"m{i}").mkdir(parents=True)
+
+    assert registry.scan_roots([root]).truncated is False, (
+        "four directories under the real cap is not a truncated walk"
+    )
+
+    monkeypatch.setattr(config, "TTS_SCAN_MAX_DIRS", 2)
+    assert registry.scan_roots([root]).truncated is True
 
 
-def test_the_scan_payload_carries_it():
-    from pathlib import Path
+def test_the_models_endpoint_repeats_the_cap(client, voice, monkeypatch):
+    """Computing the flag and not sending it is the KÖK 1 shape this whole
+    file is about: detection with no carrier."""
+    import config
 
-    source = (BACKEND / "routers" / "tts.py").read_text(encoding="utf-8")
-    assert '"truncated": result.truncated' in source
+    root = Path(config.TTS_MODELS_DIR)
+    for i in range(4):
+        (root / f"m{i}").mkdir(parents=True, exist_ok=True)
+
+    assert client.get("/api/v1/tts/models").json()["truncated"] is False
+
+    monkeypatch.setattr(config, "TTS_SCAN_MAX_DIRS", 2)
+    assert client.get("/api/v1/tts/models").json()["truncated"] is True
 
 
 # ---------------------------------------------------------------------------
 # images dropped from the provider payload
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# /speak_stream's error contract
+#
+# Moved here in KADEME 16a from test_untested_shields.py, a file whose name
+# described a GAP rather than a subject: it was opened for two unrelated
+# audit findings and kept them together only because both were untested. The
+# DNS-rebinding half went to test_cors_contract.py, which already owned the
+# Host allowlist; this half is the same subject as everything above, what the
+# voice wire says when something goes wrong.
+# ---------------------------------------------------------------------------
+
+def test_a_failing_sentence_ends_the_utterance_with_a_coded_error(
+    client, voice, monkeypatch,
+):
+    """The contract is "emit voice_error and stop", and it had no test - so
+    _code_for_error was never once executed. Audio that simply stops is
+    indistinguishable from a reply that had nothing more to say, which is the
+    one failure mode voice is not allowed to have."""
+    import routers.tts_runtime as runtime
+    from tts.errors import TTS_SYNTHESIS_FAILED
+
+    _ready_voice(client, monkeypatch)
+    real = runtime.make_stream_synth
+
+    def failing(*a, **k):
+        synth = real(*a, **k)
+
+        def boom(text):
+            raise RuntimeError("the engine gave up")
+
+        boom.engine_supports_tags = getattr(synth, "engine_supports_tags", False)
+        return boom
+
+    monkeypatch.setattr(runtime, "make_stream_synth", failing)
+
+    events = _speak_stream(client, "One sentence. Two sentences.")
+
+    errors = [e for e in events if e["type"] == "voice_error"]
+    assert errors, "the utterance stopped with nothing on the wire to say why"
+    assert errors[-1]["code"] == TTS_SYNTHESIS_FAILED
+    # Was `events[len(events) - 1:]`, a one-element slice, so it only ever
+    # looked at the last event: a voice_done anywhere before the error passed.
+    assert not any(e["type"] == "voice_done" for e in events), (
+        "a failed utterance must not also report itself complete"
+    )
+
+
+def test_the_error_carries_a_code_the_frontend_already_knows(
+    client, voice, monkeypatch,
+):
+    """Not prose. Every tts_* code has a sentence in errorMessages.ts, and a
+    code invented here would render as the generic fallback.
+
+    The floor matters more than the check. This body used to be entirely
+    conditional - `if status == 200: for event: if type == voice_error:` - so
+    on a build that emitted no voice_error at all, not one assertion ran and
+    the test passed by never reaching anything.
+    """
+    from tts.errors import ALL_CODES
+    import routers.tts_runtime as runtime
+
+    _ready_voice(client, monkeypatch)
+    monkeypatch.setattr(
+        runtime, "make_stream_synth",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no engine")),
+    )
+    res = client.post("/api/v1/tts/speak_stream", json={"text": "Hello."})
+
+    if res.status_code == 200:
+        codes = [e["code"] for e in _events_of(res) if e["type"] == "voice_error"]
+        assert codes, "the engine never came up and the wire said nothing"
+    else:
+        codes = [res.json()["detail"]]
+
+    assert codes[-1] in ALL_CODES, codes
+
+
+@pytest.mark.parametrize("text", ["", "   ", "---"])
+def test_nothing_to_say_is_its_own_answer(client, voice, monkeypatch, text):
+    """Distinct from a synthesis failure: the engine was never asked."""
+    _ready_voice(client, monkeypatch)
+    res = client.post("/api/v1/tts/speak_stream", json={"text": text})
+    assert res.status_code == 400
+    assert res.json()["detail"] == "tts_nothing_to_speak"
+
 
 def test_a_missing_blob_is_collected_not_just_logged():
     """The completion succeeded and the user got a normal answer from a model

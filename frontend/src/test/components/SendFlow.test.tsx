@@ -1108,4 +1108,95 @@ describe("SendFlow", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(useErrorStore.getState().errors).toHaveLength(0);
   });
+
+  // ------------------------------------------------------------------
+  // Moved here in KADEME 17a from ChatLayerBugFixes.test.tsx (its "F1"),
+  // a file named after a category of work rather than a subject. These two
+  // are per-chat draft isolation, which is the send path, which is here.
+  //
+  // The bug behind them was a privacy leak, not a nuisance: text typed in
+  // one conversation appeared in another and could be sent there. The two
+  // halves are separate on purpose. The first proves the draft is kept
+  // apart on screen; the second proves it is kept apart ON THE WIRE, which
+  // is the half that actually costs something if it breaks.
+  // ------------------------------------------------------------------
+
+  async function waitForComposerReady() {
+    await waitFor(() => {
+      expect(screen.getByLabelText("Message")).not.toBeDisabled();
+    });
+  }
+
+  function completePostBodies(
+    mock: ReturnType<typeof mockFetchWithStreams>,
+  ): { url: string; body: Record<string, unknown> }[] {
+    return mock.mock.calls
+      .filter(
+        (call: unknown[]) =>
+          typeof call[0] === "string" &&
+          call[0].includes("/complete/stream") &&
+          (call[1] as RequestInit)?.method === "POST",
+      )
+      .map((call) => ({
+        url: call[0] as string,
+        body: JSON.parse((call[1] as RequestInit).body as string),
+      }));
+  }
+
+  const textarea = () =>
+    screen.getByLabelText("Message") as HTMLTextAreaElement;
+
+  it("a live draft does not bleed into another chat and is restored on return", async () => {
+    const user = userEvent.setup();
+    setupReadyState();
+    mockFetchWithStreams({
+      "/settings": { body: settingsFixture },
+      "/chats/1/messages": { body: [messageFixture] },
+      "/chats/2/messages": { body: [] },
+      "/chats": { body: [] },
+    });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
+    await waitForComposerReady();
+
+    await user.type(textarea(), "chat one secret");
+    expect(textarea().value).toBe("chat one secret");
+
+    act(() => useUiStore.setState({ selectedChatId: 2 }));
+    await waitFor(() => expect(textarea()).not.toBeDisabled());
+    expect(textarea().value, "another chat's draft was showing").toBe("");
+
+    act(() => useUiStore.setState({ selectedChatId: 1 }));
+    await waitFor(() => expect(textarea().value).toBe("chat one secret"));
+  });
+
+  it("sending from another chat uses that chat's draft, never the first chat's", async () => {
+    const user = userEvent.setup();
+    setupReadyState();
+    const mock = mockFetchWithStreams({
+      "/settings": { body: settingsFixture },
+      "/chats/1/messages": { body: [messageFixture] },
+      "/chats/2/messages": { body: [] },
+      "/chats/1/complete/stream": { sse: sseEventsFor(completionFixture) },
+      "/chats/2/complete/stream": { sse: sseEventsFor(completionFixture) },
+      "/chats": { body: [] },
+    });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
+    await waitForComposerReady();
+
+    await user.type(textarea(), "leak me to chat one");
+
+    act(() => useUiStore.setState({ selectedChatId: 2 }));
+    await waitFor(() => expect(textarea()).not.toBeDisabled());
+    expect(textarea().value).toBe("");
+    await user.type(textarea(), "chat two message");
+    await user.click(screen.getByRole("button", { name: /send message/i }));
+
+    await waitFor(() => {
+      expect(completePostBodies(mock)).toHaveLength(1);
+    });
+    const posts = completePostBodies(mock);
+    expect(posts[0].url).toContain("/chats/2/complete/stream");
+    expect(posts[0].body.message).toBe("chat two message");
+    expect(posts[0].body.message).not.toBe("leak me to chat one");
+  });
 });

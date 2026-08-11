@@ -13,7 +13,7 @@
  *    clears once the message is persisted
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { screen, fireEvent, waitFor } from "@testing-library/react";
+import { screen, fireEvent, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { ChatCanvas } from "@/components/chat/ChatCanvas";
@@ -32,9 +32,12 @@ import {
   messageFixture,
   completionFixture,
   modelFixture,
+  chatFixture,
 } from "../mocks/fixtures";
+import { keys } from "@/lib/query/keys";
 import type { ReactNode } from "react";
 import type { ModelList } from "@/lib/schemas/models";
+import type { Chat } from "@/lib/schemas/chats";
 
 function wrapper({ children }: { children: ReactNode }) {
   return (
@@ -825,5 +828,157 @@ describe("Attachments", () => {
       expect(bodies[1].attachments).toEqual([11]);
     });
     expect(screen.getByAltText("Staged image")).toBeInTheDocument();
+  });
+
+  // ------------------------------------------------------------------
+  // Moved here in KADEME 17a from ChatLayerBugFixes.test.tsx, a file whose
+  // name described a CATEGORY OF WORK ("bug fixes from one audit") rather
+  // than a subject: its seven tests spanned four unrelated subsystems and
+  // were together only because one audit pass found them on the same day.
+  // These three are attachment lifecycle, which is this file. They needed
+  // no new machinery: pngFile, uploadRoute, addFiles, waitForAttachReady,
+  // completePostBodies and the object-URL stand-ins already existed here,
+  // byte for byte, in both files at once.
+  // ------------------------------------------------------------------
+
+  it("will not send staged images after a switch to a text-only model", async () => {
+    const user = userEvent.setup();
+    setupReadyState();
+    const mock = mockFetchWithStreams({
+      ...baseRoutes(),
+      "/models/openrouter": {
+        body: {
+          source: "user",
+          cached: true,
+          count: 2,
+          models: [
+            { ...modelFixture, id: "openai/gpt-4o", input_modalities: ["text", "image"] },
+            { ...modelFixture, id: "meta/text-only", name: "Text Only",
+              input_modalities: ["text"] },
+          ],
+        } satisfies ModelList,
+      },
+    });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
+    await waitForComposerReady();
+    await waitForAttachReady();
+
+    await user.type(screen.getByLabelText("Message"), "See this image");
+    addFiles([pngFile()]);
+    await waitFor(() => {
+      expect(screen.getByAltText("Staged image")).toBeInTheDocument();
+      expect(
+        screen.queryByRole("status", { name: "Uploading image" }),
+      ).not.toBeInTheDocument();
+    });
+    expect(
+      screen.getByRole("button", { name: /send message/i }),
+    ).not.toBeDisabled();
+
+    act(() => useUiStore.setState({ selectedModelId: "meta/text-only" }));
+
+    const sendButton = screen.getByRole("button", { name: /send message/i });
+    await waitFor(() => expect(sendButton).toBeDisabled());
+    expect(sendButton).toHaveAttribute(
+      "title",
+      "Selected model does not support images - remove them or switch models",
+    );
+
+    // The keyboard is the path that bypasses a disabled button.
+    fireEvent.keyDown(screen.getByLabelText("Message"), {
+      key: "Enter",
+      code: "Enter",
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    expect(completePostBodies(mock)).toHaveLength(0);
+  });
+
+  it("frees a staged preview once its chat leaves the chats list", async () => {
+    setupReadyState();
+    const chat2: Chat = { ...chatFixture, id: 2, title: "Chat Two" };
+    mockFetchWithStreams({
+      ...baseRoutes(),
+      "/chats/2/messages": { body: [] },
+      "/chats": { body: [chatFixture, chat2] },
+    });
+    const { queryClient } = renderWithQueryClient(<ChatCanvas />, { wrapper });
+    await waitForComposerReady();
+    await waitForAttachReady();
+
+    addFiles([pngFile()]);
+    await screen.findByAltText("Staged image");
+    await waitFor(() => {
+      expect(queryClient.getQueryData(keys.chats())).toBeDefined();
+    });
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+
+    act(() => useUiStore.setState({ selectedChatId: 2 }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Message")).not.toBeDisabled());
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith("blob:preview-1");
+
+    // Chat 1 is deleted elsewhere, so its staged blob has no owner left.
+    act(() => {
+      queryClient.setQueryData(keys.chats(), [chat2]);
+    });
+    await waitFor(() => {
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:preview-1");
+    });
+  });
+
+  it("keeps the previews of the chat you are looking at", async () => {
+    setupReadyState();
+    mockFetchWithStreams({ ...baseRoutes(), "/chats": { body: [chatFixture] } });
+    const { queryClient } = renderWithQueryClient(<ChatCanvas />, { wrapper });
+    await waitForComposerReady();
+    await waitForAttachReady();
+
+    addFiles([pngFile()]);
+    await screen.findByAltText("Staged image");
+
+    // Selected beats absent: even with the list empty, the chat on screen
+    // owns its previews, or your picture vanishes while you look at it.
+    act(() => {
+      queryClient.setQueryData(keys.chats(), []);
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith("blob:preview-1");
+    expect(screen.getByAltText("Staged image")).toBeInTheDocument();
+  });
+
+  it("holds the four-image cap when two adds land in one commit", async () => {
+    // Distinct from the cap test above, which hands over five files in one
+    // array. This is the stale-closure shape: two separate change events
+    // batched into a single React commit, so the second add computes room
+    // from a count that has not been re-rendered yet. The bug staged six.
+    setupReadyState();
+    mockFetchWithStreams(baseRoutes());
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
+    await waitForComposerReady();
+    await waitForAttachReady();
+
+    const input = screen.getByLabelText("Attach image files");
+    act(() => {
+      fireEvent.change(input, {
+        target: { files: [pngFile("a.png"), pngFile("b.png"), pngFile("c.png")] },
+      });
+      fireEvent.change(input, {
+        target: { files: [pngFile("d.png"), pngFile("e.png"), pngFile("f.png")] },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getAllByAltText("Staged image")).toHaveLength(4);
+    });
+    expect(screen.getByText(/4\/4/)).toBeInTheDocument();
+    // The overflow is not silent: the images that did not fit say so.
+    expect(
+      useErrorStore.getState().errors.some(
+        (e) => e.code === "too_many_attachments"),
+    ).toBe(true);
   });
 });

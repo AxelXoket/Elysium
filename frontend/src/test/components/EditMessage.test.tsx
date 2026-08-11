@@ -120,6 +120,77 @@ describe("useStreamingCompletion - startEdit (v1.1 C3)", () => {
     expect(useErrorStore.getState().errors).toHaveLength(0);
   });
 
+  it("an error frame after done cannot undo the edit, but still reports one", async () => {
+    // Two halves, and they landed differently than expected. Worth reading
+    // before touching either.
+    //
+    // After the stream ends, startEdit checks `errorEvent != null` BEFORE it
+    // checks `sawDone`, and calls restoreSnapshot(). That LOOKS like a late
+    // error frame in the drain window rolls back an edit the server already
+    // committed. It does not, and the guard is not where the ordering
+    // suggests: restoreSnapshot is REVISION-guarded. It only writes the
+    // snapshot back while the cache's dataUpdatedAt still equals the
+    // revision the edit started from, and `done` has already moved it. So
+    // the committed rows survive. That is the half this test protects: if
+    // the revision check is ever dropped, the reader's new question and its
+    // reply silently revert while the vault keeps the new text.
+    //
+    // The second half is worse, and measured: KUSUR-DEFTERI K-28. Whether
+    // the rows survive is a RACE, not a rule. `done` settles the cache in
+    // the background (`void qc.invalidateQueries(...)`), and the revision
+    // check only wins if that has landed first. Run this scenario six times
+    // and the committed exchange survived four and reverted twice.
+    //
+    // So the assertion below covers only the deterministic half: the toast.
+    // Asserting the rows would make this test itself flaky, and a flaky test
+    // cannot be a gate. The race is recorded in the ledger with its numbers
+    // instead of being pinned by a coin flip.
+    const qc = createTestQueryClient();
+    qc.setQueryData<Message[]>(keys.messages(1), seed);
+    const stream = controlledSseResponse();
+    mockFetchWithStreams({
+      "/chats/1/messages/2/edit/stream": { response: () => stream.response },
+    });
+
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
+    });
+
+    let editPromise!: Promise<void>;
+    await act(async () => {
+      editPromise = result.current.startEdit(editVars);
+    });
+
+    stream.emit({
+      type: "user_message",
+      message: msg(2, "user", "edited question"),
+    });
+    stream.emit({ type: "delta", content: "New answer." });
+    stream.emit({
+      type: "done",
+      chat_id: 1,
+      model_id: "m",
+      user_message: msg(2, "user", "edited question"),
+      assistant_message: msg(4, "assistant", "New answer."),
+    });
+    await waitFor(() => {
+      expect(messagesInCache(qc).map((m) => m.id)).toEqual([1, 2, 4]);
+    });
+
+    // The exchange has landed. Now a late frame arrives in the drain window.
+    stream.emit({ type: "error", status: 502, code: "openrouter_completion_error" });
+    stream.close();
+    await act(() => editPromise);
+
+    // Only the deterministic half is asserted here, on purpose. A successful
+    // edit ends with a failure message on screen: pushError runs whenever an
+    // error frame was seen, without asking whether `done` already landed.
+    expect(
+      useErrorStore.getState().errors.map((e) => e.code),
+      "a committed edit reported itself as failed",
+    ).toEqual(["openrouter_completion_error"]);
+  });
+
   it("abort restores the pre-edit snapshot silently (server wrote nothing)", async () => {
     const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), seed);
@@ -259,6 +330,53 @@ describe("MessageBubble inline edit UI (v1.1 C3)", () => {
     expect(pencil).toHaveAttribute("title", "Select a model to edit");
   });
 
+  it("offers the pencil on an OLD user message, and warns about one reply", async () => {
+    // CHARACTERISATION, not approval. See KUSUR-DEFTERI K-27.
+    //
+    // Editing is offered on EVERY user row, not just the last one, and the
+    // backend deletes `id > message_id`, which is every message after it.
+    // There is no confirmation step: Enter in the textarea fires it. The only
+    // warning is this tooltip, and it says "the reply after it", singular,
+    // for an action that on an old message discards the whole rest of the
+    // conversation. Permanently: the delete is a hard SQL DELETE with no
+    // trash and no undo.
+    //
+    // Pinned here so that the day a real warning arrives, this goes red.
+    const user = userEvent.setup();
+    mockFetch({
+      "/chats/1/messages": {
+        body: [
+          msg(1, "assistant", "greeting"),
+          msg(2, "user", "original question"),
+          msg(3, "assistant", "old reply"),
+          msg(4, "user", "a later question"),
+          msg(5, "assistant", "a later reply"),
+        ],
+      },
+    });
+    renderWithQueryClient(<MessageList chatId={1} onEditMessage={vi.fn()} />);
+    await screen.findByText("a later reply");
+
+    // Both user rows are editable, including the one with four messages after.
+    const pencils = screen.getAllByRole("button", { name: "Edit message" });
+    expect(pencils).toHaveLength(2);
+
+    expect(pencils[0]).toHaveAttribute(
+      "title",
+      "Edit message (the reply after it is rewritten)",
+    );
+
+    await user.click(pencils[0]);
+    // No confirmation stands between the reader and the deletion.
+    expect(
+      screen.queryByRole("dialog"),
+      "an irreversible edit grew a confirmation step",
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("textbox", { name: "Edit message text" }),
+    ).toHaveFocus();
+  });
+
   it("pencil shows only on user bubbles; Save fires onEditMessage with trimmed text", async () => {
     const user = userEvent.setup();
     const onEditMessage = renderList();
@@ -281,6 +399,34 @@ describe("MessageBubble inline edit UI (v1.1 C3)", () => {
     expect(
       screen.queryByRole("textbox", { name: "Edit message text" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("Enter on an emptied edit box does not wipe the turn", async () => {
+    // The disabled Save button is not the guard that matters here. Somebody
+    // who clears the box meaning to cancel, then presses Enter out of habit,
+    // goes straight through handleEditKeyDown to saveEdit and never touches
+    // the button. If the empty check there were lost, the turn would be
+    // rewritten to nothing AND every message after it deleted, with no
+    // confirmation and no undo. The existing "unchanged or empty text cancels
+    // silently" test only ever checked that the button was disabled.
+    const user = userEvent.setup();
+    const onEditMessage = renderList();
+
+    await screen.findByText("original question");
+    await user.click(screen.getByRole("button", { name: "Edit message" }));
+    const box = screen.getByRole("textbox", { name: "Edit message text" });
+    await user.clear(box);
+    await user.keyboard("{Enter}");
+
+    expect(
+      onEditMessage,
+      "an emptied box saved itself over the message",
+    ).not.toHaveBeenCalled();
+
+    // Same for a box holding nothing but spaces.
+    await user.type(box, "   ");
+    await user.keyboard("{Enter}");
+    expect(onEditMessage).not.toHaveBeenCalled();
   });
 
   it("Enter saves, Shift+Enter does not, Escape cancels without firing", async () => {

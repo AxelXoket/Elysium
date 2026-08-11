@@ -171,6 +171,11 @@ def test_a_broken_engine_costs_the_audio_and_nothing_else(client, stream_provide
 
     assert "done" in types
     assert "voice_chunk" not in types
+    # ... and the client is TOLD why it is silent. Without this the test
+    # passes on a build that swallows the engine failure whole - no audio,
+    # no error, nothing for the UI to show - which is the exact bug the
+    # sibling test in test_stream_hook.py was written for.
+    assert "voice_error" in types, types
     assert get_messages(client, chat_id)[-1]["content"] == "Once upon a time."
 
 
@@ -185,6 +190,11 @@ def test_a_mid_utterance_failure_is_reported_and_stops_the_audio(client,
     errors = [e for e in events if e["type"] == "voice_error"]
     assert len(errors) == 1                      # once, never repeated
     assert errors[0]["code"] == "tts_synthesis_failed"
+    # Both halves of the name, which nothing used to check: the sentence
+    # BEFORE the failure was spoken, and the one AFTER it was not. Without
+    # these a build that spoke nothing, or that carried on to the end,
+    # passed exactly the same.
+    assert fake_voice.made == ["One.", "Two."], fake_voice.made
     # The reply itself is untouched.
     assert get_messages(client, chat_id)[-1]["content"] == "One. Two. Three."
 

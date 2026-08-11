@@ -19,6 +19,7 @@ from tts.errors import (
     TTS_OUT_OF_MEMORY,
     TTS_REFERENCE_INVALID,
     TTS_RUNTIME_BROKEN,
+    TTS_WORKER_FAILED,
     TTS_WORKER_CRASHED,
     TTS_WORKER_UNAVAILABLE,
 )
@@ -569,11 +570,29 @@ def test_the_pre_generation_guard_measures_the_work_that_is_coming():
 
 
 def test_the_guard_runs_after_the_budget_is_known():
-    """Ordering IS the fix; asserting the call alone would pass on the broken
-    layout too."""
-    source = _fish_source()
-    body = source[source.index("def _op_synthesize"):]
-    assert body.index("max_new = _fit_tokens") < body.index('where="pre-generation"')
+    """Ordering IS the fix: a guard that decides whether there is room without
+    knowing how much work is coming is deciding on the one fact that determines
+    the answer.
+
+    This used to compare two `str.index` positions inside the function's source
+    text. That is a test of the file's layout: it would pass on a build where
+    the guard had been moved back up but its old line was still present in a
+    comment, and it would fail on a correct build that spelled the assignment
+    differently. What the guard actually PUBLISHES is the budget it used, in
+    the pre-generation event, so that is what is checked - and it is checked at
+    two different budgets, because a hard-coded constant would satisfy one.
+    """
+    import fish_synth_harness as synth
+
+    for budget in (512, 200):
+        run = synth.synthesize(produced=100, max_new=budget)
+        guard = run.stage("codec_policy")
+        assert guard is not None, "the codec guard did not run at all"
+        assert guard["where"] == "pre-generation"
+        assert guard["budget_frames"] == budget, guard
+        # ... and it is the SAME budget the generation was then run with, so
+        # the guard cannot be sizing one thing while the model does another.
+        assert run.max_new_used() == budget
 
 
 def test_one_reserve_answers_every_question():
@@ -601,16 +620,69 @@ def test_only_should_keep_codec_decides_whether_the_codec_stays():
     assert "_should_keep_codec(free_after)" in source
 
 
-def test_an_out_of_memory_decode_retries_instead_of_killing_the_worker():
+class TestAnOutOfMemoryDecodeIsRecoverable:
     """Observed live: OOM at 03:52:37, worker dead at 03:53:08, no voice until
-    the app was restarted. The 7 GB text2semantic model was still resident."""
-    source = _fish_source()
-    body = source[source.index("def _decode_to_audio"):]
-    body = body[: body.index("def _op_synthesize")]
-    assert "_wire.is_oom(exc)" in body
-    assert 'STATE["model"] is None' in body      # nothing left to free: give up
-    assert body.count("_decode_once(codes, codec, torch)") == 2
-    assert "force=True" in body
+    the app was restarted. The 7 GB text2semantic model was still resident, so
+    there was room to be had and nobody took it.
+
+    These read the decode path by RUNNING it. The version they replace counted
+    substrings in the function's source text, which cannot tell a retry that
+    happens from a retry that is written down, and cannot see the difference
+    between the two failures below at all.
+    """
+
+    def test_a_recoverable_oom_frees_the_model_and_decodes_again(self):
+        import fish_synth_harness as synth
+
+        run = synth.decode_to_audio(fail_times=1)
+        assert run.attempts == 2, "the decode was not retried"
+        assert run.freed == [True], (
+            "the retry did not force the eviction that buys it room")
+        assert run.audio and run.sr == 44100, "the retry produced no audio"
+
+    def test_a_clean_decode_frees_nothing_and_runs_once(self):
+        """The control. Without it, code that evicted the model before every
+        decode would satisfy the test above."""
+        import fish_synth_harness as synth
+
+        run = synth.decode_to_audio(fail_times=0)
+        assert run.attempts == 1
+        assert run.freed == []
+
+    def test_with_nothing_left_to_free_it_gives_up_instead_of_looping(self):
+        """`STATE["model"] is None` means the one thing worth evicting is
+        already gone. Retrying would OOM again, forever."""
+        import fish_synth_harness as synth
+
+        # The worker module is loaded from its file under its own name, so its
+        # `_wire` is a different object from `tts.worker._wire`. Ask the module
+        # that will raise, not a namesake.
+        mod = synth.load_worker()
+        with pytest.raises(mod._wire._OomLike):
+            synth.decode_to_audio(fail_times=1, model_resident=False, mod=mod)
+
+    def test_a_second_failure_is_not_retried_a_third_time(self):
+        """One retry, not a loop. The room the eviction bought is the only room
+        there was."""
+        import fish_synth_harness as synth
+
+        mod = synth.load_worker()
+        with pytest.raises(mod._wire._OomLike):
+            synth.decode_to_audio(fail_times=2, mod=mod)
+
+    def test_a_failure_that_is_not_an_oom_is_not_dressed_up_as_one(self):
+        """The user is told which of the two happened, because the answers
+        differ: one means "close something", the other means "this text broke
+        the engine". A retry would be pointless here and the code does not
+        attempt one.
+        """
+        import fish_synth_harness as synth
+
+        mod = synth.load_worker()
+        with pytest.raises(mod._wire.WorkerError) as caught:
+            synth.decode_to_audio(fail_times=1, oom=False, mod=mod)
+        assert caught.value.code == mod._wire.CODE_SYNTHESIS_FAILED
+        assert caught.value.code != mod._wire.CODE_OUT_OF_MEMORY
 
 
 class TestWhatTheChildProcessActuallySees:
@@ -713,3 +785,99 @@ class TestWhatTheChildProcessActuallySees:
             "the child could not read an ordinary variable, so the two tests "
             "above are asserting over an empty answer and prove nothing"
         )
+
+
+# ── folded in from test_tts_audit_fixes.py (KADEME 15b) ──────────────────
+#
+# That file was one docstring over three unrelated subjects: host
+# lifecycle, worker protocol, and provisioning. This is the worker half.
+# It came here whole; the triage that moved it also claimed
+# test_a_frame_bigger_than_the_pipe_buffer_round_trips was a stronger
+# version of test_it_round_trips_text_through_the_pipes above, and that
+# was wrong - the older one proves a real RIFF file reached the disk and
+# that a Turkish sentence survives the encoding, neither of which the
+# 20,000-character version looks at. Both kept.
+
+
+class TestDeathDiagnosis:
+    def test_a_worker_that_dies_before_hello_reports_its_exit_code(self, tmp_path):
+        """Exit 3 means "the environment is damaged" - the one diagnosis that
+        maps to a one-click fix. start() must not return success and let the
+        first request shrug with 'unavailable'."""
+        script = tmp_path / "dies_early.py"
+        script.write_text("import sys\nsys.exit(3)\n", encoding="utf-8")
+        c = WorkerClient(sys.executable, str(script))
+        with pytest.raises(WorkerFailure) as exc:
+            c.start(timeout=15)
+        assert exc.value.code == TTS_RUNTIME_BROKEN
+
+    def test_exit_two_without_oom_evidence_is_a_crash_not_oom(self, tmp_path):
+        """Exit 2 is also CPython's own usage-error code. 'Lower your memory
+        settings' must not be the advice for a missing file."""
+        c = WorkerClient(sys.executable, str(tmp_path / "no_such_script.py"))
+        with pytest.raises(WorkerFailure) as exc:
+            c.start(timeout=15)
+        assert exc.value.code == TTS_WORKER_CRASHED
+        assert exc.value.code != TTS_OUT_OF_MEMORY
+
+    def test_a_graceful_close_actually_exits_zero(self):
+        """The goodbye frame must really reach the child: before the fix the
+        writer thread died on a nulled attribute and every single close fell
+        through to terminate()."""
+        c = WorkerClient(sys.executable, FAKE)
+        c.start(timeout=30)
+        c.close(grace=5.0)
+        assert c.exit_code == 0, "the shutdown frame never reached the worker"
+
+    def test_an_unknown_code_from_the_worker_is_not_passed_through(self):
+        """The code crosses a process boundary; it is data. An unknown string
+        would reach the frontend and fall through to the generic toast."""
+        c = WorkerClient(sys.executable, FAKE)
+        c.start(timeout=30)
+        try:
+            with pytest.raises(WorkerFailure) as exc:
+                c.request(_wire.OP_LOAD, {"mode": "alien"})
+            assert exc.value.code == TTS_WORKER_FAILED
+        finally:
+            c.close(grace=0.2)
+
+    def test_pending_map_does_not_grow_with_successful_requests(self):
+        c = WorkerClient(sys.executable, FAKE)
+        c.start(timeout=30)
+        try:
+            for _ in range(10):
+                c.request(_wire.OP_PING)
+            assert len(c._pending) == 0
+        finally:
+            c.close(grace=0.2)
+
+    def test_a_frame_bigger_than_the_pipe_buffer_round_trips(self, tmp_path):
+        """The 4096-byte Windows pipe buffer is the module's headline hazard;
+        prove the dedicated writer/reader threads actually clear it."""
+        c = WorkerClient(sys.executable, FAKE)
+        c.start(timeout=30)
+        try:
+            big = "m" * 20_000
+            out = str(tmp_path / "big.wav")
+            res = c.request(_wire.OP_SYNTHESIZE, {"text": big, "out": out},
+                            timeout=30)
+            assert res["text_len"] == 20_000
+        finally:
+            c.close(grace=0.2)
+
+    def test_a_malformed_frame_does_not_kill_the_reader(self):
+        """One bad frame must be dropped like noise - before the fix it ended
+        the reader loop, whose cleanup then declared a live worker dead."""
+        assert _wire.decode('{"id": [1], "ok": true}') is not None  # decodes...
+        c = WorkerClient(sys.executable, FAKE)
+        c.start(timeout=30)
+        try:
+            # REAL junk on the wire (audit-2: the old line here was a no-op
+            # attribute access that injected nothing): the fake writes two
+            # non-frame lines onto the protocol channel mid-conversation.
+            assert c.request(_wire.OP_LOAD, {"mode": "midjunk"})["loaded"] is True
+            # The reader survived the junk and stays in sync.
+            assert c.request(_wire.OP_PING)["pong"] is True
+            assert c.alive
+        finally:
+            c.close(grace=0.2)

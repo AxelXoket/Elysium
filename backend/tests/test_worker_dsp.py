@@ -190,3 +190,58 @@ def test_dsp_numeric_checks_pass():
                           text=True, timeout=600, env=env)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "all dsp numeric checks passed" in proc.stdout
+
+
+#: The shape of the bug this module actually shipped once: `time_stretch`
+#: returning fewer samples than the rate implies, heard as a tail of digital
+#: silence. Applied ONLY to a throwaway copy.
+_TAIL_BUG = '''
+
+_orig_time_stretch = time_stretch
+
+
+def time_stretch(x, rate, *a, **k):
+    out = _orig_time_stretch(x, rate, *a, **k)
+    return out[:-700] if out.size > 1400 else out
+'''
+
+
+def test_the_numeric_check_would_notice_a_broken_stretch(tmp_path):
+    """The trap has to be shown to close.
+
+    Everything above trusts `dsp_numeric_check.py` to fail when the maths is
+    wrong. Nothing proved that. A check that had itself broken - an import that
+    stopped resolving, a `check()` that stopped counting failures, an exit code
+    nobody read - would report success forever, and this file would stay green
+    while the DSP rotted.
+
+    So: run the same script against a deliberately broken COPY of _dsp.py in a
+    throwaway tree, and require it to fail. Nothing real is touched. The break
+    is the one this module already shipped once, so a green result here would
+    mean the check cannot catch its own history.
+    """
+    exe = _numpy_interpreter()
+    if exe is None:
+        pytest.skip("no numpy-capable interpreter; see the test above")
+
+    pkg = tmp_path / "tts" / "worker"
+    pkg.mkdir(parents=True)
+    (tmp_path / "tts" / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "_dsp.py").write_text(
+        WORKER_DSP.read_text(encoding="utf-8") + _TAIL_BUG, encoding="utf-8")
+    # The script resolves the package from its OWN parents[1], so the copy has
+    # to sit in a `tests/` folder of the throwaway tree to win the import.
+    (tmp_path / "tests").mkdir()
+    broken_check = tmp_path / "tests" / NUMERIC.name
+    broken_check.write_text(NUMERIC.read_text(encoding="utf-8"),
+                            encoding="utf-8")
+
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    proc = subprocess.run([exe, str(broken_check)], capture_output=True,
+                          text=True, timeout=600, env=env)
+    assert proc.returncode != 0, (
+        "the numeric check passed a DSP that returns short - it is not "
+        "checking anything:\n" + proc.stdout)
+    assert "the output is the length the rate implies" in proc.stdout
+    assert "all dsp numeric checks passed" not in proc.stdout

@@ -60,6 +60,15 @@ RECORDS = {r["code"]: r for r in
 #: renamed fixture, a moved conftest, or an `install()` that silently stopped
 #: running would all turn this gate green while proving nothing. That is the
 #: exact failure this repository has already had twice.
+#:
+#: RE-MEASURED 2026-08-11, KADEME 16a. The margin above was one, and the test
+#: rewrite has been moving, folding and deleting tests across the whole suite,
+#: which is precisely the traffic this number rides on. A full run now observes
+#: 62, not 59. The floor stays at 58 rather than rising to match: it is the
+#: count of codes NAMED IN ASSERTIONS, which is the thing that has to be true,
+#: while the observed figure also counts codes a test crossed on its way
+#: somewhere else. Raising the floor to the observed number would make every
+#: future deletion of an unrelated test a red gate here.
 _OBSERVED_FLOOR = 58
 
 

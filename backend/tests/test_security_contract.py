@@ -131,6 +131,23 @@ CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "::TestLaunchClearsWhatTheLastSessionLeft"
         "::test_audio_from_a_previous_session_does_not_survive",
     )),
+    # KADEME 15b: this stood in UNPROVEN saying "no test triggers the ordinary
+    # app-exit path and checks the voice cache afterwards". The entry was
+    # stale - the test existed, in test_tts_audit_fixes.py, and nobody had
+    # registered it. The chain is proven in two halves because that is how it
+    # is built: the exit hook reaches THIS host exactly once, and the teardown
+    # it runs leaves no audio behind.
+    ("on exit and on the next launch", (
+        "tests/test_tts_host.py"
+        "::TestItLetsGo"
+        "::test_process_teardown_wipes_the_audio_cache",
+        "tests/test_tts_host.py"
+        "::TestItLetsGo"
+        "::test_process_teardown_reaches_the_current_host_exactly_once",
+        "tests/test_audio_cache_launch_wipe.py"
+        "::TestLaunchClearsWhatTheLastSessionLeft"
+        "::test_audio_from_a_previous_session_does_not_survive",
+    )),
 )
 
 
@@ -422,10 +439,6 @@ UNPROVEN: tuple[tuple[str, str], ...] = (
      "elsewhere in this file; nothing tests that a passphrase specifically "
      "cannot leak into a log line, for instance through an exception "
      "message during a failed unlock."),
-    ("on exit and on the next launch",
-     "the launch-clears-audio leg is proven (see CLAIMS); no test "
-     "triggers the ordinary app-exit path and checks the voice cache "
-     "afterwards."),
     ("downloads from GitHub and PyPI, uploads nothing",
      "the installer's own network behaviour (which hosts, one-way "
      "transfer) is not exercised by any test; testable with a mocked "

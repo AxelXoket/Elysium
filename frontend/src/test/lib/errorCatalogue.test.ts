@@ -56,6 +56,20 @@ describe("the error catalogue", () => {
   });
 
   it("gives every catalogued code a sentence", () => {
+    // KADEME 16b folded two hand-kept lists into this pair of checks, and
+    // their history belongs here now. errorMappingG10.test.ts named four codes
+    // reachable from routers/vault.py that were absent from the map:
+    // passphrase_too_long, vault_already_initialized, vault_not_initialized,
+    // each sitting two lines below a sibling that WAS mapped correctly, plus
+    // cross_origin_denied, which was listed in the contract table and missing
+    // from the map, so the invariant was wrong in both directions at once.
+    // ErrorHandling.test.ts named eleven more (proxy_unhealthy, timeout,
+    // proxy_url_required, invalid_proxy_scheme, proxy_url_invalid,
+    // api_key_required_by_openrouter, invalid_openrouter_models_response,
+    // openrouter_models_error, character_json_too_large,
+    // invalid_character_json, character_name_required). All fifteen are in the
+    // catalogue, so all fifteen are covered by iterating it. A hand-kept list
+    // is exactly the thing that goes stale while looking like coverage.
     const missing = CODES.filter((c) => !isKnownErrorCode(c));
     expect(missing, `no sentence in errorMessages.ts for: ${missing.join(", ")}`)
       .toEqual([]);
@@ -82,6 +96,42 @@ describe("the error catalogue", () => {
     const orphans = knownErrorCodes().filter((k) => !catalogued.has(k));
     expect(orphans, `in errorMessages.ts, not in the catalogue: ${orphans.join(", ")}`)
       .toEqual([]);
+  });
+
+  it("has no sentence that could tell a reader their half reply was kept", () => {
+    // CHARACTERISATION, not approval. See KUSUR-DEFTERI K-26.
+    //
+    // When a provider drops mid-reply the backend sometimes keeps the partial
+    // and sometimes throws it away, and the frontend knows which: partial_saved
+    // picks failSendKeepingPartial over failSend. But the error handed to the
+    // reader is built by makeApiError(status, code), which carries only those
+    // two fields, so both branches end at the same code and therefore the same
+    // sentence. The reader is left looking at half a reply with no way to know
+    // whether it is saved or a ghost that vanishes on reload, and those two
+    // situations call for opposite actions: resending after a KEPT partial
+    // appends a duplicate exchange.
+    //
+    // The house style already answers "was it saved?" in three other places:
+    // image_output_rejected says "Nothing was saved", edit_conflict says "Your
+    // edit was not saved", tts_runtime_install_failed says "Nothing was left
+    // half-installed". The one place the answer decides what the reader should
+    // do next is the one that stays quiet.
+    //
+    // This pins the absence over the provider failures, which are the codes
+    // that can arrive after text has already started arriving. The day one of
+    // them can say it, this goes red and the ledger entry closes.
+    const providerFailures = CODES.filter((c) => c.startsWith("openrouter_"));
+    expect(
+      providerFailures.length,
+      "no provider failure codes found, so this test is measuring nothing",
+    ).toBeGreaterThan(3);
+
+    const speaksToIt = providerFailures.filter((c) =>
+      /\b(partial|half|kept|saved|discarded)\b/i.test(getErrorMessage(c)));
+    expect(
+      speaksToIt,
+      `these now mention it, so the distinction may be sayable: ${speaksToIt.join(", ")}`,
+    ).toEqual([]);
   });
 
   it("keeps an escape hatch honest by making it say why", () => {

@@ -122,30 +122,45 @@ class TestJoiningTheParts:
 class TestTheEngineSaysWhenItRanOutOfBudget:
     """Reaching max_new_tokens means the speech was CUT - the model was still
     talking. Nothing reported it: no error, no event, no log line, and the
-    audio ended exactly like a reply that had finished."""
+    audio ended exactly like a reply that had finished.
 
-    def _source(self):
-        return (Path(__file__).resolve().parent.parent
-                / "tts" / "worker" / "fish_s2.py").read_text(encoding="utf-8")
+    KADEME 14: all three of these used to read fish_s2.py as TEXT and look for
+    substrings. That could not tell a report that fires from one written into
+    dead code, and the file next door had already shown the technique failing -
+    a bare search for "length_capped" finds the COMMENT that names it before
+    the call. They run the worker now, through fish_synth_harness.py.
+    """
 
-    def test_the_worker_compares_what_it_produced_against_the_budget(self):
-        source = self._source()
-        assert "length_capped" in source, "hitting the cap is still silent"
-        assert "produced >= int(max_new) - 1" in source
+    def _run(self, **kw):
+        import fish_synth_harness as synth
 
-    #: The event ITSELF, not a comment that happens to name it. The eviction
-    #: comment above `_free_for_codec` quotes "length_capped" while explaining
-    #: the OOM it guards against, and a bare substring search finds that first.
-    _REPORT = '_progress(send, "length_capped"'
+        return synth.synthesize(**kw)
+
+    def test_a_reply_that_hits_the_budget_is_reported_as_cut(self):
+        # 640, not the 800 that is both the engine default and the
+        # harness default: the report has to carry the REAL budget, and a
+        # hard-coded default would look identical at 800.
+        run = self._run(produced=640, max_new=640)
+        report = run.stage("length_capped")
+        assert report is not None, "hitting the cap is still silent"
+        assert report["produced_tokens"] == 640
+        assert report["limit"] == 640
+
+    def test_a_reply_that_finished_on_its_own_is_not_reported_as_cut(self):
+        """The half that makes the other half mean something: a report that
+        fired on every reply would tell the user nothing."""
+        assert self._run(produced=120, max_new=640).stage("length_capped") is None
 
     def test_the_report_says_what_to_do_about_it(self):
-        source = self._source()
-        block = source[source.index(self._REPORT):]
-        block = block[:400]
-        assert "cut short" in block
-        assert "Max length" in block or "smaller pieces" in block
+        """A notice with no remedy is just an alarm."""
+        note = self._run(produced=640, max_new=640).stage("length_capped")["note"]
+        assert "cut short" in note
+        assert "Max length" in note and "smaller pieces" in note
 
-    def test_it_is_checked_before_the_audio_is_decoded(self):
-        """So the report travels with the same request, not after it."""
-        source = self._source()
-        assert source.index(self._REPORT) < source.index('_progress(send, "decoding"')
+    def test_it_is_reported_before_the_audio_is_decoded(self):
+        """So the report travels with the same request, not after it - the
+        decode is the slow part, and a user who has already given up on the
+        reply is not helped by an explanation that arrives afterwards."""
+        stages = self._run(produced=640, max_new=640).stages()
+        assert "length_capped" in stages and "decoding" in stages
+        assert stages.index("length_capped") < stages.index("decoding")

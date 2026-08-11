@@ -67,17 +67,66 @@ describe("FE-1B ErrorToastStack", () => {
     expect(screen.queryByText("Click dismisses this toast.")).not.toBeInTheDocument();
   });
 
-  it("auto-dismiss removes a toast after timer advancement", () => {
+  it("keeps a toast up long enough to read, then removes it", () => {
+    // The upper bound alone was a one-sided test. AUTO_DISMISS_MS above is a
+    // COPY of the production constant, not an import of it, so cutting the
+    // real one to 1200ms left this green: the test advanced 4680ms and found
+    // the toast gone, which is exactly what it asked for. A reader who never
+    // got to finish the sentence would have noticed; the suite would not.
+    //
+    // READING_FLOOR is not the production value restated. It is the weakest
+    // claim worth making, that a sentence stays up for at least three seconds,
+    // so this stays green if somebody deliberately tunes 4500 and red if the
+    // toast starts flashing past.
+    const READING_FLOOR = 3_000;
+
     useErrorStore
       .getState()
       .pushErrorDirect("custom_error", "Auto dismisses this toast.");
     render(<ErrorToastStack />);
 
     act(() => {
-      vi.advanceTimersByTime(AUTO_DISMISS_MS + EXIT_ANIMATION_MS);
+      vi.advanceTimersByTime(READING_FLOOR);
+    });
+    expect(
+      screen.queryByText("Auto dismisses this toast."),
+      "the toast went away before it could be read",
+    ).toBeInTheDocument();
+
+    act(() => {
+      vi.advanceTimersByTime(AUTO_DISMISS_MS + EXIT_ANIMATION_MS - READING_FLOOR);
+    });
+    expect(screen.queryByText("Auto dismisses this toast.")).not.toBeInTheDocument();
+  });
+
+  it("counts down while nobody is looking at the tab", async () => {
+    // CHARACTERISATION, not approval. See KUSUR-DEFTERI K-25.
+    //
+    // The countdown is a plain window.setTimeout with no visibilitychange,
+    // blur or hover listener anywhere in the component. So a toast raised the
+    // moment the user alt-tabs away is gone before they look back, and an
+    // error nobody saw is an error nobody was told about. The pause pattern
+    // already exists in this repo, in useSmoothStreamText, and is not reused
+    // here. If it ever is, this test goes red and the ledger entry closes.
+    useErrorStore
+      .getState()
+      .pushErrorDirect("custom_error", "Raised while you were away.");
+    render(<ErrorToastStack />);
+
+    act(() => {
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => "hidden",
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+      window.dispatchEvent(new Event("blur"));
     });
 
-    expect(screen.queryByText("Auto dismisses this toast.")).not.toBeInTheDocument();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(AUTO_DISMISS_MS + EXIT_ANIMATION_MS);
+    });
+
+    expect(screen.queryByText("Raised while you were away.")).not.toBeInTheDocument();
   });
 
   it("shows at most 5 visible toasts and queues extras", () => {

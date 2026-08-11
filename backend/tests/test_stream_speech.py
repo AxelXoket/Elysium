@@ -156,6 +156,52 @@ def test_an_engine_failure_stops_everything_and_is_reported_once():
         sp.close()
 
 
+def test_a_reply_is_not_finished_while_its_last_sentence_is_still_being_made():
+    """The premature-done bug, pinned at THIS layer.
+
+    A reply that ended and a reply that lost its ending look identical on the
+    wire, so `finished` going true one sentence early costs the user the end of
+    what was said. `speech_queue.py` has its own test for this; nothing tested
+    the speaker on top of it, and the speaker is what the SSE poller asks.
+
+    KADEME 15a measured something worth writing down: deleting `and not
+    self._synthesising` from `finished` leaves the whole suite green, and that
+    is NOT a decorative test - the queue's own `_in_flight` flag closes the same
+    window one layer down, and the `not self._out` clause closes what is left.
+    The speaker's flag is belt and braces. Anyone tempted to tidy the
+    redundancy away should know it is redundancy on purpose, and that this test
+    watches the composed behaviour rather than either flag.
+    """
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking(text):
+        entered.set()
+        assert release.wait(5.0), "the test never released the engine"
+        return {"path": "/a.wav", "seconds": 1.0}
+
+    sp = StreamSpeaker(blocking, preroll_seconds=0.0)
+    try:
+        sp.feed("Only one sentence here.")
+        sp.finish()                    # closing is true from here on
+        assert entered.wait(5.0), "the engine was never called"
+        # Everything else that could hold `finished` down is already satisfied:
+        # the stream is closed and nothing is waiting to be handed over. The
+        # only thing left is the sentence in flight.
+        assert sp.drain() == []
+        assert sp.finished is False, (
+            "reported finished while the last sentence was still in the engine")
+
+        release.set()
+        assert sp.wait_idle(5.0)
+        assert sp.finished is False, "the made audio has not been taken yet"
+        assert [c["text"] for c in sp.drain()] == ["Only one sentence here."]
+        assert sp.finished is True
+    finally:
+        release.set()
+        sp.close()
+
+
 def test_a_failure_after_some_audio_keeps_what_was_already_handed_over():
     calls = []
 
@@ -171,6 +217,12 @@ def test_a_failure_after_some_audio_keeps_what_was_already_handed_over():
         sp.finish()
         assert sp.wait_idle(5.0)
         assert sp.failed
+        # The half the name is about, and nothing checked it: the sentence that
+        # HAD been synthesised is still there to play. A build that threw the
+        # good audio away on failure passed this test unchanged.
+        assert [c["text"] for c in sp.drain()] == ["One."]
+        # ... and it stopped rather than working through the backlog.
+        assert calls == ["One.", "Two."], calls
     finally:
         sp.close()
 

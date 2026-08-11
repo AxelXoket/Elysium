@@ -127,7 +127,12 @@ class TestSettings:
         uid = self._uid(client, root)
         r = client.post(f"/api/v1/tts/models/{uid}/settings",
                         json={"values": {"temperature": 0.8, "evil_kwarg": "rm -rf"}})
+        # Absence alone proved nothing: an endpoint that dropped the whole
+        # body, or refused the request outright, satisfied it too. The
+        # legitimate key has to survive the same call.
+        assert r.status_code == 200, r.text
         assert "evil_kwarg" not in r.json()["values"]
+        assert r.json()["values"]["temperature"] == 0.8
 
     def test_bad_enum_is_rejected_with_its_code(self, client, monkeypatch, tmp_path):
         root = _point_models_at(monkeypatch, tmp_path)

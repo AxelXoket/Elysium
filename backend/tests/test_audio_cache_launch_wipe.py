@@ -78,6 +78,12 @@ class TestTheHostAndTheLaunchPathShareOneDeletion:
     def test_the_method_still_deletes(self, cache: pathlib.Path) -> None:
         # wipe_cache moved its body out; the guarantee its callers rely on -
         # the vault lock and shutdown - has to be unchanged.
+        #
+        # KADEME 16a folded test_silent_failures.py's duplicate of this in.
+        # Its history is worth keeping: it started life as
+        # `assert callable(VoiceHost.wipe_cache)`, which stays true of a method
+        # that returns None, raises, or deletes nothing at all. The count and
+        # the empty directory below are what replaced that.
         _speak(cache, "speak-1-1.wav")
         _speak(cache, "speak-2-2.wav")
 

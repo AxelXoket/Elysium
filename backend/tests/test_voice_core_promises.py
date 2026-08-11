@@ -277,10 +277,46 @@ def test_the_heartbeat_stops_before_the_caller_sends_anything_else(monkeypatch):
 
 def test_warmup_wraps_both_compile_attempts_in_a_heartbeat():
     """Including the eager retry: it runs on the machine that has just proved
-    it is the slow kind."""
-    source = (BACKEND / "tts" / "worker" / "fish_s2.py").read_text(encoding="utf-8")
-    warmup = source.split("def _warmup", 1)[1].split("\ndef ", 1)[0]
-    assert warmup.count("with _heartbeat(") == 2
+    it is the slow kind, so it is the attempt LEAST able to afford silence.
+
+    KADEME 15a: this used to slice `_warmup` out of the file as text and count
+    the substring `with _heartbeat(` twice. That is satisfied by two calls in
+    dead code and broken by a rename, and it cannot see whether either block
+    actually emitted anything. `_warmup` runs here instead, with a compile that
+    fails once, and the frames are counted from the wire - the two blocks carry
+    different notes, so each attempt can be accounted for separately.
+    """
+    import fish_synth_harness as synth
+
+    module = synth.load_worker()
+    module._HEARTBEAT_SECONDS = 0.02
+    module._engine = lambda: {"decode_eager": object()}
+    module._sweep = lambda: None
+
+    attempts: list[int] = []
+
+    def generation(*a, **kw):
+        attempts.append(1)
+        time.sleep(0.12)          # long enough for the beat to be heard
+        if len(attempts) == 1:
+            raise RuntimeError("no MSVC toolchain on this machine")
+        return None
+
+    module._run_generation = generation
+
+    sent: list[dict] = []
+    module._warmup(sent.append)
+
+    assert attempts == [1, 1], "the eager retry did not happen"
+    assert module.STATE["compile_broken"] is True, (
+        "the fallback was not recorded as a property of the machine")
+
+    beats = [e.get("note") for e in sent if e.get("stage") == "compiling"]
+    first = [n for n in beats if n == "compiling the model for this GPU"]
+    retry = [n for n in beats if n == "compiling failed; retrying without it"]
+    assert first, "the first compile ran without a heartbeat"
+    assert retry, "the eager RETRY ran without a heartbeat - the host's silence "\
+                  "budget kills it at 180s and nothing would say why"
 
 
 # ---------------------------------------------------------------------------
