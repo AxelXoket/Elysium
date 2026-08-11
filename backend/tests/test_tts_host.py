@@ -7,6 +7,7 @@ when nobody has spoken for a while, and - the one that decides whether this
 feature feels broken - saying so out loud when the worker dies on its own.
 """
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from tts.errors import (
     TTS_OUT_OF_MEMORY,
     TTS_RUNTIME_MISSING,
     TTS_WORKER_CRASHED,
+    TTS_WORKER_UNAVAILABLE,
 )
 from tts.worker_client import WorkerFailure
 
@@ -284,6 +286,18 @@ class TestItLetsGo:
             monkeypatch.setattr(tts_host, "_TEARDOWN_HOOKED", hooked, raising=False)
 
 
+    def test_process_teardown_wipes_the_audio_cache(self, host):
+        """Closing the window is the NORMAL way the app ends, and it does not
+        go through the vault. The conversation must not stay audible on disk
+        because the exit was the X button instead of the lock."""
+        host.load(_model(), {})
+        host.speak("something private", {})
+        cache = Path(config.TTS_CACHE_DIR)
+        assert list(cache.glob("*.wav"))
+        host._teardown(grace=0.2)
+        assert not list(cache.glob("*.wav"))
+
+
 class TestWorkerScriptResolution:
     def test_in_a_dev_checkout_it_points_at_the_package(self):
         path = tts_host.worker_script("fish_s2")
@@ -349,23 +363,171 @@ def _host_source() -> str:
             / "tts" / "host.py").read_text(encoding="utf-8")
 
 
-def test_unload_does_not_wipe_the_audio_cache():
-    source = _host_source()
-    body = source[source.index("def unload(self"):]
-    body = body[: body.index("def _drop_client")]
-    assert "self.wipe_cache()" not in body, (
-        "unloading still deletes audio that may be playing"
-    )
-
-
-def test_the_lock_path_still_wipes():
-    """The privacy promise is kept where it is actually made."""
-    source = _host_source()
-    body = source[source.index("def on_vault_locked"):]
-    body = body[: body.index("def _teardown")]
-    assert "self.wipe_cache()" in body
-
-
 def test_wipe_cache_still_exists_for_the_callers_that_need_it():
     from tts.host import VoiceHost
     assert callable(VoiceHost.wipe_cache)
+
+
+# ── folded in from test_tts_audit_fixes.py (KADEME 15b) ──────────────────
+#
+# The host third of that file. Two of these REPLACE tests that used to
+# live here as source-text scans: `test_unload_does_not_wipe_the_audio_cache`
+# asserted the string "self.wipe_cache()" was absent from unload()'s body,
+# and `test_the_lock_path_still_wipes` asserted it was present in the lock
+# path. The versions below load a model, speak, and then look at the wav
+# files - which is the promise, rather than the spelling of it.
+#
+# The triage also claimed test_a_crashed_workers_client_is_fully_closed was
+# a stronger version of test_a_worker_that_dies_on_its_own_leaves_a_visible_error.
+# It is not: the older one asserts the error code the user is shown, the
+# newer one asserts the OS job handle was not leaked. Both kept.
+
+
+def _track_clients(monkeypatch):
+    """Every WorkerClient the host builds, in order.
+
+    Travelled with the tests below rather than being left behind: a moved
+    test depends on its helpers and its constants, not only on its own
+    body, and this one was forgotten once already in this fold.
+    """
+    created = []
+    real = tts_host.WorkerClient
+
+    def tracking(*a, **kw):
+        c = real(*a, **kw)
+        created.append(c)
+        return c
+
+    monkeypatch.setattr(tts_host, "WorkerClient", tracking)
+    return created
+
+
+class TestFailedLoadLeaksNothing:
+    def test_an_engine_error_during_load_ends_the_worker_process(
+        self, host, monkeypatch
+    ):
+        """The audit's repro: three failed loads left three live workers, each
+        invisible to unload/lock/shutdown, each holding VRAM. The client is
+        local until published, so every failure path must end it."""
+        created = _track_clients(monkeypatch)
+        for _ in range(3):
+            with pytest.raises(WorkerFailure):
+                host.load(_model(), {"__fake_mode": "coded"})
+        assert len(created) == 3
+        deadline = time.time() + 10
+        while time.time() < deadline and any(c.alive for c in created):
+            time.sleep(0.1)
+        assert not any(c.alive for c in created), (
+            "a failed load left a worker running with no reference to it")
+
+
+class TestTeardownRacingALoad:
+    def test_an_unload_during_the_load_round_trip_wins(self, host, monkeypatch):
+        """The audit scenario: lock the vault while a model loads. The load
+        finishes AFTER the teardown - it must not publish a live worker into
+        an app that already let go."""
+        created = _track_clients(monkeypatch)
+        results = {}
+
+        def slow_load():
+            try:
+                host.load(_model(), {"__fake_mode": "slow", "secs": 2.0})
+                results["outcome"] = "loaded"
+            except WorkerFailure as exc:
+                results["outcome"] = exc.code
+
+        t = threading.Thread(target=slow_load, daemon=True)
+        t.start()
+        deadline = time.time() + 10
+        while time.time() < deadline and not created:
+            time.sleep(0.05)
+        time.sleep(0.3)                  # the OP_LOAD round trip is in flight
+        host.unload("vault locked mid-load")
+        t.join(timeout=30)
+
+        assert results["outcome"] == TTS_WORKER_UNAVAILABLE
+        snap = host.snapshot()
+        assert snap["state"] == "unloaded", "the aborted load resurrected itself"
+        deadline = time.time() + 10
+        while time.time() < deadline and any(c.alive for c in created):
+            time.sleep(0.1)
+        assert not any(c.alive for c in created)
+
+
+class TestNothingOutlivesTheSession:
+    # test_process_teardown_wipes_the_audio_cache moved to
+    # test_tts_host.py::TestItLetsGo (KADEME 15b). It is the proof of a
+    # documented privacy claim ("wiped ... on exit"), and a proof has to
+    # live where the registry in test_security_contract.py can point at
+    # it and where a reader of the host tests will meet it.
+
+    def test_plain_unload_keeps_audio_that_may_still_be_playing(self, host):
+        """VRAM and privacy have different lifetimes.
+
+        This used to assert the opposite, and the reaper that once lived here
+        came through unload() - so a model that
+        unloaded while somebody was listening deleted the wav mid-playback: the
+        browser's in-flight request for the rest of the file failed and the
+        sentence stopped mid-word, with nothing to explain it.
+
+        Nothing about the promise changed. It is kept at the moments the
+        SESSION ends - the vault lock and teardown cases above and below this
+        one, both still asserted. An idle GPU is not one of those moments.
+        """
+        host.load(_model(), {})
+        host.speak("also private", {})
+        host.unload("user asked")
+        assert list(Path(config.TTS_CACHE_DIR).glob("*.wav"))
+
+    def test_locking_the_vault_still_wipes(self, host):
+        host.load(_model(), {})
+        host.speak("also private", {})
+        host.on_vault_locked()
+        assert not list(Path(config.TTS_CACHE_DIR).glob("*.wav"))
+
+    def test_unload_dismisses_the_last_error(self, host):
+        with pytest.raises(WorkerFailure):
+            host.load(_model(), {"__fake_mode": "oom"})
+        assert host.snapshot()["error_code"] == TTS_OUT_OF_MEMORY
+        host.unload("dismissed")
+        assert host.snapshot()["error_code"] is None
+
+
+class TestCrashHousekeeping:
+    def test_a_crashed_workers_client_is_fully_closed(self, host):
+        """Noticing the death is not enough: the dead worker's client still
+        holds the job handle, a blocked stdin writer and three pipes."""
+        host.load(_model(), {})
+        client = host._client
+        client._proc.kill()
+        deadline = time.time() + 15
+        while time.time() < deadline and host.snapshot()["state"] != "error":
+            host.poll_health()
+            time.sleep(0.1)
+        assert client._job._handle is None, "the job handle was leaked"
+
+    def test_the_host_polls_itself_without_any_ui(self, host, monkeypatch):
+        """A minimised window polls nothing. A dead worker must be noticed anyway.
+
+        This used to watch the idle reaper reclaim VRAM. The reaper is gone -
+        the vault lock replaced it - so the observable effect is now the other
+        thing the beat exists for: a worker that dies on its own has to be
+        reported without anybody looking at the UI, or the app sits there
+        claiming a model is loaded that is not.
+
+        The beat is one MODULE-LEVEL thread over whichever host is current
+        (audit-2 killed the per-instance while-True threads), so the test's
+        host must BE the current one - exactly what the app does via get_host.
+        """
+        from tts import host as tts_host_module
+
+        monkeypatch.setattr(config, "TTS_HEALTH_POLL_S", 0.1, raising=False)
+        monkeypatch.setattr(tts_host_module, "_HOST", host, raising=False)
+        host.load(_model(), {})
+        client = host._client
+        client._proc.kill()
+        deadline = time.time() + 15
+        while time.time() < deadline and host.snapshot()["state"] != "error":
+            time.sleep(0.1)              # NOTE: no poll_health() calls here
+        assert host.snapshot()["state"] == "error"
+        assert not client.alive

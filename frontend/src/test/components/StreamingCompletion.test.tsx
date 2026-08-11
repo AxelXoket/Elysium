@@ -1047,4 +1047,144 @@ describe("useStreamingCompletion - ghost-message chain (v1.1)", () => {
     });
     expect(deleteController.signal.aborted).toBe(true);
   });
+
+  it("two chats failing the same way produce two indistinguishable toasts", async () => {
+    // CHARACTERISATION, not approval. See KUSUR-DEFTERI K-21.
+    //
+    // Streams deliberately keep running when the reader moves to another
+    // chat; streamRegistry exists precisely so the chat list can reach them.
+    // That part is design, not a defect. The defect is what happens when one
+    // of those background streams FAILS: the toast goes into a global store
+    // whose ErrorEvent carries id, message, code, createdAt, severity, and
+    // nothing else. Not a chat id, not a message id.
+    //
+    // So a regenerate that fails in a conversation the reader has left raises
+    // its toast over whatever conversation is on screen, and there is no
+    // field anyone could route it by even if the UI wanted to. This test
+    // drives two chats failing identically and shows the two reports are the
+    // same object shape with the same contents: nothing tells them apart.
+    //
+    // The send path does this correctly, with a chat-keyed Map in ChatCanvas.
+    // The day this store learns which chat an error belongs to, this goes red.
+    const seed = [msg(2, "user", "prompt"), msg(3, "assistant", "old answer")];
+    const vars = { chatId: 1, messageId: 3, anchor: 3, modelId: "m" };
+
+    const qc = createTestQueryClient();
+    qc.setQueryData<Message[]>(keys.messages(1), seed);
+    qc.setQueryData<Message[]>(keys.messages(2), seed);
+
+    const streamA = controlledSseResponse();
+    const streamB = controlledSseResponse();
+    mockFetchWithStreams({
+      "/chats/1/messages/3/regenerate/stream": { response: () => streamA.response },
+      "/chats/2/messages/3/regenerate/stream": { response: () => streamB.response },
+    });
+
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
+    });
+
+    let a!: Promise<void>;
+    let b!: Promise<void>;
+    await act(async () => {
+      a = result.current.startRegenerate({ ...vars, chatId: 1 });
+      b = result.current.startRegenerate({ ...vars, chatId: 2 });
+    });
+
+    for (const [stream, promise] of [[streamA, a], [streamB, b]] as const) {
+      stream.emit({ type: "error", status: 429, code: "openrouter_rate_limited" });
+      stream.close();
+      await act(() => promise);
+    }
+
+    // TWO conversations failed. The reader is told ONCE.
+    //
+    // This is worse than the ambiguity it was written to pin. The store
+    // suppresses a push whose code and message match a visible toast, which
+    // is the right rule when the same failure repeats in one place. Here the
+    // two failures are in different conversations, and because ErrorEvent has
+    // no field naming a chat, they are identical events as far as the store
+    // can see. So the second chat's failure is not merely unattributed, it is
+    // swallowed: nothing on screen ever says it happened.
+    const toasts = useErrorStore.getState().errors;
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].code).toBe("openrouter_rate_limited");
+    expect(useErrorStore.getState().queuedErrors).toHaveLength(0);
+
+    // And both streams really did fail, so this is one report for two events.
+    expect(result.current.streamingByChat.has(1)).toBe(false);
+    expect(result.current.streamingByChat.has(2)).toBe(false);
+  });
+
+  it("clearing a chat empties the transcript the reader is looking at", async () => {
+    // The abort half of Clear is tested above; the part that makes Clear
+    // VISIBLE was not tested anywhere. onSuccess writes [] straight into the
+    // messages cache because the server state is known, and that write is the
+    // only thing that empties the screen: staleTime is 10s and nothing else
+    // refetches. Delete the line and Clear looks like it did nothing at all,
+    // which is the worst outcome for a destructive action - the reader presses
+    // it again.
+    const qc = createTestQueryClient();
+    qc.setQueryData(keys.messages(1), [
+      msg(1, "user", "something private"),
+      msg(2, "assistant", "a reply"),
+    ]);
+    mockFetchWithStreams({
+      "/chats/1/clear": {
+        response: () => jsonResponse({ ok: true, deleted_count: 2 }),
+      },
+    });
+
+    const { result } = renderHookWithQueryClient(() => useClearChat(), {
+      client: qc,
+    });
+    await act(async () => {
+      await result.current.mutateAsync(1);
+    });
+
+    expect(messagesInCache(qc)).toEqual([]);
+  });
+
+  it("aborts in-flight streams when the hook host unmounts", async () => {
+    // Moved here in KADEME 17a from ChatLayerBugFixes.test.tsx (its "F4"),
+    // a file named after a category of work rather than a subject: seven
+    // tests across four unrelated subsystems, together only because one
+    // audit pass found them on the same day. This one is the hook's own
+    // lifetime, which is this file.
+    //
+    // The window it guards: closing the app or unmounting the tree while a
+    // reply is arriving. Without the abort the request keeps running and
+    // keeps burning tokens for a reader who is no longer there.
+    const qc = createTestQueryClient();
+    const stream = controlledSseResponse();
+    mockFetchWithStreams({
+      "/chats/1/complete/stream": { response: () => stream.response },
+    });
+
+    const abortSpy = vi.spyOn(AbortController.prototype, "abort");
+    const { result, unmount } = renderHookWithQueryClient(
+      () => useStreamingCompletion(),
+      { client: qc },
+    );
+
+    let sendPromise!: Promise<void>;
+    await act(async () => {
+      sendPromise = result.current.startSend({
+        chatId: 1,
+        message: "stream me",
+        modelId: "m",
+      });
+    });
+    await waitFor(() => {
+      expect(result.current.streamingByChat.has(1)).toBe(true);
+    });
+    expect(abortSpy).not.toHaveBeenCalled();
+
+    unmount();
+    expect(abortSpy).toHaveBeenCalled();
+
+    // Let the aborted request settle so no dangling promise remains. The
+    // abort already tore down the stream, so there is nothing more to close.
+    await act(() => sendPromise);
+  });
 });

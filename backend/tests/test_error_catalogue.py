@@ -127,8 +127,25 @@ def test_every_error_site_resolves_to_a_declared_alphabet() -> None:
 
 
 def test_every_code_the_backend_can_emit_is_catalogued() -> None:
-    """Direction (a)."""
-    missing = sorted(all_codes() - set(RECORDS))
+    """Direction (a).
+
+    The floor is not decoration and it does not belong only to the neighbour
+    that measures it. This assertion is a SUBSET check, and a subset check over
+    an empty set passes: a scan that reached no files, a moved backend root, a
+    walker that silently stopped recognising the three shapes it looks for
+    would all leave `missing` empty and this test green while proving nothing.
+    `test_the_enumerator_is_not_silently_empty` catches that today, but it is a
+    separate test, so running this one alone (a `-k` filter, a bisect, a future
+    file split) drops the guard on the floor. It is one line; it lives here.
+    """
+    codes = all_codes()
+    assert len(codes) >= _LITERAL_FLOOR, (
+        f"the census produced {len(codes)} codes, which is below the measured "
+        f"floor of {_LITERAL_FLOOR}. Nothing below this line means anything "
+        f"until that is explained."
+    )
+
+    missing = sorted(codes - set(RECORDS))
     if not missing:
         return
 

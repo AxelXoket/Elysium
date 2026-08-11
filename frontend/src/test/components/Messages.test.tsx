@@ -56,6 +56,30 @@ describe("Messages", () => {
     ).toBeInTheDocument();
   });
 
+  it("a history that failed to load does not read as a chat with no history", async () => {
+    // The worst sentence this surface can produce. MessageList checks `error`
+    // before the empty branch, and the empty branch says "no messages yet" -
+    // so if those two ever swap, or the error stops reaching the component,
+    // somebody whose conversation failed to load is told their conversation
+    // is empty. Nothing was driving the error branch at all: no test in this
+    // suite ever made /chats/:id/messages fail, which meant the ordering that
+    // keeps the two apart was never exercised.
+    mockFetch({
+      "/chats/1/messages": { status: 500, body: { detail: "internal_error" } },
+    });
+    useUiStore.setState({ selectedChatId: 1 });
+
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
+
+    expect(
+      await screen.findByText(/something went wrong/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/no messages yet/i),
+      "a failed load was presented as an empty conversation",
+    ).not.toBeInTheDocument();
+  });
+
   // T-29: Composer send is disabled
   it("T-29: composer send button is disabled", () => {
     renderWithQueryClient(<ChatCanvas />, { wrapper });

@@ -326,10 +326,28 @@ describe("abort with a partial reply", () => {
     // The chat list preview changed too.
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: keys.chats() });
 
+    // The delay is the point, so it gets a floor as well as a ceiling. This
+    // used to advance straight to 800ms and assert the resync had fired,
+    // which is a one-sided check: cutting ABORT_RESYNC_DELAY_MS from 750 to
+    // 50 leaves it green. The delay exists to give the server's disconnect
+    // handler time to write the partial, so a resync that fires too early
+    // refetches the OLD rows and the partial never appears.
+    //
+    // 700 is not the production constant restated. It is the weakest useful
+    // claim: still waiting most of a second in. Deliberately retuning 750
+    // stays green; collapsing it does not.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(700);
+    });
+    expect(
+      messageInvalidates(),
+      "the resync fired before the server could have written the partial",
+    ).toBe(1);
+
     // ...and the second one, after the server's disconnect handler has had
     // time to write the partial.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(800);
+      await vi.advanceTimersByTimeAsync(100);
     });
     expect(messageInvalidates()).toBe(2);
   });

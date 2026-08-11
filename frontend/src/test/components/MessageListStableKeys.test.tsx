@@ -136,6 +136,13 @@ describe("AnimatedListItem keeps its identity", () => {
       </AnimatedListItem>,
     );
     const animatedTag = animated.container.firstElementChild?.tagName;
+    // The floor. This comparison used to be the whole test, and with optional
+    // chaining on both sides a build where AnimatedListItem returned null in
+    // BOTH branches gave undefined === undefined and passed: the two renders
+    // agreed on nothing at all. The tag has to be a real element, and the
+    // child has to actually be in it.
+    expect(animatedTag).toBe("DIV");
+    expect(animated.getByTestId("child")).toBeInTheDocument();
     animated.unmount();
 
     const plain = render(
@@ -143,6 +150,7 @@ describe("AnimatedListItem keeps its identity", () => {
         <span data-testid="child">x</span>
       </AnimatedListItem>,
     );
+    expect(plain.getByTestId("child")).toBeInTheDocument();
     expect(plain.container.firstElementChild?.tagName).toBe(animatedTag);
   });
 

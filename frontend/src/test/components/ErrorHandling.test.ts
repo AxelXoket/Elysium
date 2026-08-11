@@ -225,29 +225,17 @@ describe("errorMessages", () => {
     );
   });
 
-  // Every newly added code must be recognized as a known contract code and
-  // must NOT fall through to the generic fallback message.
-  it("recognizes newly added codes as known (not generic fallback)", () => {
-    const newCodes = [
-      "proxy_unhealthy",
-      "timeout",
-      "proxy_url_required",
-      "invalid_proxy_scheme",
-      "proxy_url_invalid",
-      "api_key_required_by_openrouter",
-      "invalid_openrouter_models_response",
-      "openrouter_models_error",
-      "character_json_too_large",
-      "invalid_character_json",
-      "character_name_required",
-    ];
-    for (const code of newCodes) {
-      expect(isKnownErrorCode(code), `${code} should be known`).toBe(true);
-      expect(getErrorMessage(code)).not.toBe(
-        "Something went wrong. Please try again.",
-      );
-    }
-  });
+  // A hand-listed "recognizes newly added codes as known (not generic
+  // fallback)" test lived here and checked eleven codes for exactly two
+  // things: known, and not the fallback. Deleted in KADEME 16b.
+  // errorCatalogue.test.ts runs both checks over all 105 catalogued codes, and
+  // all eleven are in the catalogue, so the list could only fail alongside it
+  // while quietly needing hand-maintenance forever. The eleven names are
+  // recorded in that file.
+  //
+  // The test above it, "maps newly added backend codes to their specific
+  // messages", is NOT the same thing and stays: it pins exact wording, and a
+  // wrong-but-specific sentence passes the catalogue check and fails that one.
 });
 
 // ─── parseApiError ───────────────────────────────────────────────────────────
@@ -432,6 +420,40 @@ describe("errorStore", () => {
     expect(useErrorStore.getState().errors).toHaveLength(2);
   });
 
+  it("cannot see the queue when it dedupes, so a waiting error doubles", () => {
+    // CHARACTERISATION, not approval. See KUSUR-DEFTERI K-23.
+    // The dedupe check reads state.errors, the FIVE VISIBLE toasts, and never
+    // state.queuedErrors. So the guarantee "the same sentence is not shown
+    // twice" quietly stops applying the moment the stack is full.
+    for (let i = 0; i < 5; i++) {
+      useErrorStore.getState().pushErrorDirect(`code_${i}`, `Message ${i}`);
+    }
+    useErrorStore.getState().pushErrorDirect("waiting", "Same sentence");
+    useErrorStore.getState().pushErrorDirect("waiting", "Same sentence");
+
+    const queued = useErrorStore.getState().queuedErrors;
+    expect(queued).toHaveLength(2);
+    expect(queued.map((e) => e.code)).toEqual(["waiting", "waiting"]);
+  });
+
+  it("then shows that doubled error twice as the queue drains", () => {
+    // The half that costs the reader something: the duplicate does not stay
+    // buried in the queue, it is promoted into view like any other event, so
+    // the same sentence ends up occupying two of five slots.
+    for (let i = 0; i < 5; i++) {
+      useErrorStore.getState().pushErrorDirect(`code_${i}`, `Message ${i}`);
+    }
+    useErrorStore.getState().pushErrorDirect("waiting", "Same sentence");
+    useErrorStore.getState().pushErrorDirect("waiting", "Same sentence");
+
+    const state = useErrorStore.getState();
+    state.dismiss(state.errors[0].id);
+    useErrorStore.getState().dismiss(useErrorStore.getState().errors[0].id);
+
+    const visible = useErrorStore.getState().errors;
+    expect(visible.filter((e) => e.code === "waiting")).toHaveLength(2);
+  });
+
   it("allows the same error again after the visible copy is dismissed", () => {
     useErrorStore.getState().pushError(new TypeError("fail"));
     const id = useErrorStore.getState().errors[0].id;
@@ -465,6 +487,24 @@ describe("errorStore", () => {
     expect(state.errors).toHaveLength(5);
     expect(state.queuedErrors).toHaveLength(0);
     expect(state.errors[4].message).toBe("Message 5");
+  });
+
+  it("promotes queued errors oldest first", () => {
+    // With exactly ONE item waiting, first-in and last-in look identical, and
+    // one waiting item is all the existing promotion tests ever set up. With
+    // two, an order bug means the failure reported FIRST can be starved while
+    // newer ones keep jumping the line, which is the opposite of what a queue
+    // is for.
+    for (let i = 0; i < 7; i++) {
+      useErrorStore.getState().pushErrorDirect(`code_${i}`, `Message ${i}`);
+    }
+    expect(useErrorStore.getState().queuedErrors).toHaveLength(2);
+
+    useErrorStore.getState().dismiss(useErrorStore.getState().errors[0].id);
+    expect(useErrorStore.getState().errors[4].message).toBe("Message 5");
+
+    useErrorStore.getState().dismiss(useErrorStore.getState().errors[0].id);
+    expect(useErrorStore.getState().errors[4].message).toBe("Message 6");
   });
 
   it("clearAll empties the store", () => {

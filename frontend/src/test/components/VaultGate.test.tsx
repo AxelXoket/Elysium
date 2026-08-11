@@ -158,6 +158,12 @@ describe("VaultGate lock hygiene", () => {
     qc.setQueryData(["messages", 1], [{ id: 10, content: "private text" }]);
     qc.setQueryData(["characters"], [{ id: 2 }]);
     qc.setQueryData(["settings"], { api_key_set: true });
+    // Two keys the four obvious ones do not cover. The predicate is written
+    // as "everything that is not vault", and the way to break that without
+    // breaking this test is to turn it into an allowlist of the names a test
+    // author would think to seed. These are here so that rewrite fails.
+    qc.setQueryData(["personas"], [{ id: 3, name: "a persona" }]);
+    qc.setQueryData(["tts", "models"], [{ uid: "voice-1" }]);
 
     // Backend locks out from under the app; the gate refetches status.
     sim.unlocked = false;
@@ -178,6 +184,119 @@ describe("VaultGate lock hygiene", () => {
     expect(qc.getQueryData(["chats"])).toBeUndefined();
     expect(qc.getQueryData(["characters"])).toBeUndefined();
     expect(qc.getQueryData(["settings"])).toBeUndefined();
+  });
+
+  it("silences a reply being read aloud when the vault locks", async () => {
+    // The audio element lives outside React, so unmounting the app does not
+    // stop it. Without an explicit stop, a private conversation keeps being
+    // narrated over a screen that says the vault is closed, which is the one
+    // way this app could leak content with the lock screen showing. The
+    // adjacent comment in VaultGate calls this "audit-2", so it was found and
+    // fixed once already; nothing was pinning it.
+    const playerStore = await import("@/lib/voice/playerStore");
+    const stopped = vi.spyOn(playerStore, "stopVoicePlayback");
+
+    const sim: VaultSim = { initialized: true, unlocked: true, passphrase: "x" };
+    stubVaultFetch(sim);
+    const qc = createTestQueryClient();
+    renderWithQueryClient(<VaultGate>{APP_MARKER}</VaultGate>, { client: qc });
+    await screen.findByTestId("app-root");
+    expect(stopped).not.toHaveBeenCalled();
+
+    sim.unlocked = false;
+    await qc.invalidateQueries({ queryKey: ["vault"] });
+    await screen.findByText("Elysium is locked");
+
+    expect(stopped, "the voice kept reading over the lock screen")
+      .toHaveBeenCalled();
+    stopped.mockRestore();
+  });
+
+  it("leaves the module-level stores standing when the vault locks", async () => {
+    // CHARACTERISATION, not approval. See KUSUR-DEFTERI K-29.
+    //
+    // The purge above is a predicate over the QUERY cache. Zustand stores are
+    // not in it, so nothing here reaches them, and two of them are still
+    // holding things after the vault has closed:
+    //
+    //   useErrorStore  - a toast raised just before the lock is still queued,
+    //                    and ErrorToastStack remounts on unlock, so it can
+    //                    pop up moments after the passphrase is accepted,
+    //                    belonging to a session that ended.
+    //   useUiStore     - selectedChatId and selectedCharacterId survive, and
+    //                    are additionally persisted to localStorage, so they
+    //                    outlive the lock, the app, and the machine restart.
+    //
+    // Neither holds message text. They hold numeric ids and an already
+    // sanitised sentence, which is why this is recorded rather than treated
+    // as a leak of content. What it costs is the promise's shape: "locked"
+    // should mean the session is over, and for these two it does not.
+    const { useErrorStore } = await import("@/lib/errors");
+    const { useUiStore } = await import("@/lib/store/uiStore");
+
+    const sim: VaultSim = { initialized: true, unlocked: true, passphrase: "x" };
+    stubVaultFetch(sim);
+    const qc = createTestQueryClient();
+    renderWithQueryClient(<VaultGate>{APP_MARKER}</VaultGate>, { client: qc });
+    await screen.findByTestId("app-root");
+
+    useErrorStore.getState().clearAll();
+    useErrorStore.getState().pushErrorDirect("chat_not_found", "Chat not found.");
+    useUiStore.setState({ selectedChatId: 41, selectedCharacterId: 7 });
+
+    sim.unlocked = false;
+    await qc.invalidateQueries({ queryKey: ["vault"] });
+    await screen.findByText("Elysium is locked");
+
+    // The query cache emptied; these did not.
+    expect(useErrorStore.getState().errors).toHaveLength(1);
+    expect(useUiStore.getState().selectedChatId).toBe(41);
+    expect(useUiStore.getState().selectedCharacterId).toBe(7);
+
+    useErrorStore.getState().clearAll();
+    useUiStore.setState({ selectedChatId: null, selectedCharacterId: null });
+  });
+
+  it("does not stop an in-flight stream when the vault locks", async () => {
+    // CHARACTERISATION, not approval. The sharper half of K-29.
+    //
+    // The purge is a one-shot sweep of the query cache, and a live reply is
+    // not in the cache: useStreamingCompletion writes deltas straight in with
+    // qc.setQueryData(keys.messages(chatId), ...). VaultGate has no reference
+    // to streams at all (no import, no stopChat, no abort), so a stream that
+    // was running when the vault closed is still running afterwards, and its
+    // next write RECREATES a messages entry under a key the lock believed it
+    // had erased. Nothing mounted reads it while locked, so this is data
+    // sitting in memory rather than data on screen, which is why it is
+    // recorded and not called a breach.
+    //
+    // The mechanism is what this pins: the registry still holds the
+    // controller and the controller was never aborted. Delete and Clear both
+    // call stopChat for exactly this reason; locking does not.
+    const { useStreamRegistry, registerStream } = await import(
+      "@/lib/chat/streamRegistry"
+    );
+
+    const sim: VaultSim = { initialized: true, unlocked: true, passphrase: "x" };
+    stubVaultFetch(sim);
+    const qc = createTestQueryClient();
+    renderWithQueryClient(<VaultGate>{APP_MARKER}</VaultGate>, { client: qc });
+    await screen.findByTestId("app-root");
+
+    const controller = new AbortController();
+    registerStream(9, controller);
+
+    sim.unlocked = false;
+    await qc.invalidateQueries({ queryKey: ["vault"] });
+    await screen.findByText("Elysium is locked");
+
+    expect(useStreamRegistry.getState().controllers.has(9)).toBe(true);
+    expect(
+      controller.signal.aborted,
+      "the lock learned to stop in-flight replies",
+    ).toBe(false);
+
+    useStreamRegistry.setState({ controllers: new Map() });
   });
 });
 

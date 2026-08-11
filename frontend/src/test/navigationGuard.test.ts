@@ -111,8 +111,15 @@ describe("navigation guard", () => {
     expect(event.defaultPrevented).toBe(false);
   });
 
-  it("does not crash when nothing is listening for the report", () => {
+  it("still blocks when nothing is listening for the report", () => {
+    // The body used to be `expect(...).not.toThrow()` alone, which asks the
+    // wrong question. `announce?.(href)` is optional-chained AFTER
+    // preventDefault, so a null handler cannot throw whatever the guard does:
+    // an accidental `if (!announce) return;` placed above preventDefault would
+    // stop blocking navigation entirely and this test would still pass. The
+    // guard is the point, not the absence of an exception.
     setBlockedNavigationHandler(null);
-    expect(() => clickLink("https://example.com/")).not.toThrow();
+    const event = clickLink("https://example.com/");
+    expect(event.defaultPrevented).toBe(true);
   });
 });

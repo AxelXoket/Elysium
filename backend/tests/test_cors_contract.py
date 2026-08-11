@@ -119,15 +119,43 @@ def test_a_foreign_host_header_is_refused(client):
     """CORS cannot stop DNS rebinding: a hostile domain that re-resolves to
     127.0.0.1 is SAME-origin to the browser, so no CORS header is consulted.
     The Host allowlist is what closes that, and it is half of the README's
-    promise - the half nothing was checking."""
+    promise - the half nothing was checking.
+
+    TrustedHostMiddleware is the only thing standing there. Removing it in the
+    audit left a `Host: evil.example` + `Origin: http://evil.example` pair
+    walking straight through the CSRF shield with the whole suite green, which
+    is what the shield exempting safe methods means in practice: on a GET, the
+    Origin header is never consulted at all and the Host allowlist is the sole
+    check.
+    """
     resp = client.get("/api/v1/settings", headers={"Host": "evil.example"})
+
+    assert resp.status_code == 400
+
+
+def test_a_foreign_host_cannot_reach_the_chat_data(client):
+    """Named separately from the probe route above because this is what the
+    shield is FOR: chats and personas are exactly the data that must never
+    leave this machine."""
+    from conftest import make_character, make_chat
+
+    chat_id = make_chat(client, make_character(client))
+    resp = client.get(f"/api/v1/chats/{chat_id}/messages",
+                      headers={"Host": "attacker.test"})
 
     assert resp.status_code == 400
 
 
 def test_the_hosts_the_app_really_uses_still_work(client):
     """Guard the guard: an allowlist that refused everything would 'pass' every
-    test above while breaking the app."""
-    for host in ("127.0.0.1", "localhost", "testserver"):
+    test above while breaking the app.
+
+    The port-suffixed spellings are here because the desktop shell, the dev
+    server and the packaged build do not all write the host the same way, and
+    an allowlist that only matched the bare forms would break the app for one
+    of them while passing every refusal test above.
+    """
+    for host in ("127.0.0.1", "localhost", "testserver",
+                 "127.0.0.1:8000", "localhost:8000"):
         resp = client.get("/healthz", headers={"Host": host})
         assert resp.status_code == 200, host

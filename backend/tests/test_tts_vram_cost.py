@@ -16,13 +16,22 @@ from pathlib import Path
 
 import pytest
 
+import fish_synth_harness as synth
+
 
 def _mod(*, codec_resident: bool = True):
     path = Path(__file__).resolve().parents[1] / "tts" / "worker" / "fish_s2.py"
     spec = importlib.util.spec_from_file_location("fish_s2_cost", path)
     mod = importlib.util.module_from_spec(spec)
-    sys.modules.setdefault("fish_s2_cost", mod)
-    spec.loader.exec_module(mod)
+    # setdefault kept the FIRST module ever built under this name while
+    # handing every later caller a fresh one, so the registry entry went
+    # stale after the first test. Registered for the exec and taken back
+    # out again.
+    sys.modules["fish_s2_cost"] = mod
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        sys.modules.pop("fish_s2_cost", None)
     mod._COSTS.clear()
     # The codec's own term (KÖK 9) is on the NEED side of _fits whenever the
     # codec is off the card. These cases are about the decode/generate reserve
@@ -296,24 +305,49 @@ class TestTheProbeIsHarmless:
 
 
 class TestItIsWiredToTheOperationsThatMatter:
-    """Source-level, because the alternative is a CUDA card in CI."""
+    """It used to say "source-level, because the alternative is a CUDA card
+    in CI". The alternative turned out to be a fake card that REPORTS a
+    peak: `_measure` records `peak - allocated`, so a probe with something
+    to say makes the wiring observable without a GPU. Counting call sites
+    in the file could not tell a probe that runs from one that is written
+    down, and could not see the units it was given at all.
+    """
 
-    def _source(self):
-        return (Path(__file__).resolve().parents[1] / "tts" / "worker"
-                / "fish_s2.py").read_text(encoding="utf-8")
-
-    def test_the_decode_is_measured_on_both_attempts(self):
-        src = self._source()
-        assert src.count('_measure("decode", frames, send)') == 2
+    PEAK_GB = 3.4
 
     def test_the_decode_is_measured_against_the_frame_count(self):
-        src = self._source()
-        assert "frames = int(codes.shape[1])" in src
+        run = synth.decode_to_audio(frames=400, peak_gb=self.PEAK_GB)
+        assert run.costs == [("decode", 400.0, self.PEAK_GB)], run.costs
+        # The units are the FRAMES, not some other number that happens to
+        # be lying around: a different frame count moves the record.
+        other = synth.decode_to_audio(frames=137, peak_gb=self.PEAK_GB)
+        assert other.costs == [("decode", 137.0, self.PEAK_GB)], other.costs
 
-    def test_the_generation_is_measured_and_corrected(self):
-        src = self._source()
-        assert '_measure("generate", max_new, send)' in src
-        assert "measured.units = int(codes.shape[1])" in src
+    def test_both_decode_attempts_are_measured_not_only_the_retry(self):
+        """The failing attempt records nothing - `_measure` is allowed to
+        learn nothing rather than something false - so the cost log alone
+        cannot tell "wrapped and learnt nothing" from "not wrapped". The
+        probe COUNT can: opening the block resets the peak either way.
+        """
+        clean = synth.decode_to_audio(peak_gb=self.PEAK_GB)
+        assert clean.torch.cuda.probes == 1
+
+        retried = synth.decode_to_audio(fail_times=1, peak_gb=self.PEAK_GB)
+        assert retried.attempts == 2
+        assert retried.torch.cuda.probes == 2, (
+            "the retry ran outside the probe, so a decode that only OOMs "
+            "on the first try teaches the estimator nothing about itself")
+        # ... and only the attempt that SUCCEEDED was recorded.
+        assert len(retried.costs) == 1, retried.costs
+
+    def test_the_generation_is_measured_and_corrected_to_what_it_produced(self):
+        """Opened with the budget, closed with the truth. Recording the
+        budget would teach the estimator a cost that never happened."""
+        run = synth.synthesize(produced=137, max_new=640,
+                               peak_gb=self.PEAK_GB)
+        assert run.costs_for("generate") == [("generate", 137.0, self.PEAK_GB)], (
+            run.costs)
+        assert run.max_new_used() == 640, "the budget itself did not change"
 
 
 class _FakeModel:
@@ -782,10 +816,35 @@ class TestTheGuardForecastsTheWorkNotTheCeiling:
     def test_a_run_that_hit_the_ceiling_does_not_teach_the_estimator(self):
         """A capped run says how long the budget was, not how long the text
         wanted to be. Folding it in drags every later forecast towards the cap,
-        which is a slow way back to the bug."""
-        import inspect
+        which is a slow way back to the bug.
 
-        src = inspect.getsource(_mod()._op_synthesize)
-        observe = src.index('_observe_cost("frames"')
-        guard = src.rindex("if produced and not", 0, observe)
-        assert "max_new" in src[guard:observe]
+        KADEME 13 lesson applied in KADEME 14: this used to read the FUNCTION'S
+        SOURCE TEXT and look for the word `max_new` between two other strings.
+        That passes on a build where the guard sits in dead code and fails on
+        one where the same rule is spelled differently - it tested the file,
+        not the program. It now runs the real function, against the harness in
+        fish_synth_harness.py, and looks at what the estimator learnt.
+        """
+        # 640, not 800: 800 is both fish_s2._DEFAULTS["max_new_tokens"] and
+        # the harness default, so a build that ignored the budget and
+        # hard-coded 800 would satisfy this test without threading
+        # anything. The number has to be one nobody would pick by accident.
+        finished = synth.synthesize(produced=100, max_new=640)
+        assert finished.learnt_frames(), (
+            "an ordinary run taught the estimator nothing - the fixture is "
+            "not exercising the path this test is about")
+
+        capped = synth.synthesize(produced=640, max_new=640)
+        assert not capped.learnt_frames(), (
+            "a run that hit the ceiling was folded into the estimator")
+
+    def test_stopping_one_token_short_of_the_ceiling_still_counts_as_capped(self):
+        """The guard is `produced >= max_new - 1`, not `== max_new`.
+
+        The generation stops when the budget is reached, and whether that lands
+        exactly on it or one short is an implementation detail of the sampler.
+        A test sitting only on the exact value would leave the off-by-one free
+        to move.
+        """
+        assert not synth.synthesize(produced=639, max_new=640).learnt_frames()
+        assert synth.synthesize(produced=638, max_new=640).learnt_frames()

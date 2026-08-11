@@ -115,6 +115,9 @@ class TestWorkerScriptHygiene:
         to a one-click fix."""
         import ast
 
+                # The floor lives in a sibling test, which is one deletion away
+        # from leaving this loop running over nothing.
+        assert self._scripts(), "no worker scripts found - the loop is vacuous"
         for script in self._scripts():
             tree = ast.parse(script.read_text(encoding="utf-8"))
             offenders = []

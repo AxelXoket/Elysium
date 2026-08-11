@@ -13,6 +13,7 @@ import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { ChatCanvas } from "@/components/chat/ChatCanvas";
 import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
 import { useUiStore } from "@/lib/store/uiStore";
+import { keys } from "@/lib/query/keys";
 import { mockFetchWithStreams, jsonResponse } from "../helpers/streamMocks";
 import { settingsFixture } from "../mocks/fixtures";
 import type { Message } from "@/lib/schemas/chats";
@@ -142,27 +143,54 @@ describe("ChatCanvas scroll + JumpToLatest", () => {
   });
 
   it("assistant content while away: NO scroll, indicator stays (FF8)", async () => {
-    const { setDistanceFromBottom, scrollToSpy, rerender } = await renderCanvas();
+    // The message has to REALLY land. This used to reassign the fixture and
+    // call rerender(), which refetches nothing, so the row never appeared and
+    // the scenario in the title never ran. Its own comment admitted it ("the
+    // message may not appear without an invalidate; accept either"), and the
+    // negative assertion was already true the instant mockClear() ran. A build
+    // with the entire while-away branch deleted passed it unchanged.
+    const { setDistanceFromBottom, scrollToSpy, queryClient } = await renderCanvas();
     act(() => setDistanceFromBottom(500));
     scrollToSpy.mockClear();
 
-    // A new assistant message lands (e.g. done resync refetch).
-    messagesBody = [...messagesBody, msg(3, "assistant", "late reply")];
-    rerender(<ChatCanvas />); // any render; the refetch drives the change
-    // Force the messages query to update by scrolling time forward: simplest
-    // is to trigger a refetch via cache invalidation - here we simulate the
-    // arrival by waiting for the row to appear after a manual refetch.
-    // (The list is dynamic: the next GET returns the extra row.)
-    await waitFor(() => {
-      // The message may not appear without an invalidate; accept either -
-      // the CONTRACT under test is "no scrollTo while away".
-      expect(scrollToSpy).not.toHaveBeenCalledWith(
-        expect.objectContaining({ behavior: "smooth" }),
-      );
+    act(() => {
+      queryClient.setQueryData(keys.messages(1), [
+        ...messagesBody,
+        msg(3, "assistant", "late reply"),
+      ]);
     });
+    expect(await screen.findByText("late reply")).toBeInTheDocument();
+
+    expect(
+      scrollToSpy,
+      "the view was yanked to the bottom while the reader was in the history",
+    ).not.toHaveBeenCalled();
     expect(
       screen.getByRole("button", { name: /jump to latest/i }),
     ).toBeInTheDocument();
+  });
+
+  it("your OWN message always descends, even from up in the history", async () => {
+    // The other half of the same rule, and it had no test at all. Assistant
+    // text arriving while you read must not move you; a message YOU just sent
+    // must, because you are the one who caused it and the reply lands under
+    // it. A build that treated both the same way would satisfy the test above
+    // and quietly strand you above your own message.
+    const { setDistanceFromBottom, scrollToSpy, queryClient } = await renderCanvas();
+    act(() => setDistanceFromBottom(500));
+    scrollToSpy.mockClear();
+
+    act(() => {
+      queryClient.setQueryData(keys.messages(1), [
+        ...messagesBody,
+        msg(3, "user", "one more thing"),
+      ]);
+    });
+    expect(await screen.findByText("one more thing")).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(scrollToSpy).toHaveBeenCalled();
+    });
   });
 
   it("clicking the indicator scrolls smooth and hides it (R2/R3)", async () => {

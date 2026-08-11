@@ -219,6 +219,52 @@ async def test_a_mid_stream_moderation_block_is_named_as_one(
 
 
 @pytest.mark.anyio
+async def test_a_malformed_frame_costs_its_text_and_says_nothing(
+    anyio_backend, monkeypatch, fake_key, caplog,
+):
+    """CHARACTERISATION, not approval. KUSUR-DEFTERI K-20.
+
+    Dropping the frame is the right trade and the code says why: ending the
+    turn here would skip finalize(), voice.finish() and drain_events, so a
+    reply the reader had already finished reading would come back as an error
+    banner over shortened text. One frame is a hole, the whole turn is a loss.
+
+    What this pins is the SILENCE around the hole. The stream yields the good
+    frames and the caller receives nothing else - no count, no terminal field,
+    no notice - even though completions.py already runs a `notice` channel
+    built to say "something of yours was quietly dropped" (it carries
+    NOTICE_IMAGE_REJECTED today). The carrier exists; this one path is not
+    wired to it. Connect it and this test goes red, which is the point.
+    """
+    raw = (
+        'data: {"choices":[{"delta":{"content":"Once upon "}}]}\n\n'
+        'data: {not json at all\n\n'
+        'data: {"choices":[{"delta":{"content":"a time."}}]}\n\n'
+        "data: [DONE]\n\n"
+    ).encode("utf-8")
+
+    monkeypatch.setattr(openrouter, "get_client", lambda: _StreamClient(200, raw))
+    got: list[str] = []
+    with caplog.at_level("ERROR"):
+        async for delta in openrouter.complete_stream(
+            [{"role": "user", "content": "hi"}], "test/model-1", {}, None,
+        ):
+            got.append(delta)
+
+    # The text around the hole survives, which is the half that is correct.
+    # And this list being exactly the good chunks IS the silence: the caller
+    # has no other channel out of this generator.
+    assert got == ["Once upon ", "a time."]
+
+    # The only record anywhere is a log line, and a log file on disk is not a
+    # channel the person reading the reply has.
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("Malformed stream frame" in m for m in messages)
+    assert any("unparseable frame" in m for m in messages), (
+        "not even the end-of-stream tally was written")
+
+
+@pytest.mark.anyio
 async def test_a_mid_stream_403_without_moderation_metadata_stays_generic(
     anyio_backend, monkeypatch, fake_key,
 ):

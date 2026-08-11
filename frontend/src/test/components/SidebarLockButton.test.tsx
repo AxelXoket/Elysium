@@ -44,6 +44,45 @@ describe("SidebarHeader lock button", () => {
     });
   });
 
+  it("a lock the server refuses says so instead of failing quietly", async () => {
+    // The failure path had no test, on the one button whose whole job is to
+    // close the vault. Worth being exact about what the promise here is,
+    // because it is easy to read this as worse than it is: the overlay's
+    // reveal timer is fixed and does NOT wait on the API, so a refused lock
+    // ends with the veil lifting and the app still on screen. That is the
+    // documented design ("on failure the overlay fades back to the app and a
+    // toast explains"), not a UI claiming to be locked while it is not: the
+    // lock SCREEN only ever appears when the server's status flips.
+    //
+    // What actually has to hold is the explaining half. A refused lock that
+    // said nothing would leave somebody believing they had locked up and
+    // walked away.
+    const { useErrorStore } = await import("@/lib/errors");
+    useErrorStore.getState().clearAll();
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) =>
+        String(input).includes("/vault/lock")
+          ? new Response(JSON.stringify({ detail: "vault_locked" }), {
+              status: 500,
+            })
+          : new Response(JSON.stringify({ ok: true }), { status: 200 }),
+      ),
+    );
+
+    renderWithQueryClient(<SidebarHeader />);
+    await userEvent.click(screen.getByRole("button", { name: "Lock vault" }));
+
+    await waitFor(() => {
+      expect(
+        useErrorStore.getState().errors,
+        "the vault refused to lock and nothing said so",
+      ).toHaveLength(1);
+    });
+    useErrorStore.getState().clearAll();
+  });
+
   it("locking still works with NO animation handler registered", async () => {
     const calls: string[] = [];
     vi.stubGlobal(

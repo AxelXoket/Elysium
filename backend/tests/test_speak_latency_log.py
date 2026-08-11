@@ -124,8 +124,16 @@ def test_a_broken_diagnostic_never_costs_the_audio(monkeypatch):
     failed."""
     from routers import tts_runtime
 
+    tried: list[int] = []
+
     def _boom(*args, **kwargs):
+        tried.append(1)
         raise RuntimeError("no handler")
 
     monkeypatch.setattr(tts_runtime.logger, "info", _boom)
     tts_runtime._log_first_audio(0.0, 1.0, True, 10, 1.0)
+    # The body used to end at the line above, with no assertion at all: it
+    # passed on a build where `_log_first_audio` had become an empty function,
+    # which swallows nothing because it does nothing. The floor says the
+    # diagnostic really was attempted and really was survived.
+    assert tried == [1], "the diagnostic was never attempted"

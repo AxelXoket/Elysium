@@ -113,10 +113,33 @@ class TestTagMaskMatchesVoiceTags:
         kept = prep("[low voice] come closer.", engine_supports_tags=True)
         assert "[low voice]" in kept
 
-    def test_the_limit_is_the_same_number_in_both_modules(self):
-        voice_tags = (BACKEND / "voice_tags.py").read_text(encoding="utf-8")
-        assert "<= 6" in voice_tags
-        assert sp._TAG_MAX_WORDS == 6
+    def test_the_two_modules_judge_the_same_bracket_the_same_way(self):
+        """Two constants that happen to be equal today prove nothing about
+        tomorrow. What has to hold is that ONE bracket gets one verdict from
+        both sides: the module that decides what counts as a delivery tag, and
+        the mask that decides what to hide before synthesis. A disagreement at
+        the boundary is exactly how bracketed prose got deleted from the audio
+        while staying on screen.
+
+        Until KADEME 16a this asserted `"<= 6" in voice_tags.py`. Reflowing the
+        comparison, or lifting the 6 into a named constant, broke it with the
+        behaviour untouched; and moving the cap while leaving the literal
+        somewhere else in the file kept it green.
+        """
+        import voice_tags
+
+        six = "one two three four five six"
+        seven = "one two three four five six seven"
+
+        assert voice_tags.usable_as_tag(six) is True
+        assert voice_tags.usable_as_tag(seven) is False, (
+            "voice_tags widened past six words")
+
+        # The mask follows the same line: a real tag is taken out of the
+        # spoken text, prose in brackets is left in it.
+        assert "five six" not in prep(f"[{six}] Come closer.")
+        assert "five six seven" in prep(f"[{seven}] Come closer."), (
+            "the mask deleted bracketed prose voice_tags calls prose")
 
 
 # ── 4. a sentence that prepares to nothing is counted ──────────────────────
@@ -303,23 +326,6 @@ class TestUndeletableAudioIsReported:
         assert "readable on disk" in caplog.text
         assert host._last_wipe_left == [stuck.name]
 
-    def test_it_still_returns_the_count(self, tmp_path, monkeypatch):
-        """Was `assert callable(VoiceHost.wipe_cache)` - which stays true of a
-        method that returns None, raises, or deletes nothing at all."""
-        import config
-        from tts.host import VoiceHost
-
-        monkeypatch.setattr(config, "TTS_CACHE_DIR", str(tmp_path / "cache"))
-        cache = pathlib.Path(config.TTS_CACHE_DIR)
-        cache.mkdir(parents=True)
-        for i in range(3):
-            (cache / f"speak-{i}-{i}.wav").write_bytes(b"RIFF")
-
-        removed = VoiceHost().wipe_cache()
-
-        assert removed == 3
-        assert not list(cache.glob("speak-*.wav"))
-
 
 # ── 7. tags can never be asked for without also being hidden ───────────────
 
@@ -365,15 +371,58 @@ class TestTagsAreNeverRequestedWithoutTheStripper:
         voice_tags.reset_stripping_cache()
         assert voice_tags.stripping_active() is True
 
-    def test_the_prompt_is_backend_owned_and_not_stored_on_the_character(self):
-        """It is a system block built at call time, never persisted."""
+    def test_the_prompt_is_backend_owned_and_not_stored_on_the_character(
+        self, client, provider, monkeypatch,
+    ):
+        """It is a system block built at call time, never persisted.
+
+        Until KADEME 16a this read completions.py and looked for two exact call
+        expressions. Reflowing either call, renaming the local, or moving the
+        injection into a helper turned it red with the behaviour untouched; and
+        a build that computed the block and then never appended it kept both
+        strings and stayed green.
+        """
+        import database
         import voice_tags
+        from conftest import make_character, make_chat
 
         assert voice_tags.VOICE_PROMPT.strip()
-        completions = (BACKEND / "routers" / "completions.py").read_text(
-            encoding="utf-8")
-        assert "voice_block=await anyio.to_thread.run_sync(voice_tags.voice_block)" \
-            in completions
-        # Injected as a system message, not merged into the character.
-        assert 'messages.append({"role": "system", "content": voice_block})' \
-            in completions
+
+        char = make_character(client, first_mes="")
+        chat = make_chat(client, char)
+
+        database.set_setting(voice_tags.SETTING_VOICE_ENABLED, "1")
+        database.set_setting(voice_tags.SETTING_VOICE_EVER, "1")
+        voice_tags.reset_stripping_cache()
+        # The second gate voice_block() reads is whether the SELECTED engine
+        # can use inline tags at all. That lookup walks the models folder and
+        # has its own tests; here it is a fixture, because the subject is the
+        # carrier - where the block ends up once it has been decided on.
+        monkeypatch.setattr(voice_tags, "_active_engine_supports_tags",
+                            lambda: True)
+        resp = client.post(f"/api/v1/chats/{chat}/complete",
+                           json={"message": "Say something.",
+                                 "model_id": "test/model-1"})
+        assert resp.status_code == 200, resp.text
+
+        sent = provider.calls[-1]["messages"]
+        carriers = [m for m in sent
+                    if voice_tags.VOICE_PROMPT.strip() in str(m["content"])]
+        assert carriers, "voice was on and the model was never asked for tags"
+        assert all(m["role"] == "system" for m in carriers), (
+            "the prompt arrived as something other than a system block")
+
+        # Backend-owned: it is built for the call, and the character the user
+        # can read and export never gains a word of it.
+        stored = client.get(f"/api/v1/characters/{char}").json()
+        assert voice_tags.VOICE_PROMPT.strip() not in str(stored), (
+            "the prompt was written into the character record")
+
+        # And with the toggle off, nothing asks for tags at all.
+        database.set_setting(voice_tags.SETTING_VOICE_ENABLED, "0")
+        database.set_setting(voice_tags.SETTING_VOICE_EVER, "")
+        voice_tags.reset_stripping_cache()
+        client.post(f"/api/v1/chats/{chat}/complete",
+                    json={"message": "Again.", "model_id": "test/model-1"})
+        assert not [m for m in provider.calls[-1]["messages"]
+                    if voice_tags.VOICE_PROMPT.strip() in str(m["content"])]

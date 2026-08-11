@@ -51,7 +51,17 @@ describe("T-01: App shell renders without crash", () => {
     expect(screen.getByText("Characters")).toBeInTheDocument();
   });
 
-  // Updated from "Settings" â†’ "Secrets" (Phase 6E-A tab rename)
+  // Updated from "Settings" to "Secrets" (Phase 6E-A tab rename).
+  //
+  // The arrow in this comment used to be the literal characters "a-hat, dagger,
+  // right-quote": UTF-8 bytes for an arrow that were decoded as Latin-1 once
+  // and written back. The file is valid UTF-8, so nothing complained; only a
+  // reader would notice. Written as ASCII now so it cannot happen twice.
+  //
+  // KADEME 17a also folded "T-73: renders Secrets tab" into this test. It was
+  // the same render under the same beforeEach asserting the same
+  // getByRole("tab", {name: /secrets/i}) - not a second angle on the tab, a
+  // second copy of this test.
   it("renders the right panel with Secrets tab", () => {
     render(
       <Providers>
@@ -79,16 +89,6 @@ describe("T-01: App shell renders without crash", () => {
       </Providers>,
     );
     expect(screen.getByRole("tab", { name: /models/i })).toBeInTheDocument();
-  });
-
-  // T-73: Right panel renders Secrets tab
-  it("T-73: renders Secrets tab", () => {
-    render(
-      <Providers>
-        <AppShell />
-      </Providers>,
-    );
-    expect(screen.getByRole("tab", { name: /secrets/i })).toBeInTheDocument();
   });
 
   // T-74: Right panel renders Persona tab
