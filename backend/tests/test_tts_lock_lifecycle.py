@@ -95,9 +95,20 @@ class TestTheTimerIsGone:
     # prose read by humans does not belong in an assertion, and proposed a
     # replacement: docs/adr/0007-no-idle-unload.md plus a pygrep hook whose
     # `name:` field becomes the durable marker. Measured: docs/adr/ does not
-    # exist, no ADR was written, and no such hook is configured. Deleting
-    # this today removes the only thing keeping the rationale in the tree,
-    # with neither promised replacement built. It goes when they exist.
+    # exist, no ADR was written, and no such hook is configured. It goes when
+    # they exist.
+    #
+    # CORRECTION (KADEME 21a). The note here used to end "deleting this today
+    # removes the ONLY thing keeping the rationale in the tree", and that was
+    # wrong - measured, not argued. The reasoning is written out in full in
+    # config.py (beside TTS_LOAD_TIMEOUT_S) and again in host.py (in the
+    # branch where the reaper used to be), and once more in the owner's
+    # decision ledger. Four copies, not one.
+    #
+    # So what this test actually guards is narrower than it claimed: not the
+    # last copy of the knowledge, but the two comment blocks in production
+    # source that carry it. That is a weaker reason to keep it, and it is the
+    # true one.
     def test_the_removal_is_explained_where_someone_would_look_for_it(self):
         """A deleted policy leaves no trace to grep for, so the reason lives at
         both places a reader would go looking."""
