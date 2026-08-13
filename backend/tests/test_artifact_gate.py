@@ -237,6 +237,48 @@ def test_the_build_does_not_carry_the_build_machine_s_home_path():
 
 
 @needs_exe
+def test_the_frozen_build_boots_and_serves_its_own_frontend():
+    """Runs the exe's own headless self-check, which until KADEME 21b nobody
+    ran automatically - the mechanism existed in run_app.py and its result was
+    wired to nothing.
+
+    This is the only test in the repo that executes the shipped binary. It
+    proves what no source test can: that the FROZEN interpreter resolves its
+    imports, that the SQLCipher native library loads inside the bundle, that
+    the server comes up, and that the packaged frontend is served.
+
+    ELYSIUM_DATA_DIR is redirected at a throwaway folder. The real vault is
+    never opened, and this test asserts that afterwards - a boot check that
+    quietly touched the user's database would be a worse bug than anything it
+    could find.
+    """
+    import hashlib
+    import subprocess
+    import tempfile
+
+    vault = Path(os.environ["LOCALAPPDATA"]) / "Elysium" / "app.db"
+    before = hashlib.md5(vault.read_bytes()).hexdigest() if vault.is_file() else None
+
+    with tempfile.TemporaryDirectory(prefix="elysium-selftest-") as tmp:
+        env = dict(os.environ, ELYSIUM_SELFTEST="1", ELYSIUM_DATA_DIR=tmp)
+        try:
+            done = subprocess.run([str(_exe())], env=env, capture_output=True,
+                                  text=True, timeout=300)
+        except subprocess.TimeoutExpired:
+            pytest.fail("the frozen build did not finish its self-check in 300s")
+
+    line = next((l for l in done.stdout.splitlines() if "SELFTEST" in l), "")
+    assert done.returncode == 0, "self-check exited %d: %s" % (done.returncode, line)
+    for claim in ("healthz=True", "root_serves_spa=True", "voice_payload=True"):
+        assert claim in line, "self-check did not report %s: %r" % (claim, line)
+
+    if before is not None:
+        assert hashlib.md5(vault.read_bytes()).hexdigest() == before, (
+            "the self-check wrote to the real vault despite ELYSIUM_DATA_DIR"
+        )
+
+
+@needs_exe
 def test_the_build_is_not_older_than_what_went_into_it():
     """The staleness trigger.
 
