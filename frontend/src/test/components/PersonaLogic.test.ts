@@ -259,67 +259,23 @@ describe("Payload persona integration", () => {
 // Mutation hook cache invalidation (structural - no render needed)
 // ═════════════════════════════════════════════════════════════════
 
-describe("Persona mutation hook cache behavior (structural)", () => {
-  // These tests verify the source code structure of persona query hooks
-  // to ensure they invalidate the correct keys.
-  // We import the source and check that the hooks exist and are functions.
-  // Actual invalidation is tested via the FE-0 contract tests and runtime SendFlow tests.
-
-  it("persona query hooks are exported", async () => {
-    const mod = await import("@/lib/query/personas");
-    expect(typeof mod.usePersonas).toBe("function");
-    expect(typeof mod.useCreatePersona).toBe("function");
-    expect(typeof mod.usePatchPersona).toBe("function");
-    expect(typeof mod.useDeletePersona).toBe("function");
-    expect(typeof mod.useSelectPersona).toBe("function");
-  });
-
-  it("persona helpers are exported", async () => {
-    const mod = await import("@/lib/personas");
-    expect(typeof mod.findActivePersona).toBe("function");
-    expect(typeof mod.getSelectedPersonaId).toBe("function");
-    expect(typeof mod.safePersonaId).toBe("function");
-  });
-
-  // Verify that settings.selected_persona_id is part of the settings schema
-  it("settings schema includes selected_persona_id", async () => {
-    const { SettingsSchema } = await import("@/lib/schemas/settings");
-    const result = SettingsSchema.safeParse({
-      api_key_set: true,
-      proxy_required: false,
-      proxy_configured: false,
-      proxy_alias: null,
-      selected_persona_id: 1,
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("settings schema accepts null selected_persona_id", async () => {
-    const { SettingsSchema } = await import("@/lib/schemas/settings");
-    const result = SettingsSchema.safeParse({
-      api_key_set: true,
-      proxy_required: false,
-      proxy_configured: false,
-      proxy_alias: null,
-      selected_persona_id: null,
-    });
-    expect(result.success).toBe(true);
-  });
-});
+// Four tests stood here until KADEME 18b: two asserting that hooks and
+// helpers are exported as functions, and two asserting the settings schema
+// takes a selected_persona_id. The first pair proved nothing the tests below
+// - which CALL those helpers - do not already prove by calling them. The
+// second pair belongs to the schema contract and now lives beside its
+// sibling in fe0-contract.test.ts, which owns that shape.
 
 // ═════════════════════════════════════════════════════════════════
 // No browser storage
 // ═════════════════════════════════════════════════════════════════
 
 describe("Persona privacy checks", () => {
-  it("persona helpers module does not reference localStorage", async () => {
-    // Import source to verify no side-effect references to browser storage
-    const src = await import("@/lib/personas/personaHelpers");
-    // The module exists and exports pure functions
-    expect(typeof src.findActivePersona).toBe("function");
-    expect(typeof src.getSelectedPersonaId).toBe("function");
-    expect(typeof src.safePersonaId).toBe("function");
-  });
+  // The "does not reference localStorage" test that opened this describe
+  // imported the module and asserted three exports are functions. It never
+  // looked at storage. static-safety S-09 already scans every source file for
+  // a direct device-storage write outside lib/store, and S-09b checks the
+  // store's own persisted allowlist - both stronger, both repo-wide.
 
   it("safePersonaId rejects unsafe values that could leak into payload", () => {
     expect(safePersonaId(NaN)).toBeUndefined();

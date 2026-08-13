@@ -142,7 +142,7 @@ describe("ChatCanvas scroll + JumpToLatest", () => {
     });
   });
 
-  it("assistant content while away: NO scroll, indicator stays (FF8)", async () => {
+  it("assistant content while away: NO scroll, indicator stays", async () => {
     // The message has to REALLY land. This used to reassign the fixture and
     // call rerender(), which refetches nothing, so the row never appeared and
     // the scenario in the title never ran. Its own comment admitted it ("the

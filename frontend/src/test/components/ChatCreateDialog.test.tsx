@@ -23,7 +23,7 @@ describe("ChatCreateDialog", () => {
   });
 
   // T-31: Chat create calls POST /chats
-  it("T-31: calls POST /chats with correct body", async () => {
+  it("creates the chat against the selected character", async () => {
     const user = userEvent.setup();
     const mock = mockFetch({
       "/chats": { body: chatFixture },
@@ -56,7 +56,7 @@ describe("ChatCreateDialog", () => {
   });
 
   // T-32: Chat create does NOT call /complete
-  it("T-32: chat create does not call /complete", async () => {
+  it("starting a chat does not spend a completion", async () => {
     const user = userEvent.setup();
     const mock = mockFetch({
       "/chats": { body: chatFixture },
@@ -83,7 +83,7 @@ describe("ChatCreateDialog", () => {
   });
 
   // T-33: No character selected shows placeholder message
-  it("T-33: shows placeholder when no character selected", async () => {
+  it("asks for a character before it will start a chat", async () => {
     const user = userEvent.setup();
     useUiStore.setState({ selectedCharacterId: null });
 
@@ -100,7 +100,7 @@ describe("ChatCreateDialog", () => {
   });
 
   // FE-6B: payload is built via buildStartChatInput - trimmed title included
-  it("FE-6B: includes trimmed title in POST body when provided", async () => {
+  it("trims a typed title before sending it", async () => {
     const user = userEvent.setup();
     const mock = mockFetch({
       "/chats": { body: chatFixture },
@@ -135,7 +135,7 @@ describe("ChatCreateDialog", () => {
   });
 
   // FIX-3: create failure renders a safe mapped message, never raw detail
-  it("FIX-3: create error shows mapped message instead of raw detail", async () => {
+  it("explains a refused create in its own words, not the upstream detail", async () => {
     const user = userEvent.setup();
     mockFetch({
       "/chats": { status: 500, body: { detail: "RAW_UPSTREAM_DETAIL" } },

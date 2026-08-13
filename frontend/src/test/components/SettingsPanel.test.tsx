@@ -30,7 +30,7 @@ describe("Settings Panel Tests", () => {
   });
 
   // T-06: Settings shows api_key_set=true status
-  it("T-06: shows api_key_set status", async () => {
+  it("tells the reader a key is already stored", async () => {
     renderWithQueryClient(<ApiKeySection />, { wrapper });
     await waitFor(() => {
       expect(screen.getByText("API key is set")).toBeInTheDocument();
@@ -38,7 +38,7 @@ describe("Settings Panel Tests", () => {
   });
 
   // T-07: API key save calls POST /settings/api-key
-  it("T-07: API key save calls POST /settings/api-key", async () => {
+  it("sends a typed key in the request body", async () => {
     const user = userEvent.setup();
     renderWithQueryClient(<ApiKeySection />, { wrapper });
 
@@ -72,7 +72,7 @@ describe("Settings Panel Tests", () => {
   });
 
   // T-08: Input clears after successful API key save
-  it("T-08: input clears after successful API key save", async () => {
+  it("empties the field once the key is stored", async () => {
     const user = userEvent.setup();
     renderWithQueryClient(<ApiKeySection />, { wrapper });
 
@@ -99,7 +99,7 @@ describe("Settings Panel Tests", () => {
   });
 
   // T-09: API key not rendered in DOM after save
-  it("T-09: API key value not rendered after save", async () => {
+  it("never renders the key back after storing it", async () => {
     const user = userEvent.setup();
     renderWithQueryClient(<ApiKeySection />, { wrapper });
 
@@ -131,7 +131,7 @@ describe("Settings Panel Tests", () => {
 
   // FIX-2: validation_unavailable means the key was NOT saved - the message
   // must say so and the input must be kept so the user can retry.
-  it("FIX-2: validation_unavailable says key not saved and keeps input", async () => {
+  it("says the key was not saved when validation could not run, and keeps what was typed", async () => {
     const user = userEvent.setup();
     renderWithQueryClient(<ApiKeySection />, { wrapper });
 
@@ -161,7 +161,7 @@ describe("Settings Panel Tests", () => {
   });
 
   // FIX-2: settings/models are invalidated (refetched) even when ok=false
-  it("FIX-2: invalidates settings even on validation_unavailable", async () => {
+  it("refreshes the stored-key status even when validation could not run", async () => {
     const user = userEvent.setup();
     renderWithQueryClient(<ApiKeySection />, { wrapper });
 
@@ -197,7 +197,7 @@ describe("Settings Panel Tests", () => {
   });
 
   // v1.1 FF12: Enter in the key field saves (house convention).
-  it("FF12: pressing Enter in the API key field saves", async () => {
+  it("Enter in the key field saves, without hunting for the button", async () => {
     const user = userEvent.setup();
     renderWithQueryClient(<ApiKeySection />, { wrapper });
     await waitFor(() => {
@@ -226,7 +226,7 @@ describe("Settings Panel Tests", () => {
   });
 
   // v1.1 FF13: Remove API Key requires an inline confirmation.
-  it("FF13: Remove API Key asks to confirm before deleting", async () => {
+  it("asks before removing the stored key", async () => {
     const user = userEvent.setup();
     renderWithQueryClient(<ApiKeySection />, { wrapper });
     await waitFor(() => {

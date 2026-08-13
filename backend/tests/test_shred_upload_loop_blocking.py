@@ -32,33 +32,15 @@ import routers.tts_runtime as tts_runtime
 import routers.vault as vault_router
 from tts import refs
 
-_STALL_S = 0.12
+from tests.loop_guard import (
+    MAX_FREEZE_S,
+    MIN_TICKS,
+    STALL_S as _STALL_S,
+    longest_freeze as _longest_freeze,
+    ticks_during as _ticks_during,
+)
 
 
-async def _longest_freeze(coro) -> tuple[float, object]:
-    """Run `coro`, returning the longest stretch the loop went without control."""
-    gaps: list[float] = []
-
-    async def heartbeat():
-        last = time.monotonic()
-        while True:
-            await asyncio.sleep(0.005)
-            now = time.monotonic()
-            gaps.append(now - last)
-            last = now
-
-    beat = asyncio.ensure_future(heartbeat())
-    try:
-        await asyncio.sleep(0.02)
-        gaps.clear()
-        result = await coro
-        # Yield once before reading the gaps, or a handler whose blocking call
-        # is its last act reports a clean run: the heartbeat has had no chance
-        # to record the stretch it was starved for.
-        await asyncio.sleep(0.005)
-        return (max(gaps) if gaps else 0.0), result
-    finally:
-        beat.cancel()
 
 
 def _wav_bytes(seconds: float = 3.0, rate: int = 22050) -> bytes:
@@ -101,7 +83,7 @@ async def test_discarding_a_backup_does_not_freeze_the_loop(
     freeze, out = await _longest_freeze(vault_router.discard_plaintext_backup())
     assert out["removed"] == 1
     assert out["left"] == []
-    assert freeze < _STALL_S, f"loop frozen {freeze:.3f}s shredding a backup"
+    assert freeze < MAX_FREEZE_S, f"loop frozen {freeze:.3f}s shredding a backup"
 
 
 def test_discarding_a_backup_still_removes_the_file(client, a_plaintext_backup):
@@ -152,7 +134,7 @@ async def test_uploading_a_voice_does_not_freeze_the_loop(
     )
     assert out["voice_id"] == "ayse"
     assert out["transcript"] == "merhaba"
-    assert freeze < _STALL_S, f"loop frozen {freeze:.3f}s saving a voice clip"
+    assert freeze < MAX_FREEZE_S, f"loop frozen {freeze:.3f}s saving a voice clip"
 
 
 @pytest.mark.anyio

@@ -26,8 +26,13 @@ describe("stagger budget", () => {
     expect(total(200)).toBeLessThanOrEqual(0.4);
   });
 
-  it("still uses a visible offset for a short list", () => {
+  it("keeps a short list step above 0.02s, and at the 0.05s cap", () => {
+    // One-sided until KADEME 19a. `staggerStep` is `min(cap, total/count)`
+    // and at five items the CAP is what wins, so the lower bound alone let
+    // the cap regress freely: at cap 1.0 this returns 0.07 and stays green.
+    // The upper side is the cap itself, so pin it here where it binds.
     expect(staggerStep(5)).toBeGreaterThan(0.02);
+    expect(staggerStep(5), "the per-item cap moved").toBeCloseTo(0.05, 5);
   });
 
   it("does not stagger a single item", () => {
@@ -58,6 +63,13 @@ describe("accessibility preferences the app must actually read", () => {
     // Windows exposes this switch (Personalization > Colors > Transparency
     // effects) and this is a Windows app, so somebody can already have it on.
     // It is a READABILITY preference, distinct from reduced motion.
+    //
+    // KADEME 19a had this test down for deletion as a duplicate of the
+    // css-contract block. Measured before deleting, and the plan was wrong:
+    // css-contract checks WHICH selectors the block lists and that they are
+    // all real, but `backdrop-filter: none` is asserted nowhere else in the
+    // suite. Delete this and the block could list every blurred surface
+    // correctly while turning off nothing at all. It stays.
     const css = readFileSync(path.join(SRC, "index.css"), "utf-8");
     expect(css).toContain("prefers-reduced-transparency");
     const block = css.slice(css.indexOf("prefers-reduced-transparency"));
@@ -66,12 +78,12 @@ describe("accessibility preferences the app must actually read", () => {
 });
 
 describe("AnimatedList honours the stagger budget", () => {
-  it("keeps the per-item value as a ceiling for short lists", () => {
+  it("caps the step at 0.04s for a short list", () => {
     // Short lists were never the problem, so nothing about them changes.
     expect(Math.min(0.04, staggerStep(4))).toBe(0.04);
   });
 
-  it("tightens a long list instead of letting it run past the budget", () => {
+  it("fits a sixteen-row list inside the 0.4s budget by shrinking the step", () => {
     // Sixteen rows at a flat 40ms is 0.64s before the last one moves - roughly
     // double the point where a sequence stops reading as considered and starts
     // reading as waiting.

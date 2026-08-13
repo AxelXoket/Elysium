@@ -30,8 +30,14 @@ import routers.settings as settings
 from config import SECRET_PROXY_URL
 from database import get_db
 
-#: Long enough that a blocked loop is unambiguous, short enough to stay cheap.
-_STALL_S = 0.12
+from tests.loop_guard import (
+    MAX_FREEZE_S,
+    MIN_TICKS,
+    STALL_S as _STALL_S,
+    longest_freeze as _longest_freeze,
+    ticks_during as _ticks_during,
+)
+
 
 _PROXY = {
     "proxy_url": "http://127.0.0.1:9",
@@ -103,25 +109,6 @@ def key_validation_succeeds(monkeypatch):
     monkeypatch.setattr(openrouter, "validate_api_key", valid)
 
 
-async def _ticks_during(coro) -> tuple[int, object]:
-    """Run `coro`, counting how many times the loop got control meanwhile."""
-    ticks = 0
-
-    async def heartbeat():
-        nonlocal ticks
-        while True:
-            await asyncio.sleep(0.005)
-            ticks += 1
-
-    beat = asyncio.ensure_future(heartbeat())
-    try:
-        await asyncio.sleep(0.02)          # let the heartbeat settle
-        before = ticks
-        result = await coro
-        return ticks - before, result
-    finally:
-        beat.cancel()
-
 
 # ── the loop keeps running ───────────────────────────────────────────────────
 
@@ -132,7 +119,7 @@ async def test_reading_settings_does_not_freeze_the_loop(
     """The panel opening must not stall a reply that is mid-sentence."""
     ticks, out = await _ticks_during(settings.get_settings())
     assert out["proxy_configured"] is False
-    assert ticks > 1, "the loop was frozen while settings were read"
+    assert ticks >= MIN_TICKS, "the loop was frozen while settings were read"
 
 
 @pytest.mark.anyio
@@ -142,7 +129,7 @@ async def test_saving_auto_lock_does_not_freeze_the_loop(
     body = settings.AutoLockBody(auto_lock_minutes=7)
     ticks, out = await _ticks_during(settings.set_auto_lock(body))
     assert out["auto_lock_minutes"] == 7
-    assert ticks > 1, "the loop was frozen while auto-lock was saved"
+    assert ticks >= MIN_TICKS, "the loop was frozen while auto-lock was saved"
 
 
 @pytest.mark.anyio
@@ -152,7 +139,7 @@ async def test_saving_stop_sequences_does_not_freeze_the_loop(
     body = settings.StopSequencesBody(stop_sequences=["Anna:", "Human:"])
     ticks, out = await _ticks_during(settings.save_stop_sequences(body))
     assert out["stop_sequences"] == ["Anna:", "Human:"]
-    assert ticks > 1, "the loop was frozen while stop sequences were saved"
+    assert ticks >= MIN_TICKS, "the loop was frozen while stop sequences were saved"
 
 
 @pytest.mark.anyio
@@ -162,7 +149,7 @@ async def test_saving_image_output_does_not_freeze_the_loop(
     body = settings.ImageOutputBody(image_output_enabled=True)
     ticks, out = await _ticks_during(settings.set_image_output(body))
     assert out["image_output_enabled"] is True
-    assert ticks > 1, "the loop was frozen while image output was saved"
+    assert ticks >= MIN_TICKS, "the loop was frozen while image output was saved"
 
 
 @pytest.mark.anyio
@@ -172,7 +159,7 @@ async def test_saving_a_proxy_does_not_freeze_the_loop(
     body = settings.ProxyBody(**_PROXY)
     ticks, out = await _ticks_during(settings.save_proxy(body))
     assert out["ok"] is True
-    assert ticks > 1, "the loop was frozen while the proxy was saved"
+    assert ticks >= MIN_TICKS, "the loop was frozen while the proxy was saved"
 
 
 @pytest.mark.anyio
@@ -183,7 +170,7 @@ async def test_arming_the_kill_switch_does_not_freeze_the_loop(
     body = settings.ProxyRequiredBody(proxy_required=True)
     ticks, out = await _ticks_during(settings.set_proxy_required(body))
     assert out["ok"] is True
-    assert ticks > 1, "the loop was frozen while the kill-switch was armed"
+    assert ticks >= MIN_TICKS, "the loop was frozen while the kill-switch was armed"
 
 
 @pytest.mark.anyio
@@ -194,7 +181,7 @@ async def test_renaming_the_proxy_does_not_freeze_the_loop(
     body = settings.ProxyAliasBody(proxy_alias="work")
     ticks, out = await _ticks_during(settings.set_proxy_alias(body))
     assert out["proxy_alias"] == "work"
-    assert ticks > 1, "the loop was frozen while the proxy was renamed"
+    assert ticks >= MIN_TICKS, "the loop was frozen while the proxy was renamed"
 
 
 @pytest.mark.anyio
@@ -204,7 +191,7 @@ async def test_deleting_the_proxy_does_not_freeze_the_loop(
     client.post("/api/v1/settings/proxy", json=_PROXY)
     ticks, out = await _ticks_during(settings.delete_proxy())
     assert out["ok"] is True
-    assert ticks > 1, "the loop was frozen while the proxy was deleted"
+    assert ticks >= MIN_TICKS, "the loop was frozen while the proxy was deleted"
 
 
 @pytest.mark.anyio
@@ -215,7 +202,7 @@ async def test_saving_the_api_key_does_not_freeze_the_loop(
     body = settings.ApiKeyBody(api_key="sk-or-v1-testtesttesttest")
     ticks, out = await _ticks_during(settings.save_api_key(body))
     assert out == {"ok": True, "key_status": "valid"}
-    assert ticks > 1, "the loop was frozen while the API key was stored"
+    assert ticks >= MIN_TICKS, "the loop was frozen while the API key was stored"
 
 
 @pytest.mark.anyio
@@ -224,7 +211,7 @@ async def test_deleting_the_api_key_does_not_freeze_the_loop(
 ):
     ticks, out = await _ticks_during(settings.delete_api_key())
     assert out["ok"] is True
-    assert ticks > 1, "the loop was frozen while the API key was deleted"
+    assert ticks >= MIN_TICKS, "the loop was frozen while the API key was deleted"
 
 
 # ── and moving them did not change what they answer ──────────────────────────

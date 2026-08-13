@@ -471,7 +471,7 @@ describe("ChatList", () => {
 
   // v1.1 FF11: blur now COMMITS (was: silently cancelled). Escape still
   // cancels (see "RENAME: Escape cancels the edit without a request").
-  it("RENAME: blur commits the typed title (FF11)", async () => {
+  it("leaving the rename box commits the typed title", async () => {
     const user = userEvent.setup();
     const mock = mockFetch({
       "PATCH /chats/1": { body: { ...chatFixture, title: "Committed On Blur" } },
@@ -521,7 +521,7 @@ describe("ChatList", () => {
     }
   });
 
-  it("RENAME: blur with an unchanged title sends no request (FF11 guard)", async () => {
+  it("leaving the rename box unchanged sends no request", async () => {
     const user = userEvent.setup();
     const mock = mockFetch({
       "PATCH /chats/1": { body: { ...chatFixture, title: "x" } },

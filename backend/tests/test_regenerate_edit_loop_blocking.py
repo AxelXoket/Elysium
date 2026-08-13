@@ -30,7 +30,14 @@ import database
 import routers.completions as cr
 from tests.conftest import make_character, make_chat
 
-_STALL_S = 0.12
+from tests.loop_guard import (
+    MAX_FREEZE_S,
+    MIN_TICKS,
+    STALL_S as _STALL_S,
+    longest_freeze as _longest_freeze,
+    ticks_during as _ticks_during,
+)
+
 
 
 @pytest.fixture()
@@ -49,42 +56,6 @@ def slow_db(monkeypatch):
 
     monkeypatch.setattr(cr, "get_db", slow)
 
-
-async def _longest_freeze(coro) -> tuple[float, object]:
-    """Run `coro`, returning the longest stretch the loop went without control.
-
-    A tick COUNT is the wrong measure for these two handlers. They do several
-    pieces of database work, and the ones that already ran on a worker thread
-    would keep the loop ticking no matter what the piece under test did - so a
-    "did it tick at all" assertion would pass either way. The longest gap
-    between ticks is the honest measure: if any single call blocked the loop,
-    exactly one gap grows to the length of the injected stall, and nothing else
-    in the handler can produce one.
-    """
-    gaps: list[float] = []
-
-    async def heartbeat():
-        last = time.monotonic()
-        while True:
-            await asyncio.sleep(0.005)
-            now = time.monotonic()
-            gaps.append(now - last)
-            last = now
-
-    beat = asyncio.ensure_future(heartbeat())
-    try:
-        await asyncio.sleep(0.02)          # let the heartbeat settle
-        gaps.clear()
-        result = await coro
-        # Yield once BEFORE reading the gaps. A handler whose blocking call is
-        # its last act leaves the loop starved right up to the moment it
-        # returns, and the heartbeat has had no chance to record that stretch
-        # yet - measuring here without this sleep reported a clean run for a
-        # fully blocked one, and made the whole assertion unfalsifiable.
-        await asyncio.sleep(0.005)
-        return (max(gaps) if gaps else 0.0), result
-    finally:
-        beat.cancel()
 
 
 def _seed(client) -> tuple[int, int]:
@@ -130,7 +101,7 @@ async def test_regenerating_does_not_freeze_the_loop(
         cr.regenerate_message(chat_id, user_id + 1, body)
     )
     assert out["assistant_message"]["content"] == "new reply"
-    assert freeze < _STALL_S, (
+    assert freeze < MAX_FREEZE_S, (
         f"the loop was frozen for {freeze:.3f}s during a regenerate"
     )
 
@@ -145,7 +116,7 @@ async def test_editing_does_not_freeze_the_loop(
         cr.edit_message(chat_id, user_id, body)
     )
     assert out["user_message"]["content"] == "a different question"
-    assert freeze < _STALL_S, (
+    assert freeze < MAX_FREEZE_S, (
         f"the loop was frozen for {freeze:.3f}s during an edit"
     )
 

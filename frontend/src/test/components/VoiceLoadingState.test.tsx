@@ -33,7 +33,7 @@ const READINESS = {
 };
 
 function stubActive(state: string, extra: Record<string, unknown> = {}) {
-  mockFetch({
+  return mockFetch({
     "/tts/active": {
       body: {
         uid: "u1",
@@ -55,7 +55,7 @@ describe("voice controls while the model loads", () => {
     useUiStore.setState({ continuousVoice: false });
   });
 
-  it("the per-message Speak button says so and pulses", async () => {
+  it("the per-message Speak button marks itself loading and refuses presses", async () => {
     stubActive("loading");
     renderWithQueryClient(<SpeakButton messageId={7} />);
 
@@ -69,7 +69,7 @@ describe("voice controls while the model loads", () => {
     expect(button).toBeDisabled();
   });
 
-  it("the live-speak button says so and pulses", async () => {
+  it("the live-speak button marks itself loading and refuses presses", async () => {
     stubActive("loading");
     renderWithQueryClient(<SpeakLiveButton chatId={1} />);
 
@@ -105,19 +105,43 @@ describe("voice controls while the model loads", () => {
     expect(button).toHaveAttribute("title", "Speak message");
   });
 
+  // These two look like copies of the null-render cases in
+  // SpeakButton.test.tsx, and KADEME 19b checked whether they should go.
+  // They should not: there the point is the button's own contract, here it is
+  // the BOUNDARY of the loading state - "not yet" against "not at all" -
+  // which is the whole subject of this file and is legible only next to the
+  // loading cases above.
+  //
+  // What they were missing is the settled-query control the SpeakButton
+  // versions carry. `container.firstChild` is null on the very first frame,
+  // before any query resolves, so `waitFor(...toBeNull())` succeeded whether
+  // the component decided to hide or the request simply never happened. A
+  // weaker copy of an existing gate is worse than no copy; now it is not one.
   it("a model that cannot run still renders nothing at all", async () => {
     // Loading is "not yet"; unrunnable is "not at all", and the settings page
     // already lists every blocker for it in words.
-    stubActive("unloaded", {
+    const fetchMock = stubActive("unloaded", {
       readiness: { ...READINESS, runnable: false },
     });
     const { container } = renderWithQueryClient(<SpeakButton messageId={7} />);
-    await waitFor(() => expect(container.firstChild).toBeNull());
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([url]) => String(url).includes("/tts/active")),
+        "the readiness query never ran, so the absence proves nothing",
+      ).toBe(true),
+    );
+    expect(container.firstChild).toBeNull();
   });
 
   it("no model chosen still renders nothing at all", async () => {
-    stubActive("unloaded", { uid: null, readiness: null });
+    const fetchMock = stubActive("unloaded", { uid: null, readiness: null });
     const { container } = renderWithQueryClient(<SpeakButton messageId={7} />);
-    await waitFor(() => expect(container.firstChild).toBeNull());
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([url]) => String(url).includes("/tts/active")),
+        "the readiness query never ran, so the absence proves nothing",
+      ).toBe(true),
+    );
+    expect(container.firstChild).toBeNull();
   });
 });

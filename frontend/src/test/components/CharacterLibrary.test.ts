@@ -250,9 +250,10 @@ describe("CharacterPatchSchema safety", () => {
       raw_json: '{"bad": true}',
     });
     // raw_json is stripped by the schema (not in CharacterSchema fields)
-    if (result.success) {
-      expect(result.data).not.toHaveProperty("raw_json");
-    }
+    // Unconditional: behind `if (result.success)` a schema that started
+    // REJECTING instead of stripping skipped the assertion and passed.
+    expect(result.success, "the schema refused a patch it has to accept").toBe(true);
+    expect(result.success && result.data).not.toHaveProperty("raw_json");
   });
 
   it("CharacterPatchSchema accepts partial updates", async () => {
@@ -267,9 +268,10 @@ describe("CharacterPatchSchema safety", () => {
       name: "Test",
       id: 999,
     });
-    if (result.success) {
-      expect(result.data).not.toHaveProperty("id");
-    }
+    // Unconditional: behind `if (result.success)` a schema that started
+    // REJECTING instead of stripping skipped the assertion and passed.
+    expect(result.success, "the schema refused a patch it has to accept").toBe(true);
+    expect(result.success && result.data).not.toHaveProperty("id");
   });
 
   it("CharacterPatchSchema does not include created_at", async () => {
@@ -278,32 +280,10 @@ describe("CharacterPatchSchema safety", () => {
       name: "Test",
       created_at: "2026-01-01T00:00:00Z",
     });
-    if (result.success) {
-      expect(result.data).not.toHaveProperty("created_at");
-    }
-  });
-});
-
-// ═════════════════════════════════════════════════════════════════
-// Character mutation hook exports and cache invalidation
-// ═════════════════════════════════════════════════════════════════
-
-describe("Character mutation hook exports (structural)", () => {
-  it("all character query/mutation hooks are exported", async () => {
-    const mod = await import("@/lib/query/characters");
-    expect(typeof mod.useCharacters).toBe("function");
-    expect(typeof mod.useCreateCharacter).toBe("function");
-    expect(typeof mod.useImportCharacter).toBe("function");
-    expect(typeof mod.usePatchCharacter).toBe("function");
-    expect(typeof mod.useDeleteCharacter).toBe("function");
-  });
-
-  it("character helpers are exported from lib/characters", async () => {
-    const mod = await import("@/lib/characters");
-    expect(typeof mod.findCharacterById).toBe("function");
-    expect(typeof mod.safeCharacterId).toBe("function");
-    expect(typeof mod.buildStartChatInput).toBe("function");
-    expect(typeof mod.CHARACTER_DELETE_CASCADE_WARNING).toBe("string");
+    // Unconditional: behind `if (result.success)` a schema that started
+    // REJECTING instead of stripping skipped the assertion and passed.
+    expect(result.success, "the schema refused a patch it has to accept").toBe(true);
+    expect(result.success && result.data).not.toHaveProperty("created_at");
   });
 });
 
@@ -312,17 +292,27 @@ describe("Character mutation hook exports (structural)", () => {
 // ═════════════════════════════════════════════════════════════════
 
 describe("Character error store integration", () => {
-  it("parseApiError handles character-related error codes", async () => {
+  it("gives a missing character its own sentence, not the catch-all", async () => {
+    // This test used to pass `{ detail: "..." }` with no `status`, which
+    // isApiError rejects, so all three cases fell through to the catch-all
+    // and `toBeTruthy()` waved them through. It proved that a string is a
+    // string. The shape has to be a real ApiError, and the assertion has to
+    // be that the mapped sentence is NOT the catch-all - otherwise deleting
+    // the entry from the catalogue would not be noticed.
     const { parseApiError } = await import("@/lib/errors/parseApiError");
 
-    const err1 = parseApiError({ detail: "character_not_found" });
-    expect(err1.message).toBeTruthy();
+    const generic = parseApiError({ status: 500, detail: "no_such_code_here" })
+      .message;
+    const missing = parseApiError({ status: 404, detail: "character_not_found" })
+      .message;
 
-    const err2 = parseApiError({ detail: "invalid_json" });
-    expect(err2.message).toBeTruthy();
+    expect(missing).not.toBe(generic);
+    expect(missing.toLowerCase()).toContain("character");
 
-    const err3 = parseApiError(new Error("network failure"));
-    expect(err3.message).toBeTruthy();
+    // An unmapped code has to land somewhere readable rather than showing the
+    // wire word, and a dead connection is its own case.
+    expect(generic).not.toContain("no_such_code_here");
+    expect(parseApiError(new Error("network failure")).message).not.toBe("");
   });
 });
 
@@ -331,12 +321,13 @@ describe("Character error store integration", () => {
 // ═════════════════════════════════════════════════════════════════
 
 describe("Character privacy checks", () => {
-  it("characterHelpers module is pure - no browser storage", async () => {
-    const mod = await import("@/lib/characters/characterHelpers");
-    expect(typeof mod.findCharacterById).toBe("function");
-    expect(typeof mod.safeCharacterId).toBe("function");
-    expect(typeof mod.buildStartChatInput).toBe("function");
-  });
+  // The "no browser storage" claim this describe used to open with was three
+  // `typeof x === "function"` assertions and nothing else - a privacy name on
+  // a test that never went near storage. The real guarantee is repo-wide and
+  // much stronger: static-safety S-09 scans EVERY source file for a direct
+  // device-storage write outside lib/store, and S-09b brace-parses the
+  // store's own partialize against an allowlist. A weaker local copy of a
+  // gate that already exists is worse than none: it reads as coverage.
 
   it("CharacterSchema does not expose raw_json", async () => {
     const { CharacterSchema } = await import("@/lib/schemas/characters");
@@ -344,9 +335,11 @@ describe("Character privacy checks", () => {
       ...character1,
       raw_json: '{"secret": true}',
     });
-    if (result.success) {
-      expect(result.data).not.toHaveProperty("raw_json");
-    }
+    // Unconditional. Behind `if (result.success)` the one outcome that would
+    // prove a regression - the schema starting to REJECT instead of strip -
+    // skipped the assertion and passed.
+    expect(result.success, "the schema refused a row it has to accept").toBe(true);
+    expect(result.success && result.data).not.toHaveProperty("raw_json");
   });
 
   it("buildStartChatInput never includes image_url", () => {

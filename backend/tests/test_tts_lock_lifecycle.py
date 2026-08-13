@@ -91,6 +91,13 @@ class TestTheTimerIsGone:
         assert not hasattr(config, "TTS_IDLE_UNLOAD_S")
         assert "TTS_IDLE_UNLOAD_S" not in _src("config")
 
+    # KEPT in KADEME 20b, against section 4's list. Section 4 was right that
+    # prose read by humans does not belong in an assertion, and proposed a
+    # replacement: docs/adr/0007-no-idle-unload.md plus a pygrep hook whose
+    # `name:` field becomes the durable marker. Measured: docs/adr/ does not
+    # exist, no ADR was written, and no such hook is configured. Deleting
+    # this today removes the only thing keeping the rationale in the tree,
+    # with neither promised replacement built. It goes when they exist.
     def test_the_removal_is_explained_where_someone_would_look_for_it(self):
         """A deleted policy leaves no trace to grep for, so the reason lives at
         both places a reader would go looking."""

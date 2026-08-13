@@ -170,23 +170,29 @@ describe("a generated image in the transcript", () => {
     expect(scrollToSpy).not.toHaveBeenCalled();
   });
 
-  // Weaker than its neighbours, deliberately labelled so: the affordance is
-  // pre-existing behaviour of the scroll listener, so this passes with or
-  // without the load handler. It is here as a regression guard on the
-  // COMBINATION - a picture landing while the reader is away must not be the
-  // thing that hides their way back - not as coverage of the handler itself.
-  // The handler is covered by the two tests above.
+  // This used to stop at "the button is on screen", and its own comment
+  // admitted the button is there with or without the load handler - an
+  // honest label, but a label is not the same as being able to fail. The
+  // claim is that a picture landing while the reader is away must not be the
+  // thing that takes their way back, so the test now uses the way back.
   it("still offers a way back to the bottom while the reader is away", async () => {
-    const { scrollToSpy, setDistanceFromBottom } = await renderCanvas();
+    const { el, scrollToSpy, setDistanceFromBottom } = await renderCanvas();
     await waitFor(() => expect(scrollToSpy).toHaveBeenCalled());
     setDistanceFromBottom(900);
     const img = (
       await screen.findByRole("button", { name: /view attached image/i })
     ).querySelector("img")!;
     fireEvent.load(img);
+    scrollToSpy.mockClear();
+
+    const back = await screen.findByRole("button", { name: /jump to latest/i });
+    fireEvent.click(back);
     expect(
-      await screen.findByRole("button", { name: /jump to latest/i }),
-    ).toBeInTheDocument();
+      scrollToSpy,
+      "the way back was on screen but did not take the reader back",
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({ top: el.scrollHeight }),
+    );
   });
 
   it("opens the picture full size", async () => {

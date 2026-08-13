@@ -64,6 +64,11 @@ describe("SpeakLiveButton", () => {
     render(<SpeakLiveButton chatId={1} />);
     const button = screen.getByRole("button");
     fireEvent.click(button);
+    // KADEME 19b: the call count alone was satisfied by the JS guard
+    // (`if (busy) return`), so the `disabled` attribute could be deleted and
+    // this stayed green. A live-looking button that silently swallows presses
+    // is a different bug from one that refuses them visibly.
+    expect(button, "the button never showed it was busy").toBeDisabled();
     fireEvent.click(button);
     expect(speakLive).toHaveBeenCalledTimes(1);
     release({ speaking: true });
@@ -73,9 +78,17 @@ describe("SpeakLiveButton", () => {
     speakLive.mockRejectedValue({ status: 404, detail: "tts_nothing_streaming" });
     render(<SpeakLiveButton chatId={1} />);
     fireEvent.click(screen.getByRole("button"));
+    // KADEME 19b: "says so" was only `errors.length > 0` - ANY error, from
+    // anywhere, satisfied it. The whole point of this path is that the user
+    // reads the contract sentence telling them to use the per-message button
+    // instead, so the code that carries that sentence is what gets pinned.
     await waitFor(() =>
       expect(useErrorStore.getState().errors.length).toBeGreaterThan(0),
     );
+    expect(
+      useErrorStore.getState().errors.map((e) => e.code),
+      "the refusal arrived without the code that explains it",
+    ).toContain("tts_nothing_streaming");
   });
 
   it("becomes pressable again after a failure", async () => {

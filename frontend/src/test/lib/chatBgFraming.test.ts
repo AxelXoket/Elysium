@@ -58,14 +58,14 @@ describe("the focal point survives a resize", () => {
 });
 
 describe("zoom hangs off whichever axis cover was already filling", () => {
-  it("scales the height when the picture is wider than the chat area", () => {
+  it("returns a height-scaled background-size when the picture is wider than the area", () => {
     // A 2:1 photo in a 4:3 window: cover was matching WIDTH and spilling
     // height, so height is what has to grow. Scaling width instead would
     // leave a gap down the sides.
     expect(bgSizeFor(1.5, 2.0, 4 / 3)).toBe("auto 150%");
   });
 
-  it("scales the width when the picture is taller than the chat area", () => {
+  it("returns a width-scaled background-size when the picture is taller than the area", () => {
     expect(bgSizeFor(1.5, 0.6, 4 / 3)).toBe("150% auto");
   });
 
@@ -106,6 +106,13 @@ describe("stored framing is clamped on the way in", () => {
     // creative choice.
     expect(clampFraming({ zoom: 0.2 }).zoom).toBe(1);
     expect(clampFraming({ zoom: 99 }).zoom).toBe(CHAT_BG_ZOOM_MAX);
+
+    // The line above is self-referential: it imports the ceiling and then
+    // checks the clamp lands on the ceiling, so raising CHAT_BG_ZOOM_MAX
+    // moves BOTH sides and nothing fails. Measured in KADEME 19a - changing
+    // it from 3 to 5 kept all 128 tests in this stage green. It proves that
+    // clamping happens, not what it clamps to, so the value needs its own pin.
+    expect(CHAT_BG_ZOOM_MAX, "the zoom ceiling moved").toBe(3);
   });
 
   it("falls back to centred rather than throwing on junk", () => {

@@ -1,3 +1,19 @@
+/**
+ * fe0-contract.test.ts - the shapes the frontend and the backend agreed on.
+ *
+ * FE-0 was the pass that made every request and response go through a Zod
+ * schema instead of a hand-written interface. These tests hold that line: a
+ * field the backend started sending, a field it stopped sending, or a field
+ * the frontend started inventing all show up here as a parse failure rather
+ * than as `undefined` three screens later.
+ *
+ * The privacy half is deliberate too - a request body is checked for what it
+ * must NOT carry (provider routing fields), not only for what it must.
+ *
+ * These are contract tests, not behaviour tests. They prove a payload parses
+ * and a path is called; whether the screen then does the right thing with it
+ * belongs to the component files.
+ */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   completeChat,
@@ -49,6 +65,18 @@ describe("FE-0 contract foundation", () => {
         selected_persona_id: 7,
       }).selected_persona_id,
     ).toBe(7);
+    // "No persona chosen" is a real state, not an absent field, and it comes
+    // back over the same wire. Moved here in KADEME 18c from PersonaLogic,
+    // which owned neither the schema nor the contract.
+    expect(
+      SettingsSchema.parse({
+        api_key_set: true,
+        proxy_required: false,
+        proxy_configured: true,
+        proxy_alias: "local",
+        selected_persona_id: null,
+      }).selected_persona_id,
+    ).toBeNull();
   });
 
   it("accepts API key valid and validation_unavailable responses", async () => {

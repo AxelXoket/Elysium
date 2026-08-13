@@ -26,7 +26,7 @@ function parse(extra: Record<string, unknown> = {}) {
 }
 
 describe("voice settings schema", () => {
-  it("accepts a payload with no matrix, so an older backend still renders", () => {
+  it("parses an omitted matrix field to an empty array", () => {
     // Forward compatibility in the other direction: the panel falls back to
     // this engine's own params rather than showing an error.
     expect(parse().matrix).toEqual([]);
@@ -67,6 +67,26 @@ describe("voice settings schema", () => {
       ],
     });
     expect(schema.matrix[0].status).toBe("dead");
+
+    // KADEME 19b: the name promises the two stay DISTINCT, and only one of
+    // them was ever parsed - a schema that collapsed both onto the same value
+    // would have passed. They look identical from outside and mean opposite
+    // things to whoever is deciding whether to touch the dial.
+    const unsupported = parse({
+      matrix: [
+        {
+          name: "repetition_penalty",
+          type: "float",
+          default: 2,
+          label: "Repetition penalty",
+          editable: false,
+          status: "unsupported",
+          reason: "this engine has no such setting",
+        },
+      ],
+    });
+    expect(unsupported.matrix[0].status).toBe("unsupported");
+    expect(unsupported.matrix[0].status).not.toBe(schema.matrix[0].status);
   });
 
   it("marks the app-level dial as editable and says who implements it", () => {

@@ -15,6 +15,14 @@
  * jsdom has no layout, so height itself is unmeasurable here. What IS
  * checkable, and what actually broke, is that the row is always PRESENT with a
  * reserved minimum - the property the intrinsic-size estimate depends on.
+ *
+ * KADEME 18c: the reserved minimum is now pinned by VALUE, not by prefix.
+ * Asserting only that the class name starts with `min-h-` left the magnitude
+ * free: shrinking the reservation to `min-h-[0.05rem]` reintroduces exactly
+ * the collapse this file exists for and kept every assertion green. Nothing
+ * links this number to the `contain-intrinsic-size: auto 78px` estimate in
+ * index.css that it has to stay consistent with; that half is still on
+ * whoever edits either one.
  */
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
@@ -32,6 +40,12 @@ function card(overrides: Partial<Model>) {
   return details as HTMLElement;
 }
 
+/**
+ * The reservation ModelCard makes for the details line. Spelled out so the
+ * SIZE is under test and not just the presence of a utility class.
+ */
+const RESERVED = "min-h-[1.125rem]";
+
 describe("model row geometry", () => {
   it("reserves the details line for a model with nothing to show", () => {
     const details = card({
@@ -42,7 +56,7 @@ describe("model row geometry", () => {
       input_modalities: ["text"],
       output_modalities: ["text"],
     });
-    expect(details.className).toContain("min-h-");
+    expect(details.className).toContain(RESERVED);
     expect(details.children.length).toBe(0);
   });
 
@@ -55,7 +69,7 @@ describe("model row geometry", () => {
       input_modalities: ["text", "image"],
       output_modalities: ["text", "image"],
     });
-    expect(details.className).toContain("min-h-");
+    expect(details.className).toContain(RESERVED);
     // ctx, max, one input badge, one output badge.
     expect(details.children.length).toBe(4);
   });

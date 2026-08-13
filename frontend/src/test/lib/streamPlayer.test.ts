@@ -200,7 +200,7 @@ describe("VoiceStreamPlayer", () => {
     expect(ctx.scheduled).toHaveLength(2);
   });
 
-  it("calls onEnded only after finish() and every chunk has played", async () => {
+  it("does not call onEnded while a chunk is still outstanding", async () => {
     const onEnded = vi.fn();
     const { player, land } = make({ onEnded });
     player.push("a");

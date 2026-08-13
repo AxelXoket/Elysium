@@ -137,6 +137,11 @@ describe("speakWhenStreamBegins", () => {
     speakLive.mockRejectedValue(notStreaming());
 
     await expect(settle(speakWhenStreamBegins(1))).resolves.toBe(false);
-    expect(speakLive.mock.calls.length).toBeLessThanOrEqual(6);
+    // Both sides. The ceiling alone ("gives up") was satisfied by giving up
+    // after ONE try, which is not patience, it is a different bug: the reply
+    // stream can take a moment to appear and a single attempt would lose the
+    // voice on a slow machine.
+    expect(speakLive.mock.calls.length, "it stopped trying too early or too late")
+      .toBe(6);
   });
 });

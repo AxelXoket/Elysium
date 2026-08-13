@@ -185,6 +185,43 @@ describe("useStaleSelectionReconciliation", () => {
     expect(useUiStore.getState().selectedChatId).toBe(163);
   });
 
+  it("does NOT clear a freshly-created character while the list is refetching", async () => {
+    // The same race, one list over, and it costs more here: clearing the
+    // character clears its chat selection too, so a create that lost this
+    // window would drop the reader out of the chat they just started.
+    //
+    // The `isFetching` guard for characters has been in the hook as long as
+    // the one for chats. Only the test was missing - KADEME 17a's adversary
+    // called the guard itself absent, which measuring disproved; what was
+    // absent was any way to notice it going away.
+    const newCharacter = { ...characterFixture, id: 471 };
+    mockFetch({
+      "/characters": { body: [newCharacter] },
+      "/models/openrouter": { body: modelListFixture },
+      "/chats": { body: [chatFixture] },
+    });
+
+    const qc = createTestQueryClient();
+    qc.setQueryData(keys.characters(), [characterFixture]); // stale: no 471
+    await qc.invalidateQueries({ queryKey: keys.characters() });
+
+    useUiStore.setState({
+      selectedChatId: null,
+      selectedCharacterId: 471, // just selected after create
+      selectedModelId: "openai/gpt-4o",
+    });
+
+    renderHookWithQueryClient(() => useStaleSelectionReconciliation(), {
+      client: qc,
+    });
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 40));
+    });
+
+    expect(useUiStore.getState().selectedCharacterId).toBe(471);
+  });
+
   it("does NOT clear selections while queries are still loading", async () => {
     // Fetch never resolves - all queries stay in loading state
     vi.stubGlobal(

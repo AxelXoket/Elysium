@@ -22,6 +22,13 @@ BACKEND_ROOT = VERIFY_DIR.parent
 SCRIPTS = sorted(VERIFY_DIR.glob("verify_*.py"))
 
 
+# KEPT in KADEME 20b, against section 4's list. Section 4 argued an empty
+# SCRIPTS glob already turns three other tests in this file red, so a floor
+# here is redundant. Two of those three were on the same deletion list.
+# This is the module's only floor: SCRIPTS feeds _aggregated_names(), the
+# parametrised backend-dir test and the coverage test. Section 4 is dated
+# 9 August 2026 and the floor doctrine was written on the 10th, so it is
+# not a contradiction, only an order of events.
 def test_there_are_verify_scripts_to_check():
     assert SCRIPTS, "no verify scripts found - the glob or the layout moved"
 
@@ -59,19 +66,22 @@ def _aggregated_names() -> list[str]:
     return sorted(p.name for p in SCRIPTS if p.name not in excluded)
 
 
-def test_every_aggregated_script_exists_on_disk():
-    """The gap that let the list rot: nothing compared it to the directory.
-
-    The hand-written list named six files and the tree held twelve, so five
-    phase suites were aggregated by nothing - and because the runner reported
-    only on names it already knew, no output ever mentioned the missing five.
-    """
-    names = _aggregated_names()
-    assert names, "the aggregate runs no scripts at all"
-    for name in names:
-        assert (VERIFY_DIR / name).is_file(), f"{name} is aggregated but absent"
+# test_every_aggregated_script_exists_on_disk was deleted in KADEME 20b.
+# It could not fail: `_aggregated_names()` is DERIVED from the same glob
+# that built SCRIPTS, so `(VERIFY_DIR / name).is_file()` compared the
+# directory with itself. The incident its docstring recorded - a
+# hand-written list naming six files while the tree held twelve, so five
+# phase suites were aggregated by nothing and the runner reported only on
+# names it already knew - is still told by
+# test_the_phase_suites_are_actually_aggregated, which pins it behaviourally.
 
 
+# KEPT in KADEME 20b, against section 4's list. Section 4 said to delete
+# the whole test and fold two lines of it elsewhere - but the lines it
+# named do not include the `# Floor.` below, which is the only assertion
+# anywhere that stops this subtraction from reporting 'everything is
+# accounted for' having seen no files at all. The fold would have dropped
+# a guard nobody noticed was there.
 def test_the_aggregate_covers_the_whole_verify_directory():
     """Every verify script is either aggregated or excluded ON PURPOSE."""
     source = _aggregate_source()
@@ -117,13 +127,12 @@ def test_scripts_are_launched_from_the_directory_they_live_in():
     assert "VERIFY_DIR = os.path.dirname(os.path.abspath(__file__))" in source
 
 
-def test_the_dead_part_f_branch_is_gone():
-    """It tested a name that was not in the list and not on disk, so it could
-    never run. A skip branch for a file nobody has is a comment pretending to
-    be code."""
-    source = _aggregate_source()
-    assert 'script == "verify_part_f.py"' not in source
-    assert "Part F deferred" not in source
+# test_the_dead_part_f_branch_is_gone was deleted in KADEME 20b.
+# A source scan may pin a DELETION, which is what this did - but the test
+# directly below already bans `verify_part_f` from non-comment code, and
+# does it without the contradiction this one carried: it forbade the words
+# "Part F deferred" even inside a comment, while its neighbour
+# deliberately allows the filename to be mentioned in comments.
 
 
 def test_no_hand_written_verify_filename_can_go_stale():

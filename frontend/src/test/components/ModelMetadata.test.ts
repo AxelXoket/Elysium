@@ -401,7 +401,7 @@ describe("Constants", () => {
 // FE-4A compatibility
 // ═════════════════════════════════════════════════════════════════
 
-describe("FE-4A compatibility", () => {
+describe("agreement with the generation clamps", () => {
   it("getModelSupportedParameters returns array compatible with filterParamsByModel", async () => {
     const { filterParamsByModel } = await import("@/lib/generation");
     const params = getModelSupportedParameters(gpt4);
@@ -412,7 +412,7 @@ describe("FE-4A compatibility", () => {
     expect(filtered).toEqual({ temperature: 0.7 });
   });
 
-  it("FE-4A clampContextBudget uses same min as CONTEXT_BUDGET_MIN", async () => {
+  it("clampContextBudget floors at the same minimum the bounds report", async () => {
     const { clampContextBudget } = await import("@/lib/generation");
     // Clamp a value below min - FE-4A should clamp to 512
     const result = clampContextBudget(100, null);
@@ -452,11 +452,9 @@ describe("FE-4A compatibility", () => {
 // ═════════════════════════════════════════════════════════════════
 
 describe("Model helper privacy checks", () => {
-  it("modelHelpers module is pure - no browser storage", async () => {
-    const mod = await import("@/lib/models/modelHelpers");
-    expect(typeof mod.findModelById).toBe("function");
-    expect(typeof mod.getModelDisplayName).toBe("function");
-  });
+  // A "no browser storage" test stood here and asserted two exports are
+  // functions. static-safety S-09 scans every source file for the real thing;
+  // this one only looked like it did.
 
   it("no context_length_override concept", () => {
     // getContextBudgetBounds uses model.context_length directly, no override
@@ -477,21 +475,5 @@ describe("Model helper privacy checks", () => {
     expect(bounds).not.toHaveProperty("zdr");
     expect(bounds).not.toHaveProperty("data_collection");
     expect(bounds).not.toHaveProperty("allow_fallbacks");
-  });
-
-  it("exports are exported from lib/models barrel", async () => {
-    const mod = await import("@/lib/models");
-    expect(typeof mod.findModelById).toBe("function");
-    expect(typeof mod.getModelDisplayName).toBe("function");
-    expect(typeof mod.getModelContextLength).toBe("function");
-    expect(typeof mod.getModelMaxCompletionTokens).toBe("function");
-    expect(typeof mod.getModelSupportedParameters).toBe("function");
-    expect(typeof mod.getModelModalities).toBe("function");
-    expect(typeof mod.hasInputModality).toBe("function");
-    expect(typeof mod.hasOutputModality).toBe("function");
-    expect(typeof mod.shouldShowTextOnlyNote).toBe("function");
-    expect(typeof mod.getContextBudgetBounds).toBe("function");
-    expect(typeof mod.CONTEXT_BUDGET_MIN).toBe("number");
-    expect(typeof mod.TEXT_ONLY_NOTE).toBe("string");
   });
 });

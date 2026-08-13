@@ -22,7 +22,7 @@ describe("Character Import Dialog Tests", () => {
   });
 
   // T-19: Character import calls POST /characters/import with raw body
-  it("T-19: calls POST /characters/import with raw body", async () => {
+  it("sends the pasted card through untouched", async () => {
     const fetchMock = mockFetch({});
 
     const user = userEvent.setup();
@@ -77,7 +77,7 @@ describe("Character Import Dialog Tests", () => {
   });
 
   // FIX-3: import failure renders a safe mapped message, never raw detail
-  it("FIX-3: import error shows mapped message instead of raw detail", async () => {
+  it("explains a refused import in its own words, not the upstream detail", async () => {
     const fetchMock = mockFetch({});
 
     const user = userEvent.setup();
@@ -112,7 +112,7 @@ describe("Character Import Dialog Tests", () => {
 
   // ── v1.1 FF14: pick a .json file ───────────────────────────────────────
 
-  it("FF14: picking a .json file fills the textarea and imports its text", async () => {
+  it("a picked file fills the box and imports what it holds", async () => {
     const fetchMock = mockFetch({});
     const user = userEvent.setup();
     renderWithQueryClient(
@@ -162,7 +162,7 @@ describe("Character Import Dialog Tests", () => {
     });
   });
 
-  it("FF14: the file picker is disabled while an import is pending", async () => {
+  it("the file picker closes while an import is still running", async () => {
     mockFetch({});
     const user = userEvent.setup();
     renderWithQueryClient(
@@ -175,5 +175,37 @@ describe("Character Import Dialog Tests", () => {
     expect(
       screen.getByRole("button", { name: "Choose file" }),
     ).toBeEnabled();
+  });
+  it("will not import an empty box", async () => {
+    // The handler opens with `if (!jsonText.trim()) return;`, but nothing
+    // could reach it: every test drives the button through a real click and a
+    // real click respects `disabled`. Removing that inner guard leaves all
+    // 1315 tests green - and so it should, because the guard is belt beside
+    // braces. What actually stands between an empty box and a POST is the
+    // disabled state, and THAT had no test either.
+    mockFetch({ "/characters/import": { body: characterFixture } });
+    const user = userEvent.setup();
+    renderWithQueryClient(
+      <CharacterImportDialog trigger={<Button>Import</Button>} />,
+      { wrapper },
+    );
+
+    await user.click(screen.getByRole("button", { name: /import/i }));
+    await waitFor(() => {
+      expect(screen.getByText("Import Character (JSON)")).toBeInTheDocument();
+    });
+
+    const submit = () => screen.getAllByRole("button", { name: /import/i }).slice(-1)[0];
+    expect(submit(), "an empty card can be imported").toBeDisabled();
+
+    // Whitespace is still empty. This is the case a paste that lost its
+    // contents actually produces. fireEvent, because userEvent.type reads a
+    // brace as a key descriptor - the same reason the tests above use it.
+    const box = screen.getByLabelText("Character JSON input");
+    fireEvent.change(box, { target: { value: "   " } });
+    expect(submit(), "a box holding only spaces can be imported").toBeDisabled();
+
+    fireEvent.change(box, { target: { value: '{"name":"Real"}' } });
+    expect(submit()).toBeEnabled();
   });
 });

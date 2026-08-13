@@ -33,7 +33,7 @@ describe("Proxy Section Tests", () => {
   });
 
   // T-10: Proxy save calls POST /settings/proxy with exact backend field names
-  it("T-10: proxy save calls POST /settings/proxy", async () => {
+  it("saves the URL, the required flag and the alias in one request", async () => {
     const user = userEvent.setup();
     renderWithQueryClient(<ProxySection />, { wrapper });
 
@@ -75,7 +75,7 @@ describe("Proxy Section Tests", () => {
   });
 
   // T-11: Proxy delete calls DELETE
-  it("T-11: proxy delete calls DELETE /settings/proxy", async () => {
+  it("removing the proxy deletes it on the server", async () => {
     const user = userEvent.setup();
     renderWithQueryClient(<ProxySection />, { wrapper });
 
@@ -106,7 +106,7 @@ describe("Proxy Section Tests", () => {
   });
 
   // T-12: Proxy URL not displayed after save
-  it("T-12: proxy URL not displayed after save", async () => {
+  it("never shows the proxy URL back, not even right after storing it", async () => {
     const user = userEvent.setup();
     renderWithQueryClient(<ProxySection />, { wrapper });
 
@@ -136,7 +136,7 @@ describe("Proxy Section Tests", () => {
   });
 
   // T-13: Proxy health status renders
-  it("T-13: proxy health status renders", async () => {
+  it("shows whether the proxy answered, and how slowly", async () => {
     renderWithQueryClient(<ProxySection />, { wrapper });
 
     await waitFor(() => {
@@ -146,7 +146,7 @@ describe("Proxy Section Tests", () => {
   });
 
   // FIX-1: "Require proxy" toggle reflects server state on mount
-  it("FIX-1: toggle renders on when settings.proxy_required=true", async () => {
+  it("starts from what the server says about requiring the proxy", async () => {
     mockFetch({
       "/settings/proxy/health": { body: proxyHealthFixture },
       "/settings": {
@@ -168,7 +168,7 @@ describe("Proxy Section Tests", () => {
 
   // FIX-1: saving with only the URL changed must NOT silently disable
   // proxy_required - the untouched toggle mirrors the server value (true).
-  it("FIX-1: URL-only save keeps proxyRequired true from server state", async () => {
+  it("saving only the URL leaves the requirement the server holds alone", async () => {
     const user = userEvent.setup();
     const mock = mockFetch({
       "/settings/proxy/health": { body: proxyHealthFixture },
@@ -217,7 +217,7 @@ describe("Proxy Section Tests", () => {
   });
 
   // FIX-1: a user-toggled value is preserved (dirty flag blocks server re-sync)
-  it("FIX-1: user-toggled value is sent even before settings refetch", async () => {
+  it("sends the requirement just toggled, not the one still being refetched", async () => {
     const user = userEvent.setup();
     // Server says proxy_required=false; user switches it on before saving.
     const mock = fetchMock;
@@ -423,7 +423,7 @@ describe("Proxy Section Tests", () => {
     });
   });
 
-  it("FIX-3: save error shows mapped message instead of raw detail", async () => {
+  it("explains a refused save in its own words, not the upstream detail", async () => {
     const user = userEvent.setup();
 
     renderWithQueryClient(<ProxySection />, { wrapper });

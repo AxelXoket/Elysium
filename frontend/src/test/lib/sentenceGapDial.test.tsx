@@ -49,7 +49,7 @@ describe("the sentence-pause dial reaches the player", () => {
     qc = createTestQueryClient();
   });
 
-  it("hands the stored pause to the voice built for a reply", async () => {
+  it("fetches the stored pause before the reply stream starts", async () => {
     const stream = controlledSseResponse();
     mockFetchWithStreams({
       "/tts/tag-prefs": { body: PREFS },
@@ -100,8 +100,19 @@ describe("the sentence-pause dial reaches the player", () => {
     // The dial's own design: a real pause REPLACES the overlap, because there
     // is nothing to crossfade into once there is silence between them. Zero
     // therefore has to be byte-identical to the behaviour before the dial.
-    expect(spacing(0)).toBeLessThan(1);
-    expect(spacing(0.4)).toBeGreaterThan(1);
+    // KADEME 19b: these were one-sided on both lines. `< 1` also holds if the
+    // crossfade were subtracted twice, and `> 1` also holds if the dial only
+    // applied half the pause. The sibling test above pins the SLOPE between
+    // two non-zero settings; neither absolute value was pinned anywhere.
+    //
+    // One 512-frame buffer at 44.1kHz is the overlap, so zero-gap spacing is
+    // 1 - 512/44100 exactly. That constant is the whole "byte-identical to
+    // before the dial" claim, and this is the only place it is measurable.
+    expect(spacing(0), "the zero-gap overlap is no longer one buffer").toBeCloseTo(
+      1 - 512 / 44100,
+      5,
+    );
+    expect(spacing(0.4), "the dial did not add its full pause").toBeCloseTo(1.4, 5);
   });
 });
 

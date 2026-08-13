@@ -85,6 +85,33 @@ describe("finished audio is released as it finishes", () => {
     expect(made.some((m) => m.disconnected > 0)).toBe(true);
   });
 
+  it("releases the chunk that finished, not whichever one is first in the list", () => {
+    // KADEME 19b. Every existing case ended all the chunks together, so the
+    // count reached zero whether the release was targeted or not - and
+    // `nodes.splice(at, 1)` could become `nodes.splice(0, 1)` unnoticed.
+    // Chunks do NOT always finish in order (a stop, a short buffer, a
+    // re-queue), and evicting the wrong entry leaves the one that really
+    // finished held for good: exactly the megabytes-per-minute leak this
+    // file exists for.
+    const { ctx, made } = fakeContext();
+    const scheduler = new ChunkScheduler(ctx as never, {});
+    scheduler.enqueue(buffer(1));
+    scheduler.enqueue(buffer(1));
+    expect(heldNodes(scheduler)).toBe(2);
+
+    const finishers = made.filter((m) => m.ended);
+    expect(finishers.length, "no source was wired to finish").toBe(2);
+
+    // The SECOND one finishes first, and only it is released.
+    finishers[1].ended?.();
+    expect(heldNodes(scheduler), "one release freed the wrong number").toBe(1);
+
+    // Then the first. If the earlier release had taken the wrong entry, this
+    // one is no longer in the list and nothing is ever freed again.
+    finishers[0].ended?.();
+    expect(heldNodes(scheduler), "a finished chunk stayed held").toBe(0);
+  });
+
   it("still schedules the SECOND chunk after the first has finished", () => {
     // The regression the separate `started` flag exists for: the first-chunk
     // branch used `nodes.length === 0`, and an emptied list now means "all
@@ -93,7 +120,13 @@ describe("finished audio is released as it finishes", () => {
     const { ctx, made } = fakeContext();
     const scheduler = new ChunkScheduler(ctx as never, {});
     const first = scheduler.enqueue(buffer(1));
-    made.filter((m) => m.ended).forEach((m) => m.ended?.());
+    const finished = made.filter((m) => m.ended);
+    // Floor. `second > first` holds because the cursor advances on its own,
+    // whether or not anything ever finished - so if production stopped
+    // attaching `onended` this list would empty, the loop would do nothing,
+    // and the test would still be green while testing the wrong thing.
+    expect(finished.length, "nothing was ever wired to finish").toBeGreaterThan(0);
+    finished.forEach((m) => m.ended?.());
     const second = scheduler.enqueue(buffer(1));
     expect(second).toBeGreaterThan(first);
   });

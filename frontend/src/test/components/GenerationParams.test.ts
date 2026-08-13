@@ -56,6 +56,18 @@ type ContaminatedGenerationParams = GenerationParams & {
   unknown_field?: unknown;
 };
 
+/**
+ * The four fields that must never reach the provider on any path, named once
+ * so the two builders cannot check different lists - which is exactly how
+ * regenerate ended up checking a shorter one than completion.
+ */
+const PRIVACY_FIELDS = [
+  "provider",
+  "zdr",
+  "data_collection",
+  "allow_fallbacks",
+] as const;
+
 // ═════════════════════════════════════════════════════════════════
 // pruneGenerationParams
 // ═════════════════════════════════════════════════════════════════
@@ -361,6 +373,16 @@ describe("clampMaxTokens", () => {
     expect(clampMaxTokens(0, null)).toBe(1);
     expect(clampMaxTokens(-10, makeModel({ max_completion_tokens: 4096 }))).toBe(1);
   });
+
+  it("treats a model claiming a zero ceiling as claiming nothing", () => {
+    // A catalogue entry with max_completion_tokens: 0 is a gap in the
+    // provider's data, not a model that can answer in no tokens. The guard
+    // that reads it is a `> 0`, and every other case here passes null or a
+    // positive number, so the boundary itself was never run: relaxing it to
+    // `>= 0` left the whole frontend suite green, and would have clamped
+    // every request on such a model down to one token.
+    expect(clampMaxTokens(2048, makeModel({ max_completion_tokens: 0 }))).toBe(2048);
+  });
 });
 
 // ═════════════════════════════════════════════════════════════════
@@ -547,12 +569,15 @@ describe("buildCompletionPayload", () => {
     expect(payload).not.toHaveProperty("zdr");
     expect(payload).not.toHaveProperty("data_collection");
     expect(payload).not.toHaveProperty("allow_fallbacks");
-    const gp = payload.generation_params as Record<string, unknown> | undefined;
-    if (gp) {
-      expect(gp).not.toHaveProperty("provider");
-      expect(gp).not.toHaveProperty("zdr");
-      expect(gp).not.toHaveProperty("data_collection");
-      expect(gp).not.toHaveProperty("allow_fallbacks");
+    // Unconditional. Wrapped in `if (gp)` this was four assertions that a
+    // missing generation_params would have skipped in silence - and the
+    // nested half is the half that matters, because that is where a
+    // contaminated field would actually travel.
+    const gp = payload.generation_params as Record<string, unknown>;
+    expect(gp, "nothing was built to inspect").toBeDefined();
+    for (const field of PRIVACY_FIELDS) {
+      expect(gp, `${field} rode inside generation_params`)
+        .not.toHaveProperty(field);
     }
   });
 
@@ -620,10 +645,33 @@ describe("buildRegeneratePayload", () => {
         allow_fallbacks: false,
       } as ContaminatedGenerationParams,
     });
-    expect(payload).not.toHaveProperty("provider");
-    expect(payload).not.toHaveProperty("zdr");
-    expect(payload).not.toHaveProperty("data_collection");
-    expect(payload).not.toHaveProperty("allow_fallbacks");
+    for (const field of PRIVACY_FIELDS) {
+      expect(payload, `${field} was sent at the top level`)
+        .not.toHaveProperty(field);
+    }
+    // The nested half, which this test did not have. Regenerate is a second
+    // road to the same provider, and it was checking only the top level:
+    // taking filterParamsByModel out of buildRegeneratePayload altogether
+    // left all ninety tests in this file green.
+    const gp = payload.generation_params as Record<string, unknown>;
+    expect(gp, "nothing was built to inspect").toBeDefined();
+    for (const field of PRIVACY_FIELDS) {
+      expect(gp, `${field} rode inside generation_params`)
+        .not.toHaveProperty(field);
+    }
+  });
+
+  it("drops params the model does not support", () => {
+    // The completion builder has had this since it was written; regenerate
+    // never did, and it is the same filter doing the same job on the same
+    // wire. Without it an unsupported parameter is a request the provider
+    // rejects, on the path taken by every retry.
+    const payload = buildRegeneratePayload({
+      modelId: "openai/gpt-4",
+      generationParams: { temperature: 0.8, seed: 42 },
+      model: makeModel({ supported_parameters: ["temperature"] }),
+    });
+    expect(payload.generation_params).toEqual({ temperature: 0.8 });
   });
 
   it("clamps max_tokens by model max_completion_tokens", () => {

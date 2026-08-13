@@ -6,7 +6,11 @@
  *  - staging via the hidden file input and via paste
  *  - upload lifecycle: spinner while uploading, ready thumbnail, failure
  *    toast + auto-removal
- *  - the 4-image cap (further adds quietly ignored)
+ *  - the 4-image cap, which does NOT ignore the extras quietly: the
+ *    fifth add raises a toast, and the tests below assert it. This line
+ *    said the opposite until KADEME 18d - the behaviour changed and the
+ *    summary did not.
+ *  - the accepted picture formats, all three of them
  *  - manual removal (with object URL revocation)
  *  - send wiring: uploads block send, ready ids go into the request body,
  *    staged list survives a send error (retry re-sends the same ids) and
@@ -20,6 +24,10 @@ import { ChatCanvas } from "@/components/chat/ChatCanvas";
 import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
 import { useUiStore } from "@/lib/store/uiStore";
 import { useErrorStore } from "@/lib/errors";
+import {
+  ACCEPTED_IMAGE_TYPES,
+  MAX_ATTACHMENTS,
+} from "@/components/chat/attachments";
 import {
   mockFetchWithStreams,
   sseEventsFor,
@@ -64,10 +72,12 @@ function setupReadyState() {
   });
 }
 
+function imageFile(name: string, type: string): File {
+  return new File([new Uint8Array([137, 80, 78, 71])], name, { type });
+}
+
 function pngFile(name = "photo.png"): File {
-  return new File([new Uint8Array([137, 80, 78, 71])], name, {
-    type: "image/png",
-  });
+  return imageFile(name, "image/png");
 }
 
 /** /uploads/images route: POST stages (201, incrementing ids); DELETE
@@ -201,7 +211,7 @@ describe("Attachments", () => {
   });
 
   // U8: the attach title states the TRUE reason, not always the modality one.
-  it("U8: attach title says to select a chat when none is selected", async () => {
+  it("the attach button asks for a chat before it will take one", async () => {
     useUiStore.setState({
       selectedChatId: null,
       selectedModelId: null,
@@ -217,7 +227,7 @@ describe("Attachments", () => {
     });
   });
 
-  it("U8: attach title says to select a model when a chat but no model is set", async () => {
+  it("the attach button asks for a model before it will take one", async () => {
     useUiStore.setState({
       selectedChatId: 1,
       selectedModelId: null,
@@ -238,7 +248,7 @@ describe("Attachments", () => {
   });
 
   // U2: image-only send is blocked (backend needs text) - say why, not silence.
-  it("U2: send hint asks for a message when images are staged but text is empty", async () => {
+  it("staged pictures alone are not a message, and the hint says so", async () => {
     setupReadyState();
     mockFetchWithStreams(baseRoutes());
     renderWithQueryClient(<ChatCanvas />, { wrapper });
@@ -342,7 +352,7 @@ describe("Attachments", () => {
   });
 
   // v1.1 FF9: a pasted GIF (unsupported image) also toasts, stages nothing.
-  it("FF9: pasting a GIF toasts attachment_invalid and stages nothing", async () => {
+  it("a pasted GIF is turned away out loud, not dropped in silence", async () => {
     setupReadyState();
     mockFetchWithStreams(baseRoutes());
     renderWithQueryClient(<ChatCanvas />, { wrapper });
@@ -362,7 +372,50 @@ describe("Attachments", () => {
     expect(screen.queryByAltText("Staged image")).not.toBeInTheDocument();
   });
 
-  it("caps staged images at 4 and toasts too_many_attachments (FF9)", async () => {
+  it("takes every picture format the contract names, up to the cap", async () => {
+    // Two one-sided bounds met here.
+    //
+    // Format: every staging test in this file used a PNG, so narrowing the
+    // accepted set to png alone kept all of them green while jpeg and webp -
+    // both promised by the uploads contract, both listed in the file input's
+    // own accept attribute - quietly stopped working. The names are spelled
+    // out rather than derived from the set, because deriving them would
+    // shrink with it and prove nothing.
+    //
+    // Count: the cap was only ever tested from ABOVE, by overflowing it. A
+    // limit that rejects the fifth is worth nothing if it also rejects the
+    // fourth, and nothing here was watching that side.
+    expect(
+      [...ACCEPTED_IMAGE_TYPES].sort(),
+      "the accepted picture formats changed",
+    ).toEqual(["image/jpeg", "image/png", "image/webp"]);
+    expect(MAX_ATTACHMENTS).toBe(4);
+
+    setupReadyState();
+    mockFetchWithStreams(baseRoutes());
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
+    await waitForComposerReady();
+    await waitForAttachReady();
+
+    addFiles([
+      imageFile("a.png", "image/png"),
+      imageFile("b.jpg", "image/jpeg"),
+      imageFile("c.webp", "image/webp"),
+      imageFile("d.png", "image/png"),
+    ]);
+
+    await waitFor(() => {
+      expect(screen.getAllByAltText("Staged image")).toHaveLength(
+        MAX_ATTACHMENTS,
+      );
+    });
+    expect(
+      useErrorStore.getState().errors,
+      "a picture the contract accepts was turned away",
+    ).toHaveLength(0);
+  });
+
+  it("caps staged images at 4 and toasts too_many_attachments", async () => {
     setupReadyState();
     mockFetchWithStreams(baseRoutes());
     renderWithQueryClient(<ChatCanvas />, { wrapper });
@@ -835,7 +888,7 @@ describe("Attachments", () => {
   // name described a CATEGORY OF WORK ("bug fixes from one audit") rather
   // than a subject: its seven tests spanned four unrelated subsystems and
   // were together only because one audit pass found them on the same day.
-  // These three are attachment lifecycle, which is this file. They needed
+  // These four are attachment lifecycle, which is this file. They needed
   // no new machinery: pngFile, uploadRoute, addFiles, waitForAttachReady,
   // completePostBodies and the object-URL stand-ins already existed here,
   // byte for byte, in both files at once.

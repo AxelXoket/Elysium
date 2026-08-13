@@ -214,6 +214,14 @@ describe("ChunkScheduler lifecycle", () => {
     const { ctx, scheduler } = make({ crossfadeSeconds: 0.01 });
     scheduler.enqueue(buf(0));
     scheduler.enqueue(buf(1));
-    expect(ctx.sources[1].started).toBeGreaterThanOrEqual(0.02);
+    // KADEME 19b: this said only `>= 0.02`, which a clamp bug pushing the
+    // start to 5.0 also satisfies - and a five-second hole after an empty
+    // chunk is the exact stall the test is named for. The lead time is the
+    // floor here (`max(cursor - crossfade + gap, earliest)` bottoms out at
+    // the 0.02s lead), so the value is knowable and gets pinned.
+    expect(ctx.sources[1].started, "the cursor stalled or leapt").toBeCloseTo(
+      0.02,
+      5,
+    );
   });
 });
