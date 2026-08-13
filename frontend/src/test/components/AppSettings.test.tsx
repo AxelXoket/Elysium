@@ -11,7 +11,7 @@
  *  - ChatCanvas applies the reader variables to the message scroll area
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { SidebarFooter } from "@/components/sidebar/SidebarFooter";
@@ -155,7 +155,7 @@ describe("AppSettingsDialog", () => {
     ).not.toContain("msg-contrast");
   });
 
-  it("Reset covers font, line spacing AND contrast (E2)", async () => {
+  it("Reset covers font, line spacing AND contrast", async () => {
     const user = userEvent.setup();
     mockFetch({});
     useUiStore.setState({ msgFontPx: 17, msgLineHeight: 1.8, msgContrast: "high" });
@@ -248,6 +248,98 @@ describe("AppSettingsDialog", () => {
       screen.queryByRole("slider", { name: "Font size slider" }),
     ).not.toBeInTheDocument();
   });
+
+  it("takes back a narration voice the vault refused, without a word", async () => {
+    // CHARACTERISATION, not approval. KUSUR-DEFTERI K-22.
+    //
+    // The swallowed `.catch(() => undefined)` in NarrationVoiceRow is not an
+    // oversight, and the ledger entry that called it one needed correcting:
+    // the comment directly above it documents the choice, "invalidated after
+    // so a failed write corrects itself rather than leaving the UI claiming
+    // something the vault never accepted". The correction does happen, and
+    // this test proves it.
+    //
+    // What it also proves is the cost. Silent self-correction is still
+    // silence: the row reads Narrator, then reads Same voice again a beat
+    // later, and nobody is told which of the two the vault holds. Compare
+    // AutoLockControl, which renders its own inline alert, and the stop
+    // sequences a page over, which revert AND raise a toast.
+    //
+    // Both halves are pinned deliberately. The day this learns to speak, the
+    // last assertion goes red - and K-22 has to come back here to be closed.
+    const user = userEvent.setup();
+    const { useErrorStore } = await import("@/lib/errors");
+    useErrorStore.getState().clearAll();
+
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
+    // The refusal is held open on purpose. An awaited click flushes the
+    // failure, the invalidate and the refetch in one go, so the optimistic
+    // value never exists long enough to look at - which would leave this
+    // test unable to tell "reverted" apart from "never applied".
+    let releaseRefusal: (() => void) | null = null;
+    let refused = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/tts/tag-prefs")) {
+          if ((init?.method ?? "GET") !== "GET") {
+            refused += 1;
+            await new Promise<void>((r) => {
+              releaseRefusal = r;
+            });
+            return json({ detail: "vault_locked" }, 423);
+          }
+          return json({
+            narrative: "same", density: 8, tone: "", min: 0, max: 16,
+            tone_max_chars: 60, speed: 1, speed_min: 0.8, speed_max: 1.25,
+            gap: 0, gap_min: 0, gap_max: 1.5,
+          });
+        }
+        if (url.includes("/tts/active")) return json({ uid: "u1", state: "loaded" });
+        return json(settingsFixture);
+      }),
+    );
+
+    renderWithQueryClient(<SidebarFooter />, { wrapper });
+    await openSettings(user);
+    await user.click(screen.getByText("Narration style"));
+
+    const group = await screen.findByRole("radiogroup", { name: "Narration voice" });
+    const narrator = within(group).getByRole("radio", { name: "Narrator" });
+    const same = within(group).getByRole("radio", { name: "Same voice" });
+    expect(same, "the row never reached its loaded state").toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+
+    await user.click(narrator);
+    // The optimistic write lands first. Asserting it is what stops the rest
+    // of this test from passing against a row that rendered nothing.
+    expect(narrator).toHaveAttribute("aria-checked", "true");
+    expect(refused, "the choice was never sent anywhere").toBe(1);
+
+    await act(async () => {
+      releaseRefusal?.();
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(same, "the refused choice stayed on screen").toHaveAttribute(
+        "aria-checked",
+        "true",
+      ),
+    );
+    expect(
+      useErrorStore.getState().errors,
+      "K-22 is fixed: the refusal now speaks, so close it in the ledger",
+    ).toHaveLength(0);
+
+    vi.unstubAllGlobals();
+  });
 });
 
 describe("Reader variables on the chat canvas", () => {
@@ -294,7 +386,7 @@ describe("Reader variables on the chat canvas", () => {
   });
 
   // v1.1 E2: the contrast preset class rides on the scroller.
-  it("applies the msg-contrast preset class to the scroller (E2)", async () => {
+  it("applies the msg-contrast preset class to the scroller", async () => {
     mockFetch({ "/settings": { body: settingsFixture } });
     useUiStore.setState({ msgContrast: "high" });
     const { container } = renderWithQueryClient(<ChatCanvas />, { wrapper });

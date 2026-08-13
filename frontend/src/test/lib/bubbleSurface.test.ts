@@ -9,6 +9,11 @@
 import { describe, expect, it } from "vitest";
 
 import { bubbleSurface } from "@/lib/appearance/bubbleSurface";
+import {
+  MSG_OPACITY_DEFAULT,
+  MSG_OPACITY_MAX,
+  MSG_OPACITY_MIN,
+} from "@/lib/store/uiStore";
 
 const FILL = "var(--msg-user-bg, var(--color-es-user-bubble))";
 
@@ -18,6 +23,22 @@ describe("a bubble nobody has changed keeps the declaration it had", () => {
     // `color-mix(... 100%, transparent)`, which a browser would paint the
     // same but which makes today's look depend on a colour function.
     expect(bubbleSurface(FILL, 1)).toBe(FILL);
+  });
+
+  it("keeps the readable floor a floor, and full opacity the ceiling", () => {
+    // The bounds had no test of any kind: dropping MSG_OPACITY_MIN from 0.35
+    // to 0.15 left every test in the visual stage green. The floor is not
+    // decorative - uiStore's own comment says a bubble you cannot find is
+    // not a setting anyone wants, and below roughly a third the text sits on
+    // bare wallpaper.
+    expect(MSG_OPACITY_MIN, "the readable floor moved").toBe(0.35);
+    expect(MSG_OPACITY_MAX, "full opacity is no longer the ceiling").toBe(1);
+    expect(MSG_OPACITY_DEFAULT, "the untouched look changed").toBe(1);
+
+    // And the floor is genuinely the lowest thing that renders differently:
+    // at the floor the fill is mixed, at the ceiling it is returned whole.
+    expect(bubbleSurface(FILL, MSG_OPACITY_MAX)).toBe(FILL);
+    expect(bubbleSurface(FILL, MSG_OPACITY_MIN)).not.toBe(FILL);
   });
 
   it("returns the fill untouched for a value that is not a number", () => {

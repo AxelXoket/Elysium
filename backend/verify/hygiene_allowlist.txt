@@ -20,17 +20,6 @@
 # anything is inserted above it, and then it either blocks a clean commit or
 # silently excuses whatever slid into that slot.
 
-[H-03] frontend/src/test/settings-copy.test.ts
-reason: this is the test that forbids the entity, and it cannot assert on a
-  pattern without containing the pattern. The same file already fell into the
-  mirror of this trap once, holding a literal em dash inside its own em dash
-  regex, so the shape is known here.
-line: // `&apos;` in one option label while every other string uses a real
-
-[H-03] frontend/src/test/settings-copy.test.ts
-reason: the regex itself. See the record above.
-line: expect(copyOf(file), `${file} uses &apos;`).not.toMatch(/&apos;/);
-
 [H-04] backend/tests/test_privacy_promises.py
 reason: the path is the INPUT to the assertion, not a leak. This case proves
   that an avatar_path never reaches the wire, so it has to hand the app a path

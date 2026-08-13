@@ -30,7 +30,14 @@ import pytest
 
 import openrouter
 
-_STALL_S = 0.12
+from tests.loop_guard import (
+    MAX_FREEZE_S,
+    MIN_TICKS,
+    STALL_S as _STALL_S,
+    longest_freeze as _longest_freeze,
+    ticks_during as _ticks_during,
+)
+
 
 _OK_BODY = {"choices": [{"message": {"content": "hello"}}]}
 
@@ -94,25 +101,6 @@ def slow_secret(monkeypatch):
     monkeypatch.setattr(openrouter, "get_secret", slow)
 
 
-async def _ticks_during(coro) -> tuple[int, object]:
-    """Run `coro`, counting how many times the loop got control meanwhile."""
-    ticks = 0
-
-    async def heartbeat():
-        nonlocal ticks
-        while True:
-            await asyncio.sleep(0.005)
-            ticks += 1
-
-    beat = asyncio.ensure_future(heartbeat())
-    try:
-        await asyncio.sleep(0.02)          # let the heartbeat settle
-        before = ticks
-        result = await coro
-        return ticks - before, result
-    finally:
-        beat.cancel()
-
 
 async def _drain(agen) -> list[str]:
     return [delta async for delta in agen]
@@ -132,7 +120,7 @@ async def test_a_completion_does_not_freeze_the_loop(
         openrouter.complete([{"role": "user", "content": "hi"}], "m", {}, None)
     )
     assert out == _OK_BODY
-    assert ticks > 1, "the loop was frozen while the API key was read"
+    assert ticks >= MIN_TICKS, "the loop was frozen while the API key was read"
 
 
 @pytest.mark.anyio
@@ -147,7 +135,7 @@ async def test_a_streaming_completion_does_not_freeze_the_loop(
         ))
     )
     assert out == ["hi"]
-    assert ticks > 1, "the loop was frozen while a stream read the API key"
+    assert ticks >= MIN_TICKS, "the loop was frozen while a stream read the API key"
 
 
 # ── and the key is still required, and still comes from the vault ────────────

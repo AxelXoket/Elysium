@@ -95,6 +95,30 @@ describe("DeliverySection", () => {
     await waitFor(() => expect(saveTagPrefs).toHaveBeenCalledWith({ density: 3 }));
   });
 
+  it("says so when a dial refuses to save, instead of looking saved", async () => {
+    // The one failure this section cannot afford. Every control here writes
+    // on release and then leaves the new position on screen; if the write
+    // loses and nobody says anything, the dial reads as the setting while
+    // the vault still holds the old one, and the next reply comes back
+    // unchanged for no visible reason. Until KADEME 18b the `.catch` that
+    // reports it had no test at all - deleting the whole handler left the
+    // entire suite green.
+    const { useErrorStore } = await import("@/lib/errors");
+    useErrorStore.getState().clearAll();
+    saveTagPrefs.mockRejectedValue(new Error("vault_locked"));
+
+    renderWithQueryClient(<DeliverySection />);
+    fireEvent.click(await screen.findByText("low voice, slow"));
+
+    await waitFor(() =>
+      expect(
+        useErrorStore.getState().errors,
+        "the dial failed to save and nothing told the reader",
+      ).toHaveLength(1),
+    );
+    useErrorStore.getState().clearAll();
+  });
+
   it("previews through the real speak path", async () => {
     // A preview rendered by some other route would be a different promise
     // from the one being tuned.

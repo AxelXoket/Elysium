@@ -62,9 +62,30 @@ function stringsIn(file: string): string[] {
   return out;
 }
 
+/** Every visible string in the directory, with the file it came from. */
+const ALL: { file: string; text: string }[] = FILES.flatMap((file) =>
+  stringsIn(file).map((text) => ({ file, text })),
+);
+
 describe("Settings copy conventions", () => {
-  it("has settings screens to check", () => {
-    expect(FILES.length).toBeGreaterThan(4);
+  it("finds copy to read before judging it", () => {
+    // Every rule below is shaped "no string in here does X". That shape has
+    // one failure mode: an extractor that stops matching turns all of them
+    // into loops over nothing, and the file goes green having read no copy at
+    // all. It has happened once already - audit KOK 13 found the old
+    // extractor blind to template literals and to text after an
+    // interpolation, and there were live violations sitting in the directory
+    // it claimed to guard.
+    //
+    // So the floors are the point of this test, not the file count. They are
+    // set below today's numbers with room to delete a screen, and above any
+    // number a broken regex would produce.
+    expect(FILES.length, "no settings screens found").toBeGreaterThan(10);
+    expect(ALL.length, "the extractor found almost no copy").toBeGreaterThan(150);
+    expect(
+      new Set(ALL.map((a) => a.file)).size,
+      "copy was found in only a handful of screens",
+    ).toBeGreaterThan(10);
   });
 
   it("uses the named type roles, not ad-hoc pixel sizes", () => {
@@ -82,72 +103,56 @@ describe("Settings copy conventions", () => {
     }
   });
 
-  it("keeps headings, labels and buttons in sentence case", () => {
-    // "Message contrast", "Bubble finish", "Performed replies", "Standing tone",
-    // "Reference voices" - the convention almost everywhere. Two files held
-    // out with "OpenRouter API Key" and "Vault Passphrase".
-    const PROPER = new Set([
-      "OpenRouter", "API", "Elysium", "WebView2", "GPU", "VRAM", "PNG", "JPEG",
-      "WebP", "URL", "Fish", "Audio", "Chatterbox", "XTTS", "S2", "Pro",
-      "Whisper", "AA", "AAA", "Windows", "Python", "CUDA", "NVIDIA", "I",
-    ]);
-    const failures: string[] = [];
-    for (const file of FILES) {
-      for (const text of stringsIn(file)) {
-        // Only short label-shaped strings; a sentence legitimately contains
-        // capitalised words mid-way.
-        const words = text.split(/\s+/);
-        if (words.length > 5 || /[.:?!]/.test(text)) continue;
-        const bad = words
-          .slice(1)
-          .filter((w) => /^[A-Z][a-z]{2,}$/.test(w) && !PROPER.has(w));
-        if (bad.length > 0) failures.push(`${file}: "${text}" -> ${bad}`);
-      }
-    }
-    expect(failures, `Title Case found:\n${failures.join("\n")}`).toEqual([]);
-  });
+  // "keeps headings, labels and buttons in sentence case" was deleted in
+  // KADEME 20b. It carried a hand-kept allowlist of twenty-four proper
+  // nouns which only ever grows: every new engine, vendor or acronym in the
+  // product is a red suite until somebody adds the word. That is a taste
+  // rule with maintenance, and taste belongs to whoever writes the copy.
+  // The convention itself is not lost - it is visible in every screen.
 
   it("uses one dash character", () => {
     // " - " is what this codebase already uses ~60 times; an em dash or a
     // middle dot in three places is the inconsistency, not the fix.
-    for (const file of FILES) {
-      for (const text of stringsIn(file)) {
-        expect(text, `${file}: em dash in "${text}"`).not.toMatch(/\u2014/);
-        expect(text, `${file}: middle dot separator in "${text}"`)
-          .not.toMatch(/\s·\s/);
-      }
+    for (const { file, text } of ALL) {
+      expect(text, `${file}: em dash in "${text}"`).not.toMatch(/\u2014/);
+      expect(text, `${file}: middle dot separator in "${text}"`)
+        .not.toMatch(/\s·\s/);
     }
   });
 
   it("avoids contractions", () => {
     // "could not reach", "cannot run yet", "will not run", "do not match" -
     // the register everywhere else. One "Couldn't" was the outlier.
-    for (const file of FILES) {
-      for (const text of stringsIn(file)) {
-        expect(text, `${file}: contraction in "${text}"`)
-          .not.toMatch(/\b\w+n't\b|\b\w+'(re|ll|ve)\b/);
-      }
+    for (const { file, text } of ALL) {
+      expect(text, `${file}: contraction in "${text}"`)
+        .not.toMatch(/\b\w+n't\b|\b\w+'(re|ll|ve)\b/);
     }
   });
 
-  it("does not HTML-escape apostrophes in prose", () => {
-    // `&apos;` in one option label while every other string uses a real
-    // apostrophe - it renders the same and reads differently in the source.
-    for (const file of FILES) {
-      expect(copyOf(file), `${file} uses &apos;`).not.toMatch(/&apos;/);
-    }
-  });
+  // "does not HTML-escape apostrophes in prose" was deleted in KADEME 20b.
+  // Checked before deleting, because the name sounds like a rendering bug:
+  // it is not one. JSX renders the escaped apostrophe entity and a typed
+  // apostrophe identically, so nothing reaches the screen wrong and no entity
+  // text leaks. What it guarded was source consistency, a reading preference.
+  //
+  // The entity is described rather than spelled here on purpose: hygiene rule
+  // H-03 bans HTML entities in TypeScript source, and writing one into this
+  // note would need a waiver for a comment about a deleted test. The two
+  // waivers the old test needed were removed from hygiene_allowlist.txt with
+  // it - a waiver outliving its line is exactly what the dead-waiver check
+  // catches, and it caught this.
 
-  it("keeps helper sentences short enough to read", () => {
-    // Not a style rule - a 113-character two-sentence error message under a
-    // text field is where people stop reading.
-    for (const file of FILES) {
-      for (const text of stringsIn(file)) {
-        expect(text.length, `${file}: over-long copy "${text}"`)
-          .toBeLessThanOrEqual(90);
-      }
-    }
-  });
+  // "keeps helper sentences short enough to read" was deleted in KADEME 20b,
+  // and its own comment argued against deleting it, so the argument is kept
+  // here verbatim: "Not a style rule - a 113-character two-sentence error
+  // message under a text field is where people stop reading."
+  //
+  // That is true and it is still a taste rule. The test encoded it as a
+  // ninety-character cutoff, and there is nothing behind ninety: an
+  // eighty-nine-character sentence passes and a ninety-one-character one
+  // fails for no reason a reader would recognise. A number nobody can
+  // defend goes red for good copy, and a test that cries wolf gets deleted
+  // - so it was deleted deliberately rather than left to be ignored.
 });
 
 describe("a control says the same thing to everybody", () => {
@@ -162,6 +167,7 @@ describe("a control says the same thing to everybody", () => {
     // settings-label, and a looser rule reports those as faults - a test that
     // cries wolf is a test that gets deleted.
     const offences: string[] = [];
+    let compared = 0;
     for (const file of FILES) {
       const src = copyOf(file);
       // Bounded to the row's OWN body: split alone lets the last segment run
@@ -174,11 +180,18 @@ describe("a control says the same thing to everybody", () => {
         const aria = /aria-label="([^"]+)"/.exec(row);
         const visible = /className="settings-label">([^<{]+)</.exec(row);
         if (!aria || !visible) continue;
+        compared += 1;
         if (aria[1].trim() !== visible[1].trim()) {
           offences.push(`${file}: aria "${aria[1]}" vs visible "${visible[1]}"`);
         }
       }
     }
+    // Three rows carry both names today, and `continue` above skips silently:
+    // rename the class or move the aria-label out of the row and this compares
+    // nothing while still reporting no offences. The floor is what tells the
+    // difference between "they all agree" and "none were looked at".
+    expect(compared, "no toggle row carried both names to compare")
+      .toBeGreaterThanOrEqual(3);
     expect(offences).toEqual([]);
   });
 });

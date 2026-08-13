@@ -26,7 +26,14 @@ import pytest
 
 import proxy_health
 
-_STALL_S = 0.12
+from tests.loop_guard import (
+    MAX_FREEZE_S,
+    MIN_TICKS,
+    STALL_S as _STALL_S,
+    longest_freeze as _longest_freeze,
+    ticks_during as _ticks_during,
+)
+
 
 
 @pytest.fixture()
@@ -47,25 +54,6 @@ def slow_db(monkeypatch):
     monkeypatch.setattr(proxy_health, "get_db", slow)
 
 
-async def _ticks_during(coro) -> tuple[int, object]:
-    """Run `coro`, counting how many times the loop got control meanwhile."""
-    ticks = 0
-
-    async def heartbeat():
-        nonlocal ticks
-        while True:
-            await asyncio.sleep(0.005)
-            ticks += 1
-
-    beat = asyncio.ensure_future(heartbeat())
-    try:
-        await asyncio.sleep(0.02)          # let the heartbeat settle
-        before = ticks
-        result = await coro
-        return ticks - before, result
-    finally:
-        beat.cancel()
-
 
 # ── the loop keeps running ───────────────────────────────────────────────────
 
@@ -74,7 +62,7 @@ async def test_the_gate_does_not_freeze_the_loop(anyio_backend, client, slow_db)
     """Every message pays this. It must not cost the other streams anything."""
     ticks, out = await _ticks_during(proxy_health.enforce_proxy_gate())
     assert out is None                      # an open gate returns nothing
-    assert ticks > 1, "the loop was frozen while the proxy gate read the vault"
+    assert ticks >= MIN_TICKS, "the loop was frozen while the proxy gate read the vault"
 
 
 @pytest.mark.anyio
@@ -83,7 +71,7 @@ async def test_reading_the_flag_does_not_freeze_the_loop(
 ):
     ticks, out = await _ticks_during(proxy_health._read_proxy_required())
     assert out is False
-    assert ticks > 1, "the loop was frozen while proxy_required was read"
+    assert ticks >= MIN_TICKS, "the loop was frozen while proxy_required was read"
 
 
 # ── and the gate still says the same things ──────────────────────────────────

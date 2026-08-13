@@ -9,7 +9,7 @@ import type { ApiError } from "@/lib/api/client";
 const EXIT_ANIMATION_MS = 180;
 const AUTO_DISMISS_MS = 4_500;
 
-describe("FE-1B ErrorToastStack", () => {
+describe("ErrorToastStack", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     useErrorStore.getState().clearAll();

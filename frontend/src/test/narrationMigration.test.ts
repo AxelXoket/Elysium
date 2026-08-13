@@ -1,3 +1,24 @@
+/**
+ * narrationMigration.test.ts - moving one setting off the device and into the
+ * vault, exactly once.
+ *
+ * The narration mode used to live in the browser-side settings blob. It is a
+ * per-character preference, so it belongs in the encrypted vault with the rest
+ * of them; leaving a copy behind means two sources of truth, and the one the
+ * user cannot see wins on the next relaunch.
+ *
+ * Three things have to hold together and each is pinned below: the old value
+ * is READ, it is SENT to the vault, and the old copy is GONE afterwards - not
+ * merely shadowed. A migration that only writes the new home is the shape that
+ * quietly resurrects the old value the first time the vault call fails.
+ *
+ * The seeding helpers come from ./mocks/legacyStorage on purpose. This file
+ * has to arrange device-side state that no other test is allowed to touch, and
+ * routing it through the sanctioned helper is what keeps static-safety S-09
+ * meaningful for every other file.
+ *
+ * KADEME 19b added this header; the file had none.
+ */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/api/tts", () => ({ saveTagPrefs: vi.fn(async () => ({})) }));

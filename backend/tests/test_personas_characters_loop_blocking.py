@@ -38,7 +38,14 @@ import routers.characters as characters
 import routers.personas as personas
 from database import get_db
 
-_STALL_S = 0.12
+from tests.loop_guard import (
+    MAX_FREEZE_S,
+    MIN_TICKS,
+    STALL_S as _STALL_S,
+    longest_freeze as _longest_freeze,
+    ticks_during as _ticks_during,
+)
+
 
 
 def _stall_get_db(monkeypatch, module):
@@ -60,33 +67,6 @@ def slow_personas(monkeypatch):
 def slow_characters(monkeypatch):
     _stall_get_db(monkeypatch, characters)
 
-
-async def _longest_freeze(coro) -> tuple[float, object]:
-    """Run `coro`, returning the longest stretch the loop went without control."""
-    gaps: list[float] = []
-
-    async def heartbeat():
-        last = time.monotonic()
-        while True:
-            await asyncio.sleep(0.005)
-            now = time.monotonic()
-            gaps.append(now - last)
-            last = now
-
-    beat = asyncio.ensure_future(heartbeat())
-    try:
-        await asyncio.sleep(0.02)          # let the heartbeat settle
-        gaps.clear()
-        result = await coro
-        # Yield once BEFORE reading the gaps. A handler whose blocking call is
-        # its last act leaves the loop starved right up to the moment it
-        # returns, and the heartbeat has had no chance to record that stretch
-        # yet - measuring here without this sleep reported a clean run for a
-        # fully blocked one, and made the whole assertion unfalsifiable.
-        await asyncio.sleep(0.005)
-        return (max(gaps) if gaps else 0.0), result
-    finally:
-        beat.cancel()
 
 
 def _make_persona(client, name="Tester") -> int:
@@ -110,7 +90,7 @@ async def test_listing_personas_does_not_freeze_the_loop(
 ):
     freeze, out = await _longest_freeze(personas.list_personas())
     assert isinstance(out, list)
-    assert freeze < _STALL_S, f"loop frozen {freeze:.3f}s listing personas"
+    assert freeze < MAX_FREEZE_S, f"loop frozen {freeze:.3f}s listing personas"
 
 
 @pytest.mark.anyio
@@ -120,7 +100,7 @@ async def test_creating_a_persona_does_not_freeze_the_loop(
     body = personas.PersonaCreate(display_name="Ayse", description="d")
     freeze, out = await _longest_freeze(personas.create_persona(body))
     assert out["display_name"] == "Ayse"
-    assert freeze < _STALL_S, f"loop frozen {freeze:.3f}s creating a persona"
+    assert freeze < MAX_FREEZE_S, f"loop frozen {freeze:.3f}s creating a persona"
 
 
 @pytest.mark.anyio
@@ -130,7 +110,7 @@ async def test_selecting_a_persona_does_not_freeze_the_loop(
     pid = _make_persona(client)
     freeze, out = await _longest_freeze(personas.select_persona(pid))
     assert out["selected_persona_id"] == pid
-    assert freeze < _STALL_S, f"loop frozen {freeze:.3f}s selecting a persona"
+    assert freeze < MAX_FREEZE_S, f"loop frozen {freeze:.3f}s selecting a persona"
 
 
 @pytest.mark.anyio
@@ -140,7 +120,7 @@ async def test_deleting_a_persona_does_not_freeze_the_loop(
     pid = _make_persona(client)
     freeze, out = await _longest_freeze(personas.delete_persona(pid))
     assert out == {"ok": True}
-    assert freeze < _STALL_S, f"loop frozen {freeze:.3f}s deleting a persona"
+    assert freeze < MAX_FREEZE_S, f"loop frozen {freeze:.3f}s deleting a persona"
 
 
 # ── characters: the loop keeps running ───────────────────────────────────────
@@ -151,7 +131,7 @@ async def test_listing_characters_does_not_freeze_the_loop(
 ):
     freeze, out = await _longest_freeze(characters.list_characters())
     assert isinstance(out, list)
-    assert freeze < _STALL_S, f"loop frozen {freeze:.3f}s listing characters"
+    assert freeze < MAX_FREEZE_S, f"loop frozen {freeze:.3f}s listing characters"
 
 
 @pytest.mark.anyio
@@ -161,7 +141,7 @@ async def test_creating_a_character_does_not_freeze_the_loop(
     body = characters.CharacterCreate(name="Nihal")
     freeze, out = await _longest_freeze(characters.create_character(body))
     assert out["name"] == "Nihal"
-    assert freeze < _STALL_S, f"loop frozen {freeze:.3f}s creating a character"
+    assert freeze < MAX_FREEZE_S, f"loop frozen {freeze:.3f}s creating a character"
 
 
 @pytest.mark.anyio
@@ -171,7 +151,7 @@ async def test_fetching_a_character_does_not_freeze_the_loop(
     cid = _make_character(client)
     freeze, out = await _longest_freeze(characters.get_character(cid))
     assert out["id"] == cid
-    assert freeze < _STALL_S, f"loop frozen {freeze:.3f}s fetching a character"
+    assert freeze < MAX_FREEZE_S, f"loop frozen {freeze:.3f}s fetching a character"
 
 
 @pytest.mark.anyio
@@ -191,7 +171,7 @@ async def test_importing_a_character_does_not_freeze_the_loop(
         characters.import_character(_fake_request(b'{"name": "Imported"}'))
     )
     assert out["name"] == "Imported"
-    assert freeze < _STALL_S, f"loop frozen {freeze:.3f}s importing a character"
+    assert freeze < MAX_FREEZE_S, f"loop frozen {freeze:.3f}s importing a character"
 
 
 def _fake_request(body: bytes) -> Request:

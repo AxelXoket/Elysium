@@ -17,6 +17,8 @@ import pytest
 from tts import stream_hook
 from tts.stream_speech import StreamSpeaker
 
+from tests.loop_guard import MIN_TICKS, ticks_during
+
 
 def _synth(delay: float = 0.0):
     def synth(text):
@@ -48,25 +50,19 @@ async def test_aclose_does_not_block_the_event_loop(anyio_backend):
     hook = stream_hook.open_speaker(True, make_synth=lambda: slow_synth)
     hook.feed("A sentence that takes a while. ")
 
-    ticks = 0
-
-    async def heartbeat():
-        nonlocal ticks
-        while True:
-            await asyncio.sleep(0.01)
-            ticks += 1
-
-    beat = asyncio.ensure_future(heartbeat())
     try:
-        await asyncio.sleep(0.05)
-        before = ticks
-        await stream_hook.aclose(hook)
+        # KADEME 20a: this file used to carry its own inline heartbeat with a
+        # 0.01s period and `assert ticks > before` - the loosest guard in the
+        # whole family. ONE tick satisfied it, out of a shutdown that can run
+        # for as long as the worker takes to join. It caught a total freeze
+        # and nothing short of one. Same instrument as the rest of the family
+        # now, same measured floor.
+        ticks, _ = await ticks_during(stream_hook.aclose(hook))
         # The loop kept running for the whole shutdown - which is the entire
         # point. A blocking close() pins it and `ticks` does not move.
-        assert ticks > before, "the loop was frozen while the speaker shut down"
+        assert ticks >= MIN_TICKS, "the loop was frozen while the speaker shut down"
     finally:
         released.set()
-        beat.cancel()
 
 
 @pytest.mark.anyio

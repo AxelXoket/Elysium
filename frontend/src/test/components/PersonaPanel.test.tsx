@@ -114,7 +114,7 @@ function json(body: unknown, status = 200) {
   });
 }
 
-describe("FE-3B PersonaPanel", () => {
+describe("PersonaPanel", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     useErrorStore.getState().clearAll();
@@ -273,6 +273,73 @@ describe("FE-3B PersonaPanel", () => {
             (init as RequestInit | undefined)?.method === "DELETE",
         ),
       ).toBe(true);
+    });
+  });
+
+  it("deletes the card that was clicked and leaves its neighbour standing", async () => {
+    // Every delete test above runs against a list of ONE, where "the right
+    // row died" cannot be told apart from "a row died". Two is the list
+    // anybody who bothers with personas at all actually has.
+    const user = userEvent.setup();
+    const mock = mockPersonaApi([activePersona, inactivePersona]);
+    renderWithQueryClient(<PersonaPanel />, { wrapper });
+
+    const card = await screen.findByTestId("persona-card-2");
+    await user.click(within(card).getByRole("button", { name: /delete/i }));
+    // Scoped to this card on purpose. The confirmation replaces the trigger
+    // INSIDE the card it belongs to, so with a neighbour on screen an
+    // unscoped query matches that neighbour's still-live Delete button too -
+    // which is the whole reason a one-row list could not catch a wrong-row
+    // bug in the first place.
+    await user.click(
+      within(await screen.findByTestId("persona-card-2")).getByRole("button", {
+        name: /^delete$/i,
+      }),
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("persona-card-2")).not.toBeInTheDocument();
+    });
+    expect(
+      screen.getByTestId("persona-card-1"),
+      "the other persona went with it",
+    ).toBeInTheDocument();
+
+    const deletes = mock.mock.calls.filter(
+      ([, init]) => (init as RequestInit | undefined)?.method === "DELETE",
+    );
+    expect(deletes, "more than one persona was deleted").toHaveLength(1);
+    expect(String(deletes[0][0])).toMatch(/\/personas\/2$/);
+  });
+
+  it("says so when the server refuses to create a persona", async () => {
+    // The panel had no failure test of any kind: create, edit, delete and
+    // select were only ever asked of a server that says yes. Deleting the
+    // pushError from the create handler left all 1315 tests green.
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if ((init?.method ?? "GET") === "POST" && url.endsWith("/personas")) {
+          return json({ detail: "vault_locked" }, 423);
+        }
+        if (url.includes("/personas")) return json([]);
+        return json({ detail: "not_found" }, 404);
+      }),
+    );
+    renderWithQueryClient(<PersonaPanel />, { wrapper });
+
+    await user.click(await screen.findByRole("button", { name: /new persona/i }));
+    await user.type(screen.getByLabelText(/display name/i), "Quiet Self");
+    await user.type(screen.getByLabelText(/description/i), "Prefers soft replies.");
+    await user.click(screen.getByRole("button", { name: /^create$/i }));
+
+    await waitFor(() => {
+      expect(
+        useErrorStore.getState().errors,
+        "the persona was refused and nothing told the reader",
+      ).toHaveLength(1);
     });
   });
 

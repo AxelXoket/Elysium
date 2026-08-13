@@ -145,7 +145,7 @@ describe("FileDrop", () => {
     });
   });
 
-  it("drop routes RAW files into the staging pipeline (H9)", async () => {
+  it("a dropped picture goes through the same staging as a picked one", async () => {
     setupReadyState();
     const main = await renderReady();
 
@@ -154,7 +154,7 @@ describe("FileDrop", () => {
     expect(await screen.findByAltText("Staged image")).toBeInTheDocument();
   });
 
-  it("H9/FF9: dropping a GIF stages nothing and toasts", async () => {
+  it("a dropped GIF is turned away out loud, not dropped in silence", async () => {
     setupReadyState();
     const main = await renderReady();
 
@@ -169,7 +169,7 @@ describe("FileDrop", () => {
     expect(screen.queryByAltText("Staged image")).not.toBeInTheDocument();
   });
 
-  it("H9/FF9: dropping 5 PNGs stages 4 and toasts too_many_attachments", async () => {
+  it("dropping more than the cap keeps the cap and says why", async () => {
     setupReadyState();
     const main = await renderReady();
 
@@ -184,7 +184,7 @@ describe("FileDrop", () => {
     expect(useErrorStore.getState().errors[0]?.code).toBe("too_many_attachments");
   });
 
-  it("H14: a text-selection drag is untouched (window net does NOT preventDefault)", async () => {
+  it("dragging selected text is left alone", async () => {
     setupReadyState();
     await renderReady();
 
@@ -195,7 +195,7 @@ describe("FileDrop", () => {
     expect(fileDrag.defaultPrevented).toBe(true);
   });
 
-  it("B0: the window net preventDefaults a Files drop (file:/// nav kill)", async () => {
+  it("a picture dropped outside the target cannot navigate the window away", async () => {
     setupReadyState();
     await renderReady();
 
@@ -203,7 +203,7 @@ describe("FileDrop", () => {
     expect(drop.defaultPrevented).toBe(true);
   });
 
-  it("B2: gate closed for a text-only model - no overlay, nothing staged, net still swallows", async () => {
+  it("a text-only model shows no drop target and takes nothing, but still swallows the drop", async () => {
     setupReadyState();
     const main = await renderReady(baseRoutes(["text"]));
 
@@ -223,7 +223,7 @@ describe("FileDrop", () => {
     expect(dispatchWindowDrag("drop", ["Files"]).defaultPrevented).toBe(true);
   });
 
-  it("H18: gate closed while streaming - overlay suppressed, re-enabled after done", async () => {
+  it("no drop target while a reply is streaming, and it returns when the reply ends", async () => {
     setupReadyState();
     const stream = controlledSseResponse();
     const main = await renderReady({

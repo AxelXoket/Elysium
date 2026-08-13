@@ -94,24 +94,20 @@ def test_a_rate_of_one_asks_nobody_to_do_anything():
 
 # ── the worker module's shape (always runs, no numpy needed) ─────────────────
 
-def test_dsp_module_parses():
-    ast.parse(WORKER_DSP.read_text(encoding="utf-8"), filename=str(WORKER_DSP))
+# test_dsp_module_parses was deleted in KADEME 20b: a strict subset of
+# test_tts_packaging.py::test_every_worker_script_parses, which parses
+# every worker script including this one and carries its own floor.
 
 
-def test_numpy_is_not_imported_at_module_scope():
-    """A module-scope numpy would break the worker's failure contract.
-
-    A damaged engine venv must exit with "the environment is broken", not die
-    at import with "no idea what happened" - and the packaging test enforces
-    exactly this for every file in the worker directory.
-    """
-    tree = ast.parse(WORKER_DSP.read_text(encoding="utf-8"))
-    for node in tree.body:
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            names = [a.name for a in getattr(node, "names", [])]
-            names.append(getattr(node, "module", "") or "")
-            assert not any(n.split(".")[0] == "numpy" for n in names), \
-                "numpy must be imported inside the functions, not at module scope"
+# test_numpy_is_not_imported_at_module_scope was deleted in KADEME 20b.
+# test_tts_packaging.py::test_no_engine_import_sits_at_module_scope walks
+# every worker script (this one included) against an ENGINE_MODULES list
+# that already names numpy, and carries its own floor. Strictly broader.
+#
+# Worth saying plainly, because the name suggested otherwise: NEITHER test
+# ever measured anything. Both are ast scans for "no module-scope import".
+# The startup cost they stand in for - importing numpy on a cold exe - has
+# no timing test anywhere in this suite, and did not before this deletion.
 
 
 def test_the_advertised_range_matches_the_host_side_dial():

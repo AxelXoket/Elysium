@@ -508,15 +508,17 @@ def test_the_prewarmed_codec_stays_resident_when_there_is_room():
     )
 
 
-def test_prewarming_parks_rather_than_keeping_it_resident():
-    """The VRAM policy is unchanged: measured, this card reports 1.76-2.02 GB
-    free with the codec resident, so it cannot stay."""
-    source = _fish_source()
-    body = source[source.index("def _prewarm_codec"):]
-    body = body[: body.index("def _drop_codec")]
-    assert "_codec(send)" in body
-    # Parked only when the measured policy says the card is tight.
-    assert "_drop_codec()" in body
+# test_prewarming_parks_rather_than_keeping_it_resident was deleted in
+# KADEME 20b. It sliced the source of `_prewarm_codec` and looked for two
+# substrings, which cannot tell "parks when the card is tight" from
+# "always parks" from "calls _drop_codec in an unreachable except branch".
+# The test directly above it already pins the same slice behaviourally, by
+# asserting the prewarm consults the measured keep policy.
+#
+# THE MEASUREMENT IN ITS DOCSTRING SURVIVES HERE, because it is recorded
+# nowhere else in the repo: with the codec resident this card reports
+# 1.76-2.02 GB free, which is why the codec cannot stay resident and why
+# _VRAM_RESERVE_GB sits where it does.
 
 
 def test_a_failed_prewarm_is_not_fatal():
@@ -528,9 +530,13 @@ def test_a_failed_prewarm_is_not_fatal():
     assert "codec_prewarm_skipped" in body
 
 
-def test_the_park_restore_block_is_not_duplicated():
-    """It was pasted twice; the second copy was unreachable."""
-    assert _fish_source().count("restoring the codec from memory") == 1
+# test_the_park_restore_block_is_not_duplicated was deleted in KADEME 20b.
+# It counted how many times a log string appeared in the source: a lint
+# check wearing a test's clothes. Rewording the message breaks it, and
+# real duplication carrying a different message defeats it. Unreachable
+# copied code is by definition unobservable, so no behaviour test can
+# replace it - and none was ever written, which is why this note says so
+# rather than pointing somewhere.
 
 
 def test_the_pre_generation_guard_measures_the_work_that_is_coming():
@@ -595,14 +601,23 @@ def test_the_guard_runs_after_the_budget_is_known():
         assert run.max_new_used() == budget
 
 
-def test_one_reserve_answers_every_question():
+def test_the_three_old_vram_floors_are_gone():
     """4.0, 3.0 and 1.0 are gone. What is left is a floor under the DESKTOP,
-    and a prior that the first real measurement overwrites."""
+    and a prior that the first real measurement overwrites.
+
+    KADEME 20b trimmed and renamed this. Section 4 listed the whole test
+    for deletion, and it was half right. The last line asserted a constant
+    was PRESENT, which test_tts_packaging.py::test_the_keep_floor_matches_
+    the_pre_generation_guard already pins behaviourally through
+    _should_keep_codec - so that line went. The three lines above it assert
+    ABSENCE, and pinning a deletion is the one thing a source scan is
+    allowed to do: no behaviour test can observe a constant that is not
+    there. Those stay, and the name now says what they check.
+    """
     source = _fish_source()
     assert "_DECODE_FLOOR_GB" not in source
     assert "_CODEC_FLOOR_GB" not in source
     assert "_CODEC_KEEP_GB" not in source
-    assert "_VRAM_RESERVE_GB = 1.0" in source
 
 
 def test_only_should_keep_codec_decides_whether_the_codec_stays():

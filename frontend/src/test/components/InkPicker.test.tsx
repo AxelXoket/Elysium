@@ -40,12 +40,25 @@ describe("InkPicker", () => {
     fireEvent.click(screen.getByText("Make it readable"));
     const fixed = parseHex(useUiStore.getState().msgInk!)!;
     expect(verdict(contrastRatio(fixed, parseHex("#F4F7FB")!))).not.toBe("low");
+    // The store value was the trigger; this is the consequence. Both the
+    // warning and the repair button are gated on the grade still being low,
+    // so a repair that fixed the number while leaving the alarm on screen
+    // would have passed everything above.
+    expect(screen.queryByText(/hard to read/)).toBeNull();
+    expect(screen.queryByText("Make it readable")).toBeNull();
   });
 
-  it("measures against the preset's own surface, not plain white", () => {
+  it("scores the same ink lower on the tinted surface than on white", () => {
     // The high preset paints a whiter bubble, so the same ink scores
     // differently - measuring against a fixed white would report a ratio the
     // person never actually sees.
+    //
+    // KADEME 19a renamed this. It used to be called "measures against the
+    // preset's own surface, not plain white", which is a claim about the
+    // PICKER; the body never renders the picker and reads two hard-coded
+    // hexes. What it really shows is that the arithmetic separates the two
+    // surfaces at all - the reason the picker's choice of surface matters.
+    // Which surface the picker actually passes is still not pinned here.
     const ink = parseHex("#6A7C90")!;
     const onDefault = contrastRatio(ink, parseHex("#F4F7FB")!);
     const onHigh = contrastRatio(ink, parseHex("#FFFFFF")!);
@@ -57,6 +70,10 @@ describe("InkPicker", () => {
     render(<InkPicker />);
     fireEvent.click(screen.getByText("Follow preset"));
     expect(useUiStore.getState().msgInk).toBeNull();
+    // With no custom ink there is nothing to hand back, so the button that
+    // does the handing back has to go. Asserting only the store left the
+    // gate around it unproven.
+    expect(screen.queryByText("Follow preset")).toBeNull();
   });
 
   it("ignores a half-typed hex instead of writing rubbish to the store", () => {

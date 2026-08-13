@@ -26,8 +26,14 @@ import routers.chats as chats
 from database import get_db
 from tests.conftest import make_character, make_chat
 
-#: Long enough that a blocked loop is unambiguous, short enough to stay cheap.
-_STALL_S = 0.12
+from tests.loop_guard import (
+    MAX_FREEZE_S,
+    MIN_TICKS,
+    STALL_S as _STALL_S,
+    longest_freeze as _longest_freeze,
+    ticks_during as _ticks_during,
+)
+
 
 
 @pytest.fixture()
@@ -46,25 +52,6 @@ def slow_db(monkeypatch):
 
     monkeypatch.setattr(chats, "get_db", slow)
 
-
-async def _ticks_during(coro) -> tuple[int, object]:
-    """Run `coro`, counting how many times the loop got control meanwhile."""
-    ticks = 0
-
-    async def heartbeat():
-        nonlocal ticks
-        while True:
-            await asyncio.sleep(0.005)
-            ticks += 1
-
-    beat = asyncio.ensure_future(heartbeat())
-    try:
-        await asyncio.sleep(0.02)          # let the heartbeat settle
-        before = ticks
-        result = await coro
-        return ticks - before, result
-    finally:
-        beat.cancel()
 
 
 def _seed(client) -> int:
@@ -86,7 +73,7 @@ async def test_listing_chats_does_not_freeze_the_loop(anyio_backend, client, slo
     _seed(client)
     ticks, out = await _ticks_during(chats.list_chats())
     assert len(out) == 1
-    assert ticks > 1, "the loop was frozen while the chat list was read"
+    assert ticks >= MIN_TICKS, "the loop was frozen while the chat list was read"
 
 
 @pytest.mark.anyio
@@ -94,7 +81,7 @@ async def test_reading_one_chat_does_not_freeze_the_loop(anyio_backend, client, 
     chat = _seed(client)
     ticks, out = await _ticks_during(chats.get_chat(chat))
     assert out["id"] == chat
-    assert ticks > 1, "the loop was frozen while one chat was read"
+    assert ticks >= MIN_TICKS, "the loop was frozen while one chat was read"
 
 
 @pytest.mark.anyio
@@ -103,7 +90,7 @@ async def test_reading_a_transcript_does_not_freeze_the_loop(anyio_backend, clie
     chat = _seed(client)
     ticks, out = await _ticks_during(chats.list_messages(chat))
     assert len(out) == 21                      # greeting + 20 seeded rows
-    assert ticks > 1, "the loop was frozen while a transcript was decrypted"
+    assert ticks >= MIN_TICKS, "the loop was frozen while a transcript was decrypted"
 
 
 # ── and moving them did not change what they return ──────────────────────────

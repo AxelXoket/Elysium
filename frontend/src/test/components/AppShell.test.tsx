@@ -13,7 +13,7 @@ import {
   modelListFixture,
 } from "@/test/mocks/fixtures";
 
-describe("T-01: App shell renders without crash", () => {
+describe("the app shell comes up", () => {
   // Mock fetch so these synchronous render assertions neither hit a live dev
   // backend nor leak unhandled rejections into the shared singleton client.
   beforeEach(() => {

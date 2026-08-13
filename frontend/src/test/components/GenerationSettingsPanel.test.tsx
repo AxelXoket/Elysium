@@ -669,7 +669,7 @@ describe("Generation Settings stop sequences (dialog)", () => {
 
   // U3: a user who added stop chips under a model that supports `stop`, then
   // switched to one that does not, must still be able to clear the stale chips.
-  it("U3: keeps chip remove buttons enabled when the model lacks stop support", async () => {
+  it("keeps stop chips removable on a model that cannot use them", async () => {
     // fullModel supports the six other params but NOT stop.
     const api = await renderWithModelAndApi(fullModel);
     const user = await openDialog();
@@ -700,7 +700,7 @@ describe("Generation Settings stop sequences (dialog)", () => {
 
   // U4: a long pasted stop value must not force the dialog to overflow - the
   // chip truncates and exposes the full value through `title`.
-  it("U4: long stop chip truncates and exposes the full value via title", async () => {
+  it("shortens a long stop chip but keeps the whole value reachable", async () => {
     const api = await renderWithModelAndApi(stopModel);
     await openDialog();
 
@@ -716,7 +716,7 @@ describe("Generation Settings stop sequences (dialog)", () => {
   });
 
   // U4: the newline-as-\n display form is preserved in the chip title too.
-  it("U4: chip title shows newlines in the escaped \\n display form", async () => {
+  it("shows a newline in a stop chip as the escape that was typed", async () => {
     const api = await renderWithModelAndApi(stopModel);
     await openDialog();
 
@@ -940,9 +940,18 @@ describe("stop sequences: the vault mirror", () => {
     return ref;
   }
 
-  it("reverts to what the vault holds when the save fails", async () => {
+  it("reverts to what the vault holds when the save fails, and says why", async () => {
     // Keeping the mirror would leave the chips showing a value that was never
     // saved, contradicting the error toast raised beside them.
+    //
+    // That toast is the half this test named and never checked. Until
+    // KADEME 18b, deleting the pushError from the onError handler left the
+    // ENTIRE frontend suite green, so the revert was pinned and the sentence
+    // explaining it was not - which is the worse half to lose: chips that
+    // silently snap back read as a UI glitch, not as a refused write.
+    const { useErrorStore } = await import("@/lib/errors");
+    useErrorStore.getState().clearAll();
+
     const ref = renderProbe(
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
@@ -961,6 +970,14 @@ describe("stop sequences: the vault mirror", () => {
     await waitFor(() => expect(ref.current!.stopSequences).toEqual(["Kept"]));
     act(() => ref.current!.setStopSequences(["Never saved"]));
     await waitFor(() => expect(ref.current!.stopSequences).toEqual(["Kept"]));
+
+    await waitFor(() =>
+      expect(
+        useErrorStore.getState().errors,
+        "the chips snapped back and nothing said the vault refused them",
+      ).toHaveLength(1),
+    );
+    useErrorStore.getState().clearAll();
   });
 
   it("a slow first save does not clobber a newer edit", async () => {
@@ -1001,5 +1018,113 @@ describe("stop sequences: the vault mirror", () => {
     });
     // Still the newer edit, never a flash back to "first".
     await waitFor(() => expect(ref.current!.stopSequences).toEqual(["second"]));
+  });
+});
+
+/**
+ * KUSUR-DEFTERI K-22, second half: the pictures toggle.
+ *
+ * The narration voice a page over at least corrects itself out loud enough to
+ * see. This one has no failure surface at all - `useSetImageOutput` carries no
+ * onError, the caller passes no options object, and nothing anywhere reads
+ * `.isError` - so a refused write is indistinguishable from a click that did
+ * not register. There is no global mutation handler to catch it either:
+ * lib/query/queryClient.ts sets defaults for queries only, and the whole of
+ * src/ contains no MutationCache.
+ *
+ * The ledger recorded that no characterisation test was possible here,
+ * because pinning "nothing is visible" would pass against a component that
+ * never rendered. It is possible with a control beside it: the success case
+ * proves the switch moves when the vault agrees, so the failure case saying
+ * it did NOT move means something.
+ */
+describe("pictures in replies: a toggle with no failure surface", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const pictureModel: Model = {
+    ...fullModel,
+    id: "test/pictures",
+    output_modalities: ["text", "image"],
+  };
+
+  /** Renders the dialog with the pictures switch reachable and Off. */
+  async function renderPictures(refuse: boolean) {
+    let stored = false;
+    let posted = 0;
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
+
+    useUiStore.setState({ selectedModelId: pictureModel.id });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/settings/image-output")) {
+          posted += 1;
+          if (refuse) return json({ detail: "vault_locked" }, 423);
+          stored = JSON.parse(String(init?.body)).image_output_enabled;
+          // `ok` is not decoration: ImageOutputResponseSchema requires it, and
+          // leaving it out made the success case reject in the parser instead
+          // of the wire, which looked exactly like the refusal below.
+          return json({ ok: true, image_output_enabled: stored });
+        }
+        if (url.includes("/settings/stop-sequences")) return json({ ok: true, stop_sequences: [] });
+        if (url.includes("/models/openrouter")) return json(modelList(pictureModel));
+        return json({ ...settingsFixture, image_output_enabled: stored });
+      }),
+    );
+
+    renderWithQueryClient(<ModelPanel />, { wrapper: Extra });
+    await waitFor(() => {
+      expect(screen.getByTestId("generation-settings-trigger")).toBeInTheDocument();
+    });
+    await openDialog();
+
+    const toggle = await screen.findByRole("switch", {
+      name: "Let replies include pictures",
+    });
+    expect(toggle, "the switch did not start from the stored value")
+      .toHaveAttribute("aria-checked", "false");
+    return { toggle, sent: () => posted };
+  }
+
+  it("turns the pictures switch on when the vault takes it", async () => {
+    // The control. Without this, the test below would pass against a switch
+    // that never moves for any reason at all.
+    const { toggle, sent } = await renderPictures(false);
+
+    await userEvent.click(toggle);
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
+    expect(sent()).toBe(1);
+  });
+
+  it("leaves the switch where it was when the vault refuses, and says nothing", async () => {
+    // CHARACTERISATION, not approval. The day this grows an error surface,
+    // one of the last two assertions goes red and K-22 comes back here to be
+    // closed.
+    const { useErrorStore } = await import("@/lib/errors");
+    useErrorStore.getState().clearAll();
+    const { toggle, sent } = await renderPictures(true);
+
+    await userEvent.click(toggle);
+
+    await waitFor(() => expect(sent(), "the click went nowhere").toBe(1));
+    expect(
+      toggle,
+      "the switch moved on a refused write, which would be the worse bug",
+    ).toHaveAttribute("aria-checked", "false");
+    expect(
+      useErrorStore.getState().errors,
+      "K-22 is fixed: the refusal now speaks, so close it in the ledger",
+    ).toHaveLength(0);
+    expect(
+      screen.queryByRole("alert"),
+      "K-22 is fixed: an inline alert appeared, so close it in the ledger",
+    ).toBeNull();
   });
 });

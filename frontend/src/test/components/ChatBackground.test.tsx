@@ -42,6 +42,16 @@ describe("chat background math (Wisteria parity)", () => {
   });
 
   it("auto tint reinforces the image's brightness class at 0.55", () => {
+    // These two look self-referential - the expected value is imported from
+    // the module under test - and KADEME 19a checked whether they are. They
+    // are not vacuous: the expected sides are two DIFFERENT constants, so
+    // swapping the branches (`lum >= 0.55 ? INK : PAPER`) fails, which is the
+    // regression that matters here. What they do not pin is the hexes
+    // themselves, and that is deliberate: the test above bounds both by
+    // luminance (> 0.85, < 0.15), and the contract is "a light scrim / a dark
+    // scrim", not two exact colours. Pinning the hex would turn every
+    // deliberate tone tweak into a failure, and a test that cries wolf gets
+    // deleted.
     expect(resolveTint("auto", 0.56)).toBe(CHAT_BG_PAPER);
     expect(resolveTint("auto", 0.54)).toBe(CHAT_BG_INK);
     expect(resolveTint("#123456", 0.9)).toBe("#123456");
@@ -183,6 +193,9 @@ describe("Background settings page", () => {
       { target: { value: "0.6" } },
     );
     expect(useUiStore.getState().chatBgContrast).toBe(0.6);
+    // The readout beside the slider is the only feedback there is - jsdom
+    // shows no wallpaper. Asserting the store alone left it free to freeze.
+    expect(screen.getByText("60%")).toBeInTheDocument();
 
     const moss = screen.getByRole("radio", { name: "Slate tint" });
     expect(moss).not.toBeDisabled();
@@ -193,5 +206,7 @@ describe("Background settings page", () => {
     // Remove flips the flag off (blob deletion is a no-op in jsdom).
     await user.click(screen.getByRole("button", { name: "Remove" }));
     expect(useUiStore.getState().chatBgOn).toBe(false);
+    // ...and the controls that only make sense with a wallpaper go with it.
+    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
   });
 });

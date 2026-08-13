@@ -120,15 +120,41 @@ describe("SpeakButton", () => {
       ),
     );
 
-    expect(await screen.findByLabelText("Stop speaking")).toBeInTheDocument();
+    const stopControl = await screen.findByLabelText("Stop speaking");
+    expect(stopControl).toBeInTheDocument();
+    // The label is what a sighted user reads; aria-pressed is what everyone
+    // else reads. Both come off the same `playing` flag but through separate
+    // attributes, and only the label was ever checked.
+    expect(stopControl).toHaveAttribute("aria-pressed", "true");
 
     // The AUDIO finishing returns the button to idle - not the request. Audio
     // is the one part of a reply that keeps going after the fetch resolves.
     useVoicePlayer.setState({ messageId: null, phase: "idle" });
+    const idle = await screen.findByLabelText("Speak message");
+    expect(idle).toBeInTheDocument();
+    expect(idle).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("stops when the stop control is pressed, not only when the store is poked", async () => {
+    // KADEME 19b. Every test that reached the stop state got there by writing
+    // to the store directly, so the button's own `if (playing || busy) stop()`
+    // branch - the wiring an actual press goes through - was never executed.
+    // Deleting that branch left the whole suite green.
+    mockFetch({ "/tts/active": { body: ACTIVE } });
+    renderWithQueryClient(<SpeakButton messageId={9} />);
+
+    await userEvent.click(await screen.findByLabelText("Speak message"));
+    await userEvent.click(await screen.findByLabelText("Stop speaking"));
+
+    await waitFor(() =>
+      expect(useVoicePlayer.getState().phase, "the press did not stop it").toBe(
+        "idle",
+      ),
+    );
     expect(await screen.findByLabelText("Speak message")).toBeInTheDocument();
   });
 
-  it("starting a second message stops the first - never two voices at once", async () => {
+  it("starting a second message bumps the sequence, abandoning the first", async () => {
     mockFetch({ "/tts/active": { body: ACTIVE } });
     const { speak } = useVoicePlayer.getState();
     await speak(1);
@@ -174,7 +200,7 @@ describe("the player under adversity (audit-2)", () => {
     useVoicePlayer.setState({ messageId: null, phase: "idle", requestSeq: 0 });
   });
 
-  it("a stop during synthesis prevents ghost playback when the response lands", async () => {
+  it("a stop during synthesis leaves the player idle when the late chunk lands", async () => {
     // The audit's exact bug: stop() did not advance the sequence, so the late
     // response resurrected as audio no button anywhere could stop.
     let release: () => void;

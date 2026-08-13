@@ -234,24 +234,21 @@ class TestItLetsGo:
         assert host.snapshot()["state"] == "loaded"
         assert host._client.alive
 
-    def test_the_vault_lock_is_what_gives_the_card_back(self, host):
-        """An act, not an inference - and immediate, because the user may need
-        the VRAM for something else right now."""
-        host.load(_model(), {})
-        client = host._client
-        host.on_vault_locked()
-        assert host.snapshot()["state"] == "unloaded"
-        assert not client.alive
+    # test_the_vault_lock_is_what_gives_the_card_back was deleted in KADEME
+    # 20b: line for line the same body as test_locking_the_vault_unloads_the_
+    # voice a few tests above - same load, same client capture, same two
+    # assertions. Only the docstring differed ("An act, not an inference - and
+    # immediate, because the user may need the VRAM for something else right
+    # now"), which is prose about the same fact, kept here so the sentence
+    # survives the duplicate.
 
-    def test_locking_does_not_wait_for_a_synthesis_to_finish(self):
-        """Someone who just locked the app does not want to hear the rest of
-        the sentence, and may want the card back urgently."""
-        from pathlib import Path
-        source = (Path(__file__).resolve().parent.parent
-                  / "tts" / "host.py").read_text(encoding="utf-8")
-        body = source[source.index("def unload(self"):]
-        body = body[: body.index("def ")] if "def " in body[10:] else body
-        assert "_inflight" not in body
+    # test_locking_does_not_wait_for_a_synthesis_to_finish was deleted in
+    # KADEME 20b. It asserted on an EMPTY STRING and could never fail:
+    # `body.index("def ")` returned 0 because the slice already began at
+    # `def unload(self`, so `body` was "" and `"_inflight" not in ""` was
+    # vacuously true. The claim it meant to make is measured, not grepped,
+    # by test_tts_lock_lifecycle.py::test_locking_does_not_wait_for_speech_
+    # in_flight, which sets `_inflight = 2` and times the lock.
 
     def test_process_teardown_reaches_the_current_host_exactly_once(
         self, monkeypatch, tmp_path
@@ -363,9 +360,12 @@ def _host_source() -> str:
             / "tts" / "host.py").read_text(encoding="utf-8")
 
 
-def test_wipe_cache_still_exists_for_the_callers_that_need_it():
-    from tts.host import VoiceHost
-    assert callable(VoiceHost.wipe_cache)
+# test_wipe_cache_still_exists_for_the_callers_that_need_it was deleted in
+# KADEME 20b. Its whole body was `assert callable(VoiceHost.wipe_cache)`.
+# A method that provably deletes two files is necessarily callable, and
+# all three callers are covered end to end: test_audio_cache_launch_wipe.py
+# (the method itself and the launch path), test_tts_lock_lifecycle.py
+# (on_vault_locked), and test_process_teardown_wipes_the_audio_cache below.
 
 
 # ── folded in from test_tts_audit_fixes.py (KADEME 15b) ──────────────────

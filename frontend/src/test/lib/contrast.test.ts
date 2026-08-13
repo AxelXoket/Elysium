@@ -7,6 +7,8 @@
  * These tests are what makes the number shown next to the wheel trustworthy.
  */
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "fs";
+import path from "path";
 
 import {
   AA_NORMAL,
@@ -23,6 +25,50 @@ import {
 const WHITE = { r: 255, g: 255, b: 255 };
 const BLACK = { r: 0, g: 0, b: 0 };
 
+/** The preset blocks as index.css actually declares them. */
+const CSS_PATH = path.resolve(__dirname, "..", "..", "index.css");
+
+/**
+ * Ratios recorded in index.css's own comment when the presets were built:
+ * "soft 6.5/8.1, high 15.2/18.8 :1 - all >= AA, ordered soft < default < high".
+ * Default deliberately declares nothing (it is the MessageBubble fallback),
+ * so only the two blocks that DO declare colours are measurable here.
+ */
+const DOCUMENTED_RATIOS = {
+  "msg-contrast-soft": { user: 6.5, asst: 8.1 },
+  "msg-contrast-high": { user: 15.2, asst: 18.8 },
+} as const;
+
+function presetColours(preset: string): Record<string, string> {
+  const css = readFileSync(CSS_PATH, "utf-8");
+  // Plain indexOf rather than a built RegExp: the escapes needed to write
+  // `\.` inside a template literal are exactly the kind of thing that
+  // silently degrades into a pattern matching nothing, which is the failure
+  // this whole stage is about.
+  const opener = `.${preset} {`;
+  const start = css.indexOf(opener);
+  expect(start, `${preset} is gone from index.css`).toBeGreaterThan(-1);
+  const body = css.slice(start + opener.length, css.indexOf("}", start));
+
+  const out: Record<string, string> = {};
+  for (const m of body.matchAll(/(--[\w-]+):\s*(#[0-9A-Fa-f]{6})/g)) {
+    out[m[1]] = m[2];
+  }
+  expect(
+    Object.keys(out).sort(),
+    `${preset} no longer declares all four colours`,
+  ).toEqual(["--msg-asst-bg", "--msg-asst-fg", "--msg-user-bg", "--msg-user-fg"]);
+  return out;
+}
+
+function pairRatio(colours: Record<string, string>, who: "user" | "asst"): number {
+  const fg = parseHex(colours[`--msg-${who}-fg`]);
+  const bg = parseHex(colours[`--msg-${who}-bg`]);
+  expect(fg, `unparseable ${who} foreground`).not.toBeNull();
+  expect(bg, `unparseable ${who} background`).not.toBeNull();
+  return contrastRatio(fg!, bg!);
+}
+
 describe("contrast ratio", () => {
   it("matches the known extremes", () => {
     expect(contrastRatio(BLACK, WHITE)).toBeCloseTo(21, 1);
@@ -34,18 +80,37 @@ describe("contrast ratio", () => {
     expect(contrastRatio(a, WHITE)).toBeCloseTo(contrastRatio(WHITE, a), 10);
   });
 
-  it("reproduces the SOFT preset's documented ratio", () => {
-    // #3D4A59 on #EFF3F8 is the soft assistant pair, recorded as ~8.1:1 when
-    // the presets were built. Reproducing it here is what proves this module
-    // measures the same thing the theme was measured with.
-    const ratio = contrastRatio(parseHex("#3D4A59")!, parseHex("#EFF3F8")!);
-    expect(ratio).toBeGreaterThan(7.5);
-    expect(ratio).toBeLessThan(8.7);
-  });
+  // The two tests that used to stand here hard-coded the preset hexes and
+  // never opened index.css. That made the whole preset table unguarded:
+  // shifting a colour, or SWAPPING the soft and high blocks outright, left
+  // every test in this stage green. Measured in KADEME 19a, not guessed.
+  //
+  // These read the declarations index.css actually ships and measure them.
+  it.each(Object.entries(DOCUMENTED_RATIOS))(
+    "%s measures what index.css declares, not what a test remembered",
+    (preset, want) => {
+      const colours = presetColours(preset);
+      const user = pairRatio(colours, "user");
+      const asst = pairRatio(colours, "asst");
 
-  it("reproduces the HIGH preset's documented ratio", () => {
-    const ratio = contrastRatio(parseHex("#0B1219")!, WHITE);
-    expect(ratio).toBeGreaterThan(18);
+      expect(user, `${preset} user pair drifted`).toBeCloseTo(want.user, 0);
+      expect(asst, `${preset} assistant pair drifted`).toBeCloseTo(want.asst, 0);
+      // The floor the presets were built to. AA_NORMAL is imported rather
+      // than spelled, because here the CONTRACT is "at least AA", and the
+      // number itself is pinned by the verdict test below.
+      expect(user).toBeGreaterThanOrEqual(AA_NORMAL);
+      expect(asst).toBeGreaterThanOrEqual(AA_NORMAL);
+    },
+  );
+
+  it("keeps soft below high, which is the whole point of having two", () => {
+    // index.css states the ordering as a promise ("ordered soft < default <
+    // high"). Nothing checked it, so the two blocks could be exchanged and
+    // the setting would quietly do the opposite of its label.
+    const soft = presetColours("msg-contrast-soft");
+    const high = presetColours("msg-contrast-high");
+    expect(pairRatio(soft, "user")).toBeLessThan(pairRatio(high, "user"));
+    expect(pairRatio(soft, "asst")).toBeLessThan(pairRatio(high, "asst"));
   });
 });
 
@@ -88,10 +153,18 @@ describe("hex parsing", () => {
 });
 
 describe("nudgeToRatio", () => {
-  it("repairs a low-contrast choice", () => {
+  it("repairs a low-contrast choice without overshooting it", () => {
     const pastel = parseHex("#B9D4F0")!;
     const fixed = nudgeToRatio(pastel, WHITE);
     expect(contrastRatio(fixed, WHITE)).toBeGreaterThanOrEqual(AA_NORMAL);
+    // The floor alone was one-sided until KADEME 19a: jumping straight to
+    // black also clears AA, and that is not a repair, it is a replacement.
+    // The whole promise is "the result still resembles the choice", so the
+    // ceiling is what makes this test about `nudge` rather than about `set`.
+    expect(
+      contrastRatio(fixed, WHITE),
+      "the repair walked past the target instead of stopping at it",
+    ).toBeLessThan(AA_NORMAL + 1);
   });
 
   it("leaves a colour that already passes exactly as it was", () => {

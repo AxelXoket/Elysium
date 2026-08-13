@@ -2,6 +2,20 @@
  * Static safety tests - scan frontend source for privacy/security violations.
  * These tests read source files on disk and check for forbidden patterns.
  * They exclude themselves, node_modules, dist, and test fixture files.
+ *
+ * Almost every rule here passes by finding NOTHING. That is a weak shape: an
+ * empty file list, a regex that stopped matching, and a genuinely clean repo
+ * all look identical from the outside. Two devices exist to tell them apart,
+ * and a new rule needs both:
+ *
+ *  - a FLOOR on any list built at runtime (`expect(files.length)
+ *    .toBeGreaterThan(n)`), so a broken glob cannot iterate zero times;
+ *  - a POSITIVE CONTROL feeding the SAME matcher object a known-bad string,
+ *    so a matcher that went blind is caught. A separate copy of the pattern
+ *    would drift; the control must reuse the one the scan just ran.
+ *
+ * A rule built on a plain `includes("literal")` needs no control - it cannot
+ * silently stop matching. Controls exist on S-09b, S-11b, S-20b and S-23.
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
@@ -132,6 +146,10 @@ describe("Static safety tests", () => {
   // S-05: No remote CSS url(http in stylesheets
   it("S-05: no url(http in CSS source", () => {
     const cssFiles = getSourceFiles("**/*.css");
+    // Floor. This rule builds its OWN glob, so S-12's count does not cover it:
+    // if this pattern ever stopped matching, the rule would sweep an empty
+    // list and pass green while guarding nothing.
+    expect(cssFiles.length, "S-05 found no stylesheet to scan").toBeGreaterThan(0);
     for (const file of cssFiles) {
       const content = readFile(file);
       expect(
@@ -142,6 +160,12 @@ describe("Static safety tests", () => {
   });
 
   // S-06: No @import url(http
+  // KEPT in KADEME 20b, against section 4's list. Section 4 said S-05 already
+  // catches this shape and stylelint's function-url-scheme-allowed-list makes
+  // it structurally redundant. Measured, both halves are wrong today: S-05
+  // globs `**/*.css` only, so this literal inside a .ts or .tsx template
+  // string is outside its file set; and stylelint appears nowhere in this
+  // repo. This is currently the only guard for the non-CSS case.
   it("S-06: no @import url(http in source", () => {
     for (const file of allSrcFiles) {
       const content = readFile(file);
@@ -168,6 +192,10 @@ describe("Static safety tests", () => {
     const scanFiles = getSourceFiles(
       "src/{lib/api,components,lib/query}/**/*.{ts,tsx}",
     );
+    // Floor - own glob, not covered by S-12. 103 files today; the bar is set
+    // low enough to survive a directory being reorganised and high enough
+    // that a broken pattern cannot slip past.
+    expect(scanFiles.length, "S-08 found nothing to scan").toBeGreaterThan(50);
     for (const file of scanFiles) {
       if (approvedFiles.has(file)) continue;
       const content = readFile(file);
@@ -183,6 +211,13 @@ describe("Static safety tests", () => {
     const nonStoreFiles = allSrcFiles.filter(
       (f) => !f.includes(path.join("lib", "store")),
     );
+    // Floor. S-12 bounds `allSrcFiles`, but this rule scans what is LEFT
+    // after a filter, and a filter that matched everything would leave
+    // nothing to scan while the source glob still looked healthy.
+    expect(
+      nonStoreFiles.length,
+      "S-09 filtered away every file it was meant to scan",
+    ).toBeGreaterThan(50);
     for (const file of nonStoreFiles) {
       const content = readFile(file);
       expect(
@@ -353,20 +388,62 @@ describe("Static safety tests", () => {
         `Forbidden field "${needle}" found in uiStore partialize`,
       ).toBe(false);
     }
+
+    // POSITIVE CONTROL. The three checks above all pass by finding nothing
+    // wrong with today's partialize. That is also what they would do if the
+    // allowlist, the provenance rule or the substring sweep had quietly
+    // stopped discriminating. Each is handed a body it MUST reject, using the
+    // same regexes and the same constants the real scan just used.
+    const rejects = (synthetic: string) => {
+      const found = [...synthetic.matchAll(entryRe)];
+      const lower = synthetic.toLowerCase();
+      return (
+        found.length === 0 ||
+        found.some(([, key, source]) => !ALLOWED_PERSISTED_KEYS.has(key)) ||
+        found.some(([, key, source]) => source !== key) ||
+        forbiddenSubstrings.some((needle) => lower.includes(needle)) ||
+        synthetic
+          .split("\n")
+          .map((l) => l.replace(/\r$/, "").replace(/\/\/.*$/, "").trim())
+          .filter((l) => l.length > 0)
+          .some((l) => !lineRe.test(l))
+      );
+    };
+    // A key nobody allowlisted.
+    expect(rejects("newThing: state.newThing,"), "allowlist stopped biting").toBe(true);
+    // The exact aliasing bug the provenance rule was written for: an
+    // allowlisted name reading a field that is not its own.
+    expect(rejects("msgFontPx: state.vaultKey,"), "provenance stopped biting").toBe(true);
+    // A forbidden word smuggled in under a harmless key.
+    expect(rejects("msgFontPx: state.msgFontPx, // password"),
+      "substring sweep stopped biting").toBe(true);
+    // Anything that is not a plain mirror at all. Named for what actually
+    // fires: `derive(state.x)` never matches the entry pattern, so it is the
+    // parse that rejects this, not the residue sweep further down.
+    expect(rejects("msgFontPx: derive(state.msgFontPx),"),
+      "entry parsing stopped discriminating").toBe(true);
+    // ...and the shape it is supposed to accept still gets through, so the
+    // control is discriminating and not just always-true.
+    expect(rejects("msgFontPx: state.msgFontPx,")).toBe(false);
   });
 
-  // S-10: No openrouter.ai in completions API file
-  it("S-10: no openrouter.ai in completions API", () => {
-    const file = path.resolve(SRC_DIR, "src", "lib", "api", "completions.ts");
-
-    const content = readFile(file);
-    expect(
-      content.includes("openrouter.ai"),
-      "Found openrouter.ai in completions API",
-    ).toBe(false);
-  });
+  // S-10 was deleted in KADEME 19a. It banned "openrouter.ai" from
+  // src/lib/api/completions.ts alone; S-01 above bans the same string from
+  // every .ts/.tsx/.css file under src, and completions.ts is in that list
+  // (measured, not assumed). A weaker copy of an existing gate only dilutes
+  // the count of what is actually guarded.
 
   // S-11: No Authorization header in any source file
+  // KEPT in KADEME 20b, against section 4's list. The listed condition was
+  // explicit: delete only after the PC-02 prefix collision is fixed. It is
+  // not fixed - the privacy-contract registry still resolves a rule by raw
+  // substring, and `"S-11` is a prefix of `"S-11b`, so deleting this rule
+  // would leave the registry still reporting it as present.
+  //
+  // The premise is wrong too. S-11b is broader in PATTERN but narrower in
+  // SCOPE: it scans app source only, while this scans every source file
+  // including tests. An Authorization literal in a test file trips this and
+  // not S-11b, so S-11b does not subsume it.
   it("S-11: no Authorization header in source", () => {
     for (const file of allSrcFiles) {
       if (file.endsWith(".css")) continue;
@@ -404,9 +481,33 @@ describe("Static safety tests", () => {
         ).toBe(false);
       }
     }
+
+    // POSITIVE CONTROL - same two RegExp objects the scan just used.
+    for (const bad of [
+      'const headers = { Authorization: "..." }',
+      "req.headers.authorization = k;",
+      "`Bearer ${apiKey}`",
+    ]) {
+      expect(
+        patterns.some((p) => p.test(bad)),
+        `S-11b went blind to: ${bad}`,
+      ).toBe(true);
+    }
+    // Narrow enough not to fire on ordinary prose.
+    expect(patterns.some((p) => p.test("const author = meta.author;"))).toBe(false);
   });
 
   // S-12: Source file count guard (prevents vacuous pass if glob breaks)
+  // KEPT in KADEME 20b, against section 4's list, and it is the most
+  // load-bearing refusal of the set. Section 4 called it an apparatus
+  // tripwire, on condition that a vacuity check land on the lint side first
+  // (an ESLint run over an empty glob exits 0). No such check exists.
+  //
+  // Counted: TWELVE rules in this file iterate `allSrcFiles` with no floor
+  // of their own - S-01, S-02, S-03, S-04, S-06, S-13 through S-19. If the
+  // shared glob broke and this line were gone, every one of them would
+  // sweep an empty list and report a clean repo. The file's own header
+  // states the doctrine; this is the line that implements it.
   it("S-12: source file count above safe threshold", () => {
     expect(allSrcFiles.length).toBeGreaterThan(10);
   });
@@ -511,6 +612,10 @@ describe("Static safety tests", () => {
   it("S-20: no provider privacy fields in frontend request code", () => {
     const forbidden = ["zdr", "data_collection", "allow_fallbacks"];
     const requestFiles = getSourceFiles("src/lib/{api,query}/**/*.ts");
+    // Floor - own glob, not covered by S-12. This is the privacy contract:
+    // an empty list here means the provider-privacy fields are unguarded and
+    // nothing says so. 23 files today.
+    expect(requestFiles.length, "S-20 found nothing to scan").toBeGreaterThan(10);
 
     for (const file of requestFiles) {
       const content = readFile(file);
@@ -537,16 +642,55 @@ describe("Static safety tests", () => {
       "lib/generation glob returned no files (guard against a broken scan)",
     ).toBeGreaterThan(0);
     const fields = ["provider", "zdr", "data_collection", "allow_fallbacks"];
+
+    // The list is spelled out here on purpose - deriving it from production
+    // would make this rule shrink silently whenever production's own list
+    // shrank. But a HAND-KEPT copy drifts the other way: a fifth forbidden
+    // field would go unscanned and nothing would say so. So pin the list AND
+    // make the two agree. Measured in KADEME 19a: 4 against 4 today.
+    const denylist = readFile(
+      path.resolve(SRC_DIR, "src", "lib", "generation", "generationParams.ts"),
+    );
+    const declared = denylist.slice(
+      denylist.indexOf("FORBIDDEN_FIELDS = new Set(["),
+      denylist.indexOf("]", denylist.indexOf("FORBIDDEN_FIELDS = new Set([")),
+    );
+    expect(
+      declared,
+      "FORBIDDEN_FIELDS is gone or renamed - this rule is scanning a stale list",
+    ).toContain("provider");
+    expect(
+      [...declared.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]).sort(),
+      "generationParams forbids a field S-20b does not scan for (or the reverse)",
+    ).toEqual([...fields].sort());
+    // One builder, used by both the scan and its control, so a change to the
+    // pattern cannot pass the control while breaking the scan.
+    const mentions = (field: string, text: string) =>
+      new RegExp("(?<![\\w\"'`])" + field + "\\s*:").test(text) ||
+      new RegExp("\\." + field + "\\b").test(text);
+
     for (const file of genFiles) {
       const content = stripComments(readFile(file));
       for (const field of fields) {
-        const asKey = new RegExp("(?<![\\w\"'`])" + field + "\\s*:");
-        const asMember = new RegExp("\\." + field + "\\b");
         expect(
-          asKey.test(content) || asMember.test(content),
+          mentions(field, content),
           `Provider field "${field}" injected in ${path.relative(SRC_DIR, file)}`,
         ).toBe(false);
       }
+    }
+
+    // POSITIVE CONTROL. Another absence rule: it is green today because
+    // lib/generation says nothing about routing, which is indistinguishable
+    // from a pattern that stopped matching. Every field gets a known-bad
+    // payload in both shapes the rule claims to cover.
+    for (const field of fields) {
+      expect(mentions(field, `body = { ${field}: true };`),
+        `S-20b went blind to a literal key: ${field}`).toBe(true);
+      expect(mentions(field, `payload.${field} = order;`),
+        `S-20b went blind to a member write: ${field}`).toBe(true);
+      // The lookbehind exists so a longer identifier does not read as the
+      // field itself; prove it still discriminates.
+      expect(mentions(field, `const my_${field}: number = 1;`)).toBe(false);
     }
   });
 
@@ -607,16 +751,30 @@ describe("Static safety tests", () => {
     const htmlFiles = getSourceFiles("**/*.html");
     expect(htmlFiles.length, "no HTML files found - did the glob break?")
       .toBeGreaterThan(0);
+    // Protocol-relative `//host` counts: it inherits the page scheme and
+    // still leaves the machine.
+    const remoteRe =
+      /\b(?:href|src|imagesrcset|srcset)\s*=\s*["'](?:https?:)?\/\//gi;
     for (const file of htmlFiles) {
-      // Protocol-relative `//host` counts: it inherits the page scheme and
-      // still leaves the machine.
-      const remote = readFile(file).match(
-        /\b(?:href|src|imagesrcset|srcset)\s*=\s*["'](?:https?:)?\/\//gi,
-      );
+      const remote = readFile(file).match(remoteRe);
       expect(
         remote,
         `Remote reference in ${path.relative(SRC_DIR, file)}: ${remote?.join(", ")}`,
       ).toBeNull();
     }
+
+    // POSITIVE CONTROL. This rule passes by finding NOTHING, so a matcher that
+    // matched nothing would look exactly like a clean repo. The floor above
+    // catches an empty file list; only this catches a blind pattern. It feeds
+    // the SAME regex object the scan used, so the two cannot drift apart.
+    for (const bad of [
+      '<script src="https://cdn.example.com/x.js"></script>',
+      '<link href="//fonts.example.com/f.css">',
+      "<img SRC = 'http://tracker.example.com/p.gif'>",
+    ]) {
+      expect(bad.match(remoteRe), `S-23 went blind to: ${bad}`).not.toBeNull();
+    }
+    // ...and is still narrow enough to leave local references alone.
+    expect('<a href="/settings"><img src="./logo.svg">'.match(remoteRe)).toBeNull();
   });
 });

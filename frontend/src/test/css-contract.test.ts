@@ -97,6 +97,14 @@ describe("reduced-transparency block", () => {
       }
     });
 
+    // Floor. The set is built by matching a property name in the stylesheet;
+    // a typo in that pattern empties it and this whole rule then iterates
+    // nothing and passes. Five surfaces today.
+    expect(
+      blurred.size,
+      "found no blurred surface in the stylesheet - did the scan break?",
+    ).toBeGreaterThan(3);
+
     for (const selector of blurred) {
       if (selector.startsWith("@")) continue;
       const covered =
@@ -112,6 +120,12 @@ describe("reduced-transparency block", () => {
 
   it("lists no class that no component renders", () => {
     const classes = [...block.matchAll(/\.([a-z][a-z0-9-]*)/g)].map((m) => m[1]);
+    // Floor. The block being non-empty is checked where it is built; that
+    // says nothing about this regex still finding class names inside it.
+    expect(
+      classes.length,
+      "no class names parsed out of the reduced-transparency block",
+    ).toBeGreaterThan(3);
     for (const cls of new Set(classes)) {
       // A dash-prefix counts too: some class names are composed at render time
       // (`surface-${surfaceFinish}`), so the full string never appears in the
@@ -133,7 +147,7 @@ describe("reduced-transparency block", () => {
 });
 
 describe("dark-wallpaper scrollbar", () => {
-  it("outranks the page-wide thumb rule instead of losing to it", () => {
+  it("writes the dark-wallpaper thumb as a two-class rule and drops the one-class version", () => {
     // Both match the SAME element: the scroller carries Tailwind's
     // overflow-y-auto and sits inside .elysium-page. A single-class selector
     // (0-1-1) lost to the page-wide two-class rule (0-2-1), so the thumb stayed

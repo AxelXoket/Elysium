@@ -123,6 +123,12 @@ function componentFiles(): string[] {
 describe("Azure palette guard", () => {
   const colors = parseColors(readFileSync(CSS, "utf-8"));
 
+  // KEPT in KADEME 20b, against section 4's list. Its reason was that this
+  // apparatus disappears once the rules move to stylelint. Measured: the
+  // repo contains no stylelint config, no stylelint dependency, no mention
+  // of it anywhere. The condition is unmet, and until it is met this is
+  // the floor that stops the amber/green and warm-colour tests below from
+  // filtering an empty array and passing having checked nothing.
   it("the stylesheet is actually being read", () => {
     // Guards the guard: a path typo would make every assertion below vacuous.
     expect(colors.length).toBeGreaterThan(50);
@@ -169,6 +175,9 @@ describe("Azure palette guard", () => {
     ).toEqual([]);
   });
 
+  // KEPT in KADEME 20b for the same reason as the stylesheet floor above:
+  // the stylelint replacement does not exist yet. Point `root` at an empty
+  // directory and the component-paint test below iterates nothing.
   it("the component walk actually finds files", () => {
     // Guards the guard, same as the stylesheet check above.
     expect(componentFiles().length).toBeGreaterThan(20);
@@ -207,7 +216,7 @@ describe("Azure palette guard", () => {
     ).toEqual([]);
   });
 
-  it("severity on the voice surfaces reads without relying on hue", () => {
+  it("gives the voice warning a left border, not colour alone", () => {
     // Colour-blind readers, and anyone glancing: the warning line is
     // distinguished by a rule and quieter type, not by being orange.
     const css = readFileSync(CSS, "utf-8");

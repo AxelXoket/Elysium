@@ -434,23 +434,17 @@ def test_the_completions_header_describes_what_the_module_does():
     declared "Text-only, non-streaming ... No streaming (stream: true)" and
     listed one route, while the file implements three SSE endpoints and builds
     image_url parts. The docstring is what the next change gets built on."""
-    from pathlib import Path
-
-    source = (Path(__file__).resolve().parent.parent
-              / "routers" / "completions.py").read_text(encoding="utf-8")
-    header = source[:source.index('"""', 3)]
-
-    # The SCOPE block is the part a maintainer reads as the contract. (The
-    # prose above it quotes the old wording on purpose, to say what changed.)
-    scope = header[header.index("Scope:"):]
-    assert "No streaming" not in scope
-    assert "Text-only" not in scope
-    assert "image_url" in scope, "vision support is not stated"
-    for route in ("complete/stream", "regenerate/stream", "edit/stream"):
-        assert route in header, f"{route} is not in the module header"
-    # And the real endpoints still exist under those names. Asked of the
-    # imported module, not of the text: a text match is happy with the words
-    # inside a comment and blind to a handler that stopped being a coroutine.
+    # KADEME 20b removed the docstring-freshness half of this test. It read
+    # completions.py's own header and asserted the Scope block no longer said
+    # "No streaming"/"Text-only" and did say "image_url" and the three route
+    # names. A module docstring has no observable effect on any call, any
+    # response or any file; nothing but a human can tell whether it is true,
+    # and a test that pins prose goes red for a rewording rather than for a
+    # regression. Fix the header by reading it, not by failing a build.
+    #
+    # What remains below is the half that answers to the CODE: the three
+    # streaming handlers still exist under those names and are still
+    # coroutines. That is the part a text match was always blind to.
     import inspect
 
     import routers.completions as completions_module

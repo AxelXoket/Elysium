@@ -35,6 +35,14 @@ import config
 import database
 import routers.vault as vault_router
 
+from tests.loop_guard import (
+    MAX_FREEZE_S,
+    MIN_TICKS,
+    STALL_S as _STALL_S,
+    longest_freeze as _longest_freeze,
+    ticks_during as _ticks_during,
+)
+
 
 # ---------------------------------------------------------------------------
 # classify_db_file: one question, four answers
@@ -219,8 +227,6 @@ def test_an_encrypted_database_with_a_lost_verifier_still_offers_unlock(client):
 # And it does not run on the event loop
 # ---------------------------------------------------------------------------
 
-#: Long enough that a blocked loop is unambiguous, short enough to stay cheap.
-_STALL_S = 0.12
 
 
 @pytest.fixture()
@@ -238,25 +244,6 @@ def slow_classification(monkeypatch):
 
     monkeypatch.setattr(vault_router.database, "classify_db_file", slow)
 
-
-async def _ticks_during(coro) -> tuple[int, object]:
-    """Run `coro`, counting how many times the loop got control meanwhile."""
-    ticks = 0
-
-    async def heartbeat():
-        nonlocal ticks
-        while True:
-            await asyncio.sleep(0.005)
-            ticks += 1
-
-    beat = asyncio.ensure_future(heartbeat())
-    try:
-        await asyncio.sleep(0.02)          # let the heartbeat settle
-        before = ticks
-        result = await coro
-        return ticks - before, result
-    finally:
-        beat.cancel()
 
 
 def test_a_lock_landing_mid_status_is_answered_not_raised(client, monkeypatch):
@@ -305,4 +292,4 @@ async def test_reading_vault_status_does_not_freeze_the_loop(
 ):
     ticks, body = await _ticks_during(vault_router.vault_status())
     assert "initialized" in body
-    assert ticks > 1, "the loop was frozen while /vault/status touched the disk"
+    assert ticks >= MIN_TICKS, "the loop was frozen while /vault/status touched the disk"

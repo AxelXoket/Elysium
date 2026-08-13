@@ -39,7 +39,7 @@ describe("Model Panel Tests", () => {
   });
 
   // T-14: Models panel renders model list
-  it("T-14: renders model list", async () => {
+  it("lists the models once the catalogue loads", async () => {
     mockFetch({
       "/models/openrouter": { body: modelListFixture },
     });
@@ -52,7 +52,7 @@ describe("Model Panel Tests", () => {
   });
 
   // T-15: Models panel shows source badge
-  it("T-15: shows source badge", async () => {
+  it("says where the catalogue came from", async () => {
     mockFetch({
       "/models/openrouter": { body: modelListFixture },
     });
@@ -66,7 +66,7 @@ describe("Model Panel Tests", () => {
 
   // T-16: Models panel shows a mapped fallback message - never the raw
   // backend fallback_reason value (internal diagnostics).
-  it("T-16: shows mapped fallback message, not raw fallback_reason", async () => {
+  it("explains a fallback in plain words, not the raw reason code", async () => {
     mockFetch({
       "/models/openrouter": { body: modelListFallbackFixture },
     });
@@ -84,7 +84,7 @@ describe("Model Panel Tests", () => {
   });
 
   // FIX-3: known fallback_reason values map to specific copy
-  it("FIX-3: maps timeout fallback_reason", async () => {
+  it("explains a catalogue timeout without naming the code", async () => {
     mockFetch({
       "/models/openrouter": {
         body: { ...modelListFallbackFixture, fallback_reason: "timeout" },
@@ -100,7 +100,7 @@ describe("Model Panel Tests", () => {
     });
   });
 
-  it("FIX-3: maps http_NNN fallback_reason", async () => {
+  it("explains an upstream status without naming the code", async () => {
     mockFetch({
       "/models/openrouter": {
         body: { ...modelListFallbackFixture, fallback_reason: "http_502" },
@@ -118,7 +118,7 @@ describe("Model Panel Tests", () => {
   });
 
   // FIX-4: refresh failure surfaces exactly one toast via the error store
-  it("FIX-4: failed refresh pushes an error toast", async () => {
+  it("a refresh that fails says so instead of looking done", async () => {
     const fetchMock = mockFetch({
       "/models/openrouter": { body: modelListFixture },
     });
@@ -148,7 +148,7 @@ describe("Model Panel Tests", () => {
   });
 
   // T-17: Modality badges shown as informational, no upload UI
-  it("T-17: modality badges informational, no upload UI", async () => {
+  it("shows what a model reads and writes without offering an upload", async () => {
     mockFetch({
       "/models/openrouter": { body: modelListFixture },
     });
@@ -177,7 +177,7 @@ describe("Model Panel Tests", () => {
   });
 
   // T-76: Model search filters the list
-  it("T-76: model search filters the list", async () => {
+  it("narrows the list to what was typed", async () => {
     mockFetch({
       "/models/openrouter": { body: modelListFixture },
     });
@@ -196,7 +196,7 @@ describe("Model Panel Tests", () => {
   });
 
   // T-77: Model search empty state appears when no match
-  it("T-77: model search empty state appears when no match", async () => {
+  it("says nothing matched instead of showing an empty panel", async () => {
     mockFetch({
       "/models/openrouter": { body: modelListFixture },
     });
@@ -217,7 +217,7 @@ describe("Model Panel Tests", () => {
   });
 
   // T-78: Model search clear button resets list
-  it("T-78: clear button resets model search", async () => {
+  it("clearing the search brings the whole list back", async () => {
     mockFetch({
       "/models/openrouter": { body: modelListFixture },
     });

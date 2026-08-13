@@ -69,6 +69,24 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+/**
+ * The fields only the SERVER knows, read back off the row.
+ *
+ * The optimistic flip sets `active` itself, so active ids alone cannot tell
+ * a settled response from an unsettled one - which is exactly how the
+ * `isMutating(...) > 1` guard above onSuccess could be loosened to `>= 1`,
+ * skipping every settle, with the whole frontend suite still green.
+ */
+function settled(qc: QueryClient, id: number) {
+  const row = (qc.getQueryData<Message[]>(keys.messages(1)) ?? []).find(
+    (m) => m.id === id,
+  );
+  return {
+    variant_index: row?.variant_index,
+    variant_count: row?.variant_count,
+  };
+}
+
 function activeIds(qc: QueryClient): number[] {
   const rows = qc.getQueryData<Message[]>(keys.messages(1)) ?? [];
   return rows
@@ -115,6 +133,10 @@ describe("useActivateVariant", () => {
       expect(result.current.isSuccess).toBe(true);
     });
     expect(activeIds(qc)).toEqual([10]);
+    expect(settled(qc, 10), "the response never reached the cache").toEqual({
+      variant_index: 0,
+      variant_count: 3,
+    });
     expect(useErrorStore.getState().errors).toHaveLength(0);
   });
 
@@ -154,11 +176,15 @@ describe("useActivateVariant", () => {
     });
     expect(activeIds(qc)).toEqual([10]);
 
-    // Second response settles the final state.
+    // Second response settles the final state - and settling means the
+    // server's own fields arrive, not just the flag the optimistic flip
+    // already set. Without this the guard could skip EVERY settle and every
+    // assertion here would still pass.
     pending[1](jsonResponse(activateResponse(10, 11)));
     await waitFor(() => {
-      expect(activeIds(qc)).toEqual([10]);
+      expect(settled(qc, 10)).toEqual({ variant_index: 0, variant_count: 3 });
     });
+    expect(activeIds(qc)).toEqual([10]);
   });
 
   it("rolls back ONLY its group on error and pushes a toast", async () => {

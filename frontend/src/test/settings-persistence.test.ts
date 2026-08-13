@@ -20,136 +20,212 @@
  * all - the server bound a random port each start, so localStorage was keyed
  * to a new origin every time and all of it was dropped. Fixed in run_app.py;
  * pinned by test_release_hardening.py.)
+ *
+ * Until KADEME 18b this file proved all of the above by reading uiStore.ts as
+ * TEXT and regex-matching the `partialize` literal. A source scan can pin a
+ * DELETION; it cannot show that a value survives a reload, and every presence
+ * claim here was that second thing - the describe promised "survives a
+ * restart" while no store was ever built, written or reloaded. It now drives
+ * the real store, reads the real localStorage, and reloads the real module.
  */
-import { describe, it, expect } from "vitest";
-import { readFileSync } from "fs";
-import path from "path";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 
-const SRC = path.resolve(__dirname, "..");
-const uiStore = readFileSync(path.join(SRC, "lib", "store", "uiStore.ts"), "utf-8");
+import { useUiStore } from "@/lib/store/uiStore";
+import { readDeviceNarration } from "@/lib/voice/narrationMigration";
+// Seeding a blob the store no longer produces cannot go through the store,
+// and static-safety S-09 reserves direct device-storage writes for lib/store.
+// This mock is the exemption that already exists for exactly that; writing
+// here by hand would widen the rule instead of using it. (S-09 scans source
+// text, comments included, so it is also why this sentence does not spell
+// the call out - the same trap caught KADEME 18a.)
+import { seedDeviceNarration, seedRawUiState } from "./mocks/legacyStorage";
 
-/** The keys uiStore actually writes to localStorage. */
-function persistedKeys(): Set<string> {
-  const head = /partialize:\s*\([^)]*\)\s*=>\s*\(\s*\{/.exec(uiStore);
-  expect(head, "partialize(...) not found in uiStore").not.toBeNull();
-  const open = head!.index + head![0].length - 1;
-  let depth = 0;
-  let close = -1;
-  for (let i = open; i < uiStore.length; i += 1) {
-    if (uiStore[i] === "{") depth += 1;
-    else if (uiStore[i] === "}") {
-      depth -= 1;
-      if (depth === 0) {
-        close = i;
-        break;
-      }
-    }
-  }
-  const body = uiStore.slice(open + 1, close);
-  return new Set([...body.matchAll(/(\w+):\s*state\./g)].map((m) => m[1]));
+/**
+ * What the store writes to device storage. Exact, not a subset: localStorage
+ * is not encrypted, so every ADDITION to this list is a privacy decision and
+ * has to be made on purpose. A subset check would wave new keys through.
+ */
+const PERSISTED = [
+  "selectedCharacterId",
+  "selectedChatId",
+  "selectedModelId",
+  "activeRightPanelTab",
+  "sidebarCollapsed",
+  "msgFontPx",
+  "msgLineHeight",
+  "msgContrast",
+  "narrationEnabled",
+  "quoteTintEnabled",
+  "continuousVoice",
+  "voiceHintDismissed",
+  "narrationMigrated",
+  "msgInk",
+  "surfaceFinish",
+  "msgOpacity",
+  "chatBgOn",
+  "chatBgLum",
+  "chatBgContrast",
+  "chatBgTint",
+  "chatBgFocusX",
+  "chatBgFocusY",
+  "chatBgZoom",
+  "chatBgAspect",
+  "ambientFogOn",
+  "genTemperature",
+  "genTopP",
+  "genTopK",
+  "genRepetitionPenalty",
+  "genMaxOutput",
+  "genSeed",
+  "genContextBudget",
+] as const;
+
+/** Names that have each been in the wrong home at some point. */
+const NEVER = [
+  // Lived here AND in the vault, written together only when the dropdown was
+  // touched, so the two could disagree forever: one performance while a reply
+  // streamed and another when the Speak button repeated it. A device copy is
+  // the wrong home for a setting the server also has to know.
+  "narrationVoice",
+  // Character names are user content and localStorage is not encrypted. The
+  // answer was the encrypted settings table, not "do not persist at all" -
+  // which is what made them a per-session retyping chore. The vault round
+  // trip itself is proven in GenerationSettingsPanel.test.tsx ("FF7
+  // persistence"), by remounting the provider and reading the chips back.
+  "stopSequences",
+  "genStopSequences",
+  // A dialog that reopens itself on launch is a bug, not a preference.
+  "settingsOpen",
+  "settingsInitialPage",
+  // Session-only: a repaint signal, and a measurement of the current window.
+  "chatBgRev",
+  "chatAreaAspect",
+];
+
+/**
+ * The name uiStore files its blob under, learned by watching it write rather
+ * than spelled here. Three modules spell it independently - uiStore.ts owns
+ * it, lib/voice/narrationMigration.ts repeats it as a private const, and
+ * mocks/legacyStorage.ts a third time - so a fourth copy, in the test whose
+ * job is to notice a rename, would be the wrong direction.
+ */
+function keyTheStoreWrites(): string {
+  localStorage.clear();
+  useUiStore.getState().setMsgFontPx(15);
+  expect(localStorage.length, "the store wrote nothing to device storage")
+    .toBe(1);
+  return localStorage.key(0)!;
+}
+
+/** The same, for the seed helper the legacy tests share. */
+function keyTheSeedWrites(): string {
+  localStorage.clear();
+  seedRawUiState("{}");
+  expect(localStorage.length, "the seed wrote nothing").toBe(1);
+  return localStorage.key(0)!;
+}
+
+/** The blob as the next launch would find it. */
+function stored(): Record<string, unknown> {
+  expect(localStorage.length, "the store wrote nothing to device storage")
+    .toBe(1);
+  const parsed = JSON.parse(localStorage.getItem(localStorage.key(0)!)!);
+  expect(parsed.state, "the persisted blob has no state").toBeTypeOf("object");
+  return parsed.state as Record<string, unknown>;
+}
+
+/** A fresh module instance, i.e. what a relaunch builds. */
+async function relaunch() {
+  const store = (await import("@/lib/store/uiStore")).useUiStore;
+  expect(store, "the module was reused, so nothing was rehydrated")
+    .not.toBe(useUiStore);
+  return store.getState();
 }
 
 describe("every preference survives a restart", () => {
-  const persisted = persistedKeys();
+  beforeEach(() => {
+    localStorage.clear();
+    vi.resetModules();
+  });
 
-  it("keeps the chat selection and the chosen model", () => {
-    // "Which model am I talking to" is the setting people notice losing first.
-    for (const key of [
-      "selectedCharacterId",
-      "selectedChatId",
-      "selectedModelId",
-      "activeRightPanelTab",
-      "sidebarCollapsed",
-    ]) {
-      expect(persisted.has(key), `${key} is not persisted`).toBe(true);
+  it("writes exactly the preferences that are safe on an unencrypted disk", () => {
+    // Any set at all makes the middleware write the whole partialized blob.
+    useUiStore.getState().setMsgFontPx(17);
+
+    const state = stored();
+    expect(Object.keys(state).sort()).toEqual([...PERSISTED].sort());
+    for (const name of NEVER) {
+      expect(name in state, `${name} must not be written to device storage`)
+        .toBe(false);
     }
   });
 
-  it("keeps every generation sampling scalar", () => {
-    for (const key of [
-      "genTemperature",
-      "genTopP",
-      "genTopK",
-      "genRepetitionPenalty",
-      "genMaxOutput",
-      "genSeed",
-      "genContextBudget",
-    ]) {
-      expect(persisted.has(key), `${key} is not persisted`).toBe(true);
-    }
-  });
-
-  it("keeps every appearance preference", () => {
-    for (const key of [
-      "msgFontPx",
-      "msgLineHeight",
-      "msgContrast",
-      "msgInk",
-      "surfaceFinish",
-      "narrationEnabled",
-      "quoteTintEnabled",
-      "ambientFogOn",
-      "chatBgOn",
-      "chatBgLum",
-      "chatBgContrast",
-      "chatBgTint",
-    ]) {
-      expect(persisted.has(key), `${key} is not persisted`).toBe(true);
-    }
-  });
-
-  it("keeps the voice preferences", () => {
-    for (const key of ["continuousVoice", "voiceHintDismissed"]) {
-      expect(persisted.has(key), `${key} is not persisted`).toBe(true);
-    }
-  });
-
-  it("does NOT keep the narration mode - the vault owns that one", () => {
-    // It lived here AND in the vault, written together only when the dropdown
-    // was touched, so the two could disagree forever: one performance while a
-    // reply streamed and another when the Speak button repeated it. A device
-    // copy is the wrong home for a setting the server also has to know.
-    expect(persisted.has("narrationVoice")).toBe(false);
-    // The flag that clears the old copy is device state, and does belong here.
-    expect(persisted.has("narrationMigrated")).toBe(true);
-  });
-
-  it("does NOT persist transient UI state", () => {
-    // A dialog that reopens itself on launch is a bug, not a preference.
-    for (const key of ["settingsOpen", "settingsInitialPage", "chatBgRev"]) {
-      expect(persisted.has(key), `${key} must not be persisted`).toBe(false);
-    }
-  });
-
-  it("keeps stop sequences OUT of browser storage, in the vault instead", () => {
-    // Character names are user content; localStorage is not encrypted. The
-    // answer is the encrypted settings table, not "do not persist at all" -
-    // which is what made them a per-session retyping chore.
-    expect(persisted.has("stopSequences")).toBe(false);
-    expect(persisted.has("genStopSequences")).toBe(false);
-
-    const context = readFileSync(
-      path.join(SRC, "components", "generation", "GenerationSettingsContext.tsx"),
-      "utf-8",
-    );
-    expect(context, "stop sequences no longer read from the vault")
-      .toMatch(/useSettings\(\)/);
-    expect(context, "stop sequences no longer written to the vault")
-      .toMatch(/useSetStopSequences\(\)/);
-
-    const schema = readFileSync(
-      path.join(SRC, "lib", "schemas", "settings.ts"),
-      "utf-8",
-    );
-    expect(schema).toMatch(/stop_sequences/);
-  });
-
-  it("every persisted entry mirrors a field of the same name", () => {
+  it("writes back what the store actually holds, under the same name", () => {
     // A rename here is how an allowlisted key ends up aliasing something it
-    // should not carry (see static-safety S-09b for the privacy half).
-    const body = uiStore.slice(uiStore.indexOf("partialize"));
-    for (const m of body.matchAll(/(\w+):\s*state\.(\w+)/g)) {
-      expect(m[2], `persisted "${m[1]}" reads state.${m[2]}`).toBe(m[1]);
+    // should not carry (static-safety S-09b owns the privacy half).
+    useUiStore.getState().setMsgFontPx(16);
+    useUiStore.getState().setGenSettings({ genTemperature: 1.3 });
+
+    const state = stored();
+    expect(Object.keys(state).length, "nothing to compare, the loop was empty")
+      .toBe(PERSISTED.length);
+    const live = useUiStore.getState() as unknown as Record<string, unknown>;
+    for (const [name, value] of Object.entries(state)) {
+      expect(live[name], `persisted "${name}" is not state.${name}`)
+        .toEqual(value);
     }
+  });
+
+  it("hands a preference set now to the next launch", async () => {
+    useUiStore.getState().setMsgFontPx(17);
+    useUiStore.getState().setActiveRightPanelTab("persona");
+    useUiStore.getState().setGenSettings({ genTemperature: 1.3, genTopK: 55 });
+    // Transient by design, and the reason it is set here: without it,
+    // "everything came back" could not be told apart from "the blob was
+    // read whole and nothing was filtered".
+    useUiStore.getState().setSettingsOpen(true);
+
+    const next = await relaunch();
+    expect(next.msgFontPx).toBe(17);
+    expect(next.activeRightPanelTab).toBe("persona");
+    expect(next.genTemperature).toBe(1.3);
+    expect(next.genTopK).toBe(55);
+    expect(next.settingsOpen, "a dialog reopened itself on launch").toBe(false);
+  });
+
+  it("opens on a tab that still exists after the rename", async () => {
+    // Version 2 renamed the right-panel tabs. An install that skipped the
+    // release in between carries "model", which matches no tab any more, so
+    // without the migration the panel opens on nothing.
+    seedRawUiState(
+      JSON.stringify({ version: 0, state: { activeRightPanelTab: "model" } }),
+    );
+
+    expect((await relaunch()).activeRightPanelTab).toBe("models");
+  });
+
+  it("is read by the narration migration under the name it writes", () => {
+    // Three modules spell this name independently: uiStore.ts owns it,
+    // lib/voice/narrationMigration.ts repeats it as a private const, and
+    // test/mocks/legacyStorage.ts a third time. Nothing links them, so a
+    // rename on the store side leaves the migration reading a key that no
+    // longer exists - and the stale device copy it was written to clear
+    // stays behind forever, without a word. Asserting the agreement rather
+    // than the spelling is what keeps the test from becoming a fourth copy.
+    expect(
+      keyTheSeedWrites(),
+      "the seed helper and the store disagree about where the blob lives",
+    ).toBe(keyTheStoreWrites());
+
+    localStorage.clear();
+    seedDeviceNarration("narrator");
+    expect(readDeviceNarration(), "the migration is reading another key")
+      .toBe("narrator");
+  });
+
+  it("ignores a blob it cannot read instead of refusing to start", async () => {
+    seedRawUiState("{not json at all");
+
+    expect((await relaunch()).msgFontPx).toBe(14);
   });
 });

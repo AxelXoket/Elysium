@@ -114,6 +114,65 @@ describe("Character Edit Dialog Tests", () => {
     });
   });
 
+  it("carries every edited field under its own name", async () => {
+    // The test above proves the ONLY half - nothing unchanged is sent. It
+    // cannot prove the other half, because it only ever edits the name: every
+    // other field's assignment sits behind an `if (changed)` that never runs,
+    // so writing `payload.scenario = personality.trim()` left all 1315 tests
+    // in the frontend suite green. One edit of everything closes it.
+    const fetchMock = mockFetch({
+      "/characters/1": { body: { ...characterFixture, name: "Everything" } },
+    });
+    const user = userEvent.setup();
+    renderWithQueryClient(
+      <CharacterEditDialog
+        character={characterFixture}
+        trigger={<Button>Edit</Button>}
+      />,
+      { wrapper: TooltipProvider },
+    );
+
+    await openDialog(user);
+
+    const edits: [string, string][] = [
+      ["Character name", "Everything"],
+      ["Character description", "A new description"],
+      ["Character personality", "A new personality"],
+      ["Character scenario", "A new scenario"],
+      ["Character first message", "A new opening"],
+      ["Character example dialogue", "A new example"],
+      ["Character system prompt", "A new system prompt"],
+      ["Character post-history instruction", "A new closing note"],
+    ];
+    for (const [label, value] of edits) {
+      const field = screen.getByLabelText(label);
+      await user.clear(field);
+      await user.type(field, value);
+    }
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      const patchCalls = fetchMock.mock.calls.filter(
+        (call) =>
+          typeof call[0] === "string" &&
+          call[0].includes("/characters/1") &&
+          call[1]?.method === "PATCH",
+      );
+      expect(patchCalls.length).toBe(1);
+      expect(JSON.parse(patchCalls[0][1]?.body as string)).toEqual({
+        name: "Everything",
+        description: "A new description",
+        personality: "A new personality",
+        scenario: "A new scenario",
+        first_mes: "A new opening",
+        mes_example: "A new example",
+        system_prompt: "A new system prompt",
+        post_history_instruction: "A new closing note",
+      });
+    });
+  });
+
   it("saving with no changes closes without a PATCH request", async () => {
     const fetchMock = mockFetch({});
     const user = userEvent.setup();

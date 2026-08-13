@@ -113,11 +113,16 @@ describe("VoiceSettingsPage", () => {
   });
 
   it("saving sends only the values that actually changed", async () => {
+    // The method-scoped route must PRECEDE the spread: mockFetch is
+    // first-match-wins, so baseRoutes' method-less "/tts/models/u1/settings"
+    // was swallowing this POST and the echo below never came back. Found in
+    // KADEME 19b by asserting the CONSEQUENCE - with only the request body
+    // checked, the override could sit here dead and nobody would know.
     const fetchMock = mockFetch({
-      ...baseRoutes(),
       "POST /tts/models/u1/settings": {
         body: { uid: "u1", values: { temperature: 1.2, language: "en" }, source_map: {} },
       },
+      ...baseRoutes(),
     });
     renderWithQueryClient(<VoiceSettingsPage />);
 
@@ -139,6 +144,17 @@ describe("VoiceSettingsPage", () => {
         values: { temperature: 1.2 },
       });
     });
+
+    // KADEME 19b: the request body was the trigger. Once the server echoes
+    // the value back, the draft is retired and the button has to go quiet
+    // again - otherwise "Save changes" stays lit over nothing and the next
+    // press sends an empty change set.
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Save changes" }),
+        "the save button stayed lit after the value landed",
+      ).toBeDisabled(),
+    );
   });
 
   // ── Audit HIGH: edits made while a save is in flight were discarded ────
@@ -392,11 +408,16 @@ describe("VoiceSettingsPage", () => {
   });
 
   it("the voice toggle reflects and mutates voice mode", async () => {
+    // Method-scoped route first - see the note on the failure test below.
+    // This override was dead until KADEME 19b: baseRoutes' method-less
+    // "/tts/voice-mode" answered the POST with the OFF payload, so the
+    // write-through wrote `enabled: false` back. Only the request body was
+    // asserted, so nothing noticed.
     const fetchMock = mockFetch({
-      ...baseRoutes(),
       "POST /tts/voice-mode": {
         body: { enabled: true, active: false, prompt_chars: 3200 },
       },
+      ...baseRoutes(),
     });
     renderWithQueryClient(<VoiceSettingsPage />);
 
@@ -412,6 +433,18 @@ describe("VoiceSettingsPage", () => {
       expect(call).toBeTruthy();
       expect(JSON.parse(call![1]!.body as string)).toEqual({ enabled: true });
     });
+
+    // KADEME 19b: the POST was the trigger; this is what the person sees.
+    // The mutation writes through to the query cache on success, so the
+    // switch and its caption both have to follow. Asserting only the request
+    // left `aria-checked={enabled}` free to be hardcoded false.
+    await waitFor(() =>
+      expect(toggle, "the switch never moved").toHaveAttribute(
+        "aria-checked",
+        "true",
+      ),
+    );
+    expect(await screen.findByText(/^On - /)).toBeInTheDocument();
   });
 });
 
@@ -476,6 +509,23 @@ describe("audit-2 additions", () => {
     ).toBeInTheDocument();
     expect(
       screen.queryByText(/No voice models found/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("asks for a model folder when the scan worked and found none", async () => {
+    // POSITIVE CONTROL for the line above. That assertion passes by finding
+    // nothing, and nothing in this file ever rendered the empty-list state -
+    // so a typo in the pattern would have passed just as quietly. It is also
+    // a real state worth pinning: a scan that succeeds and finds nothing must
+    // say what to do, not repeat the failure copy.
+    mockFetch({
+      ...baseRoutes(),
+      "/tts/models": { body: { models: [], unrecognized: [], roots: [] } },
+    });
+    renderWithQueryClient(<VoiceSettingsPage />);
+    expect(await screen.findByText(/No voice models found/)).toBeInTheDocument();
+    expect(
+      screen.queryByText("Could not scan for voice models. Rescan to retry."),
     ).not.toBeInTheDocument();
   });
 });
@@ -579,9 +629,12 @@ describe("VoiceSettingsPage - choosing the voice", () => {
   });
 
   it("says what selecting will do, before you do it", async () => {
-    mockFetch(baseRoutes());
-    renderWithQueryClient(<VoiceSettingsPage />);
-    // A model that CAN run but is not chosen must say so in words.
+    // KADEME 19b rewrote this. It used to render TWICE into the same DOM
+    // (once with the blocked model, once with a runnable one) and then assert
+    // `findAllByText(...).not.toHaveLength(0)` across the merged result. That
+    // is the banned shape: making every model - blocked ones included - claim
+    // readiness still left it green, because a match anywhere satisfied it.
+    // One render, an exact count, and the other direction below.
     const runnable = {
       ...BLOCKED_MODEL,
       readiness: { ...BLOCKED_MODEL.readiness, runnable: true, issues: [] },
@@ -593,7 +646,24 @@ describe("VoiceSettingsPage - choosing the voice", () => {
     renderWithQueryClient(<VoiceSettingsPage />);
     expect(
       await screen.findAllByText("Ready to use - select it to speak replies"),
-    ).not.toHaveLength(0);
+    ).toHaveLength(1);
+  });
+
+  it("does NOT tell you to select a model that cannot run", async () => {
+    // The other half, and the half that was missing: an invitation to press
+    // something that can only fail is the same broken promise the speak
+    // button avoids by not appearing at all.
+    mockFetch({
+      ...baseRoutes(),
+      "/tts/models": {
+        body: { models: [BLOCKED_MODEL], unrecognized: [], roots: [] },
+      },
+    });
+    renderWithQueryClient(<VoiceSettingsPage />);
+    await screen.findByText(BLOCKED_MODEL.name ?? BLOCKED_MODEL.uid);
+    expect(
+      screen.queryByText("Ready to use - select it to speak replies"),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps settings behind their own control, not the name", async () => {
@@ -607,7 +677,7 @@ describe("VoiceSettingsPage - choosing the voice", () => {
     expect(disclosure).toHaveAttribute("aria-expanded", "true");
   });
 
-  it("the pick control carries the radio role and its state", async () => {
+  it("exposes the pick control as a radio that says whether it is chosen", async () => {
     mockFetch(baseRoutes());
     renderWithQueryClient(<VoiceSettingsPage />);
     const pick = await screen.findByRole("radio", { name: "Use s2-pro" });
@@ -654,7 +724,13 @@ describe("VoiceSettingsPage - what the voice toggle actually controls", () => {
     renderWithQueryClient(<VoiceSettingsPage />);
 
     await screen.findByText("Performed replies");
-    expect(screen.queryByText(/chat stays text-only/i)).not.toBeInTheDocument();
+    // KADEME 19b removed a line here that read
+    // `queryByText(/chat stays text-only/i)).not.toBeInTheDocument()`.
+    // That phrase exists in the whole tree only inside a COMMENT in
+    // VoiceSettingsPage.tsx explaining why the old copy was dropped - it is
+    // never rendered, in any state, so the assertion could not fail and was
+    // not testing the deletion either. The line below is the real guard: it
+    // pins the words that replaced it.
     expect(
       await screen.findByText("Off - replies are written plainly"),
     ).toBeInTheDocument();

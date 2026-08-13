@@ -45,6 +45,11 @@ describe("ContinuousVoiceToggle", () => {
   it("starts off", () => {
     render(<ContinuousVoiceToggle />);
     expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "false");
+    // The muted icon, and it has to be asserted HERE: pinning only the "on"
+    // icon in the test below let the component render Volume2 unconditionally
+    // and stay green. Measured in KADEME 19b - the first version of that
+    // assertion did exactly that and the mutation survived.
+    expect(screen.getByRole("switch").innerHTML).toContain("volume-x");
   });
 
   it("flips the shared store field, so Settings and the composer agree", () => {
@@ -52,9 +57,13 @@ describe("ContinuousVoiceToggle", () => {
     fireEvent.click(screen.getByRole("switch"));
     expect(useUiStore.getState().continuousVoice).toBe(true);
     expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "true");
+    // The icon is the only signal a glancing user gets; it comes off the same
+    // flag but through a separate branch, so it could freeze while
+    // aria-checked kept flipping. lucide renders its name into the markup.
+    expect(screen.getByRole("switch").innerHTML).toContain("volume-2");
   });
 
-  it("says what turning it on will actually do", () => {
+  it("promises the NEXT message in its tooltip, not the one on screen", () => {
     // "starting from your next message" is the toggle's real contract; a label
     // that just said "speak replies" would promise the reply already on screen.
     render(<ContinuousVoiceToggle />);
