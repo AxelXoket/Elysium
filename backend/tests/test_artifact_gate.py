@@ -83,12 +83,26 @@ def forbidden_in(names) -> list[str]:
 
 
 def _git_epoch(pathspec: list[str]) -> int:
-    """Commit time of the newest commit touching `pathspec`, or 0."""
-    out = subprocess.run(
+    """Commit time of the newest commit touching `pathspec`.
+
+    Raises rather than returning 0. A silent 0 reads as "older than any exe",
+    which the caller then treats as FRESH - so a mistyped pathspec, a repo
+    with no commits, or a shallow clone would all report a healthy build
+    while having measured nothing. That is the vacuous pass this whole file
+    exists to prevent, and the first version of this function had it.
+    """
+    done = subprocess.run(
         ["git", "log", "-1", "--format=%ct", "--", *pathspec],
         cwd=REPO, capture_output=True, text=True,
-    ).stdout.strip()
-    return int(out) if out.isdigit() else 0
+    )
+    out = done.stdout.strip()
+    if not out.isdigit():
+        raise AssertionError(
+            "no commit found for %r (git exit %d, stderr %r). The staleness "
+            "check cannot answer, so it must not answer 'fresh'."
+            % (pathspec, done.returncode, done.stderr.strip()[:200])
+        )
+    return int(out)
 
 
 def stale_reasons(exe_epoch: float) -> list[str]:
@@ -210,6 +224,32 @@ def test_the_build_carries_nobody_s_data():
 
 
 @needs_exe
+def test_the_shipped_copy_is_the_copy_that_was_built():
+    """The spec writes backend/dist; the file a downloader runs is the one at
+    the repository root. Every other test here reads whichever it finds
+    first, so if those two ever diverge the whole gate would describe the
+    wrong binary - and describe it accurately, which is worse.
+
+    This is not hypothetical. It happened once already: KADEME 21b rebuilt
+    the exe, backend/dist got the new one, and the gate stayed red because
+    the root copy was still the August 10 build. Rebuilding is not finished
+    until the root copy is refreshed, and that is what this pins.
+    """
+    root, dist = EXE_CANDIDATES
+    if not (root.is_file() and dist.is_file()):
+        pytest.skip("only one copy present, nothing to compare")
+    import hashlib
+
+    a = hashlib.md5(root.read_bytes()).hexdigest()
+    b = hashlib.md5(dist.read_bytes()).hexdigest()
+    assert a == b, (
+        "the shipped root copy and the freshly built backend/dist copy are "
+        "different files (%s vs %s). Copy backend/dist/Elysium.exe over the "
+        "root one - a build that stops at dist/ ships nothing." % (a[:12], b[:12])
+    )
+
+
+@needs_exe
 def test_the_build_does_not_carry_the_build_machine_s_home_path():
     """The artefact half of hygiene rule H-04, which only reads source text.
 
@@ -272,7 +312,17 @@ def test_the_frozen_build_boots_and_serves_its_own_frontend():
     for claim in ("healthz=True", "root_serves_spa=True", "voice_payload=True"):
         assert claim in line, "self-check did not report %s: %r" % (claim, line)
 
-    if before is not None:
+    if before is None:
+        # No vault on this machine, so there was nothing to corrupt - but the
+        # boot check must not have CREATED one either. Written this way on
+        # purpose: the first version simply skipped the assertion when the
+        # file was absent, which meant the one line guarding user data never
+        # ran on exactly the machines least likely to have a vault.
+        assert not vault.is_file(), (
+            "the self-check created a vault at the real path despite "
+            "ELYSIUM_DATA_DIR pointing elsewhere"
+        )
+    else:
         assert hashlib.md5(vault.read_bytes()).hexdigest() == before, (
             "the self-check wrote to the real vault despite ELYSIUM_DATA_DIR"
         )

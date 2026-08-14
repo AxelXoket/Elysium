@@ -1,0 +1,43 @@
+# ruff, deliberately narrow: the engine worker directory only.
+#
+# KADEME 21 installed this. What it buys: the worker halves are run by an
+# interpreter that is not ours, inside an engine venv we do not control, so a
+# syntax error or an undefined name there surfaces as "the environment is
+# broken" long after the build. `test_tts_packaging.py::test_every_worker_
+# script_parses` already parses them; ruff answers the same question faster
+# and, because it walks the DIRECTORY, covers a worker added tomorrow that
+# nobody remembered to put in a list.
+#
+# WHY NOT REPO-WIDE. Measured, not assumed: `ruff check backend --select E9,F`
+# reports 119 errors today. That is not a config line, it is a multi-day
+# cleanup backlog, and there is no CI to enforce it afterwards. Narrow now,
+# widen when somebody actually intends to do that work.
+#
+# WHY E9 AND F, AND NOT THE DEFAULTS. The plan recorded "ruff check
+# backend/tts/worker comes out clean today". With ruff 0.16.3 it does not -
+# 40 findings. Every one of them is from ruff's newer opinionated defaults
+# (RUF100 unused-noqa 21, I001 import order 4, PLR/S/SIM/UP/PYI the rest).
+# ZERO are E or F. So the plan's claim held for the question it meant to ask
+# and stopped holding for the question the defaults now ask. Pinning the
+# selection keeps this gate about correctness rather than about whichever
+# style opinions the next ruff release ships.
+#
+# F   - pyflakes: undefined names, unused imports, f-strings with no
+#       placeholders, redefinitions. The class of bug that only shows up when
+#       the line finally runs, which for a worker is on a user's machine.
+#
+# SYNTAX IS NOT IN THE LIST, AND THAT IS DELIBERATE. The first version of this
+# file selected `["E9", "F"]` to stand for "the parse check". Measured on ruff
+# 0.16.3: E9 is inert. A file that cannot be parsed is reported as
+# `invalid-syntax` unconditionally, with `--select F` alone and even with
+# `--isolated`. Leaving E9 in would have been a comment claiming a guarantee
+# that the selection was not providing - the reader would think syntax
+# coverage came from the config, and a future edit to the list could have
+# dropped it believing something was lost.
+
+include = ["tts/worker/**/*.py"]
+
+target-version = "py313"
+
+[lint]
+select = ["F"]
