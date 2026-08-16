@@ -5,6 +5,7 @@ import { VariantCarousel } from "@/components/motion/VariantCarousel";
 import { MessageText } from "./MessageText";
 import { SpeakButton } from "./SpeakButton";
 import { SpeakLiveButton } from "./SpeakLiveButton";
+import { CopyMessageButton } from "./CopyMessageButton";
 import { useDeleteMessageAndFollowing } from "@/lib/query/chats";
 import {
   canRegenerateMessage,
@@ -372,6 +373,24 @@ export const MessageBubble = memo(function MessageBubble({
           className={`message-bubble-shell max-w-[75%] rounded-xl px-5 py-3 text-sm leading-relaxed ${
             isUser ? "is-user" : "is-assistant"
           } ${isPersisted ? "has-actions" : ""} ${editing ? "is-editing" : ""}`}
+          // How much room the absolutely positioned action row needs. An
+          // UPPER BOUND on purpose: SpeakButton decides internally whether to
+          // render, so an exact count is not visible from here, and guessing
+          // high only wraps the text a little early while guessing low puts
+          // buttons on top of words. `has-actions` alone reserved a fixed
+          // 4.35rem, which fitted two - the third button has been overflowing
+          // by about 19px since before Copy existed.
+          data-actions={
+            isPersisted
+              ? 1 + // delete
+                (editing ? 0 : 1) + // copy
+                (isUser ? 0 : 1) + // speak
+                (isUser && onEditMessage != null && !editing ? 1 : 0) + // edit
+                (isUser && awaitingReply && onEditMessage != null && !editing
+                  ? 1
+                  : 0) // get a reply
+              : undefined
+          }
           style={
             // v1.1 E2: layered surface vars. A contrast preset sets --msg-*;
             // Default sets nothing, so the fallbacks reproduce today's pixels
@@ -422,6 +441,24 @@ export const MessageBubble = memo(function MessageBubble({
                 ) : (
                   <SpeakButton messageId={shownMessage.id} />
                 ))}
+              {/* Copy sits before the writers and well away from Delete: it
+                  is the only read-only action here, and putting it beside a
+                  destructive one invites the misclick. It takes paneText,
+                  the string on screen, for the reason spelled out in
+                  CopyMessageButton - the active row and the shown row are
+                  not the same message while variants are being browsed. */}
+              {!editing && (
+                <CopyMessageButton
+                  // `showDots` is the window between "a new variant started
+                  // streaming" and its first delta: the bubble shows dots,
+                  // but paneText is still the PREVIOUS variant in full.
+                  // Handing that over would copy a reply the reader is not
+                  // looking at - the exact shape of KÖK 15, which the Speak
+                  // button next to it already had to be rescued from.
+                  text={showDots ? "" : paneText}
+                  isUser={isUser}
+                />
+              )}
               {/* Deleting a reply leaves its question standing with nothing
                   after it, and no way to ask again: the regenerate arrow lives
                   on the assistant bubble, which is the row that was just
@@ -574,6 +611,7 @@ export const MessageBubble = memo(function MessageBubble({
                   {(streamingText != null || isStreamingTarget) && (
                     <span
                       aria-hidden="true"
+                      className="msg-chrome"
                       style={{ opacity: 0.6, marginLeft: "1px" }}
                     >
                       {"▍"}
@@ -586,7 +624,7 @@ export const MessageBubble = memo(function MessageBubble({
 
           <span className="mt-1.5 flex items-center gap-2">
             <time
-              className="block text-[9px] opacity-70"
+              className="msg-chrome block text-[9px] opacity-70"
               dateTime={serverDateTimeAttr(shownMessage.created_at)}
             >
               {parseServerDate(shownMessage.created_at).toLocaleTimeString([], {

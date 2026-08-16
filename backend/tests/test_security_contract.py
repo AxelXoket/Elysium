@@ -411,6 +411,18 @@ ACKNOWLEDGED_UNTESTABLE: tuple[
      "here re-runs it; this only proves the pointer still exists and the "
      "sentence was not silently reworded away from what was measured.",
      "2026-08-09", "backend/win_hardening.py:33-51"),
+    ("Anything you copy leaves the vault", ReasonCategory.OS_GUARANTEE,
+     "what Windows does with the clipboard after a write is the OS's, and "
+     "Clipboard History and cross-device sync are user settings this suite "
+     "cannot read or change. The one part that IS ours - that the window "
+     "cannot opt out - is a consequence of private_mode=False in run_app, "
+     "which is asserted where that flag is set, not here.",
+     None, None),
+    ("Anything you copied to the clipboard", ReasonCategory.OS_GUARANTEE,
+     "the same OS behaviour restated under deletion: a clipboard entry, and "
+     "a synced copy that is not on this machine at all, are outside every "
+     "path this suite can reach.",
+     None, None),
 )
 
 
@@ -626,7 +638,7 @@ def _acknowledged_problems(
 #: sample - so this covers all of it. Updating this constant is the
 #: deliberate act that means a human decided what a change claims and
 #: registered a proof for it.
-DOCUMENT_DIGEST = "85b5639e47b1168534890e890a421f959075c85e83d456a794106b5caff1b7f5"
+DOCUMENT_DIGEST = "7dd8ce020d1adc58ad8ee99a9e6774cff11a297fd6066c0fbfe35dd962830bd8"
 
 
 class TestEveryProvenClaimHasAProof:

@@ -3,6 +3,7 @@ import { useMessages } from "@/lib/query/chats";
 import { MessageBubble } from "./MessageBubble";
 import { MessageText } from "./MessageText";
 import { SpeakLiveButton } from "./SpeakLiveButton";
+import { CopyMessageButton } from "./CopyMessageButton";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AnimatedList, AnimatedListItem } from "@/components/motion/AnimatedList";
 import { parseApiError } from "@/lib/errors";
@@ -305,7 +306,11 @@ function StreamingBubble({ text, chatId }: { text: string; chatId: number }) {
       >
         <p className="message-text whitespace-pre-wrap break-words">
           <MessageText text={text} streaming />
-          <span aria-hidden="true" style={{ opacity: 0.6, marginLeft: "1px" }}>
+          <span
+            aria-hidden="true"
+            className="msg-chrome"
+            style={{ opacity: 0.6, marginLeft: "1px" }}
+          >
             {"▍"}
           </span>
         </p>
@@ -313,6 +318,11 @@ function StreamingBubble({ text, chatId }: { text: string; chatId: number }) {
             stream ends - so this asks the server to wake the one it is already
             streaming. Renders nothing without a usable voice model. */}
         <div className="mt-1 flex justify-end">
+          {/* Copy works here for the same reason Speak does: there is no row
+              yet, but the reader is looking at the words now and the wait is
+              the moment they most want them. The rule stays "copy what is on
+              screen" - half a reply, if half is what is showing. */}
+          <CopyMessageButton text={text} isUser={false} />
           <SpeakLiveButton chatId={chatId} />
         </div>
       </div>

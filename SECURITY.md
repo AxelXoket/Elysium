@@ -245,6 +245,15 @@ you can find the one you care about.
   launch, but a hard kill can leave one until then.
 - **The search index remembers.** Marking the folder not-indexed is a promise
   about the future. Anything Windows already extracted stays in its index.
+- **Anything you copy leaves the vault, and Elysium cannot follow it.** The
+  Copy button and Ctrl+C both put plain text on the Windows clipboard, which
+  every program running as you can read. If you have turned on Clipboard
+  History it is kept for Win+V; if you have also turned on syncing across
+  devices, Windows uploads it to your Microsoft account. Both are off unless
+  you switched them on. Elysium cannot exclude itself from either: Chromium
+  only sets the opt-out flags for windows running in private mode, and this
+  window deliberately does not, so that your appearance settings survive a
+  restart.
 
 ### Limits of secure deletion
 
@@ -299,7 +308,7 @@ Delete `%LOCALAPPDATA%\Elysium` and the encrypted database, the passphrase
 files, the voice models, the browser profile and the log all go with it. The
 application files are separate and hold no user data.
 
-Four things that folder does not cover:
+Five things that folder does not cover:
 
 1. Crash dumps in `%LOCALAPPDATA%\CrashDumps` from before this version, or from
    a window crash. Delete that folder yourself if you want to be sure.
@@ -311,6 +320,10 @@ Four things that folder does not cover:
    if you are being thorough.
 4. The permission change described above, if it ran. The command to undo it is
    there.
+5. Anything you copied to the clipboard, if Clipboard History is on. Clear it
+   from Win+V, or from Settings, System, Clipboard. If you also sync across
+   devices, the copy on your Microsoft account is not on this machine at all
+   and deleting the folder does nothing to it.
 
 ---
 
