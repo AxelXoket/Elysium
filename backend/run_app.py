@@ -438,6 +438,25 @@ def main() -> None:
         # at 980px wide the sidebar+right panel ease to ~264+318 and the chat
         # keeps ~360px. Below this the composer would get uncomfortably narrow.
         min_size=(980, 660),
+        # Without this the window refuses to let anyone select a word.
+        # pywebview defaults text_select to False and then injects
+        # `body {user-select: none; cursor: default}` into every page after
+        # each navigation (webview/js/customize.js). Nothing in this app asked
+        # for that, and the WebView2 context menu is tied to the debug flag,
+        # which is off - so there was no right-click Copy either, and a
+        # conversation could be read but never quoted.
+        #
+        # Turning it on changes exactly one thing: that stylesheet is not
+        # injected. Accelerator keys, the context menu, DevTools and drag
+        # behaviour all hang off other flags and are untouched. Textareas were
+        # already exempt - the CSS UI spec makes editable elements ignore an
+        # inherited `none`, which is why the composer always worked and the
+        # messages never did.
+        #
+        # Ctrl+A followed by Ctrl+C now reaches the whole transcript; WebView2
+        # keeps text-editing accelerators enabled regardless of our settings.
+        # SECURITY.md says so out loud rather than pretending otherwise.
+        text_select=True,
     )
     # Fire-and-forget on a thread: even with grace=0 the teardown still waits
     # briefly for the terminated process to be reaped, and a pywebview event

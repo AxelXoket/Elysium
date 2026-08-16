@@ -2550,6 +2550,55 @@
   padding-right: 4.35rem;
 }
 
+/* The reserved strip has to follow the button count, not a single guess.
+   4.35rem fits two buttons (24.8px each, .22rem gap, .46rem offset); a third
+   overflowed by ~19px long before Copy arrived, and a fourth by ~47px. The
+   count comes from data-actions on the shell and is an UPPER bound, so these
+   only ever wrap text early - they never let a button land on a word. */
+/* Each step keeps the same 9px of daylight the two-button rule already had
+   between the leftmost button and the text. Sized to fit exactly, they would
+   let a word touch the icon: four buttons need 117.1px and 7.3rem is 116.8. */
+.message-bubble-shell.has-actions[data-actions="3"] {
+  padding-right: 6.15rem;
+}
+
+.message-bubble-shell.has-actions[data-actions="4"] {
+  padding-right: 7.9rem;
+}
+
+/* A short bubble with four buttons would otherwise be almost all padding.
+   Capped at the same 75% the shell's own max-width uses: min-width BEATS
+   max-width, so a larger value here would quietly make every user message
+   awaiting a reply wider than every other bubble in the app. */
+.message-bubble-shell.has-actions[data-actions="4"] {
+  min-width: min(18rem, 75%);
+}
+
+/* Chrome around the words, kept OUT of a drag-selection.
+   Text selection is being turned on (pywebview text_select), and without
+   this a drag across two bubbles copies "14:32" and "2/3" and the streaming
+   caret along with the sentences. These carry no meaning once pasted. The
+   message body itself is deliberately absent from this list - it is the one
+   thing selection exists for. */
+.message-actions,
+.variant-nav-button,
+.variant-counter,
+.message-action-confirm,
+.msg-chrome {
+  user-select: none;
+}
+
+/* Turning selection on flipped the cursor story. The injected stylesheet used
+   to put `cursor: default` on body, so everything looked equally unclickable
+   and nobody noticed the buttons never asked for a pointer. Now prose shows
+   an I-beam while the controls beside it still show an arrow, which reads
+   backwards: the words look interactive and the buttons do not. */
+.message-action-button:not(:disabled),
+.variant-nav-button:not(:disabled) {
+  cursor: pointer;
+}
+
+
 .message-actions {
   position: absolute;
   top: 0.42rem;
