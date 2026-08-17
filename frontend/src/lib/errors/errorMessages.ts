@@ -298,6 +298,51 @@ const ERROR_MESSAGES: Record<string, string> = {
     "The passphrase was not changed - nothing was lost, and your current passphrase still works. Close anything else using Elysium and retry.",
   unknown_error:
     "Something went wrong. Please try again.",
+
+  // K-36. These five reached the reader as sentences typed at the call site,
+  // so neither catalogue gate could see them and nothing could tell whether
+  // the wording had ever been reviewed. Moved here WORD FOR WORD - the point
+  // was where they lived, not what they said, and changing both at once would
+  // have made the move impossible to verify.
+  attachment_gate_closed:
+    "Images cannot be attached right now, so that file was not added.",
+  chat_background_unreadable:
+    "The chat background could not be loaded, so it has been turned off.",
+  tts_text_truncated:
+    "The reply was too long to read in full, so the end was not spoken.",
+  // The two below carry a number, so their real wording lives in
+  // COUNTED_MESSAGES. These entries are what getErrorMessage returns if one is
+  // ever asked for without a count - deliberately true either way rather than
+  // a placeholder, because a catalogued code with no honest sentence is how the
+  // gate gets weakened later to accommodate one.
+  tts_lines_dropped:
+    "Part of the reply could not be spoken.",
+  // Not our sentence at all: the voice_notice event carries the backend's own
+  // free text and this entry is only the floor under it. See the catalogue
+  // record - the second sentence source is a defect in its own right.
+  tts_notice:
+    "The voice engine reported something about this reply.",
+};
+
+/**
+ * Sentences that need a number, and the singular the number changes.
+ *
+ * Separated from ERROR_MESSAGES rather than being written at the call site,
+ * which is where both of these used to live. `images_omitted` is the reason
+ * this exists: it HAD a sentence in the map above, and a second one typed into
+ * useStreamingCompletion.ts that is what readers actually saw - so the
+ * catalogue gate was checking a sentence nobody could reach, and reported the
+ * code as covered.
+ */
+const COUNTED_MESSAGES: Record<string, (count: number) => string> = {
+  images_omitted: (n) =>
+    n === 1
+      ? "One image could not be sent with this message; the model answered without seeing it."
+      : `${n} images could not be sent with this message; the model answered without seeing them.`,
+  tts_lines_dropped: (n) =>
+    n === 1
+      ? "One line of the reply could not be spoken."
+      : `${n} lines of the reply could not be spoken.`,
 };
 
 const FALLBACK_MESSAGE = "Something went wrong. Please try again.";
@@ -309,6 +354,30 @@ const FALLBACK_MESSAGE = "Something went wrong. Please try again.";
 export function getErrorMessage(code: string | undefined | null): string {
   if (!code) return FALLBACK_MESSAGE;
   return ERROR_MESSAGES[code] ?? FALLBACK_MESSAGE;
+}
+
+/**
+ * The sentence for a code that reports a COUNT.
+ *
+ * Falls back to the plain sentence when the code has no counted form, so a
+ * caller that gains a number does not have to know whether one was written yet.
+ */
+export function getCountMessage(
+  code: string | undefined | null,
+  count?: number,
+): string {
+  if (!code) return FALLBACK_MESSAGE;
+  const counted = COUNTED_MESSAGES[code];
+  // No number, or no counted form for this code: the plain sentence. Both
+  // fallbacks matter at one call site - reportStreamNotice handles every
+  // notice code the stream can carry, and only some of them count anything.
+  if (count == null || !counted) return getErrorMessage(code);
+  return counted(count);
+}
+
+/** Every code whose sentence changes with a number. */
+export function countedErrorCodes(): string[] {
+  return Object.keys(COUNTED_MESSAGES);
 }
 
 /**

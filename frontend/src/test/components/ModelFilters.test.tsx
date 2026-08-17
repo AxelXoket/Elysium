@@ -22,7 +22,7 @@ import {
   availableModalities,
   capabilityScore,
   matchesFilter,
-} from "@/components/models/ModelFilters";
+} from "@/components/models/modelFilterLogic";
 import { mockFetch } from "@/test/mocks/api";
 import { modelFixture, modelListFixture } from "@/test/mocks/fixtures";
 import { useErrorStore } from "@/lib/errors";

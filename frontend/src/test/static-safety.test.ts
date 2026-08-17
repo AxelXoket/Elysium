@@ -21,6 +21,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import { globSync } from "glob";
 import path from "path";
+import catalogue from "../../../shared/error_catalogue.json";
 
 const SRC_DIR = path.resolve(__dirname, "../../");
 const THIS_FILE = path.resolve(__filename);
@@ -399,7 +400,7 @@ describe("Static safety tests", () => {
       const lower = synthetic.toLowerCase();
       return (
         found.length === 0 ||
-        found.some(([, key, source]) => !ALLOWED_PERSISTED_KEYS.has(key)) ||
+        found.some(([, key]) => !ALLOWED_PERSISTED_KEYS.has(key)) ||
         found.some(([, key, source]) => source !== key) ||
         forbiddenSubstrings.some((needle) => lower.includes(needle)) ||
         synthetic
@@ -776,5 +777,124 @@ describe("Static safety tests", () => {
     }
     // ...and is still narrow enough to leave local references alone.
     expect('<a href="/settings"><img src="./logo.svg">'.match(remoteRe)).toBeNull();
+  });
+
+  /**
+   * S-24 (K-36): every sentence a reader sees comes from the catalogue.
+   *
+   * The direction nothing checked. Two gates already guard the error codes and
+   * both were green while five codes went straight past them:
+   *
+   *   catalogue <-> errorMessages.ts   frontend, both directions
+   *   backend code -> catalogue        backend, by AST walk
+   *
+   * Drawn out, that is a LINE, not a triangle. Nothing looked at the frontend's
+   * own source, so `pushErrorDirect("some_code", "a sentence typed right here")`
+   * satisfied every existing assertion by never being seen at all. Five of the
+   * ten production calls did exactly that, and none of the five appeared in any
+   * test in either suite.
+   *
+   * `pushError` is not in scope: it goes through parseApiError, which ends at
+   * getErrorMessage on all four of its exits. The hole is only in the direct
+   * call.
+   */
+  it("S-24: pushErrorDirect never invents a code or a sentence", () => {
+    const files = getAppSourceFiles("src/**/*.{ts,tsx}");
+    expect(files.length, "S-24 scanned no files").toBeGreaterThan(50);
+
+    const catalogued = new Set(
+      (catalogue.codes as { code: string }[]).map((r) => r.code),
+    );
+    expect(catalogued.size, "the catalogue is empty").toBeGreaterThan(100);
+
+    // Multi-line on purpose. Both of the calls that hid here longest wrap their
+    // arguments onto separate lines, so a single-line pattern would have been
+    // written, passed, and measured nothing at all.
+    const callRe =
+      /pushErrorDirect\(\s*("([a-z0-9_]+)"|[A-Za-z_$][\w$.?]*)\s*,\s*([\s\S]*?)(?:,\s*"(?:warning|error)"\s*)?\)/g;
+
+    /** Second argument shapes that keep the sentence in one place. */
+    const fromCatalogue = /^(getErrorMessage|getCountMessage)\s*\(/;
+
+    /**
+     * The one call allowed to pass a sentence we did not write, and why.
+     *
+     * voice_notice carries the worker's own diagnostic text - seventeen fixed
+     * strings under tts/worker plus one interpolated exception. Reducing it to
+     * a generic line would undo the reason the carrier was added: "every load
+     * will be slow" is the whole message, and a machine without MSVC spoke two
+     * to three times slower forever while nothing said so.
+     *
+     * Compared by EQUALITY below, not membership. An exemption list that only
+     * ever grows is the failure this file exists to prevent, so a second entry
+     * has to be argued for in a diff.
+     */
+    const ALLOWED_FOREIGN_SENTENCE = new Set(["tts_notice"]);
+
+    const inventedCode: string[] = [];
+    const inventedSentence: string[] = [];
+    const foreignSeen = new Set<string>();
+    let sites = 0;
+
+    for (const file of files) {
+      const rel = path.relative(SRC_DIR, file);
+      for (const m of readFile(file).matchAll(callRe)) {
+        sites += 1;
+        const literalCode = m[2];
+        const second = (m[3] ?? "").trim();
+
+        // A code passed as a variable (`event.code`, `code`) is checked where
+        // it is produced, not here; only a literal can be invented in place.
+        if (literalCode && !catalogued.has(literalCode)) {
+          inventedCode.push(`${rel}: ${literalCode}`);
+        }
+        if (fromCatalogue.test(second)) continue;
+        if (literalCode && ALLOWED_FOREIGN_SENTENCE.has(literalCode)) {
+          foreignSeen.add(literalCode);
+          continue;
+        }
+        inventedSentence.push(`${rel}: ${literalCode ?? m[1]} <- ${second.slice(0, 60)}`);
+      }
+    }
+
+    expect(sites, "S-24 matched no pushErrorDirect calls").toBeGreaterThan(8);
+    expect(inventedCode, "codes with no catalogue record").toEqual([]);
+    expect(inventedSentence, "sentences typed at the call site").toEqual([]);
+    expect(
+      [...foreignSeen].sort(),
+      "the foreign-sentence exemption no longer matches what is in the code",
+    ).toEqual([...ALLOWED_FOREIGN_SENTENCE].sort());
+
+    // POSITIVE CONTROL, on the SAME regex object the scan just used, and
+    // deliberately WRAPPED - the single-line version of this control is what
+    // would have let the real multi-line offenders through.
+    const synthetic = [
+      'useErrorStore.getState().pushErrorDirect(',
+      '  "banana_code",',
+      '  "A sentence typed right here.",',
+      '  "warning",',
+      ');',
+    ].join("\n");
+    const probes = [...synthetic.matchAll(callRe)];
+    expect(probes.length, "S-24 went blind to a wrapped call").toBe(1);
+    expect(probes[0][2]).toBe("banana_code");
+    expect(catalogued.has("banana_code")).toBe(false);
+    expect(fromCatalogue.test((probes[0][3] ?? "").trim())).toBe(false);
+
+    // ...and discriminating: the shape we WANT must not be reported. Both
+    // helpers, because a control that only knew one of them would turn the
+    // other into a violation the day it was used.
+    for (const good of [
+      'pushErrorDirect("attachment_gate_closed", getErrorMessage("attachment_gate_closed"), "warning")',
+      'pushErrorDirect(\n  "tts_lines_dropped",\n  getCountMessage("tts_lines_dropped", n),\n  "warning",\n)',
+      "pushErrorDirect(event.code, getErrorMessage(event.code))",
+    ]) {
+      const [hit] = [...good.matchAll(callRe)];
+      expect(hit, `S-24 stopped seeing: ${good.slice(0, 40)}`).toBeDefined();
+      expect(
+        fromCatalogue.test((hit[3] ?? "").trim()),
+        `S-24 would reject a legitimate call: ${good.slice(0, 40)}`,
+      ).toBe(true);
+    }
   });
 });

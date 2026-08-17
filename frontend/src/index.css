@@ -2676,6 +2676,20 @@
   opacity: 0.48;
 }
 
+/*
+  K-27: the same panel, in the flow instead of hanging off the bubble.
+  The absolute placement below is anchored where the action strip sits, and
+  that strip is hidden while a message is being edited - so an edit
+  confirmation using it would cover the text it is asking about. Only the
+  positioning is undone; the surface, the type, the animation and the two
+  accessibility lists further down are the ones it already had.
+*/
+.message-action-confirm.is-inline {
+  position: static;
+  width: auto;
+  max-width: none;
+}
+
 .message-action-confirm {
   position: absolute;
   top: 2.25rem;

@@ -13,7 +13,7 @@
  */
 
 import type { StreamEvent } from "../api/stream";
-import { getErrorMessage } from "../errors/errorMessages";
+import { getCountMessage, getErrorMessage } from "../errors/errorMessages";
 import { useErrorStore } from "../errors/errorStore";
 import { VoiceStreamPlayer, voiceErrorCode } from "./streamPlayer";
 import { leaveStage, takeStage, type VoiceSource } from "./stage";
@@ -132,6 +132,13 @@ export function createStreamVoice(options: StreamVoiceOptions = {}): StreamVoice
           // on a machine without MSVC/triton the engine fell back to eager
           // decoding on every load, speech ran 2-3x slower forever, and
           // nothing anywhere said so.
+          // The ONE call in the app that passes a sentence the catalogue did
+          // not write: `note` is the worker's own diagnostic text. Kept
+          // deliberately - the whole reason KÖK 1 added this carrier is that
+          // "every load will be slow" said nothing when it was reduced to a
+          // generic line - and named in the gate's exemption list so a SECOND
+          // one cannot appear quietly. The second sentence source is recorded
+          // as a defect of its own.
           useErrorStore
             .getState()
             .pushErrorDirect("tts_notice", event.note, "warning");
@@ -142,7 +149,7 @@ export function createStreamVoice(options: StreamVoiceOptions = {}): StreamVoice
               .getState()
               .pushErrorDirect(
                 "tts_text_truncated",
-                "The reply was too long to read in full, so the end was not spoken.",
+                getErrorMessage("tts_text_truncated"),
                 "warning",
               );
           }
@@ -151,9 +158,7 @@ export function createStreamVoice(options: StreamVoiceOptions = {}): StreamVoice
               .getState()
               .pushErrorDirect(
                 "tts_lines_dropped",
-                event.dropped === 1
-                  ? "One line of the reply could not be spoken."
-                  : `${event.dropped} lines of the reply could not be spoken.`,
+                getCountMessage("tts_lines_dropped", event.dropped),
                 "warning",
               );
           }

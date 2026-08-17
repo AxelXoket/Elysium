@@ -206,6 +206,73 @@ describe("useStreamingCompletion - send", () => {
     expect(onPersisted).toHaveBeenCalledTimes(1);
   });
 
+  it("K-28: an error frame after done does not take the sent message back", async () => {
+    // The heaviest face of K-28, and nothing tested this path before.
+    //
+    // `done` leaves the stream body open for the voice drain, so a late
+    // `error` frame can land after the exchange is committed and on screen.
+    // The terminal branch answered it with `failSend`, which removes the
+    // user's row from the cache and calls `onError` - and ChatCanvas answers
+    // `onError` by putting the text back in the composer as a failed draft.
+    // So the reader watched a reply they had just been given disappear, with
+    // their own sentence returned to the box, inviting them to send and pay
+    // for it a second time.
+    //
+    // Three assertions, because the toast is the least of it: the rows must
+    // stay, `onError` must not fire (that is what restores the draft), and
+    // `onPersisted` must still fire - gating the branch on `sawDone` the
+    // careless way drops the `else` that carries it, which would leave the
+    // staged attachments uncleared.
+    const qc = createTestQueryClient();
+    qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]);
+    const stream = controlledSseResponse();
+    mockFetchWithStreams({
+      "/chats/1/complete/stream": { response: () => stream.response },
+    });
+
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
+    });
+
+    const onError = vi.fn();
+    const onPersisted = vi.fn();
+    let sendPromise!: Promise<void>;
+    await act(async () => {
+      sendPromise = result.current.startSend(sendVars, { onError, onPersisted });
+    });
+
+    stream.emit({ type: "user_message", message: msg(5, "user", "stream me") });
+    stream.emit({ type: "delta", content: "a whole answer" });
+    stream.emit({
+      type: "done",
+      chat_id: 1,
+      model_id: "m",
+      user_message: msg(5, "user", "stream me"),
+      assistant_message: msg(6, "assistant", "a whole answer"),
+    });
+    // GROUND: the exchange really landed before the late frame, so the
+    // assertions below are about the frame being ignored rather than about a
+    // stream that never got anywhere.
+    await waitFor(() => {
+      expect(messagesInCache(qc).map((m) => m.id)).toEqual([1, 5, 6]);
+    });
+
+    stream.emit({ type: "error", status: 502, code: "openrouter_completion_error" });
+    stream.close();
+    await act(() => sendPromise);
+
+    expect(
+      messagesInCache(qc).map((m) => m.id),
+      "a completed exchange was removed by a frame from a closing connection",
+    ).toEqual([1, 5, 6]);
+    expect(
+      onError,
+      "onError fired, which is what hands the text back to the composer",
+    ).not.toHaveBeenCalled();
+    expect(onPersisted).toHaveBeenCalledTimes(1);
+    expect(useErrorStore.getState().errors.map((e) => e.code)).toEqual([]);
+  });
+
   it("a notice arriving before the reply becomes a warning, not an error", async () => {
     const qc = createTestQueryClient();
     qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]);
@@ -427,6 +494,65 @@ describe("useStreamingCompletion - regenerate", () => {
     // Regenerate errors surface as a toast (single surface for regenerate)
     expect(useErrorStore.getState().errors).toHaveLength(1);
     expect(useErrorStore.getState().errors[0].code).toBe("openrouter_rate_limited");
+  });
+
+  it("K-28: an error frame after done does not report the new variant as failed", async () => {
+    // The third flow, and the guard on it was untested until this was written.
+    // Measured while closing K-28: removing `&& !sawDone` from the regenerate
+    // branch broke NOTHING, while the same removal on send and on edit each
+    // broke exactly one test. A fix no test can see is a fix that comes back.
+    //
+    // The pair for this is the test above ("error before done" -> one toast),
+    // and both are needed: without the discriminating half, gating the branch
+    // and deleting it outright look identical from here.
+    const qc = createTestQueryClient();
+    qc.setQueryData<Message[]>(keys.messages(1), chatMessages);
+    const stream = controlledSseResponse();
+    mockFetchWithStreams({
+      "/regenerate/stream": { response: () => stream.response },
+    });
+
+    const { result } = renderHookWithQueryClient(() => useStreamingCompletion(), {
+      client: qc,
+    });
+
+    let promise!: Promise<void>;
+    await act(async () => {
+      promise = result.current.startRegenerate(regenerateVars);
+    });
+
+    stream.emit({ type: "delta", content: "new answer" });
+    stream.emit({
+      type: "done",
+      chat_id: 1,
+      model_id: "m",
+      user_message: msg(2, "user", "prompt"),
+      assistant_message: {
+        ...msg(4, "assistant", "new answer"),
+        variant_group: 3,
+        active: true,
+        variant_index: 1,
+        variant_count: 2,
+      },
+      deactivated_message_id: 3,
+    });
+    // GROUND: the swap really landed before the late frame arrived.
+    await waitFor(() => {
+      expect(messagesInCache(qc).map((m) => m.id)).toEqual([2, 3, 4]);
+    });
+
+    stream.emit({ type: "error", status: 502, code: "openrouter_completion_error" });
+    stream.close();
+    await act(() => promise);
+
+    expect(
+      useErrorStore.getState().errors.map((e) => e.code),
+      "a variant that arrived in full reported itself as failed",
+    ).toEqual([]);
+    expect(
+      messagesInCache(qc).map((m) => m.id),
+      "the committed variant was disturbed by a frame from a closing connection",
+    ).toEqual([2, 3, 4]);
   });
 
   it("abort is silent: old row intact, no toast", async () => {

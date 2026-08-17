@@ -20,7 +20,6 @@
  * .msg-ink-custom overriding --msg-asst-fg); that half needs a browser.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render } from "@testing-library/react";
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
 import { useUiStore } from "@/lib/store/uiStore";

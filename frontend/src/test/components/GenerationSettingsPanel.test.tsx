@@ -121,8 +121,16 @@ async function renderWithModelAndApi(model: Model) {
     current: null,
   };
 
-  function Probe() {
-    api.current = useGenerationSettings();
+  // The handle is passed in rather than closed over, matching the `take`
+  // shape further down this file. Same moment - the write still happens during
+  // the probe's render - but the assignment no longer sits inside a component,
+  // which is what react-hooks/immutability is actually about.
+  function Probe({
+    take,
+  }: {
+    take: (api: ReturnType<typeof useGenerationSettings>) => void;
+  }) {
+    take(useGenerationSettings());
     return null;
   }
 
@@ -132,7 +140,7 @@ async function renderWithModelAndApi(model: Model) {
   renderWithQueryClient(
     <>
       <ModelPanel />
-      <Probe />
+      <Probe take={(next) => (api.current = next)} />
     </>,
     { wrapper: Extra },
   );
@@ -393,8 +401,12 @@ function renderSettingsHarness() {
     current: null,
   };
 
-  function Harness() {
-    api.current = useGenerationSettings();
+  function Harness({
+    take,
+  }: {
+    take: (api: ReturnType<typeof useGenerationSettings>) => void;
+  }) {
+    take(useGenerationSettings());
     return null;
   }
 
@@ -402,7 +414,9 @@ function renderSettingsHarness() {
     return <GenerationSettingsProvider>{children}</GenerationSettingsProvider>;
   }
 
-  renderWithQueryClient(<Harness />, { wrapper: SettingsOnly });
+  renderWithQueryClient(<Harness take={(next) => (api.current = next)} />, {
+    wrapper: SettingsOnly,
+  });
 
   return api;
 }
@@ -849,21 +863,27 @@ describe("Context budget UI max cap", () => {
       });
     });
 
-    function ProbeOnly() {
-      const api = useGenerationSettings();
-      probeRef.current = api;
+    function ProbeOnly({
+      take,
+    }: {
+      take: (api: ReturnType<typeof useGenerationSettings>) => void;
+    }) {
+      take(useGenerationSettings());
       return null;
     }
     const probeRef: {
       current: ReturnType<typeof useGenerationSettings> | null;
     } = { current: null };
+    const keep = (next: ReturnType<typeof useGenerationSettings>) => {
+      probeRef.current = next;
+    };
 
     function SettingsOnly({ children }: { children: ReactNode }) {
       return <GenerationSettingsProvider>{children}</GenerationSettingsProvider>;
     }
 
     it("temperature/max output rehydrate after a remount, and so do stop sequences", async () => {
-      const { unmount } = renderWithQueryClient(<ProbeOnly />, {
+      const { unmount } = renderWithQueryClient(<ProbeOnly take={keep} />, {
         wrapper: SettingsOnly,
       });
 
@@ -890,7 +910,7 @@ describe("Context budget UI max cap", () => {
       // Simulate the VaultGate remounting the provider on lock/unlock.
       unmount();
       probeRef.current = null;
-      renderWithQueryClient(<ProbeOnly />, { wrapper: SettingsOnly });
+      renderWithQueryClient(<ProbeOnly take={keep} />, { wrapper: SettingsOnly });
 
       // Sampling scalars rehydrated from the persisted slice.
       expect(probeRef.current!.settings.temperature).toBe(1.3);

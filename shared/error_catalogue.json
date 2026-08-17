@@ -29,6 +29,12 @@
       ]
     },
     {
+      "code": "attachment_gate_closed",
+      "statuses": [],
+      "channels": [],
+      "no_backend_producer": "Synthesised by the frontend. components/chat/useFileDrop.ts raises it when a drop arrives while attachments are closed - a model that cannot read images, or a chat that is not ready - so the dropped file is refused before any upload is attempted. The backend never sees the request, so it cannot name the refusal."
+    },
+    {
       "code": "attachment_invalid",
       "statuses": [
         400,
@@ -108,6 +114,12 @@
       "channels": [
         "http"
       ]
+    },
+    {
+      "code": "chat_background_unreadable",
+      "statuses": [],
+      "channels": [],
+      "no_backend_producer": "Synthesised by the frontend. lib/appearance/useChatBackground.ts raises it when the wallpaper cannot be read back out of browser storage and the setting is turned off in response. The picture never travels to the backend, so no server call is involved and none could report this."
     },
     {
       "code": "chat_not_found",
@@ -597,6 +609,12 @@
       ]
     },
     {
+      "code": "tts_lines_dropped",
+      "statuses": [],
+      "channels": [],
+      "no_backend_producer": "Synthesised by the frontend from the voice_done stream event, which carries a COUNT rather than a sentence. The backend reports how many lines could not be spoken; turning that number into words is a frontend job, and the wording lives with every other sentence in lib/errors/errorMessages.ts."
+    },
+    {
       "code": "tts_load_timeout",
       "statuses": [],
       "channels": [
@@ -667,6 +685,12 @@
         "http",
         "voice_sse"
       ]
+    },
+    {
+      "code": "tts_notice",
+      "statuses": [],
+      "channels": [],
+      "no_backend_producer": "Synthesised by the frontend from the voice_notice stream event. Unlike every other code here it carries the backend's own free-text `note` to the reader rather than a sentence of ours - seventeen fixed diagnostics written in tts/worker, plus one interpolated exception string at tts/worker/chatterbox.py:533. That second sentence source is a defect in its own right and is recorded as such; the code is catalogued so the gate can see it at all."
     },
     {
       "code": "tts_out_of_memory",
@@ -761,6 +785,12 @@
         "http",
         "voice_sse"
       ]
+    },
+    {
+      "code": "tts_text_truncated",
+      "statuses": [],
+      "channels": [],
+      "no_backend_producer": "Synthesised by the frontend from the voice_done stream event's `truncated` flag. The backend sends a boolean, not a sentence, because the reply was spoken successfully up to the cut and this is a warning about the tail, not a failure of the request."
     },
     {
       "code": "tts_transcribe_unsupported",
