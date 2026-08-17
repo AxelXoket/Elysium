@@ -727,6 +727,14 @@
       ]
     },
     {
+      "code": "tts_reference_folder_redirected",
+      "statuses": [],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
       "code": "tts_reference_too_short",
       "statuses": [],
       "channels": [

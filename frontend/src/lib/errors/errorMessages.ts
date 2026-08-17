@@ -220,6 +220,12 @@ const ERROR_MESSAGES: Record<string, string> = {
     "The voice could not be generated for this message.",
   tts_reference_too_short:
     "That voice clip is too short to clone from. Around ten seconds of clear speech works best.",
+  // Not a problem with the clip. The folder this voice would be saved into
+  // leads somewhere else on disk, so saving would write the recording into a
+  // directory that is not this app's, and replacing a clip would delete
+  // whatever audio is already there.
+  tts_reference_folder_redirected:
+    "This voice's folder points somewhere else on disk, so nothing was saved. Move or remove that link and try again.",
   tts_transcript_required:
     "This engine needs to know what is said in the voice clip. Type the words in below.",
   // Distinct from tts_worker_failed on purpose. The engine is running; it

@@ -58,6 +58,12 @@ TTS_OUT_OF_MEMORY = "tts_out_of_memory"              # 500 CUDA OOM mid-flight
 TTS_SYNTHESIS_FAILED = "tts_synthesis_failed"        # 500 generation failed
 TTS_REFERENCE_INVALID = "tts_reference_invalid"      # 400 clip unusable
 TTS_REFERENCE_TOO_SHORT = "tts_reference_too_short"  # 400 fixable in one sentence
+# The voice folder is a junction or a symlink, so saving there would write the
+# user's recording into somebody else's directory and replacing a clip would
+# delete somebody else's audio. Its own code rather than tts_reference_invalid:
+# nothing is wrong with the CLIP, and telling somebody their recording is
+# unusable sends them off to re-record a perfectly good take.
+TTS_REFERENCE_FOLDER_REDIRECTED = "tts_reference_folder_redirected"  # 400
 # Fish cannot clone from audio alone - it needs the words that were said.
 TTS_TRANSCRIPT_REQUIRED = "tts_transcript_required"  # 400 give one, or let us hear it
 # No shipped engine has ASR. Distinct from tts_worker_failed on purpose: that
@@ -91,6 +97,7 @@ ALL_CODES: frozenset[str] = frozenset({
     TTS_WORKER_FAILED, TTS_WORKER_CRASHED, TTS_WORKER_UNAVAILABLE,
     TTS_OUT_OF_MEMORY,
     TTS_SYNTHESIS_FAILED, TTS_REFERENCE_INVALID, TTS_REFERENCE_TOO_SHORT,
+    TTS_REFERENCE_FOLDER_REDIRECTED,
     TTS_TRANSCRIPT_REQUIRED, TTS_TRANSCRIBE_UNSUPPORTED,
     TTS_NOTHING_TO_SPEAK, TTS_AUDIO_EXPIRED,
     TTS_AUDIO_DEVICE_ERROR,

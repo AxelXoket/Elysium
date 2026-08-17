@@ -17,7 +17,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests import egress_guard, error_wire_recorder
+from tests import egress_guard, error_wire_recorder, fs_guard
 
 # At import time, not inside a fixture, and deliberately.
 #
@@ -52,6 +52,51 @@ def _no_egress(monkeypatch):
     no socket at all, and the voice worker talks over stdio pipes.
     """
     egress_guard.install(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_voice_caches(tmp_path_factory, monkeypatch):
+    """ALWAYS on, and it comes BEFORE the guard below for a reason.
+
+    Two folders under backend/voice/ that nothing redirected, both of which
+    the suite was already destroying.
+
+    TTS_CACHE_DIR: routers/vault.py::_purge_voice_cache runs as the first
+    statement of the unlock bootstrap, over every *.wav in that folder, with
+    no name filter and no age cutoff - and it does not unlink, it OVERWRITES
+    with random bytes first. So every /vault/init and /vault/unlock in the
+    suite, twenty-eight of them in test_vault.py alone, destroyed the
+    developer's own spoken replies. Measured as harmless once, on a machine
+    where that folder happened to be empty, which is not the same thing.
+
+    TTS_UV_CACHE_DIR: uninstalling an engine does shutil.rmtree over it
+    (tts/provision.py), and one route test drives a real uninstall. That is a
+    multi-gigabyte download, deleted by running the tests. Found by the guard
+    below on its first full run, which is what a guard is for.
+
+    Redirecting is the fix; _no_real_data is the net under it.
+    """
+    import config
+
+    for setting, name in (("TTS_CACHE_DIR", "voice-cache"),
+                          ("TTS_UV_CACHE_DIR", "uv-cache")):
+        monkeypatch.setattr(config, setting,
+                            str(tmp_path_factory.mktemp(name)))
+
+
+@pytest.fixture(autouse=True)
+def _no_real_data(monkeypatch):
+    """ALWAYS on: nothing in this suite may write to this machine's own data.
+
+    The sibling of _no_egress, and it exists for the same reason: the promise
+    was kept by habit. The vault the developer opens Elysium with sits at
+    backend/app.db beside its salt and verifier, and a test that reached it
+    would not fail - it would succeed, quietly, against real content.
+
+    Reads are left alone. The suite reads its own source, its fixtures and the
+    packaged exe constantly, and none of that changes anything.
+    """
+    fs_guard.install(monkeypatch)
 
 
 @pytest.fixture(autouse=True)

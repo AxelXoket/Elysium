@@ -397,6 +397,29 @@ class VoiceHost:
 
         Returns how many were removed.
         """
+        # is_dir() first, and it is not decoration: is_redirected fails
+        # closed on any OSError, ENOENT included, so a cache folder that
+        # simply does not exist yet answers True. Without this the guard
+        # would fire on a fresh install where nobody has spoken yet.
+        if cache.is_dir() and secure_delete.is_redirected(cache):
+            # The same trap wipe_audio_cache refuses 250 lines below, and this
+            # is the one that walked into it most often: once per synthesised
+            # sentence rather than once per launch. Junction the cache folder
+            # at somebody's Music library and their files aged past the
+            # retention window were overwritten and unlinked, three or four
+            # sentences into the first reply.
+            #
+            # Checking each FILE would not do it. A file reached THROUGH a
+            # junction has an ordinary path of its own, so is_redirected says
+            # False about it and shred goes ahead. Only the ancestor carries
+            # the reparse point.
+            #
+            # Quiet on purpose, at debug: this runs per sentence, and a
+            # warning here would be thousands of identical lines. The launch
+            # sweep warns once, which is where a person sees it.
+            logger.debug(
+                "tts: the audio cache path is a redirected name - not trimmed")
+            return 0
         cutoff = time.time() - float(config.TTS_CACHE_MAX_AGE_S)
         removed = 0
         try:

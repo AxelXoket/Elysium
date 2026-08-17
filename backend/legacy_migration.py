@@ -151,6 +151,28 @@ def migrate_upload_files_to_blobs() -> tuple[int, set[str], int]:
     migrated = 0
     removed = 0
     failed: set[str] = set()
+    # is_dir() first: is_redirected fails closed on ENOENT, and an absent
+    # uploads folder is the NORMAL terminal state - _list_uploads below
+    # returns None for it and the migration exits clean.
+    if uploads.is_dir() and secure_delete.is_redirected(uploads):
+        # Found by sweeping for the shape rather than from a report, and it is
+        # the worst-placed of the family: it runs on the unlock bootstrap and
+        # it shreds PICTURES - the user's own uploads, in the clear.
+        #
+        # The `entry.is_symlink()` check below is not this check. A junction
+        # is a reparse point that islink() calls False, which is the whole
+        # reason secure_delete.is_redirected exists, and it looks at the
+        # entries rather than at the directory holding them. A file reached
+        # through a junction has an ordinary path and passes every per-file
+        # guard there is.
+        #
+        # Nothing is migrated either, deliberately: reading somebody else's
+        # pictures into the vault is the same mistake facing the other way.
+        logger.warning(
+            "uploads migration: the uploads path is a redirected name - "
+            "skipped. Nothing was migrated and nothing was deleted.")
+        return (0, failed, 0)
+
     # `is_dir()` collapsed "absent" and "cannot be read" into one False, and
     # the caller read the resulting empty failed-set as a clean pass. See
     # UploadsUnreadable: this raises on the second case instead.
