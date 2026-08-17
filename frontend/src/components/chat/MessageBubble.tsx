@@ -78,6 +78,7 @@ export const MessageBubble = memo(function MessageBubble({
   isStreamingTarget = false,
 }: MessageBubbleProps) {
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmEdit, setConfirmEdit] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editDraft, setEditDraft] = useState("");
   const [lightboxAttachment, setLightboxAttachment] = useState<Attachment | null>(
@@ -184,6 +185,43 @@ export const MessageBubble = memo(function MessageBubble({
     };
   }, [confirmDelete]);
 
+  // The same three behaviours the delete panel above needs, for the edit
+  // confirmation (K-27): focus the destructive button, let Escape answer this
+  // panel WITHOUT reaching Composer's window-level "stop generating", and let a
+  // click outside dismiss it. Written out rather than shared with the block
+  // above because the two differ in what they focus on the way out and in what
+  // "outside" means - a shared version would need both of those as parameters
+  // and would be longer than the duplication.
+  useEffect(() => {
+    if (!confirmEdit) return;
+    editConfirmButtonRef.current?.focus();
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        event.preventDefault();
+        setConfirmEdit(false);
+        editSaveTriggerRef.current?.focus();
+      }
+    };
+    const handlePointerDown = (event: PointerEvent) => {
+      const panel = editConfirmPanelRef.current;
+      if (
+        event.target instanceof Node &&
+        !(panel && panel.contains(event.target)) &&
+        event.target !== editSaveTriggerRef.current
+      ) {
+        setConfirmEdit(false);
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [confirmEdit]);
+
   const handleDelete = () => {
     deleteMessage.mutate(
       { chatId, messageId: message.id },
@@ -197,9 +235,29 @@ export const MessageBubble = memo(function MessageBubble({
 
   // ── Inline edit (v1.1 C3): user rows only, composer conventions ─────────
   const editTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const editConfirmButtonRef = useRef<HTMLButtonElement>(null);
+  const editSaveTriggerRef = useRef<HTMLButtonElement>(null);
+  const editConfirmPanelRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * Rows a save would destroy, counted the way the SERVER counts them (K-27).
+   *
+   * The backend sweeps `DELETE FROM messages WHERE chat_id = ? AND id > ?`,
+   * which takes inactive variant siblings with it. `messages` is the raw list
+   * for exactly this reason - it is not filtered by `active` - so a count taken
+   * from it matches what actually goes, and a reply with three takes counts as
+   * three. `awaitingReply` above deliberately ignores inactive rows; this must
+   * NOT be derived from that, or the number shown would be smaller than the
+   * number deleted.
+   *
+   * Optimistic ids are negative and therefore below `message.id`, and the
+   * pencil is disabled while the chat is busy, so nothing in flight is counted.
+   */
+  const followingRowCount = messages.filter((m) => m.id > message.id).length;
 
   const startEditing = () => {
     setConfirmDelete(false);
+    setConfirmEdit(false);
     setEditDraft(message.content);
     setEditing(true);
   };
@@ -233,18 +291,54 @@ export const MessageBubble = memo(function MessageBubble({
       ? "Wait for the current reply to finish"
       : null;
 
+  /** Send the edit. Only reached once there is nothing left to ask about. */
+  const commitEdit = () => {
+    const trimmed = editDraft.trim();
+    setConfirmEdit(false);
+    setEditing(false);
+    if (trimmed.length === 0 || trimmed === message.content) return;
+    onEditMessage?.(message.id, trimmed);
+  };
+
   const saveEdit = () => {
     // Keep the box - and the retyped text - open when the save cannot be
     // dispatched. Closing first is what made the text vanish.
     if (editBlockedReason != null) return;
     const trimmed = editDraft.trim();
-    setEditing(false);
     // Empty or unchanged → cancel silently (mirror of the rename rules).
-    if (trimmed.length === 0 || trimmed === message.content) return;
-    onEditMessage?.(message.id, trimmed);
+    // Checked BEFORE the confirmation: a save that changes nothing destroys
+    // nothing, so asking about it would be a dialog for a no-op.
+    if (trimmed.length === 0 || trimmed === message.content) {
+      setEditing(false);
+      return;
+    }
+    // K-27. Saving an edit deletes every row after this one, permanently -
+    // no soft delete, no undo, and the only warning was a tooltip that said
+    // "the reply", singular, while a dozen were about to go. The confirmation
+    // is HERE rather than on the pencil because opening the box is not the
+    // destructive act; and only above one row, because rewriting the last
+    // question really does rewrite one reply and a dialog for that would be
+    // the habit-forming kind that gets clicked through.
+    //
+    // `setEditing(false)` is deliberately NOT called on this path: cancelling
+    // has to leave the box and the retyped text exactly where they were, which
+    // is the same lesson the blocked-save branch above is written around.
+    if (followingRowCount > 1) {
+      setConfirmEdit(true);
+      return;
+    }
+    commitEdit();
   };
 
-  const cancelEdit = () => setEditing(false);
+  const cancelEditConfirm = () => {
+    setConfirmEdit(false);
+    editSaveTriggerRef.current?.focus();
+  };
+
+  const cancelEdit = () => {
+    setConfirmEdit(false);
+    setEditing(false);
+  };
 
   const handleEditInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setEditDraft(e.target.value);
@@ -262,7 +356,12 @@ export const MessageBubble = memo(function MessageBubble({
     } else if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
-      cancelEdit();
+      // With the confirmation up, Escape answers the QUESTION, not the box.
+      // The panel takes focus when it opens, so this branch is for the case
+      // where focus has gone back to the textarea - without it, Escape would
+      // close the edit and leave an unattached dialog on screen.
+      if (confirmEdit) cancelEditConfirm();
+      else cancelEdit();
     }
   };
 
@@ -498,7 +597,9 @@ export const MessageBubble = memo(function MessageBubble({
                   // stops the user's retyped text from vanishing silently.
                   title={
                     selectedModelId
-                      ? "Edit message (the reply after it is rewritten)"
+                      ? followingRowCount > 1
+                        ? `Edit message (the ${followingRowCount} messages after it are deleted)`
+                        : "Edit message (the reply after it is rewritten)"
                       : "Select a model to edit"
                   }
                   onClick={startEditing}
@@ -560,6 +661,7 @@ export const MessageBubble = memo(function MessageBubble({
                     Cancel
                   </button>
                   <button
+                    ref={editSaveTriggerRef}
                     type="button"
                     className="inline-confirm-button"
                     onClick={saveEdit}
@@ -568,12 +670,66 @@ export const MessageBubble = memo(function MessageBubble({
                     }
                     title={
                       editBlockedReason ??
-                      "Save and rewrite the reply (Enter)"
+                      (followingRowCount > 1
+                        ? `Save (asks first - ${followingRowCount} messages would be deleted)`
+                        : "Save and rewrite the reply (Enter)")
                     }
                   >
                     Save
                   </button>
                 </div>
+                {/*
+                  K-27. Below the box rather than over it: the panel this is
+                  modelled on hangs at `top: 2.25rem` where the action strip
+                  sits, and that strip is hidden while editing - so the same
+                  placement here would cover the sentence the reader is being
+                  asked about. Everything else is the delete panel's, class for
+                  class, so it inherits the reduced-motion and
+                  reduced-transparency lists it is already named in.
+
+                  The label is distinct from "Confirm delete message" on
+                  purpose: both panels are `role="dialog"` inside the same
+                  message list, and a test that queried by role alone could
+                  match the wrong one and still pass.
+                */}
+                {confirmEdit && (
+                  <div
+                    ref={editConfirmPanelRef}
+                    className="message-action-confirm mt-2 is-inline"
+                    role="dialog"
+                    aria-label="Confirm rewriting this message"
+                  >
+                    <p>
+                      {`Saving this deletes the ${followingRowCount} messages after it. This cannot be undone.`}
+                    </p>
+                    <div className="mt-2 flex justify-end gap-1.5">
+                      {/*
+                        "Go back", not "Cancel". The edit box's own Cancel is
+                        still on screen right above this, and two buttons
+                        reading Cancel a centimetre apart - one abandoning the
+                        edit, one only closing this question - is a choice
+                        nobody should have to work out under a warning about
+                        permanent deletion. Found because a test could not tell
+                        them apart either.
+                      */}
+                      <button
+                        type="button"
+                        className="inline-confirm-button"
+                        onClick={cancelEditConfirm}
+                      >
+                        Go back
+                      </button>
+                      <button
+                        ref={editConfirmButtonRef}
+                        type="button"
+                        className="inline-confirm-button is-danger"
+                        onClick={commitEdit}
+                      >
+                        Save and delete
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             ) : (
               <p className="message-text whitespace-pre-wrap break-words">

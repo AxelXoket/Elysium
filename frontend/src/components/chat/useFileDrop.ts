@@ -20,6 +20,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { DragEvent as ReactDragEvent } from "react";
 import { ACCEPTED_IMAGE_TYPES } from "./attachments";
 import { useErrorStore } from "@/lib/errors/errorStore";
+import { getErrorMessage } from "@/lib/errors/errorMessages";
 
 /** True only for OS file drags - never for text/URL/element drags (H14). */
 function isFileDrag(dt: DataTransfer | null | undefined): boolean {
@@ -133,7 +134,7 @@ export function useFileDrop({
             .getState()
             .pushErrorDirect(
               "attachment_gate_closed",
-              "Images cannot be attached right now, so that file was not added.",
+              getErrorMessage("attachment_gate_closed"),
               "warning",
             );
         }

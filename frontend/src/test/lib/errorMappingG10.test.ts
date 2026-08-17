@@ -8,7 +8,7 @@
  */
 import { describe, it, expect, afterEach, vi } from "vitest";
 
-import { getErrorMessage, isKnownErrorCode } from "@/lib/errors/errorMessages";
+import { getErrorMessage } from "@/lib/errors/errorMessages";
 import { VoiceChunkError, voiceErrorCode } from "@/lib/voice/streamPlayer";
 
 afterEach(() => {

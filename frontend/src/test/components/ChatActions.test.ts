@@ -303,7 +303,11 @@ describe("Chat action privacy checks", () => {
     // The name used to promise this and the body checked that the function
     // existed. A version that posted the whole transcript passed.
     const { deleteMessageAndFollowing } = await import("@/lib/api/chats");
-    const fetchSpy = vi.fn(
+    // Typed as `typeof fetch` so mock.calls carries fetch's own parameter
+    // tuple. The cast that used to stand here claimed `[]` was
+    // `[string, RequestInit]`, which typecheck rejects outright - and it was
+    // the mock's missing signature that made a cast look necessary at all.
+    const fetchSpy = vi.fn<typeof fetch>(
       async () =>
         new Response(JSON.stringify({ ok: true, deleted_count: 3 }), {
           status: 200,
@@ -315,16 +319,16 @@ describe("Chat action privacy checks", () => {
     await deleteMessageAndFollowing(1, 42);
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
-    expect(url).toContain("/chats/1/messages/42");
-    expect(init.method).toBe("DELETE");
-    expect(init.body, "a destructive call carried a request body").toBeUndefined();
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(String(url)).toContain("/chats/1/messages/42");
+    expect(init?.method).toBe("DELETE");
+    expect(init?.body, "a destructive call carried a request body").toBeUndefined();
     vi.unstubAllGlobals();
   });
 
   it("clears a chat without sending a body", async () => {
     const { clearChat } = await import("@/lib/api/chats");
-    const fetchSpy = vi.fn(
+    const fetchSpy = vi.fn<typeof fetch>(
       async () =>
         new Response(JSON.stringify({ ok: true, deleted_count: 7 }), {
           status: 200,
@@ -336,10 +340,10 @@ describe("Chat action privacy checks", () => {
     await clearChat(1);
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
-    expect(url).toContain("/chats/1/clear");
-    expect(init.method).toBe("POST");
-    expect(init.body, "a destructive call carried a request body").toBeUndefined();
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(String(url)).toContain("/chats/1/clear");
+    expect(init?.method).toBe("POST");
+    expect(init?.body, "a destructive call carried a request body").toBeUndefined();
     vi.unstubAllGlobals();
   });
 });

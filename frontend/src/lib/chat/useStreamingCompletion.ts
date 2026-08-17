@@ -40,7 +40,7 @@ import {
 import type { StreamEvent } from "../api/stream";
 import { createStreamVoice } from "../voice/streamVoice";
 import { useTagPrefs } from "../query/tts";
-import type { NarrationMode } from "../api/tts";
+import type { NarrationMode, TtsTagPrefs } from "../api/tts";
 import { migrateDeviceNarration } from "../voice/narrationMigration";
 import { useUiStore } from "../store/uiStore";
 import {
@@ -48,7 +48,7 @@ import {
   buildRegeneratePayload,
   buildEditPayload,
 } from "../generation";
-import { getErrorMessage, useErrorStore } from "../errors";
+import { getCountMessage, getErrorMessage, useErrorStore } from "../errors";
 import type { ApiError } from "../api/client";
 import type { GenerationParams } from "../schemas/completions";
 import type { Model } from "../schemas/models";
@@ -74,14 +74,19 @@ interface StreamErrorEvent {
  * picture will write as though there were no picture, and only this says so.
  */
 function reportStreamNotice(event: { code: string; count?: number }): void {
-  const count = event.count ?? 0;
-  const message =
-    event.code === "images_omitted"
-      ? count === 1
-        ? "One image could not be sent with this message; the model answered without seeing it."
-        : `${count} images could not be sent with this message; the model answered without seeing them.`
-      : getErrorMessage(event.code);
-  useErrorStore.getState().pushErrorDirect(event.code, message, "warning");
+  // K-36: the singular/plural pair used to be typed here, which left the
+  // catalogue holding a sentence for `images_omitted` that no reader ever saw.
+  // Both forms now live beside every other sentence, and getCountMessage falls
+  // back to the plain one for a notice that carries no number - so the sentence
+  // reaches pushErrorDirect straight from the helper rather than through a local
+  // that the S-24 scan cannot follow.
+  useErrorStore
+    .getState()
+    .pushErrorDirect(
+      event.code,
+      getCountMessage(event.code, event.count),
+      "warning",
+    );
 }
 
 export interface StreamingEntry {
@@ -252,21 +257,31 @@ function speakOptions(narrationVoice: NarrationMode): {
 export function useStreamingCompletion() {
   const qc = useQueryClient();
   const pushError = useErrorStore((s) => s.pushError);
-  // The sentence-pause dial. Read HERE, in the hook, because the player is
-  // built inside a callback: a value only the open Delivery page knew is
-  // exactly why this dial did nothing at all for its three production callers.
-  // Through a ref so a mid-stream change cannot re-create the send callback.
+  // The sentence-pause dial and the narration mode, read at REQUEST-BUILD time
+  // straight out of the query cache.
+  //
+  // Both used to be mirrored into refs written during render. Two things were
+  // wrong with that. The refs rule objects for a real reason - a render React
+  // throws away still mutates the ref - and, more to the point, a render-time
+  // snapshot was never what this code wanted: the paragraph above
+  // `speakOptions` says the value must be read when the request is built, and
+  // fifteen lines further up that function already does exactly this for
+  // `continuousVoice`, reading the store inside the callback. This is that
+  // pattern, one dial along.
+  //
+  // It also keeps the property the refs were there to protect - a dial moved
+  // mid-reply must not rebuild the send callbacks - and keeps it more simply,
+  // because there is no longer a changing value for them to close over. The
+  // reason those dials are read here at all still holds: a value only the open
+  // Delivery page knew is exactly why this dial did nothing for its three
+  // production callers.
+  const deliveryPrefs = useCallback(
+    () => qc.getQueryData<TtsTagPrefs>(keys.ttsTagPrefs()),
+    [qc],
+  );
+  // Still subscribed, because the one-time migration below needs to react to
+  // the value arriving. Nothing on the send path reads this binding.
   const tagPrefs = useTagPrefs().data;
-  const gapSeconds = tagPrefs?.gap ?? 0;
-  const gapRef = useRef(gapSeconds);
-  gapRef.current = gapSeconds;
-  // The narration mode, from the SAME place - it used to come off the device
-  // instead, so the mode the Speak button read and the mode the live stream
-  // sent could disagree and the same message was performed two ways. Through a
-  // ref for the same reason `gap` is: the send callbacks must not be rebuilt
-  // when a dial moves mid-reply.
-  const narrativeRef = useRef<NarrationMode>("same");
-  narrativeRef.current = tagPrefs?.narrative ?? "same";
   useEffect(() => {
     if (tagPrefs) void migrateDeviceNarration(tagPrefs.narrative);
   }, [tagPrefs]);
@@ -416,7 +431,7 @@ export function useStreamingCompletion() {
       let realUserMessageId: number | null = null;
       let streamedText = "";
       // Voice rides along; nothing is built unless audio actually arrives.
-      const voice = createStreamVoice({ gapSeconds: gapRef.current });
+      const voice = createStreamVoice({ gapSeconds: deliveryPrefs()?.gap ?? 0 });
       let sawDone = false;
       let errorEvent: StreamErrorEvent | null = null;
       // rAF batching: deltas accumulate in streamedText; one frame per batch
@@ -548,7 +563,7 @@ export function useStreamingCompletion() {
         // the toggle's rule fall out for free: flipping it mid-stream
         // cannot retro-fit the reply already arriving, and the next
         // send picks it up with no extra state to keep in sync.
-        ...speakOptions(narrativeRef.current),
+        ...speakOptions(deliveryPrefs()?.narrative ?? "same"),
       });
       if (vars.attachments != null && vars.attachments.length > 0) {
         payload.attachments = [...vars.attachments];
@@ -564,7 +579,17 @@ export function useStreamingCompletion() {
         // still-queued deltas before the terminal branches below.
         flusher.flushNow();
 
-        if (errorEvent != null) {
+        // K-28: `!sawDone` guards this branch, and on the send path that guard
+        // is worth more than a toast. `done` leaves the body open for the voice
+        // drain, so a late `error` frame can arrive after the exchange is saved
+        // and on screen - and this branch answers it with `failSend`, which
+        // REMOVES the user's row from the cache and hands the text back to
+        // ChatCanvas, which puts it in the composer as a failed draft. The
+        // reader sees a reply they were just given disappear, with their own
+        // sentence back in the box inviting them to send - and pay for - it a
+        // second time. The catch branch below already had this guard and says
+        // why; the terminal branch did not.
+        if (errorEvent != null && !sawDone) {
           // Cast because the assignment happens inside the event callback,
           // which control-flow analysis does not follow: without it TS narrows
           // the checked variable to .
@@ -664,7 +689,11 @@ export function useStreamingCompletion() {
         }
       }
     },
-    [qc, setEntry, clearEntry, scheduleAbortResync, cancelAbortResync, claimChat],
+    // deliveryPrefs is useCallback([qc]) and qc never changes, so naming it
+    // here does not put the send callback back on the rebuild treadmill the
+    // refs it replaced were avoiding.
+    [qc, setEntry, clearEntry, scheduleAbortResync, cancelAbortResync, claimChat,
+     deliveryPrefs],
   );
 
   const startRegenerate = useCallback(
@@ -693,7 +722,7 @@ export function useStreamingCompletion() {
 
       let streamedText = "";
       // Voice rides along; nothing is built unless audio actually arrives.
-      const voice = createStreamVoice({ gapSeconds: gapRef.current });
+      const voice = createStreamVoice({ gapSeconds: deliveryPrefs()?.gap ?? 0 });
       let sawDone = false;
       let errorEvent: StreamErrorEvent | null = null;
       // rAF batching - same scheme as startSend.
@@ -786,7 +815,7 @@ export function useStreamingCompletion() {
             // the toggle's rule fall out for free: flipping it mid-stream
             // cannot retro-fit the reply already arriving, and the next
             // send picks it up with no extra state to keep in sync.
-            ...speakOptions(narrativeRef.current),
+            ...speakOptions(deliveryPrefs()?.narrative ?? "same"),
           }),
           { signal: controller.signal, onEvent: handleEvent },
         );
@@ -797,7 +826,12 @@ export function useStreamingCompletion() {
 
         // Regenerate errors surface as a toast (single surface for regenerate).
         // Old assistant row is intact server-side - no cache change needed.
-        if (errorEvent != null) {
+        //
+        // K-28: `!sawDone`, for the same reason the catch branch below carries
+        // it. After `done` the variant has already been swapped in; a failure
+        // notice about a connection that was closing describes nothing the
+        // reader can act on, and contradicts the reply in front of them.
+        if (errorEvent != null && !sawDone) {
           // Cast because the assignment happens inside the event callback,
           // which control-flow analysis does not follow: without it TS narrows
           // the checked variable to .
@@ -841,7 +875,8 @@ export function useStreamingCompletion() {
         }
       }
     },
-    [qc, pushError, setEntry, clearEntry, cancelAbortResync, claimChat],
+    [qc, pushError, setEntry, clearEntry, cancelAbortResync, claimChat,
+     deliveryPrefs],
   );
 
   const startEdit = useCallback(
@@ -870,16 +905,22 @@ export function useStreamingCompletion() {
             m.id === messageId ? { ...m, content: vars.message } : m,
           ),
       );
-      // I14: restore only if OUR write is still the latest cache revision -
-      // a mid-stream foreign write (refetch, another mutation) must not be
+      // I14: restore only if OUR write is still the one in the cache - a
+      // mid-stream foreign write (refetch, another mutation) must not be
       // clobbered by this stale snapshot; invalidate settles those instead.
-      let ownRevision =
-        qc.getQueryState(keys.messages(chatId))?.dataUpdatedAt ?? 0;
+      //
+      // K-28(b): this compared `dataUpdatedAt`, which is a MILLISECOND stamp.
+      // Two writes inside the same millisecond carry the same one, so a foreign
+      // write that landed in the same tick read as "still ours" and got
+      // overwritten. Whether the guard held came down to how the clock fell;
+      // the test for it had to sleep 3ms to make the race come out the same way
+      // twice. The array identity has no such resolution: setQueryData produces
+      // a new array on every write, ours or anybody's, so this is exact.
+      let ownData = qc.getQueryData<Message[]>(keys.messages(chatId));
 
       const restoreSnapshot = () => {
-        const current =
-          qc.getQueryState(keys.messages(chatId))?.dataUpdatedAt ?? 0;
-        if (current === ownRevision && snapshot != null) {
+        const current = qc.getQueryData<Message[]>(keys.messages(chatId));
+        if (current === ownData && snapshot != null) {
           qc.setQueryData(keys.messages(chatId), snapshot);
         }
         qc.invalidateQueries({ queryKey: keys.messages(chatId) });
@@ -887,7 +928,7 @@ export function useStreamingCompletion() {
 
       let streamedText = "";
       // Voice rides along; nothing is built unless audio actually arrives.
-      const voice = createStreamVoice({ gapSeconds: gapRef.current });
+      const voice = createStreamVoice({ gapSeconds: deliveryPrefs()?.gap ?? 0 });
       let sawDone = false;
       let errorEvent: StreamErrorEvent | null = null;
       const flusher = createFrameFlusher(() => {
@@ -908,8 +949,7 @@ export function useStreamingCompletion() {
             qc.setQueryData<Message[]>(keys.messages(chatId), (prev) =>
               prev?.map((m) => (m.id === event.message.id ? event.message : m)),
             );
-            ownRevision =
-              qc.getQueryState(keys.messages(chatId))?.dataUpdatedAt ?? 0;
+            ownData = qc.getQueryData<Message[]>(keys.messages(chatId));
             break;
           case "delta":
             // The reply is on screen now: switching the toggle on from here
@@ -964,7 +1004,7 @@ export function useStreamingCompletion() {
             // the toggle's rule fall out for free: flipping it mid-stream
             // cannot retro-fit the reply already arriving, and the next
             // send picks it up with no extra state to keep in sync.
-            ...speakOptions(narrativeRef.current),
+            ...speakOptions(deliveryPrefs()?.narrative ?? "same"),
           }),
           { signal: controller.signal, onEvent: handleEvent },
         );
@@ -973,7 +1013,12 @@ export function useStreamingCompletion() {
 
         // Edit errors surface as a toast (like regenerate - the composer is
         // not involved). Server wrote nothing - restore the pre-edit list.
-        if (errorEvent != null) {
+        //
+        // K-28: `!sawDone`. "Server wrote nothing" is only true before `done`.
+        // After it the atomic swap has landed, so this branch would both report
+        // a failure that did not happen AND try to roll back a committed edit -
+        // the catch branch three lines down refuses to do exactly that.
+        if (errorEvent != null && !sawDone) {
           // Cast because the assignment happens inside the event callback,
           // which control-flow analysis does not follow: without it TS narrows
           // the checked variable to .
@@ -1018,7 +1063,8 @@ export function useStreamingCompletion() {
         }
       }
     },
-    [qc, pushError, setEntry, clearEntry, cancelAbortResync, claimChat],
+    [qc, pushError, setEntry, clearEntry, cancelAbortResync, claimChat,
+     deliveryPrefs],
   );
 
   return { streamingByChat, startSend, startRegenerate, startEdit, stop };

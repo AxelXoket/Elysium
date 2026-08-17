@@ -19,3 +19,14 @@
 # fixture for that test cannot be built with Pillow alone. Used by exactly one
 # test: test_attachments.py::test_a_cropped_photos_original_frame_does_not_ride_along
 piexif>=1.1.3
+
+# The linter the engine-worker gate runs (tests/test_lint_gates.py). Not a new
+# dependency - it has been installed and gated since KADEME 21 - but it was
+# never DECLARED, so a fresh checkout skipped the whole gate rather than
+# failing to find the tool. Found while closing K-34.
+#
+# The floor matters. Measured on the worker directory: ruff 0.15.10 reports
+# "All checks passed" where 0.16.3 reports forty findings, because the default
+# rule set moved between them. A version below the floor would run, stay quiet
+# and look like a pass.
+ruff>=0.16.3

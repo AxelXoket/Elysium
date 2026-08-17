@@ -17,6 +17,7 @@ import {
 } from "react";
 import { useUiStore } from "@/lib/store/uiStore";
 import { useErrorStore } from "@/lib/errors/errorStore";
+import { getErrorMessage } from "@/lib/errors/errorMessages";
 import { getChatBgBlob } from "@/lib/store/chatBgDb";
 import {
   buildBgLayers,
@@ -158,7 +159,7 @@ export function useChatBackground(
           .getState()
           .pushErrorDirect(
             "chat_background_unreadable",
-            "The chat background could not be loaded, so it has been turned off.",
+            getErrorMessage("chat_background_unreadable"),
             "warning",
           );
         void err;
@@ -168,7 +169,12 @@ export function useChatBackground(
       if (url) URL.revokeObjectURL(url);
       setObjectUrl(null);
     };
-  }, [on, rev, reconcile]);
+    // clearChatBg is a zustand action defined once inside the store creator
+    // (uiStore.ts:346), so its identity never changes and naming it here
+    // cannot widen the set of renders this effect runs on. It is listed
+    // because the effect calls it, and a lint rule that is right about the
+    // dependency but silenced is worse than one that is satisfied.
+  }, [on, rev, reconcile, clearChatBg]);
 
   if (!on || objectUrl == null) return { style: null, dark: false };
 

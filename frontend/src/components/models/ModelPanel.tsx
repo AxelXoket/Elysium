@@ -5,15 +5,15 @@ import { useChats, useMessages } from "@/lib/query/chats";
 import { useCharacters } from "@/lib/query/characters";
 import { usePersonas } from "@/lib/query/personas";
 import { ModelCard } from "./ModelCard";
+import { ModelFilters } from "./ModelFilters";
 import {
   EMPTY_FILTER,
-  ModelFilters,
   capabilityScore,
   isFilterActive,
   matchesFilter,
   type ModalityFilter,
   type SortMode,
-} from "./ModelFilters";
+} from "./modelFilterLogic";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
