@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tempfile
 import sys
 import textwrap
 from pathlib import Path
@@ -62,10 +63,18 @@ def _run(passphrase: str | None, model: str = "") -> subprocess.CompletedProcess
     """)
     env = dict(os.environ)
     env["ELYSIUM_IMAGE_MODEL"] = model
-    return subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True, text=True, timeout=180, env=env,
-    )
+    # The child is a fresh interpreter: the suite's filesystem guard patches
+    # attributes in THIS one and cannot see it at all. Without this line the
+    # script resolves config.DATA_DIR to the real backend/ directory and opens
+    # the developer's own salt.bin and verifier.bin - read-only on the path
+    # these tests drive today, which is one identifier away from not being.
+    # The exe test does the same thing for the same reason.
+    with tempfile.TemporaryDirectory(prefix="elysium-imgverify-") as isolated:
+        env["ELYSIUM_DATA_DIR"] = isolated
+        return subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True, text=True, timeout=180, env=env,
+        )
 
 
 def test_without_a_model_it_spends_nothing_and_says_so():

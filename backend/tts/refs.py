@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
 import time
@@ -42,6 +43,7 @@ import config
 import secure_delete
 
 from .errors import (
+    TTS_REFERENCE_FOLDER_REDIRECTED,
     TTS_REFERENCE_INVALID,
     TTS_REFERENCE_TOO_SHORT,
     TTS_TRANSCRIPT_REQUIRED,
@@ -207,6 +209,24 @@ def save_upload(voice_id: str, filename: str, data: bytes, *,
         raise RefError(TTS_REFERENCE_INVALID, "that file is too large for a voice sample")
 
     folder = _voice_dir(voice_id)
+    # delete() forty lines below refuses a redirected folder. This did not,
+    # and it deletes as well: every audio file already in the folder goes so
+    # that one voice keeps one clip. Point that name at a music library and
+    # replacing a clip took the library with it, then wrote the new recording
+    # in its place.
+    #
+    # Refused outright rather than skipped, unlike the sweeps that run on
+    # their own. This one is a person pressing upload, so it can be answered:
+    # a silent half-success that writes their voice into somebody else's
+    # folder is the worse outcome. Its own code too - nothing is wrong with
+    # the clip, and tts_reference_invalid would send them off to re-record a
+    # perfectly good take.
+    #
+    # lexists, not exists: a folder that is not there yet is the normal first
+    # upload, and is_redirected fails closed on a missing path.
+    if os.path.lexists(folder) and secure_delete.is_redirected(folder):
+        raise RefError(TTS_REFERENCE_FOLDER_REDIRECTED,
+                       "the folder for this voice leads somewhere else")
     folder.mkdir(parents=True, exist_ok=True)
 
     # VALIDATE BEFORE DESTROYING. This used to unlink the existing clip, write

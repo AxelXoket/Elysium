@@ -16,12 +16,33 @@ steps.
 """
 from __future__ import annotations
 
+import logging
 import os
+import time
+import wave
+from io import BytesIO
 from pathlib import Path
 
 import pytest
 
+import config
 import secure_delete
+
+
+def _valid_wav(seconds: float = 8.0, rate: int = 44100) -> bytes:
+    """A clip save_upload will accept.
+
+    It has to be a real one. save_upload validates BEFORE it deletes anything
+    (tts/refs.py:212-217, and the comment there says why), so a junk payload
+    would make the junction test below pass without a guard ever running.
+    """
+    buf = BytesIO()
+    with wave.open(buf, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        handle.writeframes(bytes(2) * int(rate * seconds))
+    return buf.getvalue()
 
 
 @pytest.fixture()
@@ -351,6 +372,194 @@ class TestNothingWalksThroughAJunction:
 
         assert victim.read_bytes() == content, "walked through the junction"
         assert result is False, "a folder it refused to empty is not deleted"
+
+
+class TestTheFourWalksThatFollowedOne:
+    """K-03: four sweeps that walk a directory and never ask what it is.
+
+    The class above covers the sites that already refuse. These are the ones
+    that did not, and the shape is identical in all four: enumerate a
+    directory whose name the app chose, delete what is inside it. Put a
+    junction at that name and the deletion lands on the target - somebody's
+    Music library, somebody's Documents.
+
+    They are ordered here by how often they fire, because that is what decides
+    how long a user's files survive: once per spoken SENTENCE, then twice per
+    unlock, then once per upload. Their guarded siblings sit a few lines away
+    in the same files, so what was missing was never a design, only a line.
+    """
+
+    def _victim(self, tmp_path: Path) -> tuple[Path, Path, bytes]:
+        outside = tmp_path / "somebody-elses-music"
+        outside.mkdir()
+        victim = outside / "speak-not-ours.wav"
+        content = b"RIFF" + b"a recording that is not this app's" * 20
+        victim.write_bytes(content)
+        return outside, victim, content
+
+    def _redirected_cache(self, tmp_path, monkeypatch) -> Path:
+        """config.TTS_CACHE_DIR pointed at a junction, the way a user would.
+
+        Nothing here is exotic. Somebody with a large audio cache moves it to
+        another drive and junctions the old name back - Windows has shipped
+        `mklink /J` for that since Vista.
+        """
+        import config
+        cache = tmp_path / "cache"
+        monkeypatch.setattr(config, "TTS_CACHE_DIR", str(cache))
+        return cache
+
+    def test_the_per_sentence_trim_does_not_follow_one(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The highest-frequency deletion in the app: once per synthesised
+        # sentence, through _next_out_path. A stale file in the junction
+        # target is gone before the second sentence of the first reply.
+        from tts.host import VoiceHost
+
+        outside, victim, content = self._victim(tmp_path)
+        stale = time.time() - float(config.TTS_CACHE_MAX_AGE_S) - 60
+        os.utime(victim, (stale, stale))
+        cache = self._redirected_cache(tmp_path, monkeypatch)
+        if not _junction(cache, outside):
+            pytest.skip("this machine cannot create a junction")
+
+        VoiceHost()._next_out_path()
+
+        assert victim.read_bytes() == content, "walked through the junction"
+
+    def test_the_unlock_sweep_does_not_follow_one(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Worse than the trim in reach, if not in frequency: no name prefix
+        # and no age cutoff, so every .wav in the target goes, however new and
+        # whoever made it. Runs unattended on every unlock and every init.
+        from routers.vault import _purge_voice_cache
+
+        outside, victim, content = self._victim(tmp_path)
+        cache = self._redirected_cache(tmp_path, monkeypatch)
+        if not _junction(cache, outside):
+            pytest.skip("this machine cannot create a junction")
+
+        _purge_voice_cache()
+
+        assert victim.read_bytes() == content, "walked through the junction"
+
+    def test_the_upload_migration_does_not_follow_one(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The one no defect record had, found by sweeping for the shape.
+
+        It runs on the unlock bootstrap and shreds the user's plaintext image
+        uploads. Its only check is `entry.is_symlink()`, which is precisely
+        the check is_redirected's docstring exists to say does not catch a
+        junction - a junction is a reparse point that islink() calls False.
+        """
+        import legacy_migration
+
+        outside = tmp_path / "somebody-elses-pictures"
+        outside.mkdir()
+        # Named the way the migration expects, so nothing but the container
+        # check stands between it and the file.
+        victim = outside / ("a" * 64 + ".png")
+        content = b"\x89PNG" + b"a picture that is not this app's" * 20
+        victim.write_bytes(content)
+        uploads = tmp_path / "uploads"
+        monkeypatch.setattr(config, "UPLOADS_DIR", str(uploads))
+        if not _junction(uploads, outside):
+            pytest.skip("this machine cannot create a junction")
+
+        legacy_migration.migrate_upload_files_to_blobs()
+
+        assert victim.read_bytes() == content, "walked through the junction"
+
+    def test_replacing_a_clip_does_not_follow_one(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # refs.delete twelve lines below this one refuses. save_upload does
+        # not, and it deletes by suffix rather than by name, so every audio
+        # file in the target goes when the user replaces one clip.
+        from tts import refs
+
+        outside = tmp_path / "somebody-elses-music"
+        outside.mkdir()
+        victim = outside / "wedding.wav"
+        content = b"RIFF" + b"a recording that is not this app's" * 20
+        victim.write_bytes(content)
+        refs_root = tmp_path / "refs"
+        refs_root.mkdir()
+        monkeypatch.setattr(refs, "refs_dir", lambda: refs_root)
+        if not _junction(refs_root / "voice9", outside):
+            pytest.skip("this machine cannot create a junction")
+
+        try:
+            refs.save_upload("voice9", "new.wav", _valid_wav())
+        except Exception:
+            # Whether the upload itself succeeds is a different question. The
+            # assertion below is the one this test is about.
+            pass
+
+        assert victim.read_bytes() == content, "walked through the junction"
+
+
+class TestAFolderThatIsNotThereIsNotAJunction:
+    """The false positive the guards would otherwise have, on every launch.
+
+    is_redirected fails closed: it answers True for a path it cannot stat,
+    ENOENT included. So `if is_redirected(dir): warn and return` fires on a
+    folder that simply does not exist yet - which is the normal state of the
+    voice cache on an install where nobody has used voice, and of the uploads
+    folder on every install that never had legacy files.
+
+    The idiom the codebase already had for this is is_dir() first, in
+    secure_delete.shred_tree and browser_profile. These are the tests that keep
+    the guards using it.
+    """
+
+    def test_the_unlock_sweep_says_nothing_about_a_folder_that_is_absent(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch, caplog
+    ) -> None:
+        from routers.vault import _purge_voice_cache
+
+        monkeypatch.setattr(config, "TTS_CACHE_DIR",
+                            str(tmp_path / "never-created"))
+        with caplog.at_level(logging.WARNING):
+            _purge_voice_cache()
+
+        assert "redirected" not in caplog.text, (
+            "every launch of a voice-less install would say this")
+
+    def test_the_upload_migration_still_exits_clean_when_absent(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch, caplog
+    ) -> None:
+        import legacy_migration
+
+        monkeypatch.setattr(config, "UPLOADS_DIR", str(tmp_path / "gone"))
+        with caplog.at_level(logging.WARNING):
+            migrated, failed, removed =                 legacy_migration.migrate_upload_files_to_blobs()
+
+        assert (migrated, failed, removed) == (0, set(), 0)
+        assert "redirected" not in caplog.text
+
+    def test_the_per_sentence_trim_still_trims_an_ordinary_folder(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The discriminating half for all three: a guard that refused
+        # everything would satisfy the two tests above and stop the app
+        # cleaning up at all.
+        from tts.host import VoiceHost
+
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        monkeypatch.setattr(config, "TTS_CACHE_DIR", str(cache))
+        stale_file = cache / "speak-old.wav"
+        stale_file.write_bytes(b"RIFF")
+        stale = time.time() - float(config.TTS_CACHE_MAX_AGE_S) - 60
+        os.utime(stale_file, (stale, stale))
+
+        VoiceHost()._next_out_path()
+
+        assert not stale_file.exists(), "the guard stopped ordinary trimming"
 
 
 class TestAFailedRemovalIsNotCountedAsOne:

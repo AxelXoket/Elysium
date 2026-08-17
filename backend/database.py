@@ -370,6 +370,63 @@ def backup_encrypted(dest_path: str, key: bytes | None = None) -> None:
         src.close()
 
 
+#: SQLite's companions to the main database file. Named once, because two
+#: places have to agree about them and a list that drifts is a leak.
+_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
+
+
+def discard_plaintext_sidecars(src: Path) -> list[str]:
+    """Destroy the journal files beside a database that is not there.
+
+    PLAINTEXT PAGES, not bookkeeping. `wal_checkpoint(TRUNCATE)` folds the WAL
+    into the main file, but it does not raise when it cannot finish: a reader
+    still holding the file - an antivirus scan, a leftover connection from a
+    crash - makes it return without truncating, and committed chat pages stay
+    in `-wal`. Leaving them was leaving the conversation recoverable
+    immediately after the migration whose whole purpose was to seal it.
+
+    CALLED ONLY WHERE `src` DOES NOT EXIST, and that is the entire design.
+    Both callers sit between two renames, at the instant the live database has
+    been moved away and its replacement has not yet arrived. Anything wearing
+    the name `app.db-wal` at that moment is provably an orphan, because there
+    is no `app.db` for it to belong to.
+
+    The alternative that was rejected: report these through
+    `plaintext_backups()` so the existing discard route removes them. That
+    route needs no passphrase, by design, because it deletes files that are
+    readable without one. Handing it these names would give a key-free route
+    the authority to shred a LIVE encrypted WAL holding committed pages that
+    have not reached the main file. The fix would have been a worse defect
+    than the one it closed.
+
+    Returns the names it could not destroy, so a caller can say so. `discard`
+    reports failure by returning False and, for an ordinary OSError, says
+    nothing at all - so a silent survivor was possible even with no crash.
+    """
+    stuck: list[str] = []
+    for suffix in _SIDECAR_SUFFIXES:
+        sidecar = src.with_name(src.name + suffix)
+        if not os.path.lexists(sidecar):
+            continue
+        try:
+            if not secure_delete.discard(sidecar):
+                stuck.append(sidecar.name)
+        except BaseException:  # noqa: BLE001 - see below
+            # NOTHING may escape from here, and the reason is where this runs.
+            # Both callers are between two renames, at the one instant DB_PATH
+            # does not exist. An exception escaping leaves the live database
+            # path EMPTY - a worse state than the leak this function closes.
+            #
+            # `discard` documents itself as never raising, and for OSError it
+            # does not. MemoryError is the one that gets through: shred does
+            # os.urandom(st_size), allocating the whole file at once, and a
+            # -wal gets large in exactly the case this exists for - a
+            # checkpoint that could not finish.
+            logger.exception("Could not destroy %s", sidecar.name)
+            stuck.append(sidecar.name)
+    return stuck
+
+
 def adopt_orphaned_enc_tmp(key: bytes) -> bool:
     """Crash recovery: if a migration crashed between its two swap renames,
     the live app.db is gone but a valid encrypted copy sits at app.db.enc-tmp.
@@ -455,7 +512,19 @@ def adopt_orphaned_enc_tmp(key: bytes) -> bool:
             )
             return False
 
+    # HERE, and only here. This is the other instant at which DB_PATH is empty:
+    # the migration crashed between its own two renames, so the plaintext
+    # sidecars it never reached are still sitting at the live name, and the
+    # encrypted file is about to take that name. One line later they would be
+    # indistinguishable from a healthy vault's own journal files, and this
+    # function is the last thing that ever looks.
+    stuck = discard_plaintext_sidecars(src)
+
     enc_tmp.replace(src)
+    if stuck:
+        logger.warning(
+            "Plaintext database sidecars survived the recovery and are still "
+            "readable on disk: %s", ", ".join(stuck))
     logger.info(
         "Adopted orphaned encrypted DB from an interrupted migration%s.",
         " (an empty stub was moved aside)" if live_present else "",
@@ -832,18 +901,18 @@ def migrate_plaintext_to_encrypted(key: bytes) -> str:
     # Swap: plaintext → backup, encrypted copy → live path (retry the renames
     # against transient Windows file locks). Order matters for crash recovery:
     # if we crash between the two, adopt_orphaned_enc_tmp() restores enc-tmp on
-    # the next unlock. Stale plaintext sidecars are dropped after.
+    # the next unlock.
     _rename_with_retry(src, backup)
+    stuck = discard_plaintext_sidecars(src)
     _rename_with_retry(enc_tmp, src)
-    for suffix in ("-wal", "-shm", "-journal"):
-        # PLAINTEXT pages, not bookkeeping. wal_checkpoint(TRUNCATE) above
-        # folds the WAL into the main file, but it does not raise when it
-        # cannot finish - a reader still holding the file (an antivirus scan,
-        # a leftover connection from a crash) makes it return without
-        # truncating, and committed chat pages stay in -wal. Unlinking that
-        # left them recoverable immediately after the migration whose entire
-        # purpose was to get them into the vault.
-        secure_delete.discard(src.with_name(src.name + suffix))
+    if stuck:
+        # Not fatal: the vault is built and the conversation is in it. But a
+        # plaintext remnant that nothing can see is worse than one that
+        # somebody can, so it goes in the log at least. The route that lets a
+        # person act on it is a separate piece of work.
+        logger.warning(
+            "Plaintext database sidecars survived the migration and are still "
+            "readable on disk: %s", ", ".join(stuck))
     logger.info("Plaintext DB migrated into vault; backup at %s", backup.name)
     return str(backup)
 

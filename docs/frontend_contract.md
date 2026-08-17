@@ -237,6 +237,7 @@ shield like every other data route.
 | 500 | tts_synthesis_failed | Generation failed for this message | Per-message error, chat unaffected |
 | 400 | tts_reference_invalid | Reference clip unusable (wrong format/unreadable/too large) | Ask for a clear 10-20s clip |
 | 400 | tts_reference_too_short | Clip is under the minimum length for cloning | Say how short it was; ~10 s of clear speech works |
+| 400 | tts_reference_folder_redirected | The folder for this voice is a junction or a symlink, so saving would write into a directory that is not the app's | Nothing was saved; say the link has to be moved or removed |
 | 400 | tts_transcript_required | This engine clones from the audio AND the words in it; the words are missing | Ask for the words. Do NOT offer to auto-transcribe: no shipped engine can (see below) |
 | 409 | tts_transcribe_unsupported | The loaded engine has no speech recognition, so it cannot draft a clip’s transcript | Do not draw the button at all - gate it on capabilities.transcribes_reference. Never say the engine failed to start |
 | 400 | tts_nothing_to_speak | The message had no words to read out (only markup, tags or symbols) | Say the message had nothing to read; do not offer a retry |

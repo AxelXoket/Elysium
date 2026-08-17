@@ -146,7 +146,26 @@ def _purge_voice_cache() -> None:
         import config as _config
         from pathlib import Path as _Path
 
-        for wav in _Path(_config.TTS_CACHE_DIR).glob("*.wav"):
+        cache = _Path(_config.TTS_CACHE_DIR)
+        # is_dir() first: is_redirected fails closed on ENOENT, and this
+        # runs on every unlock - including on installs where voice has
+        # never been used and the folder has never been made. Without it,
+        # those users get an alarming line in the log at every launch.
+        if cache.is_dir() and secure_delete.is_redirected(cache):
+            # Widest reach of the three sweeps over this directory: no name
+            # prefix and no age cutoff, so every .wav in the junction target
+            # went, however new and whoever recorded it. And it runs
+            # unattended on every unlock, so a user who moved their cache to
+            # another drive lost files by opening the app.
+            #
+            # tts/host.py refuses the identical directory in wipe_audio_cache.
+            # This one and the per-sentence trim did not.
+            logger.warning(
+                "voice-cache purge: the cache path is a redirected name - "
+                "not swept. Nothing was deleted.")
+            return
+
+        for wav in cache.glob("*.wav"):
             try:
                 if not secure_delete.shred(wav):
                     raise OSError("not removed")
