@@ -9,7 +9,9 @@ unless the spec says otherwise.
 
 This lives in pytest on purpose. KADEME 07 measured the cost of the other
 arrangement: sixteen scripts under backend/verify/, nobody running them, three
-already dead. A gate that needs somebody to remember it is not a gate.
+already dead. A gate that needs somebody to remember it is not a gate. Twelve of
+those sixteen were deleted on 2026-08-17; docs/VERIFY_SCRIPTS_RETIRED.md is the
+record of what went and what took over.
 
 Two halves:
 

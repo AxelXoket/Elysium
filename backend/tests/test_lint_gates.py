@@ -4,7 +4,8 @@ KADEME 21, rewritten in K-34. `backend/ruff.toml` narrows ruff to the engine
 worker directory. A config file on its own is the failure this project already
 measured once: sixteen scripts under backend/verify/, nobody running them,
 three dead. So the config gets a caller, and the caller lives in the suite
-everybody runs.
+everybody runs. Twelve of those sixteen have since been deleted, which is the
+same lesson reaching its conclusion; see docs/VERIFY_SCRIPTS_RETIRED.md.
 
 WHY ONLY THE WORKER DIRECTORY, written down because the narrowness looks like
 an oversight and is not. `tts/adapters/` holds the HOST half of each engine and

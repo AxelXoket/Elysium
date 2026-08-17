@@ -18,10 +18,14 @@
  * silently stop matching. Controls exist on S-09b, S-11b, S-20b and S-23.
  */
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "fs";
+import { readFileSync, existsSync } from "fs";
 import { globSync } from "glob";
 import path from "path";
 import catalogue from "../../../shared/error_catalogue.json";
+// @ts-expect-error - plain JS, shared with eslint.config.js so the two gates
+// answer "is this scaffolding" the same way. No types, and none wanted: a .d.ts
+// beside it would be a second declaration of the same thing.
+import { SUPPORT_FILES, isScaffolding } from "../../privacy-scope.js";
 
 const SRC_DIR = path.resolve(__dirname, "../../");
 const THIS_FILE = path.resolve(__filename);
@@ -31,12 +35,7 @@ function getSourceFiles(pattern: string): string[] {
   const files = globSync(pattern, {
     cwd: SRC_DIR,
     absolute: true,
-    ignore: [
-      "**/node_modules/**",
-      "**/dist/**",
-      "**/.vite/**",
-      "**/test/mocks/**",
-    ],
+    ignore: ["**/node_modules/**", "**/dist/**", "**/.vite/**"],
   });
   return files.filter((f) => f !== THIS_FILE);
 }
@@ -45,12 +44,16 @@ function readFile(filePath: string): string {
   return readFileSync(filePath, "utf-8");
 }
 
-/** True for files that are part of the test suite (not shipped app source). */
+/** True for files that are part of the test suite (not shipped app source).
+ *
+ * Decided by name, and by the same list ESLint reads. It used to be decided by
+ * whether a `test` folder appeared anywhere in the path, and so did ESLint's
+ * exemption, which meant one misplaced file switched off both gates at once.
+ * The mocks folder was skipped even harder - excluded from the glob, so those
+ * files were not read at all - and that is gone too.
+ */
 function isTestFile(filePath: string): boolean {
-  return (
-    filePath.includes(`${path.sep}test${path.sep}`) ||
-    /\.test\.(ts|tsx)$/.test(filePath)
-  );
+  return isScaffolding(path.relative(SRC_DIR, filePath));
 }
 
 /** Source files with test files removed - used by app-source-only guards. */
@@ -209,8 +212,14 @@ describe("Static safety tests", () => {
 
   // S-09: localStorage.setItem only in store files
   it("S-09: no localStorage.setItem outside lib/store", () => {
+    // Scaffolding is filtered by name now. It used to be filtered by folder,
+    // and further up, by leaving `src/test/mocks/**` out of the glob entirely
+    // - so legacyStorage.ts, which seeds the legacy blob the narration
+    // migration reads, was never even opened. It is scaffolding either way;
+    // the difference is that saying so out loud is what an ordinary file
+    // dropped in that folder no longer gets for free.
     const nonStoreFiles = allSrcFiles.filter(
-      (f) => !f.includes(path.join("lib", "store")),
+      (f) => !f.includes(path.join("lib", "store")) && !isTestFile(f),
     );
     // Floor. S-12 bounds `allSrcFiles`, but this rule scans what is LEFT
     // after a filter, and a filter that matched everything would leave
@@ -896,5 +905,41 @@ describe("Static safety tests", () => {
         `S-24 would reject a legitimate call: ${good.slice(0, 40)}`,
       ).toBe(true);
     }
+  });
+
+  /**
+   * S-25 (K-35): the exemption list is itself checked.
+   *
+   * Both privacy gates ask privacy-scope.js whether a file is scaffolding, so
+   * that list is now the single thing standing between a file and every rule.
+   * A list like that goes wrong in two directions and both are checked here:
+   * it names a file that no longer exists, and it stops matching the files it
+   * was written for.
+   */
+  it("S-25: every exempted path names a file that is really there", () => {
+    expect(SUPPORT_FILES.length, "the exemption list emptied itself").toBe(8);
+    for (const rel of SUPPORT_FILES as string[]) {
+      expect(
+        existsSync(path.resolve(SRC_DIR, rel)),
+        `exempted but gone: ${rel}. A stale entry excuses nothing and hides ` +
+          `that the real file lost its exemption.`,
+      ).toBe(true);
+    }
+  });
+
+  it("S-25: living in the test folder is not what earns the exemption", () => {
+    // The defect, stated as a test. An ordinary name in the test tree used to
+    // be exempt from both gates; now only a `.test.` name or a written-down
+    // path is.
+    expect(isScaffolding("src/test/leak.ts")).toBe(false);
+    expect(isScaffolding("src/test/mocks/leak.ts")).toBe(false);
+    expect(isScaffolding("src/test/helpers/deep/leak.tsx")).toBe(false);
+    // And the other direction, or the rule would just be "nothing is exempt".
+    expect(isScaffolding("src/test/setup.ts")).toBe(true);
+    expect(isScaffolding("src/components/chat/MessageBubble.test.tsx")).toBe(
+      true,
+    );
+    // Windows hands out backslashes; the list is written with forward ones.
+    expect(isScaffolding("src\\test\\mocks\\api.ts")).toBe(true);
   });
 });

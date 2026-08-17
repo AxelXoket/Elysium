@@ -44,9 +44,11 @@ from pathlib import Path
 
 import pytest
 
-# Loaded by path rather than imported, because backend/verify is not a package
-# and putting it on sys.path would make `verify_elysium_full` importable too -
-# and importing THAT runs the entire regression suite as a side effect.
+# Loaded by path rather than imported, because backend/verify is not a package.
+# The sharper reason has expired: importing it used to make
+# `verify_elysium_full` importable as well, and importing THAT ran an entire
+# regression suite as an import side effect. That file was deleted on
+# 2026-08-17. Loading by path is still right, and now it is only tidiness.
 _GATE_PATH = Path(__file__).resolve().parent.parent / "verify" / "verify_hygiene.py"
 _spec = importlib.util.spec_from_file_location("verify_hygiene", _GATE_PATH)
 assert _spec and _spec.loader
@@ -211,3 +213,39 @@ def test_the_waiver_list_itself_parses(sweep):
     assert not sweep["errors"], "\n".join(
         ["", "backend/verify/hygiene_allowlist.txt has problems:", ""]
         + [f"  {e}" for e in sweep["errors"]])
+
+
+#: The three tools that survived 2026-08-17, each because it does something no
+#: test can: the hygiene gate the commit hook runs, the one that makes a live
+#: request with the owner's own key, and the one that measures real hardware.
+LIVE_VERIFY_TOOLS = {
+    "verify_hygiene.py",
+    "verify_image_output.py",
+    "verify_tts_latency.py",
+}
+
+
+def test_the_retired_verify_scripts_stay_retired():
+    """The absence scan the house rule allows: it pins a deletion.
+
+    Twelve scripts and a shared harness were deleted, and three defect records
+    closed by their subject ceasing to exist rather than by being repaired.
+    That only holds while they stay gone. Two of them could not even be
+    imported, and nobody noticed for months precisely because nothing looked.
+
+    Compared as a SET, in both directions. A test that only checked the old
+    names were absent would say nothing if the three live tools disappeared
+    too, and a directory with nothing in it is not the state this describes.
+    """
+    verify_dir = Path(__file__).resolve().parent.parent / "verify"
+    present = {p.name for p in verify_dir.glob("*.py")}
+    assert present == LIVE_VERIFY_TOOLS, (
+        f"backend/verify/ holds {sorted(present)}. It is meant to hold exactly "
+        f"{sorted(LIVE_VERIFY_TOOLS)}. If a retired script came back, "
+        f"docs/VERIFY_SCRIPTS_RETIRED.md says why it went; if a live tool is "
+        f"gone, that is a check nothing else performs."
+    )
+    assert not (verify_dir / "_harness.py").exists(), (
+        "the harness is back. It left 136 test vaults in %TEMP% over twelve "
+        "days, and the tests that reaped them went with it."
+    )

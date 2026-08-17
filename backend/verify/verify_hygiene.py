@@ -239,10 +239,29 @@ RULES: tuple[Rule, ...] = (
         # branch nor the POSIX ones. Described rather than written out, because
         # writing one here would trip this rule, and a waiver for the rule's
         # own definition is the last thing this file should need.
+        # The POSIX branches used to demand that the account name be
+        # [A-Za-z0-9._-]+, while the Windows branch above asked for no name at
+        # all. So a perfectly ordinary macOS path with a space in the account
+        # name went past, and the identical Windows path did not. They now
+        # match on the prefix, exactly like the Windows branch: the account
+        # name is not what makes the path identifying, the user directory is.
+        # Measured before changing it: zero tracked files outside this one
+        # contain either prefix, so the wider rule costs nothing today.
+        #
+        # The lookbehind is for URLs, the one collision the Windows form
+        # cannot have. A path inside somebody's website is not a path on
+        # somebody's disk. It only looks one character back, so a URL written
+        # with a space before its path would still be a false positive; that
+        # is a complaint about a line nobody has written, and the gate failing
+        # closed is the right direction anyway.
+        #
+        # Slashes are written as escapes throughout so that the rule's own
+        # definition does not match the rule. The Windows branches get away
+        # with plain text because they need a drive letter in front.
         pattern=re.compile(r"[A-Za-z]:[\\/]+Users[\\/]+"
                            r"|\\\\[^\\/]+[\\/]+Users[\\/]+"
-                           r"|/home/[A-Za-z0-9._-]+/"
-                           r"|/Users/[A-Za-z0-9._-]+/"),
+                           r"|(?<![A-Za-z0-9_.\-])\x2f+home\x2f"
+                           r"|(?<![A-Za-z0-9_.\-])\x2f+Users\x2f"),
         scope=_any_text,
     ),
     Rule(
@@ -425,8 +444,37 @@ def _looks_like_utf16(data: bytes) -> bool:
     Decoding it here was the other option and was rejected: this repository has
     no UTF-16 file and should not grow one, so the useful answer is a complaint
     rather than quiet accommodation.
+
+    THE BOM WAS ONLY HALF OF IT, and the docstring above used to claim the
+    whole. Measured on 2026-08-17: a file saved as utf-16-le carries no BOM,
+    so this returned False, `_is_binary` still called it binary on its null
+    bytes, and the file went past in exactly the silence this function was
+    written to end. The forbidden character was invisible AND unreported, one
+    editor setting away.
+
+    The BOM-less form is recognised by its shape instead. ASCII text in UTF-16
+    is a null byte beside every character, always on the same side: first for
+    big endian, second for little. So one of the two positions is almost
+    entirely nulls and the OTHER has none at all, and that second half is what
+    keeps real binaries out - a PNG or an exe scatters nulls across both.
+    Ninety percent rather than all, because a stretch of non-ASCII text puts
+    real bytes in the null side without making the file any more readable here.
     """
-    return data[:2] in (b"\xff\xfe", b"\xfe\xff")
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return True
+    head = data[:4096]
+    head = head[:len(head) - len(head) % 2]
+    if len(head) < 16:
+        # Too little to tell shape from coincidence, and a file this short
+        # cannot hide much. Claiming otherwise is how a heuristic starts
+        # reporting binaries as documents.
+        return False
+    for null_side in (0, 1):
+        nulls = head[null_side::2]
+        text_side = head[1 - null_side::2]
+        if nulls.count(0) >= len(nulls) * 0.9 and text_side.count(0) == 0:
+            return True
+    return False
 
 
 def decode(data: bytes, rel: str, problems: list[str] | None = None) -> str:

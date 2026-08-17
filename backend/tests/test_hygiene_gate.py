@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 # Loaded by path rather than imported, because backend/verify is not a package
-# and putting it on sys.path would make `verify_elysium_full` importable too -
+# and putting it on sys.path used to make `verify_elysium_full` importable too -
 # and importing THAT runs the entire regression suite as a side effect.
 _GATE_PATH = Path(__file__).resolve().parent.parent / "verify" / "verify_hygiene.py"
 _spec = importlib.util.spec_from_file_location("verify_hygiene", _GATE_PATH)
@@ -74,6 +74,35 @@ class TestRulesFire:
     def test_a_machine_path_is_a_hit(self):
         hits, _, _ = scan_one("backend/x.py", f'AVATAR = "{USER_PATH}"\n')
         assert [h.rule.rid for h in hits] == ["H-04"]
+
+    @pytest.mark.parametrize("path", [
+        "/" + "home/john/build.log",
+        "/" + "Users/john/build.log",
+        # The defect itself: an account name with a space in it. The Windows
+        # form of the identical path was caught; this one was not, because the
+        # POSIX branches demanded [A-Za-z0-9._-] and a space is none of those.
+        "/" + "Users/John Smith/project/build.log",
+        "/" + "home/Jose Ramirez/notes.txt",
+        # Non-ASCII account names were the other half of the same charset.
+        "/" + "home/" + chr(0x00FC) + "ser/x.txt",
+        # And the trailing form with no file after it, which is how a path
+        # usually appears in a comment.
+        "/" + "Users/john/",
+    ])
+    def test_a_posix_user_path_is_a_hit_whatever_the_account_is_called(
+        self, path: str
+    ):
+        hits, _, _ = scan_one("docs/x.md", f"see {path}\n")
+        assert [h.rule.rid for h in hits] == ["H-04"], path
+
+    @pytest.mark.parametrize("text", [
+        # A path inside somebody's website is not a path on somebody's disk.
+        "https:" + "//example.com/home/index.html",
+        "fetch('" + "https://cdn.example.org/Users/avatar.png')",
+    ])
+    def test_a_url_that_merely_contains_the_word_is_not_a_hit(self, text: str):
+        hits, _, _ = scan_one("frontend/src/x.ts", text + "\n")
+        assert hits == [], text
 
     def test_a_system_path_with_no_account_name_in_it_is_not(self):
         # C:\Windows and /usr/lib carry no identity and appear legitimately in
@@ -775,6 +804,66 @@ class TestAFileTheGateCannotReadIsNeverSilent:
         assert any("notes.md" in p and "UTF-16" in p for p in problems), (
             "the file was skipped in silence, which is the whole defect: "
             f"problems={problems}")
+
+    def test_a_utf16_file_with_no_byte_order_mark_is_reported_too(self, repo):
+        """The half the first fix missed, and the half its docstring claimed.
+
+        `utf-16-le` writes no BOM. The check looked at nothing else, so this
+        file came back False, `_is_binary` still called it binary on its null
+        bytes, and it went past in exactly the silence the check exists to
+        end. Measured on 2026-08-17 before the fix: `problems` was empty.
+        """
+        (repo / "notes.md").write_bytes(
+            ("a sentence " + EM_DASH + " broken, and long enough to have a "
+             "shape\n").encode("utf-16-le"))
+        subprocess.run(["git", "add", "notes.md"], cwd=repo, check=True)
+
+        problems: list[str] = []
+        files = dict(hygiene.worktree_files(problems))
+
+        assert "notes.md" not in files
+        assert any("notes.md" in p and "UTF-16" in p for p in problems), (
+            f"the BOM-less form is still silent: problems={problems}")
+
+    def test_the_big_endian_form_with_no_mark_is_caught_as_well(self, repo):
+        # The null sits on the other side of every character. A check that
+        # only knew one endianness would be half a check.
+        (repo / "notes.md").write_bytes(
+            ("a sentence " + EM_DASH + " broken, and long enough to have a "
+             "shape\n").encode("utf-16-be"))
+        subprocess.run(["git", "add", "notes.md"], cwd=repo, check=True)
+
+        problems: list[str] = []
+        list(hygiene.worktree_files(problems))
+        assert any("UTF-16" in p for p in problems), problems
+
+    def test_a_file_too_short_to_have_a_shape_is_not_guessed_at(self, repo):
+        # The floor under the heuristic. Below it there is not enough evidence
+        # to tell a document from a coincidence, and a check that guesses
+        # anyway is how binaries start getting reported as documents.
+        (repo / "tiny.dat").write_bytes(b"\x01\x00\x02\x00")
+        subprocess.run(["git", "add", "tiny.dat"], cwd=repo, check=True)
+
+        problems: list[str] = []
+        list(hygiene.worktree_files(problems))
+        assert problems == []
+
+    def test_a_binary_that_scatters_nulls_is_not_mistaken_for_a_document(
+        self, repo
+    ):
+        """The discriminating half of the shape test.
+
+        UTF-16 keeps its nulls on one side of every pair. This file puts them
+        on both, which is what real binary data does, and it must not be
+        reported. Without this the check would complain about every untracked
+        binary format and the complaints would stop being read.
+        """
+        (repo / "blob.dat").write_bytes(bytes(range(64)) * 4)
+        subprocess.run(["git", "add", "blob.dat"], cwd=repo, check=True)
+
+        problems: list[str] = []
+        list(hygiene.worktree_files(problems))
+        assert problems == []
 
     def test_a_real_binary_is_skipped_without_a_complaint(self, repo):
         """The other half of the same decision.
