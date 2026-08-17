@@ -318,7 +318,14 @@ set OPENROUTER_BASE_URL=http://127.0.0.1:9797/api/v1   # terminal 2
 uvicorn main:app --host 127.0.0.1 --port 8787
 ```
 
-The legacy `verify_*.py` scripts remain for reference.
+The legacy `verify_*.py` scripts were deleted on 17 August 2026. Twelve of them
+had stopped being checks: two could not be imported at all, one had been
+declared dead in writing months earlier, and seven asserted things about the
+app that are no longer true. Everything they still covered is in the test suite,
+and `docs/VERIFY_SCRIPTS_RETIRED.md` says where each one went. Three tools stay,
+because each does something no test can: `verify_hygiene.py` (the source gate
+the commit hook runs), `verify_image_output.py` (a live request with your own
+key) and `verify_tts_latency.py` (measures real hardware).
 
 ### Frontend (1308 tests)
 

@@ -207,6 +207,48 @@ class TestNothingElseBuildsAClient:
     #: fakes clients on purpose.
     ALLOWED = {"network_client.py"}
 
+    #: Every way out of this process that skips the hook, and one synthetic
+    #: line for each. The first form was all this checked for a while, and the
+    #: other three were measured as holes on 2026-08-17: the promise the router
+    #: docstrings make is about IMPORTING httpx, and this only looked at how a
+    #: client is CONSTRUCTED.
+    #:
+    #: The `clean` line beside each offender is what stops a pattern from being
+    #: written so wide that it forbids using httpx's names at all. Both halves
+    #: are asserted, so a pattern that matches everything fails just as loudly
+    #: as one that matches nothing.
+    BYPASSES = (
+        (
+            "builds a client of its own, so it gets no hook, no "
+            "trust_env=False and no vault proxy",
+            r"httpx\.(?:Async)?Client\s*\(",
+            "c = httpx.AsyncClient(timeout=5)",
+            "except httpx.TimeoutException:",
+        ),
+        (
+            "imports httpx by name, which is what the router docstrings "
+            "actually promise not to do, and the dotted patterns cannot see",
+            r"(?m)^\s*from\s+httpx\s+import\b",
+            "from httpx import AsyncClient",
+            "import httpx  # for the exception types",
+        ),
+        (
+            "calls httpx at module level, which builds a throwaway client "
+            "inside the library where nothing can reach it",
+            r"httpx\.(?:request|get|post|put|patch|delete|head|options|"
+            r"stream)\s*\(",
+            "r = httpx.post(url, json=body)",
+            "timeout = httpx.Timeout(5.0)",
+        ),
+        (
+            "builds a transport of its own, which is the layer the hook and "
+            "the proxy settings are attached to",
+            r"httpx\.(?:Async)?HTTPTransport\s*\(",
+            "t = httpx.AsyncHTTPTransport(retries=2)",
+            "limits = httpx.Limits(max_connections=4)",
+        ),
+    )
+
     def _sources(self) -> list[Path]:
         backend = Path(__file__).resolve().parents[1]
         skip = {"tests", "verify", ".venv", "__pycache__", "build", "dist"}
@@ -215,29 +257,41 @@ class TestNothingElseBuildsAClient:
             if not (skip & set(p.relative_to(backend).parts))
         ]
 
-    def test_only_the_chokepoint_constructs_an_http_client(self) -> None:
+    @pytest.mark.parametrize("what,pattern,offender,clean", BYPASSES)
+    def test_nothing_but_the_chokepoint_leaves_by_this_door(
+        self, what: str, pattern: str, offender: str, clean: str
+    ) -> None:
         import re
 
         sources = self._sources()
         # Floor: an empty walk would report perfect compliance.
         assert len(sources) >= 40, f"only {len(sources)} modules walked"
 
-        builder = re.compile(r"httpx\.(Async)?Client\s*\(")
+        door = re.compile(pattern)
         offenders = [
             str(p.name) for p in sources
             if p.name not in self.ALLOWED
-            and builder.search(p.read_text(encoding="utf-8", errors="strict"))
+            and door.search(p.read_text(encoding="utf-8", errors="strict"))
         ]
-        assert not offenders, (
-            f"these build their own httpx client, bypassing the single "
-            f"egress chokepoint: {sorted(offenders)}"
-        )
+        assert not offenders, f"{sorted(offenders)}: each one {what}"
 
-    def test_the_check_can_actually_fail(self) -> None:
-        """Guard the guard: the pattern must match the thing it forbids."""
+    @pytest.mark.parametrize("what,pattern,offender,clean", BYPASSES)
+    def test_each_door_can_actually_fail(
+        self, what: str, pattern: str, offender: str, clean: str
+    ) -> None:
+        """Guard the guard: every pattern must match the thing it forbids.
+
+        WHAT THIS CANNOT DO, said plainly because the sentence is the point:
+        it reads text. `getattr(httpx, "Cli" + "ent")()` defeats it, and so
+        does any client built by a dependency rather than by this repository.
+        That is the ceiling of static reading, not a gap to be patched here.
+        The layer that actually holds is `_one_host_only` plus the socket
+        guard in `tests/egress_guard.py`, and both are tested above and next
+        door. This check exists to keep a NEW module from quietly walking out,
+        which is the mistake somebody actually makes.
+        """
         import re
 
-        builder = re.compile(r"httpx\.(Async)?Client\s*\(")
-        assert builder.search("c = httpx.AsyncClient(timeout=5)")
-        assert builder.search("c = httpx.Client()")
-        assert not builder.search("except httpx.TimeoutException:")
+        door = re.compile(pattern)
+        assert door.search(offender), pattern
+        assert not door.search(clean), pattern

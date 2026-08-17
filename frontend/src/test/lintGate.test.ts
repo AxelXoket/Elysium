@@ -150,19 +150,85 @@ describe("the ESLint gate", () => {
     expect(clean[0].messages.map((m) => m.ruleId)).toEqual([]);
   }, 60_000);
 
-  it("leaves the test tree exempt, which is why the tests can name what they forbid", async () => {
+  it("exempts a test by its name, and an ordinary file beside it not at all", async () => {
     const eslint = engine();
+    const forbidden = 'export const x = localStorage.getItem("a");\n';
+    const ruleIds = async (...parts: string[]) =>
+      (
+        await eslint.lintText(forbidden, {
+          filePath: path.join(CWD, ...parts),
+        })
+      )[0].messages.map((m) => m.ruleId);
+
     // DISCRIMINATING half two, and a real property rather than a curiosity:
     // static-safety.test.ts has to contain every literal it searches for, so
     // the exemption is load-bearing. If it ever disappears, that file goes red
     // for doing its job and this says which of the two broke.
-    const exempt = await eslint.lintText(
-      'export const x = localStorage.getItem("a");\n',
-      { filePath: path.join(CWD, "src", "test", "__probe.ts") },
-    );
     expect(
-      exempt[0].messages.map((m) => m.ruleId),
-      "the src/test exemption is gone",
+      await ruleIds("src", "test", "something.test.ts"),
+      "a test can no longer name what it forbids",
+    ).toEqual([]);
+    expect(
+      await ruleIds("src", "test", "mocks", "api.ts"),
+      "a written-down support file lost its exemption",
+    ).toEqual([]);
+
+    // K-35, and this half of the test was the other way round until today:
+    // it used to assert that src/test/__probe.ts WAS exempt, which pinned the
+    // defect rather than the rule. A production-shaped file in the test folder
+    // switched off both privacy gates at once, and the folder was all it took.
+    expect(
+      await ruleIds("src", "test", "__probe.ts"),
+      "an ordinary name in the test folder is exempt again",
+    ).toContain("no-restricted-globals");
+    expect(
+      await ruleIds("src", "test", "mocks", "__probe.ts"),
+      "an ordinary name beside the mocks is exempt again",
+    ).toContain("no-restricted-globals");
+  }, 60_000);
+
+  it("catches the two shapes K-35 measured going past", async () => {
+    const eslint = engine();
+    const inSrc = async (source: string) =>
+      (
+        await eslint.lintText(source, {
+          filePath: path.join(CWD, "src", "lib", "__probe.ts"),
+        })
+      )[0].messages.map((m) => m.message);
+
+    // S-21 was case sensitive while its sibling S-01 was not, so one shifted
+    // key defeated it. Written in halves so this file does not contain the
+    // literal it is testing for in a form the rule would object to.
+    const shouted = await inSrc(
+      'export const u = "data:image/png;BASE' + '64,AAA";\n',
+    );
+    expect(shouted.join(" "), "S-21 is case sensitive again").toContain("S-21");
+
+    // S-20 only knew the object-literal form. Assigning the same field after
+    // the fact is the same instruction to the provider.
+    const assigned = await inSrc(
+      'export function f(p: Record<string, unknown>) { ' +
+        '(p as { zdr?: boolean }).zdr = false; }\n',
+    );
+    expect(assigned.join(" "), "S-20 misses the assignment form").toContain(
+      "S-20",
+    );
+
+    const computed = await inSrc(
+      'export function f(p: Record<string, unknown>) { ' +
+        'p["data_collection"] = true; }\n',
+    );
+    expect(computed.join(" "), "S-20 misses the subscript form").toContain(
+      "S-20",
+    );
+
+    // DISCRIMINATING: neither rule may fire on ordinary code, or they would
+    // be an outage rather than a rule.
+    expect(
+      await inSrc('export const encoded = "data:text/plain,hello";\n'),
+    ).toEqual([]);
+    expect(
+      await inSrc('export function f(p: { zdrome: number }) { return p.zdrome; }\n'),
     ).toEqual([]);
   }, 60_000);
 });

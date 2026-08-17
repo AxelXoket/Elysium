@@ -24,7 +24,7 @@ import pytest
 
 import network_client
 import openrouter
-from tests.conftest import make_chat, make_character
+from tests.conftest import make_chat, make_character, make_persona
 from tests.egress_guard import EgressAttempt
 
 
@@ -166,6 +166,128 @@ class TestWhatIsNeverSent:
         # The control: a legitimate parameter in the SAME dict does arrive, so
         # this cannot pass by dropping generation_params wholesale.
         assert bodies[0]["temperature"] == 0.5
+
+    def test_the_context_length_cannot_be_overridden_from_outside(
+        self, client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # P-01, which used to be a grep for the string `context_length_override`
+        # in backend source. That proves nobody spelled the name; it cannot see
+        # a route that started honouring an equivalent field under another one.
+        # How much of the conversation the provider is shown is this app's
+        # decision, and the wire is where that is decided or not.
+        bodies = _send(client, monkeypatch, context_length_override=999_999)
+        assert "context_length_override" not in bodies[0]
+        assert bodies[0]["model"] and bodies[0]["messages"]
+
+    def test_it_cannot_ride_in_on_generation_params_either(
+        self, client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bodies = _send(client, monkeypatch, generation_params={
+            "temperature": 0.5, "context_length_override": 999_999,
+        })
+        assert "context_length_override" not in bodies[0]
+        assert bodies[0]["temperature"] == 0.5
+
+
+    def test_a_persona_you_did_not_pick_is_not_in_the_payload(
+        self, client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """P-20, which was a grep for `SELECT * FROM personas`.
+
+        That pattern only ever knew one way of writing the mistake. The thing
+        the README actually promises is that a persona you are not using is
+        not described to the provider, and there are as many ways to break
+        that as there are ways to write a query.
+        """
+        make_persona(client, display_name="Nova",
+                     description="tends the orchard at dusk", select=True)
+        make_persona(client, display_name="Kestrel",
+                     description="hunts the dry riverbed alone", select=False)
+
+        bodies = _send(client, monkeypatch)
+        wire = json.dumps(bodies[0])
+        # The control first: the selected one has to be there, or the absence
+        # below is just an empty prompt.
+        assert "tends the orchard at dusk" in wire
+        assert "hunts the dry riverbed alone" not in wire
+        assert "Kestrel" not in wire
+
+
+class TestNothingAReaderWroteReachesTheLog:
+    """P-17 and P-18, which were greps for `logger.*content=` in source.
+
+    A grep for the shape of a logging call cannot see the one that formats its
+    argument first, or names the variable something else, or logs a dict that
+    happens to contain the text. So this runs a real completion carrying words
+    nothing else in the app would ever produce, and reads the log back.
+
+    DEBUG, deliberately: the app does not ship at DEBUG, but a developer turns
+    it on to look at exactly this path, and that is when a leak gets pasted
+    into an issue.
+    """
+
+    #: Nonsense on purpose. A common word would be found in library output and
+    #: prove nothing about ours.
+    SECRET_SENTENCE = "zorbleflax the quivering marmalade"
+    SECRET_PERSONA = "quenlithe of the hollow spindle"
+
+    def test_what_the_user_typed_is_not_in_the_log(
+        self, client, monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        bodies = _capture_wire(monkeypatch)
+        chat_id = make_chat(client, make_character(client))
+        with caplog.at_level(logging.DEBUG):
+            response = client.post(
+                f"/api/v1/chats/{chat_id}/complete",
+                json={"message": self.SECRET_SENTENCE,
+                      "model_id": "test/model-1"},
+            )
+        assert response.status_code == 200, response.text
+        # The control, and this file needs it more than most: an assertion that
+        # a string is absent from an empty log passes for the wrong reason.
+        # So the sentence must be proved to have gone somewhere first.
+        assert self.SECRET_SENTENCE in json.dumps(bodies[0]), (
+            "the message never reached the provider layer, so its absence "
+            "from the log says nothing")
+        assert self.SECRET_SENTENCE not in caplog.text
+
+    def test_the_character_a_reader_wrote_is_not_in_the_log(
+        self, client, monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        bodies = _capture_wire(monkeypatch)
+        created = client.post("/api/v1/characters", json={
+            "name": "Testchar",
+            "description": self.SECRET_PERSONA,
+            "first_mes": "Hello there!",
+        })
+        assert created.status_code == 201, created.text
+        chat_id = make_chat(client, created.json()["id"])
+        with caplog.at_level(logging.DEBUG):
+            response = client.post(
+                f"/api/v1/chats/{chat_id}/complete",
+                json={"message": "hello", "model_id": "test/model-1"},
+            )
+        assert response.status_code == 200, response.text
+        assert self.SECRET_PERSONA in json.dumps(bodies[0]), (
+            "the description never reached the prompt, so its absence from "
+            "the log says nothing")
+        assert self.SECRET_PERSONA not in caplog.text
+
+    def test_the_log_was_actually_recording(
+        self, client, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The floor under both tests above.
+
+        caplog with no handler attached, a logger disabled somewhere in
+        conftest, a level that filters everything: any of them makes `not in
+        caplog.text` true forever. So one line is put through the same
+        capture and required to arrive.
+        """
+        with caplog.at_level(logging.DEBUG):
+            logging.getLogger("elysium.test").debug("marmalade check")
+        assert "marmalade check" in caplog.text
 
 
 class TestTheApiKeyIsNeverHandedBack:

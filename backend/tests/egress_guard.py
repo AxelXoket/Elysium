@@ -97,6 +97,27 @@ def _refuse(host: object, how: str) -> EgressAttempt:
     )
 
 
+#: The older resolver calls, which reach the C resolver on their own rather
+#: than through getaddrinfo. Patching getaddrinfo does not cover a single one
+#: of them: measured, with getaddrinfo replaced by something that raises,
+#: gethostbyname("localhost") still returned an address. A dependency that
+#: reaches for one of these would have sent a live DNS query - leaking the
+#: name it asked for to every resolver on the way - while the suite stayed
+#: green. What leaks there is intent rather than content, but this guard's own
+#: test already calls resolution alone a breach, so the family belongs here.
+#:
+#: These take the thing being looked up as their first argument.
+_RESOLVERS = ("gethostbyname", "gethostbyname_ex", "gethostbyaddr", "getfqdn")
+
+#: And this one takes an address TUPLE instead, which is why it needs its own
+#: wrapper rather than a place in the list above. It was not in the defect
+#: record; it turned up when the test stopped trusting that list and started
+#: asking the socket module what it offers. Measured the same way: with
+#: getaddrinfo trapped, getnameinfo(("127.0.0.1", 80), 0) still came back with
+#: a resolved name.
+_ADDRESS_RESOLVERS = ("getnameinfo",)
+
+
 def install(monkeypatch) -> None:
     """Trap name resolution and connection for the duration of one test."""
     real_getaddrinfo = socket.getaddrinfo
@@ -135,6 +156,22 @@ def install(monkeypatch) -> None:
     monkeypatch.setattr(socket.socket, "connect_ex", guarded_connect_ex)
     monkeypatch.setattr(socket, "create_connection", guarded_create_connection)
 
+    for resolver_name in _RESOLVERS:
+        original = getattr(socket, resolver_name, None)
+        if original is None:  # pragma: no cover - every platform has all four
+            continue
+        monkeypatch.setattr(
+            socket, resolver_name, _guarded_resolver(original, resolver_name)
+        )
+
+    for resolver_name in _ADDRESS_RESOLVERS:
+        original = getattr(socket, resolver_name, None)
+        if original is None:  # pragma: no cover - defensive
+            continue
+        monkeypatch.setattr(
+            socket, resolver_name, _guarded_address_resolver(original)
+        )
+
     # asyncio does not have to come through socket.socket.connect. On Windows
     # the default loop is the Proactor one, whose sock_connect goes to
     # _overlapped.WSAConnect in C - past every patch above. Nothing in the app
@@ -155,6 +192,61 @@ def install(monkeypatch) -> None:
                     continue
                 monkeypatch.setattr(loop_class, method,
                                     _guarded_loop_method(original, method))
+
+
+def _is_this_machine(host: object) -> bool:
+    """Whether the name being looked up is the name of THIS computer.
+
+    Deliberately not folded into is_local, and the difference is the point.
+    getfqdn() with no argument asks this machine its own name, and does it by
+    handing that name straight to gethostbyaddr - so the moment gethostbyaddr
+    was guarded, socket.getfqdn() started raising. Refusing that is not strict,
+    it is broken: nothing has left the machine, and third-party code asks for
+    it routinely.
+
+    The allowance stops here, at the four legacy resolvers, rather than going
+    into is_local, because getaddrinfo(gethostname()) is refused today and
+    there is no reason to loosen it. Only the door that needed opening opens.
+    """
+    if host is None:
+        return False
+    text = str(host).strip().rstrip(".").lower()
+    if not text:
+        return False
+    own = socket.gethostname().rstrip(".").lower()
+    return text == own or text == own.split(".", 1)[0]
+
+
+def _guarded_resolver(original, name: str):
+    """Wrap a resolver whose first argument is the thing being looked up.
+
+    getfqdn is the odd one: it is pure Python, it defaults to the empty string
+    and it swallows OSError. The empty string is on the loopback list so the
+    no-argument call still works, and EgressAttempt is an AssertionError rather
+    than an OSError, so it travels out through that except clause instead of
+    being quietly turned into a hostname.
+    """
+    def guarded(host=("" if name == "getfqdn" else None), *args, **kwargs):
+        if not is_local(host) and not _is_this_machine(host):
+            raise _refuse(host, "resolve")
+        return original(host, *args, **kwargs)
+
+    return guarded
+
+
+def _guarded_address_resolver(original):
+    """Wrap a resolver whose first argument is a connect()-shaped address.
+
+    Same allowance as the name-first ones: this machine's own name is not
+    egress, because a reverse lookup of a loopback address answers with it.
+    """
+    def guarded(address=None, *args, **kwargs):
+        host = _target(address)
+        if not is_local(host) and not _is_this_machine(host):
+            raise _refuse(host, "resolve")
+        return original(address, *args, **kwargs)
+
+    return guarded
 
 
 def _guarded_loop_method(original, method: str):
