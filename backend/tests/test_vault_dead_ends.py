@@ -22,7 +22,9 @@ whole question is whether the REAL repair path is reachable.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -373,3 +375,93 @@ class TestTheOneWayToProveYouKnowThePassphrase:
         assert response.status_code == 200, response.text
         assert response.json() == {"ok": True, "migrated": False,
                                    "backup": None}
+
+
+class TestAWrongPassphraseIsMadeToWait:
+    """K-30, in the shape the measurement argued for.
+
+    A graduated lockout was the plan and was dropped. The reason is worth
+    keeping: no counter this app can persist is out of reach of somebody
+    holding the data folder, so a ladder does nothing against the attacker the
+    threat model names - the one who copies the folder and guesses somewhere
+    this code never runs. It would only have slowed the person at this
+    keyboard, which a flat delay does too, without ever locking an honest user
+    out of their own vault and without needing a clock that survives a reboot.
+
+    So: the delay is real, it is on both doors, and it must not hold the rest
+    of the app while it runs.
+    """
+
+    def test_the_refusal_is_not_instant(
+        self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import vault_state
+        import routers.vault as vault_router
+
+        _vault_with_db(tmp_path, monkeypatch)
+        vault_state.clear_key()
+        monkeypatch.setattr(vault_router, "WRONG_PASSPHRASE_DELAY_S", 0.4)
+
+        started = time.monotonic()
+        response = client.post("/api/v1/vault/unlock",
+                               json={"passphrase": "not the passphrase 123"})
+        waited = time.monotonic() - started
+
+        assert response.status_code == 401
+        assert waited >= 0.4, f"answered in {waited:.2f}s - no delay at all"
+
+    def test_the_right_passphrase_is_not_delayed(
+        self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The discriminating half. A delay on the success path would be a tax
+        # on every launch, paid by the only person it cannot protect against.
+        import vault_state
+        import routers.vault as vault_router
+
+        _vault_with_db(tmp_path, monkeypatch)
+        vault_state.clear_key()
+        monkeypatch.setattr(vault_router, "WRONG_PASSPHRASE_DELAY_S", 5.0)
+
+        started = time.monotonic()
+        response = client.post("/api/v1/vault/unlock",
+                               json={"passphrase": PASSPHRASE})
+        waited = time.monotonic() - started
+
+        assert response.status_code == 200, response.text
+        assert waited < 5.0, f"the correct passphrase waited {waited:.2f}s"
+
+    @pytest.mark.anyio
+    async def test_the_wait_does_not_hold_the_rest_of_the_vault(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The reason the delay sits outside _vault_lock.
+
+        Sleeping inside it would hold every other vault route - including
+        /vault/status, which is the one route the lock screen polls and the
+        one main.py deliberately keeps out of the idle clock so that it can
+        always answer. A typo would have frozen the lock screen.
+        """
+        import vault_state
+        import routers.vault as vault_router
+
+        _vault_with_db(tmp_path, monkeypatch)
+        vault_state.clear_key()
+        monkeypatch.setattr(vault_router, "WRONG_PASSPHRASE_DELAY_S", 1.0)
+
+        import httpx
+        import main
+        transport = httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(transport=transport,
+                                     base_url="http://testserver") as ac:
+            refusal = asyncio.create_task(ac.post(
+                "/api/v1/vault/unlock",
+                json={"passphrase": "not the passphrase 123"}))
+            await asyncio.sleep(0.3)
+            started = time.monotonic()
+            status = await ac.get("/api/v1/vault/status")
+            answered_in = time.monotonic() - started
+            assert (await refusal).status_code == 401
+
+        assert status.status_code == 200
+        assert answered_in < 0.5, (
+            f"status waited {answered_in:.2f}s behind somebody else's typo")

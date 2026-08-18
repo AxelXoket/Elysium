@@ -38,7 +38,7 @@ class FakeHost:
     def load(self, model, values):
         self.loads += 1
 
-    def speak(self, text, values, extra=None):
+    def speak(self, text, values, extra=None, message_id=None):
         self.calls.append({"text": text, "values": values, "extra": extra or {}})
         return {"path": f"C:/cache/abc{len(self.calls)}.wav",
                 "seconds": 1.25, "sample_rate": 44100}

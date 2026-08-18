@@ -97,6 +97,41 @@ def _check_length(passphrase: str) -> None:
         raise HTTPException(422, "passphrase_invalid")
 
 
+#: How long a wrong passphrase waits before it is told so.
+#:
+#: K-30, and the shape is the owner's decision after the measurement came in.
+#: A graduated lockout was the original plan and it was dropped, for a reason
+#: worth keeping written down: no counter this app can persist is out of reach
+#: of somebody who has the data folder, so a ladder does nothing at all
+#: against the attacker the threat model actually names - the one who copies
+#: the folder and guesses at home, where this code never runs. It would only
+#: have slowed the person sitting at this keyboard, which is what a flat delay
+#: does too, without ever locking an honest user out of their own vault and
+#: without needing a clock that survives a reboot.
+#:
+#: So README's and SECURITY.md's "there is no rate limit behind this vault"
+#: stays true and stays unedited. It was always a statement about the offline
+#: attack, and it still is.
+#:
+#: Two seconds because scrypt already charges about a quarter of one, and the
+#: two together put a hand-typed guess near three seconds - slow enough to
+#: matter to a person, short enough that a real typo is not a punishment.
+WRONG_PASSPHRASE_DELAY_S = 2.0
+
+
+async def _refuse_passphrase(where: str) -> None:
+    """Wait, then refuse. Never called while holding _vault_lock.
+
+    The wait is outside the lock deliberately. Sleeping inside it would hold
+    every other vault route - including /vault/status, which the lock screen
+    polls and which main.py keeps out of the idle clock precisely so it can
+    answer at any time - hostage to somebody else's typo.
+    """
+    logger.info("Vault %s rejected (wrong passphrase)", where)
+    await asyncio.sleep(WRONG_PASSPHRASE_DELAY_S)
+    raise HTTPException(401, "wrong_passphrase")
+
+
 def _lock_down_voice_sync() -> list[str]:
     """Everything voice-related that must not survive a lock.
 
@@ -550,6 +585,8 @@ def _upgrade_kdf_if_needed(vault: KeyVault, passphrase: str,
 
 @router.post("/unlock")
 async def vault_unlock(body: PassphraseBody) -> dict:
+    refused = False
+    key: bytes | None = None
     async with _vault_lock:
         vault = _vault()
         if vault_state.is_unlocked():
@@ -570,12 +607,12 @@ async def vault_unlock(body: PassphraseBody) -> dict:
             # quarter of a second and this route holds _vault_lock.
             if await anyio.to_thread.run_sync(vault.unlock,
                                               body.passphrase) is None:
-                logger.info("Vault unlock rejected (wrong passphrase)")
-                raise HTTPException(401, "wrong_passphrase")
-            # Same shape as the real path below. One route that sometimes
-            # carries `migrated`/`backup` and sometimes does not is how a
-            # consumer learns to stop looking for them.
-            return {"ok": True, "migrated": False, "backup": None}
+                refused = True
+            if not refused:
+                # Same shape as the real path below. One route that sometimes
+                # carries `migrated`/`backup` and sometimes does not is how a
+                # consumer learns to stop looking for them.
+                return {"ok": True, "migrated": False, "backup": None}
         # can_recover, not can_derive. K-05: the narrower gate asked only
         # whether salt.bin exists, while recover_with_db below accepts
         # salt.bin OR salt.bin.new - so the route refused, with "this vault
@@ -591,9 +628,15 @@ async def vault_unlock(body: PassphraseBody) -> dict:
                 vault.recover_with_db, body.passphrase, database.check_key
             )
         if key is None:
-            logger.info("Vault unlock rejected (wrong passphrase)")
-            raise HTTPException(401, "wrong_passphrase")
+            refused = True
+    if refused:
+        # OUTSIDE the lock, and that is the point of the flag. K-30's delay
+        # runs here; sleeping inside _vault_lock would hold /vault/status -
+        # the one route the lock screen polls and the one main.py keeps out
+        # of the idle clock so it can always answer - hostage to a typo.
+        await _refuse_passphrase("unlock")
 
+    async with _vault_lock:
         vault_state.set_key(key)
         # A fresh session starts idle at zero, not at however long the app sat
         # locked on the passphrase screen.
@@ -727,6 +770,11 @@ def _rekey_sidecars(db_path: Path, skip: Path, old_key: bytes,
 @router.post("/change-passphrase")
 async def vault_change_passphrase(body: ChangePassphraseBody) -> dict:
     _check_length(body.new_passphrase)
+    # This route's delay is INDEPENDENT of the unlock route's, by decision.
+    # A shared one would have meant that mistyping your current passphrase in
+    # Settings - with the vault already open, on your own machine - made you
+    # wait at the next launch. Two doors, two waits; skipping one by using the
+    # other gains nothing, because both wait.
     async with _vault_lock:
         vault = _vault()
         was_unlocked = vault_state.is_unlocked()
@@ -738,8 +786,11 @@ async def vault_change_passphrase(body: ChangePassphraseBody) -> dict:
             old_key = await anyio.to_thread.run_sync(
                 vault.recover_with_db, body.old_passphrase, database.check_key,
             )
-        if old_key is None:
-            raise HTTPException(401, "wrong_passphrase")
+        refused = old_key is None
+    if refused:
+        await _refuse_passphrase("passphrase change")
+
+    async with _vault_lock:
 
         # FB5b: NO set_key(old_key) here. Reading the current key from
         # vault_state would force a LOCKED vault open (the 423 gate would let

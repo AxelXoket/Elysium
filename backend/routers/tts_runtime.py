@@ -531,7 +531,7 @@ def voice_speak(body: SpeakBody) -> dict:
         result = _speak_in_sentences(
             host, text, values, extra,
             supports_tags=bool(adapter and adapter.capabilities.inline_prosody_tags),
-            density=density, tone=tone,
+            density=density, tone=tone, message_id=body.message_id,
         )
     except refs.RefError as exc:
         raise HTTPException(_STATUS.get(exc.code, 400), exc.code)
@@ -601,7 +601,9 @@ async def voice_speak_stream(body: SpeakBody) -> StreamingResponse:
         yields. One hop rather than two: they are always needed together and a
         second await point buys nothing.
         """
-        return (_prepare_speech_text(body), make_stream_synth(body.uid),
+        return (_prepare_speech_text(body),
+                make_stream_synth(body.uid,
+                                  message_id=body.message_id),
                 _narrative_pref(), stored_pronunciations())
 
     try:
@@ -761,7 +763,8 @@ def _code_for_error(exc: BaseException) -> str:
 def _speak_in_sentences(host, text: str, values: dict, extra: dict | None,
                         *, supports_tags: bool = False,
                         density: int | None = None,
-                        tone: str = "") -> dict:
+                        tone: str = "",
+                        message_id: int | None = None) -> dict:
     """Synthesise a whole message the way the LIVE path does: sentence by
     sentence, then joined into one file.
 
@@ -803,16 +806,20 @@ def _speak_in_sentences(host, text: str, values: dict, extra: dict | None,
 
     sentences = [s for s in speech_prep.sentences(text) if s.strip()]
     if len(sentences) <= 1:
-        return host.speak(_dress(text), values, extra=extra)
+        return host.speak(_dress(text), values, extra=extra,
+                          message_id=message_id)
 
     # A sentence that sanitises down to nothing (a lone malformed span) is
     # skipped rather than sent: an engine asked to speak "" fails the whole
     # utterance for a fragment that had no words in it to begin with.
     spoken = [d for d in (_dress(s) for s in sentences) if d.strip()]
     if not spoken:
-        return host.speak(text, values, extra=extra)
+        return host.speak(text, values, extra=extra,
+                          message_id=message_id)
 
-    parts = [host.speak(sentence, values, extra=extra) for sentence in spoken]
+    parts = [host.speak(sentence, values, extra=extra,
+                        message_id=message_id)
+             for sentence in spoken]
     joined = _join_wavs([p.get("path", "") for p in parts])
     if joined is None:
         # Could not stitch them: the first part alone is still a real answer,
@@ -920,7 +927,8 @@ def _closing_tag(tone: str) -> str:
     return speech_prep.DEFAULT_SPEECH_TAG
 
 
-def make_stream_synth(uid: str | None = None, *, rate: float | None = None):
+def make_stream_synth(uid: str | None = None, *, rate: float | None = None,
+                      message_id: int | None = None):
     """A `synth(text) -> {path, seconds}` callable for the streaming speaker.
 
     The queue must not know what an engine is - that is what keeps its timing
@@ -982,7 +990,8 @@ def make_stream_synth(uid: str | None = None, *, rate: float | None = None):
         payload = dict(extra or {})
         if not _dsp_noop(dsp_rate):
             payload["rate"] = dsp_rate
-        result = host.speak(spoken, values, extra=payload)
+        result = host.speak(spoken, values, extra=payload,
+                            message_id=message_id)
         path = Path(result.get("path", ""))
         return {
             "path": str(path),

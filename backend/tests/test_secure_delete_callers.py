@@ -424,8 +424,32 @@ class TestTheFourWalksThatFollowedOne:
         if not _junction(cache, outside):
             pytest.skip("this machine cannot create a junction")
 
-        VoiceHost()._next_out_path()
+        # K-40 landed after this test and changed WHY it survives, which is
+        # worth pinning rather than papering over: the write is refused before
+        # the trim is even reached, because the spoken reply is chat content
+        # and chat content is not written into a folder that leads somewhere
+        # else. So assert both halves - the refusal, and the file.
+        with pytest.raises(Exception) as caught:
+            VoiceHost()._next_out_path()
+        assert "tts_cache_outside_data_dir" in str(caught.value)
+        assert victim.read_bytes() == content, "walked through the junction"
 
+    def test_the_per_sentence_trim_still_refuses_on_its_own(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The deletion guard, called directly, because the write guard above
+        # now short-circuits the path that used to prove it. It is still
+        # load-bearing: two other sweeps walk this same directory.
+        from tts.host import VoiceHost
+
+        outside, victim, content = self._victim(tmp_path)
+        stale = time.time() - float(config.TTS_CACHE_MAX_AGE_S) - 60
+        os.utime(victim, (stale, stale))
+        cache = self._redirected_cache(tmp_path, monkeypatch)
+        if not _junction(cache, outside):
+            pytest.skip("this machine cannot create a junction")
+
+        assert VoiceHost()._trim_cache(cache) == 0
         assert victim.read_bytes() == content, "walked through the junction"
 
     def test_the_unlock_sweep_does_not_follow_one(
@@ -631,3 +655,91 @@ class TestAFailedRemovalIsNotCountedAsOne:
 
         assert refused, "the rotation never tried to remove its backup"
         assert response.json()["unrevoked"] == refused
+
+
+class TestTheSpokenFormGoesWithItsMessage:
+    """K-45, and the owner's rule that produced it.
+
+    "Nothing that lives in the encrypted database gets written permanently
+    anywhere else." A wav of a reply is that content read aloud. Deleting the
+    message took the row and the image bytes out of the vault and left the
+    recording on disk - and if the user never spoke again, the age trim never
+    ran either, so it stayed until the vault locked.
+    """
+
+    def _cache(self, tmp_path, monkeypatch) -> Path:
+        cache = tmp_path / "audio"
+        cache.mkdir()
+        monkeypatch.setattr(config, "TTS_CACHE_DIR", str(cache))
+        return cache
+
+    def test_deleting_a_message_destroys_its_audio(
+        self, client, tmp_path, monkeypatch: pytest.MonkeyPatch, no_unlink
+    ) -> None:
+        from tests.conftest import make_chat, make_character, get_messages
+
+        cache = self._cache(tmp_path, monkeypatch)
+        chat_id = make_chat(client, make_character(client))
+        message_id = get_messages(client, chat_id)[0]["id"]
+        spoken = cache / f"speak-{message_id}-1700000000000-1.wav"
+        original = b"RIFF" + b"the reply, read aloud" * 30
+        spoken.write_bytes(original)
+        # A neighbour that belongs to a different message, so this cannot pass
+        # by sweeping the whole folder.
+        bystander = cache / f"speak-{message_id + 1}-1700000000000-1.wav"
+        bystander.write_bytes(b"RIFF" + b"somebody else's reply" * 20)
+
+        response = client.delete(
+            f"/api/v1/chats/{chat_id}/messages/{message_id}")
+
+        assert response.status_code == 200, response.text
+        _assert_destroyed(spoken, original)
+        assert bystander.exists(), "it swept a message it was not asked about"
+
+    def test_deleting_a_chat_destroys_the_audio_of_every_message_in_it(
+        self, client, tmp_path, monkeypatch: pytest.MonkeyPatch, no_unlink
+    ) -> None:
+        from tests.conftest import make_chat, make_character, get_messages
+
+        cache = self._cache(tmp_path, monkeypatch)
+        chat_id = make_chat(client, make_character(client))
+        message_id = get_messages(client, chat_id)[0]["id"]
+        spoken = cache / f"speak-{message_id}-1700000000000-1.wav"
+        original = b"RIFF" + b"the greeting, read aloud" * 30
+        spoken.write_bytes(original)
+
+        assert client.delete(f"/api/v1/chats/{chat_id}").status_code == 200
+
+        _assert_destroyed(spoken, original)
+
+    def test_the_name_carries_the_message_it_belongs_to(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The property the sweep rests on. Without the id in the name there is
+        # no way to answer "which of these is that reply", which is exactly
+        # why the audio outlived its message for so long.
+        from tts.host import VoiceHost
+
+        self._cache(tmp_path, monkeypatch)
+        named = Path(VoiceHost()._next_out_path(42)).name
+        anonymous = Path(VoiceHost()._next_out_path(None)).name
+
+        assert named.startswith("speak-42-"), named
+        assert anonymous.startswith("speak-0-"), anonymous
+
+    def test_a_folder_that_leads_elsewhere_is_not_swept_either(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Same rule as every other sweep in this file: the app does not delete
+        # through a redirected name, not even to clean up after itself.
+        from tts.host import VoiceHost
+
+        outside, victim, content = TestTheFourWalksThatFollowedOne._victim(
+            TestTheFourWalksThatFollowedOne(), tmp_path)
+        cache = tmp_path / "cache"
+        monkeypatch.setattr(config, "TTS_CACHE_DIR", str(cache))
+        if not _junction(cache, outside):
+            pytest.skip("this machine cannot create a junction")
+
+        assert VoiceHost().forget_message_audio(1) == []
+        assert victim.read_bytes() == content
