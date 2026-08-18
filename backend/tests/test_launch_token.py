@@ -55,6 +55,29 @@ class TestWhenItIsArmed:
     def test_anything_else_is_refused(self, armed: str, presented) -> None:
         assert launch_token.accepts(presented) is False
 
+    @pytest.mark.parametrize("presented", [
+        chr(0xE9) + "bad",                 # latin-1 range
+        chr(0xFF) + "test-launch-token",   # the top of the byte
+        "token" + chr(0x100),              # past latin-1 entirely
+    ])
+    def test_a_byte_over_ascii_is_refused_rather_than_crashing(
+        self, armed: str, presented: str
+    ) -> None:
+        """It used to raise, and a raise is not a refusal.
+
+        Starlette decodes header bytes as latin-1, so any byte over 0x7f
+        reaches this function as a non-ASCII str - and hmac.compare_digest
+        refuses to compare those, with TypeError. The exception escaped the
+        gate and became a 500 with a traceback, produced by exactly the local
+        process the gate exists to turn away.
+
+        Invisible to this file until now for a mechanical reason worth
+        recording: the test client ASCII-encodes headers and cannot send the
+        byte, so only a call at this level, or one at the raw ASGI layer, can
+        reach it.
+        """
+        assert launch_token.accepts(presented) is False
+
     def test_a_request_without_the_header_is_refused(
         self, client, armed: str
     ) -> None:

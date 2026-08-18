@@ -73,6 +73,31 @@ class TestShapesThatAreLongButNotSecret:
         # any cracking tool tries.
         assert strength.assess(passphrase) == "passphrase_too_simple"
 
+    def test_the_threshold_is_strict_enough_for_its_own_worked_example(
+        self
+    ) -> None:
+        """K-02: the comment named a threshold the code did not use.
+
+        MAX_SINGLE_CHAR_SHARE's docstring said two thirds while the value was
+        a half. "aaaaaaaabcde" - the example the comment itself gives as the
+        thing to refuse - is 8 of 12, which is exactly two thirds and not MORE
+        than it. So at the documented threshold the rule would have accepted
+        the one passphrase it was written for.
+
+        The test above already pins that string. This pins the ARITHMETIC, so
+        that loosening the constant toward the old prose goes red here with
+        the reason attached, rather than silently changing what is accepted.
+        """
+        share = strength.MAX_SINGLE_CHAR_SHARE
+        assert 0 < share < 8 / 12, (
+            f"at {share} the worked example 'aaaaaaaabcde' (8 of 12) would be "
+            f"accepted, which is the exact drift this constant is here to stop"
+        )
+        # And the other direction: a threshold low enough to refuse ordinary
+        # text would be an outage, not a rule. Four of 28 is the commonest
+        # letter in "correct horse battery staple".
+        assert share > 4 / 28
+
     def test_an_ordinary_phrase_with_repeated_letters_is_still_fine(
         self
     ) -> None:

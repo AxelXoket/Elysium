@@ -24,11 +24,14 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import secrets
 import time
 from pathlib import Path
 
 import secure_delete
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------- scrypt KDF
 
@@ -50,6 +53,48 @@ KDF_CURRENT: dict = {"kdf": "scrypt", "v": 2, "n": 2**17, "r": 8, "p": 1}
 
 #: What a vault with no kdf.json is: every vault created before this existed.
 KDF_LEGACY = KDF_V1
+
+
+#: The largest cost this build will derive at. Not a security ceiling - it is
+#: the point past which scrypt cannot be called at all on this platform, so
+#: values above it are corruption rather than choice. maxmem is computed as
+#: 128*n*r + 1 MiB and handed to a C long, which is 4 bytes on Windows, so
+#: 128*n*r must stay under LONG_MAX. Measured: n=2**20 with r=8 is exactly
+#: 1 GiB and works; n=2**21 overflows before a single byte is allocated.
+_MAX_SCRYPT_MEMORY = 2**31 - 1 - 1024 * 1024
+
+
+def _check_scrypt_bounds(n: int, r: int, p: int) -> None:
+    """Refuse parameters that cannot derive a key, before they are used.
+
+    K-06. These came from kdf.json, which is a plain file next to the vault,
+    and the only validation was int(). A file saying n=2**21 - one digit away
+    from the real 2**17, and exactly what a bit flip in a decimal digit
+    produces - passed that check and then made hashlib.scrypt raise.
+
+    That raise is the defect, not the memory. It escaped unlock(), which has
+    no try around its derive_key call, so the route never reached the line
+    below it where recover_with_db would have healed the vault in one pass
+    (it tries the recorded params, then legacy, then current, and rewrites
+    kdf.json with whatever opened the database). Measured: the user got a
+    plain 500 and "Something went wrong. Please try again." forever, one file
+    deletion away from a complete recovery they had no way to know about.
+
+    Refusing here turns that into the case the vault already survives: bad
+    parameters read as the legacy ones, the derived key fails the verifier,
+    and recovery takes over. Deliberately NOT an exception - read_params
+    promises never to raise, and half of the recovery path depends on it.
+    """
+    if n < 2 or r < 1 or p < 1:
+        raise ValueError("scrypt parameters must be positive")
+    if n & (n - 1):
+        raise ValueError("n must be a power of two")
+    if 128 * n * r > _MAX_SCRYPT_MEMORY:
+        raise ValueError("scrypt parameters are larger than this build can run")
+    # p multiplies the work without multiplying maxmem, so it needs its own
+    # bound: OpenSSL checks 128*r*p against maxmem and refuses separately.
+    if 128 * r * p > _MAX_SCRYPT_MEMORY:
+        raise ValueError("scrypt p is larger than this build can run")
 
 
 def _scrypt_kwargs(params: dict) -> dict:
@@ -102,6 +147,20 @@ class KeyVault:
     """
 
     def __init__(self, dir_path: Path) -> None:
+        #: Names of identity files this vault could not destroy.
+        #:
+        #: K-07. secure_delete.discard returns a boolean and, at every site in
+        #: this file, that boolean was dropped. The material is key material -
+        #: a 16-byte salt and its cost parameters are a working recipe for a
+        #: key that may still open snapshots on this disk - and the routes
+        #: above already have somewhere to put it: change-passphrase answers
+        #: with an `unrevoked` list, and it was answering [] while the recipe
+        #: for the revoked key sat next to the vault.
+        #:
+        #: An attribute rather than a return value because change_passphrase
+        #: returns the new key and both of its callers assign it directly; a
+        #: tuple would have become the key at two call sites, silently.
+        self.left_behind: list[str] = []
         self.dir = Path(dir_path)
         self.salt_path = self.dir / "salt.bin"
         self.verifier_path = self.dir / "verifier.bin"
@@ -119,6 +178,24 @@ class KeyVault:
         """Salt still present - a passphrase key can still be derived."""
         return self.salt_path.exists()
 
+    def can_recover(self) -> bool:
+        """Whether ANY salt is on disk, staged or live.
+
+        K-05. The unlock route gated on can_derive(), which asks only about
+        salt.bin - but recover_with_db looks at salt.bin AND salt.bin.new, so
+        the route declared impossible the one state recovery was written for.
+
+        That state is reachable: change_passphrase shelves salt.bin before
+        verifier.bin, so a crash between those two renames leaves no salt.bin,
+        a correct salt.bin.new, and a database already re-keyed. The vault was
+        then wedged - status said "not initialized" so the UI offered setup,
+        init answered 409 because the database is encrypted, and unlock
+        answered 409 because salt.bin was gone. Every door shut, on a vault
+        whose data was intact and whose passphrase the user knew.
+        """
+        return (self.salt_path.exists()
+                or self.salt_path.with_name("salt.bin.new").exists())
+
     # -- KDF parameters -------------------------------------------------------
     def read_params(self, path: Path | None = None) -> dict:
         """The parameters THIS vault's key was derived with.
@@ -133,9 +210,12 @@ class KeyVault:
             data = json.loads(target.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 raise ValueError("not an object")
-            for field in ("n", "r", "p"):
-                int(data[field])
-            return {**KDF_LEGACY, **data}
+            checked = {field: int(data[field]) for field in ("n", "r", "p")}
+            _check_scrypt_bounds(**checked)
+            # The CHECKED integers, not the raw values. Before this, a float
+            # or a numeric string was validated and then the original handed
+            # to scrypt, so the thing tested was not the thing used.
+            return {**KDF_LEGACY, **data, **checked}
         except Exception:                                # noqa: BLE001
             return dict(KDF_LEGACY)
 
@@ -158,7 +238,7 @@ class KeyVault:
         deleted."""
         self.dir.mkdir(parents=True, exist_ok=True)
         ts = int(time.time())
-        for p in (self.salt_path, self.verifier_path):
+        for p in (self.salt_path, self.verifier_path, self.kdf_path):
             if p.exists():
                 try:
                     p.replace(p.with_name(f"{p.name}.bak-{ts}"))
@@ -167,9 +247,25 @@ class KeyVault:
         salt = new_salt()
         params = dict(KDF_CURRENT)
         key = derive_key(passphrase, salt, params)
+        # PARAMETERS FIRST, and the order is the whole point.
+        #
+        # is_initialized() is "salt.bin and verifier.bin both exist", so those
+        # two writes are what makes the vault real. Writing kdf.json after
+        # them left a window in which the vault WAS initialized and its
+        # parameters were not recorded: read_params falls back to the legacy
+        # cost, unlock derives a key that fails the verifier, init answers 409
+        # because the vault already exists, and recovery cannot help because
+        # there is no database yet for db_check to open. A dead end, from one
+        # crash between two adjacent lines.
+        #
+        # Parameters alone are inert - nothing reads them without a salt - so
+        # with this order every crash window here is simply re-runnable
+        # through /vault/init. kdf.json joins the shelving loop above for the
+        # same reason: a re-init used to overwrite the parameters describing
+        # the salt it had just moved aside.
+        self.write_params(params)
         self.salt_path.write_bytes(salt)
         self.verifier_path.write_bytes(make_verifier(key))
-        self.write_params(params)
         return key
 
     # -- later runs: unlock ---------------------------------------------------
@@ -177,10 +273,26 @@ class KeyVault:
         """Return the key if the passphrase is correct, else None."""
         if not self.is_initialized():
             return None
-        salt = self.salt_path.read_bytes()
-        key = derive_key(passphrase, salt, self.read_params())
-        if check_verifier(key, self.verifier_path.read_bytes()):
-            return key
+        try:
+            salt = self.salt_path.read_bytes()
+            key = derive_key(passphrase, salt, self.read_params())
+            if check_verifier(key, self.verifier_path.read_bytes()):
+                return key
+        except Exception as exc:                         # noqa: BLE001
+            # "unlock does not throw; recovery takes over" is the contract the
+            # route depends on, and it was not kept. An unreadable salt.bin,
+            # an unreadable verifier.bin, or parameters scrypt refuses all
+            # escaped to a 500 - and the 500 happened one line ABOVE the call
+            # to recover_with_db, which already survives every one of them
+            # (its own derive_key sits in except Exception: continue). So the
+            # repair existed, was correct, and was unreachable.
+            #
+            # The class name only, never the traceback and never the message.
+            # This module's first promise is that a passphrase is not logged
+            # here, and the passphrase is an argument to the frame that threw.
+            logger.warning(
+                "vault: could not derive from the stored identity (%s); "
+                "falling through to recovery", type(exc).__name__)
         return None
 
     # -- DB-validated recovery ------------------------------------------------
@@ -217,12 +329,28 @@ class KeyVault:
                     continue
                 try:  # best-effort repair: a write error must not block entry
                     if sp != self.salt_path:
+                        # The salt being replaced describes a key that may
+                        # still open snapshots on this disk, so it leaves by
+                        # the same door change_passphrase uses for the shelved
+                        # identity - overwritten, not handed back to the
+                        # filesystem with its bytes intact. This line used to
+                        # be a plain write_bytes, and K-05 makes it common.
+                        if self.salt_path.exists():
+                            self.left_behind.extend(
+                                [] if secure_delete.discard(self.salt_path)
+                                else [self.salt_path.name])
                         self.salt_path.write_bytes(salt)
                     self.verifier_path.write_bytes(make_verifier(key))
                     self.write_params(params)
                     for leftover in (salt_new, ver_new, kdf_new):
-                        if leftover.exists():
-                            secure_delete.discard(leftover)
+                        if leftover.exists() and not secure_delete.discard(
+                                leftover):
+                            # K-07. discard returns False and says nothing for
+                            # an ordinary OSError, and this sat inside an
+                            # except OSError that a False return never even
+                            # reaches. A staged identity surviving here is the
+                            # recipe for a key, left beside the vault.
+                            self.left_behind.append(leftover.name)
                 except OSError:
                     pass
                 return key
@@ -282,7 +410,8 @@ class KeyVault:
             for leftover in (salt_new, ver_new, kdf_new):
                 # The half-written NEW identity. Same material as the old one,
                 # so it leaves by the same door.
-                secure_delete.discard(leftover)
+                if not secure_delete.discard(leftover):
+                    self.left_behind.append(leftover.name)
             raise
         # Rekey confirmed: the old key can no longer open the DB, so shelving
         # (rather than overwriting) the old identity is belt-and-suspenders
@@ -312,5 +441,12 @@ class KeyVault:
             # not having removed it: scrypt params plus a 16-byte salt is a
             # small, distinctive pattern for an undelete tool to find beside a
             # snapshot still encrypted under the key it derives.
-            secure_delete.discard(p.with_name(f"{p.name}.bak-{ts}"))
+            shelved = p.with_name(f"{p.name}.bak-{ts}")
+            if not secure_delete.discard(shelved):
+                # The single most important one to say out loud. If this file
+                # survives, the rotation revoked nothing for anyone holding
+                # the old passphrase - and the route answered {"unrevoked":
+                # []} while it sat there. The caller reads this list and puts
+                # it on the wire beside the snapshots it could not re-key.
+                self.left_behind.append(shelved.name)
         return key

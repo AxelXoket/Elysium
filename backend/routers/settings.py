@@ -224,7 +224,38 @@ def _read_auto_lock(raw: str | None) -> int:
 # POST /settings/api-key
 # ---------------------------------------------------------------------------
 
-def _store_api_key_sync(api_key: str) -> None:
+def _revoke_legacy(name: str) -> bool:
+    """Delete a legacy keyring copy, and remember it if that fails.
+
+    Returns True when a copy is still out there.
+
+    THE RETURN VALUE WAS THE WHOLE DEFECT. `delete_legacy` computes a boolean
+    and, at every one of its six call sites, that boolean was dropped on the
+    floor. The credential store is a different machine-global store with its
+    own failure mode - a broken backend, a roaming profile, a locked store -
+    and it answers False rather than raising, so a failure looked exactly like
+    a success from here.
+
+    Worse than a leak, on the delete path. The vault row goes; the keyring
+    entry stays; and the next unlock's migration sees "vault empty, keyring
+    set", which is its signal to IMPORT. So the key the user revoked was
+    copied back into the vault and used for the next request. The tombstone is
+    what tells those two states apart: "never imported" and "deliberately
+    removed" are otherwise the same absence.
+    """
+    if keyring_service.delete_legacy(name):
+        # Clean state: no copy, so no tombstone to keep. Leaving one behind
+        # would block a genuine future import for no reason.
+        set_setting(keyring_service.revoked_key(name), "")
+        return False
+    set_setting(keyring_service.revoked_key(name), "1")
+    logger.warning(
+        "settings: the legacy credential-store copy of %s could not be "
+        "removed and is still readable on this machine.", name)
+    return True
+
+
+def _store_api_key_sync(api_key: str) -> bool:
     """Worker-thread body (audit KÖK 8): the vault write plus the legacy
     keyring delete, which is a blocking call into the Windows credential store
     and not a fast one.
@@ -236,9 +267,11 @@ def _store_api_key_sync(api_key: str) -> None:
     """
     set_secret(SECRET_API_KEY, api_key)
     # Saving through the app is the user's resolution path for any stale
-    # or conflicting LEGACY keyring copy: best-effort delete it now (the
-    # unlock migration warns about conflicts but never auto-deletes).
-    keyring_service.delete_legacy(SECRET_API_KEY)
+    # or conflicting LEGACY keyring copy: delete it now. The migration warns
+    # about conflicts and never auto-deletes, so this is the only exit from
+    # that state - which is why a failure here is recorded rather than
+    # dropped.
+    return _revoke_legacy(SECRET_API_KEY)
 
 
 @router.post("/api-key")
@@ -281,11 +314,11 @@ async def save_api_key(body: ApiKeyBody) -> dict:
 # DELETE /settings/api-key
 # ---------------------------------------------------------------------------
 
-def _delete_api_key_sync() -> None:
+def _delete_api_key_sync() -> bool:
     """Worker-thread body (audit KÖK 8): vault delete plus legacy keyring
     delete, both blocking. See _store_api_key_sync."""
     delete_secret(SECRET_API_KEY)
-    keyring_service.delete_legacy(SECRET_API_KEY)
+    return _revoke_legacy(SECRET_API_KEY)
 
 
 @router.delete("/api-key")
@@ -299,10 +332,15 @@ async def delete_api_key() -> dict:
     and it came back - silently, and specifically for the one action people
     take when a key has leaked.
     """
-    await anyio.to_thread.run_sync(_delete_api_key_sync)
+    left_behind = await anyio.to_thread.run_sync(_delete_api_key_sync)
     invalidate_model_cache()  # loop-only, see save_api_key
     logger.info("API key deleted.")
-    return {"ok": True}
+    # Not a flat ok. The vault row is gone either way, but a legacy copy the
+    # credential store would not release is still readable by anything running
+    # as this user, and the person who pressed this button pressed it because
+    # a key leaked. Saying "done" to that is the failure this field exists to
+    # end - the same shape /vault/lock reports with audio_left.
+    return {"ok": True, "legacy_copy_left": left_behind}
 
 
 # ---------------------------------------------------------------------------
@@ -310,7 +348,7 @@ async def delete_api_key() -> dict:
 # ---------------------------------------------------------------------------
 
 def _save_proxy_sync(proxy_url: str, proxy_required: bool,
-                     proxy_alias: str) -> None:
+                     proxy_alias: str) -> bool:
     """Worker-thread body (audit KÖK 8): the write transaction and the legacy
     keyring delete. The URL is already validated - that has to fail on the loop
     before anything opens the database, exactly as it did before."""
@@ -323,7 +361,7 @@ def _save_proxy_sync(proxy_url: str, proxy_required: bool,
     # store with its own failure mode, and holding the writer lock across a
     # Windows credential-store call would widen the stall this whole change
     # exists to remove.
-    keyring_service.delete_legacy(SECRET_PROXY_URL)
+    return _revoke_legacy(SECRET_PROXY_URL)
 
 
 @router.post("/proxy")
@@ -523,7 +561,7 @@ async def set_proxy_alias(body: ProxyAliasBody) -> dict:
 # DELETE /settings/proxy
 # ---------------------------------------------------------------------------
 
-def _delete_proxy_sync() -> None:
+def _delete_proxy_sync() -> bool:
     """Worker-thread body (audit KÖK 8): the delete transaction and the legacy
     keyring delete. See _save_proxy_sync."""
     with get_db() as con:
@@ -533,13 +571,13 @@ def _delete_proxy_sync() -> None:
     # Mirrors save_proxy, for the same reason delete_api_key does: a legacy
     # copy left behind here is re-migrated into the vault on the next unlock,
     # so "deleted" would mean "back tomorrow".
-    keyring_service.delete_legacy(SECRET_PROXY_URL)
+    return _revoke_legacy(SECRET_PROXY_URL)
 
 
 @router.delete("/proxy")
 async def delete_proxy() -> dict:
     """Remove proxy config atomically (secret + flags, one transaction)."""
-    await anyio.to_thread.run_sync(_delete_proxy_sync)
+    left_behind = await anyio.to_thread.run_sync(_delete_proxy_sync)
 
     # Side effects only after the commit above.
     await reset_client()
@@ -547,7 +585,7 @@ async def delete_proxy() -> dict:
     invalidate_model_cache()
 
     logger.info("Proxy config deleted.")
-    return {"ok": True}
+    return {"ok": True, "legacy_copy_left": left_behind}
 
 
 # ---------------------------------------------------------------------------

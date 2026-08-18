@@ -22,12 +22,31 @@ import re
 import unicodedata
 from collections import Counter
 
-#: 8 was the old floor and it is not defensible against an offline attack: a
-#: lowercase 8-character passphrase is about 2^37 candidates, which scrypt at
-#: 0.24s per guess turns into weeks on one machine and hours on rented GPUs.
-#: 12 is the shortest floor that still buys real time, and it is short enough
-#: that a three-word phrase clears it without effort.
+#: 8 was the old floor and it is not defensible against an offline attack.
+#:
+#: THE ARITHMETIC, REDONE, because the sentence that used to be here did not
+#: evaluate. It said 2^37 candidates at 0.24s per guess "turns into weeks on
+#: one machine and hours on rented GPUs". 2^37 x 0.24s is 1600 years on one
+#: machine, not weeks - four orders of magnitude out, in a comment written to
+#: justify a number. (0.24s is real: crypto.py records 0.242s for the shipped
+#: scrypt parameters.)
+#:
+#: What is actually true, and it is still an argument for moving the floor:
+#: 8 lowercase characters is 26^8, about 2^37.6. One machine would take
+#: centuries, but the cost of an offline attack is set by how wide it can go,
+#: not by one core - and the honest thing to say is that the shipped
+#: parameters make each guess cost 128 MiB, so widening it costs memory rather
+#: than being free. 12 characters multiplies the space by 26^4, about half a
+#: million, and no amount of renting closes that. It is also short enough that
+#: a three-word phrase clears it without effort, which is why it is the floor
+#: rather than something larger.
 MIN_PASSPHRASE_LEN = 12
+
+#: Not a security bound - the length floor is. This is a size cap, so that a
+#: pasted file cannot become a passphrase and spend the scrypt time to find
+#: out. 512 is far above any phrase somebody types and far below anything that
+#: costs real work to hash. Deliberately NOT enforced on the pydantic model:
+#: a model-level max_length echoes the rejected passphrase back in the 422.
 MAX_PASSPHRASE_LEN = 512
 
 #: Below this the passphrase is one idea typed several times - "abababababab"
@@ -37,8 +56,18 @@ MIN_DISTINCT_CHARS = 5
 #: The share of the passphrase one character may occupy. "aaaaaaaabcde" clears
 #: every other rule here - twelve characters, five distinct, not a full run,
 #: not a full repetition - and "a long run plus a short tail" is among the
-#: first masks any cracking tool tries. Two thirds leaves ordinary phrases
-#: alone: a space is the commonest repeat in real text and never approaches it.
+#: first masks any cracking tool tries.
+#:
+#: HALF, and the sentence here used to say two thirds while the value said
+#: half. The value was the right one and the prose was the drift: at two
+#: thirds the example above is 8 of 12, which is exactly two thirds and NOT
+#: more than it, so the rule would have accepted the one passphrase it was
+#: written to refuse. A comment that describes a threshold the code does not
+#: use is worse than no comment - the next person changes the code to match it.
+#:
+#: Half leaves ordinary phrases alone with room to spare. The commonest repeat
+#: in real text is the space, and it does not come close: "correct horse
+#: battery staple" is 28 characters whose commonest is 4.
 MAX_SINGLE_CHAR_SHARE = 0.5
 
 #: Long enough to pass the length floor AND common enough to be in any
@@ -56,10 +85,13 @@ _COMMON = frozenset({
     "correcthorsebatterystaple",
 })
 
-#: Walks, in both directions. The rows are joined as well as listed
-#: separately, because a walk does not stop at the end of a row: the first
-#: version of this checked each row alone and let "qwertyuiopasd" straight
-#: through - eleven characters of one finger sliding left to right.
+#: Walks, in both directions. The keyboard is stored as ONE joined string
+#: rather than three rows, because a walk does not stop at the end of a row:
+#: the first version of this checked each row alone and let "qwertyuiopasd"
+#: straight through - eleven characters of one finger sliding left to right.
+#: Each individual row is a substring of the joined form, forwards and
+#: backwards, so listing them separately would add nothing. (This comment used
+#: to claim the rows were listed separately as well. They never were.)
 _ROWS = (
     "qwertyuiopasdfghjklzxcvbnm",
     "1234567890",

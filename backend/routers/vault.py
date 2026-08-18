@@ -339,8 +339,17 @@ def _vault_status_sync() -> dict:
     # unlock via DB-validated recovery). Only a genuinely ENCRYPTED file counts
     # for that second branch; see classify_db_file for what an empty one used
     # to do here.
+    # can_recover, not can_derive, and this half of K-05 is the half that
+    # matters. The unlock route's gate was the visible symptom; THIS is why
+    # nobody could reach it. VaultGate branches on `initialized` before it
+    # branches on `unlocked`, so a vault whose salt.bin was shelved by a
+    # half-finished rotation was answered "not initialized", shown the SET UP
+    # A PASSPHRASE screen, and never offered the unlock box at all - while
+    # /vault/init refused with encrypted_db_without_identity because the
+    # database is encrypted. Widening only the unlock gate would have fixed a
+    # door nobody could walk to.
     initialized = vault.is_initialized() or (
-        kind == database.DB_ENCRYPTED and vault.can_derive()
+        kind == database.DB_ENCRYPTED and vault.can_recover()
     )
     # One read of the key decides BOTH answers below, and that is the point.
     # Asking is_unlocked() here and get_key() a few lines later is two reads
@@ -544,11 +553,34 @@ async def vault_unlock(body: PassphraseBody) -> dict:
     async with _vault_lock:
         vault = _vault()
         if vault_state.is_unlocked():
+            # VERIFY ANYWAY, and this was a hole. The branch used to return
+            # ok:true without looking at body.passphrase at all, so the app's
+            # one "prove you know the passphrase" primitive answered yes to
+            # anything whenever the vault happened to be open - and told the
+            # caller ok about a passphrase that was wrong.
+            #
+            # change-passphrase closed the identical hole on its own route and
+            # test_vault.py:666 records why: anything that can reach these
+            # routes while the vault is open may use them. Nothing built on
+            # unlock as a re-authentication step - confirm before shredding
+            # the plaintext copy, before revealing a secret - could have
+            # worked while this branch existed.
+            #
+            # Off the loop, like every other derivation here: scrypt is a
+            # quarter of a second and this route holds _vault_lock.
+            if await anyio.to_thread.run_sync(vault.unlock,
+                                              body.passphrase) is None:
+                logger.info("Vault unlock rejected (wrong passphrase)")
+                raise HTTPException(401, "wrong_passphrase")
             # Same shape as the real path below. One route that sometimes
             # carries `migrated`/`backup` and sometimes does not is how a
             # consumer learns to stop looking for them.
             return {"ok": True, "migrated": False, "backup": None}
-        if not vault.can_derive():
+        # can_recover, not can_derive. K-05: the narrower gate asked only
+        # whether salt.bin exists, while recover_with_db below accepts
+        # salt.bin OR salt.bin.new - so the route refused, with "this vault
+        # was never set up", the exact state recovery was written to repair.
+        if not vault.can_recover():
             raise HTTPException(409, "vault_not_initialized")
 
         key = await anyio.to_thread.run_sync(vault.unlock, body.passphrase)
@@ -772,6 +804,12 @@ async def vault_change_passphrase(body: ChangePassphraseBody) -> dict:
             # rotation, reported honestly, that had revoked nothing about it.
             unrevoked.append(backup.name)
             logger.warning("Vault rotation could not remove %s", backup.name)
+        # K-07: and the identity files the vault itself could not destroy. The
+        # shelved salt and verifier ARE the recipe for the revoked key, so a
+        # rotation that left one behind revoked nothing for anybody holding
+        # the old passphrase - and this list is the only place the user could
+        # ever learn that.
+        unrevoked.extend(vault.left_behind)
         logger.info("Vault passphrase changed")
         return {
             "ok": True,
