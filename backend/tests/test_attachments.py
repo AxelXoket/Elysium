@@ -937,29 +937,95 @@ def _palette_png_with_trns(trns: bytes) -> bytes:
     return buf.getvalue()
 
 
-def test_a_palette_transparency_array_rides_through_the_strip_verbatim(client):
-    """K-18. 256 bytes of the uploader's choosing survive a re-encode the
-    README describes as dropping embedded metadata."""
+def test_a_palette_transparency_array_is_rebuilt_from_what_the_pixels_show(client):
+    """K-18, closed. This used to assert the 256 bytes rode through verbatim.
+
+    The old comment said tRNS "carries no uploader information - it is a
+    palette index or a grey level". True of the int form, false of this one:
+    in mode P a tRNS is a byte string with one alpha value per palette entry,
+    and every entry the image never uses is a byte nobody looks at, leaving
+    this machine inside a file the app re-encoded specifically so that nothing
+    would.
+
+    Refusing it outright was measured and rejected: 153 of the 153 real files
+    carrying a `bytes` tRNS would have been visibly broken. Rebuilding it from
+    the alpha values the pixels actually use changed none of the 168 affected
+    files.
+    """
     from PIL import Image as PILImage
 
     arr = bytearray(b"\xff" * 256)
     arr[200:208] = _TRNS_PAYLOAD          # indices no pixel in this image uses
     src = _palette_png_with_trns(bytes(arr))
     # Floor: Pillow must actually be handing back the array form, otherwise
-    # this test is measuring the collapsed-int case the guard is fine with.
+    # this test is measuring the collapsed-int case.
     assert isinstance(PILImage.open(io.BytesIO(src)).info["transparency"], bytes)
 
     row = upload(client, src)
     stored = client.get(f"/api/v1/uploads/images/{row['id']}").content
     out = PILImage.open(io.BytesIO(stored)).info.get("transparency")
 
-    assert isinstance(out, bytes) and len(out) == 256, out
-    assert out == bytes(arr), "K-18 changed shape - re-measure before editing"
-    assert _TRNS_PAYLOAD in out
+    if out is not None:
+        assert _TRNS_PAYLOAD not in out, (
+            "the payload in unused palette entries survived the re-encode")
 
 
-def test_a_greyscale_transparency_value_rides_through_the_strip(client):
-    """K-18, the second door: mode L tRNS is 16 bits, not a grey level index."""
+def test_the_transparency_a_picture_really_uses_is_kept(client):
+    """The discriminating half, and the reason this is a rebuild not a ban.
+
+    A palette image whose transparent index is actually on screen must come
+    back transparent. Dropping tRNS wholesale would turn every "Save for Web"
+    export, every logo and every icon fully opaque - which is the defect this
+    carve-out was written to fix in the first place.
+    """
+    from PIL import Image as PILImage
+
+    img = Image.new("P", (8, 8), 0)
+    img.putpixel((0, 0), 1)
+    palette = [0, 0, 0, 255, 255, 255] + [0] * (768 - 6)
+    img.putpalette(palette)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", transparency=bytes([0, 255]))
+
+    row = upload(client, buf.getvalue())
+    stored = client.get(f"/api/v1/uploads/images/{row['id']}").content
+    out = PILImage.open(io.BytesIO(stored)).info.get("transparency")
+
+    assert out is not None, "a picture that really is transparent came back opaque"
+    # Either shape is correct: a one-entry tRNS trimmed to its used range is
+    # read back by Pillow as the int form. What matters is that index 0 is
+    # still transparent.
+    assert (out == 0 if isinstance(out, int) else out[0] == 0), out
+
+
+def test_an_index_no_pixel_uses_is_dropped(client):
+    """The strict variant the owner asked for.
+
+    An `int` tRNS naming a palette entry that no pixel refers to says
+    something about the file's history and nothing about its appearance.
+    Measured: none of the 168 real files affected by this change.
+    """
+    from PIL import Image as PILImage
+
+    img = Image.new("P", (8, 8), 0)
+    palette = [0, 0, 0] + [255, 255, 255] * 255
+    img.putpalette(palette[:768])
+    buf = io.BytesIO()
+    # Index 7 is never drawn - every pixel is index 0.
+    img.save(buf, format="PNG", transparency=7)
+
+    row = upload(client, buf.getvalue())
+    stored = client.get(f"/api/v1/uploads/images/{row['id']}").content
+
+    assert PILImage.open(io.BytesIO(stored)).info.get("transparency") is None
+
+
+def test_a_greyscale_value_no_pixel_shows_is_dropped(client):
+    """K-18's second door. Mode L tRNS is 16 bits, not a grey level index.
+
+    54321 cannot be a grey this 8-bit image displays, so it described nothing
+    on screen and rode out anyway.
+    """
     from PIL import Image as PILImage
 
     buf = io.BytesIO()
@@ -968,7 +1034,21 @@ def test_a_greyscale_transparency_value_rides_through_the_strip(client):
     row = upload(client, buf.getvalue())
     stored = client.get(f"/api/v1/uploads/images/{row['id']}").content
 
-    assert PILImage.open(io.BytesIO(stored)).info.get("transparency") == 54321
+    assert PILImage.open(io.BytesIO(stored)).info.get("transparency") is None
+
+
+def test_a_greyscale_value_the_picture_does_show_is_kept(client):
+    # The other side of the same rule: a grey that IS on screen is real
+    # transparency and must survive.
+    from PIL import Image as PILImage
+
+    buf = io.BytesIO()
+    Image.new("L", (8, 8), 128).save(buf, format="PNG", transparency=128)
+
+    row = upload(client, buf.getvalue())
+    stored = client.get(f"/api/v1/uploads/images/{row['id']}").content
+
+    assert PILImage.open(io.BytesIO(stored)).info.get("transparency") == 128
 
 
 # test_stripping_still_removes_exif lived here: a JPEG carrying EXIF tag 271

@@ -239,6 +239,20 @@ def _build_system_block(char_row) -> str:
     Non-empty sections are separated by double newlines.
     """
     sections = []
+    # K-31. The character's NAME never reached the model at all - five fields
+    # went out and the one word naming who is speaking was not among them. The
+    # user's persona has carried its name since the beginning
+    # (_build_persona_block below), so the model was told who it was talking
+    # TO and not who it was playing.
+    #
+    # A LABEL, not an instruction, and the persona header's exact twin. "You
+    # are {name}." was the alternative and it competes with the card: an
+    # author who has already set the voice in system_prompt now has the app
+    # talking over them. A header states the fact and leaves the framing to
+    # whoever wrote it.
+    name = (char_row["name"] or "").strip()
+    if name:
+        sections.append(f"[Character: {name}]")
     for label, field in [
         ("System Prompt", "system_prompt"),
         ("Description", "description"),

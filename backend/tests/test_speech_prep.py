@@ -82,50 +82,85 @@ def test_tag_is_removed_for_an_engine_without_tag_support():
     assert "Come here." in out
 
 
-def test_a_citation_becomes_a_delivery_direction_on_the_way_to_the_engine():
-    """CHARACTERIZATION of K-19, not approval. Do not "fix" this test.
+def test_a_citation_is_still_a_citation_by_the_time_it_is_spoken():
+    """K-19, closed. This pair used to characterise the defect.
 
-    This used to be called `test_a_bracket_that_is_not_a_tag_is_left_alone` and
-    asserted `"earlier" in out` - it never looked at the bracket the name was
-    about, so it passed while the opposite of its name was happening.
+    A digit disqualifies `[1]` from being a delivery tag, so `_mask_tags`
+    leaves it unprotected - correctly, it is not a tag. `_expand_numbers` then
+    rewrote the digit into a word and the span came out newly tag SHAPED, and
+    the voice layer, seeing something that now looked like an instruction the
+    author wrote, removed it.
 
-    A digit disqualifies `[1]` from being a delivery tag, so `_mask_tags` (step
-    3) leaves it unprotected. `_expand_numbers` (step 8) then rewrites the digit
-    into a word and the span comes out newly tag SHAPED. The module's own rule
-    is that a span is decided before anything chews on its contents; here the
-    decision was made on the old text and the test applied to the new.
+    The rule the module states is that a span is decided before anything chews
+    on its contents. The decision was being made on the old text and applied
+    to the new.
     """
     out = prep("As shown [1] earlier.", engine_supports_tags=True)
-    assert out == "As shown [one] earlier.", (
-        "K-19 changed shape - re-measure before editing this")
-    # And it is now well formed enough that the tag sanitiser hands it to a
-    # tag reading engine as a real instruction rather than as words.
-    assert voice_tags.usable_as_tag("one")
+    assert out == "As shown [1] earlier.", (
+        "the bracket was rewritten into something else on the way")
 
 
-def test_a_citation_is_deleted_outright_on_a_plain_engine():
-    """The other half of K-19.
+def test_a_citation_survives_an_engine_that_cannot_read_directions():
+    """The half that cost the listener something.
 
-    An engine that cannot read directions gets the whole span REMOVED, so the
-    citation is not merely unspoken, it is gone, and the sentence keeps the
-    hole where it was. The neighbouring words DO survive - an earlier draft of
-    this note claimed otherwise and an adversary check corrected it; the
-    equality below is what was actually measured.
-
-    The reader's door keeps `[1]` untouched (SURVIVORS corpus, in
-    test_voice_tags.py), so the reader and the listener are shown two
-    different sentences. That divergence is the finding, not word loss.
+    An engine with no inline tags had the whole span REMOVED, so the citation
+    was not merely unspoken - it was gone, and the sentence kept the hole.
+    The reader's door leaves `[1]` alone, so reader and listener were shown
+    two different sentences.
     """
     prepared = prep("The answer is 42 [1]. See [2] for details.")
-    assert prepared == "The answer is forty-two [one]. See [two] for details."
+    assert prepared == "The answer is forty-two [1]. See [2] for details."
     spoken = voice_tags.sanitize_for_tts(prepared, engine_supports_tags=False)
-    # Exact on purpose, gap in the spacing included. This is a
-    # characterization test: ANY change to this string means somebody
-    # touched the behaviour and has to come and read K-19 first.
-    assert spoken == "The answer is forty-two . See for details.", spoken
-    # The display door, for contrast, is intact.
+    assert spoken == "The answer is forty-two [1]. See [2] for details.", spoken
+    # The two doors now agree, which is the whole point.
     assert voice_tags.strip_tags("The answer is 42 [1]. See [2] for details.") == (
         "The answer is 42 [1]. See [2] for details.")
+
+
+@pytest.mark.parametrize("source,inside", [
+    # NOT about numbers, and this is the roadmap's correction to the record:
+    # the record blamed number expansion alone. Abbreviation and punctuation
+    # expansion open the identical hole, and between them they account for
+    # most of it.
+    ("Books, papers [etc.] and so on.", "[etc.]"),
+    ("Some of them [e.g.] this one.", "[e.g.]"),
+    ("The result [i.e.] the answer.", "[i.e.]"),
+    ("Pick one [a/b] and go.", "[a/b]"),
+    ("Salt [a & b] pepper.", "[a & b]"),
+    # And the number case the record did name.
+    ("As shown [1] earlier.", "[1]"),
+    ("Chapter [12] covers it.", "[12]"),
+])
+def test_four_different_rewriters_all_left_the_brackets_alone(source, inside):
+    """One hole, four ways in. Fixed once rather than four times.
+
+    _apply_pronunciations, _expand_abbreviations, _expand_numbers and
+    _clean_punctuation each rewrite words, and each of them could turn a span
+    that was not a delivery tag into one that is. Teaching all four to look
+    where they are would have been four chances to miss the fifth; the spans
+    are held out of reach instead.
+    """
+    assert inside in prep(source, engine_supports_tags=True)
+    assert inside in voice_tags.sanitize_for_tts(
+        prep(source), engine_supports_tags=False)
+
+
+def test_a_real_delivery_tag_is_still_handled_by_the_rule_that_owns_it():
+    """The discriminating half, and the one that matters most here.
+
+    Holding every bracket out of the rewriters must not turn into holding
+    every bracket out of the VOICE layer: an author's "[softly]" is a real
+    instruction, and it still has to be given to an engine that reads them and
+    removed from one that does not.
+    """
+    kept = prep("She answered [softly] and left.", engine_supports_tags=True)
+    assert "[softly]" in kept
+    assert voice_tags.usable_as_tag("softly")
+
+    plain = voice_tags.sanitize_for_tts(
+        prep("She answered [softly] and left."), engine_supports_tags=False)
+    assert "softly" not in plain
+    assert "She answered" in plain and "and left" in plain
 
 
 # ── layer 4: narrative ───────────────────────────────────────────────────────

@@ -178,6 +178,13 @@ _MASK_FIND = re.compile(_SENTINEL + "t([a-j]+)" + _SENTINEL)
 def _mask_key(i: int) -> str:
     body = "".join(chr(ord("a") + int(d)) for d in str(i))
     return _SENTINEL + "t" + body + _SENTINEL
+
+
+def _shield_key(i: int) -> str:
+    # A different letter from the tag mask, so the two never collide and a
+    # stray shield key cannot be mistaken for a held tag.
+    body = "".join(chr(ord("a") + int(d)) for d in str(i))
+    return _SENTINEL + "b" + body + _SENTINEL
 # Same shape rule as voice_tags._looks_like_tag, kept in step with it on
 # purpose: lowercase english words, few of them, no digits. Anything else is a
 # citation, a checkbox or an array index and is none of our business.
@@ -191,6 +198,51 @@ def _mask_key(i: int) -> str:
 _TAG_SPAN = re.compile(r"(?<![\w])\[([a-z][a-z ,'\-]{2,39})\](?![(:])")
 #: Kept in step with voice_tags._looks_like_tag, which uses the same number.
 _TAG_MAX_WORDS = 6
+
+
+#: Any bracketed span at all, tag-shaped or not. Same two exclusions
+#: _TAG_SPAN uses so a markdown link and a "[3]:" reference are left alone.
+_ANY_BRACKET = re.compile(r"(?<![\w])\[([^\[\]\n]{1,120})\](?![(:])")
+
+
+def _shield_brackets(text: str) -> tuple[str, list[str]]:
+    """Hold every remaining bracketed span out of the rewriters. K-19.
+
+    _mask_tags above takes the spans that ALREADY look like a delivery tag.
+    What it leaves behind is ordinary bracketed writing, and four steps in the
+    pipeline then rewrite the inside of it: pronunciations, abbreviations,
+    numbers and punctuation. Any of them can turn a span that was not a tag
+    into one that is - and downstream voice_tags then deletes it, because by
+    then it looks exactly like something the author wrote for the engine.
+
+    The record blamed number expansion alone, and the roadmap corrected it to
+    four steps. Measured, and the interesting half is that most of the damage
+    is not about numbers at all: "[etc.]" becomes "[et cetera]", "[e.g.]"
+    becomes "[for example]", "[i.e.]" becomes "[that is]", "[a/b]" becomes
+    "[a or b]" - two lowercase words in brackets, which is the shape of a tag.
+    On an engine without inline tags every one of those is removed together
+    with its brackets, so "x [etc.] y" is spoken as "x y".
+
+    Fixing the four steps one at a time would be four chances to miss the
+    fifth. This holds the spans instead: whatever they were when the author
+    wrote them is what comes back.
+
+    Restored BEFORE _unmask_tags, so the real tags are still handled by the
+    rule that owns them.
+    """
+    held: list[str] = []
+
+    def take(m: re.Match) -> str:
+        held.append(m.group(0))
+        return _shield_key(len(held) - 1)
+
+    return _ANY_BRACKET.sub(take, text), held
+
+
+def _unshield_brackets(text: str, held: list[str]) -> str:
+    for index, original in enumerate(held):
+        text = text.replace(_shield_key(index), original)
+    return text
 
 
 def _mask_tags(text: str) -> tuple[str, list[str]]:
@@ -698,11 +750,17 @@ def prepare(text: str, opts: PrepOptions | None = None) -> str:
     text, held = _mask_tags(text)
     text = _apply_narrative(text, opts)
     text = _strip_structure(text)
+    # K-19. Everything below this line rewrites words, and four of those
+    # rewrites can turn ordinary bracketed writing into something shaped like
+    # a delivery tag - which the voice layer then deletes. Held out of reach
+    # rather than each rewriter taught to look where it is.
+    text, shielded = _shield_brackets(text)
     text = _apply_pronunciations(text, opts.pronunciations)
     text = _expand_abbreviations(text)
     text = _expand_numbers(text)
     text = _clean_punctuation(text)
     text = _strip_symbols(text)
+    text = _unshield_brackets(text, shielded)
     text = _unmask_tags(text, held, keep=opts.engine_supports_tags)
     return _tidy(text)
 

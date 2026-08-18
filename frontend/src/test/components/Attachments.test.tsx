@@ -46,6 +46,7 @@ import { keys } from "@/lib/query/keys";
 import type { ReactNode } from "react";
 import type { ModelList } from "@/lib/schemas/models";
 import type { Chat } from "@/lib/schemas/chats";
+import { MAX_ATTACHMENT_BYTES } from "@/components/chat/attachments";
 
 function wrapper({ children }: { children: ReactNode }) {
   return (
@@ -370,6 +371,73 @@ describe("Attachments", () => {
       expect(useErrorStore.getState().errors[0]?.code).toBe("attachment_invalid");
     });
     expect(screen.queryByAltText("Staged image")).not.toBeInTheDocument();
+  });
+
+  it("turns away an oversized picture before it is uploaded", async () => {
+    // K-32. Nothing on this side read File.size, so a 400 MB picture was
+    // staged, previewed, marked "uploading" and sent in FULL before the
+    // server's 413 came back. The backend was never in danger - it stops
+    // reading at the limit and a body shield sits in front of it - but the
+    // person waited out a transfer that could only ever be refused.
+    setupReadyState();
+    const routes = baseRoutes();
+    let uploads = 0;
+    const wrapped = {
+      ...routes,
+      "/uploads": {
+        ...(routes["/uploads"] ?? {}),
+        response: () => {
+          uploads += 1;
+          return new Response(JSON.stringify({}), { status: 413 });
+        },
+      },
+    };
+    mockFetchWithStreams(wrapped);
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
+    await waitForComposerReady();
+    await waitForAttachReady();
+
+    const huge = new File([new Uint8Array([137, 80, 78, 71])], "huge.png", {
+      type: "image/png",
+    });
+    // Real bytes are not allocated: the size is what the code reads, and a
+    // test that actually built ten megabytes would be paying for nothing.
+    Object.defineProperty(huge, "size", { value: MAX_ATTACHMENT_BYTES + 1 });
+
+    fireEvent.paste(screen.getByLabelText("Message"), {
+      clipboardData: { files: [huge] },
+    });
+
+    await waitFor(() => {
+      expect(useErrorStore.getState().errors[0]?.code).toBe(
+        "attachment_too_large",
+      );
+    });
+    expect(screen.queryByAltText("Staged image")).not.toBeInTheDocument();
+    expect(uploads, "it sent the file anyway").toBe(0);
+  });
+
+  it("takes a picture that is exactly at the limit", async () => {
+    // The discriminating half, and the boundary the backend also pins: the
+    // ceiling is inclusive on both sides of the wire, so a client guessing
+    // low would refuse pictures the app can actually take.
+    setupReadyState();
+    mockFetchWithStreams(baseRoutes());
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
+    await waitForComposerReady();
+    await waitForAttachReady();
+
+    const exact = new File([new Uint8Array([137, 80, 78, 71])], "exact.png", {
+      type: "image/png",
+    });
+    Object.defineProperty(exact, "size", { value: MAX_ATTACHMENT_BYTES });
+
+    fireEvent.paste(screen.getByLabelText("Message"), {
+      clipboardData: { files: [exact] },
+    });
+
+    expect(await screen.findByAltText("Staged image")).toBeInTheDocument();
+    expect(useErrorStore.getState().errors).toHaveLength(0);
   });
 
   it("takes every picture format the contract names, up to the cap", async () => {

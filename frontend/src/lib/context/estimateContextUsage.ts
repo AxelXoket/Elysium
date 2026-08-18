@@ -146,6 +146,14 @@ const SYSTEM_BLOCK_SECTIONS: readonly (readonly [
  */
 export function buildSystemBlock(character: Character): string {
   const sections: string[] = [];
+  // K-31, and this half is what keeps the gauge honest. The backend now opens
+  // the block with the character's name; a mirror that did not would report a
+  // budget slightly smaller than the one actually sent, silently, on every
+  // single conversation.
+  const name = character.name.trim();
+  if (name) {
+    sections.push(`[Character: ${name}]`);
+  }
   for (const [label, field] of SYSTEM_BLOCK_SECTIONS) {
     const value = character[field].trim();
     if (value) {

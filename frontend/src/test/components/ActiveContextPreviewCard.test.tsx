@@ -304,7 +304,7 @@ describe("ActiveContextPreviewCard", () => {
     await openCard();
 
     expect(
-      await screen.findByText("2 of 2 messages fit (≈87 / 8.1K tokens)"),
+      await screen.findByText("2 of 2 messages fit (≈97 / 8.1K tokens)"),
     ).toBeInTheDocument();
     expect(
       screen.queryByText("2 messages in chat history"),
@@ -358,7 +358,7 @@ describe("ActiveContextPreviewCard", () => {
     await openCard();
 
     expect(
-      await screen.findByText("1 of 2 messages fit (≈268 / 425 tokens)"),
+      await screen.findByText("1 of 2 messages fit (≈278 / 425 tokens)"),
     ).toBeInTheDocument();
     expect(
       screen.getByTestId("context-usage-dropped-note"),
