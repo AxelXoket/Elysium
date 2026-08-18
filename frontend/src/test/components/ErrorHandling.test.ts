@@ -414,17 +414,85 @@ describe("errorStore", () => {
     expect(state.queuedErrors).toHaveLength(0);
   });
 
-  it("does not dedupe when the message differs for the same code", () => {
+  it("dedupes on the code, not on the sentence it renders", () => {
+    // REWRITTEN. This used to assert the opposite, and the opposite is what
+    // K-23 is about: the key was code+message, and every count-bearing code
+    // builds a different sentence every time - `images_omitted` says "one
+    // image" then "three images" - so the one rule that was supposed to stop
+    // a repeat never applied to the codes that repeat most.
+    //
+    // The sentence is a rendering of the event, not its identity.
     useErrorStore.getState().pushErrorDirect("same_code", "Message one");
     useErrorStore.getState().pushErrorDirect("same_code", "Message two");
+    expect(useErrorStore.getState().errors).toHaveLength(1);
+  });
+
+  it("keeps two conversations apart even when they fail identically", () => {
+    // K-21. Every sentence in the catalogue is static text, so two chats
+    // failing the same way produced byte-identical events and the second was
+    // dropped. The one the user was not looking at is the one they never
+    // heard about.
+    useErrorStore
+      .getState()
+      .pushErrorDirect("network_error", "Could not reach the server.",
+                       "error", { chatId: 4 });
+    useErrorStore
+      .getState()
+      .pushErrorDirect("network_error", "Could not reach the server.",
+                       "error", { chatId: 9 });
+
+    const errors = useErrorStore.getState().errors;
+    expect(errors).toHaveLength(2);
+    expect(errors.map((e) => e.chatId)).toEqual([4, 9]);
+  });
+
+  it("still collapses the same failure in the same conversation", () => {
+    // The discriminating half. A key that never matches is not a dedupe rule,
+    // it is a stack of duplicates.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      useErrorStore
+        .getState()
+        .pushErrorDirect("network_error", "Could not reach the server.",
+                         "error", { chatId: 4 });
+    }
+    expect(useErrorStore.getState().errors).toHaveLength(1);
+  });
+
+  it("does not let a chatless error match one that has a chat", () => {
+    // Undefined is a value, not a wildcard. Settings, the voice engine and
+    // the player have no chat at all, and folding them into whichever
+    // conversation failed most recently would be a worse attribution than
+    // none.
+    useErrorStore
+      .getState()
+      .pushErrorDirect("network_error", "Could not reach the server.");
+    useErrorStore
+      .getState()
+      .pushErrorDirect("network_error", "Could not reach the server.",
+                       "error", { chatId: 4 });
     expect(useErrorStore.getState().errors).toHaveLength(2);
   });
 
-  it("cannot see the queue when it dedupes, so a waiting error doubles", () => {
-    // CHARACTERISATION, not approval. See KUSUR-DEFTERI K-23.
-    // The dedupe check reads state.errors, the FIVE VISIBLE toasts, and never
-    // state.queuedErrors. So the guarantee "the same sentence is not shown
-    // twice" quietly stops applying the moment the stack is full.
+  it("tells apart a failure that kept your half reply from one that did not", () => {
+    // K-26. The backend has always sent partial_saved and this app has always
+    // parsed it, and then it died at makeApiError. Two different things
+    // happened to the user's words; they are not one event.
+    useErrorStore
+      .getState()
+      .pushErrorDirect("openrouter_timeout", "The request timed out.",
+                       "error", { chatId: 4, partialSaved: true });
+    useErrorStore
+      .getState()
+      .pushErrorDirect("openrouter_timeout", "The request timed out.",
+                       "error", { chatId: 4, partialSaved: false });
+    expect(useErrorStore.getState().errors).toHaveLength(2);
+  });
+
+  it("sees the queue when it dedupes, so a waiting error does not double", () => {
+    // REWRITTEN, was characterisation for K-23. The check read the five
+    // VISIBLE toasts and never the queue, so the guarantee "the same thing is
+    // not shown twice" quietly stopped applying the moment the stack filled -
+    // and the duplicate was then promoted into view like any other event.
     for (let i = 0; i < 5; i++) {
       useErrorStore.getState().pushErrorDirect(`code_${i}`, `Message ${i}`);
     }
@@ -432,14 +500,11 @@ describe("errorStore", () => {
     useErrorStore.getState().pushErrorDirect("waiting", "Same sentence");
 
     const queued = useErrorStore.getState().queuedErrors;
-    expect(queued).toHaveLength(2);
-    expect(queued.map((e) => e.code)).toEqual(["waiting", "waiting"]);
+    expect(queued).toHaveLength(1);
+    expect(queued.map((e) => e.code)).toEqual(["waiting"]);
   });
 
-  it("then shows that doubled error twice as the queue drains", () => {
-    // The half that costs the reader something: the duplicate does not stay
-    // buried in the queue, it is promoted into view like any other event, so
-    // the same sentence ends up occupying two of five slots.
+  it("and the queue drains without showing it twice", () => {
     for (let i = 0; i < 5; i++) {
       useErrorStore.getState().pushErrorDirect(`code_${i}`, `Message ${i}`);
     }
@@ -451,7 +516,7 @@ describe("errorStore", () => {
     useErrorStore.getState().dismiss(useErrorStore.getState().errors[0].id);
 
     const visible = useErrorStore.getState().errors;
-    expect(visible.filter((e) => e.code === "waiting")).toHaveLength(2);
+    expect(visible.filter((e) => e.code === "waiting")).toHaveLength(1);
   });
 
   it("allows the same error again after the visible copy is dismissed", () => {

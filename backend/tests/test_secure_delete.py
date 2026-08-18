@@ -19,6 +19,7 @@ Neither needs administrator rights to create.
 """
 from __future__ import annotations
 
+import builtins
 import os
 from pathlib import Path
 
@@ -178,3 +179,80 @@ class TestItRefusesASharedName:
 
         monkeypatch.setattr(os, "stat", refuse)
         assert secure_delete.is_shared(target) is True
+
+
+class TestItDoesNotLieAboutWhatItDid:
+    """Two ways shred's answer used to be wrong, in opposite directions."""
+
+    def test_a_short_write_does_not_count_as_an_overwrite(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """K-47. The return value of write() was thrown away.
+
+        open(..., "r+b", buffering=0) yields a FileIO, and RawIOBase.write is
+        allowed to write fewer bytes than it was handed and to report that by
+        RETURNING a count - not by raising. So a short write left the tail of
+        the file readable and this function still answered True.
+        """
+        target = tmp_path / "secret"
+        original = b"A" * 4096
+        target.write_bytes(original)
+
+        # FileIO is an immutable type, so the short write is injected by
+        # wrapping the handle rather than patching the class.
+        real_open = builtins.open
+
+        class Stubborn:
+            def __init__(self, handle):
+                self._handle = handle
+
+            def write(self, data):
+                # One byte, then no progress at all - the shape that used to
+                # be invisible because nobody read the count.
+                return self._handle.write(data[:1]) if len(data) > 1 else 0
+
+            def __getattr__(self, name):
+                return getattr(self._handle, name)
+
+            def __enter__(self):
+                self._handle.__enter__()
+                return self
+
+            def __exit__(self, *exc):
+                return self._handle.__exit__(*exc)
+
+        def wrapping_open(file, mode="r", *args, **kwargs):
+            handle = real_open(file, mode, *args, **kwargs)
+            return Stubborn(handle) if "+" in str(mode) else handle
+
+        monkeypatch.setattr(builtins, "open", wrapping_open)
+        monkeypatch.setattr(os, "unlink", lambda *a, **kw: None)
+
+        assert secure_delete.shred(target) is False
+        assert target.exists(), "it unlinked a file it had not overwritten"
+
+    def test_a_failed_unlink_is_not_reported_as_untouched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """K-48. False meant two opposite things.
+
+        If the overwrite finishes and the unlink then fails, the BYTES ARE
+        GONE - only the name is left. Callers translate False as "still
+        readable on disk", which was the opposite of the truth and sent the
+        user looking for content that no longer exists. It still returns
+        False, because the file is still there; what changed is that the log
+        now says which of the two happened.
+        """
+        target = tmp_path / "secret"
+        original = b"B" * 512
+        target.write_bytes(original)
+
+        def refuse(*args, **kwargs):
+            raise OSError(13, "in use")
+
+        monkeypatch.setattr(os, "unlink", refuse)
+
+        assert secure_delete.shred(target) is False
+        survivor = target.read_bytes()
+        assert len(survivor) == len(original)
+        assert survivor != original, "the content was not destroyed"

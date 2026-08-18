@@ -14,6 +14,7 @@ import {
   getProxyHealth,
 } from "../api/settings";
 import type { Settings } from "../schemas/settings";
+import { useErrorStore } from "@/lib/errors";
 
 export function useSettings() {
   return useQuery({
@@ -153,6 +154,10 @@ export function useSetImageOutput() {
         prev ? { ...prev, image_output_enabled: data.image_output_enabled } : prev,
       );
     },
+    // K-22. There was no onError at all, and the caller passes no options
+    // either, so a refused write snapped the switch back with nothing said
+    // anywhere. A rejected save and a mis-registered click looked identical.
+    onError: (err: unknown) => useErrorStore.getState().pushError(err),
   });
 }
 

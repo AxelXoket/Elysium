@@ -175,10 +175,19 @@ async def test_a_long_silence_after_the_first_token_is_not_the_first_token_budge
     """
     gap = config.STREAM_FIRST_TOKEN_TIMEOUT * 2
     assert gap < config.STREAM_TOTAL_TIMEOUT, "the fixture must sit between them"
-    # One reading per line, plus the one taken before the loop starts. The last
-    # value repeats so an extra call (a latency log, say) cannot shift the run.
+    # TWO readings per line now, plus the one before the loop, and the change
+    # is K-16's: the deadline is checked per CHUNK as well as per line. It had
+    # to be. A provider that never terminates a line produces no lines at all,
+    # so a per-line check is a check that never runs, and both budgets were
+    # unreachable for exactly the input they exist to stop.
+    #
+    # The fixture pairs each value so a line and its chunk land at the same
+    # instant, which is what the scenario means: the silence is BETWEEN lines,
+    # not inside one. The last value repeats so an extra call - a latency log,
+    # say - cannot shift the run.
     monkeypatch.setattr(
-        openrouter, "time", _ScriptedClock([0.0, 1.0, 2.0, gap, gap + 1.0]))
+        openrouter, "time",
+        _ScriptedClock([0.0, 0.0, 1.0, 1.0, 2.0, 2.0, gap, gap, gap + 1.0]))
     lines = [
         ": OPENROUTER PROCESSING",
         'data: {"choices":[{"delta":{"content":"Once "}}]}',
@@ -215,3 +224,101 @@ def test_the_two_budgets_are_ordered_sensibly():
 # deadline` line disabled, that test fails on a 30 s response while the scan
 # above stayed green. So the scan is deleted rather than rewritten; there was
 # nothing left for it to prove.
+
+
+# ---------------------------------------------------------------------------
+# K-16: one line with no terminator used to be an unbounded allocation, and
+# the two budgets above could not see it at all.
+# ---------------------------------------------------------------------------
+
+
+class _NeverTerminates:
+    """A provider that sends bytes forever and never finishes a line."""
+
+    def __init__(self, chunk: bytes, times: int) -> None:
+        self.status_code = 200
+        self._chunk = chunk
+        self._times = times
+        self.sent = 0
+
+    async def aiter_bytes(self):
+        for _ in range(self._times):
+            self.sent += len(self._chunk)
+            yield self._chunk
+
+    async def aclose(self):
+        return None
+
+
+@pytest.mark.anyio
+async def test_a_line_that_never_ends_is_refused_rather_than_buffered(
+    monkeypatch,
+):
+    """The allocation half. `buf` had no bound of any kind.
+
+    aiter_bytes with chunk_size unset is a pass-through, so a provider that
+    trickles bytes without ever sending a terminator grew this buffer for as
+    long as it cared to - and httpx's own read timeout resets on every chunk,
+    so nothing else stopped it either.
+    """
+    response = _NeverTerminates(b"x" * 65536, times=1000)
+
+    with pytest.raises(openrouter.OpenRouterError):
+        async for _ in openrouter._aiter_sse_lines(
+            response, max_line_bytes=256 * 1024,
+        ):
+            pass
+
+    assert response.sent <= 256 * 1024 + 65536, (
+        f"it kept reading past the ceiling: {response.sent} bytes")
+
+
+@pytest.mark.anyio
+async def test_the_ceiling_leaves_a_legitimate_image_line_alone():
+    """The discriminating half, and the reason there are two ceilings.
+
+    A generated image arrives as ONE SSE line of base64, which
+    generated_images._MAX_B64_CHARS puts at about 13.3 MiB. A flat 1 MiB cap
+    would have made image output impossible - a safety limit that is really an
+    outage. So the wide ceiling exists and is only in force when pictures were
+    actually asked for.
+    """
+    assert openrouter.IMAGE_LINE_MAX_BYTES > 14 * 1024 * 1024
+    assert openrouter.TEXT_LINE_MAX_BYTES < openrouter.IMAGE_LINE_MAX_BYTES
+
+    body = b"data: " + b"y" * (2 * 1024 * 1024) + b"\n"
+    response = _FakeResponse([])
+    response.aiter_bytes = lambda: _one(body)          # type: ignore[method-assign]
+
+    got = [line async for line in openrouter._aiter_sse_lines(
+        response, max_line_bytes=openrouter.IMAGE_LINE_MAX_BYTES)]
+
+    assert len(got) == 1 and len(got[0]) > 2 * 1024 * 1024
+
+
+async def _one(chunk: bytes):
+    yield chunk
+
+
+@pytest.mark.anyio
+async def test_the_budget_ticks_without_a_single_line_arriving(monkeypatch):
+    """The other half of K-16, and the one the ledger did not have.
+
+    Both deadline checks used to live in the `async for line` loop. No
+    terminator means no lines, so neither budget could ever be evaluated - the
+    guards were placed exactly where the hostile input never arrives.
+    """
+    ticks = 0
+
+    def counting() -> None:
+        nonlocal ticks
+        ticks += 1
+
+    response = _NeverTerminates(b"z" * 1024, times=50)
+
+    async for _ in openrouter._aiter_sse_lines(
+        response, max_line_bytes=10 * 1024 * 1024, on_chunk=counting,
+    ):
+        pass
+
+    assert ticks == 50, f"the budget was checked {ticks} times for 50 chunks"

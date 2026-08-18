@@ -247,6 +247,79 @@ class TestEngineOverride:
         assert r.status_code == 400
         assert outside.read_text(encoding="utf-8") == "{}"   # untouched
 
+    def test_sidecar_write_refuses_a_hardlink_and_spares_its_twin(
+        self, client, monkeypatch, tmp_path
+    ):
+        """K-41. The guard above asked the wrong question.
+
+        A hardlink is not a link as far as is_symlink() is concerned - it is a
+        second ordinary directory entry for the same bytes - and creating one
+        needs no privilege, unlike a symlink. So the check refused the form
+        that needs Developer Mode and admitted the form that does not, and
+        write_text opens with "w", which truncates before anything is written.
+
+        A second name for somebody's document, planted at
+        <model>/elysium-model.json, was therefore zeroed by pressing an engine
+        override button.
+        """
+        import os
+        import pytest
+        root = _point_models_at(monkeypatch, tmp_path)
+        d = make_fish(root, "hardlinked")
+        document = tmp_path / "thesis.txt"
+        original = "a document that has nothing to do with this app." * 40
+        document.write_text(original, encoding="utf-8")
+        try:
+            os.link(document, d / "elysium-model.json")
+        except (OSError, NotImplementedError, AttributeError):
+            pytest.skip("this filesystem cannot make a hard link")
+
+        uid = client.get("/api/v1/tts/models").json()["models"][0]["uid"]
+        r = client.post(f"/api/v1/tts/models/{uid}/engine",
+                        json={"engine_id": "xtts_v2"})
+
+        assert r.status_code == 400, r.text
+        assert document.read_text(encoding="utf-8") == original, (
+            "the override button truncated a file that is not this app's")
+
+    def test_a_sidecar_write_never_truncates_what_is_already_there(
+        self, client, monkeypatch, tmp_path
+    ):
+        """The property that closes the window a check cannot close.
+
+        The guard reads the name; the write happens six lines later. Nothing
+        can make that gap zero. So the write goes to a neighbour and is
+        RENAMED over the target: os.replace repoints a directory entry and
+        never opens the old file, which means even a link planted inside the
+        gap keeps its bytes and merely stops sharing them.
+
+        Asserted by watching what the write actually opens.
+        """
+        import builtins
+        root = _point_models_at(monkeypatch, tmp_path)
+        d = make_fish(root, "atomic")
+        target = d / "elysium-model.json"
+        target.write_text('{"engine_id": "fish_s2"}', encoding="utf-8")
+
+        opened_for_writing = []
+        real_open = builtins.open
+
+        def watching_open(file, mode="r", *args, **kwargs):
+            if any(ch in str(mode) for ch in ("w", "a", "+")):
+                opened_for_writing.append(str(file))
+            return real_open(file, mode, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", watching_open)
+        uid = client.get("/api/v1/tts/models").json()["models"][0]["uid"]
+        r = client.post(f"/api/v1/tts/models/{uid}/engine",
+                        json={"engine_id": "xtts_v2"})
+
+        assert r.status_code == 200, r.text
+        assert str(target) not in opened_for_writing, (
+            f"the target itself was opened for writing: {opened_for_writing}")
+        assert json.loads(target.read_text(encoding="utf-8"))["engine_id"]             == "xtts_v2"
+        assert not list(d.glob("*.tmp-*")), "the staging file was left behind"
+
     def test_unknown_engine_is_refused(self, client, monkeypatch, tmp_path):
         root = _point_models_at(monkeypatch, tmp_path)
         make_fish(root)

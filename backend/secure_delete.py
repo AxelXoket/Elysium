@@ -139,12 +139,45 @@ def shred(path: Path) -> bool:
             # between them would otherwise be overwritten only as far as its
             # old length and the rest left readable.
             if info.st_size:
-                handle.write(os.urandom(info.st_size))
+                # K-47. The return value was discarded, and this is a FileIO -
+                # RawIOBase.write is allowed to write fewer bytes than it was
+                # given and to say so by returning a count, not by raising. A
+                # short write left the TAIL of the file un-overwritten, and
+                # this function still answered True. Loop until the whole
+                # length is covered, and refuse if it stops making progress
+                # rather than spinning.
+                noise = os.urandom(info.st_size)
+                written = 0
+                while written < len(noise):
+                    step = handle.write(noise[written:])
+                    if not step:
+                        log.warning(
+                            "secure_delete: %s could not be fully overwritten "
+                            "- left in place rather than unlinked",
+                            target.name)
+                        return False
+                    written += step
                 handle.flush()
                 os.fsync(handle.fileno())
-        target.unlink()
+        try:
+            target.unlink()
+        except OSError:
+            # K-48. The bytes ARE gone - the overwrite above finished and was
+            # fsynced. Only the name is left. Returning False here made every
+            # caller report "still readable on disk", which was the opposite
+            # of the truth and sent the user looking for a file whose content
+            # no longer exists. Say what actually happened.
+            log.warning(
+                "secure_delete: %s was overwritten but its name could not be "
+                "removed - the content is destroyed, the entry remains",
+                target.name)
+            return False
         return True
     except OSError:
+        # Nothing was destroyed on this path: every guard above returns
+        # early, and the only remaining raiser is the open itself.
+        log.warning("secure_delete: %s could not be opened - left untouched",
+                    target.name)
         return False
 
 

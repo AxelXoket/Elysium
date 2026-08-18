@@ -40,7 +40,10 @@ when an interpreter was recorded but has since gone missing.
 """
 
 import json
+import os
 import logging
+
+import secure_delete
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -308,13 +311,45 @@ def override_engine(uid: str, body: EngineBody) -> dict:
         target_dir = path.parent.resolve()
         if not any(target_dir == r or r in target_dir.parents for r in roots):
             raise HTTPException(400, TTS_MODEL_UNKNOWN)
-        if path.is_symlink():
-            logger.warning("tts: refusing to write sidecar through a symlink")
+        # is_symlink() was the whole guard here, and it is the wrong question.
+        # A HARDLINK is not a link as far as that call is concerned - it is an
+        # ordinary directory entry for the same bytes - and creating one needs
+        # no privilege at all, unlike a symlink. This module's own dependency
+        # says so: secure_delete.is_shared exists in this repository for
+        # exactly this, and it was not being used.
+        #
+        # So a second name for somebody's document, planted at
+        # <model>/elysium-model.json, used to be OPENED FOR WRITING and
+        # truncated to twenty-four bytes by the line below. The check refused
+        # the one form that needs Developer Mode and admitted the one that
+        # does not.
+        # lexists first, and it is the same trap twice now: is_redirected
+        # fails closed on ENOENT, and the sidecar usually does NOT exist -
+        # this is the file being created. Without the gate the guard refused
+        # every ordinary override.
+        if os.path.lexists(path) and (secure_delete.is_redirected(path)
+                                      or secure_delete.is_shared(path)):
+            logger.warning(
+                "tts: refusing to write the sidecar through a name that leads "
+                "somewhere else or is shared with another file")
             raise HTTPException(400, TTS_MODEL_UNKNOWN)
     except OSError:
         raise HTTPException(400, TTS_MODEL_UNKNOWN)
     try:
-        path.write_text(json.dumps({"engine_id": body.engine_id}), encoding="utf-8")
+        # Write beside it, then rename over it. Two things fall out of that,
+        # and both matter more than the guard above:
+        #
+        #  * NOTHING IS EVER TRUNCATED. os.replace repoints a directory entry;
+        #    it does not open the old file. If the target was a hardlink after
+        #    all - planted in the window between the check and this line, which
+        #    is a window a check can never close - the other name keeps its
+        #    bytes and simply stops sharing them with this one.
+        #  * The sidecar is never half-written. A crash mid-write leaves the
+        #    temporary file, not a truncated setting the next scan would read.
+        staged = path.with_name(f"{SIDECAR_NAME}.tmp-{os.getpid()}")
+        staged.write_text(json.dumps({"engine_id": body.engine_id}),
+                          encoding="utf-8")
+        os.replace(staged, path)
     except OSError:
         # The folder exists (we just scanned it) but is not writable - a
         # read-only drive or a permission problem. Telling the user to rescan
