@@ -239,6 +239,8 @@ shield like every other data route.
 | 400 | tts_reference_too_short | Clip is under the minimum length for cloning | Say how short it was; ~10 s of clear speech works |
 | 400 | tts_reference_folder_redirected | The folder for this voice is a junction or a symlink, so saving would write into a directory that is not the app's | Nothing was saved; say the link has to be moved or removed |
 | 500 | tts_cache_outside_data_dir | The generated-audio folder resolves outside the app's data directory | Nothing was written; say the folder has to move back, or the whole data dir with ELYSIUM_DATA_DIR |
+| - | provider_frame_dropped | An SSE frame could not be parsed and its text was lost | Say a piece of the reply is missing; the rest is unaffected |
+| - | stream_ended_without_done | The stream closed with no [DONE] and no finish_reason | Say the reply may be cut short |
 | 400 | tts_transcript_required | This engine clones from the audio AND the words in it; the words are missing | Ask for the words. Do NOT offer to auto-transcribe: no shipped engine can (see below) |
 | 409 | tts_transcribe_unsupported | The loaded engine has no speech recognition, so it cannot draft a clip’s transcript | Do not draw the button at all - gate it on capabilities.transcribes_reference. Never say the engine failed to start |
 | 400 | tts_nothing_to_speak | The message had no words to read out (only markup, tags or symbols) | Say the message had nothing to read; do not offer a retry |

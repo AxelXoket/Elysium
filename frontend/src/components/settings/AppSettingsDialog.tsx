@@ -595,7 +595,16 @@ function NarrationVoiceRow() {
     qc.setQueryData(keys.ttsTagPrefs(), (old: unknown) =>
       old && typeof old === "object" ? { ...old, narrative: next } : old);
     void saveTagPrefs({ narrative: next })
-      .catch(() => undefined)
+      // K-22. The catch was swallowing the failure whole, so the row flipped
+      // to the choice, corrected itself a beat later, and said nothing. The
+      // user watched their setting undo itself and had no way to know the
+      // vault had refused it.
+      //
+      // Routed through the error store rather than a sentence written here:
+      // pushError maps the backend's code to the catalogued sentence, so this
+      // adds no new user-facing text and nothing for the vocabulary gate to
+      // miss. The revert still happens - it is correct, it was just silent.
+      .catch((err: unknown) => useErrorStore.getState().pushError(err))
       .finally(() => void qc.invalidateQueries({ queryKey: keys.ttsTagPrefs() }));
   };
 

@@ -99,15 +99,12 @@ describe("ErrorToastStack", () => {
     expect(screen.queryByText("Auto dismisses this toast.")).not.toBeInTheDocument();
   });
 
-  it("counts down while nobody is looking at the tab", async () => {
-    // CHARACTERISATION, not approval. See KUSUR-DEFTERI K-25.
-    //
-    // The countdown is a plain window.setTimeout with no visibilitychange,
-    // blur or hover listener anywhere in the component. So a toast raised the
-    // moment the user alt-tabs away is gone before they look back, and an
-    // error nobody saw is an error nobody was told about. The pause pattern
-    // already exists in this repo, in useSmoothStreamText, and is not reused
-    // here. If it ever is, this test goes red and the ledger entry closes.
+  it("waits for the tab to come back before it counts down", async () => {
+    // K-25, and this test used to assert the opposite. The countdown was a
+    // plain setTimeout with no listeners at all, so a toast raised as the
+    // user alt-tabbed away was dismissed 4.5 seconds later and never seen -
+    // counted as shown, and if the queue was full it took a waiting error
+    // down with it.
     useErrorStore
       .getState()
       .pushErrorDirect("custom_error", "Raised while you were away.");
@@ -119,14 +116,91 @@ describe("ErrorToastStack", () => {
         get: () => "hidden",
       });
       document.dispatchEvent(new Event("visibilitychange"));
-      window.dispatchEvent(new Event("blur"));
     });
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(AUTO_DISMISS_MS + EXIT_ANIMATION_MS);
+      await vi.advanceTimersByTimeAsync(AUTO_DISMISS_MS * 4);
     });
 
-    expect(screen.queryByText("Raised while you were away.")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Raised while you were away."),
+      "it expired while the tab was hidden",
+    ).toBeInTheDocument();
+
+    // And it does not live forever: coming back starts the clock again.
+    act(() => {
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => "visible",
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(AUTO_DISMISS_MS + EXIT_ANIMATION_MS);
+    });
+    expect(
+      screen.queryByText("Raised while you were away."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not hand back the whole window every time it resumes", async () => {
+    // The trap in the naive version of this fix. A bare paused flag restarts
+    // the full 4.5 seconds on every resume, so a toast in a window that keeps
+    // losing focus never expires at all - a leak wearing a fix's clothes.
+    // What is tracked is the REMAINING time.
+    useErrorStore.getState().pushErrorDirect("custom_error", "Nearly done.");
+    render(<ErrorToastStack />);
+
+    // Most of the window passes while visible.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(AUTO_DISMISS_MS - 200);
+    });
+    expect(screen.queryByText("Nearly done.")).toBeInTheDocument();
+
+    // A brief hide and unhide must not buy another full window.
+    act(() => {
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => "hidden",
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => "visible",
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400 + EXIT_ANIMATION_MS);
+    });
+    expect(
+      screen.queryByText("Nearly done."),
+      "the resume handed back the whole window instead of what was left",
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not vanish from under the pointer", async () => {
+    // Resting the pointer on a toast is what somebody does while reading it.
+    useErrorStore.getState().pushErrorDirect("custom_error", "Read me.");
+    render(<ErrorToastStack />);
+    const toast = screen.getByText("Read me.");
+
+    act(() => {
+      fireEvent.mouseEnter(toast.closest('[role="status"]') as HTMLElement);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(AUTO_DISMISS_MS * 3);
+    });
+    expect(screen.queryByText("Read me.")).toBeInTheDocument();
+
+    act(() => {
+      fireEvent.mouseLeave(toast.closest('[role="status"]') as HTMLElement);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(AUTO_DISMISS_MS + EXIT_ANIMATION_MS);
+    });
+    expect(screen.queryByText("Read me.")).not.toBeInTheDocument();
   });
 
   it("shows at most 5 visible toasts and queues extras", () => {

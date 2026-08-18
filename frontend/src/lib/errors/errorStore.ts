@@ -32,15 +32,37 @@ export interface ErrorEvent {
   createdAt: string;
   /** Severity level */
   severity: ErrorSeverity;
+  /**
+   * Which conversation this belongs to, when it belongs to one. K-21.
+   *
+   * Undefined for the ~two thirds of push sites that have no chat at all -
+   * settings, the voice engine, the player. Undefined is NOT a wildcard: an
+   * event with no chat never matches one with a chat, because aggregating
+   * across that boundary is how a second conversation's failure disappeared
+   * into the first one's toast.
+   */
+  chatId?: number;
+  /**
+   * Whether the half of the reply that had arrived was kept. K-26.
+   *
+   * The backend has always sent this and the frontend has always parsed it,
+   * and then it died at makeApiError, which returns {status, detail,
+   * message}. So the app knew whether the user's words survived and had no
+   * way to say so.
+   */
+  partialSaved?: boolean;
 }
+
+/** The context a caller can attach. Both optional; most sites have neither. */
+export type ErrorContext = Pick<ErrorEvent, "chatId" | "partialSaved">;
 
 interface ErrorState {
   errors: ErrorEvent[];
   queuedErrors: ErrorEvent[];
   /** Push an error from any thrown value. Parses and maps automatically. */
-  pushError: (err: unknown, severity?: ErrorSeverity) => void;
+  pushError: (err: unknown, severity?: ErrorSeverity, context?: ErrorContext) => void;
   /** Push an error with a pre-parsed code and message. */
-  pushErrorDirect: (code: string, message: string, severity?: ErrorSeverity) => void;
+  pushErrorDirect: (code: string, message: string, severity?: ErrorSeverity, context?: ErrorContext) => void;
   /** Dismiss a specific error by id. */
   dismiss: (id: string) => void;
   /** Clear all errors. */
@@ -62,7 +84,7 @@ export const useErrorStore = create<ErrorState>()((set) => ({
   errors: [],
   queuedErrors: [],
 
-  pushError: (err, severity = "error") => {
+  pushError: (err, severity = "error", context = {}) => {
     const parsed = parseApiError(err);
     const event: ErrorEvent = {
       id: nextId(),
@@ -70,17 +92,19 @@ export const useErrorStore = create<ErrorState>()((set) => ({
       code: parsed.detail,
       createdAt: new Date().toISOString(),
       severity,
+      ...context,
     };
     set((state) => enqueueError(state, event));
   },
 
-  pushErrorDirect: (code, message, severity = "error") => {
+  pushErrorDirect: (code, message, severity = "error", context = {}) => {
     const event: ErrorEvent = {
       id: nextId(),
       message,
       code,
       createdAt: new Date().toISOString(),
       severity,
+      ...context,
     };
     set((state) => enqueueError(state, event));
   },
@@ -94,11 +118,43 @@ export const useErrorStore = create<ErrorState>()((set) => ({
   },
 }));
 
+/**
+ * What makes two events "the same one twice". K-21 and K-23 together.
+ *
+ * THE CHAT IS PART OF IT (K-21). Every sentence in the catalogue is static
+ * text, so two different conversations failing the same way produced byte
+ * identical events - and the second was dropped. The user was told one thing
+ * had gone wrong when two had, and the one they were not looking at is the
+ * one they never heard about. Undefined is a value here, not a wildcard: it
+ * never equals a real chat id.
+ *
+ * THE MESSAGE IS NOT (K-23). It used to be, and that made the rule useless
+ * for exactly the codes that need it most: `images_omitted` builds its
+ * sentence around a live count, so the text differed every time and it never
+ * deduped at all. The code plus its context is the identity; the sentence is
+ * a rendering of it.
+ *
+ * partialSaved is in the key because it changes what the user is being told -
+ * "we kept what arrived" and "nothing was saved" are two different events
+ * about the same code, and collapsing them would report the wrong one.
+ */
+function identityOf(event: ErrorEvent): string {
+  return [
+    event.code,
+    event.chatId === undefined ? "-" : String(event.chatId),
+    event.partialSaved === undefined ? "-" : String(event.partialSaved),
+  ].join("\u0000");
+}
+
 function enqueueError(state: ErrorState, event: ErrorEvent): Pick<ErrorState, "errors" | "queuedErrors"> {
-  // Dedupe: skip if an identical code+message toast is already visible.
-  const isDuplicate = state.errors.some(
-    (e) => e.code === event.code && e.message === event.message,
-  );
+  // Both lists, and that is K-23's other half. Scanning only the visible ones
+  // meant a duplicate raised while five toasts were up went into the queue
+  // and was shown again as the queue drained - the exact double the check
+  // exists to prevent, arriving a few seconds late.
+  const identity = identityOf(event);
+  const isDuplicate =
+    state.errors.some((e) => identityOf(e) === identity) ||
+    state.queuedErrors.some((e) => identityOf(e) === identity);
   if (isDuplicate) {
     return {
       errors: state.errors,

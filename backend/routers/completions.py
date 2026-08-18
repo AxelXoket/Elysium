@@ -76,6 +76,8 @@ from generated_images import (
     image_output_enabled,
 )
 from openrouter import (
+    NOTICE_FRAME_DROPPED,
+    NOTICE_STREAM_UNFINISHED,
     OpenRouterError,
     MODALITIES_WITH_IMAGE,
     image_urls_from,
@@ -1590,6 +1592,28 @@ async def _stream_exchange(
         for notice in notices:
             yield _sse_event(notice)
 
+        # Things the provider layer has to say once the stream is under way:
+        # a frame it could not read (K-20), and a stream that stopped without
+        # saying so (K-15). Both used to be counted and dropped on the floor.
+        late_notices: list[dict] = []
+
+        def _note(reason: str, count: int) -> None:
+            """Two literal codes, spelled out at their own emission sites.
+
+            The error census reads `{"type": "notice", "code": ...}` dicts and
+            resolves module constants; it cannot resolve a code that arrives
+            as a function argument. A forwarded variable would have made both
+            of these invisible to the one thing that checks every user-facing
+            code has a sentence.
+            """
+            if reason == NOTICE_FRAME_DROPPED:
+                late_notices.append({"type": "notice",
+                                     "code": NOTICE_FRAME_DROPPED,
+                                     "count": count})
+            else:
+                late_notices.append({"type": "notice",
+                                     "code": NOTICE_STREAM_UNFINISHED})
+
         # None when voice was never enabled: zero stripping work, and the raw
         # text IS the display text (audit-2: no unconditional stripping).
         stripper = voice_tags.StreamStripper() if voice_tags.stripping_active() else None
@@ -1609,6 +1633,10 @@ async def _stream_exchange(
             messages, model_id, gen_params, provider_dict,
             modalities=modalities,
             on_image=image_urls.append if modalities else None,
+            # A SEPARATE queue, not `notices`: those were already emitted
+            # above, before the first delta. These arrive during the stream
+            # and are drained below.
+            on_notice=_note,
         ):
             parts.append(delta)                      # RAW - storage
             voice.feed(delta)                        # RAW - the tags are
@@ -1617,6 +1645,8 @@ async def _stream_exchange(
             shown = stripper.feed(delta) if stripper else delta
             if shown:
                 yield _sse_event({"type": "delta", "content": shown})
+            while late_notices:
+                yield _sse_event(late_notices.pop(0))
             for event in voice.events():             # never waits
                 yield _sse_event(event)
 
@@ -1672,6 +1702,11 @@ async def _stream_exchange(
             "Streaming %s success: chat_id=%d asst_msg_id=%s",
             label, chat_id, done.get("assistant_message", {}).get("id"),
         )
+        # Before `done`, always. A reader that learns a sentence went missing
+        # AFTER being told the reply is complete has been told two things in
+        # the wrong order.
+        while late_notices:
+            yield _sse_event(late_notices.pop(0))
         yield _sse_event({
             "type": "done",
             "chat_id": chat_id,

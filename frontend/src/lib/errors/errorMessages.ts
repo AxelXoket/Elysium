@@ -79,6 +79,14 @@ const ERROR_MESSAGES: Record<string, string> = {
   // which is the promise the whole design is built on and read as a shrug.
   images_omitted:
     "Some images were left out because the selected model cannot read them. The rest of your message was sent.",
+  // Stream notices about the reply itself, added 2026-08-18. Both were
+  // counted inside the provider layer and never left it, so a piece of a
+  // reply could go missing, or a reply could simply stop, and the app showed
+  // a normal complete message either way.
+  provider_frame_dropped:
+    "Part of this reply did not arrive in a form Elysium could read, so a piece of it is missing. Nothing else was affected.",
+  stream_ended_without_done:
+    "The connection ended before the model said it had finished, so this reply may be cut short.",
   image_output_rejected:
     "The model sent back a picture this app would not open. Nothing was saved, and the reply itself is unaffected.",
   image_output_remote_url_refused:

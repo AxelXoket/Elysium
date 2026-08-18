@@ -836,9 +836,18 @@ export function useStreamingCompletion() {
           // which control-flow analysis does not follow: without it TS narrows
           // the checked variable to .
           const evt = errorEvent as StreamErrorEvent;
-          pushError(makeApiError(evt.status, evt.code));
+          // K-21 and K-26. The chat, so two conversations failing the same
+          // way are two events rather than one; and whether the half that
+          // arrived was kept, which the backend has always sent, this file
+          // has always parsed, and makeApiError has always dropped.
+          pushError(makeApiError(evt.status, evt.code), "error", {
+            chatId,
+            partialSaved: evt.partialSaved,
+          });
         } else if (!sawDone) {
-          pushError(makeApiError(0, "invalid_response_shape"));
+          pushError(makeApiError(0, "invalid_response_shape"), "error", {
+            chatId,
+          });
         }
       } catch (err) {
         flusher.flushNow();
@@ -1024,10 +1033,16 @@ export function useStreamingCompletion() {
           // the checked variable to .
           const evt = errorEvent as StreamErrorEvent;
           restoreSnapshot();
-          pushError(makeApiError(evt.status, evt.code));
+          // K-21 and K-26, same as the regenerate path above.
+          pushError(makeApiError(evt.status, evt.code), "error", {
+            chatId,
+            partialSaved: evt.partialSaved,
+          });
         } else if (!sawDone) {
           restoreSnapshot();
-          pushError(makeApiError(0, "invalid_response_shape"));
+          pushError(makeApiError(0, "invalid_response_shape"), "error", {
+            chatId,
+          });
         }
       } catch (err) {
         flusher.flushNow();

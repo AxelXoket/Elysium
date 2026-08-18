@@ -608,7 +608,31 @@ async def complete(
 # Streaming chat completion
 # ---------------------------------------------------------------------------
 
-async def _aiter_sse_lines(response: httpx.Response) -> AsyncIterator[str]:
+#: How long a single SSE line may get before this app stops buffering it.
+#:
+#: K-16. `buf` had no bound at all, so one line with no terminator was an
+#: unbounded allocation - and the roadmap's first suggestion, a flat 1 MiB,
+#: was measured to KILL image output: `_MAX_B64_CHARS` allows a legitimate
+#: 13.3 MiB of base64 in one line. So the ceiling depends on what the request
+#: can legally receive, and the wide one is only in force when pictures were
+#: actually asked for.
+#: The two things this generator has to say that are not reply text.
+#:
+#: K-20 and K-15. Both used to be counted, or not counted, inside the loop and
+#: never leave it: the generator yields str by contract, so a piece of the
+#: reply could vanish and a stream could simply stop, and the app reported
+#: neither. They are literals here rather than f-strings because the error
+#: vocabulary guard scans this repository for LITERAL codes.
+NOTICE_FRAME_DROPPED = "provider_frame_dropped"
+NOTICE_STREAM_UNFINISHED = "stream_ended_without_done"
+
+TEXT_LINE_MAX_BYTES = 1024 * 1024
+IMAGE_LINE_MAX_BYTES = 64 * 1024 * 1024
+
+
+async def _aiter_sse_lines(response: httpx.Response, *,
+                           max_line_bytes: int = TEXT_LINE_MAX_BYTES,
+                           on_chunk=None) -> AsyncIterator[str]:
     """Yield SSE lines, splitting only on CRLF, LF or CR.
 
     A drop-in replacement for `response.aiter_lines()`, which cannot be used
@@ -650,7 +674,27 @@ async def _aiter_sse_lines(response: httpx.Response) -> AsyncIterator[str]:
     async for chunk in response.aiter_bytes():
         if not chunk:
             continue
+        # PER CHUNK, not per line, and that is K-16's other half. The deadline
+        # checks below used to live only in the `async for line` loop - so a
+        # provider that never sends a terminator produced no lines, and
+        # neither the first-token budget nor the wall-clock one could ever be
+        # evaluated. httpx's own read timeout resets on every chunk, so one
+        # byte a second on a single unterminated line held the connection open
+        # for as long as it liked. The guards were placed where the hostile
+        # input never arrives.
+        if on_chunk is not None:
+            on_chunk()
         buf += chunk
+        # And the size ceiling, for the same input from the other direction:
+        # `buf` grew without any bound at all. Two ceilings rather than one,
+        # because a legitimate single SSE line carrying a generated image is
+        # 13.3 MiB of base64 - a flat 1 MiB cap would have made image output
+        # impossible, which is how a "safety" limit becomes an outage.
+        if len(buf) > max_line_bytes:
+            logger.warning(
+                "Stream sent a single line over %d bytes without a "
+                "terminator; refusing to keep buffering it.", max_line_bytes)
+            raise OpenRouterError("openrouter_error")
         if buf.endswith(b"\r"):
             # That CR may be the first half of a CRLF straddling two network
             # reads. Hold it back rather than emit a phantom blank line - a
@@ -680,6 +724,7 @@ async def complete_stream(
     provider: dict,
     modalities: tuple[str, ...] | list[str] | None = None,
     on_image=None,
+    on_notice=None,
 ) -> AsyncIterator[str]:
     """Send a streaming completion request; yield content deltas as they arrive.
 
@@ -764,16 +809,25 @@ async def complete_stream(
 
             saw_token = False
             dropped_frames = 0
+            saw_done = False
+            last_finish = None
             #: sha256 of every image url already handed to the sink. See the
             #: dedup comment in the loop below.
             seen_images: set[bytes] = set()
-            async for line in _aiter_sse_lines(response):
-                # The only bound that survives a keepalive. Everything below
-                # `continue`s on a comment line, and each of those comments
-                # reset httpx's per-read timeout - so a queued request with a
-                # chatty provider could hold this generator open forever.
-                # Checked on EVERY line, comments included, which is the whole
-                # point: the comments are the thing that used to buy time.
+            def check_deadlines() -> None:
+                """The only bound that survives a keepalive.
+
+                Everything in the loop `continue`s on a comment line, and each
+                of those comments resets httpx's per-read timeout - so a
+                queued request with a chatty provider could hold this
+                generator open forever. Checked on EVERY line, comments
+                included, which is the whole point: the comments are the thing
+                that used to buy time.
+
+                Also handed to the splitter, per CHUNK. Without that a stream
+                that never terminates a line produces no lines at all, and a
+                per-line check is a check that never runs.
+                """
                 waited = time.monotonic() - start
                 if not saw_token and waited > STREAM_FIRST_TOKEN_TIMEOUT:
                     logger.warning(
@@ -788,6 +842,16 @@ async def complete_stream(
                     )
                     raise OpenRouterError("openrouter_timeout")
 
+            # One legitimate SSE line can be a whole generated image in
+            # base64, which _MAX_B64_CHARS puts at 13.3 MiB. So the ceiling
+            # depends on whether pictures are even possible for this request.
+            max_line_bytes = (IMAGE_LINE_MAX_BYTES if modalities
+                              else TEXT_LINE_MAX_BYTES)
+            async for line in _aiter_sse_lines(response,
+                                               max_line_bytes=max_line_bytes,
+                                               on_chunk=check_deadlines):
+                check_deadlines()
+
                 line = line.strip()
                 if not line or line.startswith(":"):
                     continue  # blank or keepalive comment
@@ -795,6 +859,7 @@ async def complete_stream(
                     continue
                 data = line[len("data:"):].strip()
                 if data == "[DONE]":
+                    saw_done = True
                     break
                 if not data:
                     # A `data:` with no value is legal SSE and json.loads("")
@@ -819,14 +884,21 @@ async def complete_stream(
                     # rejects exactly that trade for exactly this reason. One
                     # frame is a hole; the whole turn is a loss.
                     dropped_frames += 1
+                    # The frame's TEXT is not logged, and it used to be. A
+                    # malformed frame on a merely mis-encoded stream is the
+                    # reply itself, and this module's own first promise is
+                    # that response body content is never written down. Its
+                    # length and the model are enough to diagnose the shape.
                     logger.error(
-                        "Malformed stream frame: model=%s len=%d head=%.60r",
-                        model_id, len(data), data,
+                        "Malformed stream frame: model=%s len=%d",
+                        model_id, len(data),
                     )
                     continue
 
                 error_obj = chunk.get("error")
                 choices = chunk.get("choices") or []
+                if choices and isinstance(choices[0], dict):
+                    last_finish = choices[0].get("finish_reason") or last_finish
                 choice = choices[0] if choices and isinstance(choices[0], dict) else {}
 
                 if error_obj is not None or choice.get("finish_reason") == "error":
@@ -881,6 +953,23 @@ async def complete_stream(
                     yield content
 
         latency_ms = int((time.monotonic() - start) * 1000)
+        # K-20. The count existed and never left this function: the generator
+        # yields str by contract, so there was nowhere for it to go and the
+        # user was told nothing while a piece of their reply vanished. A sink,
+        # like on_image, because a return value is unreachable to an
+        # `async for` caller.
+        if dropped_frames and on_notice is not None:
+            on_notice(NOTICE_FRAME_DROPPED, dropped_frames)
+        # K-15. A stream that simply stops is indistinguishable from one that
+        # finished, and the app called it finished: the half sentence was
+        # saved and rendered as a normal, complete reply.
+        #
+        # Gated on finish_reason, so a provider that closes cleanly without
+        # ever sending the sentinel produces no warning at all - that was the
+        # ledger's own worry about breaking a conforming provider, and this is
+        # the answer to it.
+        if not saw_done and last_finish is None and on_notice is not None:
+            on_notice(NOTICE_STREAM_UNFINISHED, 0)
         if dropped_frames:
             logger.error(
                 "Stream completed with %d unparseable frame(s): model=%s",

@@ -249,7 +249,7 @@ describe("AppSettingsDialog", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("takes back a narration voice the vault refused, without a word", async () => {
+  it("takes back a narration voice the vault refused, and says so", async () => {
     // CHARACTERISATION, not approval. KUSUR-DEFTERI K-22.
     //
     // The swallowed `.catch(() => undefined)` in NarrationVoiceRow is not an
@@ -265,8 +265,13 @@ describe("AppSettingsDialog", () => {
     // AutoLockControl, which renders its own inline alert, and the stop
     // sequences a page over, which revert AND raise a toast.
     //
-    // Both halves are pinned deliberately. The day this learns to speak, the
-    // last assertion goes red - and K-22 has to come back here to be closed.
+    // REWRITTEN for K-22. The last assertion used to require SILENCE, and the
+    // silence was the defect: the row read Narrator, read Same voice again a
+    // beat later, and nobody was told which of the two the vault holds.
+    //
+    // The revert is still correct and is still asserted. What is new is that
+    // the refusal reaches the error store, which maps the backend's code to
+    // its catalogued sentence - so this adds no user-facing text of its own.
     const user = userEvent.setup();
     const { useErrorStore } = await import("@/lib/errors");
     useErrorStore.getState().clearAll();
@@ -333,10 +338,13 @@ describe("AppSettingsDialog", () => {
         "true",
       ),
     );
-    expect(
-      useErrorStore.getState().errors,
-      "K-22 is fixed: the refusal now speaks, so close it in the ledger",
-    ).toHaveLength(0);
+    await waitFor(() =>
+      expect(
+        useErrorStore.getState().errors,
+        "the vault refused and the user was told nothing",
+      ).toHaveLength(1),
+    );
+    expect(useErrorStore.getState().errors[0].code).toBe("vault_locked");
 
     vi.unstubAllGlobals();
   });

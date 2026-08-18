@@ -219,22 +219,20 @@ async def test_a_mid_stream_moderation_block_is_named_as_one(
 
 
 @pytest.mark.anyio
-async def test_a_malformed_frame_costs_its_text_and_says_nothing(
+async def test_a_malformed_frame_costs_its_text_and_now_says_so(
     anyio_backend, monkeypatch, fake_key, caplog,
 ):
-    """CHARACTERISATION, not approval. KUSUR-DEFTERI K-20.
+    """K-20, rewritten. It used to pin the silence; now it pins the notice.
 
-    Dropping the frame is the right trade and the code says why: ending the
-    turn here would skip finalize(), voice.finish() and drain_events, so a
+    Dropping the frame is still the right trade and the code says why: ending
+    the turn here would skip finalize(), voice.finish() and drain_events, so a
     reply the reader had already finished reading would come back as an error
     banner over shortened text. One frame is a hole, the whole turn is a loss.
 
-    What this pins is the SILENCE around the hole. The stream yields the good
-    frames and the caller receives nothing else - no count, no terminal field,
-    no notice - even though completions.py already runs a `notice` channel
-    built to say "something of yours was quietly dropped" (it carries
-    NOTICE_IMAGE_REJECTED today). The carrier exists; this one path is not
-    wired to it. Connect it and this test goes red, which is the point.
+    What changed is that the hole is now REPORTED. The count existed and never
+    left the generator - it yields str by contract, so there was nowhere for
+    it to go - and the reader was told nothing while a sentence of theirs
+    vanished. A sink, like on_image, is the way out.
     """
     raw = (
         'data: {"choices":[{"delta":{"content":"Once upon "}}]}\n\n'
@@ -245,23 +243,91 @@ async def test_a_malformed_frame_costs_its_text_and_says_nothing(
 
     monkeypatch.setattr(openrouter, "get_client", lambda: _StreamClient(200, raw))
     got: list[str] = []
+    notices: list[tuple] = []
     with caplog.at_level("ERROR"):
         async for delta in openrouter.complete_stream(
             [{"role": "user", "content": "hi"}], "test/model-1", {}, None,
+            on_notice=lambda code, count: notices.append((code, count)),
         ):
             got.append(delta)
 
-    # The text around the hole survives, which is the half that is correct.
-    # And this list being exactly the good chunks IS the silence: the caller
-    # has no other channel out of this generator.
+    # The text around the hole still survives, which was always the correct
+    # half of the trade.
     assert got == ["Once upon ", "a time."]
+    assert notices == [(openrouter.NOTICE_FRAME_DROPPED, 1)]
 
-    # The only record anywhere is a log line, and a log file on disk is not a
-    # channel the person reading the reply has.
+    # And the log no longer carries the frame's TEXT. A malformed frame on a
+    # merely mis-encoded stream is the reply itself, and this module's first
+    # promise is that response body content is never written down.
     messages = [r.getMessage() for r in caplog.records]
     assert any("Malformed stream frame" in m for m in messages)
-    assert any("unparseable frame" in m for m in messages), (
-        "not even the end-of-stream tally was written")
+    assert not any("not json at all" in m for m in messages), (
+        "the provider's text was written to the log")
+
+
+async def test_a_clean_stream_says_nothing_at_all(
+    anyio_backend, monkeypatch, fake_key,
+):
+    # The discriminating half. A sink that fired on every stream would be
+    # noise, and noise is how a notice stops being read.
+    raw = (
+        'data: {"choices":[{"delta":{"content":"hello"},'
+        '"finish_reason":"stop"}]}\n\n'
+        "data: [DONE]\n\n"
+    ).encode("utf-8")
+    monkeypatch.setattr(openrouter, "get_client", lambda: _StreamClient(200, raw))
+    notices: list[tuple] = []
+    async for _ in openrouter.complete_stream(
+        [{"role": "user", "content": "hi"}], "test/model-1", {}, None,
+        on_notice=lambda code, count: notices.append((code, count)),
+    ):
+        pass
+    assert notices == []
+
+
+async def test_a_stream_that_just_stops_is_reported(
+    anyio_backend, monkeypatch, fake_key,
+):
+    """K-15. A stream that ends is not the same as a stream that finished.
+
+    Without [DONE] the generator simply ran out of lines, and the app called
+    that success: the half sentence was saved and rendered as a normal,
+    complete reply, with nothing anywhere to say otherwise.
+    """
+    raw = b'data: {"choices":[{"delta":{"content":"half a sen"}}]}\n\n'
+    monkeypatch.setattr(openrouter, "get_client", lambda: _StreamClient(200, raw))
+    notices: list[tuple] = []
+    got = []
+    async for delta in openrouter.complete_stream(
+        [{"role": "user", "content": "hi"}], "test/model-1", {}, None,
+        on_notice=lambda code, count: notices.append((code, count)),
+    ):
+        got.append(delta)
+
+    assert got == ["half a sen"]
+    assert notices == [(openrouter.NOTICE_STREAM_UNFINISHED, 0)]
+
+
+async def test_a_provider_that_finishes_without_the_sentinel_is_not_nagged(
+    anyio_backend, monkeypatch, fake_key,
+):
+    """The gate, and the answer to the ledger's own worry.
+
+    The record hesitated over this fix because refusing a stream with no
+    [DONE] would break a provider that closes cleanly without sending one.
+    finish_reason is the difference: a provider that says how it finished HAS
+    told us, sentinel or not, so there is nothing to report.
+    """
+    raw = (b'data: {"choices":[{"delta":{"content":"all of it"},'
+           b'"finish_reason":"stop"}]}\n\n')
+    monkeypatch.setattr(openrouter, "get_client", lambda: _StreamClient(200, raw))
+    notices: list[tuple] = []
+    async for _ in openrouter.complete_stream(
+        [{"role": "user", "content": "hi"}], "test/model-1", {}, None,
+        on_notice=lambda code, count: notices.append((code, count)),
+    ):
+        pass
+    assert notices == []
 
 
 @pytest.mark.anyio

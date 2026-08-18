@@ -1174,24 +1174,19 @@ describe("useStreamingCompletion - ghost-message chain (v1.1)", () => {
     expect(deleteController.signal.aborted).toBe(true);
   });
 
-  it("two chats failing the same way produce two indistinguishable toasts", async () => {
-    // CHARACTERISATION, not approval. See KUSUR-DEFTERI K-21.
+  it("two chats failing the same way are two reports, not one", async () => {
+    // REWRITTEN. This used to assert that the second failure was SWALLOWED,
+    // and that was K-21.
     //
     // Streams deliberately keep running when the reader moves to another
     // chat; streamRegistry exists precisely so the chat list can reach them.
-    // That part is design, not a defect. The defect is what happens when one
-    // of those background streams FAILS: the toast goes into a global store
-    // whose ErrorEvent carries id, message, code, createdAt, severity, and
-    // nothing else. Not a chat id, not a message id.
-    //
-    // So a regenerate that fails in a conversation the reader has left raises
-    // its toast over whatever conversation is on screen, and there is no
-    // field anyone could route it by even if the UI wanted to. This test
-    // drives two chats failing identically and shows the two reports are the
-    // same object shape with the same contents: nothing tells them apart.
-    //
-    // The send path does this correctly, with a chat-keyed Map in ChatCanvas.
-    // The day this store learns which chat an error belongs to, this goes red.
+    // That part is design. What was not design: a background stream failing
+    // raised an event whose only fields were id, message, code, createdAt and
+    // severity - no chat, no message id. Every sentence in the catalogue is
+    // static text, so two conversations failing the same way produced
+    // byte-identical events and the dedupe rule dropped the second one. The
+    // conversation the reader was not looking at is the one they never heard
+    // about.
     const seed = [msg(2, "user", "prompt"), msg(3, "assistant", "old answer")];
     const vars = { chatId: 1, messageId: 3, anchor: 3, modelId: "m" };
 
@@ -1223,18 +1218,12 @@ describe("useStreamingCompletion - ghost-message chain (v1.1)", () => {
       await act(() => promise);
     }
 
-    // TWO conversations failed. The reader is told ONCE.
-    //
-    // This is worse than the ambiguity it was written to pin. The store
-    // suppresses a push whose code and message match a visible toast, which
-    // is the right rule when the same failure repeats in one place. Here the
-    // two failures are in different conversations, and because ErrorEvent has
-    // no field naming a chat, they are identical events as far as the store
-    // can see. So the second chat's failure is not merely unattributed, it is
-    // swallowed: nothing on screen ever says it happened.
+    // TWO conversations failed. The reader is told twice, and each report
+    // knows which conversation it came from.
     const toasts = useErrorStore.getState().errors;
-    expect(toasts).toHaveLength(1);
-    expect(toasts[0].code).toBe("openrouter_rate_limited");
+    expect(toasts).toHaveLength(2);
+    expect(toasts.every((t) => t.code === "openrouter_rate_limited")).toBe(true);
+    expect(toasts.map((t) => t.chatId).sort()).toEqual([1, 2]);
     expect(useErrorStore.getState().queuedErrors).toHaveLength(0);
 
     // And both streams really did fail, so this is one report for two events.

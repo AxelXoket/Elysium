@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertCircle, X } from "lucide-react";
 import { useErrorStore } from "@/lib/errors";
 import type { ErrorEvent } from "@/lib/errors";
@@ -63,13 +63,52 @@ function ErrorToast({
   exiting: boolean;
   onClose: (id: string) => void;
 }) {
+  // K-25. The countdown used to run whatever was happening, so a toast raised
+  // as somebody alt-tabbed away was dismissed 4.5 seconds later and never
+  // seen at all - counted as shown, gone, and if the queue was full it took a
+  // waiting error down with it.
+  //
+  // Two things pause it: the tab being hidden, and the pointer resting on the
+  // toast. The second matters because it is what somebody does while READING
+  // one, which is the moment it must not vanish.
+  //
+  // The REMAINING time is tracked rather than the timer restarted. A naive
+  // paused flag gives a full 4.5 seconds back on every resume, so a toast
+  // under the pointer never expires and a toast in a window that keeps losing
+  // focus lives forever - a leak dressed as a fix.
+  const [hovered, setHovered] = useState(false);
+  const [hidden, setHidden] = useState(
+    () => typeof document !== "undefined" && document.visibilityState === "hidden",
+  );
+  const remainingRef = useRef(AUTO_DISMISS_MS);
+
   useEffect(() => {
+    const onVisibility = () =>
+      setHidden(document.visibilityState === "hidden");
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
+
+  // A new error id is a new toast: give it the whole window again.
+  useEffect(() => {
+    remainingRef.current = AUTO_DISMISS_MS;
+  }, [error.id]);
+
+  useEffect(() => {
+    if (hovered || hidden) return;
+    const startedAt = Date.now();
     const timeoutId = window.setTimeout(() => {
       onClose(error.id);
-    }, AUTO_DISMISS_MS);
+    }, remainingRef.current);
 
-    return () => window.clearTimeout(timeoutId);
-  }, [error.id, onClose]);
+    return () => {
+      window.clearTimeout(timeoutId);
+      remainingRef.current = Math.max(
+        0,
+        remainingRef.current - (Date.now() - startedAt),
+      );
+    };
+  }, [error.id, onClose, hovered, hidden]);
 
   return (
     // Non-button container (role="status") so the toast text is announced
@@ -81,6 +120,10 @@ function ErrorToast({
         exiting ? "is-exiting" : ""
       }`}
       onClick={() => onClose(error.id)}
+      // Resting the pointer on a toast is what somebody does while
+      // READING it, which is the one moment it must not disappear.
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       title={error.message}
     >
       <span className="error-toast-accent" aria-hidden="true">

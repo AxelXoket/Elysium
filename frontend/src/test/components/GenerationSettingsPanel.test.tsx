@@ -1123,10 +1123,15 @@ describe("pictures in replies: a toggle with no failure surface", () => {
     expect(sent()).toBe(1);
   });
 
-  it("leaves the switch where it was when the vault refuses, and says nothing", async () => {
-    // CHARACTERISATION, not approval. The day this grows an error surface,
-    // one of the last two assertions goes red and K-22 comes back here to be
-    // closed.
+  it("leaves the switch where it was when the vault refuses, and says so", async () => {
+    // REWRITTEN for K-22. The last two assertions used to require silence.
+    //
+    // The mutation had no onError at all and its caller passes no options, so
+    // a refused write snapped the switch back with nothing said anywhere - a
+    // rejected save and a mis-registered click looked identical. The switch
+    // not moving is still correct and is still asserted; what is new is that
+    // the refusal now reaches the error store, which maps the backend's code
+    // to its catalogued sentence rather than inventing one here.
     const { useErrorStore } = await import("@/lib/errors");
     useErrorStore.getState().clearAll();
     const { toggle, sent } = await renderPictures(true);
@@ -1138,13 +1143,11 @@ describe("pictures in replies: a toggle with no failure surface", () => {
       toggle,
       "the switch moved on a refused write, which would be the worse bug",
     ).toHaveAttribute("aria-checked", "false");
-    expect(
-      useErrorStore.getState().errors,
-      "K-22 is fixed: the refusal now speaks, so close it in the ledger",
-    ).toHaveLength(0);
-    expect(
-      screen.queryByRole("alert"),
-      "K-22 is fixed: an inline alert appeared, so close it in the ledger",
-    ).toBeNull();
+    await waitFor(() =>
+      expect(
+        useErrorStore.getState().errors,
+        "the vault refused and the user was told nothing",
+      ).toHaveLength(1),
+    );
   });
 });

@@ -175,6 +175,20 @@
       ]
     },
     {
+      "code": "provider_frame_dropped",
+      "statuses": [],
+      "channels": [
+        "notice"
+      ]
+    },
+    {
+      "code": "stream_ended_without_done",
+      "statuses": [],
+      "channels": [
+        "notice"
+      ]
+    },
+    {
       "code": "image_output_rejected",
       "statuses": [],
       "channels": [
