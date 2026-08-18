@@ -55,6 +55,7 @@ from tts.errors import (
     TTS_LOAD_TIMEOUT,
     TTS_MODEL_UNKNOWN,
     TTS_OUT_OF_MEMORY,
+    TTS_REFERENCE_CLIP_STUCK,
     TTS_REFERENCE_INVALID,
     TTS_REFERENCE_TOO_SHORT,
     TTS_RUNTIME_INSTALL_FAILED,
@@ -92,6 +93,10 @@ _STATUS = {
     TTS_RUNTIME_INSTALL_FAILED: 500,
     TTS_REFERENCE_INVALID: 400,
     TTS_REFERENCE_TOO_SHORT: 400,
+    # Not 400: the clip that was just sent is fine and nothing about the
+    # request needs changing. Something on this machine is holding the old
+    # file, so the honest answer is "conflict, try again in a moment".
+    TTS_REFERENCE_CLIP_STUCK: 409,
     TTS_TRANSCRIPT_REQUIRED: 400,
     TTS_TRANSCRIBE_UNSUPPORTED: 409,
     TTS_NOTHING_TO_SPEAK: 400,

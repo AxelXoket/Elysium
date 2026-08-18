@@ -15,8 +15,16 @@ from PIL import Image
 
 import config
 import database
+import keyring_service
 import legacy_migration
 import secrets_service
+
+# Captured at COLLECTION time, before the autouse _no_real_keyring fixture
+# swaps them out. K-53's tests need the real functions - the ones that decide
+# whether the machine-wide credential store gets touched - and everywhere else
+# in the suite quite rightly cannot have them.
+_REAL_READ_LEGACY = keyring_service.read_legacy
+_REAL_DELETE_LEGACY = keyring_service.delete_legacy
 
 
 def make_png_bytes(color=(10, 20, 30)) -> bytes:
@@ -235,6 +243,81 @@ def test_save_transaction_atomicity_blob_rolls_back(client):
 # ---------------------------------------------------------------------------
 # Premigrate snapshot lifecycle (watch-point 2)
 # ---------------------------------------------------------------------------
+
+class TestAHalfWrittenSnapshotIsNotASnapshot:
+    """K-46. `exists()` was the whole test, and `backup_encrypted` wrote
+    straight to the final name. A crash or a full disk mid-write therefore
+    left a truncated file wearing a snapshot's name, every later unlock said
+    "already present; kept", and the pass that DELETES ROWS ran with no net
+    behind it. The never-overwrite rule then blocked the repair as well.
+    """
+
+    def _pending_work(self):
+        _plant_legacy_file(make_png_bytes((9, 9, 9)))
+        assert legacy_migration.uploads_migration_pending()
+
+    def test_the_final_name_is_only_ever_reached_by_a_rename(self, client):
+        """The mechanism, pinned directly: if the write goes to the real name,
+        a crash halfway leaves damage there. If it goes to `.partial`, the
+        worst a crash leaves is junk nothing trusts."""
+        self._pending_work()
+        bak = legacy_migration.premigrate_backup_path()
+        written_to = []
+        real_backup = database.backup_encrypted
+
+        def watched(dest, key=None):
+            written_to.append(Path(dest).name)
+            return real_backup(dest, key) if key is not None else real_backup(dest)
+
+        import unittest.mock as mock
+        with mock.patch.object(database, "backup_encrypted", watched):
+            legacy_migration.ensure_premigrate_backup()
+
+        assert written_to == [bak.name + ".partial"]
+        assert bak.exists()
+        assert not bak.with_name(bak.name + ".partial").exists()
+
+    def test_a_snapshot_that_does_not_open_is_replaced_not_trusted(self, client):
+        """The state an old crash already left on somebody's disk."""
+        self._pending_work()
+        bak = legacy_migration.premigrate_backup_path()
+        bak.write_bytes(b"SQLite format 3" + bytes(2049))  # a torn write
+
+        legacy_migration.ensure_premigrate_backup()
+
+        # Replaced by a real one...
+        assert database.check_key(database.get_key(), str(bak))
+        # ...and the unreadable file was moved aside, never deleted: it may be
+        # a snapshot from an era whose passphrase this vault no longer holds.
+        aside = list(bak.parent.glob(bak.name + ".unreadable-*"))
+        assert len(aside) == 1, [p.name for p in bak.parent.iterdir()]
+
+    def test_a_crashed_attempt_does_not_block_the_next_one(self, client):
+        self._pending_work()
+        bak = legacy_migration.premigrate_backup_path()
+        partial = bak.with_name(bak.name + ".partial")
+        partial.write_bytes(b"half a database")
+
+        legacy_migration.ensure_premigrate_backup()
+
+        assert not partial.exists()
+        assert database.check_key(database.get_key(), str(bak))
+
+    def test_a_snapshot_that_cannot_be_read_back_raises(self, client, monkeypatch):
+        """The caller runs the row-deleting pass on the next line, inside a
+        guarded block. Refusing loudly skips that work until the next unlock;
+        returning quietly is what let it run with nothing behind it."""
+        self._pending_work()
+        bak = legacy_migration.premigrate_backup_path()
+        monkeypatch.setattr(database, "backup_encrypted",
+                            lambda dest, key=None: Path(dest).write_bytes(b"junk"))
+
+        with pytest.raises(OSError):
+            legacy_migration.ensure_premigrate_backup()
+
+        assert not bak.exists()
+        assert not bak.with_name(bak.name + ".partial").exists()
+
 
 def test_premigrate_backup_created_kept_and_never_overwritten(client):
     data = make_png_bytes((8, 8, 8))
@@ -457,3 +540,58 @@ def test_a_failed_pass_still_keeps_the_snapshot(client, monkeypatch):
     assert legacy_migration.premigrate_backup_path().exists(), (
         "the snapshot went while a file was still unmigrated"
     )
+
+
+class TestTheSafetySwitchCoversEveryDoor:
+    """K-53. `ELYSIUM_SKIP_LEGACY_MIGRATION` is what stops a throwaway instance
+    - a test, an E2E run, a second copy started to reproduce something - from
+    reaching into the developer's REAL Windows credential store, which is
+    machine-global and does not care that this process has its own vault, its
+    own database and its own temp folder.
+
+    It used to be checked in one place: the unlock migration. Four Settings
+    routes reach the same store without going anywhere near a migration, so
+    saving a key in a disposable instance sent a real `delete_password` into
+    the real store, through a door the switch never watched.
+    """
+
+    def _watch_the_store(self, monkeypatch) -> list:
+        touched: list = []
+        monkeypatch.setattr(keyring_service, "read_legacy", _REAL_READ_LEGACY)
+        monkeypatch.setattr(keyring_service, "delete_legacy", _REAL_DELETE_LEGACY)
+        monkeypatch.setattr(keyring_service.keyring, "get_password",
+                            lambda *a, **k: touched.append("read"))
+        monkeypatch.setattr(keyring_service.keyring, "delete_password",
+                            lambda *a, **k: touched.append("delete"))
+        return touched
+
+    def test_the_switch_is_read_at_the_store_itself(self, monkeypatch):
+        touched = self._watch_the_store(monkeypatch)
+        monkeypatch.setenv(keyring_service.SKIP_ENV, "1")
+        # One coherent fiction: an empty legacy store. Reads find nothing, and
+        # a delete of nothing succeeded.
+        assert _REAL_READ_LEGACY(config.SECRET_API_KEY) is None
+        assert _REAL_DELETE_LEGACY(config.SECRET_API_KEY) is True
+        assert touched == []
+
+    def test_without_the_switch_the_store_really_is_reached(self, monkeypatch):
+        """Positive control. Without this, the test above would keep passing
+        if the functions stopped calling the store at all."""
+        touched = self._watch_the_store(monkeypatch)
+        monkeypatch.delenv(keyring_service.SKIP_ENV, raising=False)
+        _REAL_READ_LEGACY(config.SECRET_API_KEY)
+        _REAL_DELETE_LEGACY(config.SECRET_API_KEY)
+        assert touched == ["read", "delete"]
+
+    def test_a_settings_route_is_behind_the_switch_too(self, client, monkeypatch):
+        """The defect itself: deleting the proxy never mentions migration, and
+        went straight through to the machine-wide store."""
+        touched = self._watch_the_store(monkeypatch)
+        monkeypatch.setenv(keyring_service.SKIP_ENV, "1")
+        assert client.delete("/api/v1/settings/proxy").status_code == 200
+        assert touched == []
+
+    def test_the_two_modules_name_the_same_variable(self):
+        """Two spellings of one environment variable is a switch that is on in
+        one module and off in the other."""
+        assert legacy_migration.SKIP_ENV == keyring_service.SKIP_ENV

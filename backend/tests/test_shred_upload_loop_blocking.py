@@ -93,7 +93,7 @@ def test_discarding_a_backup_still_removes_the_file(client, a_plaintext_backup):
     assert backup.exists()
     r = client.post("/api/v1/vault/discard-plaintext-backup")
     assert r.status_code == 200
-    assert r.json() == {"removed": 1, "left": []}
+    assert r.json() == {"removed": 1, "left": [], "shared": []}
     assert not backup.exists()
     assert a_plaintext_backup.exists(), "the live database must be untouched"
 

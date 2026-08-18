@@ -11,6 +11,7 @@ import { KeyRound, Loader2 } from "lucide-react";
 import { useChangeVaultPassphrase } from "@/lib/query/vault";
 import { PlaintextBackupNotice } from "./PlaintextBackupNotice";
 import { OrphanedCopyNotice } from "./OrphanedCopyNotice";
+import { RotationBackupNotice } from "./RotationBackupNotice";
 import { EmptyStubNotice } from "./EmptyStubNotice";
 import { AutoLockControl } from "./AutoLockControl";
 import { isApiError } from "@/lib/api/client";
@@ -71,7 +72,12 @@ export function VaultSection() {
           under it is the one that promises encryption. */}
       <PlaintextBackupNotice />
       <OrphanedCopyNotice />
-      {/* Last of the three, because it is the least: the other two are copies
+      {/* Beside the orphaned copy, because it is the same size of problem -
+          a whole second vault - with one difference that matters more than
+          the similarity: this one opens with a passphrase the user believes
+          they revoked. */}
+      <RotationBackupNotice />
+      {/* Last of the four, because it is the least: the other two are copies
           of the user's data and this one is provably an empty file. */}
       <EmptyStubNotice />
       <AutoLockControl />

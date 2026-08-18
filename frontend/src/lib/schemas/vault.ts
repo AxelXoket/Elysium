@@ -32,6 +32,13 @@ export const VaultStatusSchema = z.object({
    *  an unexplained file beside the vault of an app whose pitch is that you
    *  can see what it keeps. Optional so an older backend still parses. */
   empty_stub: z.boolean().optional(),
+  /** Full copies of the database left by a rotation that was killed between
+   *  taking its backup and removing it. Every unlock sweeps the ones this
+   *  vault can open - those are duplicates of the live file - so a name that
+   *  reaches here is the other case: a copy that opens only with the
+   *  passphrase that was rotated away, which Elysium will not delete because
+   *  it cannot read it. Optional so an older backend still parses. */
+  rotation_backups: z.array(z.string()).optional(),
 });
 export type VaultStatus = z.infer<typeof VaultStatusSchema>;
 

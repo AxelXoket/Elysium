@@ -191,3 +191,48 @@ describe("removing it", () => {
     expect(alert).toHaveTextContent(BACKUP);
   });
 });
+
+describe("PlaintextBackupNotice - the file that will never come free", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("does not tell you to close a program you cannot close", async () => {
+    /**
+     * K-49. `shred` refuses a file whose bytes answer to a second name,
+     * because overwriting it would destroy whatever that name belongs to.
+     * That refusal used to arrive in the same list as "something has the file
+     * open", so the screen told people to close a program and retry - and
+     * when retrying never worked, to delete the file themselves. Deleting it
+     * removes ONE name and leaves the whole unencrypted database readable
+     * under the other. The wrong sentence was worse than no sentence.
+     */
+    const user = userEvent.setup();
+    mockFetch({
+      "/vault/status": {
+        body: {
+          initialized: true,
+          unlocked: true,
+          plaintext_backups: ["app.db.plain.bak-1700000000"],
+        },
+      },
+      "/vault/discard-plaintext-backup": {
+        body: {
+          removed: 0,
+          left: [],
+          shared: ["app.db.plain.bak-1700000000"],
+        },
+      },
+    });
+    renderWithQueryClient(<PlaintextBackupNotice />);
+
+    await user.click(
+      await screen.findByRole("button", { name: /delete the unencrypted/i }),
+    );
+    await user.click(await screen.findByRole("button", { name: /^delete$/i }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(/shares its contents/i);
+    // And the one instruction that would have made things worse is absent.
+    expect(alert.textContent).not.toMatch(/has the file open/i);
+  });
+});

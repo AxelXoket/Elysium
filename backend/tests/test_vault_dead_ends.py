@@ -465,3 +465,200 @@ class TestAWrongPassphraseIsMadeToWait:
         assert status.status_code == 200
         assert answered_in < 0.5, (
             f"status waited {answered_in:.2f}s behind somebody else's typo")
+
+
+class TestTheDatabaseIsOnlyHalfTheVault:
+    """K-52. `crypto.py` says the encrypted database is the final authority on
+    whether a key is right and the verifier is only a convenience. That was
+    true in exactly one direction: recovery ran when the verifier said NO and
+    never when it said YES.
+
+    So the identity files and the database could come from different moments -
+    restore a backup of app.db without the salt and verifier beside it, or let
+    a synced folder put back an older copy - and the CORRECT current passphrase
+    got a 500 forever, the old one got a 401, and /vault/status reported every
+    honesty field clean. Three answers and not one of them said the true
+    thing, which is that these two files are not the same vault.
+
+    Unlike K-05 and K-06, this is not a door in FRONT of recovery. It is the
+    success branch itself.
+    """
+
+    NEW_PASSPHRASE = "a different correct horse battery staple"
+
+    def _database_from_before_the_change(
+        self, client, tmp_path: Path, monkeypatch
+    ) -> tuple[Path, bytes]:
+        vault, db_path = _vault_with_db(tmp_path, monkeypatch)
+        import vault_state
+        vault_state.clear_key()
+
+        assert client.post("/api/v1/vault/unlock",
+                           json={"passphrase": PASSPHRASE}).status_code == 200
+        era_one = db_path.read_bytes()
+
+        assert client.post("/api/v1/vault/change-passphrase", json={
+            "old_passphrase": PASSPHRASE,
+            "new_passphrase": self.NEW_PASSPHRASE,
+        }).status_code == 200
+        client.post("/api/v1/vault/lock")
+
+        # The restore. Nothing exotic: a file put back from a backup taken
+        # before the passphrase was changed.
+        db_path.write_bytes(era_one)
+        return db_path, era_one
+
+    def test_the_right_passphrase_is_told_what_is_actually_wrong(
+        self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db_path, _ = self._database_from_before_the_change(
+            client, tmp_path, monkeypatch)
+
+        response = client.post("/api/v1/vault/unlock",
+                               json={"passphrase": self.NEW_PASSPHRASE})
+
+        # NOT 500 (which said the disk was full or the file was busy) and NOT
+        # 401 (which said the user had typed it wrong). Both sent people off
+        # to fix something that was not broken.
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"] == "vault_identity_mismatch"
+
+    def test_the_refusal_destroys_nothing(
+        self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The restored database is the user's only copy of that era. A route
+        that diagnosed the mismatch and then tidied one side away would be a
+        worse defect than the silence it replaced."""
+        db_path, era_one = self._database_from_before_the_change(
+            client, tmp_path, monkeypatch)
+
+        client.post("/api/v1/vault/unlock",
+                    json={"passphrase": self.NEW_PASSPHRASE})
+
+        assert db_path.read_bytes() == era_one
+        assert (tmp_path / "verifier.bin").is_file()
+        assert (tmp_path / "salt.bin").is_file()
+
+    def test_a_matching_pair_still_opens_normally(
+        self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Positive control. The new check runs on EVERY unlock, so an ordinary
+        one has to be proved still ordinary - otherwise the guard above could
+        be a guard that never lets anybody in."""
+        _vault_with_db(tmp_path, monkeypatch)
+        import vault_state
+        vault_state.clear_key()
+
+        response = client.post("/api/v1/vault/unlock",
+                               json={"passphrase": PASSPHRASE})
+        assert response.status_code == 200, response.text
+
+    def _identity_only(self, tmp_path: Path, monkeypatch) -> Path:
+        """Identity files, no database yet - the state right after setup."""
+        import vault_state
+
+        db_path = tmp_path / "app.db"
+        monkeypatch.setattr(config, "DB_PATH", str(db_path))
+        monkeypatch.setattr(database, "DB_PATH", str(db_path))
+        crypto.KeyVault(tmp_path).initialize(PASSPHRASE)
+        vault_state.clear_key()
+        return db_path
+
+    def test_a_database_that_is_not_there_yet_has_no_opinion_about_keys(
+        self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only an ENCRYPTED file can answer "is this the right key". Asking an
+        absent one turns the very first unlock after setup into a refusal."""
+        db_path = self._identity_only(tmp_path, monkeypatch)
+        assert not db_path.exists()
+
+        response = client.post("/api/v1/vault/unlock",
+                               json={"passphrase": PASSPHRASE})
+        assert response.status_code == 200, response.text
+
+    def test_a_still_plaintext_database_has_no_opinion_either(
+        self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The pre-vault migration path. A plaintext app.db opens under NO
+        key, so a check that did not ask what kind of file this is would refuse
+        the one unlock whose whole job is to encrypt it."""
+        import sqlite3
+
+        db_path = self._identity_only(tmp_path, monkeypatch)
+        con = sqlite3.connect(str(db_path))
+        con.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)")
+        con.commit()
+        con.close()
+        assert database.classify_db_file() == database.DB_PLAINTEXT
+
+        response = client.post("/api/v1/vault/unlock",
+                               json={"passphrase": PASSPHRASE})
+        assert response.status_code == 200, response.text
+        assert response.json()["migrated"] is True
+
+
+class TestTheCopyARotationLeavesWhenItIsKilled:
+    """K-44. Both rotations copy the whole database to `app.db.rekey.bak-<ts>`
+    before touching it and remove it afterwards. Kill the process in that
+    window and the copy stays - a complete vault, in none of the three remnant
+    families /vault/status reported, removed by no route, and on the KDF path
+    with no HTTP answer to carry the news either.
+
+    Two shapes, and they deserve opposite treatment. One this vault can open
+    is a redundant duplicate of the live database and there is nothing to
+    decide about it. One it cannot open was taken before a rotation that DID
+    finish, so it is readable only with the passphrase that was revoked - and
+    deleting a file this app cannot read is the single thing every other
+    discard path here refuses to do.
+    """
+
+    def _rotation_leftover(self, tmp_path: Path, monkeypatch, readable: bool):
+        vault, db_path = _vault_with_db(tmp_path, monkeypatch)
+        leftover = db_path.with_name(db_path.name + ".rekey.bak-1700000000")
+        leftover.write_bytes(
+            db_path.read_bytes() if readable
+            else b"SQLite format 3" + bytes(4096))
+        import vault_state
+        vault_state.clear_key()
+        return leftover
+
+    def test_one_this_vault_can_read_is_swept_at_unlock(
+        self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        leftover = self._rotation_leftover(tmp_path, monkeypatch, readable=True)
+
+        assert client.post("/api/v1/vault/unlock",
+                           json={"passphrase": PASSPHRASE}).status_code == 200
+
+        assert not leftover.exists()
+        assert client.get(
+            "/api/v1/vault/status").json()["rotation_backups"] == []
+
+    def test_one_it_cannot_read_is_kept_and_named(
+        self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        leftover = self._rotation_leftover(tmp_path, monkeypatch, readable=False)
+
+        assert client.post("/api/v1/vault/unlock",
+                           json={"passphrase": PASSPHRASE}).status_code == 200
+
+        # Still there - it may be the only copy of chats this vault cannot
+        # show, and nothing here gets to guess about that.
+        assert leftover.exists()
+        # And SAYABLE. Surviving silently is the whole defect: before this
+        # field the only trace of a full second vault was a log line.
+        assert client.get("/api/v1/vault/status").json()[
+            "rotation_backups"] == [leftover.name]
+
+    def test_the_sweep_does_not_touch_the_live_database(
+        self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """It works by name, next to the file it must never take."""
+        leftover = self._rotation_leftover(tmp_path, monkeypatch, readable=True)
+        db_path = Path(config.DB_PATH)
+        before = db_path.read_bytes()
+
+        client.post("/api/v1/vault/unlock", json={"passphrase": PASSPHRASE})
+
+        assert db_path.read_bytes() == before
+        assert not leftover.exists()

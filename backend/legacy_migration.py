@@ -21,6 +21,10 @@ Safety switches:
 - ELYSIUM_SKIP_LEGACY_MIGRATION=1 disables ONLY the keyring reads/deletes
   (the OS keyring is machine-global; throwaway test/E2E instances must never
   touch the real entries). DB/file work is per-data-dir and stays active.
+  ENFORCED IN keyring_service, not here: this module is one of several callers
+  and the guard has to cover the ones that never think about migration - the
+  Settings routes that save or clear a key reach the same machine-wide store.
+  The early return below is only a shortcut, never the protection.
 - app.db.premigrate.bak: encrypted snapshot taken before the first pass that
   could delete rows; an EXISTING backup is never overwritten (it is the
   earliest pre-damage state), and it is discarded only after a fully clean
@@ -33,6 +37,7 @@ import hashlib
 import logging
 import os
 import re
+import time
 from pathlib import Path
 
 import config
@@ -44,7 +49,9 @@ from database import get_db, iter_chunks
 
 logger = logging.getLogger(__name__)
 
-SKIP_ENV = "ELYSIUM_SKIP_LEGACY_MIGRATION"
+#: Re-exported, not re-declared: two spellings of an environment variable name
+#: is the kind of drift that leaves a switch half-wired.
+SKIP_ENV = keyring_service.SKIP_ENV
 _LEGACY_SECRET_NAMES = (config.SECRET_API_KEY, config.SECRET_PROXY_URL)
 _UPLOAD_NAME_RE = re.compile(r"^[0-9a-f]{64}\.(png|jpg|webp)$")
 _PREMIGRATE_BAK = "app.db.premigrate.bak"
@@ -88,7 +95,7 @@ def _list_uploads(uploads: Path) -> set[str] | None:
 
 
 def _keyring_disabled() -> bool:
-    return os.environ.get(SKIP_ENV) == "1"
+    return keyring_service.disabled()
 
 
 # ---------------------------------------------------------------------------
@@ -399,12 +406,59 @@ def uploads_migration_pending() -> bool:
 def ensure_premigrate_backup() -> None:
     """Encrypted snapshot before the first mutating pass. An existing backup
     is NEVER overwritten - it is the earliest pre-damage state and therefore
-    the most valuable copy."""
+    the most valuable copy.
+
+    K-46. That rule was being applied to a file nobody had looked at.
+    `exists()` was the entire test, and `backup_encrypted` wrote straight to
+    the final name - so a crash or a full disk mid-write left a truncated file
+    wearing the name of a snapshot, and every later unlock said "already
+    present; kept" and walked on into `reconcile_attachments_without_blobs`,
+    which DELETES ROWS. The never-overwrite rule then blocked the repair too:
+    the half file could not be replaced by a good one, ever.
+
+    Two changes, and the first makes the second rare rather than routine:
+
+    - the snapshot is built under `.partial` and renamed into place, so a file
+      at the final name is one that finished being written;
+    - a file already at that name is opened before it is trusted, and one that
+      does not open is moved aside rather than deleted - it may be a snapshot
+      of an era whose passphrase this vault no longer holds, which is somebody
+      else's decision to make, not this function's.
+
+    RAISES rather than returning quietly when it cannot leave a usable
+    snapshot. Its caller runs the row-deleting pass on the next line inside a
+    guarded block, so a raise here skips the destructive work until the next
+    unlock - the direction this whole file is supposed to fail in.
+    """
     path = premigrate_backup_path()
+    partial = path.with_name(path.name + ".partial")
+    key = database.get_key()
+
     if path.exists():
-        logger.info("uploads-migration: premigrate backup already present; kept.")
-        return
-    database.backup_encrypted(str(path))
+        if database.check_key(key, str(path)):
+            logger.info(
+                "uploads-migration: premigrate backup already present; kept.")
+            return
+        aside = path.with_name(f"{path.name}.unreadable-{int(time.time())}")
+        os.replace(path, aside)
+        logger.error(
+            "uploads-migration: the premigrate backup did not open with this "
+            "vault's key, so it was not a usable safety net. It was moved to "
+            "%s - nothing was deleted - and a fresh snapshot is being taken.",
+            aside.name)
+
+    # Whatever is here is a crashed attempt, never a snapshot: the rename is
+    # the only thing that ever promotes a file to that name.
+    if os.path.lexists(partial):
+        secure_delete.discard(partial)
+
+    database.backup_encrypted(str(partial))
+    if not database.check_key(key, str(partial)):
+        # Written, and unopenable. Saying "backup written" here is exactly the
+        # sentence that made the old defect invisible.
+        secure_delete.discard(partial)
+        raise OSError("the premigrate backup could not be read back")
+    os.replace(partial, path)
     logger.info("uploads-migration: premigrate backup written.")
 
 

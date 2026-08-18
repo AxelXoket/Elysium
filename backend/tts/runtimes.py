@@ -65,13 +65,32 @@ def _load() -> dict:
 
 def _save(data: dict) -> None:
     """Write via a temp file + replace so a crash mid-write cannot leave a
-    half-written registry that would read as 'not set up' next launch."""
+    half-written registry that would read as 'not set up' next launch.
+
+    The fsync is what makes that sentence true. `os.replace` reorders a
+    directory entry; it says nothing about the bytes behind it. Without the
+    flush+fsync below, a power cut just after the rename can leave the new name
+    pointing at a file the filesystem has not written yet - and the cost of
+    that lands on the user, not on us: `_load` reads the truncated file, warns
+    to a log nobody opens, returns `{}`, and the app says voice is not set up.
+    They are then sent to re-download gigabytes of models that are still
+    sitting intact on their own disk.
+
+    What this CANNOT promise: the rename itself is not flushed. Windows offers
+    no portable way to fsync a directory entry (`os.open` on a directory
+    fails), so a crash inside the window between the data landing and the
+    directory entry landing still leaves the PREVIOUS registry in place. That
+    is the safe direction to fail in - stale, never truncated - which is
+    exactly the outcome the missing fsync could not guarantee.
+    """
     p = _path()
     p.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(p.parent), suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
         os.replace(tmp, p)
     except Exception:
         try:

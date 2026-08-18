@@ -10,6 +10,7 @@ app, never hand-edited by the user, so these tests treat it as an internal
 artefact with a state machine (missing -> installing -> ready | broken).
 """
 import json
+import os
 
 import pytest
 
@@ -169,6 +170,53 @@ class TestRuntimeRegistry:
         runtimes.register("fish_s2", str(exe))
         data = json.loads(p.read_text(encoding="utf-8"))
         assert "engines" in data and "fish_s2" in data["engines"]
+
+    def test_the_bytes_are_on_the_disk_before_the_name_points_at_them(
+        self, monkeypatch, tmp_path
+    ):
+        """K-51. `_save` promises a crash cannot leave a half-written registry.
+
+        `os.replace` only reorders a directory entry - it says nothing about
+        the bytes behind it. So the promise is kept by the flush+fsync, and
+        only if that happens BEFORE the rename; afterwards it is decoration.
+
+        The cost of getting this wrong is not an unreadable file, it is a
+        sentence: a truncated registry reads as `{}`, the app says voice was
+        never set up, and the user is sent to re-download gigabytes of models
+        that are still sitting on their disk.
+
+        Three things are asserted, so three different mistakes are caught:
+        that a sync happened at all, that it happened before the rename, and
+        that at the moment it happened the file already held the whole
+        registry (a sync of an unflushed buffer syncs nothing).
+        """
+        p = self._point_at(monkeypatch, tmp_path)
+        exe = tmp_path / "x.exe"; exe.write_bytes(b"")
+
+        events: list[tuple[str, int]] = []
+        real_fsync, real_replace = os.fsync, os.replace
+
+        def watched_fsync(fd):
+            # Size THROUGH THE SAME DESCRIPTOR: this is the file the call is
+            # actually durable-ing, not some other file that happens to exist.
+            events.append(("fsync", os.fstat(fd).st_size))
+            return real_fsync(fd)
+
+        def watched_replace(src, dst):
+            events.append(("replace", 0))
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(os, "fsync", watched_fsync)
+        monkeypatch.setattr(os, "replace", watched_replace)
+        runtimes.register("fish_s2", str(exe))
+
+        names = [name for name, _ in events]
+        assert "fsync" in names, "the registry was renamed into place unsynced"
+        assert names.index("fsync") < names.index("replace")
+        synced_bytes = next(size for name, size in events if name == "fsync")
+        assert synced_bytes == p.stat().st_size, (
+            "the sync ran while the registry was still in a buffer"
+        )
 
     def test_extra_roots_are_read_from_the_registry_on_every_call(
         self, monkeypatch, tmp_path

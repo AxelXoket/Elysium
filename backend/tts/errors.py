@@ -64,6 +64,13 @@ TTS_REFERENCE_TOO_SHORT = "tts_reference_too_short"  # 400 fixable in one senten
 # nothing is wrong with the CLIP, and telling somebody their recording is
 # unusable sends them off to re-record a perfectly good take.
 TTS_REFERENCE_FOLDER_REDIRECTED = "tts_reference_folder_redirected"  # 400
+# The clip already saved for this voice could not be destroyed - something has
+# the file open (the engine mid-sentence, an antivirus mid-scan). The upload is
+# refused rather than completed, because a surviving old clip does not step
+# aside politely: it goes on BEING the voice while the new transcript describes
+# the new take. Its own code, not tts_reference_invalid: the clip that was just
+# sent is fine, and the fix is to wait or close something, not to re-record.
+TTS_REFERENCE_CLIP_STUCK = "tts_reference_clip_stuck"  # 409 try again shortly
 # Fish cannot clone from audio alone - it needs the words that were said.
 TTS_TRANSCRIPT_REQUIRED = "tts_transcript_required"  # 400 give one, or let us hear it
 # No shipped engine has ASR. Distinct from tts_worker_failed on purpose: that
@@ -104,7 +111,7 @@ ALL_CODES: frozenset[str] = frozenset({
     TTS_WORKER_FAILED, TTS_WORKER_CRASHED, TTS_WORKER_UNAVAILABLE,
     TTS_OUT_OF_MEMORY,
     TTS_SYNTHESIS_FAILED, TTS_REFERENCE_INVALID, TTS_REFERENCE_TOO_SHORT,
-    TTS_REFERENCE_FOLDER_REDIRECTED,
+    TTS_REFERENCE_FOLDER_REDIRECTED, TTS_REFERENCE_CLIP_STUCK,
     TTS_TRANSCRIPT_REQUIRED, TTS_TRANSCRIBE_UNSUPPORTED,
     TTS_NOTHING_TO_SPEAK, TTS_AUDIO_EXPIRED,
     TTS_AUDIO_DEVICE_ERROR, TTS_CACHE_OUTSIDE_DATA_DIR,

@@ -43,7 +43,8 @@ def _orphan(readable: bool = True) -> Path:
 def _no_stray_orphan():
     yield
     live = Path(config.DB_PATH)
-    live.with_name(live.name + ".enc-tmp").unlink(missing_ok=True)
+    for stray in live.parent.glob(live.name + database.ORPHAN_GLOB):
+        stray.unlink(missing_ok=True)
 
 
 class TestTheCopyIsVisible:
@@ -218,3 +219,56 @@ class TestRotatingThePassphraseRevokesThisCopyToo:
             assert stub.name not in unrevoked
         finally:
             stub.unlink(missing_ok=True)
+
+
+class TestAJournalFileIsNotACopy:
+    """K-50. `ORPHAN_GLOB` is `.enc-tmp*`, and that also catches
+    `app.db.enc-tmp-wal` - a journal ATTACH can leave behind, which is not a
+    database and opens under no key at all.
+
+    Both readers below insist that EVERY match opens under the current key,
+    and they are right to: one unreadable file among several is precisely the
+    case that must not be offered a delete button. So the two correct rules
+    multiplied into a wrong answer - one stray journal file answered
+    `different_key` forever and permanently disabled the only route that can
+    remove a stranded copy of the vault.
+    """
+
+    def _sidecars_beside(self, orphan: Path) -> list[Path]:
+        planted = []
+        for suffix in ("-wal", "-shm", "-journal"):
+            side = orphan.with_name(orphan.name + suffix)
+            side.write_bytes(b"not a database, just pages" * 8)
+            planted.append(side)
+        return planted
+
+    def test_a_stray_journal_does_not_veto_the_route(self, client) -> None:
+        orphan = _orphan(readable=True)
+        self._sidecars_beside(orphan)
+        body = client.get("/api/v1/vault/status").json()
+        # Still one copy, still readable - the journals said nothing about it.
+        assert body["orphaned_copy"] is True
+        assert body["orphaned_copy_readable"] is True
+        assert client.post(
+            "/api/v1/vault/discard-orphaned-copy").status_code == 200
+        assert not orphan.exists()
+
+    def test_the_listing_answers_copies_and_only_copies(self) -> None:
+        """Straight at the function, because the route test above would also
+        stay green if the journals merely stopped EXISTING for some unrelated
+        reason - and they do: `check_key` opens the copy, and SQLite clears a
+        hot journal on the way. That side effect is not this guard, and a test
+        that cannot tell them apart proves nothing about either."""
+        orphan = _orphan(readable=True)
+        self._sidecars_beside(orphan)
+        assert [p.name for p in database.orphaned_enc_tmp_paths()] == [orphan.name]
+
+    def test_an_unreadable_COPY_still_vetoes_the_route(self, client) -> None:
+        """The safety property this fix must not weaken. A file that does not
+        open may be a vault under a passphrase we do not have, and forgiving
+        it would be the whole guard gone."""
+        _orphan(readable=False)
+        assert client.get(
+            "/api/v1/vault/status").json()["orphaned_copy_readable"] is False
+        body = client.post("/api/v1/vault/discard-orphaned-copy").json()
+        assert body == {"removed": False, "reason": "different_key"}

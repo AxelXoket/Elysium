@@ -156,6 +156,7 @@ def test_full_passphrase_lifecycle_on_fresh_vault(client, tmp_path, monkeypatch)
         # no field and no screen, and nothing in the app could remove it -
         # reported here for the same reason as the two above, one size smaller.
         "empty_stub": False,
+        "rotation_backups": [],
     }
     r = client.post("/api/v1/vault/init", json={"passphrase": "seaside-orchid-9"})
     assert r.status_code == 200 and r.json()["migrated"] is False
