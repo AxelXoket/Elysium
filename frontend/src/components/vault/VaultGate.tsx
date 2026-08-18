@@ -153,6 +153,18 @@ export function VaultGate({ children }: { children: ReactNode }) {
       qc.removeQueries({
         predicate: (query) => query.queryKey[0] !== keys.vault()[0],
       });
+      // The MUTATION cache too, and this was the sharp one. removeQueries
+      // sweeps the query cache only; a mutation keeps its `variables` until
+      // garbage collection, five minutes after its last observer goes. Those
+      // variables are the payload the user sent - and for the settings save
+      // that payload is the OpenRouter API key itself, verbatim. So the key
+      // outlived the lock by five minutes, in memory, behind a lock screen
+      // that said the session was over.
+      //
+      // Nothing here depends on a mutation surviving a lock: every one of
+      // them has already run, and after unlock the tree is rebuilt from the
+      // vault anyway.
+      qc.getMutationCache().clear();
     }
     wasUnlockedRef.current = unlocked;
   }, [status?.unlocked, qc]);

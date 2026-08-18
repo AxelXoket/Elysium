@@ -345,6 +345,33 @@ async def list_messages(chat_id: int) -> list[dict]:
 # DELETE /chats/{chat_id}
 # ---------------------------------------------------------------------------
 
+def _forget_spoken_audio(message_ids: list[int]) -> None:
+    """The wav of a deleted message goes with the row. K-45.
+
+    Deleting a message removed its row and its image bytes from the encrypted
+    vault and left the recording of it sitting in the clear in the audio
+    cache. If the user never used voice again the age trim never ran either,
+    so it stayed until the vault locked - and somebody who deletes a reply
+    usually deletes it BECAUSE they want it gone.
+
+    Outside the transaction on purpose: the rows are the source of truth and
+    must commit whether or not a file lets go. A wav that will not shred is
+    reported in the log by the sweeper, not by raising here.
+    """
+    if not message_ids:
+        return
+    try:
+        from tts.host import get_host
+        host = get_host()
+        for message_id in message_ids:
+            host.forget_message_audio(message_id)
+    except Exception:                                     # noqa: BLE001
+        # Voice is optional and may not be installed at all. A missing engine
+        # is not a reason to fail a delete the database already committed.
+        logger.warning("chats: could not sweep audio for a deleted message",
+                       exc_info=True)
+
+
 def _delete_chat_sync(chat_id: int) -> None:
     """Worker-thread body (v1.1 FB2/I7): own connection, whole txn in this
     thread. An image-heavy cascade holds the writer for a while - on the event
@@ -370,6 +397,7 @@ def _delete_chat_sync(chat_id: int) -> None:
         delete_for_messages(con, msg_ids)
         con.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
         con.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
+    _forget_spoken_audio(msg_ids)
 
 
 @router.delete("/{chat_id}")
@@ -406,6 +434,7 @@ def _clear_chat_sync(chat_id: int) -> int:
             "UPDATE chats SET updated_at = datetime('now') WHERE id = ?",
             (chat_id,),
         )
+    _forget_spoken_audio(msg_ids)
     return deleted
 
 
@@ -460,6 +489,7 @@ def _delete_message_sync(chat_id: int, message_id: int) -> int:
             "UPDATE chats SET updated_at = datetime('now') WHERE id = ?",
             (chat_id,),
         )
+    _forget_spoken_audio(msg_ids)
     return deleted
 
 

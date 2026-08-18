@@ -81,6 +81,13 @@ TTS_NOTHING_TO_SPEAK = "tts_nothing_to_speak"        # 400 the text had no words
 # device" - so a restart sent people hunting for a sound-card driver.
 TTS_AUDIO_EXPIRED = "tts_audio_expired"              # 404 ask for it again
 TTS_AUDIO_DEVICE_ERROR = "tts_audio_device_error"    # 500 no output device
+# The audio cache folder resolves outside the app's own data directory - a
+# junction, a mount point, an absolute path from somewhere. The spoken reply is
+# chat content, and chat content does not get written permanently outside the
+# encrypted database's own folder. Refused rather than written, because every
+# sweep that would later remove it refuses a redirected name too, so writing
+# there means leaving it there.
+TTS_CACHE_OUTSIDE_DATA_DIR = "tts_cache_outside_data_dir"  # 500
 # Speak pressed mid-reply, but that reply is no longer streaming (it finished,
 # or was aborted). A quiet 200 here would leave a button that did nothing and
 # said nothing - the one outcome nobody can diagnose by looking at it.
@@ -100,7 +107,7 @@ ALL_CODES: frozenset[str] = frozenset({
     TTS_REFERENCE_FOLDER_REDIRECTED,
     TTS_TRANSCRIPT_REQUIRED, TTS_TRANSCRIBE_UNSUPPORTED,
     TTS_NOTHING_TO_SPEAK, TTS_AUDIO_EXPIRED,
-    TTS_AUDIO_DEVICE_ERROR,
+    TTS_AUDIO_DEVICE_ERROR, TTS_CACHE_OUTSIDE_DATA_DIR,
     TTS_NOTHING_STREAMING,
 })
 

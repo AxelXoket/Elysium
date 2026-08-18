@@ -212,8 +212,25 @@ describe("VaultGate lock hygiene", () => {
     stopped.mockRestore();
   });
 
-  it("leaves the module-level stores standing when the vault locks", async () => {
-    // CHARACTERISATION, not approval. See KUSUR-DEFTERI K-29.
+  it("keeps the two navigation ids across a lock, and nothing else", async () => {
+    // APPROVAL now, not characterisation. Decided 2026-08-18: the
+    // ids stay.
+    //
+    // What survives is selectedChatId and selectedCharacterId - two
+    // numbers naming which conversation and which character were
+    // open. They are classified as PREFERENCES rather than content,
+    // and that classification is not casual: uiStore's partialize
+    // allowlist, static-safety's S-09b and the README line about the
+    // local profile all say the same thing. The reason they persist
+    // is that unlocking should put you back where you were.
+    //
+    // The error store is left standing too: its entries are already
+    // sanitised sentences from the catalogue, never message text. A
+    // toast queued just before a lock can still appear after the
+    // next unlock, which is untidy rather than a leak.
+    //
+    // What did NOT survive the decision is the mutation cache - see
+    // the test below. It held the API key verbatim.
     //
     // The purge above is a predicate over the QUERY cache. Zustand stores are
     // not in it, so nothing here reaches them, and two of them are still
@@ -257,8 +274,57 @@ describe("VaultGate lock hygiene", () => {
     useUiStore.setState({ selectedChatId: null, selectedCharacterId: null });
   });
 
-  it("does not stop an in-flight stream when the vault locks", async () => {
-    // CHARACTERISATION, not approval. The sharper half of K-29.
+  it("does not leave the API key in the mutation cache when the vault locks", async () => {
+    // The one thing on this screen that was a real leak rather than untidy.
+    //
+    // removeQueries sweeps the QUERY cache. A mutation is not in it: TanStack
+    // keeps a mutation's `variables` until garbage collection, five minutes
+    // after its last observer goes. And the settings save carries the
+    // OpenRouter API key as its variables, verbatim - so the key sat in
+    // memory for five minutes behind a lock screen that said the session was
+    // over.
+    const sim: VaultSim = { initialized: true, unlocked: true, passphrase: "x" };
+    stubVaultFetch(sim);
+    const qc = createTestQueryClient();
+    renderWithQueryClient(<VaultGate>{APP_MARKER}</VaultGate>, { client: qc });
+    await screen.findByTestId("app-root");
+
+    const SECRET = "sk-or-v1-should-not-outlive-the-lock";
+    const mutation = qc.getMutationCache().build(qc, {
+      mutationFn: async (key: string) => key,
+    });
+    await mutation.execute(SECRET);
+    // Ground first: without this the assertion below passes on an empty cache
+    // and proves nothing at all.
+    expect(JSON.stringify(qc.getMutationCache().getAll())).toContain(SECRET);
+
+    sim.unlocked = false;
+    await qc.invalidateQueries({ queryKey: ["vault"] });
+    await screen.findByText("Elysium is locked");
+
+    expect(
+      JSON.stringify(qc.getMutationCache().getAll()),
+      "the key the user typed is still in memory behind the lock screen",
+    ).not.toContain(SECRET);
+  });
+
+  it("does not itself abort a stream - the unmount does", async () => {
+    // REWRITTEN 2026-08-18, because the sentence underneath it was
+    // wrong about production and would have kept being believed.
+    //
+    // It is true that VaultGate has no reference to streams: no
+    // import, no stopChat, no abort. It is NOT true that a reply
+    // running at lock time keeps running. The gate stops rendering
+    // children, ChatCanvas unmounts, and useStreamingCompletion's
+    // cleanup aborts every controller it holds - so the request does
+    // end, and the cache is not repopulated. This test renders a
+    // dummy child, which is exactly why it could not see that.
+    //
+    // So what it pins now is the narrow, true thing: the abort comes
+    // from unmounting, not from the lock. That distinction matters -
+    // if the app ever keeps the tree mounted behind the lock screen,
+    // the abort disappears with it and this comment is the record of
+    // where to look.
     //
     // The purge is a one-shot sweep of the query cache, and a live reply is
     // not in the cache: useStreamingCompletion writes deltas straight in with

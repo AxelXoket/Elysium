@@ -139,7 +139,7 @@ def test_the_live_synth_spends_one_budget_across_the_whole_reply(
         def load(self, *a, **k):
             return {}
 
-        def speak(self, text, values, extra=None):
+        def speak(self, text, values, extra=None, message_id=None):
             spoken.append(text)
             return {"path": "a.wav", "seconds": 1.0, "sample_rate": 44100}
 
@@ -178,7 +178,7 @@ def test_the_standing_tone_reaches_every_sentence():
         def load(self, *a, **k):
             return {}
 
-        def speak(self, text, values, extra=None):
+        def speak(self, text, values, extra=None, message_id=None):
             spoken.append(text)
             return {"path": "", "seconds": 1.0, "sample_rate": 44100}
 
@@ -207,7 +207,7 @@ def test_the_tone_yields_to_the_models_own_direction():
         def load(self, *a, **k):
             return {}
 
-        def speak(self, text, values, extra=None):
+        def speak(self, text, values, extra=None, message_id=None):
             spoken.append(text)
             return {"path": "", "seconds": 1.0, "sample_rate": 44100}
 

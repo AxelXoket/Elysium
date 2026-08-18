@@ -548,6 +548,14 @@
       ]
     },
     {
+      "code": "tts_cache_outside_data_dir",
+      "statuses": [],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
       "code": "tts_audio_expired",
       "statuses": [
         404

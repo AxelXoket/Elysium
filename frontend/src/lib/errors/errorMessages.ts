@@ -218,6 +218,11 @@ const ERROR_MESSAGES: Record<string, string> = {
     "The voice model ran out of GPU memory while working. Lower its memory settings, or use a smaller model.",
   tts_synthesis_failed:
     "The voice could not be generated for this message.",
+  // The spoken reply is the conversation read aloud, so it is kept where the
+  // conversation is kept. If the audio folder points somewhere else on disk,
+  // nothing is written rather than something being left there forever.
+  tts_cache_outside_data_dir:
+    "The voice folder points outside Elysium's own data folder, so nothing was written there. Move it back, or move the whole data folder with the ELYSIUM_DATA_DIR setting.",
   tts_reference_too_short:
     "That voice clip is too short to clone from. Around ten seconds of clear speech works best.",
   // Not a problem with the clip. The folder this voice would be saved into

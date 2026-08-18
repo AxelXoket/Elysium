@@ -24,7 +24,7 @@ class RecordingHost:
         self.calls: list[str] = []
         self.seconds = seconds
 
-    def speak(self, text, values, extra=None):
+    def speak(self, text, values, extra=None, message_id=None):
         self.calls.append(text)
         return {"path": "", "seconds": self.seconds, "sample_rate": 44100}
 
@@ -59,7 +59,7 @@ class TestSpeakSplitsLikeTheLivePath:
             def __init__(self):
                 self.n = 0
 
-            def speak(self, text, values, extra=None):
+            def speak(self, text, values, extra=None, message_id=None):
                 self.n += 1
                 path = _wav(tmp_path / f"part{self.n}.wav", 44100)
                 return {"path": path, "seconds": 2.5, "sample_rate": 44100}

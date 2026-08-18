@@ -21,6 +21,7 @@ a terminal-until-next-attempt state that carries the reason.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import threading
 import time
@@ -31,6 +32,7 @@ import secure_delete
 
 from .base import DetectedModel
 from .errors import (
+    TTS_CACHE_OUTSIDE_DATA_DIR,
     TTS_MODEL_ALREADY_LOADING,
     TTS_RUNTIME_INSTALLING,
     TTS_RUNTIME_MISSING,
@@ -64,6 +66,44 @@ def worker_script(engine_id: str) -> Path:
     if base and getattr(sys, "frozen", False):
         return Path(base) / "tts_worker" / f"{engine_id}.py"
     return Path(__file__).resolve().parent / "worker" / f"{engine_id}.py"
+
+
+def _refuse_to_speak_outside_our_own_folder(cache: Path) -> None:
+    """The spoken reply is chat content. It does not leave the app's folder.
+
+    K-40. The junction guards elsewhere stopped this app DELETING somebody
+    else's files; they did nothing about WRITING. So a user who moved the
+    audio cache to another drive and left a junction behind kept getting their
+    conversation written there in the clear - and none of the four sweeps that
+    exist to remove it could reach the target, because every one of them now
+    refuses a redirected name. Speech accumulated somewhere nothing would ever
+    clean.
+
+    The owner's rule, in their words: nothing that lives in the encrypted
+    database may be written permanently anywhere else. A wav of the reply is
+    exactly that content, read aloud.
+
+    The test is "does this name lead somewhere else", not "is it under the
+    data directory". abspath normalises without following links; resolve
+    follows them. If the two disagree, something on this path is a reparse
+    point - a junction, a symlink, a mount point - and it does not matter
+    which, or whether it sits on the last component or an ancestor.
+
+    Deliberately NOT a containment check against DATA_DIR. Moving the whole
+    data folder with ELYSIUM_DATA_DIR is supported, coherent, and creates no
+    redirection: the vault, the uploads and the audio all move together and
+    every sweep still reaches them. What is refused is the arrangement where
+    the audio alone points off into a folder the cleanup can no longer touch.
+    """
+    try:
+        if Path(os.path.abspath(cache)) == cache.resolve():
+            return
+    except OSError:                                   # pragma: no cover
+        return  # cannot tell; the deletion guards still hold
+    raise WorkerFailure(
+        TTS_CACHE_OUTSIDE_DATA_DIR,
+        f"{cache} leads somewhere else on disk",
+    )
 
 
 class VoiceHost:
@@ -312,12 +352,13 @@ class VoiceHost:
 
     # -- speaking -----------------------------------------------------------
     def speak(self, text: str, values: dict | None = None,
-              out_path: str | None = None, extra: dict | None = None) -> dict:
+              out_path: str | None = None, extra: dict | None = None,
+              message_id: int | None = None) -> dict:
         with self._lock:
             client = self._client
             if client is None or not client.alive or self._state != STATE_LOADED:
                 raise self._fail(TTS_WORKER_UNAVAILABLE, "no model is loaded")
-        out = out_path or self._next_out_path()
+        out = out_path or self._next_out_path(message_id)
         payload = {"text": text, "out": out, "values": values or {}}
         payload.update(extra or {})
         with self._lock:
@@ -373,13 +414,48 @@ class VoiceHost:
                 self._uid = None
                 self._vram_mb = None
 
-    def _next_out_path(self) -> str:
+    def _next_out_path(self, message_id: int | None = None) -> str:
         cache = Path(config.TTS_CACHE_DIR)
         cache.mkdir(parents=True, exist_ok=True)
+        _refuse_to_speak_outside_our_own_folder(cache)
         self._trim_cache(cache)
+        # The message id is IN THE NAME, and that is K-45. Without it there
+        # was no way to answer "which of these files is that reply", so
+        # deleting a message left its audio behind - the same words, in the
+        # clear, next to an encrypted database that no longer holds them. And
+        # if the user never spoke again the 30-minute trim never ran either,
+        # so it sat there until the vault locked.
+        #
+        # 0 for the paths that have no message yet (a preview, a probe). Those
+        # are still swept by age, by the lock and at launch.
+        tag = message_id if isinstance(message_id, int) and message_id > 0 else 0
         # Monotonic-ish and collision-free without needing a clock the tests
         # would have to freeze.
-        return str(cache / f"speak-{int(time.time() * 1000)}-{threading.get_ident()}.wav")
+        return str(cache / f"speak-{tag}-{int(time.time() * 1000)}"
+                           f"-{threading.get_ident()}.wav")
+
+    def forget_message_audio(self, message_id: int) -> list[str]:
+        """Destroy the spoken form of one message. Returns what would not go.
+
+        K-45. Deleting a message removed its row and its image bytes from the
+        vault and left the wav of it on disk. The owner's rule is that content
+        living in the encrypted database is not written permanently anywhere
+        else, and a recording of a reply the user just deleted is the sharpest
+        case of that: they deleted it BECAUSE they wanted it gone.
+        """
+        cache = Path(config.TTS_CACHE_DIR)
+        if not cache.is_dir() or secure_delete.is_redirected(cache):
+            return []
+        left: list[str] = []
+        for wav in cache.glob(f"speak-{int(message_id)}-*.wav"):
+            if not secure_delete.shred(wav):
+                left.append(wav.name)
+        if left:
+            logger.warning(
+                "tts: %d audio file(s) for a deleted message could not be "
+                "removed and are still readable on disk: %s",
+                len(left), ", ".join(left))
+        return left
 
     def _trim_cache(self, cache: Path) -> int:
         """Drop generated audio older than the retention window.
