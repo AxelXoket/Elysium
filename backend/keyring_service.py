@@ -32,6 +32,17 @@ def read_legacy(name: str) -> str | None:
         return None
 
 
+#: Written when a legacy entry could not be deleted, so the unlock migration
+#: knows the user revoked it rather than never having touched it. Without this
+#: the two states are identical from the vault's side - "no row" - and the
+#: migration reads a revoked key as one that still needs importing.
+REVOKED_PREFIX = "legacy_revoked:"
+
+
+def revoked_key(name: str) -> str:
+    return REVOKED_PREFIX + name
+
+
 def delete_legacy(name: str) -> bool:
     """Delete a legacy keyring entry. True on success or already-absent."""
     try:

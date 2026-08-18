@@ -97,4 +97,12 @@ def accepts(presented: str | None) -> bool:
         return True
     if not presented:
         return False
-    return hmac.compare_digest(presented, expected)
+    # Encoded, not compared as text. Starlette decodes header bytes as
+    # latin-1, so any byte over 0x7f arrives as a non-ASCII str and
+    # compare_digest raises TypeError on it - which escaped the gate and
+    # became a 500 with a traceback, triggerable by exactly the local process
+    # this exists to refuse. A gate that answers "server error" to a hostile
+    # input has not refused it. Measured at the ASGI layer; the test client
+    # cannot send the byte, which is why no test saw it.
+    return hmac.compare_digest(presented.encode("utf-8", "surrogateescape"),
+                               expected.encode("utf-8", "surrogateescape"))

@@ -169,6 +169,13 @@ class _FakeVault:
     def can_derive(self) -> bool:
         return True
 
+    def can_recover(self) -> bool:
+        # The gate the unlock route reads. It used to read can_derive, and
+        # that difference is K-05: recovery accepts a staged salt and the
+        # route did not. A fake has to carry the real interface or it stops
+        # being a stand-in and becomes a way to miss the change.
+        return True
+
     def unlock(self, passphrase: str) -> bytes:
         return bytes(range(32))
 

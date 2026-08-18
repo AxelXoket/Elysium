@@ -108,6 +108,23 @@ def migrate_legacy_secrets() -> None:
     for name in _LEGACY_SECRET_NAMES:
         legacy = keyring_service.read_legacy(name)
         current = secrets_service.get_secret(name)
+        if legacy is not None and database.get_setting(
+                keyring_service.revoked_key(name)) == "1":
+            # The user deleted this through Settings and the credential store
+            # would not let go of its copy. Importing it back is what the
+            # delete route exists to prevent, and "vault empty, keyring set"
+            # is the same shape as "never imported" - the tombstone is the
+            # only thing that tells them apart.
+            if keyring_service.delete_legacy(name):
+                database.set_setting(keyring_service.revoked_key(name), "")
+                logger.info(
+                    "legacy-migration: the revoked %s is finally gone from "
+                    "the credential store.", name)
+            else:
+                logger.warning(
+                    "legacy-migration: %s was revoked here but its credential "
+                    "store copy is still readable on this machine.", name)
+            continue
         if current is None:
             if legacy is None:
                 continue
