@@ -464,3 +464,75 @@ class TestTheVoiceEngineGetsNoCredentialsAndNoWayHome:
     ) -> None:
         env = self._spawn_env(monkeypatch, ELYSIUM_TEST_KNOB="7")
         assert env["ELYSIUM_TEST_KNOB"] == "7"
+
+
+class TestTheCharacterHasAName:
+    """K-31. Five fields went out and the one naming who is speaking did not.
+
+    The user's persona has carried its name since the beginning, so the model
+    was told who it was talking TO and not who it was playing. Measured before
+    the fix: a prototype changed zero tests, because nothing anywhere asserted
+    what the system block contains.
+
+    A LABEL rather than an instruction, and the persona header's exact twin.
+    "You are X." competes with the card - an author who has already set the
+    voice in system_prompt would have the app talking over them.
+    """
+
+    def test_the_name_reaches_the_provider(
+        self, client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        created = client.post("/api/v1/characters", json={
+            "name": "Marisol Vance",
+            "description": "a lighthouse keeper",
+            "first_mes": "Hello there!",
+        })
+        assert created.status_code == 201, created.text
+        bodies = _capture_wire(monkeypatch)
+        chat_id = make_chat(client, created.json()["id"])
+        response = client.post(f"/api/v1/chats/{chat_id}/complete",
+                               json={"message": "hi",
+                                     "model_id": "test/model-1"})
+        assert response.status_code == 200, response.text
+
+        system = bodies[0]["messages"][0]
+        assert system["role"] == "system"
+        assert "[Character: Marisol Vance]" in system["content"]
+        # The control: the rest of the block is still there, so this cannot
+        # pass by replacing it.
+        assert "a lighthouse keeper" in system["content"]
+
+    def test_the_header_comes_first(
+        self, client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Who is speaking, before what they are like. Same order the persona
+        # block uses for the person on the other side.
+        created = client.post("/api/v1/characters", json={
+            "name": "Marisol Vance",
+            "description": "a lighthouse keeper",
+            "first_mes": "Hello there!",
+        })
+        bodies = _capture_wire(monkeypatch)
+        chat_id = make_chat(client, created.json()["id"])
+        client.post(f"/api/v1/chats/{chat_id}/complete",
+                    json={"message": "hi", "model_id": "test/model-1"})
+
+        content = bodies[0]["messages"][0]["content"]
+        assert content.index("[Character:") < content.index("[Description]")
+
+    def test_a_nameless_row_emits_no_empty_header(self) -> None:
+        # Defensive, exactly like the persona block's own branch: the schema
+        # forbids a blank name, and a hand-edited vault must not produce
+        # "[Character: ]" for the model to reason about.
+        from routers.completions import _build_system_block
+
+        block = _build_system_block({
+            "name": "   ",
+            "system_prompt": "",
+            "description": "a lighthouse keeper",
+            "personality": "",
+            "scenario": "",
+            "mes_example": "",
+        })
+        assert "[Character:" not in block
+        assert "a lighthouse keeper" in block

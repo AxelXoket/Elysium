@@ -40,6 +40,28 @@ export function isAcceptedImageFile(file: File): boolean {
 }
 
 /**
+ * The byte ceiling, mirrored from the backend's MAX_UPLOAD_BYTES.
+ *
+ * K-32. Nothing on this side read File.size at all, so a 400 MB picture was
+ * staged, given a preview, marked "uploading" and sent in full before the
+ * server's 413 came back. The backend was never in danger - it reads
+ * MAX_UPLOAD_BYTES + 1 and stops, and a body-size shield sits in front of
+ * that - but the person waited for a transfer that could only ever be
+ * refused, and on a slow link that is a long wait for nothing.
+ *
+ * A MIRROR, and the honest thing is to say so: the value lives in
+ * backend/config.py and this copy can drift. It is deliberately the SAME
+ * number rather than a smaller "safe" one, so the only file this refuses is
+ * one the server would refuse too - a client that guessed low would reject
+ * pictures the app can actually take.
+ */
+export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+
+export function isWithinAttachmentSizeLimit(file: File): boolean {
+  return file.size <= MAX_ATTACHMENT_BYTES;
+}
+
+/**
  * Object-URL helpers. jsdom does not implement createObjectURL/revokeObjectURL
  * (tests stub them when they assert previews); real browsers always have them.
  */

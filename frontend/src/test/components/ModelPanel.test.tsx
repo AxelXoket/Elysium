@@ -353,11 +353,11 @@ describe("Context usage meter", () => {
 
     const meter = await screen.findByTestId("context-usage-meter");
     expect(meter).toHaveAttribute("data-state", "normal");
-    expect(meter).toHaveTextContent("Context ≈ 210 / 775 tokens · 1 msg");
+    expect(meter).toHaveTextContent("Context ≈ 217 / 775 tokens · 1 msg");
     expect(meter).not.toHaveTextContent("dropped");
 
     const fill = screen.getByTestId("context-usage-fill");
-    expect(fill.style.width).toBe(`${(210 / 775) * 100}%`);
+    expect(fill.style.width).toBe(`${(217 / 775) * 100}%`);
   });
 
   it("switches to the warning state at 75% and danger at 92%", async () => {
@@ -367,7 +367,7 @@ describe("Context usage meter", () => {
     const { unmount } = renderWithQueryClient(<ModelPanel />, { wrapper });
 
     const meter = await screen.findByTestId("context-usage-meter");
-    expect(meter).toHaveTextContent("Context ≈ 610 / 775 tokens · 1 msg");
+    expect(meter).toHaveTextContent("Context ≈ 617 / 775 tokens · 1 msg");
     expect(meter).toHaveAttribute("data-state", "warning");
 
     unmount();
@@ -379,7 +379,7 @@ describe("Context usage meter", () => {
     renderWithQueryClient(<ModelPanel />, { wrapper });
 
     const dangerMeter = await screen.findByTestId("context-usage-meter");
-    expect(dangerMeter).toHaveTextContent("Context ≈ 727 / 775 tokens · 1 msg");
+    expect(dangerMeter).toHaveTextContent("Context ≈ 734 / 775 tokens · 1 msg");
     expect(dangerMeter).toHaveAttribute("data-state", "danger");
   });
 
@@ -392,7 +392,7 @@ describe("Context usage meter", () => {
 
     const meter = await screen.findByTestId("context-usage-meter");
     expect(meter).toHaveTextContent(
-      "Context ≈ 410 / 775 tokens · 2 msgs (1 oldest dropped)",
+      "Context ≈ 417 / 775 tokens · 2 msgs (1 oldest dropped)",
     );
   });
 
@@ -402,7 +402,7 @@ describe("Context usage meter", () => {
     renderWithQueryClient(<ModelPanel />, { wrapper });
 
     const meter = await screen.findByTestId("context-usage-meter");
-    expect(meter).toHaveTextContent("Context ≈ 210 / 775 tokens · 1 msg");
+    expect(meter).toHaveTextContent("Context ≈ 217 / 775 tokens · 1 msg");
 
     act(() => {
       useUiStore.setState({ selectedModelId: meterModelLarge.id });
@@ -411,7 +411,7 @@ describe("Context usage meter", () => {
     // Same 210 used tokens, but capacity becomes 3644 -> "3.6K".
     await waitFor(() => {
       expect(screen.getByTestId("context-usage-meter")).toHaveTextContent(
-        "Context ≈ 210 / 3.6K tokens · 1 msg",
+        "Context ≈ 217 / 3.6K tokens · 1 msg",
       );
     });
   });
@@ -425,12 +425,12 @@ describe("Context usage meter", () => {
 
     await screen.findByTestId("context-usage-meter");
     const bar = screen.getByRole("progressbar");
-    expect(bar).toHaveAttribute("aria-valuenow", "27");
+    expect(bar).toHaveAttribute("aria-valuenow", "28");
     expect(bar).toHaveAttribute("aria-valuemin", "0");
     expect(bar).toHaveAttribute("aria-valuemax", "100");
     expect(bar).toHaveAttribute(
       "aria-label",
-      "Estimated context usage: 27 percent",
+      "Estimated context usage: 28 percent",
     );
     // The estimate caveat is available to assistive tech, not mouse-hover only.
     const describedBy = bar.getAttribute("aria-describedby");

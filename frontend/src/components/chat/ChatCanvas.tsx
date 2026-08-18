@@ -37,6 +37,7 @@ import { useFileDrop } from "./useFileDrop";
 import {
   MAX_ATTACHMENTS,
   isAcceptedImageFile,
+  isWithinAttachmentSizeLimit,
   createPreviewUrl,
   revokePreviewUrl,
 } from "./attachments";
@@ -357,14 +358,26 @@ export function ChatCanvas() {
     (files: File[]) => {
       if (selectedChatId == null) return;
       const chatId = selectedChatId;
-      const accepted = files.filter(isAcceptedImageFile);
+      const rightType = files.filter(isAcceptedImageFile);
       // FF9: a rejected file (e.g. a GIF paste/drop) must not vanish silently.
       // This is the SINGLE filter+toast point - the paste/drop/picker paths
       // forward raw files (H9) so every rejection surfaces here exactly once.
-      if (accepted.length < files.length) {
+      if (rightType.length < files.length) {
         pushErrorDirect(
           "attachment_invalid",
           getErrorMessage("attachment_invalid"),
+        );
+      }
+      // K-32. The size was never looked at here, so an oversized picture was
+      // staged, previewed, marked "uploading" and sent in full before the
+      // server's 413 arrived. Refused at the door instead, with the sentence
+      // the server would have sent anyway - the code already exists and
+      // already says "under 10 MB", so this adds no new user-facing text.
+      const accepted = rightType.filter(isWithinAttachmentSizeLimit);
+      if (accepted.length < rightType.length) {
+        pushErrorDirect(
+          "attachment_too_large",
+          getErrorMessage("attachment_too_large"),
         );
       }
       if (accepted.length === 0) return;

@@ -128,7 +128,7 @@ describe("estimateContextUsage", () => {
       messages: [],
     });
     expect(result).toMatchObject({
-      usedTokens: 65,
+      usedTokens: 73,
       capacityTokens: 950,
       reservedOutputTokens: 100,
       includedMessages: 0,
@@ -137,7 +137,7 @@ describe("estimateContextUsage", () => {
       isEstimate: true,
     });
     // percent = 65 / 950 * 100 = 6.842...
-    expect(result!.percent).toBeCloseTo((65 / 950) * 100, 9);
+    expect(result!.percent).toBeCloseTo((73 / 950) * 100, 9);
   });
 
   it("drops the oldest messages until the history fits", () => {
@@ -155,14 +155,14 @@ describe("estimateContextUsage", () => {
       ],
     });
     expect(result).toMatchObject({
-      usedTokens: 732,
+      usedTokens: 740,
       capacityTokens: 950,
       reservedOutputTokens: 100,
       includedMessages: 2,
       droppedMessages: 1,
       totalMessages: 3,
     });
-    expect(result!.percent).toBeCloseTo((732 / 950) * 100, 9);
+    expect(result!.percent).toBeCloseTo((740 / 950) * 100, 9);
   });
 
   it("excludes inactive variant siblings, mirroring the backend active filter", () => {
@@ -181,7 +181,7 @@ describe("estimateContextUsage", () => {
       ],
     });
     expect(result).toMatchObject({
-      usedTokens: 732,
+      usedTokens: 740,
       includedMessages: 2,
       droppedMessages: 1,
       totalMessages: 3, // active rows only - the hidden sibling is invisible
@@ -206,7 +206,7 @@ describe("estimateContextUsage", () => {
       personas: persona50,
       messages: plain,
     });
-    expect(without!.usedTokens).toBe(732);
+    expect(without!.usedTokens).toBe(740);
     expect(without!.capacityTokens).toBe(3644);
 
     // One attachment adds 1100 * 3 = 3300 chars to that message:
@@ -225,7 +225,7 @@ describe("estimateContextUsage", () => {
       personas: persona50,
       messages: withImage,
     });
-    expect(withAttachment!.usedTokens).toBe(1832);
+    expect(withAttachment!.usedTokens).toBe(1840);
     expect(withAttachment!.usedTokens - without!.usedTokens).toBe(1100);
     expect(withAttachment!.includedMessages).toBe(2);
   });
@@ -277,7 +277,7 @@ describe("estimateContextUsage", () => {
     expect(result!.capacityTokens).toBe(14080);
     expect(result!.reservedOutputTokens).toBe(2048);
     // fixed = 195 -> used = ceil(195 / 3) = 65.
-    expect(result!.usedTokens).toBe(65);
+    expect(result!.usedTokens).toBe(73);
 
     // Budget larger than the model context clamps down to the context:
     // effective = 1200 -> identical numbers to the no-budget ctx1200 case.
@@ -328,7 +328,7 @@ describe("estimateContextUsage", () => {
       generationParams: { max_tokens: 1000 },
     });
     expect(result).toMatchObject({
-      usedTokens: 206,
+      usedTokens: 214,
       capacityTokens: 262,
       reservedOutputTokens: 262,
       includedMessages: 1,
@@ -380,7 +380,7 @@ describe("estimateContextUsage", () => {
       personas: inactive,
       messages: [],
     });
-    expect(result!.usedTokens).toBe(39);
+    expect(result!.usedTokens).toBe(47);
   });
 
   it("charges a name-only persona for its header (v1.1 KUME D)", () => {
@@ -396,7 +396,7 @@ describe("estimateContextUsage", () => {
       personas: nameOnly,
       messages: [],
     });
-    expect(result!.usedTokens).toBe(46);
+    expect(result!.usedTokens).toBe(54);
   });
 
   it("clamps percent to 100 when even the fixed cost overflows", () => {
@@ -417,7 +417,7 @@ describe("estimateContextUsage", () => {
       messages: [msg(1, "aaa"), msg(2, "bbb")],
     });
     expect(result).toMatchObject({
-      usedTokens: 699,
+      usedTokens: 707,
       capacityTokens: 425,
       includedMessages: 0,
       droppedMessages: 2,
@@ -428,6 +428,31 @@ describe("estimateContextUsage", () => {
 });
 
 describe("buildSystemBlock", () => {
+  it("opens with the character's name, and charges the estimate for it", () => {
+    // K-31. The name never reached the model at all - five fields went out
+    // and the one word naming who is speaking was not among them.
+    //
+    // This test exists because closing that record moved a dozen hardcoded
+    // token numbers across three test files, and moving numbers is exactly
+    // how a mirror drifts unnoticed: nothing in that churn says WHY they
+    // moved. So the header is asserted directly, and the estimate is asserted
+    // to have grown by it.
+    const named = makeCharacter({ name: "Estimator", system_prompt: "SP" });
+    const nameless = makeCharacter({ name: "", system_prompt: "SP" });
+
+    expect(buildSystemBlock(named).startsWith("[Character: Estimator]")).toBe(
+      true,
+    );
+    // A blank name emits no empty header, exactly like the persona block's
+    // own defensive branch.
+    expect(buildSystemBlock(nameless)).toBe("[System Prompt]\nSP");
+    // And the difference is the header itself, so the gauge is counting what
+    // the provider is actually sent rather than a stale five-field shape.
+    expect(
+      buildSystemBlock(named).length - buildSystemBlock(nameless).length,
+    ).toBe("[Character: Estimator]\n\n".length);
+  });
+
   it("renders labeled sections in backend order and skips blank ones", () => {
     // Mirrors completions.py _build_system_block: "[Label]\n{value}" joined
     // by "\n\n"; whitespace-only sections (description here) are skipped.
@@ -439,7 +464,7 @@ describe("buildSystemBlock", () => {
       mes_example: "ME",
     });
     expect(buildSystemBlock(character)).toBe(
-      "[System Prompt]\nSP\n\n[Personality]\nPE\n\n[Scenario]\nSC\n\n[Example Dialogue]\nME",
+      "[Character: Estimator]\n\n[System Prompt]\nSP\n\n[Personality]\nPE\n\n[Scenario]\nSC\n\n[Example Dialogue]\nME",
     );
   });
 
@@ -463,7 +488,7 @@ describe("buildSystemBlock", () => {
       personas: [makePersona({ description: " PD " })],
       messages: [],
     });
-    expect(result!.usedTokens).toBe(36);
+    expect(result!.usedTokens).toBe(44);
     expect(result!.capacityTokens).toBe(950);
   });
 });
