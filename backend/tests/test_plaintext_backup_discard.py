@@ -70,7 +70,7 @@ class TestTheCopyCanBeRemoved:
     def test_discarding_deletes_it(self, client) -> None:
         backup = _backup()
         body = client.post("/api/v1/vault/discard-plaintext-backup").json()
-        assert body == {"removed": 1, "left": []}
+        assert body == {"removed": 1, "left": [], "shared": []}
         assert not backup.exists()
 
     def test_the_content_is_overwritten_not_just_unlinked(
@@ -95,7 +95,7 @@ class TestTheCopyCanBeRemoved:
 
     def test_discarding_nothing_is_not_an_error(self, client) -> None:
         assert client.post("/api/v1/vault/discard-plaintext-backup").json() == {
-            "removed": 0, "left": []}
+            "removed": 0, "left": [], "shared": []}
 
     @pytest.mark.skipif(os.name != "nt", reason="Windows file locking")
     def test_a_file_it_could_not_delete_is_named(self, client) -> None:
@@ -179,7 +179,14 @@ class TestItRefusesNamesThatAreNotWhatTheyLookLike:
 
             assert victim.read_text(encoding="utf-8") == "MUST SURVIVE"
             assert body["removed"] == 0
-            assert body["left"] == [decoy.name]
+            # K-49. NOT in `left`. That list means "try again, something has
+            # it open", and this file will never come free: overwriting it
+            # would destroy the notes it shares an inode with, and deleting it
+            # by hand removes one name while the plaintext database stays
+            # readable under the other. Two different sentences, and the user
+            # acts on them differently.
+            assert body["left"] == []
+            assert body["shared"] == [decoy.name]
         finally:
             decoy.unlink(missing_ok=True)
             victim.unlink(missing_ok=True)
@@ -231,7 +238,7 @@ class TestItOnlyMatchesTheNameMigrationActuallyWrites:
         try:
             assert not vault_state.is_unlocked()
             body = client.post("/api/v1/vault/discard-plaintext-backup").json()
-            assert body == {"removed": 1, "left": []}
+            assert body == {"removed": 1, "left": [], "shared": []}
             assert not backup.exists()
         finally:
             vault_state.set_key(conftest_key())

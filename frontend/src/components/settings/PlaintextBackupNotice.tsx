@@ -37,6 +37,7 @@ export function PlaintextBackupNotice() {
 
   const backups = status.data?.plaintext_backups ?? [];
   const stuck = discard.data?.left ?? [];
+  const shared = discard.data?.shared ?? [];
   const removed = discard.data?.removed ?? 0;
   if (backups.length === 0) {
     // Nothing left on disk. Say so once, so pressing delete does not simply
@@ -93,6 +94,20 @@ export function PlaintextBackupNotice() {
         <p className="settings-error" role="alert">
           Still readable on disk and could not be deleted (something else has{" "}
           {stuck.length === 1 ? "the file" : "them"} open): {stuck.join(", ")}
+        </p>
+      )}
+      {/* A different sentence, because it asks for a different thing. The
+          message above sends you to close a program and press the button
+          again; this one never comes free that way, and deleting the file
+          yourself would remove one name while the database stays readable
+          under the other. Saying "could not delete" here is what sent people
+          off doing exactly that. */}
+      {shared.length > 0 && (
+        <p className="settings-error" role="alert">
+          Left alone on purpose: {shared.join(", ")} shares its contents with
+          another file on this disk, so erasing it would destroy that one too.
+          Deleting it yourself will not remove the data either - the other name
+          still points at it. Find and remove that name first.
         </p>
       )}
 

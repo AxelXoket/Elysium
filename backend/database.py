@@ -472,14 +472,6 @@ def adopt_orphaned_enc_tmp(key: bytes) -> bool:
         # more likely to be a previous migration's own scratch file than a
         # second vault. Stating more than was measured is how a log line sends
         # somebody to the wrong conclusion at the worst moment.
-        # The wording is careful about what this branch actually checked, which
-        # is only that both files are non-empty. It used to assert "It is a full
-        # copy of the vault" without calling check_key at all - and the live
-        # file is not necessarily a vault either: a still-plaintext app.db
-        # awaiting migration lands here too, where a stranded .enc-tmp is far
-        # more likely to be a previous migration's own scratch file than a
-        # second vault. Stating more than was measured is how a log line sends
-        # somebody to the wrong conclusion at the worst moment.
         logger.error(
             "An encrypted DB is present at %s beside a live database and was "
             "NOT adopted. Neither file was opened, so which one holds what is "
@@ -542,12 +534,28 @@ ORPHAN_GLOB = ".enc-tmp*"
 
 
 def orphaned_enc_tmp_paths() -> list[Path]:
-    """Every stranded encrypted copy beside the vault, in a stable order."""
+    """Every stranded encrypted copy beside the vault, in a stable order.
+
+    SIDECARS ARE NOT COPIES. `ORPHAN_GLOB` is deliberately wide, and a wide
+    glob also catches `app.db.enc-tmp-wal`, which ATTACH can leave behind and
+    which is a journal, not a database. It cannot open under any key, so it
+    failed `check_key`, and both readers below insist that EVERY match opens -
+    correctly, since one unreadable file among several is exactly the case
+    that must not be offered a delete button.
+
+    The two rules were each right and their product was not: a single stray
+    journal file answered `different_key` forever, permanently disabling the
+    only route that removes a stranded copy of the vault and putting it in the
+    `unrevoked` list at every passphrase change. Sidecars are excluded here,
+    once, rather than each reader being taught to forgive them - a reader that
+    forgives an unopenable file is the safety property gone.
+    """
     src = Path(DB_PATH)
     try:
-        return sorted(src.parent.glob(src.name + ORPHAN_GLOB))
+        found = sorted(src.parent.glob(src.name + ORPHAN_GLOB))
     except OSError:
         return []
+    return [p for p in found if not p.name.endswith(_SIDECAR_SUFFIXES)]
 
 
 def orphaned_enc_tmp_present() -> bool:
@@ -607,6 +615,21 @@ def discard_orphaned_enc_tmp(key: bytes) -> tuple[bool, str]:
             return False, "in_use"
     logger.info("Discarded %d orphaned encrypted copy(ies).", len(paths))
     return True, ""
+
+
+#: Both rotations - the passphrase change and the KDF upgrade - copy the whole
+#: database here before touching it and remove it afterwards. A process killed
+#: in that window leaves a complete copy of the vault behind.
+ROTATION_BACKUP_GLOB = ".rekey.bak-*"
+
+
+def rotation_backup_paths() -> list[Path]:
+    """Every full copy a rotation left behind, in a stable order."""
+    src = Path(DB_PATH)
+    try:
+        return sorted(src.parent.glob(src.name + ROTATION_BACKUP_GLOB))
+    except OSError:
+        return []
 
 
 def plaintext_backups() -> list[Path]:
@@ -675,8 +698,11 @@ def discard_empty_stub() -> tuple[bool, str]:
     return True, ""
 
 
-def discard_plaintext_backups() -> tuple[int, list[str]]:
-    """Shred the pre-vault copies. Returns (removed, names it could not).
+def discard_plaintext_backups() -> tuple[int, list[str], list[str]]:
+    """Shred the pre-vault copies.
+
+    Returns (removed, could-not, would-not), and the last two are separate
+    because they need opposite sentences from the user.
 
     Overwritten before unlinking, because the point is that the content stops
     existing, not that the directory entry does.
@@ -684,21 +710,44 @@ def discard_plaintext_backups() -> tuple[int, list[str]]:
     The names of failures are returned rather than swallowed: a route that
     answered a flat "done" while a full plaintext database stayed readable
     would be making exactly the promise this whole feature exists to keep.
+
+    K-49, the third list. `shred` refuses a file whose bytes answer to more
+    than one name, and it is right to - overwriting would destroy whatever the
+    other name belongs to, which is how a shred becomes a weapon. But that
+    refusal came back as an ordinary failure, and the user was told something
+    else had the file open. So they closed programs, retried, and eventually
+    deleted the file by hand - which unlinks ONE name and leaves the whole
+    plaintext database readable under the other. The one fact that changes
+    what they do was the one fact missing.
+
+    Deliberately NOT solved by unlinking our name without overwriting. That
+    would clear the folder and the notice while the content stayed exactly as
+    readable as before, and this app does not get to swap a true alarm for a
+    tidy screen. Naming the file, and naming what is actually true about it,
+    is the whole remedy available from in here.
     """
     removed = 0
     left: list[str] = []
+    shared: list[str] = []
     for backup in plaintext_backups():
         if secure_delete.shred(backup):
             removed += 1
+        elif secure_delete.is_shared(backup):
+            shared.append(backup.name)
         else:
             left.append(backup.name)
     if left:
         logger.warning(
             "%d plaintext backup(s) could not be deleted and are still "
             "readable on disk: %s", len(left), ", ".join(left))
-    elif removed:
+    if shared:
+        logger.warning(
+            "%d plaintext backup(s) were left alone because their contents "
+            "answer to another name on this disk, which overwriting them "
+            "would have destroyed: %s", len(shared), ", ".join(shared))
+    if removed and not left and not shared:
         logger.info("Discarded %d plaintext pre-vault backup(s).", removed)
-    return removed, left
+    return removed, left, shared
 
 
 def _rename_with_retry(src: Path, dest: Path, attempts: int = 5) -> None:

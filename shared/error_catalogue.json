@@ -757,6 +757,14 @@
       ]
     },
     {
+      "code": "tts_reference_clip_stuck",
+      "statuses": [],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
       "code": "tts_reference_too_short",
       "statuses": [],
       "channels": [
@@ -935,6 +943,15 @@
     },
     {
       "code": "vault_not_initialized",
+      "statuses": [
+        409
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "vault_identity_mismatch",
       "statuses": [
         409
       ],

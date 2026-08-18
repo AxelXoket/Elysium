@@ -66,6 +66,89 @@ class TestSavingAClip:
         assert names == ["ayse"]
 
 
+def _hold(monkeypatch, name):
+    """Make exactly ONE file undestroyable, the way the real world does it.
+
+    Stubbing `shred` to False wholesale would also break the refusal path's own
+    cleanup of the staged bytes, and the test would then be measuring the stub
+    rather than the guard. Something holding take 1 open says nothing about the
+    file we wrote ourselves a moment ago.
+    """
+    real = refs.secure_delete.shred
+    monkeypatch.setattr(
+        refs.secure_delete, "shred",
+        lambda path: False if Path(path).name == name else real(path))
+
+
+class TestAClipThatWillNotDie:
+    """K-42. `shred` answers, and until now nobody read the answer.
+
+    A clip that is open - the engine holding it mid-sentence, an antivirus
+    mid-scan - survives the shred. The upload then used to continue: the new
+    file landed BESIDE the survivor and the transcript and metadata were
+    rewritten to describe the new take. Since the survivor can outrank the
+    newcomer by name alone, the result was take 1's audio conditioned on take
+    2's words, reported as success.
+    """
+
+    def test_the_survivor_can_outrank_the_newcomer_by_name_alone(self, refs_root):
+        """The fact the refusal is built on, pinned on its own.
+
+        `_audio_in` takes the first audio file in sorted order, so a surviving
+        `ref.mp3` keeps being the voice however new the `ref.wav` beside it is.
+        Nothing about "newest wins" is true here, and nothing enforces it.
+        """
+        folder = refs_root / "ayse"
+        folder.mkdir()
+        (folder / "ref.wav").write_bytes(_wav_bytes())      # the new take
+        (folder / "ref.mp3").write_bytes(b"take one" * 200)  # the survivor
+        assert refs._audio_in(folder).name == "ref.mp3"
+
+    def test_a_clip_that_cannot_be_destroyed_stops_the_upload(
+        self, refs_root, monkeypatch
+    ):
+        refs.save_upload("ayse", "ref.mp3", b"take one" * 200,
+                         transcript="the words of take one")
+        before = (refs_root / "ayse" / "ref.mp3").read_bytes()
+
+        _hold(monkeypatch, "ref.mp3")
+        with pytest.raises(refs.RefError) as exc:
+            refs.save_upload("ayse", "ref.wav", _wav_bytes(),
+                             transcript="the words of take two")
+        assert exc.value.code == "tts_reference_clip_stuck"
+
+        # Nothing was destroyed...
+        assert (refs_root / "ayse" / "ref.mp3").read_bytes() == before
+        # ...nothing was installed beside it, where it would have lost anyway...
+        assert not (refs_root / "ayse" / "ref.wav").exists()
+        # ...and above all the clip and the words still belong to each other.
+        voice = refs.describe("ayse")
+        assert voice.audio_name == "ref.mp3"
+        assert voice.transcript == "the words of take one"
+
+    def test_the_refused_upload_leaves_nothing_staged(self, refs_root, monkeypatch):
+        """The rejected bytes are the user's own recording too."""
+        refs.save_upload("ayse", "ref.mp3", b"take one" * 200)
+        _hold(monkeypatch, "ref.mp3")
+        with pytest.raises(refs.RefError):
+            refs.save_upload("ayse", "ref.wav", _wav_bytes())
+        leftovers = [p.name for p in refs_root.iterdir()
+                     if p.name.startswith(".incoming-")]
+        assert leftovers == []
+
+    def test_when_the_old_clip_does_die_the_new_one_takes_over(self, refs_root):
+        """Positive control, in the direction that used to fail silently:
+        `ref.wav` replacing `ref.mp3` sorts AFTER it, so this passing is what
+        proves the shred really ran rather than the refusal being unreachable."""
+        refs.save_upload("ayse", "ref.mp3", b"take one" * 200,
+                         transcript="the words of take one")
+        refs.save_upload("ayse", "ref.wav", _wav_bytes(),
+                         transcript="the words of take two")
+        voice = refs.describe("ayse")
+        assert voice.audio_name == "ref.wav"
+        assert voice.transcript == "the words of take two"
+
+
 class TestItRefusesWhatCannotWork:
     def test_a_clip_that_is_too_short_says_how_short(self, refs_root):
         with pytest.raises(refs.RefError) as exc:

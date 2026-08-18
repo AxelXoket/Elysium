@@ -43,6 +43,7 @@ import config
 import secure_delete
 
 from .errors import (
+    TTS_REFERENCE_CLIP_STUCK,
     TTS_REFERENCE_FOLDER_REDIRECTED,
     TTS_REFERENCE_INVALID,
     TTS_REFERENCE_TOO_SHORT,
@@ -258,13 +259,33 @@ def save_upload(voice_id: str, filename: str, data: bytes, *,
         secure_delete.discard(staged)
         raise
 
-    for old in list(folder.iterdir()):
-        if old.is_file() and old.suffix.lower() in AUDIO_SUFFIXES:
-            # A reference clip is the user's own recorded voice. Replacing it
-            # with a plain unlink left the previous take on disk, so a person
-            # who re-recorded BECAUSE the first take said something they did
-            # not want kept still had it.
-            secure_delete.shred(old)           # one clip per voice
+    # A reference clip is the user's own recorded voice. Replacing it with a
+    # plain unlink left the previous take on disk, so a person who re-recorded
+    # BECAUSE the first take said something they did not want kept still had it.
+    #
+    # shred() ANSWERS, and here the answer decides whether the upload happens
+    # at all. A clip that is open - the engine holding it mid-sentence, an
+    # antivirus mid-scan - survives, and a survivor does not step politely
+    # aside: the new file lands BESIDE it, and `_audio_in` takes the first
+    # audio file in sorted order, so `ref.mp3` keeps beating `ref.wav`. The
+    # transcript and the metadata written below would then describe take 2
+    # while take 1 is what gets cloned - the exact contradiction the transcript
+    # comment further down was written to prevent, arriving by another door,
+    # and reported as a successful upload.
+    #
+    # So: refuse, and install nothing. With the one clip per voice this folder
+    # is supposed to hold, that leaves the disk exactly as it was. If a earlier
+    # half-failure left several, some may already be gone by the time a later
+    # one sticks - but that folder was already broken, and destroying the
+    # user's own copies is the direction this module is allowed to fail in.
+    stuck = [old.name
+             for old in list(folder.iterdir())
+             if old.is_file() and old.suffix.lower() in AUDIO_SUFFIXES
+             and not secure_delete.shred(old)]
+    if stuck:
+        secure_delete.discard(staged)
+        raise RefError(TTS_REFERENCE_CLIP_STUCK,
+                       "the clip already saved for this voice is still in use")
     staged.replace(folder / ("ref" + suffix))
 
     # The transcript belongs to the RECORDING, not to the voice id. Writing it

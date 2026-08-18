@@ -220,11 +220,77 @@ def _purge_voice_cache() -> None:
         )
 
 
+def _key_opens_the_database(key: bytes) -> bool:
+    """Whether this key actually opens the database that is on disk.
+
+    Only an ENCRYPTED file has an opinion about keys. A missing app.db (first
+    unlock after setup), an empty one, and a still-plaintext one awaiting
+    migration all answer True here, because refusing on any of them would
+    close the very paths `_bootstrap_unlocked` exists to walk.
+
+    WHAT THIS CANNOT DO, and the limit is worth naming: it only speaks when
+    the passphrase was already accepted. If someone types the OLD passphrase
+    against a database from that same era, the verifier rejects it before this
+    is reached and the answer is still "wrong passphrase" - which is a true
+    sentence about the identity files and a misleading one about the disk.
+    Telling those apart would mean deriving keys nobody handed us.
+    """
+    if database.classify_db_file() != database.DB_ENCRYPTED:
+        return True
+    return database.check_key(key, database.DB_PATH)
+
+
+def _sweep_crashed_rotation_backups(key: bytes) -> list[str]:
+    """Remove the full vault copies a crashed rotation left behind.
+
+    K-44. Both rotations - the passphrase change and the KDF upgrade - copy
+    the whole database to `app.db.rekey.bak-<ts>` before touching it, and
+    remove it after. Kill the process in that window and the copy stays: it
+    is in none of the remnant families /vault/status reports, no discard route
+    removes it, and on the KDF path there is no HTTP answer to carry the news
+    either. A complete copy of every chat, persona, secret and image, that
+    nothing would ever mention again.
+
+    Removed here rather than given a route of its own, and the reason is what
+    the two cases look like:
+
+    - it opens under the current key: this vault can read it, it is a
+      redundant duplicate of the live database, and there is nothing for a
+      user to decide about it. Swept.
+    - it does not open: it is a copy from before a rotation that DID finish,
+      readable only with the revoked passphrase. Left alone and logged loudly.
+      Deleting something this app cannot read is the one thing every other
+      discard path in this file refuses to do, and a route offering to do it
+      would be a button that destroys data nobody could check first.
+
+    Returns the names it left behind, so /vault/status can say they are there.
+    """
+    left: list[str] = []
+    for path in database.rotation_backup_paths():
+        if not database.check_key(key, str(path)):
+            left.append(path.name)
+            logger.error(
+                "%s is a complete copy of the vault left by an interrupted "
+                "rotation, and it does not open with the current key - so it "
+                "is readable with the previous passphrase. It was NOT removed.",
+                path.name)
+            continue
+        if secure_delete.discard(path):
+            logger.info("Removed %s, left by an interrupted rotation.",
+                        path.name)
+        else:
+            left.append(path.name)
+            logger.warning("%s could not be removed and is still on disk.",
+                           path.name)
+    return left
+
+
 def _bootstrap_unlocked() -> str | None:
     """Deferred, SELF-HEALING startup work that needs the key. Idempotent and
     run on every init/unlock, so a state left half-finished by a crashed or
     file-locked migration is completed on the next unlock instead of bricking.
     Canonical order:
+      0) sweep the full copies a crashed rotation left behind;
       1) adopt an encrypted copy orphaned mid-migration-swap;
       2) migrate a still-plaintext app.db into the vault (backup kept);
       3) build the schema (fatal on failure - the only fatal step);
@@ -240,6 +306,7 @@ def _bootstrap_unlocked() -> str | None:
     import legacy_migration
 
     key = vault_state.get_key()
+    _sweep_crashed_rotation_backups(key)
     database.adopt_orphaned_enc_tmp(key)
     backup: str | None = None
     if database.is_plaintext_db():
@@ -427,6 +494,14 @@ def _vault_status_sync() -> dict:
         # unexplained file appearing beside the vault of an app whose whole
         # pitch is that you can see what it keeps.
         "empty_stub": database.empty_stub_present(),
+        # K-44. A rotation killed mid-flight leaves app.db.rekey.bak-<ts>: a
+        # complete copy of the vault, in none of the three families above and
+        # removed by no route. The unlock sweep takes every one of them this
+        # vault can read, so a file still here while unlocked is the other
+        # case - openable only with the passphrase that was rotated away - and
+        # that is precisely the file the user has to know about, because it is
+        # the one Elysium will not touch.
+        "rotation_backups": [b.name for b in database.rotation_backup_paths()],
     }
 
 
@@ -458,9 +533,13 @@ async def discard_plaintext_backup() -> dict:
         # cost scales with the size of everything the user ever wrote. Its two
         # siblings below have always run in a thread; this one was the outlier.
         # The lock stays on the loop side, wrapping the hop, exactly as they do.
-        removed, left = await anyio.to_thread.run_sync(
+        removed, left, shared = await anyio.to_thread.run_sync(
             database.discard_plaintext_backups)
-    return {"removed": removed, "left": left}
+    # `shared` separately from `left`: one means try again, the other means
+    # the file cannot be removed from in here at all and deleting it by hand
+    # will not remove the data either. Told as one list, the second reads as
+    # the first and sends people off closing programs.
+    return {"removed": removed, "left": left, "shared": shared}
 
 
 @router.post("/discard-empty-stub")
@@ -567,7 +646,18 @@ def _upgrade_kdf_if_needed(vault: KeyVault, passphrase: str,
     except Exception:
         logger.warning("KDF upgrade did not take; the vault is unchanged",
                        exc_info=True)
-        secure_delete.discard(backup)
+        if not secure_delete.discard(backup):
+            # Its twin twelve lines down checks this and its sibling route
+            # reports it; here the answer was dropped. The upgrade failed, so
+            # the file is under the key that is STILL current - not a
+            # revocation hole, but a complete second copy of the vault sitting
+            # in the data folder that nothing would ever mention again. The
+            # unlock sweep collects it; this line is what makes it findable in
+            # the meantime.
+            logger.warning(
+                "KDF upgrade failed AND its backup %s could not be removed; "
+                "it is a full copy of the vault under the current key.",
+                backup.name)
         return False
     vault_state.set_key(new_key)
     # The same revocation the passphrase route performs. The passphrase has
@@ -627,6 +717,27 @@ async def vault_unlock(body: PassphraseBody) -> dict:
             key = await anyio.to_thread.run_sync(
                 vault.recover_with_db, body.passphrase, database.check_key
             )
+        elif not await anyio.to_thread.run_sync(_key_opens_the_database, key):
+            # K-52. "The database is the final authority" was only ever true in
+            # ONE direction: recovery ran when the verifier said no, and never
+            # when it said yes. So a database restored from before a passphrase
+            # change - a backup, a synced folder, a copy put back by hand - met
+            # identity files belonging to a later vault, and the CORRECT
+            # current passphrase produced a 500 forever while /vault/status
+            # reported every honesty field clean. Three answers, none of them
+            # the true sentence.
+            key = await anyio.to_thread.run_sync(
+                vault.recover_with_db, body.passphrase, database.check_key
+            )
+            if key is None:
+                # Deliberately not 401: the passphrase was right. What is wrong
+                # is that these two things on disk are not the same vault, and
+                # only the user knows which one they meant to keep.
+                logger.error(
+                    "Unlock refused: the passphrase matches the identity "
+                    "files, but the database on disk does not open with the "
+                    "key they produce. They are not the same vault.")
+                raise HTTPException(409, "vault_identity_mismatch")
         if key is None:
             refused = True
     if refused:

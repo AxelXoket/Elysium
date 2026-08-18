@@ -238,6 +238,7 @@ shield like every other data route.
 | 400 | tts_reference_invalid | Reference clip unusable (wrong format/unreadable/too large) | Ask for a clear 10-20s clip |
 | 400 | tts_reference_too_short | Clip is under the minimum length for cloning | Say how short it was; ~10 s of clear speech works |
 | 400 | tts_reference_folder_redirected | The folder for this voice is a junction or a symlink, so saving would write into a directory that is not the app's | Nothing was saved; say the link has to be moved or removed |
+| 409 | tts_reference_clip_stuck | The clip already saved for this voice could not be destroyed - something has the file open | Nothing was saved and nothing was lost; say to try again shortly, NOT to re-record |
 | 500 | tts_cache_outside_data_dir | The generated-audio folder resolves outside the app's data directory | Nothing was written; say the folder has to move back, or the whole data dir with ELYSIUM_DATA_DIR |
 | - | provider_frame_dropped | An SSE frame could not be parsed and its text was lost | Say a piece of the reply is missing; the rest is unaffected |
 | - | stream_ended_without_done | The stream closed with no [DONE] and no finish_reason | Say the reply may be cut short |

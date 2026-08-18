@@ -239,6 +239,13 @@ const ERROR_MESSAGES: Record<string, string> = {
   // whatever audio is already there.
   tts_reference_folder_redirected:
     "This voice's folder points somewhere else on disk, so nothing was saved. Move or remove that link and try again.",
+  // Nothing wrong with the clip that was just sent. The previous recording is
+  // open somewhere - the voice engine mid-sentence, an antivirus mid-scan -
+  // and it cannot be destroyed, so the upload was refused rather than left to
+  // land beside it and lose. Waiting is the whole fix; do not send anyone off
+  // to record again.
+  tts_reference_clip_stuck:
+    "The recording already saved for this voice is in use right now, so nothing was changed. Try again in a moment.",
   tts_transcript_required:
     "This engine needs to know what is said in the voice clip. Type the words in below.",
   // Distinct from tts_worker_failed on purpose. The engine is running; it
@@ -313,6 +320,14 @@ const ERROR_MESSAGES: Record<string, string> = {
     "The vault could not be created. Check that the Elysium data folder is writable and has free space, then try again.",
   vault_unlock_failed:
     "The passphrase was accepted but the vault could not be opened. The database may be in use by another program, or the disk may be full.",
+  // K-52. Not a wrong passphrase and not a broken database - each of those
+  // has its own sentence, and both of them would send someone off doing the
+  // wrong thing. The passphrase is right; the two halves of the vault simply
+  // come from different moments, which is what restoring one of them without
+  // the other does. Only the owner knows which half they meant to keep, so
+  // the message names the files rather than proposing a repair.
+  vault_identity_mismatch:
+    "That passphrase is correct, but it does not open the database that is here - the key files and the database are from different vaults. This usually means one of them was restored from a backup without the other. Put back the matching app.db, or the matching salt.bin and verifier.bin, from the same backup.",
   change_passphrase_failed:
     "The passphrase was not changed - nothing was lost, and your current passphrase still works. Close anything else using Elysium and retry.",
   unknown_error:

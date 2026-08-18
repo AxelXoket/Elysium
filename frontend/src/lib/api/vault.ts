@@ -12,10 +12,19 @@ import {
 
 /** POST /vault/discard-plaintext-backup. `left` names the files it could not
  *  delete: a flat "done" while a full unencrypted database stayed readable
- *  would be the exact promise this feature exists to keep. */
+ *  would be the exact promise this feature exists to keep.
+ *
+ *  `shared` is the other half of that, and it needs the opposite sentence.
+ *  Those files were left alone on purpose: their bytes answer to a second
+ *  name on the disk, so overwriting them would destroy whatever that other
+ *  name belongs to. Reported as "could not delete" they read as "close
+ *  something and retry", and the user ends up deleting the file by hand -
+ *  which removes one name and leaves the plaintext database readable under
+ *  the other. Optional so an older backend still parses. */
 export const DiscardBackupSchema = z.object({
   removed: z.number(),
   left: z.array(z.string()),
+  shared: z.array(z.string()).optional(),
 });
 export type DiscardBackup = z.infer<typeof DiscardBackupSchema>;
 

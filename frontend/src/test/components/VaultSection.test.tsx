@@ -18,6 +18,7 @@ import userEvent from "@testing-library/user-event";
 
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { VaultSection } from "@/components/settings/VaultSection";
+import { mockFetch } from "../mocks/api";
 
 /** Enough to clear the client-side length floor without naming it twice. */
 const LONG_ENOUGH = "correct horse battery";
@@ -171,5 +172,47 @@ describe("changing the vault passphrase", () => {
     }
     expect(sent, "the form sent nothing").toHaveLength(1);
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+describe("VaultSection - the leftovers it has to show", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("paints every remnant the vault reports", async () => {
+    /**
+     * Each of these notices has its own test file, and every one of those
+     * renders the component directly. That proves the component works and
+     * says nothing about whether anything renders it - which is exactly the
+     * failure orphaned_copy already made once, sitting on the wire for a whole
+     * release with no screen reading it.
+     *
+     * So this is the mounting, asserted where the mounting happens. It covers
+     * all four together on purpose: the next one added should have to change
+     * this line.
+     */
+    mockFetch({
+      "/vault/status": {
+        body: {
+          initialized: true,
+          unlocked: true,
+          plaintext_backups: ["app.db.plain.bak-1700000000"],
+          orphaned_copy: true,
+          orphaned_copy_readable: true,
+          empty_stub: true,
+          rotation_backups: ["app.db.rekey.bak-1700000000"],
+        },
+      },
+      "/settings": { body: { auto_lock_minutes: 0 } },
+    });
+
+    renderWithQueryClient(<VaultSection />);
+
+    expect(
+      await screen.findByTestId("plaintext-backup-notice"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("orphaned-copy-notice")).toBeInTheDocument();
+    expect(screen.getByTestId("rotation-backup-notice")).toBeInTheDocument();
+    expect(screen.getByTestId("empty-stub-notice")).toBeInTheDocument();
   });
 });
