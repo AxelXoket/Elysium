@@ -9,6 +9,7 @@ import {
   setProxyRequired,
   setStopSequences,
   setAutoLock,
+  setScreenPrivacy,
   setImageOutput,
   deleteProxy,
   getProxyHealth,
@@ -174,6 +175,21 @@ export function useSetAutoLock() {
         prev ? { ...prev, auto_lock_minutes: data.auto_lock_minutes } : prev,
       );
     },
+  });
+}
+
+/** Same shape as useSetAutoLock: the vault is the truth, so the server's
+ *  answer is written through rather than a local guess. */
+export function useSetScreenPrivacy() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (enabled: boolean) => setScreenPrivacy(enabled),
+    onSuccess: (_data, enabled) => {
+      qc.setQueryData<Settings>(keys.settings(), (prev) =>
+        prev ? { ...prev, screen_privacy_enabled: enabled } : prev,
+      );
+    },
+    onError: (err: unknown) => useErrorStore.getState().pushError(err),
   });
 }
 

@@ -671,6 +671,22 @@
       ]
     },
     {
+      "code": "safeword_too_long",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "safeword_triggered",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
       "code": "stream_ended_without_done",
       "statuses": [],
       "channels": [

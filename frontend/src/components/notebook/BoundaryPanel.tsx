@@ -25,6 +25,8 @@ import {
   useCreateBoundary,
   useDeleteBoundary,
   useSetUseGlobalBoundaries,
+  useSafeword,
+  useSetSafeword,
 } from "@/lib/query/notebook";
 import type { Boundary } from "@/lib/schemas/notebook";
 
@@ -46,6 +48,22 @@ export function BoundaryPanel() {
   const [severity, setSeverity] = useState("hard");
   // Global by default: a limit is usually about the person, not the scene.
   const [scope, setScope] = useState<"global" | "chat">("global");
+
+  // Saved on blur, per A50: the vault can lock mid-thought, and a buffer
+  // somebody typed and never committed is a buffer the lock eats.
+  const safewordQuery = useSafeword();
+  const saveWord = useSetSafeword();
+  const [safeword, setSafeword] = useState<string | null>(null);
+  const shown = safeword ?? safewordQuery.data?.word ?? "";
+
+  async function saveSafeword() {
+    if (safeword === null || safeword === (safewordQuery.data?.word ?? "")) return;
+    try {
+      await saveWord.mutateAsync([safeword]);
+    } catch (err) {
+      pushError(err, "error");
+    }
+  }
   const [confirmId, setConfirmId] = useState<number | null>(null);
   // Optimistic only while a save is in flight; the server's answer is the
   // truth the rest of the time.
@@ -106,6 +124,38 @@ export function BoundaryPanel() {
       >
         Limits
       </h4>
+
+      {/* Above the list on purpose. Everything below this is a paragraph the
+          model is asked to honour; this one is matched in code before the
+          request is built, and when it matches the request never exists. It
+          is the only thing on this panel that does not depend on a model
+          agreeing, so it says so and it goes first. */}
+      <div className="persona-card space-y-1">
+        <label className="block space-y-1">
+          <span className="text-xs leading-relaxed text-muted-foreground">
+            Safeword - stops a message before it is sent
+          </span>
+          <Input
+            value={shown}
+            maxLength={64}
+            placeholder="A word you would never write by accident..."
+            disabled={busy || !safewordQuery.isSuccess}
+            onChange={(e) => setSafeword(e.target.value)}
+            onBlur={() => void saveSafeword()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void saveSafeword();
+            }}
+            aria-label="Safeword"
+            className="persona-field text-xs md:text-xs"
+          />
+        </label>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          Put it anywhere in a message and nothing is sent - not the message,
+          not your notes, not these limits - and nothing is saved. This one is
+          not a request to the model; it is checked here. Leave it empty to
+          turn it off.
+        </p>
+      </div>
 
       <p className="text-xs leading-relaxed text-muted-foreground">
         Sent with every message and never trimmed to make room. If they do not

@@ -97,6 +97,22 @@ export function setAutoLock(minutes: number): Promise<AutoLockResponse> {
   });
 }
 
+/**
+ * Hide the window from screen capture. Stored in the VAULT, like the auto-lock
+ * delay and for the same reason: a protection setting somebody can read and
+ * change without the passphrase is not one.
+ *
+ * It is a defence layer, not a guarantee - it stops the ordinary capture and
+ * screen-share APIs on Windows, and it is not applied at all while the vault
+ * is locked, because a locked screen has nothing on it to protect.
+ */
+export function setScreenPrivacy(enabled: boolean): Promise<OkResponse> {
+  return request("/settings/screen-privacy", OkResponseSchema, {
+    method: "POST",
+    body: JSON.stringify({ screen_privacy_enabled: enabled }),
+  });
+}
+
 export function setProxyRequired(proxyRequired: boolean): Promise<OkResponse> {
   return request("/settings/proxy/required", OkResponseSchema, {
     method: "POST",

@@ -130,3 +130,12 @@ backend/voice/
 docs/*
 !docs/frontend_contract.md
 !docs/AUDIT_2026_07_CLOSURE.md
+
+# Throwaway data directories used when the packaged exe is self-tested
+# (ELYSIUM_DATA_DIR pointed somewhere disposable). An interrupted run leaves
+# a COMPLETE vault behind - encrypted, but still the user's conversation -
+# and the rule for this repository is that nothing the running app writes is
+# ever a candidate for a commit. `*.db` catches the database itself; this
+# catches the directory, its logs and its voice folder with it.
+/.st/
+/.selftest_tmp/

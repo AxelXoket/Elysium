@@ -177,6 +177,34 @@ async def worker_reset() -> dict:
     return {"ok": True, "worker": notebook_worker.worker.status()}
 
 
+class SafewordBody(BaseModel):
+    word: str = Field(default="", max_length=64)
+
+
+@router.get("/safeword")
+async def get_safeword() -> dict:
+    return {"word": await anyio.to_thread.run_sync(notebook.safeword)}
+
+
+@router.post("/safeword")
+async def set_safeword(body: SafewordBody) -> dict:
+    """The one thing here that is not a request to a model.
+
+    Every other limit is a paragraph in a prompt, and a paragraph in a prompt
+    is something a model may decline to honour. This is matched in code before
+    the provider is called, and when it matches the turn does not happen: no
+    request, no storage, no reply. Set it to an empty string to turn it off.
+    """
+    try:
+        await anyio.to_thread.run_sync(notebook.set_safeword, body.word)
+    except notebook.NotebookError as exc:
+        _refuse(exc)
+    # The WORD is never logged. It is a phrase the user chose for the worst
+    # moment they expect to have, and it belongs in the vault and nowhere else.
+    logger.info("Safeword %s.", "set" if body.word.strip() else "cleared")
+    return {"ok": True}
+
+
 @router.get("/auto-accept")
 async def get_auto_accept() -> dict:
     def _read() -> dict:

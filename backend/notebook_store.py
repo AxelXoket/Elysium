@@ -63,6 +63,7 @@ ALL_CODES: frozenset[str] = frozenset({
     "notebook_entry_not_found",
     "notebook_reorder_incomplete",
     "notebook_daily_cap_reached",
+    "safeword_too_long",
     "boundary_empty",
     "boundary_invalid",
     "chat_not_found",
@@ -984,3 +985,43 @@ def extraction_stats(con, chat_id: int | None = None) -> dict:
         "skipped": by_status.get("skipped", 0),
         "skip_reasons": {r[0]: r[1] for r in skips if r[0]},
     }
+
+
+# ── The safeword ────────────────────────────────────────────────────────────
+
+def safeword() -> str:
+    """The phrase that stops a turn before it leaves the machine."""
+    from database import get_setting
+    return (get_setting(config.SETTING_SAFEWORD) or "").strip()
+
+
+def set_safeword(word: str) -> None:
+    from database import set_setting
+    word = " ".join(word.split())
+    if len(word) > 64:
+        raise NotebookError("safeword_too_long")
+    set_setting(config.SETTING_SAFEWORD, word)
+
+
+def _fold_tr(text: str) -> str:
+    """Lowercased the Turkish way, so a safeword survives being typed.
+
+    `İ` lowercases to `i` in Turkish and to `i` + a combining dot elsewhere;
+    `I` lowercases to `i` elsewhere and to `ı` in Turkish. A safeword the user
+    typed in one case and matched in the other would silently fail exactly
+    once - the one time it mattered.
+    """
+    return (text.replace("I", "ı").replace("İ", "i").lower()
+            .replace("̇", ""))
+
+
+def safeword_in(message: str) -> bool:
+    """Whether this outgoing message trips it.
+
+    Substring, not equality: somebody reaching for a safeword is not composing
+    carefully, and "red. stop" has to work as well as "red".
+    """
+    word = safeword()
+    if not word:
+        return False
+    return _fold_tr(word) in _fold_tr(message)

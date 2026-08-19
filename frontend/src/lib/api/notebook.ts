@@ -3,6 +3,7 @@ import {
   NotebookEntrySchema,
   WorkerStatusSchema,
   AutoAcceptSchema,
+  SafewordSchema,
   NotebookListSchema,
   BoundarySchema,
   BoundaryListSchema,
@@ -161,5 +162,19 @@ export function setAutoAccept(enabled: boolean) {
   return request("/notebook/auto-accept", NotebookOkSchema, {
     method: "POST",
     body: JSON.stringify({ enabled }),
+  });
+}
+
+
+// ── The safeword ───────────────────────────────────────────────────────────
+
+export function getSafeword() {
+  return request("/notebook/safeword", SafewordSchema);
+}
+
+export function setSafeword(word: string) {
+  return request("/notebook/safeword", NotebookOkSchema, {
+    method: "POST",
+    body: JSON.stringify({ word }),
   });
 }

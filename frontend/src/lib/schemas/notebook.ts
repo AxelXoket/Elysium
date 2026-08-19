@@ -189,3 +189,7 @@ export const WorkerStatusSchema = z.object({
 export type WorkerStatus = z.infer<typeof WorkerStatusSchema>;
 
 export const AutoAcceptSchema = z.object({ enabled: z.boolean() });
+
+/** The phrase that stops a turn in CODE rather than by asking the model.
+ *  Empty means off. */
+export const SafewordSchema = z.object({ word: z.string() });

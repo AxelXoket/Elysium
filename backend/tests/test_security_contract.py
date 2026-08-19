@@ -175,12 +175,38 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "tests/test_privacy_at_rest.py::TestTheDatabaseFileIsCiphertext"
         "::test_stdlib_sqlite_cannot_read_it",
     )),
+    # The notebook's second sender, and what it writes.
+    ("A SECOND model reads them too", (
+        "tests/test_notebook_offer_wiring.py::TestEverySendPathTellsTheNotebook"
+        "::test_plain_send",
+        "tests/test_extraction_model_list.py::TestTheSchemaCondition"
+        "::test_a_qualifying_endpoint_survives",
+    )),
+    ("What it writes goes into your prompts unreviewed, by default", (
+        "tests/test_notebook_worker.py::TestAutoAccept::test_the_default_is_ON",
+        "tests/test_notebook_worker_hardening.py::TestAnImportedCardNeverAutoAccepts"
+        "::test_a_chat_from_an_imported_card_waits_for_review",
+    )),
+    ("Notes are fenced with a random per-request tag", (
+        "tests/test_notebook_sentries.py::TestANoteCannotForgeAMarker"
+        "::test_the_tag_is_different_every_time",
+        "tests/test_notebook_sentries.py::TestModelTextIsNeverMergedWithTheUsers"
+        "::test_the_headers_say_whose_notes_they_are",
+    )),
+    ("`on_violation` is stored and deliberately not acted on", (
+        "tests/test_notebook_context.py::TestLimitsRefuseRatherThanShrink"
+        "::test_limits_survive_a_full_notebook",
+    )),
+    ("the vault never locked on a busy chat", (
+        "tests/test_notebook_worker.py::TestALockedVaultIsNotAFailure"
+        "::test_cancellation_propagates_and_does_not_open_the_breaker",
+    )),
     ("On by default, 5 minutes", (
         "tests/test_auto_lock.py::TestTheSettingIsReadSafely"
         "::test_never_configured_means_the_default_not_off",
     )),
-    ("tears down the voice engine (giving the GPU memory back) "
-     "and drops the network client", (
+    ("tears down the voice engine (giving the GPU memory back), "
+     "drops the network client, and stands", (
         "tests/test_auto_lock.py::TestTheLockItPerforms"
         "::test_it_is_the_same_lock_the_button_performs",
     )),
@@ -638,7 +664,7 @@ def _acknowledged_problems(
 #: sample - so this covers all of it. Updating this constant is the
 #: deliberate act that means a human decided what a change claims and
 #: registered a proof for it.
-DOCUMENT_DIGEST = "7dd8ce020d1adc58ad8ee99a9e6774cff11a297fd6066c0fbfe35dd962830bd8"
+DOCUMENT_DIGEST = "acbffdc32492d81099dd0eb9b4d14a8179c8476cd141f8bed273fc73af47e3eb"
 
 
 class TestEveryProvenClaimHasAProof:

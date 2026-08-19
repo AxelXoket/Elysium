@@ -782,6 +782,18 @@ async def _prepare_completion(
     resolved_persona_id = ctx["resolved_persona_id"]
     from_settings = ctx["persona_from_settings"]
 
+    # ── The safeword ──────────────────────────────────────────────────────
+    #
+    # Before the key check, before the proxy gate, before anything is
+    # assembled. It is the only control in this feature that IS a control:
+    # every limit the notebook carries is a paragraph in a prompt, which is a
+    # request, and this is a match in code that stops the request from
+    # existing. Nothing is sent - not the message, not the notebook, not the
+    # limits - and nothing is stored.
+    if await anyio.to_thread.run_sync(
+            notebook_store.safeword_in, user_message_text):
+        raise HTTPException(400, "safeword_triggered")
+
     # ── Check API key ─────────────────────────────────────────────────────
     if not ctx["api_key_present"]:
         raise HTTPException(401, "api_key_missing")

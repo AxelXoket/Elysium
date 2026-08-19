@@ -33,13 +33,13 @@ Everything is under one folder:
 
 | What | Encrypted? |
 |---|---|
-| `app.db` - messages, characters, personas, images, your API key, proxy URL | **Yes**, AES-256 (SQLCipher), including the journal files |
+| `app.db` - messages, characters, personas, images, your notebook and limits, what the note reader has read and spent, your API key, proxy URL | **Yes**, AES-256 (SQLCipher), including the journal files |
 | `salt.bin`, `verifier.bin`, `kdf.json` - passphrase machinery | No, and they are not secret. Knowing them does not reveal your key |
 | `app.db.plain.bak-*` - a pre-vault copy kept after a one-time upgrade | **No, plaintext.** Settings > Secrets lists it and deletes it on request |
 | `voice/models`, `voice/refs` - voice model weights, your reference recordings | No |
 | `voice/cache` - generated speech, your conversation as audio | No. Cleared at every lock, every launch and every shutdown; anything older than 30 minutes is cleared as the next reply is spoken |
 | `webview/` - the app window's browser profile | No. Cache, history and session files are wiped at every launch and exit; only cosmetic settings and your wallpaper are kept |
-| `elysium.log` - application log | No. It carries no message text, no keys and no passphrases |
+| `elysium.log` - application log | No. It carries no message text, no note text, no keys and no passphrases - but it does record that things happened: chat and note ids, counts, and the TYPE name of an error. A plaintext record of which chats have notes, sitting beside an otherwise opaque vault |
 | `port` - the port the server last used | No. One number |
 
 In a development checkout this folder is the source tree instead, which is why
@@ -70,10 +70,17 @@ not open at all.
 ### Idle auto-lock
 
 **On by default, 5 minutes.** Locking clears the key from memory, tears down the
-voice engine (giving the GPU memory back) and drops the network client. Idle
-means nothing in flight and nothing finished recently, so a reply that is still
-streaming holds the vault open however long it takes. Change the delay or turn
-it off in Settings > Secrets.
+voice engine (giving the GPU memory back), drops the network client, and stands
+the notebook's background reader down. Idle means nothing in flight and nothing
+finished recently, so a reply that is still streaming holds the vault open
+however long it takes. Change the delay or turn it off in Settings > Security.
+
+One thing deliberately does **not** hold it open: the notebook's background
+reader. It runs while you are reading something else, so counting it as
+activity would mean the vault never locked on a busy chat. Instead the lock
+cancels whatever it was doing - including a request already in flight - and
+empties its queue. Nothing is lost: the messages it had not finished reading
+stay unread, and a later run picks them up.
 
 ### The key in memory
 
@@ -112,6 +119,14 @@ One provider host, enforced by refusing any other destination before the
 connection opens. System proxy environment variables are ignored on purpose.
 Every request forces `zdr: true`, `data_collection: deny`, `allow_fallbacks:
 false`, and the app window **cannot** override those three.
+
+**Two things send your conversation there, not one.** The reply you asked for,
+and the notebook's note reader - a second model, which you choose, sent
+excerpts of the same conversation automatically every twenty turns while you
+are not watching. It goes to the same single host under the same locked
+policy, and it is off entirely until you pick a model, but it is a second
+sender and it spends your credits. What it did and what it cost is in the
+Notes tab; the ceiling is sixty calls a day and it is a block, not a warning.
 
 The one other egress is the optional voice engine setup, which you start
 yourself. It downloads from GitHub and PyPI, uploads nothing, and no chat,
@@ -231,6 +246,30 @@ you can find the one you care about.
 - **Your provider reads your prompts.** Elysium forces zero-data-retention
   routing, but the model still reads what you send it. Encryption at rest is not
   encryption in transit to a third party you chose to use.
+- **A SECOND model reads them too, if you let it.** The notebook's note reader
+  is a model you choose separately, and once chosen it is sent excerpts of the
+  conversation automatically - in the background, every twenty turns, on your
+  own API key. The same policy is forced on it and the list only offers
+  endpoints that keep no copy, but it is another party reading your words, and
+  it starts reading without asking again each time. It is off until you pick
+  one; the Notes tab shows every call it has made.
+- **What it writes goes into your prompts unreviewed, by default.** A note the
+  model wrote is sent with every later message in that chat. "Keep suggestions
+  without asking" is ON out of the box - the panel announces each note once and
+  offers Undo, but if you never look, nobody reviewed it. Turn it off in the
+  Notes tab to approve each one. A chat opened from an imported character card
+  always requires approval regardless.
+- **A note is text a model reads, and that is a soft boundary.** Notes are
+  fenced with a random per-request tag so a message cannot forge a section
+  break, the model's own text sits in a weaker block after the history, and
+  every quote must appear verbatim in the transcript. None of that makes a
+  model immune to being talked to. Do not treat the notebook as a security
+  control.
+- **A limit is told to the model, not enforced in code.** The limits list is
+  the strongest-worded block in the payload and it is still a block in a
+  payload. `on_violation` is stored and deliberately not acted on. If you need
+  something to be impossible rather than discouraged, this is not the feature
+  for it.
 - **A running unlocked app is unlocked.** Anything with your user account, or
   administrator rights, can reach a running process's memory. The vault protects
   the file at rest and the window once it locks.

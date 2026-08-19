@@ -359,6 +359,13 @@ const ERROR_MESSAGES: Record<string, string> = {
     "There is nothing new in this chat to read yet. Send a few messages and try again.",
   notebook_language_unknown:
     "That instruction language is not one of the two available.",
+  // The only limit in this app that is enforced rather than requested. The
+  // sentence says so, because a user who reaches for it deserves to know it
+  // worked rather than hoping the model listened.
+  safeword_triggered:
+    "Stopped. Your safeword was in that message, so nothing was sent - not the message, not your notes, not your limits. Nothing was saved either.",
+  safeword_too_long:
+    "A safeword has to be short enough to type in a hurry. Sixty-four characters at most.",
   notebook_daily_cap_reached:
     "The notebook has used its calls for today and stopped. It will start again tomorrow, and nothing was lost - the messages it has not read yet stay unread, not skipped.",
   notebook_model_id_invalid:

@@ -15,6 +15,7 @@ import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { NotebookPanel } from "@/components/notebook/NotebookPanel";
 import { mockFetch } from "../mocks/api";
 import { useUiStore } from "@/lib/store/uiStore";
+import { useSeenNotesStore } from "@/lib/chat/seenNotes";
 
 function entry(over: Partial<Record<string, unknown>> = {}) {
   return {
@@ -143,5 +144,205 @@ describe("NotebookPanel", () => {
       .toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^pin note$/i }))
       .not.toBeInTheDocument();
+  });
+});
+
+describe("what the model wrote, and taking it back", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({ selectedChatId: 7 });
+    useSeenNotesStore.setState({ byChat: {} });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  const modelNote = (over = {}) => entry({
+    id: 5, text: "Her brother owns the mill.", provenance: "model",
+    evidence: "kardesi degirmenin sahibi", ...over,
+  });
+
+  it("announces a note the model saved without asking", async () => {
+    // A35. With auto-accept on there is NO review step, so this is the only
+    // moment the user is told a note was written. Every shipped version of
+    // this feature that surprised its users surprised them exactly here.
+    mockFetch({ "/notebook/7": { body: { entries: [modelNote()],
+                                         notebook_chars: 10 } } });
+    renderWithQueryClient(<NotebookPanel />);
+    const strip = await screen.findByTestId("just-saved");
+    expect(strip.textContent).toMatch(/saved a note the model wrote/i);
+    expect(strip.textContent).toContain("Her brother owns the mill.");
+  });
+
+  it("does not announce the user's own notes", async () => {
+    // Ground: the user knows what they typed.
+    mockFetch({ "/notebook/7": { body: { entries: [entry()],
+                                         notebook_chars: 10 } } });
+    renderWithQueryClient(<NotebookPanel />);
+    await screen.findByTestId("note-1");
+    expect(screen.queryByTestId("just-saved")).not.toBeInTheDocument();
+  });
+
+  it("does not announce a proposal - it is already visibly waiting", async () => {
+    mockFetch({ "/notebook/7": {
+      body: { entries: [modelNote({ status: "proposed" })],
+              notebook_chars: 10 } } });
+    renderWithQueryClient(<NotebookPanel />);
+    await screen.findByTestId("note-5");
+    expect(screen.queryByTestId("just-saved")).not.toBeInTheDocument();
+  });
+
+  it("Undo actually deletes it", async () => {
+    const user = userEvent.setup();
+    mockFetch({
+      "DELETE /notebook/entries/5": { body: { ok: true } },
+      "/notebook/7": { body: { entries: [modelNote()], notebook_chars: 10 } },
+    });
+    renderWithQueryClient(<NotebookPanel />);
+    await user.click(await screen.findByRole("button", { name: /^undo$/i }));
+
+    await waitFor(() => {
+      const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+        .find((c: unknown[]) =>
+          String(c[0]).includes("/notebook/entries/5")
+          && (c[1] as RequestInit | undefined)?.method === "DELETE");
+      expect(call).toBeTruthy();
+    });
+  });
+
+  it("stops announcing once it has been acknowledged", async () => {
+    const user = userEvent.setup();
+    mockFetch({ "/notebook/7": { body: { entries: [modelNote()],
+                                         notebook_chars: 10 } } });
+    renderWithQueryClient(<NotebookPanel />);
+    await user.click(await screen.findByRole("button", { name: /keep it/i }));
+    await waitFor(() =>
+      expect(screen.queryByTestId("just-saved")).not.toBeInTheDocument());
+  });
+
+  it("shows the Turkish original under an English note", async () => {
+    // The whole reason notes are English is that a small model reads and
+    // writes it far better. The cost is that a Turkish sentence comes back
+    // as somebody else's paraphrase - unless the verbatim quote is there to
+    // check it against.
+    mockFetch({ "/notebook/7": { body: {
+      entries: [modelNote({ evidence: "kardeşi değirmenin sahibi" })],
+      notebook_chars: 10 } } });
+    renderWithQueryClient(<NotebookPanel />);
+    const row = await screen.findByTestId("note-5");
+    expect(row.textContent).toMatch(/Türkçe aslı/);
+    expect(row.textContent).toContain("kardeşi değirmenin sahibi");
+  });
+
+  it("says WHY the note is in English", async () => {
+    mockFetch({ "/notebook/7": { body: { entries: [modelNote()],
+                                         notebook_chars: 10 } } });
+    renderWithQueryClient(<NotebookPanel />);
+    expect((await screen.findByTestId("note-5")).textContent)
+      .toMatch(/reads and writes English far better/i);
+  });
+
+  it("does not repeat the quote when it is already the note", async () => {
+    // Ground: a second identical line is noise, not evidence.
+    mockFetch({ "/notebook/7": { body: {
+      entries: [modelNote({ text: "she said her brother owns the mill",
+                            evidence: "her brother owns the mill" })],
+      notebook_chars: 10 } } });
+    renderWithQueryClient(<NotebookPanel />);
+    const row = await screen.findByTestId("note-5");
+    expect(row.textContent).not.toMatch(/From:/);
+  });
+});
+
+describe("finding a note again", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({ selectedChatId: 7 });
+    useSeenNotesStore.setState({ byChat: {} });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  const many = (extra: object[] = []) => ({
+    entries: [
+      ...Array.from({ length: 6 }, (_, i) =>
+        entry({ id: 100 + i, text: `filler note ${i}` })),
+      ...extra,
+    ],
+    notebook_chars: 10,
+  });
+
+  it("does not offer a search box over a short list", async () => {
+    // Furniture over four rows.
+    mockFetch({ "/notebook/7": { body: { entries: [entry()],
+                                         notebook_chars: 10 } } });
+    renderWithQueryClient(<NotebookPanel />);
+    await screen.findByTestId("note-1");
+    expect(screen.queryByLabelText(/search notes/i)).not.toBeInTheDocument();
+  });
+
+  it("filters by what the note says", async () => {
+    const user = userEvent.setup();
+    mockFetch({ "/notebook/7": { body: many([
+      entry({ id: 200, text: "Mira keeps the ledger." })]) } });
+    renderWithQueryClient(<NotebookPanel />);
+    await user.type(await screen.findByLabelText(/search notes/i), "ledger");
+    expect(await screen.findByTestId("note-200")).toBeInTheDocument();
+    expect(screen.queryByTestId("note-100")).not.toBeInTheDocument();
+  });
+
+  it("finds a note by the TURKISH it was taken from", async () => {
+    // The point of searching the quote. Notes are written in English, so the
+    // words the user actually typed are otherwise the one thing they cannot
+    // search for.
+    const user = userEvent.setup();
+    mockFetch({ "/notebook/7": { body: many([
+      entry({ id: 201, text: "Her brother owns the mill.",
+              provenance: "model",
+              evidence: "kardeşi değirmenin sahibi" })]) } });
+    renderWithQueryClient(<NotebookPanel />);
+    await user.type(await screen.findByLabelText(/search notes/i), "değirmen");
+    expect(await screen.findByTestId("note-201")).toBeInTheDocument();
+  });
+
+  it("lowercases the Turkish way", async () => {
+    // `İstanbul` folds to `i̇stanbul` under the invariant rules and to
+    // `istanbul` under Turkish ones. With the default, typing `istanbul`
+    // finds nothing.
+    const user = userEvent.setup();
+    mockFetch({ "/notebook/7": { body: many([
+      entry({ id: 202, text: "İstanbul is where they met." })]) } });
+    renderWithQueryClient(<NotebookPanel />);
+    await user.type(await screen.findByLabelText(/search notes/i), "istanbul");
+    expect(await screen.findByTestId("note-202")).toBeInTheDocument();
+  });
+
+  it("says nothing matched, and how many are still there", async () => {
+    // An empty filtered list looks exactly like an empty notebook, and one of
+    // those means the notes are gone.
+    const user = userEvent.setup();
+    mockFetch({ "/notebook/7": { body: many() } });
+    renderWithQueryClient(<NotebookPanel />);
+    await user.type(await screen.findByLabelText(/search notes/i), "zzzz");
+    expect(await screen.findByText(/no note matches that/i)).toBeInTheDocument();
+    expect(screen.getByText(/6 are still here/i)).toBeInTheDocument();
+  });
+
+  it("the sent counter still describes the whole notebook", async () => {
+    // Filtering is a view. A counter that followed the filter would report
+    // that fewer notes are in force than actually are.
+    const user = userEvent.setup();
+    mockFetch({ "/notebook/7": { body: many() } });
+    renderWithQueryClient(<NotebookPanel />);
+    await user.type(await screen.findByLabelText(/search notes/i), "filler note 3");
+    expect((await screen.findByTestId("notebook-sent-count")).textContent)
+      .toMatch(/6 of 6 sent/);
+  });
+
+  it("clears back to the whole list", async () => {
+    const user = userEvent.setup();
+    mockFetch({ "/notebook/7": { body: many() } });
+    renderWithQueryClient(<NotebookPanel />);
+    const box = await screen.findByLabelText(/search notes/i);
+    await user.type(box, "note 2");
+    await user.click(screen.getByRole("button", { name: /clear search/i }));
+    expect(await screen.findByTestId("note-100")).toBeInTheDocument();
   });
 });

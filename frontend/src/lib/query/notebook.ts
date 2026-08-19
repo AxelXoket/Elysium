@@ -17,6 +17,8 @@ import {
   resetWorker,
   getAutoAccept,
   setAutoAccept,
+  getSafeword,
+  setSafeword,
   reorderNotes,
   listGlobalBoundaries,
   listChatBoundaries,
@@ -240,6 +242,24 @@ export function useSetAutoAccept() {
     mutationFn: (args: [boolean]) => setAutoAccept(...args),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["extraction", "auto-accept"] });
+    },
+  });
+}
+
+
+export function useSafeword() {
+  return useQuery({
+    queryKey: ["extraction", "safeword"] as const,
+    queryFn: getSafeword,
+  });
+}
+
+export function useSetSafeword() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: [string]) => setSafeword(...args),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["extraction", "safeword"] });
     },
   });
 }
