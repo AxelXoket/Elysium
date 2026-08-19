@@ -292,12 +292,32 @@ def build_user_message(*, card: str, existing: list[str],
     # EXISTING_NOTES on every later extraction. A closed loop.
     tag = "#" + secrets.token_hex(8)
     card = card[:CARD_MAX_CHARS]
-    existing = _budget(existing, EXISTING_MAX_CHARS)
+    # NOT budgeted. The numbers the model is shown here are indices the
+    # caller resolves against the FULL list - `parse_reply` bounds-checks on
+    # `len(existing)` and `commit_extraction` looks up `existing_ids[idx]`.
+    # Trimming here renumbered the shown list from zero while the resolution
+    # stayed absolute, so past roughly seventy-five notes EVERY index was
+    # shifted by the difference and every accepted supersession retired a
+    # systematically wrong note - deterministically, silently, and with no
+    # way to undo it from the panel.
+    #
+    # The list is bounded where it is BUILT instead (see notebook_worker's
+    # planner), so the two halves cannot drift apart again.
     new = _budget(new, TURNS_MAX_CHARS, keep="tail")
     # RECENT_TURNS is context, not material: it gets whatever NEW_TURNS left.
     recent = _budget(recent, max(0, TURNS_MAX_CHARS
                                  - sum(len(n) + 1 for n in new)))
-    numbered = "\n".join(f"{i}. {line}" for i, line in enumerate(existing))
+    # The numbering prefixes are charged to the budget, not added after it -
+    # at twenty-character notes they were 22% of a cap whose entire purpose is
+    # to stop unbounded growth. And the lines are SHORTENED rather than
+    # dropped: dropping renumbers, and these numbers are indices the caller
+    # resolves against the full list, so a dropped line shifted every later
+    # index and retired the wrong note. No floor, because a floor makes the
+    # block unbounded in the note count again.
+    prefix = sum(len(f"{i}. ") + 1 for i in range(len(existing)))
+    share = max(1, (EXISTING_MAX_CHARS - prefix) // max(1, len(existing)))
+    numbered = "\n".join(f"{i}. {line[:share]}"
+                         for i, line in enumerate(existing))
     nl = chr(10)
     sections = [
         ("CHARACTER_CARD", card or "(none)"),

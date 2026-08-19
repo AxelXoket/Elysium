@@ -350,6 +350,17 @@ export function NotebookPanel() {
           </p>
         )}
 
+        {/* Once, not on every row. The per-row version told a Turkish-speaking
+            owner about their own language's model support every few lines,
+            which is a lecture rather than a note. */}
+        {entries.some((e) => e.provenance === "model") && (
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            Suggested notes are written in English - the reader is a small
+            model and reads English far better. What was actually said is kept
+            underneath, word for word.
+          </p>
+        )}
+
         <div className="space-y-1">
           {entries.map((entry) => (
             <NoteRow
@@ -416,8 +427,7 @@ function NoteRow({
         )}
         {entry.provenance === "model" && (
           <p className="text-xs leading-relaxed text-muted-foreground">
-            Written by the model, in English - it reads and writes English far
-            better than Turkish, so the note is a paraphrase.
+            Written by the model.
           </p>
         )}
         {/* What was actually said, verbatim, in whichever language it was

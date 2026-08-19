@@ -232,12 +232,17 @@ describe("what the model wrote, and taking it back", () => {
     expect(row.textContent).toContain("kardeşi değirmenin sahibi");
   });
 
-  it("says WHY the note is in English", async () => {
-    mockFetch({ "/notebook/7": { body: { entries: [modelNote()],
-                                         notebook_chars: 10 } } });
+  it("says WHY the notes are in English - once, not on every row", async () => {
+    // Per row it was a lecture: a Turkish-speaking owner being told about
+    // their own language's model support every few lines.
+    mockFetch({ "/notebook/7": { body: {
+      entries: [modelNote(), modelNote({ id: 6 })],
+      notebook_chars: 10 } } });
     renderWithQueryClient(<NotebookPanel />);
+    await screen.findByTestId("note-5");
+    expect(screen.getAllByText(/reads English far better/i)).toHaveLength(1);
     expect((await screen.findByTestId("note-5")).textContent)
-      .toMatch(/reads and writes English far better/i);
+      .not.toMatch(/reads English far better/i);
   });
 
   it("does not repeat the quote when it is already the note", async () => {

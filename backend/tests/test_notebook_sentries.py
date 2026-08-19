@@ -395,10 +395,18 @@ class TestTheDropOrder:
     importance ascending, then position DESCENDING, and reversing the second
     left every test green."""
 
-    def test_among_equals_the_NEWEST_goes_first(self, client) -> None:
-        """Position descending. Two notes of equal importance are separated
-        only by which arrived later, and the older one has had more chances to
-        matter."""
+    def test_among_equals_the_OLDEST_goes_first(self, client) -> None:
+        """Position ASCENDING, and this is the direction the feature lives or
+        dies on.
+
+        The tiebreak was `-position` - newest out first. Model-written
+        importance is clamped to 2 and a user's own note defaults to 2, so the
+        key collapsed to exactly that, and after roughly forty turns the
+        notebook froze on the first two dozen notes it ever held: every later
+        one was written, marked over_ceiling, and never sent again for the
+        life of the chat. Corrections and superseding facts were discarded on
+        arrival. A notebook that cannot learn after its first hour is not one.
+        """
         chat_id = seed(client)
         first = notebook.create_entry(chat_id, "OLDEST " + "x" * 200)
         for i in range(30):
@@ -407,8 +415,8 @@ class TestTheDropOrder:
 
         blocks = notebook.build_notebook_blocks(chat_id, 8000)
         dropped = {e[0] for e in blocks["excluded"]}
-        assert last["id"] in dropped
-        assert first["id"] not in dropped
+        assert first["id"] in dropped, "the oldest note survived"
+        assert last["id"] not in dropped, "the newest note was thrown away"
 
     def test_importance_still_outranks_position(self, client) -> None:
         """Ground: the tiebreak must not overtake the primary key."""

@@ -473,6 +473,28 @@ CREATE TABLE IF NOT EXISTS notebook_spend (
         "CREATE INDEX IF NOT EXISTS idx_boundaries_scope_v1 "
         "ON boundaries(scope, chat_id, active)"
     )
+    # The hottest query in the whole feature had no index at all. The worker
+    # resolves its resume point on EVERY offered turn -
+    #   SELECT MAX(to_message_id) WHERE chat_id = ? AND status = 'done'
+    # - against a table that gains a row per attempt, failures and skips
+    # included. Three more scans hang off the same gap: the chat-delete sweep,
+    # the message-delete rollback, and the status counters.
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_extractions_chat_v1 "
+        "ON notebook_extractions(chat_id, status, to_message_id)"
+    )
+    # And the child-side index the FK needs. Without it SQLite rescans
+    # notebook_entries ONCE PER DELETED ROW while validating
+    # `DELETE FROM messages`, which is quadratic: measured at 0.03s for 500
+    # notes and 0.23s for 2000 across 4000 messages, under a held write lock.
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_notebook_source_v1 "
+        "ON notebook_entries(source_message_id)"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_notebook_superseded_v1 "
+        "ON notebook_entries(superseded_by)"
+    )
 
     if con.execute("PRAGMA user_version").fetchone()[0] < _SCHEMA_VERSION:
         con.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")

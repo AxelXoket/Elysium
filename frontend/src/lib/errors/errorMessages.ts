@@ -364,6 +364,10 @@ const ERROR_MESSAGES: Record<string, string> = {
   // worked rather than hoping the model listened.
   safeword_triggered:
     "Stopped. Your safeword was in that message, so nothing was sent - not the message, not your notes, not your limits. Nothing was saved either.",
+  safeword_blank:
+    "A space is not a safeword - it would have turned the stop off while the box still looked filled in. Clear the box completely to turn it off, or type a word.",
+  safeword_too_short:
+    "Too short to be safe. One or two letters appear inside ordinary words, so every message would be stopped. Three characters at least.",
   safeword_too_long:
     "A safeword has to be short enough to type in a hurry. Sixty-four characters at most.",
   notebook_daily_cap_reached:

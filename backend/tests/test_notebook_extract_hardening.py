@@ -178,10 +178,15 @@ class TestThePromptCannotGrowWithoutBound:
     chat may hold, how long a card may be, or how long a message may be.
     """
 
-    def test_a_thousand_notes_do_not_reach_the_wire(self) -> None:
+    def test_a_thousand_notes_are_SHORTENED_not_dropped(self) -> None:
+        """Dropping renumbers, and the numbers are indices the caller resolves
+        against the full list - so a dropped note shifted every later index
+        and retired the wrong row. Shortening keeps every index in place."""
         msg = ex.build_user_message(card="", existing=["n" * 240] * 1000,
                                     recent=[], new=["x"])
         assert len(msg) < ex.EXISTING_MAX_CHARS + 2000
+        # Every index still there, first and last.
+        assert "\n0. " in msg and "\n999. " in msg
 
     def test_the_worst_case_prompt_is_bounded(self) -> None:
         msg = ex.build_user_message(
