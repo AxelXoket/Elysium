@@ -150,3 +150,70 @@ describe("BoundaryPanel", () => {
     });
   });
 });
+
+describe("the safeword", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({ selectedChatId: 7 });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  function mount(word = "") {
+    mockFetch({
+      "POST /notebook/safeword": { body: { ok: true } },
+      "/notebook/safeword": { body: { word } },
+      "/notebook/7/boundaries": { body: { boundaries: [], use_global: true } },
+    });
+    return renderWithQueryClient(<BoundaryPanel />);
+  }
+
+  it("says it is checked here, not asked of the model", async () => {
+    // The whole reason it exists. Every other line on this panel is a request
+    // to a model; this one is not, and a user reaching for it in a bad moment
+    // needs to know which kind it is.
+    mount();
+    expect(await screen.findByText(/not a request to the model; it is checked here/i))
+      .toBeInTheDocument();
+  });
+
+  it("shows the stored word", async () => {
+    mount("kırmızı");
+    await waitFor(() =>
+      expect(screen.getByLabelText(/safeword/i)).toHaveValue("kırmızı"));
+  });
+
+  it("saves when the field loses focus", async () => {
+    // A50: the vault can lock mid-thought, and a buffer nobody committed is a
+    // buffer the lock eats.
+    const user = userEvent.setup();
+    mount("");
+    const box = await screen.findByLabelText(/safeword/i);
+    await waitFor(() => expect(box).toBeEnabled());
+    await user.type(box, "kırmızı");
+    await user.tab();
+
+    await waitFor(() => {
+      const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+        .find((c: unknown[]) =>
+          String(c[0]).includes("/notebook/safeword")
+          && (c[1] as RequestInit | undefined)?.method === "POST");
+      expect(call).toBeTruthy();
+      expect(JSON.parse(String((call![1] as RequestInit).body)))
+        .toEqual({ word: "kırmızı" });
+    });
+  });
+
+  it("does not save when nothing changed", async () => {
+    // Ground: blur fires on every tab through the panel.
+    const user = userEvent.setup();
+    mount("kırmızı");
+    const box = await screen.findByLabelText(/safeword/i);
+    await waitFor(() => expect(box).toHaveValue("kırmızı"));
+    await user.click(box);
+    await user.tab();
+    expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+      .some((c: unknown[]) =>
+        String(c[0]).includes("/notebook/safeword")
+        && (c[1] as RequestInit | undefined)?.method === "POST")).toBe(false);
+  });
+});

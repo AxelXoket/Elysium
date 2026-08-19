@@ -23,8 +23,11 @@
  * other destructive action here does.
  */
 import { useContextNotesStore } from "@/lib/chat/contextNotes";
+import { useSeenNotesStore } from "@/lib/chat/seenNotes";
 import { useState } from "react";
-import { Pin, PinOff, Plus, Trash2, X, Check, Loader2 } from "lucide-react";
+import {
+  Pin, PinOff, Plus, Trash2, X, Check, Loader2, Undo2, Search,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -43,6 +46,55 @@ import type { NotebookEntry } from "@/lib/schemas/notebook";
 /** Mirrors backend notebook_store.ENTRY_MAX_CHARS. The backend refuses past
  *  it; this only stops the user typing a paragraph they will lose. */
 const ENTRY_MAX_CHARS = 240;
+
+/** Letters that exist in Turkish and not in English.
+ *
+ *  Used only to decide whether a quote is worth SHOWING, never to decide
+ *  anything the model sees. A false positive costs one extra line on screen;
+ *  a false negative costs a line the reader wanted. Neither is worth a
+ *  language-detection library. */
+const TURKISH_LETTERS = /[çÇğĞıİöÖşŞüÜ]/;
+
+/** The model's own quote, when it is worth putting under the note.
+ *
+ *  Notes are written in English on purpose - the extractor is a small cheap
+ *  model, and small cheap models read and write English far better than they
+ *  read and write Turkish. The cost is that a sentence the user typed in
+ *  Turkish comes back as somebody else's English paraphrase, and there is no
+ *  way to check it against what was actually said.
+ *
+ *  So the check comes back: `evidence` is stored verbatim, in whatever
+ *  language it was said in, and it is shown under the English note whenever
+ *  the two are not the same words. The reader can see at a glance whether
+ *  the paraphrase is fair. */
+function originalOf(entry: NotebookEntry): string | null {
+  const quote = (entry.evidence ?? "").trim();
+  if (!quote) return null;
+  if (entry.text.includes(quote)) return null;   // same words, no second line
+  return quote;
+}
+
+/** Turkish-aware, and it has to be: `İstanbul` lowercases to `i̇stanbul` under
+ *  the invariant rules and to `istanbul` under Turkish ones, so a user typing
+ *  `istanbul` finds nothing with the default. The locale is passed explicitly
+ *  rather than left to the machine's - the notes are the owner's, and their
+ *  machine is not necessarily the one this runs on. */
+function fold(text: string): string {
+  return text.toLocaleLowerCase("tr").trim();
+}
+
+/** Matches the note AND the verbatim quote under it.
+ *
+ *  The quote is the point: notes are written in English, so a Turkish
+ *  sentence is stored as somebody else's paraphrase. Searching only the note
+ *  text would mean the words the user actually typed are the one thing they
+ *  cannot search for. */
+function matches(entry: NotebookEntry, needle: string): boolean {
+  if (!needle) return true;
+  const q = fold(needle);
+  return fold(entry.text).includes(q)
+    || fold(entry.evidence ?? "").includes(q);
+}
 
 function noteState(
   entry: NotebookEntry,
@@ -66,11 +118,14 @@ export function NotebookPanel() {
   const pushError = useErrorStore((s) => s.pushError);
 
   const [draft, setDraft] = useState("");
+  const [query, setQuery] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
 
   const busy = create.isPending || patch.isPending || remove.isPending
     || accept.isPending;
-  const entries = data?.entries ?? [];
+
+  const all = data?.entries ?? [];
+  const entries = all.filter((e) => matches(e, query));
   // The number the SERVER computed for the last turn, when there has been
   // one. Counting live notes here is a client-side guess that is right only
   // while nothing was trimmed - and the case where something was is the whole
@@ -78,9 +133,36 @@ export function NotebookPanel() {
   // report, so the count stands in.
   const turn = useContextNotesStore((s) =>
     chatId == null ? undefined : s.byChat[chatId]);
-  const live = entries.filter((e) => noteState(e) === "live").length;
+  const live = all.filter((e) => noteState(e) === "live").length;
   const sent = turn?.notebook_sent ?? live;
-  const total = turn?.notebook_total ?? entries.length;
+  const total = turn?.notebook_total ?? all.length;
+
+  // Accepted, written by the model, and never announced. `proposed` rows are
+  // deliberately excluded: those already announce themselves by sitting in
+  // the list unsent, which is the whole point of review being on.
+  const seen = useSeenNotesStore((s) =>
+    chatId == null ? undefined : s.byChat[chatId]);
+  const markSeen = useSeenNotesStore((s) => s.markSeen);
+  const justSaved = all.filter(
+    (e) => e.provenance === "model" && e.status === "accepted"
+      && !e.retired_at && !(seen ?? []).includes(e.id));
+
+  function acknowledge() {
+    if (chatId != null) markSeen(chatId, justSaved.map((e) => e.id));
+  }
+
+  async function handleUndo() {
+    // Deleted, not retired: the user is saying it should never have been
+    // written. A retired row would go on sitting in the panel forever as a
+    // fact they explicitly rejected.
+    const doomed = justSaved.map((e) => e.id);
+    acknowledge();
+    try {
+      for (const id of doomed) await remove.mutateAsync([id]);
+    } catch (err) {
+      pushError(err, "error", { chatId: chatId ?? undefined });
+    }
+  }
 
   async function handleAdd() {
     const text = draft.trim();
@@ -148,6 +230,76 @@ export function NotebookPanel() {
           </span>
         </div>
 
+        {/* A35. With auto-accept ON there is no review step, so a note the
+            model wrote reaches the prompt having been seen by nobody - and
+            "the write was invisible" is the complaint every shipped version
+            of this feature collected. Announced once, takeable back, and
+            then remembered as announced. */}
+        {justSaved.length > 0 && (
+          <div className="persona-card space-y-2" data-testid="just-saved">
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              Saved {justSaved.length === 1 ? "a note" : `${justSaved.length} notes`}{" "}
+              the model wrote{justSaved.length === 1
+                ? `: "${justSaved[0].text}"`
+                : "."}
+            </p>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                disabled={busy}
+                onClick={() => void handleUndo()}
+                className="persona-danger-action h-7 gap-1.5 px-2 text-xs"
+              >
+                <Undo2 size={12} className="size-3" />
+                Undo
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={acknowledge}
+                className="persona-ghost-action h-7 px-2 text-xs"
+              >
+                Keep {justSaved.length === 1 ? "it" : "them"}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Only once there are enough notes for the eye to lose one. A search
+            box over four rows is furniture. */}
+        {all.length > 5 && (
+          <div className="relative">
+            <Search
+              size={12}
+              className="pointer-events-none absolute left-2 top-1/2 size-3 -translate-y-1/2"
+              style={{ color: "var(--muted-foreground)" }}
+              aria-hidden="true"
+            />
+            <Input
+              value={query}
+              placeholder="Search notes..."
+              aria-label="Search notes"
+              onChange={(e) => setQuery(e.target.value)}
+              className="persona-field pl-7 text-xs md:text-xs"
+            />
+            {query !== "" && (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                aria-label="Clear search"
+                onClick={() => setQuery("")}
+                className="persona-ghost-action absolute right-1 top-1/2 h-6 w-6 -translate-y-1/2 p-0"
+              >
+                <X size={12} className="size-3" />
+              </Button>
+            )}
+          </div>
+        )}
+
         <div className="flex items-center gap-2">
           <Input
             value={draft}
@@ -191,6 +343,13 @@ export function NotebookPanel() {
           </p>
         )}
 
+        {query !== "" && entries.length === 0 && (
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            No note matches that. {all.length} are still here - the search
+            covers the note and the words it was taken from.
+          </p>
+        )}
+
         <div className="space-y-1">
           {entries.map((entry) => (
             <NoteRow
@@ -231,6 +390,7 @@ function NoteRow({
   onDelete: () => void;
 }) {
   const state = noteState(entry);
+  const original = originalOf(entry);
   return (
     <div
       className="persona-card flex items-start gap-2"
@@ -255,7 +415,21 @@ function NoteRow({
           </p>
         )}
         {entry.provenance === "model" && (
-          <p className="text-xs leading-relaxed text-muted-foreground">Written by the model.</p>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            Written by the model, in English - it reads and writes English far
+            better than Turkish, so the note is a paraphrase.
+          </p>
+        )}
+        {/* What was actually said, verbatim, in whichever language it was
+            said in. Without it an English paraphrase of a Turkish sentence
+            cannot be checked against anything. */}
+        {original && (
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {TURKISH_LETTERS.test(original) ? "Türkçe aslı: " : "From: "}
+            <span style={{ color: "var(--color-es-text-light)" }}>
+              {"“"}{original}{"”"}
+            </span>
+          </p>
         )}
       </div>
 

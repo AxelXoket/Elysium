@@ -17,6 +17,7 @@ export const settingsFixture: Settings = {
   // five minutes.
   image_output_enabled: false,
   auto_lock_minutes: 5,
+  screen_privacy_enabled: false,
 };
 
 export const proxyHealthFixture: ProxyHealth = {

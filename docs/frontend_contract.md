@@ -1,7 +1,7 @@
 # Elysium Frontend-Backend Contract
 
 > **Created:** Part A (scaffold)
-> **Last updated:** 2026-08-09, checked route by route against the source.
+> **Last updated:** 2026-08-19, checked route by route against the source.
 > **Status:** Living contract of record
 
 ---
@@ -54,6 +54,8 @@
 | DELETE | /notebook/boundaries/{id} | Remove a limit | FAZ 1 (notebook) |
 | GET | /notebook/{chat_id}/boundaries | Limits actually in force for this chat | FAZ 1 (notebook) |
 | POST | /notebook/{chat_id}/use-global | Whether this chat follows the global limits | FAZ 1 (notebook) |
+| GET | /notebook/safeword | The phrase that stops a turn. Empty means off | Since 1.1.0 (notebook) |
+| POST | /notebook/safeword | Set or clear it. **The only limit in this app enforced in code**: matched before the provider is called, and when it matches nothing is sent and nothing is stored (`400 safeword_triggered` from every completion route) | Since 1.1.0 (notebook) |
 | GET | /notebook/worker | What the background extractor has done: counters, today's spend, and the circuit-breaker state. A refusal nobody can see is the same screen as a notebook that found nothing | FAZ 5 (notebook) |
 | POST | /notebook/worker/reset | Lift a tripped or stopped circuit breaker by hand. Without it, recovering from a provider outage means restarting the whole application | FAZ 5 (notebook) |
 | GET | /notebook/auto-accept | Whether proposals are accepted without review. **Unset is ON** - the default, not "off" | FAZ 5 (notebook) |
@@ -263,9 +265,18 @@ shield like every other data route.
 | 400 | notebook_entry_too_long | Over the per-entry character limit; refused rather than truncated | That note is too long. |
 | 400 | notebook_entry_invalid | A field outside its allowed set (kind, durability, importance) | That note could not be saved. |
 | 400 | notebook_field_not_editable | An edit tried to change provenance, chat or source; refused loudly rather than dropped silently | That part of a note cannot be changed after it is written. |
-| 404 | notebook_entry_not_found | No such entry id | That note is no longer there. |
+| 400/404 | notebook_entry_not_found | No such entry id, or one that has already been retired. **DELETE answers 404; PATCH and accept answer 400** for the same code - the two handlers relay it through different helpers | That note is no longer there. |
+| 400 | notebook_reorder_incomplete | The id list did not cover exactly this chat's notes; refused rather than partially applied | Nothing was moved. |
+| 400 | notebook_model_not_chosen | No extraction model has been picked, so there is nothing to run | Choose a model first; nothing runs until you do. |
+| 400 | notebook_nothing_to_read | The chat has no new messages for the extractor to read | Send a few messages first. |
+| 400 | notebook_language_unknown | Instruction language outside `en`/`tr` | Not one of the two available. |
+| 400 | notebook_model_id_invalid | Not shaped like an OpenRouter model id (`author/slug`) | Pick one from the list. |
+| 400 | notebook_model_id_too_long | Over 128 characters | Pick one from the list. |
+| **429** | notebook_daily_cap_reached | The daily ceiling on extraction calls is spent. Claimed BEFORE the request, so no call was made | It starts again tomorrow; nothing was lost. |
+| 401/502/504 | *relayed provider reasons* | The two notebook routes that reach OpenRouter relay the provider's own reason rather than a literal: `api_key_invalid`, `api_key_not_set`, `openrouter_auth_failed`, `api_key_required_by_openrouter`, `proxy_auth_failed`, `openrouter_timeout`, `openrouter_unreachable`, and the fallback `notebook_extract_failed`. All eight are in `error_catalogue.json` and `errorMessages.ts` | Each has its own sentence; none is a bare 502 |
+| 400 | chat_not_found | The chat is gone. **`POST /notebook/{chat_id}` answers 400, `GET /notebook/{chat_id}/boundaries` answers 404** - the code is one, the statuses are two | That chat is no longer there. |
 | 400 | boundary_empty | label or phrasing blank | A limit needs both a name and the wording the model will see. |
-| 400 | boundary_invalid | severity outside hard/veiled/soft | That limit could not be saved. |
+| 400 | boundary_invalid | severity, polarity, on_violation or rating_ceiling outside its allowed set. `source: inferred` with `severity: hard` is refused by the DATABASE, not by this check | That limit could not be saved. |
 | 404 | boundary_not_found | No such boundary id | That limit is no longer there. |
 | 500 | tts_cache_outside_data_dir | The generated-audio folder resolves outside the app's data directory | Nothing was written; say the folder has to move back, or the whole data dir with ELYSIUM_DATA_DIR |
 | - | provider_frame_dropped | An SSE frame could not be parsed and its text was lost | Say a piece of the reply is missing; the rest is unaffected |
@@ -484,6 +495,15 @@ Note: `context` (bare) is not a generation param and is never accepted.
 - Unsent drafts
 - Frontend-sent `zdr`, `data_collection`, `allow_fallbacks`
 - `tools`, `tool_choice`
+- Three `system` blocks the backend adds that the frontend never sends and
+  cannot influence: the **limits** block (standing rules, counted into the
+  budget and never trimmed - if it does not fit, generation is refused with
+  `boundaries_do_not_fit` rather than degraded), the **notebook** block of
+  what the user wrote, placed beside the persona, and a second, separately
+  labelled notebook block of what the MODEL wrote, placed after the history
+  beside the post-history instruction. Both notebook blocks carry a random
+  per-payload tag in their open and close markers, and the header tells the
+  model the block ends only at the line carrying that same tag
 - `response_format` **from the frontend** - it is sent on exactly one backend
   path, the notebook's note extractor, and only ever as a fixed schema defined
   in this repository. Nothing the frontend sends can add it to any request,
@@ -643,6 +663,29 @@ Codex uses:
 - `GET /personas` includes `is_active: bool` derived from `settings.selected_persona_id`. Not a DB column.
 
 ---
+
+
+### The `done` frame's context report
+
+Every completion's `done` event carries three extra numbers, and a client that
+does not declare them **loses them silently** - zod's `z.object` strips unknown
+keys rather than rejecting them, so a schema that forgets a field turns a live
+counter into a permanent zero with nothing red anywhere.
+
+```
+{ "type": "done", "chat_id", "model_id",
+  "user_message", "assistant_message",
+  "deactivated_message_id"?,          // regenerate only
+  "notebook_sent":    2,              // notes that fit this turn
+  "notebook_total":   9,              // notes that were eligible
+  "history_trimmed":  4 }             // older messages dropped to make room
+```
+
+`notebook_sent` is the server's count, not a client-side guess: it is correct
+precisely in the case the number exists for, when the ceiling trimmed the
+notebook. `history_trimmed` rides along because it is the older debt - history
+has always been trimmed oldest-first with nothing recording it, and announcing
+the notebook alone would teach a reader that dropped context gets announced.
 
 
 ### The notebook's extraction routes (FAZ 4)

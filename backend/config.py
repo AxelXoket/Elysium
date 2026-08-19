@@ -285,6 +285,16 @@ SETTING_NOTEBOOK_AUTO_ACCEPT = "notebook_auto_accept"
 NOTEBOOK_EXTRACT_EVERY_TURNS = int(os.environ.get(
     "ELYSIUM_NOTEBOOK_EVERY_TURNS", "20"))
 
+#: The one control in this feature that is a control.
+#:
+#: Everything else about limits is a paragraph in a prompt, and a paragraph in
+#: a prompt is a request. This is matched in CODE, before the provider is
+#: called, and when it matches nothing is sent at all - not the message, not
+#: the notebook, not the limits. The scene stops because the request never
+#: leaves, which is the only version of "stop" that does not depend on a model
+#: agreeing to it.
+SETTING_SAFEWORD = "notebook_safeword"
+
 #: A hard daily ceiling, enforced as a BLOCK before the call rather than an
 #: alert after it. The largest documented runaway in this space was not a loop:
 #: it was a context that grew every call while a budget alarm dutifully fired.

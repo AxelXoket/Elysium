@@ -10,7 +10,7 @@
     <img src="https://img.shields.io/badge/privacy-ZDR_enforced-brightgreen?style=flat-square" alt="Privacy">
     <img src="https://img.shields.io/badge/at--rest-SQLCipher_vault-brightgreen?style=flat-square" alt="Encryption">
     <img src="https://img.shields.io/badge/streaming-SSE-brightgreen?style=flat-square" alt="Streaming">
-    <img src="https://img.shields.io/badge/frontend_tests-1308_passed-success?style=flat-square" alt="Frontend Tests">
+    <img src="https://img.shields.io/badge/frontend_tests-1431_passed-success?style=flat-square" alt="Frontend Tests">
     <img src="https://img.shields.io/badge/frontend-React_19-61DAFB?style=flat-square&logo=react&logoColor=white" alt="React">
   </p>
   <p align="center">
@@ -20,7 +20,7 @@
 
 ---
 
-Elysium is a privacy-first AI character chat client that routes **all model traffic through a local FastAPI backend**. The frontend never contacts OpenRouter directly. Your entire chat database - messages, characters, personas, attached images, and your API key - is **passphrase-encrypted at rest (SQLCipher)**, strict ZDR privacy routing is enforced on every request, and raw upstream error bodies are never exposed to the client. It runs as a dev server pair or as a **packaged Windows desktop app** (`Elysium.exe`).
+Elysium is a privacy-first AI character chat client that routes **all model traffic through a local FastAPI backend**. The frontend never contacts OpenRouter directly. Your entire chat database - messages, characters, personas, attached images, your notebook and limits, and your API key - is **passphrase-encrypted at rest (SQLCipher)**, strict ZDR privacy routing is enforced on every request, and raw upstream error bodies are never exposed to the client. It runs as a dev server pair or as a **packaged Windows desktop app** (`Elysium.exe`).
 
 ## What's new in v1.1.0
 
@@ -64,13 +64,17 @@ release and never losing one.
 - **Stop Sequences** - Up to 4 stop sequences (with `\n` support) managed as chips in Generation Settings; always forwarded to the provider, mirroring the backend rule
 - **Image Attachments** - Attach up to 4 images (PNG/JPEG/WebP) per message to vision-capable models; drag-in/paste/pick, thumbnail strip, full-size lightbox. The attach UI is gated by the model's image modality, images are downscaled and content-addressed server-side, and the backend builds the provider payload (the frontend never constructs image URLs)
 - **Reading & Ambience Settings** - In-app settings for message font size and line height, `*narration*` styling, an optional chat wallpaper with framing, zoom, contrast/tint controls and adaptive text, message-bubble solidity, and a living WebGL mist backdrop (with a static fallback)
+- **Notebook** - a per-chat list of what the story has established, sent with every message. You write the notes, or let a small model of your choosing read the last turns and suggest them - off until you pick one, because it is your API key. Notes are never deleted behind your back: a superseded one retires, and one that does not fit the ceiling stays in the panel saying why. What the model writes lives in its own weaker block, after the history, and says who wrote it
+- **Limits** - a separate list of what you never want written, `everywhere` or `this chat`. Never expire, never merge, and **never trimmed to make room**: if they do not fit the model's context, the app refuses to send rather than quietly dropping them. Any chat can be told to ignore the global set
+- **A daily ceiling on the notebook's spending** - sixty calls, counted in the database so a restart does not reset it, blocked before the request rather than warned about after. Repeated failures pause the reader; enough of them stop it until you say otherwise. The Notes tab shows runs, calls used today, credits spent, and why anything was skipped
+- **Screen privacy** - Settings › Security can hide the window from screenshots, screen recording and screen sharing. Off by default, stored in the vault, and not applied while the vault is locked. A layer, not a guarantee
 - **Sidebar Navigation** - Persona strip with a switcher, client-side character search, and New Chat / New Character docks
-- **Active Context Preview + live context meter** - Local-only collapsible card in the Models tab showing what the next request will include (model, persona, character, message count, generation params, context budget) plus a live "≈ used / capacity tokens" gauge on the selected model; approximate estimates, never the exact provider payload
+- **Active Context Preview + live context meter** - Local-only collapsible card in the Models tab showing what the next request will include (model, persona, character, message count, generation params, context budget, notebook size) plus a live "≈ used / capacity tokens" gauge on the selected model; approximate estimates, never the exact provider payload
 - **Error Toast System** - Centralized safe error notifications over the chat canvas; auto-dismiss after 4.5 s, max 5 visible, extras queued
 - **Privacy by Design** - the provider policy is hardcoded backend-side and cannot be overridden from anywhere; see [Privacy Contract](#privacy-contract) for the exact fields and the full list of what is and is not sent
 - **Sealed Secrets** - API key and proxy URL live inside the encrypted vault (unreadable while locked); a one-time migration moves them out of the OS keyring and deletes the old entries - never sent to the frontend
 - **Strict CORS + Host allowlist** - Backend accepts browser requests from `http://127.0.0.1:5173` only and rejects foreign `Host` headers (DNS-rebinding shield)
-- **Locks itself when idle** - after 5 minutes of doing nothing the vault closes: the key leaves memory, the voice model is unloaded and the GPU memory comes back. Change the delay or turn it off in Settings > Secrets. A reply that is still streaming counts as activity for as long as it runs
+- **Locks itself when idle** - after 5 minutes of doing nothing the vault closes: the key leaves memory, the voice model is unloaded and the GPU memory comes back. Change the delay or turn it off in Settings > Security. A reply that is still streaming counts as activity for as long as it runs - a background note extraction deliberately does NOT, and is cancelled when the lock fires
 - **Takes its own folder back** - at launch Elysium checks whether other accounts on this PC can reach its data folder and removes that access, naming what it removed in the log. Your database is encrypted, but `salt.bin` and `verifier.bin` beside it are what an offline passphrase attack needs. This is the one change that persists after the app closes; [SECURITY.md](SECURITY.md) says how to undo it
 - **Desktop App** - PyInstaller build (one-folder for development, a single ~33 MB exe for release) with a native window (pywebview + WebView2); the exe serves the built frontend same-origin on a random loopback port and locks the vault when the window closes
 
@@ -86,6 +90,7 @@ release and never losing one.
 │   Characters │                                           │
 │   Personas   ├──────── REST API (/api/v1/*) ────────────►│
 │   Models     │                                           │
+│   Notes      │                                           │
 │   Chat     ──┘                                           │
 └─────────────────────────────┬───────────────────────────┘
                               │ http only, 127.0.0.1
@@ -98,6 +103,9 @@ release and never losing one.
 │  │ settings │  │characters│  │  chats/  │  │personas │ │
 │  │  vault   │  │ uploads  │  │ complete │  │ models  │ │
 │  └──────────┘  └──────────┘  └──────────┘  └─────────┘ │
+│  ┌────────────────────────┐   ┌──────────────────────┐ │
+│  │ notebook (notes+limits)│   │ note reader (worker) │ │
+│  └────────────────────────┘   └──────────┬───────────┘ │
 │                                                          │
 │  SQLCipher vault (DB + images + secrets, WAL) · httpx     │
 │  (trust_env=False) · 423 vault gate while locked         │
@@ -106,6 +114,9 @@ release and never losing one.
 │    zdr=true · data_collection=deny · allow_fallbacks=false│
 └──────────────────────────────┬──────────────────────────┘
                                │ HTTPS · Authorization only
+                               │ TWO senders, one host: the chat you
+                               │ sent, and the note reader running
+                               │ unattended on the same key
                                ▼
                     ┌─────────────────────┐
                     │  OpenRouter API      │
@@ -254,6 +265,10 @@ them from drifting apart.
   using `backend/`
 - Closing the window ends the process and locks the vault
 - `ELYSIUM_SELFTEST=1 Elysium.exe` runs a headless boot check (exit 0 = OK)
+- Two environment variables tune the notebook's background reader, and one of
+  them raises what it may spend: `ELYSIUM_NOTEBOOK_EVERY_TURNS` (how many new
+  messages before it runs, default 20) and `ELYSIUM_NOTEBOOK_DAILY_CALLS` (the
+  daily ceiling, default 60)
 - Startup problems are logged to `%LOCALAPPDATA%\Elysium\elysium.log`
 
 ## Stack
@@ -288,10 +303,15 @@ All endpoints are under `/api/v1` (except `GET /healthz`, which lives at the
 root). While the vault is locked, every data route answers `423 Locked`; only
 the `/vault/*` routes and `/healthz` pass.
 
-The full list, with every error code each route can return, lives in
-**[docs/frontend_contract.md](docs/frontend_contract.md)** and is kept honest
-by a test: `test_every_route_the_app_serves_appears_in_the_contract` fails the
-build if the app grows a route the contract does not mention.
+The full list lives in **[docs/frontend_contract.md](docs/frontend_contract.md)**
+and is kept honest by a test: `test_every_route_the_app_serves_appears_in_the_contract`
+fails the build if the app grows a route the contract does not mention.
+
+That test compares **paths**, in one direction. It does not check that every
+error code a route can return is written down, and an audit found the contract
+missing several - so the error codes there are maintained by hand and the three
+places they must agree (route, `shared/error_catalogue.json`,
+`errorMessages.ts`) are what the build actually enforces.
 
 A hand-maintained copy used to sit here and had drifted by eight routes,
 which is the argument for one list rather than two.
@@ -302,7 +322,7 @@ which is the argument for one list rather than two.
 
 ```powershell
 cd backend
-.venv\Scripts\python -m pytest tests -q   # TestClient regression suite (2087 collected, 2081 pass + 6 skip)
+.venv\Scripts\python -m pytest tests -q   # TestClient regression suite
 ```
 
 The `tests/` suite covers the completion/regenerate flows (including the
@@ -327,11 +347,11 @@ because each does something no test can: `verify_hygiene.py` (the source gate
 the commit hook runs), `verify_image_output.py` (a live request with your own
 key) and `verify_tts_latency.py` (measures real hardware).
 
-### Frontend (1308 tests)
+### Frontend
 
 ```powershell
 cd frontend
-npm test                          # full suite - 1308 tests, 102 files
+npm test                          # full suite
 npm test -- src/test/static-safety.test.ts   # static privacy checks
 npm run typecheck                 # tsc strict - app + test configs
 ```
@@ -356,12 +376,25 @@ npm run typecheck                 # tsc strict - app + test configs
 - **Voice is production quality in English only** - the shipped engines speak Turkish with a heavy foreign accent rather than not at all, which is the worse failure of the two: nothing errors, the reply is simply read out wrong. Cloning from a native Turkish reference clip helps and does not fix it
 - **Generated audio is session-only** - locking the vault or closing the app deletes the cached speech, the next launch clears whatever a crash or a kill left behind, and anything older than half an hour is cleared as the next reply is spoken
 - **No speech recognition** - no shipped engine can listen to a reference clip and write out its words; type them in yourself. The control only appears for an engine that declares the ability
+- **The notebook's reader spends your own credits, in the background** - it is off until you choose a model, capped at sixty calls a day (counted in the vault, so a restart does not reset it), and it never blocks a message. But it is a second thing sending your conversation to a provider, on a timer, while you are reading something else. The Notes tab shows every call it made and every one it refused
+- **Automatic acceptance is ON by default** - a note the model wrote goes into the prompt without being reviewed. The panel announces it once and offers Undo; turn "Keep suggestions without asking" off in the Notes tab if you would rather approve each one. A chat opened from an **imported** character card always requires approval, whatever that switch says
+- **Notes are written in English** - the reader is a small, cheap model and reads and writes English far better than Turkish. What you actually said is kept verbatim and shown under the English note so the paraphrase can be checked, but the note itself is not in your language
+- **The note reader can be caught by a hostile message** - a note is text a model reads, and this app defends it with structural fences and a random per-request tag rather than by trusting the model. That stops a message forging a section boundary; it does not make a model immune to being talked to. Do not treat the notebook as a security boundary
+- **A note extraction in flight is lost when the window closes** - the packaged app has no shutdown path (the process ends with the window), so an extraction that was mid-request is simply gone. Nothing is corrupted: the messages it was reading stay unread and a later run picks them up
+- **`on_violation` is stored and not enforced** - a limit's "what should happen if this is crossed" is recorded and currently only told to the model. Prompt instructions are not controls, and this one is not pretending to be
+- **Screen privacy is Windows-only and not a guarantee** - it uses the OS flag that excludes a window from capture. It stops the ordinary screenshot, recording and screen-share paths, not every possible way a screen can be read, and it does nothing while the vault is locked
 
 ## Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
 | Cannot reach the server | Ensure backend is running at `127.0.0.1:8787` |
+| The notebook stopped suggesting notes | Open the Notes tab. It says which: no model chosen, today's sixty calls used, the reader paused after repeated failures, or the reader stopped and is waiting for "Try again now" |
+| "The notebook has used its calls for today" | The daily ceiling did its job. It resets on the local day boundary; nothing was lost, and the messages it has not read yet stay unread rather than being skipped |
+| The background reader has stopped | Repeated failures stopped it on purpose. Fix the cause (usually the API key or the model), then press "Try again now" in the Notes tab - it does not need a restart |
+| A note appeared that I did not write | The model wrote it. The panel announces it once with an Undo; to be asked every time, turn off "Keep suggestions without asking" in the Notes tab |
+| A limit is not being obeyed | Limits are told to the model, not enforced in code. Check "Use my global limits here" in the Notes tab if a chat is ignoring your global set - and see [SECURITY.md](SECURITY.md) on what a prompt instruction can and cannot do |
+| Sending fails with a context error in one chat | Too many PINNED notes: pins are exempt from trimming, so enough of them fill the budget. Unpin a few in the Notes tab |
 | CORS error / blank page | Open at `http://127.0.0.1:5173`, not `http://localhost:5173` |
 | Wrong passphrase | There is no recovery or reset - the passphrase is the key. Try again |
 | Forgot passphrase | Data in the vault is unrecoverable by design; delete the data folder to start fresh |

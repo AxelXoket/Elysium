@@ -22,6 +22,11 @@ export const SettingsSchema = z.object({
    *  default is the one that does not lock a session the server never
    *  promised to keep track of. */
   auto_lock_minutes: z.number().default(0),
+  /** Hide the window from screen capture and screen sharing. Defaulted so a
+   *  newer client against an older server parses, and the default is OFF -
+   *  the owner takes screenshots of this app, and a protection that silently
+   *  blanks them is a bug report rather than a feature. */
+  screen_privacy_enabled: z.boolean().default(false),
 });
 
 // Exact match of proxy_health.py check_proxy_health() return dict
