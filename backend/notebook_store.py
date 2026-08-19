@@ -64,6 +64,8 @@ ALL_CODES: frozenset[str] = frozenset({
     "notebook_reorder_incomplete",
     "notebook_daily_cap_reached",
     "safeword_too_long",
+    "safeword_blank",
+    "safeword_too_short",
     "boundary_empty",
     "boundary_invalid",
     "chat_not_found",
@@ -623,8 +625,22 @@ def build_notebook_blocks(chat_id: int, available_chars: int) -> dict:
     # Cheapest-to-lose first: low importance, then newest-of-equal-importance.
     # `pinned` is not in the sort - it is excluded from the candidate list, so
     # no amount of pressure reaches it.
+    # Importance ascending, then OLDEST first. The tiebreak used to be
+    # `-position`, and since model-written importance is clamped to 2 and a
+    # user's own note defaults to 2, the key collapsed to "newest out first" -
+    # so after roughly forty turns the notebook froze on the first two dozen
+    # notes it ever held and every later one was written, marked
+    # over_ceiling, and never sent again for the life of the chat. A notebook
+    # that cannot learn anything after its first hour is not a notebook.
+    #
+    # Oldest-first is also what makes it complementary to history, which is
+    # trimmed newest-last: the notebook is supposed to carry what has fallen
+    # out of the transcript, and what falls out first is the beginning. That
+    # argues for keeping the old - but not for keeping ONLY the old, forever,
+    # while every correction and every superseding fact is discarded on
+    # arrival. Pins are the user's way to hold something older.
     droppable = sorted((r for r in live if not r["pinned"]),
-                       key=lambda r: (r["importance"], -r["position"]))
+                       key=lambda r: (r["importance"], r["position"]))
     keep = {r["id"] for r in live}
     excluded: list[tuple[int, str]] = []
 
@@ -997,9 +1013,21 @@ def safeword() -> str:
 
 def set_safeword(word: str) -> None:
     from database import set_setting
-    word = " ".join(word.split())
+    raw, word = word, " ".join(word.split())
     if len(word) > 64:
         raise NotebookError("safeword_too_long")
+    # Whitespace collapses to nothing, and nothing means OFF. A space was
+    # accepted and silently disarmed the one control in this app that IS a
+    # control - the field went on showing the space, so the only tell arrived
+    # on the next remount, and until then the user believed their stop was
+    # armed. An empty string still means "turn it off"; a space does not.
+    if raw and not word:
+        raise NotebookError("safeword_blank")
+    # And two characters is not a safeword. A single letter matches inside
+    # almost every sentence, so the app becomes unsendable with the only cure
+    # buried in a panel the user is not looking at.
+    if word and len(word) < 3:
+        raise NotebookError("safeword_too_short")
     set_setting(config.SETTING_SAFEWORD, word)
 
 

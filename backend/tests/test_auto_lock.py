@@ -481,3 +481,59 @@ class TestAStreamedReplyIsNotInterrupted:
 
         vault_state._last_activity -= 100_000
         assert vault_state.idle_seconds() > 1.0
+
+
+class TestAPollIsNotAPerson:
+    """The idle clock is what makes auto-lock mean anything, and a route the
+    frontend asks for on a timer feeds it whether or not somebody is at the
+    keyboard.
+
+    This was one exempt route. Adding the notebook's status card - a 20-second
+    poll, live whenever the Notes tab is open - silently disabled auto-lock
+    entirely: the shortest configurable timeout is one minute, so the clock
+    could never reach it. The vault stopped locking itself and nothing said
+    so. The rule now lives in a named set, and the test is here so the next
+    poller cannot arrive without one.
+    """
+
+    def _idle(self):
+        import vault_state
+        return vault_state.idle_seconds()
+
+    def test_a_polled_route_does_not_reset_the_clock(self, client) -> None:
+        import time
+
+        import vault_state
+
+        vault_state.enter_request()
+        vault_state.leave_request()
+        time.sleep(0.05)
+        before = self._idle()
+
+        assert client.get("/api/v1/notebook/worker").status_code == 200
+        assert self._idle() >= before, (
+            "a poll nobody made was counted as somebody being at the keyboard")
+
+    def test_an_ORDINARY_route_does(self, client) -> None:
+        """The ground. Without it the test above is satisfied by a clock that
+        never moves at all, which would mean the vault locks mid-sentence."""
+        import time
+
+        import vault_state
+
+        vault_state.enter_request()
+        vault_state.leave_request()
+        time.sleep(0.05)
+        assert self._idle() > 0
+
+        assert client.get("/api/v1/chats").status_code == 200
+        assert self._idle() < 0.05
+
+    def test_every_exempt_route_actually_exists(self, client) -> None:
+        """An exemption for a path the app does not serve is a typo that
+        silently exempts nothing - which is how this broke the first time."""
+        import main
+
+        served = {getattr(r, "path", "") for r in main.app.routes}
+        for path in main._IDLE_EXEMPT:
+            assert path in served, path

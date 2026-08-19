@@ -554,10 +554,33 @@ def _plan_work(chat_id: int, model_id: str, language: str,
         # so the other four hundred and eighty were silently never extracted.
         # The one silent-loss shape this whole module exists to prevent,
         # rebuilt at the other end of the same function.
-        rows = con.execute(
-            "SELECT id, role, content FROM messages "
-            "WHERE chat_id = ? AND active = 1 AND id > ? ORDER BY id LIMIT ?",
-            (chat_id, last, max(1, limit))).fetchall()
+        if last == 0 and pending > limit * 2:
+            # NOTHING has been read in this chat and there is a backlog. That
+            # is the upgrading user: an existing conversation meeting this
+            # feature for the first time.
+            #
+            # Reading from the OLDEST end would have the notebook describing
+            # the opening of a story that has since moved four hundred
+            # messages on, and injecting those notes into the live prompt for
+            # the twenty-odd turns it takes to catch up - each one a paid
+            # call. A notebook that lags a session behind is worse than an
+            # empty one, because the model trusts it.
+            #
+            # So the first read of an existing chat starts at the PRESENT.
+            # The older history is not extracted at all, and that is the
+            # honest trade: it was never read, it is not pretended to be.
+            rows = con.execute(
+                "SELECT id, role, content FROM messages "
+                "WHERE chat_id = ? AND active = 1 "
+                "ORDER BY id DESC LIMIT ?",
+                (chat_id, max(1, limit))).fetchall()
+            rows = list(reversed(rows))
+        else:
+            rows = con.execute(
+                "SELECT id, role, content FROM messages "
+                "WHERE chat_id = ? AND active = 1 AND id > ? ORDER BY id "
+                "LIMIT ?",
+                (chat_id, last, max(1, limit))).fetchall()
 
         window = con.execute(
             "SELECT role, content FROM messages "
@@ -572,6 +595,19 @@ def _plan_work(chat_id: int, model_id: str, language: str,
     new = [f"{r['role']}: {r['content']}" for r in rows]
     recent = [f"{r['role']}: {r['content']}" for r in reversed(window)]
     live = [e for e in entries if e["status"] == notebook.STATUS_ACCEPTED]
+    # Bounded HERE, where the ids and the text are still side by side, so the
+    # numbered list the model sees and the list its answers are resolved
+    # against are the same list. Budgeting one and not the other shifted every
+    # index and retired the wrong note.
+    budget = 0
+    trimmed: list[dict] = []
+    for entry in reversed(live):          # newest first, keep what fits
+        cost = len(entry["text"]) + 8     # the "12. " prefix and a newline
+        if budget + cost > notebook_extract.EXISTING_MAX_CHARS:
+            break
+        trimmed.append(entry)
+        budget += cost
+    live = list(reversed(trimmed))
     return {
         "from_id": rows[0]["id"],
         "to_id": rows[-1]["id"],

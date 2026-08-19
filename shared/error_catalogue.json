@@ -671,7 +671,21 @@
       ]
     },
     {
+      "code": "safeword_blank",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
       "code": "safeword_too_long",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "safeword_too_short",
       "statuses": [],
       "channels": [
         "http"

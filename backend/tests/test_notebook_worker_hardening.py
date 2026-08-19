@@ -310,7 +310,11 @@ class TestTheReadWindowIsBounded:
             ids = [r[0] for r in con.execute(
                 "SELECT id FROM messages WHERE chat_id = ? ORDER BY id",
                 (chat_id,)).fetchall()]
-        assert plan["to_id"] == ids[19], "the range must name what was read"
+        # A chat this app has never read starts at the PRESENT, so the range
+        # is the newest twenty rather than the oldest - see
+        # TestAnExistingChatStartsAtThePRESENT for why.
+        assert plan["to_id"] == ids[-1], "the range must name what was read"
+        assert plan["from_id"] == ids[-20]
 
     def test_the_chunk_is_what_was_actually_sent(self, client) -> None:
         """The grounding check runs against this. A chunk larger than the
@@ -341,8 +345,10 @@ class TestTheReadWindowIsBounded:
         await w._handle(chat_id)
 
         left = notebook_worker._plan_work(chat_id, "vendor/cheap", "en", 4, 20)
-        assert left is not None, "the unread remainder was marked processed"
-        assert len(left["new"]) == 20
+        # Nothing NEW has arrived since, and the older stretch is behind the
+        # mark by design - a chat this app met for the first time is read from
+        # the present, not from its beginning.
+        assert left is None
 
 
 class TestAnImportedCardNeverAutoAccepts:
@@ -550,3 +556,63 @@ class TestTheCursorWipeIsScopedToItsOwnChat:
                 "SELECT work_key FROM notebook_extractions").fetchall()}
         assert "wb" in left, "an unrelated chat's reading record was wiped"
         assert "wa" not in left, "the affected chat's record should go"
+
+
+class TestAnExistingChatStartsAtThePRESENT:
+    """The upgrading user. Every test in this suite starts from a clean vault,
+    so nobody had looked at what happens to a conversation that already has
+    four hundred messages when this feature meets it for the first time.
+
+    Reading from the oldest end, the notebook would spend twenty-odd paid
+    turns describing the opening of a story that has moved on - and injecting
+    those notes into the live prompt the whole time. A notebook that lags a
+    session behind is worse than an empty one, because the model trusts it.
+    """
+
+    def test_the_first_read_of_a_long_chat_takes_the_NEWEST(self, client):
+        chat_id = seed(client, 200)
+        plan = notebook_worker._plan_work(chat_id, "vendor/cheap", "en", 4, 20)
+        with get_db() as con:
+            ids = [r[0] for r in con.execute(
+                "SELECT id FROM messages WHERE chat_id = ? ORDER BY id",
+                (chat_id,)).fetchall()]
+        assert plan["to_id"] == ids[-1], "it started at the beginning"
+        assert plan["from_id"] == ids[-20]
+
+    def test_a_SHORT_existing_chat_is_read_whole(self, client) -> None:
+        """Ground: the jump-to-the-end rule must not skip a conversation
+        small enough to read entirely."""
+        chat_id = seed(client, 6)
+        plan = notebook_worker._plan_work(chat_id, "vendor/cheap", "en", 4, 20)
+        with get_db() as con:
+            first = con.execute(
+                "SELECT MIN(id) FROM messages WHERE chat_id = ?",
+                (chat_id,)).fetchone()[0]
+        assert plan["from_id"] == first
+
+    @pytest.mark.anyio
+    async def test_after_the_first_read_it_moves_forward_normally(
+            self, client, monkeypatch) -> None:
+        """And never jumps again: once a mark exists, the delta is the delta.
+        A rule that kept skipping to the end would silently drop every
+        stretch the user wrote between runs."""
+        import database
+
+        chat_id = seed(client, 200)
+        database.set_setting(config.SETTING_NOTEBOOK_MODEL, "vendor/cheap")
+        replying(monkeypatch, [])
+
+        w = worker()
+        await w._handle(chat_id)
+
+        with get_db() as con:
+            mark = con.execute(
+                "SELECT MAX(to_message_id) FROM notebook_extractions "
+                "WHERE chat_id = ? AND status = 'done'", (chat_id,)).fetchone()[0]
+            for i in range(30):
+                con.execute(
+                    "INSERT INTO messages (chat_id, role, content, active) "
+                    "VALUES (?,'user',?,1)", (chat_id, f"new line {i}"))
+
+        plan = notebook_worker._plan_work(chat_id, "vendor/cheap", "en", 4, 20)
+        assert plan["from_id"] > mark, "it jumped to the end a second time"

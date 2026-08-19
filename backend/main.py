@@ -133,6 +133,20 @@ app = FastAPI(
 # earlier ones, so CORS ends up outermost and 423 responses still carry CORS
 # headers (otherwise the frontend would see an opaque CORS failure instead
 # of a catchable 423).
+#: Routes the FRONTEND polls on a timer. None of them may feed the idle clock:
+#: a request nobody made is not activity, and one of these is enough to hold
+#: the vault open forever.
+#:
+#: Adding a poller means adding it here, in the same commit. The alternative
+#: is what happened when the notebook's status card arrived: a second timer,
+#: no change here, and auto-lock quietly stopped existing.
+_IDLE_EXEMPT: frozenset[str] = frozenset({
+    "/api/v1/vault/status",
+    "/api/v1/notebook/worker",
+    "/api/v1/tts/state",
+})
+
+
 @app.middleware("http")
 async def vault_gate(request: Request, call_next):
     path = request.url.path
@@ -154,9 +168,15 @@ async def vault_gate(request: Request, call_next):
         return JSONResponse({"detail": "vault_locked"}, status_code=423)
     # Idle is measured HERE because this is the one place every API request
     # passes through. Polling routes would keep the vault open forever if
-    # they counted, so /vault/status - which the frontend asks for on a timer
-    # whether or not anybody is at the keyboard - deliberately does not.
-    if not path.startswith("/api/v1") or path.endswith("/vault/status"):
+    # they counted, so every route the frontend asks for ON A TIMER - whether
+    # or not anybody is at the keyboard - is exempt.
+    #
+    # This was one route, and adding a second poller silently disabled
+    # auto-lock: the notebook's status card refreshes every 20 seconds while
+    # the Notes tab is open, and the shortest configurable timeout is one
+    # minute, so the idle clock could never reach it. The vault stopped
+    # locking itself and nothing said so. A poll is not a person.
+    if not path.startswith("/api/v1") or path in _IDLE_EXEMPT:
         return await call_next(request)
 
     vault_state.enter_request()

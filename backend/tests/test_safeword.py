@@ -135,3 +135,41 @@ class TestTheRoute:
         assert "peynirli" not in caplog.text
         # Ground: something WAS logged, so this is not passing on silence.
         assert "Safeword" in caplog.text
+
+
+class TestItCannotBeSetToSomethingThatDisarmsIt:
+    """The two ways this control silently stopped being one."""
+
+    def test_a_space_is_refused(self, db) -> None:
+        """It collapsed to empty, empty means OFF, and the box went on showing
+        the space - so the only tell arrived on the next remount and until
+        then the user believed their stop was armed."""
+        with pytest.raises(notebook.NotebookError) as exc:
+            notebook.set_safeword(" ")
+        assert exc.value.code == "safeword_blank"
+        assert notebook.safeword() == ""
+
+    def test_an_EMPTY_string_still_turns_it_off(self, db) -> None:
+        """Ground: refusing whitespace must not make the feature unremovable."""
+        notebook.set_safeword("kırmızı")
+        notebook.set_safeword("")
+        assert notebook.safeword() == ""
+
+    @pytest.mark.parametrize("tiny", ["a", "bi"])
+    def test_one_or_two_letters_are_refused(self, db, tiny) -> None:
+        """A single letter appears inside almost every sentence, so the app
+        becomes unsendable with the only cure buried in a panel the user is
+        not looking at."""
+        with pytest.raises(notebook.NotebookError) as exc:
+            notebook.set_safeword(tiny)
+        assert exc.value.code == "safeword_too_short"
+
+    def test_three_is_enough(self, db) -> None:
+        notebook.set_safeword("kes")
+        assert notebook.safeword() == "kes"
+
+    def test_the_route_refuses_them_too(self, client) -> None:
+        for word, code in ((" ", "safeword_blank"), ("a", "safeword_too_short")):
+            resp = client.post("/api/v1/notebook/safeword", json={"word": word})
+            assert resp.status_code == 400
+            assert resp.json()["detail"] == code
