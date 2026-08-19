@@ -51,7 +51,7 @@ describe("WorkerPanel", () => {
     const box = await screen.findByTestId("worker-status");
     expect(box.textContent).toMatch(/3 runs/);
     expect(box.textContent).toMatch(/3 of 60 calls today/);
-    expect(box.textContent).toMatch(/0\.0004 credits/);
+    expect(box.textContent).toMatch(/0\.00040 credits/);
   });
 
   it("says WHY runs were skipped, in words", async () => {
@@ -124,14 +124,14 @@ describe("WorkerPanel", () => {
   it("shows the auto-accept switch in its stored position", async () => {
     mount({}, false);
     await waitFor(() =>
-      expect(screen.getByLabelText(/keep suggested notes without asking/i))
+      expect(screen.getByRole("switch", { name: /keep suggestions without asking/i }))
         .not.toBeChecked());
   });
 
   it("saves the switch when it is flipped", async () => {
     const user = userEvent.setup();
     mount({}, true);
-    const sw = await screen.findByLabelText(/keep suggested notes without asking/i);
+    const sw = await screen.findByRole("switch", { name: /keep suggestions without asking/i });
     await waitFor(() => expect(sw).toBeEnabled());
     await user.click(sw);
 

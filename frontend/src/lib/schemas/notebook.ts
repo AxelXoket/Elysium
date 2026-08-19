@@ -171,6 +171,17 @@ export const WorkerStatusSchema = z.object({
     dropped_offers: z.number(),
     runs: z.number(),
     batch_size: z.number(),
+    /** Declared here or DISCARDED here. These five are the whole reason the
+     *  status screen exists - `alive` and `died` are the "the background task
+     *  crashed" signal - and zod's z.object STRIPS unknown keys, so the
+     *  backend computed them on every request and the client threw them away.
+     *  A dead worker went on reporting "Running." with a growing queue, which
+     *  is the exact failure the fields were added to prevent. */
+    refused_by_breaker: z.number().default(0),
+    alive: z.boolean().default(true),
+    died: z.string().nullish(),
+    unhandled: z.number().default(0),
+    last_error: z.string().nullish(),
   }),
   daily_cap: z.number(),
 });

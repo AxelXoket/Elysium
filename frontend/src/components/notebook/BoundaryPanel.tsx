@@ -44,6 +44,8 @@ export function BoundaryPanel() {
 
   const [label, setLabel] = useState("");
   const [severity, setSeverity] = useState("hard");
+  // Global by default: a limit is usually about the person, not the scene.
+  const [scope, setScope] = useState<"global" | "chat">("global");
   const [confirmId, setConfirmId] = useState<number | null>(null);
   // Optimistic only while a save is in flight; the server's answer is the
   // truth the rest of the time.
@@ -60,7 +62,15 @@ export function BoundaryPanel() {
       // One field, used twice: what the person reads and what the model reads
       // start identical. They are separate columns so the wording can diverge
       // later without the screen changing under them.
-      await create.mutateAsync([{ label: text, phrasing: text, severity }]);
+      await create.mutateAsync([{
+        label: text, phrasing: text, severity,
+        // The scope the owner asked for. `chat_id` was never passed, so every
+        // limit the app could create was GLOBAL - the row below rendered
+        // "- this chat" for something it had no way to produce, and turning
+        // "use my global limits here" off hid every limit the user had ever
+        // written.
+        ...(scope === "chat" && chatId != null ? { chat_id: chatId } : {}),
+      }]);
       setLabel("");
     } catch (err) {
       pushError(err, "error", { chatId: chatId ?? undefined });
@@ -109,7 +119,6 @@ export function BoundaryPanel() {
             checked={useGlobal}
             disabled={busy}
             onCheckedChange={(v) => void handleToggleGlobal(v)}
-            aria-label="Use my global limits in this chat"
           />
           <span className="text-xs leading-relaxed text-muted-foreground">Use my global limits here</span>
         </label>
@@ -125,8 +134,18 @@ export function BoundaryPanel() {
           onKeyDown={(e) => {
             if (e.key === "Enter") void handleAdd();
           }}
-          className="persona-field text-xs"
+          className="persona-field text-xs md:text-xs"
         />
+        <select
+          value={scope}
+          disabled={busy || chatId == null}
+          onChange={(e) => setScope(e.target.value as "global" | "chat")}
+          aria-label="Where this applies"
+          className="persona-field h-8 min-w-0 rounded-md px-2 text-xs"
+        >
+          <option value="global">everywhere</option>
+          <option value="chat">this chat</option>
+        </select>
         <select
           value={severity}
           disabled={busy}
@@ -137,7 +156,7 @@ export function BoundaryPanel() {
           // variant of one control, and `settings-value` also carried an 11px
           // size that beat the `text-xs` beside it - so the same select
           // rendered at two sizes in two sibling panels.
-          className="persona-field rounded-md px-2 py-1 text-xs"
+          className="persona-field h-8 min-w-0 rounded-md px-2 text-xs"
         >
           <option value="hard">never</option>
           <option value="veiled">off the page</option>

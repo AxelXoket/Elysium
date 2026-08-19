@@ -831,6 +831,25 @@ async def lock_vault_now(reason: str = "request") -> list[str]:
     different lock would be a second, slightly weaker one.
     """
     async with _vault_lock:
+        # BEFORE the key is cleared, and before the HTTP client is dropped.
+        #
+        # An extraction already past its planning step is holding DECRYPTED
+        # chat text and is awaiting the provider. Nothing here touched it, so
+        # locking the vault - by the button or by the idle watchdog - did not
+        # stop that text from leaving the machine afterwards. The lock is
+        # supposed to mean the conversation is closed; it did not mean it for
+        # the one path that runs while nobody is watching.
+        #
+        # It also drains the queue: every offer still waiting would otherwise
+        # wake into a locked vault and be counted as an unhandled error, so a
+        # normal lock/unlock cycle left the status panel reporting failures
+        # that were nothing of the kind.
+        try:
+            import notebook_worker
+            await notebook_worker.quiesce()
+        except Exception:
+            logger.warning("Notebook worker did not stand down cleanly.")
+
         vault_state.clear_key()
         # The single funnel: the idle watchdog comes through here too, so the
         # window stops being protected the moment the conversation stops being

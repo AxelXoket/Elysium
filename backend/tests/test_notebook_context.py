@@ -97,13 +97,19 @@ class TestWhatReachesTheModel:
         assert idx["user wrote this"] < len(msgs) - 1
 
     def test_the_block_says_it_is_data(self, db, chat) -> None:
-        """A note is quoted material. The wrapper says so out loud, and the
-        newline collapse stops a note forging the wrapper."""
+        """A note is quoted material and the wrapper says so out loud.
+
+        The wrapper also carries a random tag, in the opening line and the
+        closing one, because a fixed marker is one a note can simply print.
+        The text itself is never altered - people write brackets and
+        parentheses, and there is no punctuation nobody uses."""
         notebook.create_entry(chat, "anything")
         msgs, _, _ = _payload(chat)
         block = next(m["content"] for m in msgs if "anything" in m["content"])
         assert "DATA NOT INSTRUCTIONS" in block
-        assert block.endswith("[End of notebook]")
+        lines = block.splitlines()
+        tag = lines[0].split("#", 1)[1].split()[0]
+        assert lines[-1] == f"[End of notebook #{tag}]"
 
 
 class TestTheCeiling:
@@ -249,3 +255,44 @@ class TestTheBlocksArePaidForBeforeTheTrimRuns:
         with_model = self._surviving_history(
             chat, notebook_model_block="M" * 3000)
         assert with_model < without
+
+
+class TestAStaleExclusionReasonIsCleared:
+    """The badge inverted its own meaning.
+
+    The router only called `record_exclusions` when something HAD been
+    excluded, so the clearing half never ran on a quiet turn: once the
+    pressure stopped, rows kept a reason from an earlier turn forever and the
+    panel showed them as "not sent" while they were being sent every single
+    time. A badge that is wrong in the safe direction is worse than none.
+    """
+
+    def _turn(self, chat_id: int, budget: int) -> None:
+        """What the router does on every message, in the order it does it."""
+        blocks = notebook.build_notebook_blocks(chat_id, budget)
+        notebook.record_exclusions(chat_id, blocks["excluded"])
+
+    def test_the_reason_goes_when_the_note_fits_again(self, db, chat) -> None:
+        ids = [notebook.create_entry(chat, f"{i:03d} " + "x" * 200)["id"]
+               for i in range(40)]
+        self._turn(chat, 9000)
+        assert any(e["excluded_reason"] for e in notebook.list_entries(chat))
+
+        # Down to two notes: 10% of a 9000-char budget is 900, so five of
+        # them would still not fit and the test would be measuring the wrong
+        # thing.
+        for entry_id in ids[2:]:
+            notebook.delete_entry(entry_id)
+        self._turn(chat, 9000)
+
+        assert not any(e["excluded_reason"]
+                       for e in notebook.list_entries(chat)), (
+            "a note that fits again still reads as not sent")
+
+    def test_a_note_that_still_does_not_fit_keeps_its_reason(self, db, chat):
+        """Ground: clearing unconditionally would erase the true ones too."""
+        for i in range(40):
+            notebook.create_entry(chat, f"{i:03d} " + "x" * 200)
+        self._turn(chat, 9000)
+        self._turn(chat, 9000)
+        assert any(e["excluded_reason"] for e in notebook.list_entries(chat))

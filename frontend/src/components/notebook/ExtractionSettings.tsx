@@ -126,15 +126,19 @@ export function ExtractionSettings() {
             disabled={busy || !loaded || models.isLoading}
             onChange={(e) => void pick({ model_id: e.target.value })}
             aria-label="Extraction model"
-            className="persona-field w-full rounded-md px-2 py-1 text-xs"
+            className="persona-field h-8 w-full min-w-0 rounded-md px-2 text-xs"
           >
             <option value="">
               {loaded ? "Not chosen - suggestions are off" : "Loading..."}
             </option>
             {(models.data?.models ?? []).map((m) => (
               <option key={m.id} value={m.id}>
-                {m.id} - ${m.prompt_price.toFixed(3)}/M
-                {m.endpoints === 1 ? " (single provider)" : ""}
+                {/* Price first, then the id: a native select CLIPS rather
+                    than wraps, and at the panel's 300px floor the tail of a
+                    long vendor slug was eating both the price and the
+                    single-provider warning - the two things the line is for. */}
+                ${m.prompt_price.toFixed(3)}/M
+                {m.endpoints === 1 ? " (1 provider)" : ""} - {m.id}
               </option>
             ))}
           </select>
@@ -171,7 +175,7 @@ export function ExtractionSettings() {
             disabled={busy || !loaded}
             onChange={(e) => void pick({ prompt_language: e.target.value })}
             aria-label="Instruction language"
-            className="persona-field w-full rounded-md px-2 py-1 text-xs"
+            className="persona-field h-8 w-full min-w-0 rounded-md px-2 text-xs"
           >
             <option value="en">English</option>
             <option value="tr">Turkce</option>
@@ -190,7 +194,7 @@ export function ExtractionSettings() {
           variant="ghost"
           disabled={!chosen || chatId == null || pending}
           onClick={() => void runOnce()}
-          className="persona-ghost-action h-7 gap-1.5 px-2 text-xs"
+          className="persona-ghost-action h-8 gap-1.5 px-2 text-xs"
         >
           {pending ? (
             <Loader2 size={12} className="size-3 animate-spin" />
@@ -224,7 +228,9 @@ export function ExtractionSettings() {
               <p className="text-xs leading-relaxed text-muted-foreground">
                 What it read
               </p>
-              <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words text-xs">
+              <pre // font-sans: a <pre> inherits the mono stack, and this is Turkish
+              // prose meant to be read beside the proposals, not code.
+              className="max-h-32 overflow-y-auto whitespace-pre-wrap break-words font-sans text-xs">
                 {result.source}
               </pre>
             </div>
@@ -263,7 +269,7 @@ export function ExtractionSettings() {
             )}
 
             <p className="text-xs leading-relaxed text-muted-foreground">
-              Cost: {result.usage.cost ?? 0} credits ({result.usage.tokens_in ?? 0}
+              Cost: {(result.usage.cost ?? 0).toFixed(5)} credits ({result.usage.tokens_in ?? 0}
               {" in / "}
               {result.usage.tokens_out ?? 0} out)
             </p>
