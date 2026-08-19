@@ -247,6 +247,36 @@ def _voice_tag_caches_reset():
 
 
 @pytest.fixture(autouse=True)
+def _notebook_worker_reset():
+    """`notebook_worker.worker` is process-wide mutable state.
+
+    Its breaker, its counters and its queue outlive every temporary vault, so
+    a test that drives the breaker to "stopped" hands that refusal to whatever
+    runs next - and the test that asserts a healthy worker passes only on file
+    order. Production now also increments `dropped_offers` from every
+    streaming completion in the suite.
+
+    Same shape, and the same fix, as `_model_cache_reset` below.
+    """
+    import notebook_worker
+
+    def _clean() -> None:
+        w = notebook_worker.worker
+        w.breaker.reset()
+        w.breaker.total_failures = 0
+        w.dropped_offers = 0
+        w.refused_by_breaker = 0
+        w.runs = 0
+        w.unhandled = 0
+        w.last_error = None
+        w.died = None
+
+    _clean()
+    yield
+    _clean()
+
+
+@pytest.fixture(autouse=True)
 def _model_cache_reset():
     """openrouter._model_cache is a module-level dict that outlives the temp
     vault every test gets, so a test that seeds it hands its answer to

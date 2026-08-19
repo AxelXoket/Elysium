@@ -1259,6 +1259,19 @@ def iter_chunks(seq: list, size: int | None = None):
 # Settings helpers
 # ---------------------------------------------------------------------------
 
+def get_setting_con(con, key: str, default: str | None = None) -> str | None:
+    """Read one settings row on a connection the CALLER already owns.
+
+    `get_setting` opens its own. Called from inside an open transaction that
+    is holding the write lock, that second connection waits for a lock its own
+    caller is holding - the whole busy_timeout, every time, for a value the
+    transaction could have read for free.
+    """
+    row = con.execute(
+        "SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
 def get_setting(key: str, default: str | None = None) -> str | None:
     """Read one settings row. Returns default if the key does not exist."""
     with get_db() as con:

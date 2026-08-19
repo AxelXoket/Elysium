@@ -72,6 +72,10 @@ class EntryPatch(BaseModel):
     # can carry, and the next reader would wire it up.
 
 
+class AutoAcceptBody(BaseModel):
+    enabled: bool
+
+
 class ReorderBody(BaseModel):
     ordered_ids: list[int]
 
@@ -129,6 +133,106 @@ async def delete_boundary(boundary_id: int) -> dict:
         raise HTTPException(404, "boundary_not_found")
     logger.info("Boundary removed: id=%d", boundary_id)
     return {"ok": True}
+
+
+
+# ── FAZ 5: what the background worker did, and whether it may keep going ────
+
+@router.get("/worker")
+async def worker_status() -> dict:
+    """Counters, not silence.
+
+    A skipped extraction that leaves no trace makes "the notebook has proposed
+    nothing this week" and "the notebook has refused sixty times for a reason
+    nobody can see" the same screen. Every refusal carries its reason here.
+    """
+    import notebook_worker
+
+    def _read() -> dict:
+        from database import get_db
+        with get_db() as con:
+            return {
+                "stats": notebook.extraction_stats(con),
+                "spend": notebook.spend_today(con),
+            }
+
+    body = await anyio.to_thread.run_sync(_read)
+    body["worker"] = notebook_worker.worker.status()
+    body["daily_cap"] = config.NOTEBOOK_DAILY_CALL_CAP
+    return body
+
+
+@router.post("/worker/reset")
+async def worker_reset() -> dict:
+    """The hand on the breaker.
+
+    Without it, recovering from a stopped breaker means restarting the whole
+    application after fixing whatever broke - which is a breaker plus an
+    insult. The counters stay; only the refusal is lifted.
+    """
+    import notebook_worker
+
+    notebook_worker.worker.breaker.reset()
+    logger.info("Notebook extraction breaker reset by the user.")
+    return {"ok": True, "worker": notebook_worker.worker.status()}
+
+
+@router.get("/auto-accept")
+async def get_auto_accept() -> dict:
+    def _read() -> dict:
+        from database import get_setting
+        raw = get_setting(config.SETTING_NOTEBOOK_AUTO_ACCEPT)
+        # Unset IS the default, and the default is on. Reading an unset key as
+        # "off" would make a fresh install silently do nothing and look like a
+        # broken worker rather than a setting.
+        return {"enabled": raw != "0"}
+    return await anyio.to_thread.run_sync(_read)
+
+
+@router.post("/auto-accept")
+async def set_auto_accept(body: AutoAcceptBody) -> dict:
+    def _write() -> None:
+        from database import set_setting
+        set_setting(config.SETTING_NOTEBOOK_AUTO_ACCEPT,
+                    "1" if body.enabled else "0")
+    await anyio.to_thread.run_sync(_write)
+    logger.info("Notebook auto-accept set to %s.", body.enabled)
+    return {"ok": True}
+
+
+@router.post("/entries/{entry_id}/accept")
+async def accept_entry(entry_id: int) -> dict:
+    """Promote a proposal. The ONLY thing this changes is `status`.
+
+    `provenance` stays `model` forever - promotion is the classic bypass, and
+    a route that could rewrite it would leave `provenance='model'` with no
+    live rows, so its guard would pass by describing an empty set.
+    """
+    def _accept() -> dict:
+        # Read first, and read WHAT it is. Without this the route promoted any
+        # id in the database and RETURNED THE ROW - so it answered "what does
+        # note 412 say" for a note in a chat the caller never opened. The same
+        # gap exists on patch and delete, but only this one hands back text.
+        from database import get_db
+        with get_db() as con:
+            row = con.execute(
+                "SELECT status, retired_at FROM notebook_entries WHERE id = ?",
+                (entry_id,)).fetchone()
+        if row is None:
+            raise notebook.NotebookError("notebook_entry_not_found")
+        if row["retired_at"] is not None:
+            # Accepting a replaced note would show it as kept in the panel
+            # while the payload still, correctly, leaves it out.
+            raise notebook.NotebookError("notebook_entry_not_found")
+        return notebook.update_entry(entry_id,
+                                     status=notebook.STATUS_ACCEPTED)
+
+    try:
+        entry = await anyio.to_thread.run_sync(_accept)
+    except notebook.NotebookError as exc:
+        _refuse(exc)
+    logger.info("Notebook proposal accepted: id=%d", entry_id)
+    return entry
 
 
 @router.get("/{chat_id}")

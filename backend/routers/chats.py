@@ -137,7 +137,7 @@ def _create_chat_sync(character_id: int, title_in: str | None,
         con.execute("BEGIN IMMEDIATE")
         # 1. Verify character exists
         char_row = con.execute(
-            "SELECT id, name, first_mes FROM characters WHERE id = ?",
+            "SELECT id, name, first_mes, raw_json FROM characters WHERE id = ?",
             (character_id,),
         ).fetchone()
         if char_row is None:
@@ -160,10 +160,25 @@ def _create_chat_sync(character_id: int, title_in: str | None,
             raise HTTPException(400, "model_id_too_long")
 
         # 4. Insert chat
+        #
+        # A chat opened from an IMPORTED card never auto-accepts model-written
+        # notes, whatever the general setting says. `raw_json` is non-empty
+        # only on the import path (`characters.py`'s importer stores the whole
+        # card; a hand-written character leaves the column at '{}'), so it is
+        # the record of where this text came from.
+        #
+        # Until this line the column existed, was read on every extraction,
+        # was described in two docstrings and the API contract, and was
+        # written by NOTHING - so every model-written fact distilled from
+        # somebody else's card went straight into the prompt unreviewed, and
+        # the named defence against exactly that was a comment.
+        raw = (char_row["raw_json"] or "").strip()
+        imported = 1 if raw and raw not in ("{}", "null") else 0
         try:
             cur = con.execute(
-                "INSERT INTO chats (character_id, title, model_id) VALUES (?,?,?)",
-                (character_id, title, model_id),
+                "INSERT INTO chats (character_id, title, model_id, "
+                "notebook_auto_accept_override) VALUES (?,?,?,?)",
+                (character_id, title, model_id, 0 if imported else None),
             )
         except sqlite3.IntegrityError:
             # Belt over the txn guard: the FK says the character vanished -

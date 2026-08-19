@@ -54,6 +54,11 @@
 | DELETE | /notebook/boundaries/{id} | Remove a limit | FAZ 1 (notebook) |
 | GET | /notebook/{chat_id}/boundaries | Limits actually in force for this chat | FAZ 1 (notebook) |
 | POST | /notebook/{chat_id}/use-global | Whether this chat follows the global limits | FAZ 1 (notebook) |
+| GET | /notebook/worker | What the background extractor has done: counters, today's spend, and the circuit-breaker state. A refusal nobody can see is the same screen as a notebook that found nothing | FAZ 5 (notebook) |
+| POST | /notebook/worker/reset | Lift a tripped or stopped circuit breaker by hand. Without it, recovering from a provider outage means restarting the whole application | FAZ 5 (notebook) |
+| GET | /notebook/auto-accept | Whether proposals are accepted without review. **Unset is ON** - the default, not "off" | FAZ 5 (notebook) |
+| POST | /notebook/auto-accept | Turn review on or off. A chat opened from an imported card overrides this to OFF for itself, whatever the global says | FAZ 5 (notebook) |
+| POST | /notebook/entries/{id}/accept | Promote one proposal. Changes `status` and nothing else - `provenance` stays `model` forever | FAZ 5 (notebook) |
 | GET | /notebook/extract/models | Models a background extraction may use. Filtered to endpoints that keep no data AND honour a strict JSON schema - a model that cannot do the job has no business being pickable and then failing at request time | FAZ 4 (notebook) |
 | GET | /notebook/extract/settings | The chosen extraction model and instruction language. `model_id: null` means extraction never runs | FAZ 4 (notebook) |
 | POST | /notebook/extract/settings | Choose the model and the instruction language (`en` or `tr`) | FAZ 4 (notebook) |
