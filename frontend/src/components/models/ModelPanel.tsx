@@ -1,6 +1,7 @@
 import { useState, useMemo, useId, useEffect } from "react";
 import { useModels, useRefreshModels } from "@/lib/query/models";
 import { useVoiceMode } from "@/lib/query/tts";
+import { useNotebook } from "@/lib/query/notebook";
 import { useChats, useMessages } from "@/lib/query/chats";
 import { useCharacters } from "@/lib/query/characters";
 import { usePersonas } from "@/lib/query/personas";
@@ -164,6 +165,7 @@ export function ModelPanel() {
   // G2 parity (audit-2): BOTH gauges charge the voice block, or the two
   // meters disagree with each other the moment the toggle flips.
   const { data: voiceMode } = useVoiceMode();
+  const notebook = useNotebook(selectedChatId);
   const contextUsage = estimateContextUsage({
     model: selectedModel ?? null,
     character: chatCharacter ?? null,
@@ -172,6 +174,9 @@ export function ModelPanel() {
     generationParams,
     contextBudgetTokens,
     voicePromptChars: voiceMode?.active ? voiceMode.prompt_chars : 0,
+    // Same shape, same reason: a server-measured number, charged identically
+    // by both gauges so they cannot disagree with each other or the backend.
+    notebookChars: notebook.data?.notebook_chars ?? 0,
   });
 
   return (

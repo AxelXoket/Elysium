@@ -220,6 +220,45 @@ def _purge_voice_cache() -> None:
         )
 
 
+#: Kept in the vault, not in an env var and not in browser storage: a switch
+#: that protects the screen is not one somebody can read and flip without the
+#: passphrase. Off by default - the owner said they take screenshots.
+SETTING_SCREEN_PRIVACY = "screen_privacy_enabled"
+
+
+def screen_privacy_enabled() -> bool:
+    """Fails CLOSED on any exception, including a locked vault.
+
+    Same shape as image_output_enabled. A protection setting that defaults to
+    "on" when it cannot be read would black out the window of somebody who
+    never asked for it, with no way to see why.
+    """
+    try:
+        raw = (database.get_setting(SETTING_SCREEN_PRIVACY) or "").lower()
+    except Exception:
+        return False
+    return raw in ("1", "true")
+
+
+def _apply_screen_privacy(unlocked: bool) -> None:
+    """Put the window's capture exclusion where the vault says it belongs.
+
+    A STATE TRANSITION, not a one-time setting. While the vault is locked there
+    is no conversation on screen - only a passphrase box, and that is masked -
+    so the protection comes off. It goes back on at unlock. Both directions
+    matter: leaving it on while locked would black out a window with nothing
+    to hide, and leaving it off after unlock would be the setting silently not
+    applying.
+
+    Never raises into a route. On a build with no window this is a no-op.
+    """
+    try:
+        import win_hardening
+        win_hardening.set_screen_privacy(unlocked and screen_privacy_enabled())
+    except Exception:
+        logger.warning("screen-capture setting could not be applied")
+
+
 def _key_opens_the_database(key: bytes) -> bool:
     """Whether this key actually opens the database that is on disk.
 
@@ -764,6 +803,7 @@ async def vault_unlock(body: PassphraseBody) -> dict:
         upgraded = await anyio.to_thread.run_sync(
             partial(_upgrade_kdf_if_needed, vault, body.passphrase, key),
         )
+        _apply_screen_privacy(True)
         logger.info("Vault unlocked")
         # _bootstrap_unlocked has ALWAYS returned this path and this route has
         # always thrown it away. A plaintext pre-vault app.db can be migrated
@@ -792,6 +832,10 @@ async def lock_vault_now(reason: str = "request") -> list[str]:
     """
     async with _vault_lock:
         vault_state.clear_key()
+        # The single funnel: the idle watchdog comes through here too, so the
+        # window stops being protected the moment the conversation stops being
+        # on screen - and only then.
+        _apply_screen_privacy(False)
         audio_left = await _lock_down_voice()
         # Drop the HTTP client too: it snapshots the proxy URL (a secret) at
         # build time and would otherwise keep it in RAM while locked. The

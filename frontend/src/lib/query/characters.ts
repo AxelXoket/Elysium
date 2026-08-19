@@ -80,6 +80,10 @@ export function useDeleteCharacter() {
       // them behind is what lets a deleted conversation reappear on a revisit.
       for (const chatId of context?.doomed ?? []) {
         qc.removeQueries({ queryKey: keys.messages(chatId) });
+        // Inside the same loop: deleting a character takes every chat it ever
+        // had, which is the path that leaves the most behind.
+        qc.removeQueries({ queryKey: keys.notebookEntries(chatId) });
+        qc.removeQueries({ queryKey: keys.notebookBoundaries(chatId) });
       }
     },
   });

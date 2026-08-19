@@ -170,7 +170,8 @@ def _get_settings_sync() -> dict:
                 "SELECT key, value FROM settings "
                 "WHERE key IN ('proxy_required', 'proxy_alias', "
                 "'selected_persona_id', 'stop_sequences', "
-                "'image_output_enabled', 'auto_lock_minutes')"
+                "'image_output_enabled', 'auto_lock_minutes', "
+                "'screen_privacy_enabled')"
             ).fetchall()
         }
         api_key_set = get_secret(SECRET_API_KEY, conn=con) is not None
@@ -199,6 +200,10 @@ def _get_settings_sync() -> dict:
         # An unlocked vault is a decrypted vault for as long as the window is
         # open, and windows stay open for days.
         "auto_lock_minutes": _read_auto_lock(rows.get("auto_lock_minutes")),
+        # Off unless explicitly on, matching the reader in routers/vault.py.
+        # Two places parse the same row, so both fail closed the same way.
+        "screen_privacy_enabled":
+            rows.get("screen_privacy_enabled") in ("1", "true"),
     }
 
 
@@ -596,3 +601,38 @@ async def delete_proxy() -> dict:
 async def proxy_health() -> dict:
     """Return proxy health status. No extra network logic in this handler."""
     return await check_proxy_health()
+
+
+class ScreenPrivacyBody(BaseModel):
+    screen_privacy_enabled: bool
+
+
+@router.post("/screen-privacy")
+async def set_screen_privacy(body: ScreenPrivacyBody) -> dict:
+    """Hide this window from screen capture and screen sharing.
+
+    Stored in the vault rather than in browser storage, for the same reason
+    the auto-lock delay is: a protection setting somebody can read and change
+    without the passphrase is not one.
+
+    OFF by default. The owner takes screenshots of this app, and a default
+    that blacks out their captures until they find the switch would be the app
+    deciding for them. Applied on vault transitions, never at launch - the
+    setting lives inside the vault and the window exists before it is open.
+
+    What it cannot do, said plainly: macOS's newer capture API can still read
+    the window, and a window opened after the flag is set (a file picker, a
+    permission prompt) is not covered. A layer, not a guarantee.
+    """
+    from routers import vault as vault_router
+
+    await anyio.to_thread.run_sync(
+        set_setting, vault_router.SETTING_SCREEN_PRIVACY,
+        "1" if body.screen_privacy_enabled else "0")
+    # Immediately, not on the next unlock: a switch that takes effect later is
+    # one the user cannot tell worked.
+    await anyio.to_thread.run_sync(
+        vault_router._apply_screen_privacy, True)
+    logger.info("Screen privacy set to %s.", body.screen_privacy_enabled)
+    return {"ok": True, "screen_privacy_enabled": body.screen_privacy_enabled}
+
