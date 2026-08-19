@@ -192,6 +192,11 @@ export function useDryRun() {
     mutationFn: (args: [number]) => dryRun(...args),
     onSuccess: (data, args) => {
       qc.setQueryData([...DRY_RUN_KEY, args[0]], data);
+      // It writes no NOTES, which is what the panel says - but it does claim
+      // a call against the daily cap and record what it cost. Leaving the
+      // status card stale meant the "N of 60 calls today" line was wrong for
+      // twenty seconds after every press of the button that changed it.
+      void qc.invalidateQueries({ queryKey: ["extraction", "worker"] });
     },
   });
 }

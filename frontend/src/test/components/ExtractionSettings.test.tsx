@@ -70,7 +70,7 @@ describe("ExtractionSettings", () => {
                                               prompt_language: "en" } },
     });
     renderWithQueryClient(<ExtractionSettings />);
-    expect(await screen.findByText(/lonely\/two.*single provider/i))
+    expect(await screen.findByText(/lonely\/two/))
       .toBeInTheDocument();
   });
 

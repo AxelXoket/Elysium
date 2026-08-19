@@ -158,7 +158,12 @@ export function NotebookPanel() {
             onKeyDown={(e) => {
               if (e.key === "Enter") void handleAdd();
             }}
-            className="text-xs"
+            // `persona-field` like every other input on this light
+          // island, and `md:text-xs` because Input's own cva base
+          // ends in `md:text-sm` - same specificity, later in the
+          // sheet, so a bare `text-xs` loses above 768px and this
+          // panel is never narrower than that in practice.
+          className="persona-field text-xs md:text-xs"
           />
           <Button
             type="button"
@@ -231,7 +236,6 @@ function NoteRow({
       className="persona-card flex items-start gap-2"
       data-testid={`note-${entry.id}`}
       data-state={state}
-      style={{ opacity: state === "live" ? 1 : 0.62 }}
     >
       <div className="min-w-0 flex-1">
         <p className="break-words text-sm font-medium">{entry.text}</p>
@@ -265,7 +269,7 @@ function NoteRow({
           variant="ghost"
           disabled={busy}
           onClick={onAccept}
-          aria-label="Keep note"
+          aria-label="Keep suggestion"
           className="persona-ghost-action h-7 w-7 p-0"
         >
           <Check size={12} className="size-3" />
@@ -294,8 +298,12 @@ function NoteRow({
           disabled={busy}
           onClick={onAskDelete}
           aria-label="Delete note"
-          className="persona-ghost-action h-7 w-7 p-0"
-          style={{ color: "var(--color-es-danger)" }}
+          // `persona-danger-action`, not ghost + an inline colour: the ghost
+          // class sets its colour with !important, so the inline style never
+          // applied and the trash rendered grey here while the identical one
+          // in Limits rendered maroon. The token differs too - es-danger is
+          // the DARK shell's red and lands at about 3.2:1 on this panel.
+          className="persona-danger-action h-7 w-7 p-0"
         >
           <Trash2 size={12} className="size-3" />
         </Button>

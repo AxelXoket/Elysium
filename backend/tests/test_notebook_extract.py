@@ -200,9 +200,15 @@ class TestThePrompt:
     def test_the_four_sections_are_fenced_and_only_one_is_extractable(self):
         msg = ex.build_user_message(
             card="c", existing=["e"], recent=["r"], new=["n"])
-        for tag in ("CHARACTER_CARD", "EXISTING_NOTES", "RECENT_TURNS",
-                    "NEW_TURNS"):
-            assert f"<{tag}>" in msg and f"</{tag}>" in msg
+        # The fences carry a random tag now, so the assertion is that each
+        # section opens and closes with the SAME one - a fixed label was a
+        # label a message could simply print.
+        import re
+        for name in ("CHARACTER_CARD", "EXISTING_NOTES", "RECENT_TURNS",
+                     "NEW_TURNS"):
+            opens = re.findall(rf"<{name} (#[0-9a-f]{{16}})>", msg)
+            closes = re.findall(rf"</{name} (#[0-9a-f]{{16}})>", msg)
+            assert opens and opens == closes
 
     def test_existing_notes_are_numbered_so_supersedes_can_point(self) -> None:
         msg = ex.build_user_message(card="", existing=["a", "b"], recent=[],

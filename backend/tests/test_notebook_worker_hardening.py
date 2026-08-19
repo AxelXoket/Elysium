@@ -291,7 +291,6 @@ class TestAFailedWriteIsNotASuccess:
         await w._handle(chat_id)
 
         assert w.runs == 0, "a run that wrote nothing was counted"
-        assert w.breaker.failures == 0 or w.breaker.failures >= 0
         with get_db() as con:
             stats = notebook.extraction_stats(con, chat_id)
         assert stats["failed"] == 1 and stats["done"] == 0
@@ -462,3 +461,92 @@ class TestAnAnsweredRangeIsNotPaidForAgain:
         await w._handle(chat_id)
         with get_db() as con:
             assert notebook.spend_today(con)["calls"] == 1
+
+
+class TestPinnedNotesCannotBreakTheChat:
+    """A pin means "never dropped to make room for another NOTE". It was
+    reading as "allowed to break the conversation": pinned rows were exempt
+    from eviction but not from arithmetic, so enough of them pushed the
+    notebook past its ceiling, those characters entered the context budget,
+    and every send in that chat failed with `context_too_large` - an error
+    about the window, naming nothing about the notebook, with the only fix
+    (unpin) never suggested anywhere.
+    """
+
+    def test_pins_alone_cannot_exceed_the_ceiling(self, client) -> None:
+        chat_id = make_chat(client, make_character(client))
+        for i in range(40):
+            notebook.create_entry(chat_id, f"{i:03d} " + "x" * 200,
+                                  pinned=True)
+        blocks = notebook.build_notebook_blocks(chat_id, 32000)
+        assert len(blocks["user_block"]) <= notebook.NOTEBOOK_MAX_CHARS
+
+    def test_the_pins_that_did_not_fit_are_named(self, client) -> None:
+        """They must not vanish quietly - the owner's rule is that a note
+        never disappears, and this is the one case where the app overrode a
+        pin the user set on purpose."""
+        chat_id = make_chat(client, make_character(client))
+        for i in range(40):
+            notebook.create_entry(chat_id, f"{i:03d} " + "x" * 200,
+                                  pinned=True)
+        blocks = notebook.build_notebook_blocks(chat_id, 32000)
+        assert any(reason == "pinned_over_ceiling"
+                   for _id, reason in blocks["excluded"])
+
+    def test_a_pin_still_outranks_an_unpinned_note(self, client) -> None:
+        """Ground: the ceiling must not turn the pin into nothing."""
+        chat_id = make_chat(client, make_character(client))
+        pinned = notebook.create_entry(chat_id, "PINNED " + "x" * 200,
+                                       pinned=True)
+        for i in range(40):
+            notebook.create_entry(chat_id, f"filler {i} " + "x" * 200)
+        blocks = notebook.build_notebook_blocks(chat_id, 32000)
+        dropped = {e[0] for e in blocks["excluded"]}
+        assert pinned["id"] not in dropped
+
+    def test_a_notebook_of_pins_that_FITS_loses_none(self, client) -> None:
+        chat_id = make_chat(client, make_character(client))
+        ids = [notebook.create_entry(chat_id, f"note {i}", pinned=True)["id"]
+               for i in range(5)]
+        blocks = notebook.build_notebook_blocks(chat_id, 32000)
+        assert blocks["excluded"] == []
+        assert blocks["sent"] == len(ids)
+
+
+class TestTheCursorWipeIsScopedToItsOwnChat:
+    """`messages.id` is a GLOBAL autoincrement. "Every reading record above
+    id N" therefore spanned every conversation in the vault: deleting one
+    message in one chat wiped every other chat's cursor, and the worker
+    re-read - and re-paid for - all of their history, on every delete and
+    every edit. Written in the previous audit round, found in this one.
+    """
+
+    def test_another_chats_record_survives(self, client) -> None:
+        a = seed(client, 6)
+        b = seed(client, 6)
+        with get_db() as con:
+            a_ids = [r[0] for r in con.execute(
+                "SELECT id FROM messages WHERE chat_id = ? ORDER BY id",
+                (a,)).fetchall()]
+            b_ids = [r[0] for r in con.execute(
+                "SELECT id FROM messages WHERE chat_id = ? ORDER BY id",
+                (b,)).fetchall()]
+            assert b_ids[0] > a_ids[0], "chat B must come later in id order"
+            con.execute("BEGIN IMMEDIATE")
+            notebook.commit_extraction(
+                con, work_key="wa", chat_id=a, from_id=a_ids[0],
+                to_id=a_ids[-1], proposals=[])
+            notebook.commit_extraction(
+                con, work_key="wb", chat_id=b, from_id=b_ids[0],
+                to_id=b_ids[-1], proposals=[])
+
+        # A message deleted in chat A, with an id BELOW chat B's whole range.
+        with get_db() as con:
+            con.execute("BEGIN IMMEDIATE")
+            notebook.forget_proposals_from_messages(con, [a_ids[1]])
+
+        with get_db() as con:
+            left = {r[0] for r in con.execute(
+                "SELECT work_key FROM notebook_extractions").fetchall()}
+        assert "wb" in left, "an unrelated chat's reading record was wiped"
+        assert "wa" not in left, "the affected chat's record should go"

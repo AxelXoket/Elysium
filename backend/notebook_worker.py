@@ -224,6 +224,14 @@ class Worker:
                 # stepped away from their desk.
                 raise
             except Exception as exc:
+                import vault_state
+                if isinstance(exc, vault_state.VaultLockedError):
+                    # The vault closed under us. Not a failure of the model,
+                    # of this code, or of anything the user should read about:
+                    # background work deliberately does not feed the idle
+                    # timer, so an ordinary lock/unlock cycle used to leave up
+                    # to a queueful of "unhandled errors" on the status panel.
+                    continue
                 # A supervised worker that dies on one bad chat is not
                 # supervised. The type name and the chat id - never the
                 # message, which can carry the text that caused it. The
@@ -439,6 +447,36 @@ def _note_death(task: asyncio.Task) -> None:
     if exc is not None:
         worker.died = type(exc).__name__
         logger.warning("Notebook worker stopped: %s", worker.died)
+
+
+async def quiesce() -> None:
+    """Stand down for a vault lock: cancel what is in flight, drop the queue.
+
+    Called from `lock_vault_now`, which is the single funnel both the button
+    and the idle watchdog come through. The loop is restarted immediately, so
+    this is a pause rather than a shutdown - what it must NOT leave behind is
+    an in-flight request carrying decrypted text, or a backlog of offers that
+    will each wake into a locked vault and be counted as an error.
+    """
+    task, worker.task = worker.task, None
+    queue, worker.queue = worker.queue, None
+    if task is not None and not task.done():
+        task.cancel()
+        try:
+            await task
+        except BaseException:
+            pass
+    if queue is not None:
+        while True:
+            try:
+                queue.get_nowait()
+                queue.task_done()
+            except asyncio.QueueEmpty:
+                break
+    # Back on its feet for the next unlock. A worker that stayed down after
+    # the first auto-lock would look exactly like a feature that stopped
+    # working for no reason.
+    start()
 
 
 async def stop() -> None:

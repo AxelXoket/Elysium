@@ -378,7 +378,11 @@ CREATE TABLE IF NOT EXISTS notebook_extractions (
     # tightening migration would be the worse bug.
     spend_cols = {r[1]: r for r in
                   con.execute("PRAGMA table_info(notebook_spend)").fetchall()}
-    if spend_cols and not spend_cols["day"][3]:      # 3 == notnull
+    # `.get`, not `[...]`. A `notebook_spend` from a divergent build without
+    # a `day` column raised KeyError inside _migrate, which propagates out of
+    # init_db and refuses to open the vault - with a traceback instead of the
+    # deliberate sentence the downgrade guard produces.
+    if spend_cols.get("day") and not spend_cols["day"][3]:      # 3 == notnull
         rows = con.execute("SELECT COUNT(*) FROM notebook_spend").fetchone()[0]
         if rows == 0:
             con.execute("DROP TABLE notebook_spend")

@@ -31,8 +31,6 @@ import {
 const SKIP_PROSE: Record<string, string> = {
   notebook_daily_cap_reached: "today's call limit was already used",
   proxy_gate: "your proxy was required and not healthy",
-  breaker_open: "it was cooling down after repeated failures",
-  breaker_stopped: "it had stopped and was waiting for you",
 };
 
 /** The three states, said plainly. "closed" is engineering vocabulary for
@@ -84,10 +82,16 @@ export function WorkerPanel() {
         <label className="flex items-center gap-2">
           <Switch
             checked={auto.data?.enabled ?? true}
+            // Not operable until the stored value is known: a switch that
+            // shows a guess and accepts a click is the "you believe it is in
+            // force and it is not" failure this feature warns about.
             disabled={setAuto.isPending || !auto.isSuccess}
             onCheckedChange={(v) => void toggle(v)}
-            aria-label="Keep suggested notes without asking"
           />
+          {/* No aria-label. The wrapping <label> already names this control
+              with the words on screen; an aria-label OVERRIDES those, so
+              voice control could not address the switch by what it says -
+              and here it also duplicated the name, which is worse. */}
           <span className="text-xs leading-relaxed text-muted-foreground">
             Keep suggestions without asking
           </span>
@@ -106,7 +110,7 @@ export function WorkerPanel() {
             </p>
             <p className="text-xs leading-relaxed text-muted-foreground">
               {body.stats.done} runs · {body.spend.calls} of {body.daily_cap}{" "}
-              calls today · {body.spend.cost} credits
+              calls today · {body.spend.cost.toFixed(5)} credits
             </p>
 
             {/* Failures and refusals are separate lines because they call for
@@ -127,6 +131,33 @@ export function WorkerPanel() {
                 {n} skipped: {SKIP_PROSE[why] ?? why}.
               </p>
             ))}
+
+            {/* The worker died. Everything else on this card describes a
+                worker that is running; without this line the card describes
+                one that is not, in the same words. */}
+            {!body.worker.alive && (
+              <p className="persona-local-error" role="alert">
+                The background reader has stopped
+                {body.worker.died ? ` (${body.worker.died})` : ""}. Restart
+                Elysium to bring it back. Nothing was lost - unread messages
+                stay unread.
+              </p>
+            )}
+
+            {body.worker.unhandled > 0 && (
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                {body.worker.unhandled} runs ended in an unexpected error
+                {body.worker.last_error ? ` (${body.worker.last_error})` : ""}.
+                Those messages stay unread.
+              </p>
+            )}
+
+            {body.worker.refused_by_breaker > 0 && (
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                {body.worker.refused_by_breaker} turns were passed over while
+                it was cooling down. Their messages are still unread.
+              </p>
+            )}
 
             {body.worker.dropped_offers > 0 && (
               <p className="text-xs leading-relaxed text-muted-foreground">

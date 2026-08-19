@@ -874,12 +874,14 @@ async def _prepare_completion(
     notebook = await anyio.to_thread.run_sync(
         lambda: notebook_store.build_notebook_blocks(
             chat_id, context_budget_chars - max_tokens_chars))
-    if notebook["excluded"]:
-        # Written down rather than dropped quietly: a note that stops being
-        # sent looks identical to one that was never written.
-        await anyio.to_thread.run_sync(
-            lambda: notebook_store.record_exclusions(
-                chat_id, notebook["excluded"]))
+    # Unconditional. Guarded on `excluded` being non-empty, the CLEARING half
+    # never ran on a turn where nothing was excluded - so once the pressure
+    # stopped, rows kept a reason from an earlier turn forever and the panel
+    # showed them as "not sent" while they were being sent every single time.
+    # The badge inverted its own meaning, which is worse than not having it.
+    await anyio.to_thread.run_sync(
+        lambda: notebook_store.record_exclusions(
+            chat_id, notebook["excluded"]))
 
     messages = _assemble_messages(
         system_block,

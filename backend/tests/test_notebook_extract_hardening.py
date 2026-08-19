@@ -204,7 +204,7 @@ class TestThePromptCannotGrowWithoutBound:
         the model would credit the wrong person for it."""
         turns = [f"user: {i} " + "x" * 4000 for i in range(10)]
         msg = ex.build_user_message(card="", existing=[], recent=[], new=turns)
-        body = msg.split("<NEW_TURNS>")[1]
+        body = msg.split("<NEW_TURNS ")[1]
         for line in body.splitlines():
             if line.startswith("user:"):
                 assert len(line) == len(turns[0])

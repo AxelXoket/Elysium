@@ -123,9 +123,12 @@ export function useClearChat() {
       // Messages are known to be empty - set directly; only the chat list
       // (message_count/updated_at) needs a refetch.
       qc.setQueryData(keys.messages(chatId), []);
-      // Clearing a chat clears its notebook too, so the cache must not keep
-      // showing what the server just discarded.
+      // Clearing a chat clears its notebook AND its chat-scoped limits, so
+      // the cache must not keep showing what the server just discarded. The
+      // limits half was missing while both sibling sweeps - delete chat and
+      // delete character - removed both keys.
       qc.removeQueries({ queryKey: keys.notebookEntries(chatId) });
+      qc.removeQueries({ queryKey: keys.notebookBoundaries(chatId) });
       qc.invalidateQueries({ queryKey: keys.chats() });
     },
     onError: (err) => {
@@ -141,6 +144,11 @@ export function useDeleteMessageAndFollowing() {
     mutationFn: (vars: { chatId: number; messageId: number }) =>
       deleteMessageAndFollowing(vars.chatId, vars.messageId),
     onSuccess: (_data, vars) => {
+      // Deleting a turn also deletes the unreviewed suggestions that came
+      // from it, and rolls back how far the extractor has read. Without this
+      // the panel keeps offering proposals the server destroyed, and pressing
+      // Keep on one answers 404.
+      qc.invalidateQueries({ queryKey: keys.notebookEntries(vars.chatId) });
       qc.setQueryData<Message[]>(keys.messages(vars.chatId), (prev) => {
         if (!prev) return prev;
         return removeMessageAndFollowingFromCache(prev, vars.messageId);
