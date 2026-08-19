@@ -544,7 +544,12 @@ describe("SendFlow", () => {
     await user.click(screen.getByRole("button", { name: /send message/i }));
 
     await waitFor(() => {
-      expect(screen.getAllByText(/unexpected response/i).length).toBeGreaterThan(0);
+      // Reworded 2026-08-19: "Unexpected response format from server" named
+      // the failure and gave the reader nowhere to go. The sentence now says
+      // nothing was applied and what to try, so this matches its new stem.
+      expect(
+        screen.getAllByText(/could not read the server's reply/i).length,
+      ).toBeGreaterThan(0);
     });
   });
 
@@ -637,7 +642,7 @@ describe("SendFlow", () => {
 
     // Safe user-facing message
     expect(
-      (await screen.findAllByText(/generation parameters/i)).length,
+      (await screen.findAllByText(/generation settings/i)).length,
     ).toBeGreaterThan(0);
 
     // Input preserved on error

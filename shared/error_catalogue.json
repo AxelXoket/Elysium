@@ -119,6 +119,20 @@
       ]
     },
     {
+      "code": "boundary_set_too_long",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "boundary_too_long",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
       "code": "change_passphrase_failed",
       "statuses": [
         500
@@ -671,6 +685,15 @@
       ]
     },
     {
+      "code": "reset_confirmation_mismatch",
+      "statuses": [
+        422
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
       "code": "safeword_blank",
       "statuses": [],
       "channels": [
@@ -1151,6 +1174,15 @@
       "code": "vault_unlock_failed",
       "statuses": [
         500
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "vault_unlocked",
+      "statuses": [
+        409
       ],
       "channels": [
         "http"

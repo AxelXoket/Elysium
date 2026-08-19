@@ -13,6 +13,7 @@ import json
 import pytest
 
 import config
+import notebook_extract
 import notebook_store as notebook
 import notebook_worker
 from database import get_db
@@ -616,3 +617,340 @@ class TestAnExistingChatStartsAtThePRESENT:
 
         plan = notebook_worker._plan_work(chat_id, "vendor/cheap", "en", 4, 20)
         assert plan["from_id"] > mark, "it jumped to the end a second time"
+
+
+# ── FAZ 5b: three failures the status screen could not show ─────────────────
+#
+# Each of the three below was invisible in a different way, and one of them
+# billed the user again on every threshold for as long as it lasted. The tests
+# are written against the SPEND and the COUNTERS rather than against the code,
+# because "the row is there" is not what was wrong with any of them.
+
+
+class TestAFailedWriteIsCountedAndVisible:
+    """The commit is the last step and it was the only failure that told
+    nobody. `_write` raising - the vault locking between the reply and the
+    commit, the chat deleted mid-call so the foreign key fires, a disk error -
+    wrote a `failed` row and returned: the breaker stayed closed, `unhandled`
+    stayed at zero, `runs` never moved. A chat that fails to commit every time
+    therefore burned one billed call per threshold, forever, under a panel
+    reading "Running. 0 runs." Only the daily cap ever stopped it.
+    """
+
+    @pytest.mark.anyio
+    async def test_a_failed_write_counts_against_the_breaker(
+            self, client, monkeypatch) -> None:
+        import database
+
+        chat_id = seed(client, 30)
+        database.set_setting(config.SETTING_NOTEBOOK_MODEL, "vendor/cheap")
+        replying(monkeypatch, [fact()], usage={"cost": 0.0001})
+
+        def boom(*a, **kw):
+            raise RuntimeError("vault locked")
+
+        monkeypatch.setattr(notebook_worker, "_write", boom)
+
+        w = worker()
+        await w._handle(chat_id)
+
+        assert w.breaker.failures == 1, (
+            "a billed call whose work was lost did not move the breaker")
+        assert w.unhandled == 1
+        assert w.status()["last_error"] == "write_RuntimeError"
+
+    @pytest.mark.anyio
+    async def test_a_healthy_write_moves_none_of_them(
+            self, client, monkeypatch) -> None:
+        """Ground. Without it the assertions above are satisfied by a worker
+        that counts a failure on every run."""
+        import database
+
+        chat_id = seed(client, 30)
+        database.set_setting(config.SETTING_NOTEBOOK_MODEL, "vendor/cheap")
+        replying(monkeypatch, [fact()], usage={"cost": 0.0001})
+
+        w = worker()
+        await w._handle(chat_id)
+
+        assert w.breaker.failures == 0
+        assert w.unhandled == 0 and w.status()["last_error"] is None
+        assert w.runs == 1
+
+    @pytest.mark.anyio
+    async def test_the_re_billing_stops_instead_of_running_to_the_cap(
+            self, client, monkeypatch) -> None:
+        """The money, which is the actual defect. The range stays unread, so
+        every following threshold plans the same chat, claims again and pays
+        again; uncounted, that ran until the daily cap - sixty calls - with
+        the screen reporting a healthy worker the whole way."""
+        import database
+
+        chat_id = seed(client, 30)
+        database.set_setting(config.SETTING_NOTEBOOK_MODEL, "vendor/cheap")
+        replying(monkeypatch, [fact()], usage={"cost": 0.0001})
+
+        def boom(*a, **kw):
+            raise RuntimeError("vault locked")
+
+        monkeypatch.setattr(notebook_worker, "_write", boom)
+
+        w = worker()
+        for _ in range(notebook_worker.TRIP_AFTER + 3):
+            await w._handle(chat_id)
+
+        assert w.breaker.state == "open"
+        assert w.refused_by_breaker == 3, "the extra attempts were not refused"
+        with get_db() as con:
+            paid = notebook.spend_today(con)["calls"]
+        assert paid == notebook_worker.TRIP_AFTER, (
+            "the same losing work was billed past the breaker; left alone it "
+            "runs to the daily cap")
+
+    @pytest.mark.anyio
+    async def test_a_failure_that_could_not_even_be_recorded_says_so(
+            self, client, monkeypatch) -> None:
+        """`_record` swallows its own failure - it has to, or a locked vault
+        takes the loop with it - and it did so silently. When the vault is
+        still locked the ROW is lost as well as the write, so the database
+        also reports that nothing happened, and the in-memory counter is the
+        only witness left."""
+        import database
+
+        chat_id = seed(client, 30)
+        database.set_setting(config.SETTING_NOTEBOOK_MODEL, "vendor/cheap")
+        replying(monkeypatch, [fact()], usage={"cost": 0.0001})
+
+        def boom(*a, **kw):
+            raise RuntimeError("vault locked")
+
+        monkeypatch.setattr(notebook_worker, "_write", boom)
+
+        real_record = notebook_worker._record
+
+        def only_the_failure_row_is_lost(chat, plan, status, **kw):
+            if status == "failed":
+                return False
+            return real_record(chat, plan, status, **kw)
+
+        monkeypatch.setattr(notebook_worker, "_record",
+                            only_the_failure_row_is_lost)
+
+        w = worker()
+        await w._handle(chat_id)
+
+        assert w.status()["last_error"] == "write_RuntimeError_unrecorded"
+        assert w.unhandled == 1
+
+
+class TestABilledCallLeavesATraceBeforeItIsMade:
+    """The claim commits in its own transaction BEFORE the request, so past
+    that line the money is spent whatever happens next. A cancellation in
+    flight - the vault locking while the provider generates, which this module
+    expects rather than defends against - recorded nothing at all: `calls` was
+    +1, the cost was never attributed, and there was no extraction row of ANY
+    status, so the identical work key was re-planned and re-billed at the next
+    threshold. The schema has carried `'running'` and `started_at` for exactly
+    this since the table was written, and nothing ever wrote them.
+    """
+
+    @pytest.mark.anyio
+    async def test_the_row_is_there_BEFORE_the_provider_is_called(
+            self, client, monkeypatch) -> None:
+        import database
+        import openrouter
+
+        chat_id = seed(client, 30)
+        database.set_setting(config.SETTING_NOTEBOOK_MODEL, "vendor/cheap")
+        seen: dict = {}
+
+        async def look_around(*a, **kw):
+            with get_db() as con:
+                seen["rows"] = con.execute(
+                    "SELECT status, started_at FROM notebook_extractions "
+                    "WHERE chat_id = ?", (chat_id,)).fetchall()
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(openrouter, "complete", look_around)
+
+        w = worker()
+        with pytest.raises(asyncio.CancelledError):
+            await w._handle(chat_id)
+
+        assert seen["rows"], "the call left with no row behind it"
+        assert seen["rows"][0][0] == "running"
+        assert seen["rows"][0][1] is not None, (
+            "started_at is what separates an abandoned row from a live one")
+
+    @pytest.mark.anyio
+    async def test_a_cancellation_in_flight_leaves_the_trace_behind(
+            self, client, monkeypatch) -> None:
+        """A lock is not a failure and must not be counted as one - but it
+        must not be counted as NOTHING either, when it cost a call."""
+        import database
+        import openrouter
+
+        chat_id = seed(client, 30)
+        database.set_setting(config.SETTING_NOTEBOOK_MODEL, "vendor/cheap")
+
+        async def locked_mid_flight(*a, **kw):
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(openrouter, "complete", locked_mid_flight)
+
+        w = worker()
+        with pytest.raises(asyncio.CancelledError):
+            await w._handle(chat_id)
+
+        with get_db() as con:
+            left = con.execute(
+                "SELECT status FROM notebook_extractions WHERE chat_id = ?",
+                (chat_id,)).fetchall()
+            assert notebook.spend_today(con)["calls"] == 1
+        assert [r[0] for r in left] == ["running"], (
+            "a billed call left no trace, so the same range is billed again")
+        assert w.breaker.failures == 0, "a lock is still not a failure"
+
+    @pytest.mark.anyio
+    async def test_a_run_that_finishes_leaves_no_running_row(
+            self, client, monkeypatch) -> None:
+        """Ground, and the reason `commit_extraction` does the settling: a
+        trace that is never cleared is an alarm that is always on."""
+        import database
+
+        chat_id = seed(client, 30)
+        database.set_setting(config.SETTING_NOTEBOOK_MODEL, "vendor/cheap")
+        replying(monkeypatch, [fact()], usage={"cost": 0.0001})
+
+        w = worker()
+        await w._handle(chat_id)
+
+        with get_db() as con:
+            rows = con.execute(
+                "SELECT status FROM notebook_extractions WHERE chat_id = ?",
+                (chat_id,)).fetchall()
+        assert [r[0] for r in rows] == ["done"], (
+            "the trace was left behind, or a second row was written beside it")
+
+    @pytest.mark.anyio
+    async def test_a_failed_call_settles_THE_SAME_row(
+            self, client, monkeypatch) -> None:
+        """One work key, one row. `commit_extraction` updates a prior
+        non-`done` row in place, which is why the trace needs no SQL of its
+        own and cannot become a duplicate of the outcome."""
+        import database
+        import openrouter
+
+        chat_id = seed(client, 30)
+        database.set_setting(config.SETTING_NOTEBOOK_MODEL, "vendor/cheap")
+
+        async def boom(*a, **kw):
+            raise openrouter.OpenRouterError("openrouter_error")
+
+        monkeypatch.setattr(openrouter, "complete", boom)
+
+        w = worker()
+        await w._handle(chat_id)
+
+        with get_db() as con:
+            rows = con.execute(
+                "SELECT status FROM notebook_extractions WHERE chat_id = ?",
+                (chat_id,)).fetchall()
+            stats = notebook.extraction_stats(con, chat_id)
+        assert [r[0] for r in rows] == ["failed"]
+        assert stats["failed"] == 1
+
+
+class TestALockedVaultIsNotABacklog:
+    """`dropped_offers` counted two unrelated events. The queue overflowing
+    means the worker is falling behind, which is what the panel's sentence
+    says; `self.queue is None` means it is not running at all, which is the
+    state before startup and during every vault lock, since `quiesce()` nulls
+    the queue each time. The rare, real signal was buried under the most
+    routine event in the application.
+    """
+
+    def test_an_offer_with_no_queue_is_not_an_overflow(self) -> None:
+        w = notebook_worker.Worker()
+        assert w.queue is None
+        for chat_id in range(3):
+            w.offer(chat_id)
+        assert w.offers_while_down == 3
+        assert w.queue_overflows == 0, (
+            "an ordinary vault lock was counted as the worker falling behind")
+
+    def test_a_FULL_queue_still_is_one(self) -> None:
+        """The positive control: separating the two must not empty the counter
+        that was worth having."""
+        w = notebook_worker.Worker()
+        w.queue = asyncio.Queue(maxsize=notebook_worker.QUEUE_MAXSIZE)
+        for chat_id in range(notebook_worker.QUEUE_MAXSIZE + 2):
+            w.offer(chat_id)
+        assert w.queue_overflows == 2
+        assert w.offers_while_down == 0
+
+    def test_the_status_screen_reports_them_apart(self) -> None:
+        w = notebook_worker.Worker()
+        w.offer(1)                                    # nothing running
+        w.queue = asyncio.Queue(maxsize=1)
+        w.offer(2)
+        w.offer(3)                                    # and now it is behind
+        status = w.status()
+        assert status["offers_while_down"] == 1
+        assert status["queue_overflows"] == 1
+        # The total stays on the wire under its old name, because the client
+        # schema requires the key and a status screen that goes blank is worse
+        # than one that is coarse.
+        assert status["dropped_offers"] == 2
+
+
+class TestWhoseWordsTheQuoteCameFrom:
+    """The one signal the verification literature cannot supply.
+
+    Every groundedness checker asks "is this claim supported by the source".
+    The verbatim check has already answered that. None of them can ask "was
+    the source itself invented" - and when the chat model quotes its own
+    reply, the check passes by construction. That is the class of note that
+    can be wrong, and it is readable off the transcript for free.
+
+    Measured fabrication at the extraction step runs at 0.3 to 1.2%, and at
+    that rate the best published detector produces a flagged pile that is
+    96 to 99% correct notes. So this is not a risk score and does not pretend
+    to be one. It is a fact, and it is marked rather than acted on.
+    """
+
+    def test_a_quote_from_the_USER_is_marked_as_theirs(self) -> None:
+        chunk = "user: kardesi degirmenin sahibi\nassistant: she nodded"
+        kept, _ = notebook_extract.parse_reply(
+            {"choices": [{"finish_reason": "stop", "message": {"content":
+                json.dumps({"facts": [fact(
+                    evidence="kardesi degirmenin sahibi")]})}}]},
+            chunk, [])
+        assert kept[0]["evidence_role"] == "user"
+
+    def test_a_quote_from_the_MODEL_is_marked_as_its_own(self) -> None:
+        chunk = ("user: what happened to the mill\n"
+                 "assistant: her brother owns the mill now")
+        kept, _ = notebook_extract.parse_reply(
+            {"choices": [{"finish_reason": "stop", "message": {"content":
+                json.dumps({"facts": [fact(
+                    evidence="her brother owns the mill")]})}}]},
+            chunk, [])
+        assert kept[0]["evidence_role"] == "assistant"
+
+    def test_the_mark_survives_into_the_notebook(self, client) -> None:
+        """Computed and then discarded would be the usual shape of this bug."""
+        chat_id = seed(client, 4)
+        with get_db() as con:
+            con.execute("BEGIN IMMEDIATE")
+            notebook.commit_extraction(
+                con, work_key="role", chat_id=chat_id, from_id=1, to_id=4,
+                proposals=[{**fact(), "evidence_role": "assistant"}])
+        assert notebook.list_entries(chat_id)[0]["evidence_role"] == "assistant"
+
+    def test_a_note_the_user_typed_carries_no_mark(self, client) -> None:
+        """Ground. The mark distinguishes two kinds of MODEL-written note; a
+        note the person wrote themselves has nothing to disclose."""
+        chat_id = seed(client, 4)
+        entry = notebook.create_entry(chat_id, "I wrote this myself.")
+        assert entry["evidence_role"] is None

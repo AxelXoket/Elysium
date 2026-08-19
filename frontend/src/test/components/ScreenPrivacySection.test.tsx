@@ -7,7 +7,7 @@
  * route. These tests are about the switch being honest: off by default,
  * inert until the stored value is known, and saying what it does not do.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { afterAll, beforeAll, describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
@@ -15,6 +15,12 @@ import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { ScreenPrivacySection } from "@/components/settings/ScreenPrivacySection";
 import { mockFetch } from "../mocks/api";
 import { settingsFixture } from "../mocks/fixtures";
+import {
+  loadGlassRightCss,
+  injectCss,
+  wrapInGlassRight,
+  surfaceToken,
+} from "@/test/helpers/glassSurfaceCss";
 
 function mount(enabled = false) {
   mockFetch({
@@ -117,5 +123,67 @@ describe("ScreenPrivacySection", () => {
     mount(true);
     expect(screen.getByText(/not every possible way a screen can be read/i))
       .toBeInTheDocument();
+  });
+});
+
+/**
+ * This is the worst case the whole audit found: the label of a SECURITY
+ * control, rendered inside `.glass-right` (the app's one light surface) with
+ * `settings-section-title` and `settings-hint` - classes painted for the dark
+ * settings dialog. See helpers/glassSurfaceCss.ts for why these tests read
+ * custom-property tokens rather than `.color`: jsdom cannot run Tailwind v4's
+ * generated utility rules, so `.color` on a `text-muted-foreground` element
+ * comes back as the browser default rather than the real declared value.
+ */
+describe("ScreenPrivacySection - light surface contrast", () => {
+  let styleEl: HTMLStyleElement;
+
+  beforeAll(async () => {
+    styleEl = injectCss(await loadGlassRightCss());
+  }, 20000);
+
+  afterAll(() => styleEl.remove());
+
+  afterEach(() => {
+    document.querySelectorAll(".glass-right").forEach((el) => el.remove());
+  });
+
+  it("the heading and every hint read .glass-right's own text tokens", async () => {
+    const glassRight = wrapInGlassRight();
+    mockFetch({
+      "/settings": { body: { ...settingsFixture, screen_privacy_enabled: false } },
+    });
+    renderWithQueryClient(<ScreenPrivacySection />, {
+      container: glassRight,
+      baseElement: document.body,
+    });
+
+    const heading = await screen.findByTestId("screen-privacy-heading");
+    const switchLabel = screen.getByTestId("screen-privacy-switch-label");
+    const hint1 = screen.getByTestId("screen-privacy-hint-1");
+    const hint2 = screen.getByTestId("screen-privacy-hint-2");
+
+    const lightText = surfaceToken(glassRight, "--color-es-text-light");
+    const mutedText = surfaceToken(glassRight, "--muted-foreground");
+    expect(lightText, "the surface never resolved a text-light token").not.toBe("");
+    expect(mutedText, "the surface never resolved a muted token").not.toBe("");
+
+    expect(surfaceToken(heading, "--color-es-text-light")).toBe(lightText);
+    for (const el of [switchLabel, hint1, hint2]) {
+      expect(surfaceToken(el, "--muted-foreground")).toBe(mutedText);
+      expect(el.className).not.toMatch(/settings-/);
+    }
+    expect(heading.className).not.toMatch(/settings-/);
+
+    // Negative control: `settings-section-title`'s colour is also a
+    // hardcoded rgba, not a variable - jsdom resolves it directly, and it is
+    // the class this heading used to carry.
+    const oldHeading = document.createElement("h4");
+    oldHeading.className = "settings-section-title";
+    glassRight.appendChild(oldHeading);
+    expect(
+      getComputedStyle(oldHeading).color,
+      "settings-section-title's colour drifted - re-measure before trusting this ground",
+    ).toBe("rgba(202, 212, 224, 0.62)");
   });
 });

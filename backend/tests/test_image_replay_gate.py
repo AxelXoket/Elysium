@@ -62,7 +62,9 @@ def test_an_assistant_row_never_gets_image_parts():
 def test_the_default_role_is_the_permissive_one_so_existing_callers_are_unchanged():
     """Every pre-existing call site passed no role and meant the user's turn."""
     out = completions._content_for("hi", [_fake_row()], True, _blobs())
-    assert isinstance(out, list)
+    # `isinstance(out, list)` alone was the whole test, and a default that
+    # silently dropped the image would still have returned a list.
+    assert any(p.get("type") == "image_url" for p in out), out
 
 
 # ── budget accounting has to agree with the door ─────────────────────────────

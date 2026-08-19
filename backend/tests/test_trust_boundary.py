@@ -32,6 +32,26 @@ BACKEND = Path(__file__).resolve().parents[1]
 # 1. the dev origin must not ship
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _config_as_this_file_found_it():
+    """Reload `config` around every test here, because this file is not the
+    only one that reloads it.
+
+    `test_phase0_hardening.py` and `test_release_hardening.py` both reload
+    `config`, both sort BEFORE this file, and one of them can leave the module
+    holding the values it takes under `sys.frozen`. The first test below then
+    read a FROZEN build's empty origin tuple and failed - intermittently,
+    which is the worst way for a test to be wrong, because it looks like a
+    flake and gets re-run rather than read.
+
+    A test that depends on what ran before it is not testing what it says it
+    is. This one establishes its own precondition instead.
+    """
+    importlib.reload(config)
+    yield
+    importlib.reload(config)
+
+
 def test_the_dev_origin_is_trusted_in_a_dev_tree():
     """The grant is real and load-bearing: 5173 -> 8787 is genuinely
     cross-origin, so removing it outright would break development."""

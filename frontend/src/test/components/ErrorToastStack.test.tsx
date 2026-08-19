@@ -284,3 +284,64 @@ describe("ErrorToastStack", () => {
     expect(stack.className).toContain("left-1/2");
   });
 });
+
+describe("a message the reader can actually finish", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    useErrorStore.getState().clearAll();
+  });
+
+  // The measured defect: 26 of the catalogue's sentences did not fit one
+  // line, and because every one is written problem-first, the half that
+  // vanished was always what to DO. The safeword sentence - read at the worst
+  // moment somebody expects to have - was cut mid-clause.
+  const LONG =
+    "Stopped. Your safeword was in that message, so nothing was sent - "
+    + "not the message, not your notes, not your limits. Nothing was saved "
+    + "either.";
+
+  it("shows the whole sentence, not the first line of it", async () => {
+    useErrorStore.getState().pushErrorDirect("safeword_triggered", LONG);
+    render(<ErrorToastStack />);
+    const toast = await screen.findByRole("status");
+    expect(toast.textContent).toContain("Nothing was saved either.");
+  });
+
+  it("does not clip the text with truncate", async () => {
+    useErrorStore.getState().pushErrorDirect("safeword_triggered", LONG);
+    render(<ErrorToastStack />);
+    const toast = await screen.findByRole("status");
+    const span = toast.querySelector("span.flex-1");
+    expect(span?.className).not.toMatch(/\btruncate\b/);
+  });
+
+  it("gives a long message longer to be read than a short one", async () => {
+    // Behaviour, not the constant: the same 4.5s for a 20-character message
+    // and a 200-character one means the long one is never finished.
+    vi.useFakeTimers();
+    useErrorStore.getState().clearAll();
+    useErrorStore.getState().pushErrorDirect("safeword_triggered", LONG);
+    render(<ErrorToastStack />);
+    expect(screen.getByRole("status")).toBeInTheDocument();
+
+    await act(async () => { vi.advanceTimersByTime(5_000); });
+    expect(screen.queryByRole("status")).toBeInTheDocument();
+
+    await act(async () => { vi.advanceTimersByTime(20_000 + EXIT_ANIMATION_MS); });
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("a SHORT message still goes away promptly", async () => {
+    // Ground: a rule that just made every toast permanent would satisfy the
+    // test above.
+    vi.useFakeTimers();
+    useErrorStore.getState().pushErrorDirect("unknown_error", "Try again.");
+    render(<ErrorToastStack />);
+    await act(async () => {
+      vi.advanceTimersByTime(AUTO_DISMISS_MS + 500 + EXIT_ANIMATION_MS);
+    });
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    vi.useRealTimers();
+  });
+});

@@ -102,7 +102,88 @@ class TestTheDayColumnCannotBeNull:
                 con.execute("INSERT INTO notebook_spend (day) VALUES (NULL)")
 
 
+class TestTheLifetimeTotal:
+    """FAZ 5: the panel shows the lifetime total beside today's, and the two
+    must be readable as different KINDS of number, not the same one twice."""
+
+    def test_a_fresh_vault_reads_as_zero_not_as_missing(self, db) -> None:
+        with get_db() as con:
+            assert notebook.spend_lifetime(con) == {
+                "calls": 0, "tokens_in": 0, "tokens_out": 0, "cost": 0.0}
+
+    def test_it_sums_every_day_not_only_today(self, db) -> None:
+        """The positive control: today's count and the lifetime total must
+        actually DIVERGE. Seeded on two different days, or the two numbers
+        are indistinguishable and the feature is untested."""
+        with get_db() as con:
+            con.execute(
+                "INSERT INTO notebook_spend (day, calls, tokens_in, "
+                "tokens_out, cost) VALUES ('2020-01-01', 5, 100, 10, 0.01)")
+            notebook.claim_call(con, 60)
+            notebook.record_usage(con, {"tokens_in": 50, "tokens_out": 5,
+                                        "cost": 0.002})
+        with get_db() as con:
+            today = notebook.spend_today(con)
+            lifetime = notebook.spend_lifetime(con)
+        assert today["calls"] == 1
+        assert lifetime["calls"] == 6
+        assert lifetime["calls"] != today["calls"], (
+            "today's count and the lifetime total must diverge for this "
+            "test to prove anything")
+        assert lifetime["cost"] == pytest.approx(0.012)
+
+    def test_a_null_day_row_is_still_counted(self, db) -> None:
+        """A vault upgraded from a build that predates the NOT NULL
+        constraint on `day` can carry a row with no day at all - the exact
+        bug that constraint exists to close (database.py's `_migrate`, which
+        leaves an already-populated table on its old, nullable column rather
+        than dropping somebody's spend history). That row's spend already
+        happened and must not vanish from the lifetime total because it has
+        nowhere to file itself under. Planted directly, the way it really
+        arrives: the fixture's fresh table is NOT NULL, so this rebuilds the
+        weaker shape a legacy vault would actually have.
+        """
+        with get_db() as con:
+            con.execute("DROP TABLE notebook_spend")
+            con.execute(
+                "CREATE TABLE notebook_spend (day TEXT PRIMARY KEY, "
+                "calls INTEGER NOT NULL DEFAULT 0, "
+                "tokens_in INTEGER NOT NULL DEFAULT 0, "
+                "tokens_out INTEGER NOT NULL DEFAULT 0, "
+                "cost REAL NOT NULL DEFAULT 0)")
+            con.execute(
+                "INSERT INTO notebook_spend (day, calls, tokens_in, "
+                "tokens_out, cost) VALUES (NULL, 3, 30, 3, 0.003)")
+            con.execute(
+                "INSERT INTO notebook_spend (day, calls, tokens_in, "
+                "tokens_out, cost) VALUES ('2024-06-01', 2, 20, 2, 0.002)")
+        with get_db() as con:
+            lifetime = notebook.spend_lifetime(con)
+        assert lifetime["calls"] == 5
+        assert lifetime["cost"] == pytest.approx(0.005)
+
+
 class TestTheRouteIsWiredToTheLedger:
+    def test_the_worker_route_carries_the_lifetime_total_beside_todays(
+            self, client) -> None:
+        """The wire shape the panel actually reads: both numbers, on the same
+        payload, from the same poll - no second request added for this."""
+        with get_db() as con:
+            con.execute(
+                "INSERT INTO notebook_spend (day, calls, tokens_in, "
+                "tokens_out, cost) VALUES ('2020-01-01', 9, 0, 0, 0)")
+            notebook.claim_call(con, 60)
+
+        resp = client.get("/api/v1/notebook/worker")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["spend"]["calls"] == 1
+        assert body["spend_lifetime"]["calls"] == 10
+        assert body["spend_lifetime"]["calls"] != body["spend"]["calls"], (
+            "today's count and the lifetime total must diverge for this "
+            "test to prove anything")
+
     def test_the_dry_run_refuses_once_the_day_is_spent(
             self, client, monkeypatch) -> None:
         """The block, on the path that actually spends. Without it the route

@@ -25,7 +25,17 @@ import {
   ChevronLeft,
   ChevronRight,
   CornerDownLeft,
+  Scissors,
 } from "lucide-react";
+
+/**
+ * Visible text for the truncation mark, exported so its test imports this
+ * instead of retyping the word - the same reason COPY_FEEDBACK_MS is
+ * exported by CopyMessageButton. The word IS the accessible name (a bare
+ * span with no aria-label): the icon next to it is `aria-hidden`, so a
+ * screen reader gets the text, never colour or a glyph alone.
+ */
+export const TRUNCATED_MARK_TEXT = "Truncated";
 
 interface MessageBubbleProps {
   chatId: number;
@@ -788,6 +798,34 @@ export const MessageBubble = memo(function MessageBubble({
                 minute: "2-digit",
               })}
             </time>
+            {/* Owner's ask, verbatim: a mark bottom-left, not colliding with
+                anything already there. This row IS the bubble's bottom-left
+                corner - the timestamp already lives here alone, so a sibling
+                flex item extends the row instead of overlapping it. Checked
+                against every other thing that can render on an assistant
+                bubble: .message-actions (top-right, hover-only), the delete
+                confirm dialog (`.message-action-confirm`, absolute but
+                anchored at top: 2.25rem - the top strip, not here), the
+                variant-nav chevrons (outside the bubble entirely, siblings
+                in the outer flex row), and the attachment thumbnails (above
+                the text, not below it). None of them touch this row.
+
+                No new class, colour or size: `msg-chrome` (user-select:none,
+                already shared with the timestamp), the same 9px/opacity-70
+                pairing the timestamp uses, and the 13px icon size every
+                other action glyph in this file already uses. Assistant-only
+                - a token ceiling only ever cuts off a GENERATED reply - and
+                read from shownMessage so paging to an older variant shows
+                THAT variant's own truncation state, not the active row's. */}
+            {!isUser && shownMessage.truncated && (
+              <span
+                className="msg-chrome flex items-center gap-1 text-[9px] opacity-70"
+                title="This reply was cut off by the token limit"
+              >
+                <Scissors size={13} aria-hidden="true" />
+                {TRUNCATED_MARK_TEXT}
+              </span>
+            )}
             {showCounter && (
               <span
                 className="variant-counter"

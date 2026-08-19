@@ -157,6 +157,11 @@ def test_full_passphrase_lifecycle_on_fresh_vault(client, tmp_path, monkeypatch)
         # reported here for the same reason as the two above, one size smaller.
         "empty_stub": False,
         "rotation_backups": [],
+        # A stale copy of the whole vault kept by legacy_migration whenever
+        # an uploads-migration pass could not finish cleanly. Same reasoning
+        # as the fields above: a state the UI can show, not a log line.
+        "premigrate_backup": False,
+        "premigrate_backup_readable": None,
     }
     r = client.post("/api/v1/vault/init", json={"passphrase": "seaside-orchid-9"})
     assert r.status_code == 200 and r.json()["migrated"] is False

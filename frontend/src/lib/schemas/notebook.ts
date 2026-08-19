@@ -26,6 +26,16 @@ export const NotebookEntrySchema = z.object({
   status: z.string(),
   provenance: z.string(),
   source_message_id: z.number().nullish(),
+  /** WHOSE words the quote came from: `user`, `assistant`, or null for a note
+   *  somebody typed themselves.
+   *
+   *  It is the one thing no verifier can supply. Every groundedness checker
+   *  asks whether a claim is supported by its source, which the verbatim
+   *  check already answers; none can ask whether the SOURCE was invented, and
+   *  when the chat model quotes its own reply that check passes by
+   *  construction. Marked rather than acted on: at the measured fabrication
+   *  rate a review queue would be almost entirely correct notes. */
+  evidence_role: z.string().nullish(),
   created_at: z.string(),
   updated_at: z.string(),
 });
@@ -162,6 +172,18 @@ export const WorkerStatusSchema = z.object({
     tokens_out: z.number(),
     cost: z.number(),
   }),
+  /** The same shape, summed over every day this vault has ever run rather
+   *  than just today. `spend` is what governs the daily cap; this is not -
+   *  it never gates anything, it only tells the reader how much has gone out
+   *  the door in total. `.default(...)` so a backend that predates this field
+   *  still parses instead of the whole worker card vanishing - z.object
+   *  strips unknown keys silently and would do the same to a missing one. */
+  spend_lifetime: z.object({
+    calls: z.number(),
+    tokens_in: z.number(),
+    tokens_out: z.number(),
+    cost: z.number(),
+  }).default({ calls: 0, tokens_in: 0, tokens_out: 0, cost: 0 }),
   worker: z.object({
     /** closed = running · open = cooling down · stopped = waiting for you */
     state: z.string(),

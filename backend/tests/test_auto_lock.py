@@ -514,6 +514,61 @@ class TestAPollIsNotAPerson:
         assert self._idle() >= before, (
             "a poll nobody made was counted as somebody being at the keyboard")
 
+    def test_the_tts_active_poll_does_not_reset_the_clock(self, client) -> None:
+        """/tts/active is polled every 1.5s while a voice model is loading
+        (frontend/src/lib/query/tts.ts). Same shape as the notebook poll: at
+        that rate the idle clock could never reach even a one-minute
+        auto-lock for as long as a load runs."""
+        import time
+
+        import vault_state
+
+        vault_state.enter_request()
+        vault_state.leave_request()
+        time.sleep(0.05)
+        before = self._idle()
+
+        resp = client.get("/api/v1/tts/active")
+        assert resp.status_code == 200
+        assert self._idle() >= before, (
+            "a poll nobody made was counted as somebody being at the keyboard")
+        # Operational metadata only - no message ever rides on this route.
+        assert set(resp.json()) <= {
+            "uid", "state", "engine_id", "vram_mb", "error_code",
+            "readiness", "voice_installed",
+        }
+
+    def test_the_tts_install_status_poll_does_not_reset_the_clock(
+        self, client
+    ) -> None:
+        """/tts/runtimes/{engine_id}/install is polled every 700ms while an
+        engine install runs (same file) - the fastest poll in the app, and a
+        running install can take minutes. The path carries an engine id, so
+        the exemption in main.py has to be built from the real registry
+        rather than a literal template string; this is what actually proves
+        that construction reaches the route a real poll hits."""
+        import time
+
+        import vault_state
+        from tts.registry import all_adapters
+
+        engine_id = all_adapters()[0].engine_id
+        vault_state.enter_request()
+        vault_state.leave_request()
+        time.sleep(0.05)
+        before = self._idle()
+
+        resp = client.get(f"/api/v1/tts/runtimes/{engine_id}/install")
+        assert resp.status_code == 200
+        assert self._idle() >= before, (
+            "a poll nobody made was counted as somebody being at the keyboard")
+        # Install progress only - engine ids, a state enum, log lines about
+        # setup/download, error info, timestamps. No message ever rides here.
+        assert set(resp.json()) <= {
+            "engine_id", "state", "log", "error_code", "error_detail",
+            "started_at", "finished_at", "running",
+        }
+
     def test_an_ORDINARY_route_does(self, client) -> None:
         """The ground. Without it the test above is satisfied by a clock that
         never moves at all, which would mean the vault locks mid-sentence."""
@@ -531,9 +586,23 @@ class TestAPollIsNotAPerson:
 
     def test_every_exempt_route_actually_exists(self, client) -> None:
         """An exemption for a path the app does not serve is a typo that
-        silently exempts nothing - which is how this broke the first time."""
-        import main
+        silently exempts nothing - which is how this broke the first time.
 
-        served = {getattr(r, "path", "") for r in main.app.routes}
+        vault_gate compares _IDLE_EXEMPT against request.url.path, the
+        RESOLVED path a browser asks for - never a route template. A route
+        with a path parameter (the tts install poll) therefore has to appear
+        here as a concrete path, and a plain "in served" check (served being
+        route TEMPLATES like "/api/v1/tts/runtimes/{engine_id}/install")
+        would never find it - which would make this exact test the thing
+        hiding the bug it exists to catch. compile_path turns each served
+        template into the same regex Starlette itself matches requests
+        against, so a concrete exempt path is checked the way the app really
+        checks it.
+        """
+        import main
+        from starlette.routing import compile_path
+
+        served = [getattr(r, "path", "") for r in main.app.routes]
+        patterns = [compile_path(p)[0] for p in served if p]
         for path in main._IDLE_EXEMPT:
-            assert path in served, path
+            assert path in served or any(rx.match(path) for rx in patterns), path

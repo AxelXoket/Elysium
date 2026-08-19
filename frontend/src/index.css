@@ -850,6 +850,15 @@
   --color-es-surface-elevated: rgba(255, 255, 255, 0.55);
   --color-es-glass-border-dark: rgba(30, 45, 62, 0.14);
   --color-es-glass-border-warm: rgba(30, 45, 62, 0.12);
+  /* --color-es-danger at its :root brightness (#C36A72) measures 3.37-3.67:1
+     against this panel's own gradient stops (WCAG contrast formula) - under
+     the 4.5:1 floor text needs, because that value was only ever checked on
+     the app's dark surfaces. Same hue and saturation as the root token
+     (354.6deg, 42.6%), lightness taken from 59% down to 48%, so every
+     danger-coloured element on this ONE light surface (error text, the
+     status dot, the destructive icons) darkens together and still reads as
+     the app's one danger rose, not a second colour. */
+  --color-es-danger: #AF4650;
 }
 
 .glass-right [data-slot="tabs-list"] {

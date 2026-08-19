@@ -43,6 +43,96 @@ export interface StreamVoiceOptions {
 }
 
 /**
+ * What the reader is told when the engine files a diagnostic, and why it is
+ * never the diagnostic itself.
+ *
+ * `voice_notice.note` is free text written for whoever is debugging the
+ * worker. Verified at the source: every note is a fixed string in
+ * backend/tts/worker/fish_s2.py except one, which is
+ * `f"{type(exc).__name__}: {exc}"` at backend/tts/worker/chatterbox.py:533,
+ * and backend/tts/host.py relays all of them verbatim without the stage. So
+ * the sentences that used to land on the reader were things like "falling
+ * back to eager decoding (triton-windows + MSVC?)", "staying bf16", the name
+ * of a cache environment variable, and a raw Python exception. Mid scene, in
+ * red, over a private conversation. The catalogue record for `tts_notice`
+ * already names this as a defect of its own.
+ *
+ * Of the three ways out, this is the mapped one: the known diagnostics become
+ * sentences of ours, and anything unrecognised is not shown at all. The other
+ * two were rejected for reasons worth keeping.
+ *
+ *  - Showing one calm line with the detail on request keeps the engine's text
+ *    in the store and one render away from the screen, and the detail is not
+ *    ours to hand over anyway.
+ *  - Showing nothing at all would undo the reason this carrier exists (KÖK 1):
+ *    a machine without MSVC spoke two to three times slower on EVERY load and
+ *    nothing anywhere said so. That is worth a sentence. It is the wording
+ *    that was never worth shipping.
+ *
+ * Dropping the unrecognised ones loses nothing that is not already written
+ * down: backend/tts/worker_client.py logs every note at warning level WITH its
+ * stage and the exception that caused it, which is strictly more than the
+ * toast could ever carry. And a diagnostic the frontend does not recognise is
+ * one it cannot vouch for, so the default has to be silence.
+ *
+ * The cost is honest: the retimer's exception carries a real signal (the
+ * speaking-speed dial silently did nothing) and it arrives shaped as an
+ * exception with no stage, so it is dropped here. Guessing its meaning from
+ * the shape of the string would put the wrong sentence on every future
+ * exception. That one needs a code from the backend, not a rescue here.
+ */
+const SLOWER_ALWAYS =
+  "The voice engine could not finish setting itself up on this computer, so speech will be slower than it should be.";
+const WARMING_UP =
+  "The voice engine is preparing itself for this computer, so this reply will be slow to start speaking.";
+const RELOADING =
+  "The voice engine had to reload itself to fit in memory, so this reply will be slow to start speaking.";
+const LENGTH_CAPPED =
+  "The voice engine reached its own length limit for this reply, so the last part of it was not spoken.";
+const LONG_FOR_SETTINGS =
+  "This reply is long for the voice engine's current settings, so part of it may not be spoken.";
+
+/**
+ * One line per diagnostic the worker can send today, matched on the part of
+ * the wording least likely to be reworded.
+ *
+ * Grouped by what is actually different FOR THE READER, which is the only
+ * distinction a toast can carry: it will be slow forever, it is slow this
+ * once, or their reply did not fit. Two notes that mean the same thing to a
+ * person share a sentence on purpose, and the store then collapses them.
+ */
+const NOTICE_SENTENCES: ReadonlyArray<readonly [RegExp, string]> = [
+  // Setup that failed and will keep failing. The engine runs, slowly, forever.
+  [/bf16/i, SLOWER_ALWAYS],
+  [/eager decoding/i, SLOWER_ALWAYS],
+  [/compiling failed/i, SLOWER_ALWAYS],
+  [/every load will be slow/i, SLOWER_ALWAYS],
+  // Setup that is working, and costs this reply its head start.
+  [/first compile is slow/i, WARMING_UP],
+  [/compiling the model/i, WARMING_UP],
+  [/recompiling once/i, WARMING_UP],
+  // The model being moved in and out of memory around this reply.
+  [/rebuilt from disk/i, RELOADING],
+  [/rebuilding the model from disk/i, RELOADING],
+  [/from system memory/i, RELOADING],
+  [/was freed to let/i, RELOADING],
+  [/^freeing /i, RELOADING],
+  [/first spoken sentence will load/i, RELOADING],
+  // The reply itself did not fit.
+  [/hit the length limit/i, LENGTH_CAPPED],
+  [/does not fit the chosen context/i, LONG_FOR_SETTINGS],
+  [/less context than the length limit/i, LONG_FOR_SETTINGS],
+];
+
+/** Our sentence for a worker diagnostic, or null if we do not recognise it. */
+function noticeSentence(note: string): string | null {
+  for (const [pattern, sentence] of NOTICE_SENTENCES) {
+    if (pattern.test(note)) return sentence;
+  }
+  return null;
+}
+
+/**
  * Every live stream voice, so something outside its closure can silence it.
  *
  * Without this the only handle on playing audio was a local const inside one
@@ -126,23 +216,24 @@ export function createStreamVoice(options: StreamVoiceOptions = {}): StreamVoice
           report(event.code);
           player?.finish();
           break;
-        case "voice_notice":
-          // A warning, not an error: the audio is playing. Everything below
-          // was detected correctly by the backend and had no carrier at all -
-          // on a machine without MSVC/triton the engine fell back to eager
-          // decoding on every load, speech ran 2-3x slower forever, and
-          // nothing anywhere said so.
-          // The ONE call in the app that passes a sentence the catalogue did
-          // not write: `note` is the worker's own diagnostic text. Kept
-          // deliberately - the whole reason KÖK 1 added this carrier is that
-          // "every load will be slow" said nothing when it was reduced to a
-          // generic line - and named in the gate's exemption list so a SECOND
-          // one cannot appear quietly. The second sentence source is recorded
-          // as a defect of its own.
-          useErrorStore
-            .getState()
-            .pushErrorDirect("tts_notice", event.note, "warning");
+        case "voice_notice": {
+          // A warning, not an error: the audio is playing. What the reader
+          // gets is OUR sentence for what the engine reported, never the
+          // engine's own words - see NOTICE_SENTENCES above for the whole
+          // argument. An unrecognised note is not shown; the backend has
+          // already logged it with more detail than a toast could hold.
+          //
+          // Still the one call in the app that passes a sentence the
+          // catalogue did not write, and still named in the gate's exemption
+          // list so a SECOND one cannot appear quietly.
+          const sentence = noticeSentence(event.note);
+          if (sentence) {
+            useErrorStore
+              .getState()
+              .pushErrorDirect("tts_notice", sentence, "warning");
+          }
           break;
+        }
         case "voice_done":
           if (event.truncated) {
             useErrorStore

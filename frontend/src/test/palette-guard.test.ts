@@ -42,6 +42,8 @@ const ALLOWED: Record<string, string> = {
 const ALLOWED_HEX = new Set([
   "#c36a72", // --color-es-danger, the one warm token
   "#96424e", // deepened danger for the persona destructive action
+  "#af4650", // --color-es-danger, redefined inside .glass-right so danger
+             // text clears 4.5:1 on the app's one light surface
 ]);
 
 function parseColors(css: string): { line: number; raw: string; rgb: number[] }[] {

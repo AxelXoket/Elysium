@@ -190,8 +190,14 @@ describe("errorMessages", () => {
     expect(getErrorMessage("proxy_unhealthy")).toBe(
       "The configured proxy is not responding. Please check your proxy configuration.",
     );
+    // Reworded 2026-08-19. It used to be byte-identical to openrouter_timeout,
+    // which hid what this code actually is: proxy_health.py raises it as a 503
+    // detail when the PROXY probe times out, so the sentence names the proxy.
     expect(getErrorMessage("timeout")).toBe(
-      "The request timed out. Please try again.",
+      "The proxy did not answer in time, so nothing was sent. Check that your proxy is running and reachable, then try again.",
+    );
+    expect(getErrorMessage("timeout")).not.toBe(
+      getErrorMessage("openrouter_timeout"),
     );
     // A3 - proxy URL validation (settings.py, 400)
     expect(getErrorMessage("proxy_url_required")).toBe(
@@ -276,9 +282,13 @@ describe("parseApiError", () => {
     };
     const result = parseApiError(apiErr);
     expect(result.detail).toBe("invalid_generation_params");
-    expect(result.message).toBe(
-      "One or more generation parameters are invalid.",
-    );
+    // Pinned to the map rather than to a retyped copy of its sentence: what
+    // this test is actually guarding is that the raw Pydantic detail above
+    // never reaches the reader, and re-typing the wording made an unrelated
+    // rewording fail here instead of where it belonged.
+    expect(result.message).toBe(getErrorMessage("invalid_generation_params"));
+    expect(result.message).not.toContain("temperature");
+    expect(result.message).not.toContain("must be >=");
   });
 
   it("normalizes object detail → safe code", () => {
@@ -486,6 +496,58 @@ describe("errorStore", () => {
       .pushErrorDirect("openrouter_timeout", "The request timed out.",
                        "error", { chatId: 4, partialSaved: false });
     expect(useErrorStore.getState().errors).toHaveLength(2);
+  });
+
+  it("keeps two different voice notices raised by the same reply", () => {
+    // The other half of K-23, and where its rule was exactly backwards.
+    // `tts_notice` is the one code whose sentence is not a rendering of the
+    // code: the engine can report warming up AND a reply that did not fit in
+    // the same turn, and an identity built from the code alone called those
+    // one event and dropped the second without a trace.
+    useErrorStore
+      .getState()
+      .pushErrorDirect("tts_notice", "The voice engine is preparing itself.",
+                       "warning");
+    useErrorStore
+      .getState()
+      .pushErrorDirect("tts_notice", "The last part was not spoken.",
+                       "warning");
+
+    const errors = useErrorStore.getState().errors;
+    expect(errors).toHaveLength(2);
+    expect(errors.map((e) => e.message)).toEqual([
+      "The voice engine is preparing itself.",
+      "The last part was not spoken.",
+    ]);
+  });
+
+  it("GROUND: the same voice notice twice is still one toast", () => {
+    // A rule that never collapses anything is not a dedupe. Two diagnostics
+    // that reduce to the same sentence are one thing to be told.
+    useErrorStore
+      .getState()
+      .pushErrorDirect("tts_notice", "Speech will be slower.", "warning");
+    useErrorStore
+      .getState()
+      .pushErrorDirect("tts_notice", "Speech will be slower.", "warning");
+
+    expect(useErrorStore.getState().errors).toHaveLength(1);
+  });
+
+  it("GROUND: a counted code is still deduped by its code alone", () => {
+    // The incident K-23 records, re-run. `images_omitted` builds its sentence
+    // around a live count, so a key that reads the message stops deduping the
+    // codes that repeat most. Adding tts_notice must not buy that back.
+    useErrorStore
+      .getState()
+      .pushErrorDirect("images_omitted", "One image could not be sent.",
+                       "warning", { chatId: 4 });
+    useErrorStore
+      .getState()
+      .pushErrorDirect("images_omitted", "3 images could not be sent.",
+                       "warning", { chatId: 4 });
+
+    expect(useErrorStore.getState().errors).toHaveLength(1);
   });
 
   it("sees the queue when it dedupes, so a waiting error does not double", () => {

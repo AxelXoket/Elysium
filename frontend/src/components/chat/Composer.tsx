@@ -268,9 +268,23 @@ export const Composer = memo(function Composer({
   let helperText: string | null = null;
   if (noChatSelected) helperText = "Select a character and chat to start.";
   else if (settingsLoading) helperText = "Checking settings…";
-  else if (settingsBroken) helperText = "Cannot load settings. Is the backend running?";
-  else if (apiKeyMissing) helperText = "API key is not set. Configure it in Secrets.";
-  else if (proxyIssue) helperText = "Proxy is required but not configured. Set it up in Secrets.";
+  // "Is the backend running?" asked the reader about a server process they
+  // never started - Elysium is launched by double-clicking it - and it folded
+  // every distinct cause into one wrong guess. VaultGate.tsx fixed this exact
+  // phrasing by routing through the shared error map instead of hard coding a
+  // sentence, and the same reasoning applies here: a locked vault, a page
+  // opened outside Elysium and a dropped connection each have their own
+  // sentence and their own next step, and all three used to arrive as this.
+  else if (settingsBroken)
+    helperText = `Settings could not be loaded, so sending is off. ${parseApiError(settingsError).message}`;
+  // The tab these two point at is LABELLED "Security" (RightPanel.tsx); only
+  // its stored value is still "secrets", which is why setActiveTab below is
+  // unchanged. Naming a "Secrets" tab sent people scanning a row of four tabs
+  // for a word that is not printed on any of them.
+  else if (apiKeyMissing)
+    helperText = "No API key is set yet, so messages cannot be sent. Add one in the Security tab.";
+  else if (proxyIssue)
+    helperText = "A proxy is required but none is configured, so messages cannot be sent. Set one up in the Security tab.";
   else if (noModelSelected) helperText = "Select a model from the Models tab.";
 
   // ── Attach button title ──
@@ -338,7 +352,7 @@ export const Composer = memo(function Composer({
               type="button"
               className="shrink-0 opacity-70 hover:opacity-100 transition-opacity"
               onClick={() => setActiveTab("secrets")}
-              aria-label="Go to Secrets"
+              aria-label="Go to Security"
             >
               <Settings size={12} />
             </button>
@@ -370,7 +384,7 @@ export const Composer = memo(function Composer({
               type="button"
               className="shrink-0 opacity-70 hover:opacity-100 transition-opacity"
               onClick={() => setActiveTab("secrets")}
-              aria-label="Go to Secrets"
+              aria-label="Go to Security"
             >
               <Settings size={12} />
             </button>

@@ -743,3 +743,104 @@ class TestTheSpokenFormGoesWithItsMessage:
 
         assert VoiceHost().forget_message_audio(1) == []
         assert victim.read_bytes() == content
+
+
+class TestTheStalePremigrateBackupIsDestroyedNotUnlinked:
+    """The route Route 1 adds: a full encrypted copy of the vault, removed on
+    the user's word rather than automatically."""
+
+    def test_discard_premigrate_backup_overwrites(
+        self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        no_unlink,
+    ) -> None:
+        import crypto
+        import database
+        import legacy_migration
+        import vault_state
+
+        db_path = tmp_path / "app.db"
+        monkeypatch.setattr(config, "DB_PATH", str(db_path))
+        monkeypatch.setattr(database, "DB_PATH", str(db_path))
+        vault = crypto.KeyVault(tmp_path)
+        key = vault.initialize("a passphrase long enough to unlock")
+        # Left UNLOCKED on purpose: the discard route below requires it.
+        vault_state.set_key(key)
+        database.init_db()
+        path = legacy_migration.premigrate_backup_path()
+        database.backup_encrypted(str(path), key=key)
+        original = path.read_bytes()
+
+        response = client.post("/api/v1/vault/discard-premigrate-backup")
+
+        assert response.status_code == 200, response.text
+        _assert_destroyed(path, original)
+
+
+class TestVaultResetDestroysRatherThanUnlinks:
+    """The route that promises nothing is left behind must not leave the
+    bytes behind either - the same proof every other deletion in this file
+    already carries, extended to the newest and largest one."""
+
+    def _locked_vault(self, tmp_path: Path, monkeypatch) -> Path:
+        import crypto
+        import database
+        import vault_state
+
+        db_path = tmp_path / "app.db"
+        monkeypatch.setattr(config, "DB_PATH", str(db_path))
+        monkeypatch.setattr(database, "DB_PATH", str(db_path))
+        monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+        # No autouse fixture redirects TTS_REFS_DIR, so without this a reset
+        # driven through this helper would reach out of tmp_path and into
+        # this machine's own voice folder - the exact thing fs_guard.py
+        # exists to refuse.
+        monkeypatch.setattr(config, "UPLOADS_DIR", str(tmp_path / "uploads"))
+        monkeypatch.setattr(config, "TTS_CACHE_DIR",
+                            str(tmp_path / "voice_cache"))
+        monkeypatch.setattr(config, "TTS_REFS_DIR",
+                            str(tmp_path / "voice_refs"))
+        vault = crypto.KeyVault(tmp_path)
+        key = vault.initialize("a passphrase long enough to reset")
+        vault_state.set_key(key)
+        try:
+            database.init_db()
+        finally:
+            vault_state.clear_key()
+        return db_path
+
+    def test_the_database_is_overwritten_not_unlinked(
+        self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        no_unlink,
+    ) -> None:
+        from routers.vault import RESET_CONFIRMATION_PHRASE
+
+        db_path = self._locked_vault(tmp_path, monkeypatch)
+        original = db_path.read_bytes()
+
+        response = client.post("/api/v1/vault/reset",
+                               json={"confirm": RESET_CONFIRMATION_PHRASE})
+
+        assert response.status_code == 200, response.text
+        _assert_destroyed(db_path, original)
+
+    def test_a_voice_reference_clip_is_overwritten_not_unlinked(
+        self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        no_unlink,
+    ) -> None:
+        # A recording of the user's own voice - the sharpest case for why an
+        # unlink alone would not be enough.
+        from routers.vault import RESET_CONFIRMATION_PHRASE
+
+        self._locked_vault(tmp_path, monkeypatch)
+        refs = tmp_path / "voice_refs"
+        (refs / "voice1").mkdir(parents=True)
+        monkeypatch.setattr(config, "TTS_REFS_DIR", str(refs))
+        clip = refs / "voice1" / "ref.wav"
+        original = b"RIFF" + b"the user's own recorded voice" * 5
+        clip.write_bytes(original)
+
+        response = client.post("/api/v1/vault/reset",
+                               json={"confirm": RESET_CONFIRMATION_PHRASE})
+
+        assert response.status_code == 200, response.text
+        _assert_destroyed(clip, original)

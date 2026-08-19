@@ -313,7 +313,7 @@ def _list_messages_sync(chat_id: int) -> list[dict]:
 
         rows = con.execute(
             "SELECT id, chat_id, role, content, created_at, "
-            "variant_group, active "
+            "variant_group, active, truncated "
             "FROM messages WHERE chat_id = ? ORDER BY id ASC",
             (chat_id,),
         ).fetchall()
@@ -596,7 +596,7 @@ def _activate_variant_sync(chat_id: int, message_id: int) -> dict:
         ).fetchall()]
         fresh = con.execute(
             "SELECT id, chat_id, role, content, created_at, "
-            "variant_group, active FROM messages WHERE id = ?",
+            "variant_group, active, truncated FROM messages WHERE id = ?",
             (message_id,),
         ).fetchone()
 

@@ -76,7 +76,7 @@ describe("a moderation block", () => {
   it("does not offer the go-to-Secrets button", async () => {
     await sendAgainst(403, "openrouter_moderation_blocked");
     expect(
-      screen.queryByRole("button", { name: "Go to Secrets" }),
+      screen.queryByRole("button", { name: "Go to Security" }),
     ).not.toBeInTheDocument();
   });
 
@@ -86,7 +86,7 @@ describe("a moderation block", () => {
     // is what suppresses it, rather than the test never rendering a CTA at all.
     await sendAgainst(401, "auth_failed");
     expect(
-      await screen.findByRole("button", { name: "Go to Secrets" }),
+      await screen.findByRole("button", { name: "Go to Security" }),
     ).toBeInTheDocument();
   });
 

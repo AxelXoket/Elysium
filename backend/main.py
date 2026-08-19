@@ -140,10 +140,53 @@ app = FastAPI(
 #: Adding a poller means adding it here, in the same commit. The alternative
 #: is what happened when the notebook's status card arrived: a second timer,
 #: no change here, and auto-lock quietly stopped existing.
+#: vault_gate below compares this set against request.url.path - the RESOLVED
+#: path a browser actually asked for, never a route template. A literal
+#: "{engine_id}" string would sit in this set forever and match nothing: the
+#: install-status poll is on a parameterized route, so its exemption has to be
+#: every concrete path that route can resolve to, built from the same engine
+#: registry the route itself validates against (routers/tts_runtime.py's
+#: _known_engine uses this exact call). Adding an engine adapter therefore
+#: exempts its install poll automatically - nobody has to remember this set
+#: exists on that day, the same way they had to remember it for the notebook.
+from tts.registry import all_adapters as _tts_engines
+
 _IDLE_EXEMPT: frozenset[str] = frozenset({
     "/api/v1/vault/status",
     "/api/v1/notebook/worker",
     "/api/v1/tts/state",
+    # Polled every 700ms while an engine install runs (frontend/src/lib/
+    # query/tts.ts). routers/vault.py's own teardown already treats a running
+    # install as independent of vault state - killing a multi-GB download
+    # because the user locked the screen punishes the cautious behaviour this
+    # app wants. The payload (tts/provision.py's _Job.to_json) is engine_id,
+    # a state enum, a log of setup/download progress lines, an error code and
+    # detail string, two timestamps and a running flag - install progress,
+    # never a message.
+    #
+    # This also exempts the POST that STARTS an install, since it shares the
+    # same path and the gate has no way to tell methods apart without touching
+    # code outside this set. That is accepted: a single deliberate click not
+    # resetting the clock is nothing like a request nobody made every 700ms -
+    # the click sits among other real requests (opening the runtime panel,
+    # reading the plan) that already count.
+    *(f"/api/v1/tts/runtimes/{a.engine_id}/install" for a in _tts_engines()),
+    # Polled every 1500ms while a voice model is loading (same file). Unlike
+    # the install above, locking the vault DOES tear this down: on_vault_
+    # locked() -> unload() bumps tts/host.py's _generation counter, and load()
+    # checks that counter against the round trip it started with, so a lock
+    # that lands mid-load aborts it cleanly rather than abandoning it. That
+    # makes exempting this route SAFE rather than just convenient: a load
+    # that never reaches a terminal state (the client timeout alone is 180s,
+    # already longer than the shortest 1-minute auto-lock) would otherwise
+    # hold the vault open for the whole stall, since 1.5s < 60s is exactly
+    # the notebook poll's shape. Exempting it means a stalled load gets
+    # reclaimed by auto-lock instead of being kept alive by a poll nobody at
+    # the keyboard is answering. The payload (routers/tts.py get_active) is a
+    # model uid, a state enum, engine_id, a VRAM number, an error code, a
+    # readiness verdict of issue codes/booleans/language tags, and a boolean -
+    # never message content.
+    "/api/v1/tts/active",
 })
 
 

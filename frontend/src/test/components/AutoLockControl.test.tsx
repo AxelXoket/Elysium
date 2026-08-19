@@ -10,9 +10,15 @@
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AutoLockControl } from "@/components/settings/AutoLockControl";
+import {
+  loadGlassRightCss,
+  injectCss,
+  wrapInGlassRight,
+  surfaceToken,
+} from "@/test/helpers/glassSurfaceCss";
 
 const setAutoLock = vi.fn();
 const settingsData = { current: { auto_lock_minutes: 0 } as { auto_lock_minutes: number } | undefined };
@@ -133,5 +139,95 @@ describe("AutoLockControl", () => {
       "aria-checked",
       "true",
     );
+  });
+});
+
+/**
+ * This panel renders inside `.glass-right`, the app's one LIGHT surface, but
+ * `settings-hint` and `settings-error` are painted for the DARK settings
+ * dialog - `settings-hint`'s colour is a hardcoded rgba, never a variable, so
+ * it measured 1.24-1.31:1 here. jsdom cannot run Tailwind v4's generated
+ * utility rules (confirmed by hand: `.text-muted-foreground`'s own `color`
+ * silently fails to apply, unlike the hand-written `settings-hint` rule,
+ * which is a literal and DOES apply) - see helpers/glassSurfaceCss.ts for the
+ * full explanation. So these tests measure the one thing that does survive
+ * jsdom's cascade reliably: which custom-property TOKEN each element
+ * actually resolves at its real position in the tree, against index.css run
+ * through the project's own build pipeline, not a hand-copied excerpt.
+ */
+describe("AutoLockControl - light surface contrast", () => {
+  let styleEl: HTMLStyleElement;
+
+  beforeAll(async () => {
+    styleEl = injectCss(await loadGlassRightCss());
+  }, 20000);
+
+  afterAll(() => styleEl.remove());
+
+  afterEach(() => {
+    document.querySelectorAll(".glass-right").forEach((el) => el.remove());
+  });
+
+  it("the heading and both hints read .glass-right's own text tokens", () => {
+    settingsData.current = { auto_lock_minutes: 0 };
+    const glassRight = wrapInGlassRight();
+    renderWithQueryClient(<AutoLockControl />, {
+      container: glassRight,
+      baseElement: document.body,
+    });
+
+    const heading = screen.getByTestId("auto-lock-heading");
+    const hint = screen.getByTestId("auto-lock-hint");
+    const offHint = screen.getByTestId("auto-lock-off-hint");
+
+    // Ground: what the surface itself declares for these tokens - read live,
+    // not a hex copied out of index.css that the file could drift away from.
+    const lightText = surfaceToken(glassRight, "--color-es-text-light");
+    const mutedText = surfaceToken(glassRight, "--muted-foreground");
+    expect(lightText, "the surface never resolved a text-light token").not.toBe("");
+    expect(mutedText, "the surface never resolved a muted token").not.toBe("");
+
+    expect(surfaceToken(heading, "--color-es-text-light")).toBe(lightText);
+    expect(surfaceToken(hint, "--muted-foreground")).toBe(mutedText);
+    expect(surfaceToken(offHint, "--muted-foreground")).toBe(mutedText);
+
+    // None of the fixed elements carry a dark-dialog settings-* class.
+    expect(heading.className).not.toMatch(/settings-/);
+    expect(hint.className).not.toMatch(/settings-/);
+    expect(offHint.className).not.toMatch(/settings-/);
+
+    // Negative control, rendered inline: an element still wearing the OLD
+    // class. Its colour is a hardcoded rgba rather than a variable, so - and
+    // only for this one class - jsdom's own `.color` resolves it directly,
+    // reproducing the exact measured defect (1.24-1.31:1 against this
+    // surface's near-white background).
+    const oldHint = document.createElement("p");
+    oldHint.className = "settings-hint";
+    glassRight.appendChild(oldHint);
+    expect(
+      getComputedStyle(oldHint).color,
+      "settings-hint's colour drifted - re-measure the defect before trusting this ground",
+    ).toBe("rgba(202, 212, 224, 0.72)");
+  });
+
+  it("the save-failed alert uses the sibling panels' local-error idiom, not settings-error", async () => {
+    mutationState.isError = true;
+    const glassRight = wrapInGlassRight();
+    renderWithQueryClient(<AutoLockControl />, {
+      container: glassRight,
+      baseElement: document.body,
+    });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.className).not.toMatch(/settings-error/);
+    expect(alert.className).toMatch(/persona-local-error/);
+    // settings-error and persona-local-error both read the SAME
+    // --color-es-danger token, declared only at :root - which jsdom does not
+    // resolve through getPropertyValue (confirmed by hand), so colour cannot
+    // distinguish the two classes here. Font-size can, and is real: 11px is
+    // settings-error's own declared size, 12px is persona-local-error's.
+    expect(getComputedStyle(alert).fontSize).toBe("12px");
+
+    mutationState.isError = false;
   });
 });

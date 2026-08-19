@@ -23,6 +23,7 @@ import pytest
 
 import database
 from database import sqlite3          # the SQLCipher driver, not stdlib
+import notebook_store as notebook
 
 
 def _a_chat(con) -> int:
@@ -299,3 +300,164 @@ class TestTheSelfHealActuallyConverges:
                     "SELECT position FROM notebook_entries WHERE chat_id = ?",
                     (chat,)).fetchall()]
                 assert len(pos) == len(set(pos)) == 2
+
+
+class TestALimitCannotGrowBigEnoughToStopTheApp:
+    """The ceiling on a limit, and the arithmetic that picked the number.
+
+    Limits are the ONE block that is never trimmed, and that is correct: a
+    limit the user believes is in force must never be silently dropped. The
+    price of the promise is that a long enough limit does not degrade the
+    prompt, it ENDS it - every send in the chat fails with
+    `boundaries_do_not_fit`, permanently, and the only cure is in a panel
+    nobody is looking at. Notes were capped for exactly this reason; limits
+    were missed.
+
+    So: a positive control on both ceilings, and the two that matter most -
+    the cap must not make an existing set unremovable, and a set filled to the
+    ceiling must actually fit the model the ceiling was computed for.
+    """
+
+    def _limit(self, chat=None, n=None):
+        n = notebook.BOUNDARY_MAX_CHARS if n is None else n
+        return notebook.create_boundary(
+            "L" * min(n, notebook.BOUNDARY_MAX_CHARS), "p" * n,
+            "hard", chat_id=chat)
+
+    def test_a_limit_at_the_cap_is_accepted(self, db) -> None:
+        """The positive control. A ceiling nothing can reach is a ban."""
+        row = self._limit()
+        assert len(row["phrasing"]) == notebook.BOUNDARY_MAX_CHARS
+        assert len(row["label"]) == notebook.BOUNDARY_MAX_CHARS
+
+    def test_one_character_over_the_cap_is_refused(self, db) -> None:
+        n = notebook.BOUNDARY_MAX_CHARS + 1
+        with pytest.raises(notebook.NotebookError) as exc:
+            notebook.create_boundary("ok", "p" * n, "hard")
+        assert exc.value.code == "boundary_too_long"
+
+        # The LABEL too. It never reaches the prompt, but an unbounded column
+        # is an unbounded column and the panel has to render it.
+        with pytest.raises(notebook.NotebookError) as exc:
+            notebook.create_boundary("L" * n, "ok", "hard")
+        assert exc.value.code == "boundary_too_long"
+
+    def test_the_cap_is_the_domains_and_not_the_routes(self, db, client) -> None:
+        """Through HTTP, because the UI cap is not enforcement.
+
+        `BoundaryBody` declares no max_length on purpose - with one, this would
+        arrive as a 422 validation structure instead of the catalogued code,
+        and the reader would get "Something went wrong" for a refusal that has
+        a sentence written for it.
+        """
+        r = client.post(
+            "/api/v1/notebook/boundaries",
+            json={"label": "ok", "severity": "hard",
+                  "phrasing": "p" * (notebook.BOUNDARY_MAX_CHARS + 1)})
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"] == "boundary_too_long"
+
+    def test_the_line_cost_still_matches_the_line_that_is_built(self, db) -> None:
+        """The constant the whole budget is divided by, measured rather than
+        trusted. If a severity word or the bullet ever gets longer the
+        arithmetic behind BOUNDARY_MAX_CHARS is quietly wrong, and the block
+        starts overrunning the budget it was sized for with nothing saying so.
+        """
+        worst = 0
+        for severity in notebook.SEVERITIES:
+            for polarity in ("avoid", "seek"):
+                line = notebook._boundary_line(
+                    {"phrasing": "", "severity": severity,
+                     "polarity": polarity})
+                worst = max(worst, len(line) + 1)
+        assert worst == notebook._BOUNDARY_LINE_COST
+
+    def test_the_set_is_capped_and_not_only_each_limit(self, db) -> None:
+        """Eight limits at the cap is a large block; eighty is a broken app,
+        and the route can be called eighty times."""
+        made = 0
+        while True:
+            try:
+                self._limit()
+            except notebook.NotebookError as exc:
+                assert exc.code == "boundary_set_too_long"
+                break
+            made += 1
+            assert made < 100, "the set never refused - it has no ceiling"
+        # The arithmetic as a number rather than as a comment: 1500 characters
+        # of line budget, 181 per limit written at the cap.
+        assert made == notebook.BOUNDARY_SET_MAX_CHARS // (
+            notebook.BOUNDARY_MAX_CHARS + notebook._BOUNDARY_LINE_COST)
+
+    def test_a_short_limit_still_goes_in_beside_a_full_set(self, db) -> None:
+        """The positive control for the set ceiling: it refuses what does not
+        fit, not everything arriving after a lot of text."""
+        for _ in range(6):
+            self._limit()
+        row = notebook.create_boundary("no gore", "Avoid graphic injury.",
+                                       "hard")
+        assert row["id"]
+
+    def test_a_chat_limit_is_measured_beside_the_global_set(self, db) -> None:
+        """What a chat is sent is the global set PLUS its own, so a chat limit
+        that fits only while the globals are ignored is a chat that breaks the
+        moment somebody turns them back on."""
+        with database.get_db() as con:
+            chat = _a_chat(con)
+        while True:
+            try:
+                self._limit()
+            except notebook.NotebookError:
+                break
+        with pytest.raises(notebook.NotebookError) as exc:
+            self._limit(chat=chat)
+        assert exc.value.code == "boundary_set_too_long"
+
+    def test_an_over_length_limit_can_still_be_deleted(self, db) -> None:
+        """The cure must stay reachable.
+
+        A limit written before the ceiling existed - or by any writer that did
+        not come through create_boundary - is exactly the row somebody needs to
+        get rid of. A rule that also blocked the delete would be the same "the
+        app is stuck and the fix is out of reach" failure it was written to
+        prevent, arriving from the other side.
+        """
+        with database.get_db() as con:
+            con.execute(
+                "INSERT INTO boundaries (scope, label, phrasing, severity) "
+                "VALUES ('global', 'old', ?, 'hard')",
+                ("p" * (notebook.BOUNDARY_MAX_CHARS * 10),))
+            old = con.execute("SELECT MAX(id) FROM boundaries").fetchone()[0]
+
+        # It is readable, it is in force, and it is deletable.
+        assert any(r["id"] == old for r in notebook.list_boundaries())
+        assert notebook.delete_boundary(old) is True
+        assert not any(r["id"] == old for r in notebook.list_boundaries())
+
+    def test_a_full_set_fits_the_model_the_ceiling_was_sized_for(self, db):
+        """The payoff, and the one test that checks the NUMBER rather than the
+        rule.
+
+        completions.py refuses the turn when the boundary block plus the user's
+        message will not fit `available`. On the smallest model this app serves
+        - 8k window, 256 tokens of safety margin, three characters to the
+        token, 2048 reserved for the reply - that is 17664 characters, and the
+        limits are given the same tenth of it the notebook takes. A set filled
+        to its ceiling has to land inside that tenth or the ceiling is
+        decorative.
+        """
+        import config
+        with database.get_db() as con:
+            chat = _a_chat(con)
+        while True:
+            try:
+                self._limit()
+            except notebook.NotebookError:
+                break
+
+        available = ((8192 - config.CONTEXT_SAFETY_MARGIN)
+                     * config.CHARS_PER_TOKEN_ESTIMATE
+                     - 2048 * config.CHARS_PER_TOKEN_ESTIMATE)
+        block = notebook.build_boundary_block(chat)
+        assert block, "nothing was assembled - the test measured an empty set"
+        assert len(block) <= available * notebook.NOTEBOOK_BUDGET_FRACTION

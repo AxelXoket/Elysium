@@ -146,15 +146,68 @@ class TestPerMonitorDpi:
     # it returns True. A source match adds nothing there and would pass for a
     # mention in a comment.
 
-    def test_it_runs_before_the_window_is_created(self):
+    def test_it_runs_before_the_window_is_created(self, monkeypatch):
         """A process's DPI awareness can only be set once and the first caller
-        wins - after pywebview starts it is too late."""
-        import inspect
+        wins - after pywebview starts it is too late.
+
+        Rewritten 2026-08-19: this used to read main()'s own source and check
+        which of two names appeared first in the text, which pins prose, not
+        execution - a helper called from a comment, or moved into a branch
+        that never runs, would still read "before" here. This runs the real
+        main() with every side effect it has (the single-instance mutex, the
+        registry hardening, the socket, the server, the window itself)
+        stubbed to a recorder or a no-op, and reads the ORDER two calls
+        actually happened in.
+        """
+        import types
+        from unittest.mock import MagicMock
 
         import run_app
 
-        src = inspect.getsource(run_app.main)
-        assert src.index("_try_per_monitor_dpi") < src.index("create_window")
+        order: list[str] = []
+
+        # Every side effect main() has before and around the window, stubbed
+        # so this test can run it for real without touching the registry, a
+        # real socket, a real server thread, or a real window. None of these
+        # are the thing under test; _try_per_monitor_dpi and create_window are.
+        monkeypatch.delenv("ELYSIUM_SELFTEST", raising=False)
+        monkeypatch.setattr(run_app, "_setup_frozen_logging", lambda: None)
+        monkeypatch.setattr(run_app, "enforce_single_instance", lambda: None)
+        monkeypatch.setattr(run_app.win_hardening, "harden", lambda *a, **k: None)
+        monkeypatch.setattr(run_app.launch_token, "issue", lambda: None)
+        monkeypatch.setattr(run_app.launch_token, "configured", lambda: "tok")
+        monkeypatch.setattr(run_app, "_stop_voice_worker", lambda *a, **k: None)
+        monkeypatch.setattr(
+            run_app, "bind_app_socket",
+            lambda: types.SimpleNamespace(
+                getsockname=lambda: ("127.0.0.1", 55123)))
+        monkeypatch.setattr(run_app, "serve", lambda sock: None)
+        monkeypatch.setattr(run_app, "_webview2_installed", lambda: True)
+        monkeypatch.setattr(
+            run_app, "wait_until_ready", lambda url, timeout=30.0: True)
+        monkeypatch.setattr(run_app, "clear_session_residue", lambda profile: {})
+        monkeypatch.setattr(run_app.webview, "start", lambda *a, **k: None)
+        monkeypatch.setattr(run_app.browser_profile, "purge", lambda profile: 0)
+
+        # POSITIVE CONTROL and GROUND both live in `order`: if
+        # _try_per_monitor_dpi or create_window stopped being called at all,
+        # the missing entry (or the IndexError from a short list) fails the
+        # assert below just as loudly as the wrong order would.
+        monkeypatch.setattr(
+            run_app, "_try_per_monitor_dpi",
+            lambda: order.append("dpi") or True)
+
+        def fake_create_window(*a, **k):
+            order.append("create_window")
+            return MagicMock()
+
+        monkeypatch.setattr(run_app.webview, "create_window", fake_create_window)
+
+        run_app.main()
+
+        assert order == ["dpi", "create_window"], (
+            f"expected the DPI call before the window is created, got {order}"
+        )
 
 
 class TestApiIsNeverCachedToDisk:
@@ -275,16 +328,81 @@ class TestAuditRegressions2026_07_25:
         )
         assert "probe-from-access" in written
 
-    def test_a_refused_load_does_not_orphan_the_resident_model(self):
+    def test_a_refused_load_does_not_orphan_the_resident_model(
+        self, monkeypatch, tmp_path
+    ) -> None:
         """A pre-spawn refusal leaves the running worker untouched, so the
         state must keep describing it. Wiping the identity reported "nothing
-        loaded" while a process still held its VRAM."""
-        import inspect
+        loaded" while a process still held its VRAM.
 
-        from tts.host import VoiceHost
+        Rewritten 2026-08-19: this used to read VoiceHost.load's own source
+        and check that the words "prior" and "STATE_LOADED" both appeared in
+        it, which passes for either word sitting in a comment. This loads a
+        real model into the fake worker, refuses a SECOND load on a real VRAM
+        check, and reads what the host reports and what worker is actually
+        still alive afterwards.
+        """
+        import sys as _sys
+        from pathlib import Path as _Path
 
-        src = inspect.getsource(VoiceHost.load)
-        assert "prior" in src and "STATE_LOADED" in src
+        import config
+        from tts import host as tts_host
+        from tts import runtimes, vram
+        from tts.base import DetectedModel
+        from tts.errors import TTS_INSUFFICIENT_VRAM
+        from tts.worker_client import WorkerFailure
+
+        fake_worker = str(_Path(__file__).resolve().parent / "fake_worker.py")
+
+        reg = tmp_path / "voice" / "runtimes.json"
+        reg.parent.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(config, "TTS_RUNTIMES_PATH", str(reg), raising=False)
+        monkeypatch.setattr(
+            config, "TTS_CACHE_DIR", str(tmp_path / "cache"), raising=False)
+        runtimes.register("fish_s2", _sys.executable)
+
+        def fake_smi(*, total=16303, free=14000, used=2303):
+            monkeypatch.setattr(
+                vram, "_run_smi",
+                lambda: "NVIDIA GeForce RTX 5080, %d, %d, %d\n" % (
+                    total, free, used))
+
+        fake_smi()
+        host = tts_host.VoiceHost()
+        host.script_resolver = lambda engine_id: fake_worker
+        try:
+            model = DetectedModel(uid="resident", engine_id="fish_s2",
+                                  name="s", path="/models/resident")
+            host.load(model, {})
+            client = host._client
+            assert host.snapshot()["state"] == "loaded", "setup did not load"
+
+            # GROUND: nothing fits now, so this second load must be refused
+            # BEFORE it touches the worker that is already up.
+            fake_smi(free=400, used=15903)
+            with pytest.raises(WorkerFailure) as exc:
+                host.load(
+                    DetectedModel(uid="other", engine_id="fish_s2", name="o",
+                                  path="/models/other"),
+                    {},
+                )
+            assert exc.value.code == TTS_INSUFFICIENT_VRAM
+
+            # POSITIVE CONTROL: the refusal above proves the pre-spawn check
+            # ran. What follows is the actual guarantee - the resident model
+            # is still what the host reports and its worker is still alive,
+            # not wiped by a load it never let past preflight.
+            snap = host.snapshot()
+            assert snap["state"] == "loaded", (
+                "a refused second load wiped the resident model's state")
+            assert snap["uid"] == "resident", (
+                "a refused second load reported the wrong model as resident")
+            assert host._client is client, (
+                "the resident worker was replaced by a load that was refused")
+            assert client.alive, (
+                "the resident worker was ended by a load it never reached")
+        finally:
+            host.unload("test teardown")
 
 
 # ── Audit: the base-URL override warning must reach the LOG FILE ────────────
@@ -339,18 +457,82 @@ def test_the_default_destination_warns_about_nothing(caplog):
     assert caplog.text == ""
 
 
-def test_run_app_reports_the_override_after_installing_its_handler():
-    """Ordering is the whole bug: the call must come AFTER basicConfig."""
-    from pathlib import Path
+def test_run_app_reports_the_override_after_installing_its_handler(
+    tmp_path, monkeypatch
+):
+    """Ordering is the whole bug: the call must come AFTER basicConfig, or the
+    one guard against a hijacked API destination goes to a stderr no windowed
+    exe can show and never reaches elysium.log.
 
-    source = Path(__file__).resolve().parent.parent / "run_app.py"
-    text = source.read_text(encoding="utf-8")
-    assert "warn_if_base_url_overridden" in text, (
-        "the frozen build no longer reports a redirected base URL"
+    Rewritten 2026-08-19: this used to read run_app.py's own text and check
+    which of two names came first in it - the same class of test as the other
+    two on this page (VoiceHost.load, main()'s DPI call), fixed for the same
+    reason: source order is not execution order, and a rename or a comment
+    passes it. This runs the real frozen-logging setup with a real base-URL
+    override in the environment and reads the file the warning is promised to
+    reach.
+    """
+    import importlib
+    import logging
+
+    import config
+    import run_app
+
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "http://evil.example/v1")
+    reloaded = importlib.reload(config)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(reloaded, "DATA_DIR", tmp_path)
+
+    # logging.basicConfig() is a no-op once the root logger already has a
+    # handler - which pytest's own log-capture plugin has installed by the
+    # time any test runs. A real launch starts from a bare interpreter with
+    # no root handler at all, so that is what this test has to recreate for
+    # basicConfig to do anything, or it would be testing pytest's logging
+    # setup instead of run_app's.
+    root = logging.getLogger()
+    saved_handlers = list(root.handlers)
+    saved_level = root.level
+    for handler in saved_handlers:
+        root.removeHandler(handler)
+
+    run_app._setup_frozen_logging()
+    try:
+        for handler in logging.getLogger().handlers:
+            handler.flush()
+        written = (tmp_path / "elysium.log").read_text(
+            encoding="utf-8", errors="replace")
+    finally:
+        # Same cleanup as the neighbouring uvicorn-log test: this installs
+        # handlers on process-global loggers, and leaving them up would have
+        # the next test writing into a tmp_path that no longer exists.
+        for name in ("", "uvicorn", "uvicorn.error", "uvicorn.access"):
+            logger = logging.getLogger(name)
+            for handler in list(logger.handlers):
+                logger.removeHandler(handler)
+                handler.close()
+        for handler in saved_handlers:
+            root.addHandler(handler)
+        root.setLevel(saved_level)
+        monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+        # sys.frozen must go back BEFORE this reload, not after: monkeypatch
+        # only restores it once this function returns, and config.py reads
+        # sys.frozen at IMPORT time to compute FRONTEND_ORIGINS. Reloading
+        # while frozen was still True baked an empty FRONTEND_ORIGINS into
+        # the live config module and left it there - this test still passed,
+        # and test_trust_boundary.py failed instead, in whatever unrelated
+        # test happened to run after this one and read config next.
+        monkeypatch.setattr(sys, "frozen", False, raising=False)
+        importlib.reload(config)
+
+    # GROUND: swap the two calls inside _setup_frozen_logging (warn before
+    # basicConfig) and this file disappears or stays empty - logging.warning
+    # has nowhere configured to write yet, so the message falls through to
+    # logging.lastResort, which this test never reads.
+    assert "OPENROUTER_BASE_URL overridden" in written, (
+        "the override warning did not reach elysium.log"
     )
-    assert text.index("logging.basicConfig") < text.index(
-        "warn_if_base_url_overridden"
-    ), "the warning would land before the log handler exists"
+    assert "evil.example" in written
+    assert "Authorization" in written
 
 
 # ── Audit: a random port every launch made the persistent profile useless ───

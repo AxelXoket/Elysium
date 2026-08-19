@@ -36,13 +36,21 @@ export function AutoLockControl() {
       <div className="flex items-center gap-2">
         <Lock size={13} style={{ color: "var(--color-es-text-muted)" }} />
         <h4
+          data-testid="auto-lock-heading"
           className="text-xs font-semibold"
           style={{ color: "var(--color-es-text-light)" }}
         >
           Lock when idle
         </h4>
       </div>
-      <p className="settings-hint">
+      {/* `settings-hint`'s colour is a hardcoded rgba tuned for the DARK
+          settings dialog and never a variable, so it could not pick up
+          .glass-right's redefined tokens even if the cascade reached it -
+          measured at 1.24-1.31:1 on this light island. The sibling notebook
+          panels already solved this: plain hint text on this surface is
+          Tailwind's `text-muted-foreground`, which resolves against
+          .glass-right's own `--muted-foreground` redefinition. */}
+      <p data-testid="auto-lock-hint" className="text-xs leading-relaxed text-muted-foreground">
         While Elysium is unlocked, your chats are decrypted. This closes the
         vault again after a period with nothing happening, so a window left
         open does not leave them readable. A reply that is still being written
@@ -83,12 +91,15 @@ export function AutoLockControl() {
         })}
       </div>
       {current === 0 && (
-        <p className="settings-hint">
+        <p data-testid="auto-lock-off-hint" className="text-xs leading-relaxed text-muted-foreground">
           Off: the vault stays open until you lock it or close Elysium.
         </p>
       )}
+      {/* `persona-local-error`, not `settings-error`: same reason as the
+          hint above, and the class the notebook panels already use for a
+          refusal on this exact surface. */}
       {setAutoLock.isError && (
-        <p className="settings-error" role="alert">
+        <p className="persona-local-error" role="alert">
           That could not be saved. The vault is still using the previous
           setting.
         </p>

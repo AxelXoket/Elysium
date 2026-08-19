@@ -48,6 +48,13 @@ def msg_to_dict(
         "attachments": [attachment_to_api(a) for a in (attachments or [])],
         "variant_group": row["variant_group"] if "variant_group" in keys else None,
         "active": bool(row["active"]) if "active" in keys else True,
+        # True when the assistant's reply was cut off mid-generation - the
+        # token ceiling, an aborted stream, or a connection that died without
+        # ever saying it finished - rather than the model reaching a natural
+        # stop. Read defensively like variant_group/active above: a caller
+        # whose SELECT forgot the column gets False, never a crash, and a
+        # user row (which never sets it) reads the same as "not truncated".
+        "truncated": bool(row["truncated"]) if "truncated" in keys else False,
     }
     if variant_index is not None:
         d["variant_index"] = variant_index

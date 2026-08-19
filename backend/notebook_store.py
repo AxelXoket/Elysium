@@ -50,6 +50,57 @@ SEVERITIES = ("hard", "veiled", "soft")
 #: short enough to blunt anything pasted in from elsewhere.
 ENTRY_MAX_CHARS = 240
 
+#: The longest prefix `_boundary_line` can build - "- (not on the page) " -
+#: plus the one newline that joins a line to the next. Every ceiling below is
+#: measured in ASSEMBLED characters, so a limit costs its phrasing plus this.
+_BOUNDARY_LINE_COST = 21
+
+#: One limit's ceiling, for BOTH its label and its phrasing.
+#:
+#: Notes have had a ceiling since the day they were written; limits were
+#: missed, and they are the block that cannot absorb the mistake. Everything
+#: else in the payload shrinks under pressure - history is trimmed oldest
+#: first, the notebook drops by importance, and even a pinned note is evicted
+#: rather than allowed to break the chat. The limits refuse instead
+#: (BoundariesDoNotFit, and it is correct that they do), so an unbounded limit
+#: is not a big prompt, it is a chat that can never be sent again, and a
+#: second one is a chat whose only cure is a panel the user is not looking at.
+#:
+#: The number is arithmetic rather than taste. The smallest model this app
+#: realistically serves has an 8k window, and routers/completions.py sizes a
+#: turn on it like this:
+#:
+#:     safety    = min(CONTEXT_SAFETY_MARGIN 256, 8192 // 8)   =   256 tokens
+#:     budget    = (8192 - 256) * CHARS_PER_TOKEN_ESTIMATE 3   = 23808 chars
+#:     reply     = _DEFAULT_MAX_TOKENS 2048 * 3                =  6144 chars
+#:     available = 23808 - 6144                                = 17664 chars
+#:
+#: The notebook already takes a tenth of `available` (NOTEBOOK_BUDGET_FRACTION)
+#: and the limits are given the same tenth rather than a fraction invented
+#: here: 17664 * 0.10 = 1766 characters for the whole assembled block. The
+#: markers cost 216 of that - a tagged `[Limits #...]` header is 182
+#: characters, its closing line 33, and two newlines attach them - which leaves
+#: 1550 for the lines. Rounded down to BOUNDARY_SET_MAX_CHARS below, so the
+#: ceiling does not sit flush against the arithmetic that produced it.
+#:
+#: Dividing that by a reasonable NUMBER of limits is what fixes 160: at the cap
+#: a line costs 181 characters, so 1500 carries 8 limits written at their
+#: absolute longest, and about 18 at the length a limit is actually written at
+#: (one clause, roughly 60 characters). Below the note ceiling of 240 on
+#: purpose - a note that is too long gets dropped, a limit that is too long
+#: stops the app.
+BOUNDARY_MAX_CHARS = 160
+
+#: What every ACTIVE limit that can appear in ONE chat's block may cost
+#: together, lines included. See the arithmetic above: 1766 characters of
+#: budget minus 216 of markers, rounded down.
+#:
+#: The per-limit cap alone does not give the promise. Eight limits at 160 fit;
+#: eighty do, arithmetically, exactly what one limit of 12800 characters does,
+#: and the route can be called eighty times. This is the ceiling that actually
+#: keeps `boundaries_do_not_fit` unreachable by accumulation.
+BOUNDARY_SET_MAX_CHARS = 1500
+
 
 #: Every code a NotebookError can carry. The routes forward `exc.code`, which
 #: the catalogue census cannot resolve on its own - this is what it reads
@@ -68,6 +119,8 @@ ALL_CODES: frozenset[str] = frozenset({
     "safeword_too_short",
     "boundary_empty",
     "boundary_invalid",
+    "boundary_too_long",
+    "boundary_set_too_long",
     "chat_not_found",
 })
 
@@ -128,7 +181,8 @@ def list_entries(chat_id: int, *, include_retired: bool = True) -> list[dict]:
         rows = con.execute(
             f"SELECT id, chat_id, position, kind, text, evidence, durability, "
             f"importance, pinned, retired_at, superseded_by, excluded_reason, "
-            f"status, provenance, source_message_id, created_at, updated_at "
+            f"status, provenance, source_message_id, evidence_role, "
+            f"created_at, updated_at "
             f"FROM notebook_entries WHERE {where} "
             "ORDER BY position ASC, id ASC", (chat_id,)).fetchall()
     return [_row(r) for r in rows]
@@ -329,6 +383,60 @@ def uses_global_boundaries(chat_id: int) -> bool:
     return bool(row[0])
 
 
+def _set_cost(con, where: str, args: tuple = ()) -> int:
+    """What the active limits matching `where` cost once assembled.
+
+    Counted in SQL rather than by loading the rows: this runs on the write
+    path of a screen somebody can hold a key down on, and the answer is one
+    integer either way.
+    """
+    return con.execute(
+        f"SELECT COALESCE(SUM(LENGTH(phrasing)), 0) + COUNT(*) * ? "
+        f"FROM boundaries WHERE active = 1 AND {where}",
+        (_BOUNDARY_LINE_COST, *args)).fetchone()[0]
+
+
+def _refuse_if_the_set_will_not_fit(con, chat_id: int | None,
+                                    phrasing: str) -> None:
+    """The ceiling on the WHOLE block, checked against the block this limit
+    would join.
+
+    Checked on the way IN and nowhere else. A limit already stored is never
+    re-measured, never deactivated and never hidden by this - `list_boundaries`
+    and `delete_boundary` do not call it - because a set that has somehow grown
+    past the ceiling has to stay deletable. A rule that made the cure
+    unreachable would be the same failure it was written to prevent, arriving
+    from the other side.
+    """
+    mine = len(phrasing) + _BOUNDARY_LINE_COST
+    globals_cost = _set_cost(con, "scope = 'global'")
+    if chat_id is not None:
+        # A chat limit is assembled beside the global set, and the global half
+        # is counted whatever `use_global_boundaries` says today: that switch
+        # can be turned back on tomorrow, and a limit that only fits while it
+        # is off is a chat that breaks the moment somebody flips it.
+        total = globals_cost + _set_cost(
+            con, "scope = 'chat' AND chat_id = ?", (chat_id,)) + mine
+    else:
+        # A global limit lands in EVERY chat's block, so the set it has to fit
+        # beside is the heaviest one any single chat owns. Measured rather than
+        # reserved: giving chat limits a fixed half of the budget would spend
+        # half of it on the common case, where a person has only ever written
+        # global ones and no chat has any of its own.
+        worst_own = con.execute(
+            "SELECT COALESCE(MAX(t), 0) FROM ("
+            "  SELECT SUM(LENGTH(phrasing)) + COUNT(*) * ? AS t "
+            "  FROM boundaries WHERE active = 1 AND scope = 'chat' "
+            "  GROUP BY chat_id)", (_BOUNDARY_LINE_COST,)).fetchone()[0]
+        total = globals_cost + worst_own + mine
+    if total > BOUNDARY_SET_MAX_CHARS:
+        # Which limit pushed it over is not a guess: it is this one, the only
+        # row that was not already in force. The sentence behind the code says
+        # so, so the answer is "shorten or remove one", not "something is too
+        # big somewhere".
+        raise NotebookError("boundary_set_too_long")
+
+
 def create_boundary(label: str, phrasing: str, severity: str, *,
                     chat_id: int | None = None, polarity: str = "avoid",
                     on_violation: str = "pause", source: str = "explicit",
@@ -341,6 +449,11 @@ def create_boundary(label: str, phrasing: str, severity: str, *,
     label, phrasing = _flat(label), _flat(phrasing)
     if not label or not phrasing:
         raise NotebookError("boundary_empty")
+    # Here, not in BoundaryBody. A ceiling in the schema is a ceiling the next
+    # route that calls this function does not have, and the UI cap is not
+    # enforcement either - it is a convenience in front of the contract.
+    if len(label) > BOUNDARY_MAX_CHARS or len(phrasing) > BOUNDARY_MAX_CHARS:
+        raise NotebookError("boundary_too_long")
     # All four enums checked here, not just severity. The database refuses the
     # rest too, but an IntegrityError surfaces as a 500 with no sentence - so
     # the CHECK stops being a guard the user can act on and becomes a crash.
@@ -352,6 +465,13 @@ def create_boundary(label: str, phrasing: str, severity: str, *,
         raise NotebookError("boundary_invalid")
     scope = "chat" if chat_id is not None else "global"
     with get_db() as con:
+        # BEGIN IMMEDIATE for the same reason create_entry takes it: the set is
+        # measured and then added to, and two writers landing between those two
+        # moments would each read a total that does not include the other's row.
+        # An "add" button somebody can hold a key down on is exactly the caller
+        # that produces that pair.
+        con.execute("BEGIN IMMEDIATE")
+        _refuse_if_the_set_will_not_fit(con, chat_id, phrasing)
         cur = con.execute(
             "INSERT INTO boundaries (scope, chat_id, label, phrasing, severity,"
             " polarity, on_violation, source, rating_ceiling) "
@@ -766,6 +886,37 @@ def spend_today(con) -> dict:
             "tokens_out": row[2], "cost": row[3]}
 
 
+def spend_lifetime(con) -> dict:
+    """Calls and cost recorded across EVERY day this vault has ever run.
+
+    One SUM over the whole table, with no WHERE clause - deliberately. The
+    table is day-keyed, one row per calendar day this feature ever spent
+    anything, so this never scans more than a few thousand rows even after
+    years of use; it is the status route's cheapest query, not its most
+    expensive one, and it rides the same connection `spend_today` already
+    opens on every poll rather than adding a second one.
+
+    Filtering would be the bug. `day` was nullable before a prior migration
+    tightened it to `TEXT PRIMARY KEY NOT NULL`, and a database that already
+    held rows when that migration ran keeps its old, weaker column (see
+    `_migrate` in database.py) - so a vault upgraded from an early build can
+    still carry a row with `day IS NULL`, from the exact bug that constraint
+    was written to close. That row's `calls`/`tokens_in`/`tokens_out`/`cost`
+    are real spend that happened; a `WHERE day IS NOT NULL` would make it
+    disappear from the one screen that is supposed to be honest about every
+    credit spent. A row planted by a clock change - two different `day`
+    strings for what a person would call one sitting, or a day out of order -
+    costs nothing here either: SUM adds every row exactly once, whatever its
+    key looks like.
+    """
+    row = con.execute(
+        "SELECT COALESCE(SUM(calls), 0), COALESCE(SUM(tokens_in), 0), "
+        "COALESCE(SUM(tokens_out), 0), COALESCE(SUM(cost), 0) "
+        "FROM notebook_spend").fetchone()
+    return {"calls": row[0], "tokens_in": row[1],
+            "tokens_out": row[2], "cost": row[3]}
+
+
 def claim_call(con, cap: int) -> int:
     """Reserve one call against today's ceiling, or raise.
 
@@ -850,7 +1001,8 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
                       usage: dict | None = None,
                       status: str = "done",
                       skip_reason: str | None = None,
-                      error_type: str | None = None) -> dict:
+                      error_type: str | None = None,
+                      require_trace: bool = False) -> dict:
     """Write the whole outcome of one extraction. Returns what was done.
 
     A duplicate work key is NOT an error: it means this exact range, under this
@@ -895,6 +1047,24 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
              usage.get("finish_reason"), usage.get("tokens_in"),
              usage.get("tokens_out"), usage.get("cost"), error_type, work_key))
     else:
+        if require_trace:
+            # A caller that wrote a `running` row before the call and finds it
+            # GONE is not looking at a first write. Something deleted it, and
+            # exactly one thing does: editing or deleting a message rolls the
+            # cursor back on purpose, so the rewritten stretch gets read again.
+            #
+            # Writing `done` here undid that rollback using text that no
+            # longer exists. Measured: edit a message while an extraction is
+            # in flight and the reply, built from the OLD wording, recreates
+            # the cursor past it - the edited sentence is never read by any
+            # later run, and the notes describe words the user took back.
+            #
+            # So the outcome is recorded for the money and the range is left
+            # unread. `skipped` keeps the cursor behind it, which is the whole
+            # point: this range genuinely still needs reading.
+            status = "skipped"
+            skip_reason = "plan_invalidated"
+            proposals = []
         con.execute(
             "INSERT INTO notebook_extractions "
             "(work_key, chat_id, from_message_id, to_message_id, status, "
@@ -924,8 +1094,8 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
         cur = con.execute(
             "INSERT INTO notebook_entries "
             "(chat_id, position, kind, text, evidence, durability, importance,"
-            " pinned, status, provenance, source_message_id) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            " pinned, status, provenance, source_message_id, evidence_role) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (chat_id, nxt, fact["kind"], _flat(fact["text"]),
              fact.get("evidence"), fact["durability"],
              # Clamped BELOW a user's default of 2. The model rates its own
@@ -939,7 +1109,13 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
              # could write it, `provenance='model'` would have no live rows to
              # describe and its guard would pass by describing an empty set.
              PROV_MODEL,
-             source_id))
+             source_id,
+             # Whose words the quote came from. Marked, not acted on: the
+             # owner's decision was that a note from the model's own reply is
+             # shown for what it is rather than held back, because the
+             # research says a review queue nobody reads is worse than an
+             # honest label somebody can see.
+             fact.get("evidence_role")))
         written += 1
 
         # A15b: retirement happens HERE, in this transaction, or the old note
@@ -965,6 +1141,40 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
 
     return {"duplicate": False, "written": written, "retired": retired,
             "accepted": accept}
+
+
+ABANDONED_IN_FLIGHT = "abandoned_in_flight"
+"""error_type on a row whose call was made and never settled.
+
+A `running` row is written between the claim and the request, so a row still
+wearing that status means the process died or the vault locked with the call
+already on the wire. The money is gone either way - the provider bills on
+receipt, and the window between writing the row and the socket write is
+microseconds against a call that runs for up to two minutes.
+"""
+
+
+def settle_orphaned_running(con, chat_id: int) -> int:
+    """Close out any `running` row for this chat. Returns how many.
+
+    Safe because the worker is ONE task draining one chat at a time (`run`
+    awaits `_handle`, and `start` refuses to make a second task), so a
+    `running` row seen at the top of a cycle cannot belong to a call that is
+    still in flight - there is no such call.
+
+    It has to be closed out, and the cursor has to move past it, or the chat
+    stops dead: the planner reads a fixed window forward from the cursor, so
+    the same range yields the same work key on every later cycle. Leaving the
+    row alone re-sends and RE-BILLS that range; refusing it without moving the
+    cursor freezes the notebook for that chat forever. Both were real. Marked
+    `failed` rather than `done` because it did fail - the panel must not count
+    a lost reply as an answer - and counted, so a run that vanished is not the
+    same screen as a quiet week.
+    """
+    return con.execute(
+        "UPDATE notebook_extractions SET status = 'failed', error_type = ? "
+        "WHERE chat_id = ? AND status = 'running'",
+        (ABANDONED_IN_FLIGHT, chat_id)).rowcount
 
 
 def already_done(con, work_key: str) -> bool:
@@ -995,10 +1205,19 @@ def extraction_stats(con, chat_id: int | None = None) -> dict:
     skips = con.execute(
         f"SELECT skip_reason, COUNT(*) FROM notebook_extractions {where} "
         "GROUP BY skip_reason", args).fetchall()
+    # Counted separately from the failures it is stored among, because it is
+    # a different event with a different lesson: not "the model refused" but
+    # "a call was paid for and its answer never arrived". A user who sees the
+    # number climb is being told their app is being killed mid-extraction.
+    abandoned = con.execute(
+        f"SELECT COUNT(*) FROM notebook_extractions {where} "
+        f"{'AND' if where else 'WHERE'} error_type = ?",
+        (*args, ABANDONED_IN_FLIGHT)).fetchone()[0]
     return {
         "done": by_status.get("done", 0),
         "failed": by_status.get("failed", 0),
         "skipped": by_status.get("skipped", 0),
+        "abandoned": abandoned,
         "skip_reasons": {r[0]: r[1] for r in skips if r[0]},
     }
 

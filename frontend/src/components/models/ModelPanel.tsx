@@ -5,6 +5,7 @@ import { useNotebook } from "@/lib/query/notebook";
 import { useChats, useMessages } from "@/lib/query/chats";
 import { useCharacters } from "@/lib/query/characters";
 import { usePersonas } from "@/lib/query/personas";
+import { useSettings } from "@/lib/query/settings";
 import { ModelCard } from "./ModelCard";
 import { ModelFilters } from "./ModelFilters";
 import {
@@ -21,7 +22,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { SlideIn } from "@/components/motion/SlideIn";
 import { AnimatedList, AnimatedListItem } from "@/components/motion/AnimatedList";
 import { Collapse } from "@/components/motion/Collapse";
-import { RefreshCw, AlertCircle, Search, X, ChevronDown } from "lucide-react";
+import { RefreshCw, AlertCircle, Check, Search, X, ChevronDown } from "lucide-react";
 import { parseApiError } from "@/lib/errors";
 import { useUiStore } from "@/lib/store/uiStore";
 import { GenerationSettingsDialog } from "@/components/generation/GenerationSettingsDialog";
@@ -63,6 +64,14 @@ export function ModelPanel() {
   const [sourceOpen, setSourceOpen] = useState(false);
   const selectedModelId = useUiStore((s) => s.selectedModelId);
   const selectedChatId = useUiStore((s) => s.selectedChatId);
+
+  // Key state for the notice above the list. Read from the settings query the
+  // rest of the app already reads - no second endpoint, and no local guess:
+  // api_key_set is the server's answer about what is STORED, and the store
+  // only happens after the key validates (useSetApiKey leaves it unset on
+  // validation_unavailable). Undefined until that query answers, which is a
+  // third state the notice honours below.
+  const { data: settings } = useSettings();
 
   // Live context usage inputs - all derived from existing hooks, so the
   // meter re-renders on chat, message, model, and settings changes.
@@ -256,6 +265,54 @@ export function ModelPanel() {
             <AlertCircle size={12} />
             {describeFallbackReason(data.fallback_reason)}
           </div>
+        )}
+
+        {/* Where the list came from, and whether any of it can be used yet.
+            The catalogue is public: it loads and every card answers a click
+            before a key exists, so the panel used to read as ready and the
+            first word about a missing key arrived in the composer, four steps
+            later. This is the same fact, said where the list is offered.
+
+            Both arms wait for `settings` to arrive. Rendering the warning on
+            an undefined settings query would show it for a frame to an owner
+            whose key IS set - a false alarm about their own setup - so the
+            honest third state is to say nothing until the server has answered.
+            The list itself is gated on `data` for the same reason: "this list
+            came from OpenRouter" is only true when there is a list. */}
+        {data && settings && (
+          settings.api_key_set ? (
+            <div
+              className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs"
+              data-testid="model-key-ready"
+              style={{
+                backgroundColor: "rgba(255,255,255,0.34)",
+                color: "var(--color-es-text-muted)",
+              }}
+            >
+              <Check size={12} className="shrink-0" />
+              API key is set.
+            </div>
+          ) : (
+            /* Same treatment as the fallback-reason notice above: this panel
+               already owns a notice shape, and --color-es-accent-strong is one
+               of the few colours vetted against the light island (.glass-right
+               repaints text-light/text-muted; the dark shell's classes land
+               near 1.2:1 here). */
+            <div
+              className="flex items-start gap-2 rounded-lg px-3 py-2 text-xs"
+              data-testid="model-key-missing"
+              style={{
+                backgroundColor: "rgba(94, 130, 174, 0.08)",
+                color: "var(--color-es-accent-strong)",
+              }}
+            >
+              <AlertCircle size={12} className="mt-0.5 shrink-0" />
+              <span>
+                This list came from OpenRouter. Until you enter your API key in
+                the Security tab, no model here can be used.
+              </span>
+            </div>
+          )
         )}
 
         {/* Search input - only shown when data is available */}

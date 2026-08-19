@@ -110,7 +110,17 @@ export function WorkerPanel() {
             </p>
             <p className="text-xs leading-relaxed text-muted-foreground">
               {body.stats.done} runs · {body.spend.calls} of {body.daily_cap}{" "}
-              calls today · {body.spend.cost.toFixed(5)} credits
+              calls today · {body.spend.cost.toFixed(5)} credits{" "}
+              {/* Same line as today's count - "beside", not below - but
+                  dimmed with the app's existing secondary-text idiom
+                  (opacity-70, as ModelPanel's "Selected:" label and
+                  ImageOutputSetting's hint text already use) and named
+                  "lifetime" rather than positioned next to "today" with no
+                  label of its own. Today's number is the one that governs
+                  the cap, so it keeps full weight; this one does not. */}
+              <span className="opacity-70">
+                ({body.spend_lifetime.calls} lifetime)
+              </span>
             </p>
 
             {/* Failures and refusals are separate lines because they call for

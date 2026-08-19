@@ -657,6 +657,28 @@ NOTICE_STREAM_UNFINISHED = "stream_ended_without_done"
 TEXT_LINE_MAX_BYTES = 1024 * 1024
 IMAGE_LINE_MAX_BYTES = 64 * 1024 * 1024
 
+#: Every spelling of "the answer was cut off" this code may meet. OpenRouter
+#: normalises to `length`, but `native_finish_reason` relays the upstream word
+#: unchanged. Lives HERE rather than beside each caller because two callers
+#: (notebook_extract.py's extraction parser and completions.py's message
+#: persistence) both have to recognise a truncated reply, and two separately
+#: maintained lists is exactly how one of them ends up missing a spelling.
+TRUNCATED_FINISH_REASONS = frozenset({"length", "max_tokens", "maxtokens",
+                                      "model_length", "token_limit"})
+
+
+def finish_reasons(choice: dict) -> set[str]:
+    """Every stop-reason a provider choice gave, lowercased.
+
+    Both fields, case-folded, against a SET - reading only `finish_reason`
+    was one provider's spelling away from missing a truncation entirely:
+    `native_finish_reason` relays the upstream word ("MAX_TOKENS",
+    "max_tokens") unchanged, while OpenRouter's own `finish_reason` may
+    normalise it to something this set already knows.
+    """
+    return {str(choice.get(key) or "").strip().lower()
+            for key in ("finish_reason", "native_finish_reason")}
+
 
 async def _aiter_sse_lines(response: httpx.Response, *,
                            max_line_bytes: int = TEXT_LINE_MAX_BYTES,
@@ -753,6 +775,7 @@ async def complete_stream(
     modalities: tuple[str, ...] | list[str] | None = None,
     on_image=None,
     on_notice=None,
+    on_finish=None,
 ) -> AsyncIterator[str]:
     """Send a streaming completion request; yield content deltas as they arrive.
 
@@ -777,6 +800,17 @@ async def complete_stream(
     channel HERE, at the one place that knows the difference, is what keeps all
     of that impossible instead of merely unlikely. The sink is called with a raw
     `data:` URL string and must not raise.
+
+    on_finish: called once, after the loop ends without raising, with a single
+    bool - True when the reply was cut off rather than reaching a natural stop.
+    That covers two different providers' worth of evidence: a finish_reason (or
+    native_finish_reason) in TRUNCATED_FINISH_REASONS, OR the connection closing
+    with neither a `[DONE]` sentinel nor any finish_reason at all (the K-15
+    silence NOTICE_STREAM_UNFINISHED already warns about) - a provider that says
+    nothing about how it ended gets no benefit of the doubt. Not called when the
+    generator raises (a provider error, a timeout, a client abort): those paths
+    are handled by the caller's own rescue/error logic, which already knows a
+    partial reply is not a clean stop and does not need this callback to say so.
     """
     # Off the event loop (audit KÖK 8). See complete() for the full reasoning;
     # this is the streaming twin and the more damaging of the two, because the
@@ -839,6 +873,12 @@ async def complete_stream(
             dropped_frames = 0
             saw_done = False
             last_finish = None
+            #: Union of finish_reason/native_finish_reason across every chunk
+            #: that carried one - normally only the final chunk does, but
+            #: unioning rather than overwriting means a provider that repeats
+            #: the field on more than one chunk cannot make an earlier true
+            #: reading disappear behind a later empty one.
+            last_finish_reasons: set[str] = set()
             #: sha256 of every image url already handed to the sink. See the
             #: dedup comment in the loop below.
             seen_images: set[bytes] = set()
@@ -927,6 +967,7 @@ async def complete_stream(
                 choices = chunk.get("choices") or []
                 if choices and isinstance(choices[0], dict):
                     last_finish = choices[0].get("finish_reason") or last_finish
+                    last_finish_reasons |= finish_reasons(choices[0])
                 choice = choices[0] if choices and isinstance(choices[0], dict) else {}
 
                 if error_obj is not None or choice.get("finish_reason") == "error":
@@ -998,6 +1039,16 @@ async def complete_stream(
         # the answer to it.
         if not saw_done and last_finish is None and on_notice is not None:
             on_notice(NOTICE_STREAM_UNFINISHED, 0)
+        # Same silence, read a second way: NOTICE_STREAM_UNFINISHED tells the
+        # reader something may be missing, and on_finish tells the PERSISTENCE
+        # layer the same fact in the vocabulary it stores - a stream that ended
+        # without saying why is exactly as untrustworthy as one that said
+        # "length" outright, and the half sentence it left behind must not be
+        # saved as if the model had chosen to stop there.
+        if on_finish is not None:
+            stopped_cleanly = saw_done or last_finish is not None
+            on_finish(bool(last_finish_reasons & TRUNCATED_FINISH_REASONS)
+                     or not stopped_cleanly)
         if dropped_frames:
             logger.error(
                 "Stream completed with %d unparseable frame(s): model=%s",

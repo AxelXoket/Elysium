@@ -7,8 +7,10 @@
  * Rules:
  *  - Max 5 errors visible; extra events wait in-memory until a slot opens
  *  - Queue is capped at 20 events; oldest queued events are dropped first
- *  - Duplicate suppression: an event whose code+message matches a currently
- *    visible toast is skipped entirely (prevents identical toast spam)
+ *  - Duplicate suppression: an event whose identity matches one already
+ *    visible or queued is skipped entirely (prevents identical toast spam).
+ *    What counts as the same event is argued at identityOf, not here, because
+ *    that line has been wrong twice and a summary of it goes stale silently
  *  - No localStorage/sessionStorage/IndexedDB/cookies
  *  - No sensitive data in error events (messages use safe mapped text)
  *  - Events have stable shape for future UI: id, message, code, createdAt, severity
@@ -137,12 +139,25 @@ export const useErrorStore = create<ErrorState>()((set) => ({
  * partialSaved is in the key because it changes what the user is being told -
  * "we kept what arrived" and "nothing was saved" are two different events
  * about the same code, and collapsing them would report the wrong one.
+ *
+ * AND SO IS THE MESSAGE, FOR THE CODES BELOW, for the same reason partialSaved
+ * is. K-23's argument holds wherever the sentence is a rendering of the code;
+ * it is exactly backwards where one code carries several different things a
+ * person could be told. `tts_notice` is the only such code today: one reply
+ * can raise "the engine is warming up" and "the reply was cut short" in the
+ * same turn, and a key that ignores what the event SAYS called those two the
+ * same event and dropped the second in silence. Nothing weakens for the codes
+ * K-23 was written for - `images_omitted` still collapses whether it counts
+ * one image or three, because its code is not in this set.
  */
+const MESSAGE_IS_THE_EVENT: ReadonlySet<string> = new Set(["tts_notice"]);
+
 function identityOf(event: ErrorEvent): string {
   return [
     event.code,
     event.chatId === undefined ? "-" : String(event.chatId),
     event.partialSaved === undefined ? "-" : String(event.partialSaved),
+    MESSAGE_IS_THE_EVENT.has(event.code) ? event.message : "",
   ].join("\u0000");
 }
 

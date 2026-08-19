@@ -10,6 +10,8 @@ gated with HTTP 423 by the middleware in main.py):
     POST /vault/discard-plaintext-backup → shred the pre-vault copies
     POST /vault/discard-orphaned-copy → shred a stranded encrypted copy
     POST /vault/discard-empty-stub → remove the 0-byte stub a recovery moved aside
+    POST /vault/discard-premigrate-backup → shred a stale pre-migration snapshot
+    POST /vault/reset → wipe every artefact of this vault (locked-state only, typed confirmation)
 
 Privacy rules:
     - Passphrases are NEVER logged (mirrors keyring_service's no-log rule).
@@ -22,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import time
 from functools import partial
 from pathlib import Path
@@ -473,6 +476,8 @@ def _vault_status_sync() -> dict:
     the app. The same reasoning, and the same fix, as _load_completion_context
     in the completions router.
     """
+    import legacy_migration
+
     vault = _vault()
     kind = database.classify_db_file()
     # "initialized" = the unlock screen is the right UI: identity files exist,
@@ -541,6 +546,25 @@ def _vault_status_sync() -> dict:
         # that is precisely the file the user has to know about, because it is
         # the one Elysium will not touch.
         "rotation_backups": [b.name for b in database.rotation_backup_paths()],
+        # A stale copy of the whole vault, kept by legacy_migration whenever
+        # an uploads-migration pass could not finish cleanly - and NOT gated
+        # on whatever made a pass dirty still being true, so it can outlive
+        # that condition indefinitely (see legacy_migration.discard_
+        # premigrate_backup's own comment). Encrypted under the same key as
+        # the live vault, so this is not a plaintext leak - the problem is
+        # that it is a STALE copy: a message deleted after it was written
+        # still lives inside it, which is what keeps "delete" from being
+        # complete while the file is there. No route reported this or
+        # removed it before now.
+        "premigrate_backup": legacy_migration.premigrate_backup_present(),
+        # Same shape as orphaned_copy_readable, and the same reason: null
+        # while locked, because the question needs the key to answer.
+        "premigrate_backup_readable": (
+            database.check_key(
+                key, str(legacy_migration.premigrate_backup_path()))
+            if key is not None and legacy_migration.premigrate_backup_present()
+            else None
+        ),
     }
 
 
@@ -613,6 +637,27 @@ async def discard_orphaned_copy() -> dict:
     async with _vault_lock:
         removed, reason = await anyio.to_thread.run_sync(
             partial(database.discard_orphaned_enc_tmp, vault_state.get_key()))
+    return {"removed": removed, "reason": reason}
+
+
+@router.post("/discard-premigrate-backup")
+async def discard_premigrate_backup() -> dict:
+    """Delete a stale pre-migration snapshot of the whole vault.
+
+    Same shape as discard-orphaned-copy above, and for the same reason it
+    requires an unlocked vault: the file is encrypted, so "can this user read
+    it" is a real question, and the answer decides whether deleting it is
+    tidying or destroying. /vault/status's own comment on the
+    `premigrate_backup` field spells out why this can survive indefinitely on
+    a machine where an uploads-migration pass never comes back clean.
+    """
+    if not vault_state.is_unlocked():
+        raise HTTPException(423, "vault_locked")
+    async with _vault_lock:
+        import legacy_migration
+        removed, reason = await anyio.to_thread.run_sync(
+            partial(legacy_migration.discard_premigrate_backup_now,
+                   vault_state.get_key()))
     return {"removed": removed, "reason": reason}
 
 
@@ -1046,3 +1091,267 @@ async def vault_change_passphrase(body: ChangePassphraseBody) -> dict:
             "migrated": migrated_backup is not None,
             "backup": Path(migrated_backup).name if migrated_backup else None,
         }
+
+
+# ---------------------------------------------------------------------------
+# Reset: "forgot your passphrase" - wipe every artefact, no recovery exists
+# ---------------------------------------------------------------------------
+
+#: What the request body must type, verbatim (surrounding whitespace
+#: stripped, nothing else forgiven - no case-folding, no synonyms). The
+#: backend is the one place this is decided: a frontend field can always be
+#: relaxed to a checkbox by a later edit nobody meant as a weakening, so the
+#: true value has to live where nothing downstream can soften it.
+#:
+#: Chosen to read like a sentence describing what happens rather than like a
+#: password somebody might reuse: nobody fat-fingers this by accident, and
+#: unlike a single checkbox it cannot be satisfied by a client that forgot to
+#: ask the user anything at all.
+RESET_CONFIRMATION_PHRASE = "DELETE EVERYTHING"
+
+
+def _reset_identity_files(vault_dir: Path) -> list[str]:
+    """Every salt/verifier/kdf file this vault could have on disk, live or
+    shelved.
+
+    initialize() and change_passphrase() both shelve a superseded identity as
+    `<name>.bak-<ts>` rather than deleting it (crypto.py), and a rotation
+    killed between its two renames can leave `<name>.new` staged. None of
+    that matters once app.db is gone too - but the promise this route makes
+    is that NOTHING of this vault is left, not that what is left is harmless.
+    """
+    left: list[str] = []
+    for name in ("salt.bin", "verifier.bin", "kdf.json"):
+        candidates = [vault_dir / name, vault_dir / f"{name}.new"]
+        candidates += sorted(vault_dir.glob(f"{name}.bak-*"))
+        for path in candidates:
+            if not secure_delete.discard(path):
+                left.append(path.name)
+    return left
+
+
+def _reset_database(db_path: Path) -> list[str]:
+    """The live database and its journal/WAL siblings."""
+    left: list[str] = []
+    if not secure_delete.discard(db_path):
+        left.append(db_path.name)
+    for suffix in database._SIDECAR_SUFFIXES:
+        sidecar = db_path.with_name(db_path.name + suffix)
+        if not secure_delete.discard(sidecar):
+            left.append(sidecar.name)
+    return left
+
+
+def _reset_backup_families(db_path: Path) -> list[str]:
+    """Every sidecar and backup copy /vault/status already tracks by name:
+    plaintext pre-vault copies, encrypted copies orphaned by an interrupted
+    migration, full snapshots a rotation left behind, and the 0-byte stub a
+    recovery moved aside. Reset destroys the live database; leaving any of
+    these standing would turn "gone" into "moved to a name with .bak in it".
+    """
+    left: list[str] = []
+    for path in (database.plaintext_backups()
+                + database.orphaned_enc_tmp_paths()
+                + database.rotation_backup_paths()):
+        if not secure_delete.discard(path):
+            left.append(path.name)
+    stub = db_path.with_name(db_path.name + ".empty-stub-bak")
+    if not secure_delete.discard(stub):
+        left.append(stub.name)
+    return left
+
+
+def _reset_premigrate_family() -> list[str]:
+    """The premigrate snapshot the two routes above already track, plus the
+    two names its own write path can leave behind mid-write:
+    ensure_premigrate_backup's `.partial` scratch file, and the
+    `.unreadable-<ts>` name an unopenable snapshot is moved aside to rather
+    than deleted."""
+    import legacy_migration
+
+    left: list[str] = []
+    base = legacy_migration.premigrate_backup_path()
+    candidates = [base, base.with_name(base.name + ".partial")]
+    candidates += sorted(base.parent.glob(base.name + ".unreadable-*"))
+    for path in candidates:
+        if not secure_delete.discard(path):
+            left.append(path.name)
+    return left
+
+
+def _reset_directory_tree(path: Path, label: str) -> list[str]:
+    """Shred every file under a directory, then remove the directory itself.
+
+    Shared by the three plain-file trees this route destroys: legacy
+    uploads, the voice cache and voice references, and the WebView2 browser
+    profile. shred_tree refuses to follow a redirected (junction/symlink)
+    name rather than descending into it - the same guard every other sweep in
+    this app relies on, because a junction pointed at the user's documents
+    needs no privilege to create.
+
+    When shred_tree had to prune a redirected name, rmtree is skipped rather
+    than run over what remains: rmtree would walk straight into the very
+    thing that was just refused. A few empty directories left behind is the
+    cheap half of that trade; the other half is not this app's to take.
+    """
+    if not path.is_dir():
+        return []
+    _removed, left, pruned = secure_delete.shred_tree(path)
+    if pruned:
+        logger.warning(
+            "vault reset: a redirected name under %s was not swept.", label)
+        left = left + [f"{label}: contains a redirected name, not fully swept"]
+    else:
+        shutil.rmtree(path, ignore_errors=True)
+    return left
+
+
+def _reset_legacy_keyring() -> list[str]:
+    """The OS-keyring entries the one-time migration reads (E5).
+
+    Nothing else in this route touches the credential store, but a reset that
+    left a legacy entry standing would hand the NEXT vault's first unlock a
+    secret this one never asked it to keep: migrate_legacy_secrets copies
+    whatever is there into a fresh vault automatically, with no user action
+    at all.
+    """
+    import keyring_service
+
+    left: list[str] = []
+    for name in (config.SECRET_API_KEY, config.SECRET_PROXY_URL):
+        if not keyring_service.delete_legacy(name):
+            left.append(f"keyring:{name}")
+    return left
+
+
+def _reset_vault_sync() -> dict:
+    """The whole wipe, off the event loop and with no key at all - the route
+    below already refuses an unlocked vault before this ever runs, so nothing
+    here decrypts anything. It only shreds files whose names this app already
+    knows, by the same primitive every other deletion in this codebase uses.
+
+    Every category below runs independently and a stuck file in one must not
+    skip the rest: a wipe that stops at the first held-open file is a worse
+    outcome than one that gets as far as it can and says exactly what did
+    not go, which is the same reasoning every discard route above already
+    follows for a single file at a time.
+
+    NOT reset here, and deliberately: TTS_MODELS_DIR, the engine runtimes,
+    and the uv/python install caches. Those are downloaded ENGINE software,
+    multi-gigabyte and hours to reprovision (see TTS_INSTALL_TIMEOUT_S), not
+    user data - re-fetching them on every forgotten passphrase would turn a
+    privacy feature into a bandwidth and time tax nobody asked for. The user's
+    own recorded voice references and the spoken-audio cache, which DO carry
+    their conversation, are wiped below.
+
+    Generated images are not swept as a separate directory: attachments_
+    service stores every image - uploaded or model-generated - as a blob
+    inside app.db itself (E6), so destroying the database already destroys
+    them; there is no second copy on disk to find.
+    """
+    db_path = Path(config.DB_PATH)
+    vault_dir = db_path.parent
+
+    left: list[str] = []
+    left += _reset_database(db_path)
+    left += _reset_identity_files(vault_dir)
+    left += _reset_backup_families(db_path)
+    left += _reset_premigrate_family()
+    left += _reset_directory_tree(Path(config.UPLOADS_DIR), "uploads")
+    left += _reset_directory_tree(Path(config.TTS_CACHE_DIR), "voice cache")
+    left += _reset_directory_tree(Path(config.TTS_REFS_DIR),
+                                  "voice references")
+    left += _reset_directory_tree(Path(config.DATA_DIR) / "webview",
+                                  "browser profile")
+    left += _reset_legacy_keyring()
+
+    if left:
+        logger.warning(
+            "Vault reset ran but %d artefact(s) could not be removed: %s",
+            len(left), ", ".join(left))
+    else:
+        logger.info("Vault reset: every known artefact was removed.")
+    return {"ok": not left, "left": left}
+
+
+class VaultResetBody(BaseModel):
+    model_config = {"extra": "forbid"}
+    confirm: str = Field(min_length=1)
+
+
+@router.post("/reset")
+async def vault_reset(body: VaultResetBody) -> dict:
+    """Wipe every artefact of this vault and leave DATA_DIR as if Elysium had
+    never been run. The "forgot your passphrase" answer the owner asked for:
+    there is no recovery, so the only honest response to a lost passphrase is
+    starting over.
+
+    THE CENTRAL PROBLEM, NAMED RATHER THAN BURIED
+
+    This has to work from the LOCKED state - a route that needed the
+    passphrase would be no use to the one person it exists for - which makes
+    it a destructive action reachable without proving who is asking. Three
+    things stand between "reachable" and "reachable by accident, or by
+    whoever merely got to this machine first":
+
+      * the launch-token gate in main.py (see launch_token.py), armed on
+        every packaged build. It refuses any request that does not carry
+        THIS launch's own secret, which stops a DIFFERENT PROCESS on the
+        same machine from curling this route blind. It does NOT stop
+        something that can read the token out of this app's own window - a
+        malicious browser extension, devtools access to the renderer, or the
+        WebView2 session-restore residue launch_token.py's own docstring
+        names as a real, accepted gap - and it is simply absent in dev,
+        where nothing issues a token and the gate lets everything through.
+      * the cross-origin write shield in main.py, which refuses a mutating
+        request whose Origin is not this app's own. That stops a hostile WEB
+        PAGE from reaching this route even from an open tab. It does nothing
+        against a bare local process: curl sends no Origin and no
+        Sec-Fetch-Site header at all, and the shield's own fallback treats an
+        absent header as non-browser tooling and lets it through - which is
+        exactly the gap the launch token exists to close instead.
+      * `body.confirm` below, checked against a phrase only the backend
+        decides the true value of, so a frontend bug - a button wired wrong,
+        a stale default in a form - cannot fire this with an empty or a
+        near-miss string.
+
+    Residual risk, stated rather than implied: anyone able to present the
+    current launch token can wipe this vault with no passphrase at all. That
+    is the SAME trust boundary vault_state.py already accepts for the
+    unlocked vault - "any code running as this user" - extended to the locked
+    one. It is real, and it is not new: someone with that access does not
+    need this route either, since they could already delete every file it
+    deletes by hand.
+
+    WHY THIS REFUSES OUTRIGHT WHILE UNLOCKED
+
+    A vault that CAN be unlocked does not need this door. Answering it anyway
+    would make it a different and far more dangerous route - a way to destroy
+    a conversation somebody is reading right now - and a confirmation phrase
+    only guards against an ACCIDENT, never against someone reaching over a
+    shoulder. So the unlocked check runs first, before the confirmation
+    phrase is even read.
+
+    WHAT THIS CANNOT UNDO
+
+    Every file here goes through secure_delete.shred: bytes overwritten
+    before the name is removed, which defeats an undelete tool and anything
+    reading freed blocks through the same filesystem view. It is NOT a
+    guarantee against the OS page file having held a copy of something once
+    decrypted, a filesystem shadow copy taken before this ran, or an SSD's
+    wear levelling leaving the original physical blocks readable to
+    firmware-level recovery after the logical overwrite. Full-disk encryption
+    is the only answer to that class, and it is the user's to enable, not
+    this app's to fake.
+    """
+    async with _vault_lock:
+        # Checked FIRST, before the confirmation phrase is even read - see
+        # the docstring above for why the order is load-bearing and not
+        # cosmetic. Same lock as init/unlock/change-passphrase, so a reset
+        # cannot interleave with one of them starting or finishing mid-way.
+        if vault_state.is_unlocked():
+            raise HTTPException(409, "vault_unlocked")
+        if body.confirm.strip() != RESET_CONFIRMATION_PHRASE:
+            raise HTTPException(422, "reset_confirmation_mismatch")
+        result = await anyio.to_thread.run_sync(_reset_vault_sync)
+    return result

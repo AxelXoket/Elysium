@@ -5,11 +5,16 @@ and shows it in a native window. Closing the window returns from
 webview.start(), the process exits, and the vault key - held only in RAM - is
 gone. So the vault locks on close, exactly as intended; reopening the app shows
 the lock screen and asks for the passphrase.
+
+That promise only holds while ONE process owns the data folder, so a second
+launch against the same folder is refused before it can touch anything. See
+enforce_single_instance.
 """
 from __future__ import annotations
 
 import atexit
 import ctypes
+import hashlib
 import logging
 import os
 import socket
@@ -18,6 +23,7 @@ import threading
 import time
 import urllib.request
 import winreg
+from ctypes import wintypes
 
 import uvicorn
 import webview
@@ -114,6 +120,284 @@ def _webview2_installed() -> bool:
         except OSError:
             continue
     return False
+
+
+# ── One instance, one vault ──────────────────────────────────────────────────
+#
+# CreateMutexW hands back a valid handle whether or not the name was already
+# taken, so this code, not the return value, is what says somebody got here
+# first.
+_ALREADY_EXISTS = 183  # ERROR_ALREADY_EXISTS
+
+#: The kernel handle IS the claim. Held for the life of the process and never
+#: waited on: the only question ever asked is whether the NAME exists.
+_instance_mutex: int | None = None
+
+
+def _close_handle(handle: int) -> None:
+    """CloseHandle with its argtypes declared. Not optional: a HANDLE is
+    pointer sized, and an undeclared ctypes call marshals a Python int as a
+    32-bit value, so on 64-bit Windows the wrong handle (or none) gets closed
+    and the failure is silent."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    close = kernel32.CloseHandle
+    close.argtypes = [wintypes.HANDLE]
+    close.restype = wintypes.BOOL
+    close(handle)
+
+
+def _instance_mutex_name() -> str:
+    """One claim per DATA FOLDER, not one per machine.
+
+    What must not happen twice is not "Elysium runs", it is "two processes
+    share one vault". vault_state keeps the key in a module global, so window A
+    and window B each hold their own copy of it: locking A clears A's key and
+    leaves B sitting on a fully decryptable database. The user performs the one
+    gesture the whole at-rest design rests on and gets half of it, and auto
+    lock has exactly the same blind spot. So the folder is the thing being
+    guarded, and the name says so.
+
+    That also keeps the harmless case legal. Two runs pointed at two different
+    ELYSIUM_DATA_DIRs share no key, no database, no port file and no launch
+    token, so they may sit side by side; that is what keeps the frozen self
+    check runnable while the real app is open, since it always redirects
+    ELYSIUM_DATA_DIR at a throwaway folder.
+
+    normcase and abspath because Windows paths are case insensitive and the
+    data folder arrives spelled differently depending on who expanded it. A
+    hash because a kernel object name may not contain a backslash after its
+    namespace prefix, and a path is mostly backslashes.
+
+    Local rather than Global for the namespace: Local is per logon session,
+    which is the same boundary the data folder already has, and it needs no
+    privilege. Two people signed in to one machine get an app each instead of
+    one of them locking the other out.
+    """
+    from config import DATA_DIR
+
+    key = os.path.normcase(os.path.abspath(str(DATA_DIR)))
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+    return "Local\\Elysium-vault-" + digest
+
+
+def claim_single_instance() -> bool:
+    """True if THIS process now owns the data folder, False if another one does.
+
+    A named mutex rather than a lockfile, and the reason is the kill case. A
+    lockfile outlives whatever wrote it, so every later reader has to guess
+    whether the pid inside is still the app or a number the OS has since handed
+    to something else. Guess wrong one way and a crashed app can never be
+    reopened; wrong the other way and the guard is decoration. A kernel object
+    has no stale state to reason about: the name exists exactly as long as some
+    handle to it does, and Windows closes every handle a process holds when it
+    dies, whether it exited, crashed, or was ended from Task Manager. Nothing
+    is written to disk, so there is nothing left to clean up.
+
+    use_last_error=True builds a private WinDLL whose thunk saves the thread's
+    error code the instant the call returns. ctypes.windll is a shared, cached
+    handle without it, and then the one value this function exists to read
+    could be overwritten by any ctypes bookkeeping in between, which would
+    silently turn the guard off rather than break it loudly.
+    """
+    global _instance_mutex
+    if os.name != "nt":
+        return True
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create = kernel32.CreateMutexW
+        create.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+        create.restype = wintypes.HANDLE
+        handle = create(None, False, _instance_mutex_name())
+        code = ctypes.get_last_error()
+    except Exception:
+        # A guard that cannot run must never become the reason the app will not
+        # open. Losing it costs the second-window protection; refusing here
+        # would cost the app.
+        logging.getLogger(__name__).warning(
+            "single-instance guard unavailable; starting anyway", exc_info=True)
+        return True
+    if not handle:
+        return True
+    if code == _ALREADY_EXISTS:
+        # Somebody else's object, opened by name. Let go of it immediately:
+        # holding a handle to a mutex we do not own would keep the name alive
+        # after the real instance quits.
+        _close_handle(handle)
+        return False
+    _instance_mutex = handle
+    return True
+
+
+def release_single_instance() -> None:
+    """Give the claim back. Only the tests call this, and that is the point: a
+    real run holds it until the process ends, which is precisely the property a
+    lockfile could not offer. Closing the last handle destroys the named object
+    and lets the next launch straight through."""
+    global _instance_mutex
+    handle, _instance_mutex = _instance_mutex, None
+    if handle:
+        try:
+            _close_handle(handle)
+        except Exception:
+            pass
+
+
+def _process_image(pid: int) -> str:
+    """Full path of the executable behind a pid, normcased, or "" if it cannot
+    be read. QUERY_LIMITED_INFORMATION rather than QUERY_INFORMATION because it
+    is the right that survives another process running at a different integrity
+    level, and this only ever asks for a name."""
+    query_limited_information = 0x1000
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    open_process = kernel32.OpenProcess
+    open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    open_process.restype = wintypes.HANDLE
+    handle = open_process(query_limited_information, False, pid)
+    if not handle:
+        return ""
+    try:
+        query = kernel32.QueryFullProcessImageNameW
+        query.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+                          ctypes.POINTER(wintypes.DWORD)]
+        query.restype = wintypes.BOOL
+        size = wintypes.DWORD(32768)
+        buffer = ctypes.create_unicode_buffer(size.value)
+        if not query(handle, 0, buffer, ctypes.byref(size)):
+            return ""
+        return os.path.normcase(buffer.value)
+    finally:
+        _close_handle(handle)
+
+
+def _own_image() -> str:
+    """This process's executable as the KERNEL reports it, not as
+    sys.executable claims it. Inside a virtualenv the two disagree:
+    sys.executable is the shim in .venv and the kernel reports the interpreter
+    behind it, so comparing one against the other would never match in dev and
+    every second launch would fall through to the dialog. sys.executable is
+    only the fallback for the case where even our own image cannot be read."""
+    return _process_image(os.getpid()) or os.path.normcase(
+        os.path.abspath(sys.executable))
+
+
+def _find_app_window(title: str = WINDOW_TITLE) -> int:
+    """HWND of a window belonging to another copy of this same program, or 0.
+
+    Two filters, and the second one is why this is not a one line FindWindowW.
+    A title is not an identity: the packaged app's data folder is itself named
+    Elysium, and an Explorer window sitting in it is titled exactly "Elysium".
+    Raising THAT and then going quiet would be the precise failure this path
+    exists to prevent, so the owning process must also be running the same
+    image we are (python.exe in dev, the exe when frozen).
+
+    The port file was the other candidate and it cannot do this job. It says a
+    server answered, not where that server's window is, and the API is launch
+    token gated on purpose, so we could not ask the other instance to show
+    itself even if we wanted to.
+
+    No filter on our own pid, deliberately: this runs before
+    webview.create_window, so at this moment this process owns no window at
+    all. The `title` argument exists so a test can look for a name nothing else
+    on the machine could be carrying; the default is the only value the app
+    itself ever passes.
+    """
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    text_of = user32.GetWindowTextW
+    text_of.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    text_of.restype = ctypes.c_int
+    owner_of = user32.GetWindowThreadProcessId
+    owner_of.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    owner_of.restype = wintypes.DWORD
+    walk = user32.EnumWindows
+    walk.argtypes = [ctypes.c_void_p, wintypes.LPARAM]
+    walk.restype = wintypes.BOOL
+
+    mine = _own_image()
+    found: list[int] = []
+    callback_type = ctypes.WINFUNCTYPE(
+        wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def visit(hwnd, _lparam):
+        buffer = ctypes.create_unicode_buffer(256)
+        text_of(hwnd, buffer, 256)
+        if buffer.value != title:
+            return True
+        pid = wintypes.DWORD()
+        owner_of(hwnd, ctypes.byref(pid))
+        if _process_image(pid.value) != mine:
+            return True
+        found.append(int(hwnd))
+        return False  # stop walking: one is all this needs
+
+    walk(callback_type(visit), 0)
+    return found[0] if found else 0
+
+
+def _raise_existing_window(title: str = WINDOW_TITLE) -> bool:
+    """Put the instance that is already running back in front of the user.
+    True if a window of ours was found and asked to come forward.
+
+    SetForegroundWindow's return value is deliberately not the answer. Windows
+    refuses foreground changes from a process the user did not just interact
+    with, so it can fail while the restore above it has already put the window
+    back on screen. Treating that as a failure would stack an error dialog on
+    top of a window the user is looking at.
+    """
+    try:
+        hwnd = _find_app_window(title)
+        if not hwnd:
+            return False
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        show = user32.ShowWindow
+        show.argtypes = [wintypes.HWND, ctypes.c_int]
+        show.restype = wintypes.BOOL
+        show(hwnd, 9)  # SW_RESTORE: un-minimise, leaving a normal window's size alone
+        front = user32.SetForegroundWindow
+        front.argtypes = [wintypes.HWND]
+        front.restype = wintypes.BOOL
+        front(hwnd)
+        return True
+    except Exception:
+        return False
+
+
+def enforce_single_instance() -> None:
+    """The second double click ends here, and it ends BEFORE anything touches
+    the data folder.
+
+    Order matters more than it looks. launch_token.issue() writes the secret
+    that gates the API, and a second process reaching it would overwrite the
+    token the live window is already using, locking the running app out of its
+    own backend. win_hardening.harden and the vault come after that. So this is
+    the first thing main() does with any knowledge of DATA_DIR.
+
+    IT APPLIES IN DEV TOO. The split key is a property of the code, not of the
+    packaging: `python run_app.py` twice against the same folder produces the
+    identical half locked vault. There is no env flag to switch this off,
+    because a flag that lets two processes share one folder is only a
+    documented way back into the hole. A developer who wants two windows sets
+    ELYSIUM_DATA_DIR on one of them, which gives it a vault of its own and is
+    safe by construction rather than by promise.
+    """
+    if claim_single_instance():
+        return
+    logging.getLogger(__name__).info(
+        "another Elysium already holds this data folder; handing over to it")
+    if not _raise_existing_window():
+        # Never a silent exit. If we could not find the window then we cannot
+        # assume the user can see it either, and an app that vanishes on a
+        # double click is indistinguishable from an app that crashed.
+        _alert(
+            "Elysium is already running.\n\n"
+            "Only one copy can use a data folder at a time. Two copies would "
+            "each hold their own copy of the vault key, so locking one would "
+            "leave the other one wide open.\n\n"
+            "Switch to the Elysium window that is already open."
+        )
+    # 0, not 1. Nothing failed here: the user asked for Elysium and Elysium is
+    # on screen. A non zero code would make the shell, and any script that
+    # launches this, report an error for a launch that did what was wanted.
+    raise SystemExit(0)
 
 
 def _port_file():
@@ -384,6 +668,10 @@ def clear_session_residue(profile) -> dict[str, object]:
 
 def main() -> None:
     _setup_frozen_logging()
+    # First, and before anything reads or writes the data folder. A second copy
+    # that gets past this line would reissue the launch token and then hold its
+    # own copy of the vault key.
+    enforce_single_instance()
     # Before the vault key can exist in this process, and before the data
     # directory has anything worth indexing: a crash dump that excludes the
     # heap is only useful if the flag was set before the crash.

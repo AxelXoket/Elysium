@@ -79,8 +79,10 @@ from generated_images import (
 from openrouter import (
     NOTICE_FRAME_DROPPED,
     NOTICE_STREAM_UNFINISHED,
+    TRUNCATED_FINISH_REASONS,
     OpenRouterError,
     MODALITIES_WITH_IMAGE,
+    finish_reasons,
     image_urls_from,
     validate_and_filter_gen_params,
     get_cached_model_metadata,
@@ -1099,14 +1101,17 @@ async def _call_provider_for_chat(
     context_budget_tokens: int | None,
     history_before_id: int | None = None,
     pending_attachments: list[dict] | None = None,
-) -> tuple[str, list[dict], list[tuple[bytes, str, int, int]]]:
+) -> tuple[str, list[dict], list[tuple[bytes, str, int, int]], bool]:
     """Non-streaming provider call: prepare, call OpenRouter, parse.
 
-    Returns (assistant_text, notices, generated_image_bytes) on success. The
-    notices ride back out to the caller for the same reason the SSE path emits
-    them: this endpoint has a response body, so "the model never saw your
-    picture" has somewhere to go here too, and the two paths must not disagree
-    about that (P4).
+    Returns (assistant_text, notices, generated_image_bytes, truncated) on
+    success. The notices ride back out to the caller for the same reason the
+    SSE path emits them: this endpoint has a response body, so "the model
+    never saw your picture" has somewhere to go here too, and the two paths
+    must not disagree about that (P4). `truncated` is read from THIS choice's
+    finish_reason/native_finish_reason - the streaming path has to accumulate
+    that across chunks, but a non-streaming reply arrives as one object with
+    the field already sitting on it.
     Raises HTTPException on any failure.
     """
     (messages, filtered_gen_params, provider_dict, notices,
@@ -1137,9 +1142,13 @@ async def _call_provider_for_chat(
     if not isinstance(choices, list) or not choices:
         raise HTTPException(502, "invalid_openrouter_completion_response")
 
-    message = choices[0].get("message") if isinstance(choices[0], dict) else None
+    choice = choices[0] if isinstance(choices[0], dict) else {}
+    message = choice.get("message")
     if not isinstance(message, dict):
         raise HTTPException(502, "invalid_openrouter_completion_response")
+    # Read from the CHOICE, not the message - finish_reason/native_finish_reason
+    # are siblings of "message" in the OpenRouter shape, never inside it.
+    truncated = bool(finish_reasons(choice) & TRUNCATED_FINISH_REASONS)
 
     # Images first, because whether the reply is empty depends on the answer.
     # Nothing is fetched here and nothing base64 survives past this call.
@@ -1163,7 +1172,7 @@ async def _call_provider_for_chat(
         raise HTTPException(502, "invalid_openrouter_completion_response")
 
     logger.info("Gen params keys: %s", list(filtered_gen_params.keys()))
-    return text, notices, generated
+    return text, notices, generated, truncated
 
 
 # ---------------------------------------------------------------------------
@@ -1174,6 +1183,7 @@ def _persist_exchange_sync(
     chat_id: int, model_id: str, user_text: str, assistant_text: str,
     attachment_ids: list[int],
     generated_images: list[tuple[bytes, str, int, int]] | None = None,
+    truncated: bool = False,
 ) -> tuple[dict, dict, int, int, int]:
     """Worker-thread body for the non-streaming write. Both rows, one txn.
 
@@ -1215,8 +1225,9 @@ def _persist_exchange_sync(
             linked_rows = link_attachments(con, attachment_ids, user_msg_id)
 
         cur = con.execute(
-            "INSERT INTO messages (chat_id, role, content) VALUES (?, 'assistant', ?)",
-            (chat_id, assistant_text),
+            "INSERT INTO messages (chat_id, role, content, truncated) "
+            "VALUES (?, 'assistant', ?, ?)",
+            (chat_id, assistant_text, int(truncated)),
         )
         asst_msg_id = cur.lastrowid
 
@@ -1232,11 +1243,13 @@ def _persist_exchange_sync(
         )
 
         user_row = con.execute(
-            "SELECT id, chat_id, role, content, created_at FROM messages WHERE id = ?",
+            "SELECT id, chat_id, role, content, created_at, truncated "
+            "FROM messages WHERE id = ?",
             (user_msg_id,),
         ).fetchone()
         asst_row = con.execute(
-            "SELECT id, chat_id, role, content, created_at FROM messages WHERE id = ?",
+            "SELECT id, chat_id, role, content, created_at, truncated "
+            "FROM messages WHERE id = ?",
             (asst_msg_id,),
         ).fetchone()
     return (_msg_to_dict(user_row, linked_rows),
@@ -1250,7 +1263,7 @@ async def complete_chat(chat_id: int, body: CompleteRequest) -> dict:
 
     pending_rows = _validate_request_attachments(body.attachments, body.model_id)
 
-    assistant_text, notices, generated = await _call_provider_for_chat(
+    assistant_text, notices, generated, truncated = await _call_provider_for_chat(
         chat_id=chat_id,
         model_id=body.model_id,
         user_message_text=body.message,
@@ -1267,7 +1280,7 @@ async def complete_chat(chat_id: int, body: CompleteRequest) -> dict:
             await anyio.to_thread.run_sync(
                 _persist_exchange_sync, chat_id, body.model_id,
                 body.message.strip(), assistant_text, body.attachments,
-                generated,
+                generated, truncated,
             )
         )
     except HTTPException:
@@ -1359,6 +1372,7 @@ def _insert_assistant_message(
     chat_id: int, model_id: str, text: str, user_msg_id: int,
     busy_timeout_ms: int = 15000,
     generated_images: list[tuple[bytes, str, int, int]] | None = None,
+    truncated: bool = False,
 ) -> dict:
     """Insert an assistant message + bump the chat; return the API row dict.
 
@@ -1392,8 +1406,9 @@ def _insert_assistant_message(
         if tail != user_msg_id:
             raise StaleExchangeError()
         cur = con.execute(
-            "INSERT INTO messages (chat_id, role, content) VALUES (?, 'assistant', ?)",
-            (chat_id, text),
+            "INSERT INTO messages (chat_id, role, content, truncated) "
+            "VALUES (?, 'assistant', ?, ?)",
+            (chat_id, text, int(truncated)),
         )
         asst_msg_id = cur.lastrowid
         generated_rows, refused = _store_generated(con, generated_images,
@@ -1403,7 +1418,8 @@ def _insert_assistant_message(
             (model_id, chat_id),
         )
         row = con.execute(
-            "SELECT id, chat_id, role, content, created_at FROM messages WHERE id = ?",
+            "SELECT id, chat_id, role, content, created_at, truncated "
+            "FROM messages WHERE id = ?",
             (asst_msg_id,),
         ).fetchone()
     if refused:
@@ -1446,6 +1462,7 @@ def _offer_to_notebook(chat_id: int) -> None:
 def _append_variant(
     chat_id: int, anchor: int, text: str, model_id: str, fallback_active_id: int,
     generated_images: list[tuple[bytes, str, int, int]] | None = None,
+    truncated: bool = False,
 ) -> dict:
     """Atomic variant append (v1.1 FB2b/I7): run in a WORKER THREAD, opening
     its own connection here. Guard + deactivate + insert + chat bump all live
@@ -1486,9 +1503,9 @@ def _append_variant(
         )
         cur = con.execute(
             "INSERT INTO messages "
-            "(chat_id, role, content, variant_group, active) "
-            "VALUES (?, 'assistant', ?, ?, 1)",
-            (chat_id, text, anchor),
+            "(chat_id, role, content, variant_group, active, truncated) "
+            "VALUES (?, 'assistant', ?, ?, 1, ?)",
+            (chat_id, text, anchor, int(truncated)),
         )
         asst_msg_id = cur.lastrowid
         generated_rows, refused = _store_generated(con, generated_images,
@@ -1505,7 +1522,7 @@ def _append_variant(
         )
         asst_row = con.execute(
             "SELECT id, chat_id, role, content, created_at, "
-            "variant_group, active FROM messages WHERE id = ?",
+            "variant_group, active, truncated FROM messages WHERE id = ?",
             (asst_msg_id,),
         ).fetchone()
     return {
@@ -1623,16 +1640,24 @@ async def _stream_exchange(
 ):
     """Stream one provider reply and commit it. The body all three share.
 
-    finalize(full_text, generated_images) -> dict: awaited once the reply is
-        complete; the dict is merged into the `done` event. May raise any key of
-        _CONFLICT_CODES. generated_images are raw bytes, already decoded and
-        already judged - the finalizer stores them in the SAME transaction as the
-        assistant row, so a picture and the reply that owns it commit together.
+    finalize(full_text, generated_images, truncated) -> dict: awaited once the
+        reply is complete; the dict is merged into the `done` event. May raise
+        any key of _CONFLICT_CODES. generated_images are raw bytes, already
+        decoded and already judged - the finalizer stores them in the SAME
+        transaction as the assistant row, so a picture and the reply that owns
+        it commit together. `truncated` is complete_stream's own verdict (see
+        its on_finish docstring): the model's ceiling, or a connection that
+        died without ever saying it was done - never true for a natural stop.
     rescue(partial, persisted, urgent) -> bool: what an exchange that ended
         early leaves behind, True when it kept the partial. None for the two
         endpoints that write nothing until finalize, so there is nothing to
         undo. `urgent` is set only inside GeneratorExit handling, where
-        awaiting is not an option.
+        awaiting is not an option. A KEPT partial is ALWAYS truncated - it is
+        text the model never finished saying, whether the reason was a client
+        abort or a provider error mid-reply - so rescue's own implementation
+        marks it True unconditionally rather than asking complete_stream,
+        which never got the chance to render a verdict on a stream that did
+        not end cleanly.
     """
     parts: list[str] = []
     #: `data:` URLs collected off the image channel. Strings only, and never
@@ -1640,6 +1665,16 @@ async def _stream_exchange(
     #: text, so a URL in there would be stored in messages.content, painted in
     #: the bubble and read aloud.
     image_urls: list[str] = []
+    # complete_stream calls this once, after the loop ends without raising,
+    # with its own verdict on whether the reply was cut off (finish_reason in
+    # TRUNCATED_FINISH_REASONS, or the connection closing with no [DONE] and
+    # no finish_reason at all - see its docstring). A one-element list rather
+    # than a bare bool so the closure below can WRITE it; `finalize(full_text,
+    # generated, finish_state[0])` reads it back after the loop ends.
+    finish_state: list[bool] = [False]
+
+    def _on_finish(truncated: bool) -> None:
+        finish_state[0] = truncated
     persisted = False  # guards against a double-insert if the client
     # disconnects exactly at the `done` yield (GeneratorExit lands in the
     # abort handler after the assistant row is already written).
@@ -1784,6 +1819,7 @@ async def _stream_exchange(
             # above, before the first delta. These arrive during the stream
             # and are drained below.
             on_notice=_note,
+            on_finish=_on_finish,
         ):
             parts.append(delta)                      # RAW - storage
             voice.feed(delta)                        # RAW - the tags are
@@ -1836,7 +1872,7 @@ async def _stream_exchange(
             raise OpenRouterError("openrouter_error")
 
         try:
-            done = await finalize(full_text, generated)
+            done = await finalize(full_text, generated, finish_state[0])
         except tuple(_CONFLICT_CODES) as exc:
             code = _CONFLICT_CODES[type(exc)]
             logger.warning(
@@ -1994,13 +2030,14 @@ async def complete_chat_stream(chat_id: int, body: CompleteRequest) -> Streaming
 
     async def finalize(
         full_text: str, generated: list[tuple[bytes, str, int, int]],
+        truncated: bool,
     ) -> dict:
         # Worker thread: the commit between SSE events must not block the
         # loop (other live streams stall for its duration).
         assistant_message = await anyio.to_thread.run_sync(
             _insert_assistant_message,
             chat_id, model_id_stripped, full_text, user_msg_id, 15000,
-            generated,
+            generated, truncated,
         )
         return {
             "user_message": user_message,
@@ -2030,9 +2067,14 @@ async def complete_chat_stream(chat_id: int, body: CompleteRequest) -> Streaming
         timeout = _ABORT_DB_BUSY_TIMEOUT_MS if urgent else _DB_BUSY_TIMEOUT_MS
         if partial:
             try:
+                # Always truncated=True: a kept partial is by definition text
+                # the model never finished saying - whether the reader hit
+                # Stop or the provider dropped the connection, the sentence
+                # is cut, and complete_stream never ran its own finish_reason
+                # check on a stream that did not end cleanly enough to ask.
                 _insert_assistant_message(
                     chat_id, model_id_stripped, partial, user_msg_id,
-                    busy_timeout_ms=timeout,
+                    busy_timeout_ms=timeout, truncated=True,
                 )
                 logger.info(
                     "Streaming completion ended early; partial persisted: "
@@ -2198,7 +2240,7 @@ async def regenerate_message(chat_id: int, message_id: int,
     # Call provider first - the old assistant variants stay untouched until
     # the new one exists. history_before_id excludes the user message (it is
     # re-appended as the current turn) and the whole target variant group.
-    assistant_text, notices, generated = await _call_provider_for_chat(
+    assistant_text, notices, generated, truncated = await _call_provider_for_chat(
         chat_id=chat_id,
         model_id=body.model_id,
         user_message_text=user_text,
@@ -2218,7 +2260,7 @@ async def regenerate_message(chat_id: int, message_id: int,
         result = await anyio.to_thread.run_sync(
             _append_variant,
             chat_id, anchor, assistant_text, model_id_stripped, prev_active_id,
-            generated,
+            generated, truncated,
         )
     except RegenerateConflictError:
         raise HTTPException(409, "regenerate_conflict")
@@ -2296,6 +2338,7 @@ async def regenerate_message_stream(chat_id: int, message_id: int,
 
     async def finalize(
         full_text: str, generated: list[tuple[bytes, str, int, int]],
+        truncated: bool,
     ) -> dict:
         # Atomic variant append on a worker thread (v1.1 FB2b): the swap txn
         # runs off the loop so other live SSE streams do not stall. The await
@@ -2304,7 +2347,7 @@ async def regenerate_message_stream(chat_id: int, message_id: int,
         result = await anyio.to_thread.run_sync(
             _append_variant,
             chat_id, anchor, full_text, model_id_stripped, prev_active_id,
-            generated,
+            generated, truncated,
         )
         variant_count = result["variant_count"]
         return {
@@ -2405,6 +2448,7 @@ def _finalize_edit(
     expected_content: str,
     expected_tail_id: int,
     generated_images: list[tuple[bytes, str, int, int]] | None = None,
+    truncated: bool = False,
 ) -> dict:
     """Atomic edit swap. Runs in a WORKER THREAD and opens its own
     connection there (I7: a connection never crosses threads; guard + sweep +
@@ -2466,9 +2510,9 @@ def _finalize_edit(
             (new_content, message_id),
         )
         cur = con.execute(
-            "INSERT INTO messages (chat_id, role, content) "
-            "VALUES (?, 'assistant', ?)",
-            (chat_id, assistant_text),
+            "INSERT INTO messages (chat_id, role, content, truncated) "
+            "VALUES (?, 'assistant', ?, ?)",
+            (chat_id, assistant_text, int(truncated)),
         )
         asst_msg_id = cur.lastrowid
         generated_rows, refused = _store_generated(con, generated_images,
@@ -2481,12 +2525,12 @@ def _finalize_edit(
 
         user_row = con.execute(
             "SELECT id, chat_id, role, content, created_at, variant_group, "
-            "active FROM messages WHERE id = ?",
+            "active, truncated FROM messages WHERE id = ?",
             (message_id,),
         ).fetchone()
         asst_row = con.execute(
             "SELECT id, chat_id, role, content, created_at, variant_group, "
-            "active FROM messages WHERE id = ?",
+            "active, truncated FROM messages WHERE id = ?",
             (asst_msg_id,),
         ).fetchone()
 
@@ -2524,7 +2568,7 @@ async def edit_message(chat_id: int, message_id: int, body: EditRequest) -> dict
     )
     new_content = body.message.strip()
 
-    assistant_text, notices, generated = await _call_provider_for_chat(
+    assistant_text, notices, generated, truncated = await _call_provider_for_chat(
         chat_id=chat_id,
         model_id=body.model_id,
         user_message_text=new_content,
@@ -2541,6 +2585,7 @@ async def edit_message(chat_id: int, message_id: int, body: EditRequest) -> dict
             _finalize_edit,
             chat_id, message_id, new_content, assistant_text, body.model_id,
             user_row["updated_at"], user_row["content"], tail_id, generated,
+            truncated,
         )
     except EditConflictError:
         raise HTTPException(409, "edit_conflict")
@@ -2602,11 +2647,13 @@ async def edit_message_stream(chat_id: int, message_id: int,
 
     async def finalize(
         full_text: str, generated: list[tuple[bytes, str, int, int]],
+        truncated: bool,
     ) -> dict:
         result = await anyio.to_thread.run_sync(
             _finalize_edit,
             chat_id, message_id, new_content, full_text, model_id_stripped,
             user_row["updated_at"], user_row["content"], tail_id, generated,
+            truncated,
         )
         logger.info(
             "Streaming edit swept %d row(s): chat_id=%d user_msg_id=%d",

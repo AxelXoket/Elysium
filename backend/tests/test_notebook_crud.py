@@ -12,6 +12,8 @@ So every test here names which of those it is protecting against.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 import database
@@ -301,13 +303,63 @@ class TestWhatTheFirstAuditFound:
         with database.get_db() as con:
             assert con.execute("PRAGMA secure_delete").fetchone()[0] == 1
 
-    def test_the_migration_source_connection_keeps_scratch_in_ram(self, db):
+    def test_the_migration_source_connection_keeps_scratch_in_ram(
+        self, tmp_path, monkeypatch
+    ) -> None:
         """It never passes through _key_pragma, and it runs the whole database
-        through one statement - the likeliest spill in the app."""
-        import inspect
+        through one statement - the likeliest spill in the app.
+
+        Rewritten 2026-08-19: this used to read migrate_plaintext_to_encrypted's
+        own source and check for the pragma string, with a comment admitting
+        "behaviour would need a real plaintext migration". That passes for a
+        mention in a dead branch or a comment and fails for nothing real. This
+        builds a real plaintext database, watches the actual connection the
+        migration opens on it, and reads PRAGMA temp_store off that connection
+        at the moment sqlcipher_export runs - not off the function's text.
+        """
         import database as db_mod
-        src = inspect.getsource(db_mod.migrate_plaintext_to_encrypted)
-        # Behaviour would need a real plaintext migration; what is asserted
-        # here is that the connection carries the pragma at all, because the
-        # module docstring claimed coverage this path did not have.
-        assert 'PRAGMA temp_store = MEMORY' in src
+        from sqlcipher3 import dbapi2 as sqlite3
+
+        src = tmp_path / "plain.db"
+        seed = sqlite3.connect(str(src))
+        seed.execute("CREATE TABLE t (v TEXT)")
+        seed.execute("INSERT INTO t VALUES ('x')")
+        seed.commit()
+        seed.close()
+        monkeypatch.setattr(db_mod, "DB_PATH", str(src))
+
+        # GROUND: if the migration ever stops setting the pragma on this
+        # connection, this list holds the wrong number instead of 2 (MEMORY).
+        # POSITIVE CONTROL: if sqlcipher_export never runs on this connection
+        # at all - the export moved, or this test stopped observing the right
+        # connection - the list stays empty and the assert below still catches
+        # it, rather than passing on a call that never happened.
+        seen: list[int] = []
+
+        class _WatchedConnection(sqlite3.Connection):
+            def execute(self, sql, *args, **kwargs):
+                result = super().execute(sql, *args, **kwargs)
+                if "sqlcipher_export" in sql.lower():
+                    seen.append(super().execute("PRAGMA temp_store").fetchone()[0])
+                return result
+
+        real_connect = sqlite3.connect
+
+        def watched_connect(path, *args, **kwargs):
+            # Only the plaintext SOURCE connection is watched. check_key()
+            # opens a second, separate connection on the encrypted scratch
+            # file later in the same migration call, and that one is not what
+            # this test is about.
+            if str(path) == str(src):
+                kwargs["factory"] = _WatchedConnection
+            return real_connect(path, *args, **kwargs)
+
+        monkeypatch.setattr(db_mod.sqlite3, "connect", watched_connect)
+
+        backup = db_mod.migrate_plaintext_to_encrypted(bytes(range(32)))
+
+        assert seen == [2], (
+            f"PRAGMA temp_store read {seen} while sqlcipher_export ran; "
+            f"MEMORY reads back as 2"
+        )
+        assert Path(backup).exists(), "the migration did not finish"

@@ -12,15 +12,16 @@
  * Passphrases exist ONLY in component state - never persisted, never logged.
  */
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { motion as m } from "motion/react";
+import { z } from "zod/v4";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
 import { ElysiumMark } from "@/components/brand/ElysiumMark";
 import { Wordmark } from "@/components/brand/Wordmark";
 import { MistCanvas } from "@/components/backdrop/MistCanvas";
 import { LockOverlay } from "@/components/vault/LockOverlay";
 import { useReducedMotion } from "@/components/motion/ReducedMotion";
-import { setVaultLockedHandler, isApiError } from "@/lib/api/client";
+import { setVaultLockedHandler, isApiError, request } from "@/lib/api/client";
 import { getErrorMessage } from "@/lib/errors/errorMessages";
 import { stopVoicePlayback } from "@/lib/voice/playerStore";
 import { setVaultLockAnimationHandler } from "@/lib/vaultLockUi";
@@ -32,6 +33,47 @@ import {
 } from "@/lib/query/vault";
 
 const MIN_PASSPHRASE_LEN = 12;
+
+/**
+ * The phrase a user must type to wipe the vault and start over.
+ *
+ * ASSUMPTION, recorded because there is nothing yet to confirm it against:
+ * as of this writing backend/routers/vault.py defines no /vault/reset route
+ * at all (checked directly, not inferred), so no server-side phrase exists to
+ * read. The build brief names the backend as the authority on the exact
+ * wording once that route lands. Until then this constant is a stand-in, and
+ * it is exported so the test file imports it rather than duplicating it - if
+ * the real route later expects different wording, only this one line and the
+ * request body shape below need to change to match it.
+ */
+export const RESET_CONFIRM_PHRASE = "DELETE EVERYTHING";
+
+/** POST /vault/reset - ASSUMED shape (see RESET_CONFIRM_PHRASE above). Kept
+ * local to this file rather than added to lib/api/vault.ts and
+ * lib/schemas/vault.ts: this component owns only VaultGate.tsx, and those
+ * files are shared ground other work touches concurrently. */
+const VaultResetOkSchema = z.object({ ok: z.boolean() });
+
+function resetVault(confirm: string): Promise<{ ok: boolean }> {
+  return request("/vault/reset", VaultResetOkSchema, {
+    method: "POST",
+    body: JSON.stringify({ confirm }),
+  });
+}
+
+function useResetVault() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: resetVault,
+    // Same shape as init/unlock: a reset is a boot-state transition too, and
+    // the gate has to see a fresh /vault/status (initialized: false) to swing
+    // over to the setup screen on its own - see the stage switch in
+    // VaultGate. Nothing here invents a fourth stage.
+    onSuccess: () => {
+      void qc.invalidateQueries();
+    },
+  });
+}
 
 /** Passphrase input with a show/hide reveal toggle. The visibility state is
  * per-field and local; the plaintext never leaves component state. */
@@ -313,10 +355,47 @@ function CreatePassphrase() {
             <Wordmark size={27} tone="onDark" />
           </span>
           <h1 className="vault-title">Protect your world</h1>
+          {/* An exception clause reads as exhaustive, so every item left out
+              of it is a claim that item IS encrypted. This one listed the
+              wallpaper alone and left out the two that matter more:
+
+              1. SPOKEN REPLIES. tts/host.py writes each reply as a plain wav
+                 under the data folder. The backend says it plainly in
+                 routers/vault.py: the cache "is the user's conversation in
+                 audible form, in the clear, next to a database that is
+                 encrypted". It is wiped at lock, launch and shutdown and
+                 trimmed at thirty minutes, so it is transient - but while it
+                 is there it is the conversation, unencrypted. Transient is
+                 not encrypted, and this screen is where the promise is made.
+              2. THE CLONING REFERENCE. tts/refs.py keeps the clip the user
+                 recorded and a transcript of the words in it as plain files
+                 under voice/refs/, and NOTHING purges those - not the lock,
+                 not shutdown. Worded as "any voice clip you add", because
+                 reference clips only exist for engines that clone: a user
+                 whose model cannot must not be told they have such a file.
+
+              The wallpaper stays in Settings rather than here. It is
+              decorative, it is the least of the three, and the gate should
+              name what is the conversation itself. Settings carries the
+              complete list, this card carries the true short one.
+
+              Checked and deliberately NOT listed: the voice models folder
+              holds weights the user dropped in, not their content, and
+              elysium.log is audited (run_app.py) to carry no chat content,
+              keys or passphrases.
+
+              Do not trim this back to one item. That already happened once:
+              audit FF15 in v1.1 caught this exact sentence overclaiming
+              ("images ... encrypted" while the wallpaper sat plain in
+              IndexedDB), narrowed it to the wallpaper, and left the audible
+              conversation unmentioned. A second pass on the same sentence
+              is what it cost. */}
           <p className="vault-note">
             Everything Elysium stores - chats, characters, personas, images -
-            is encrypted on disk with this passphrase, except the decorative
-            chat wallpaper.
+            is encrypted on disk with this passphrase. Two things are not:
+            spoken replies, written as plain audio and wiped at every lock,
+            and any voice clip you add for cloning, which stays on disk with
+            its transcript. Settings has the full list.
           </p>
         </div>
         <PassphraseField
@@ -370,6 +449,23 @@ function LockScreen() {
   const unlock = useUnlockVault();
   const [pass, setPass] = useState("");
   const [shakeKey, setShakeKey] = useState(0);
+  const [resetOpen, setResetOpen] = useState(false);
+  // The trigger button unmounts while the reset panel is open (the panel
+  // REPLACES the form, the same way CreatePassphrase's migration notice
+  // replaces its form above) - so focus cannot return to a ref that no
+  // longer exists. It has to live here, one level up, where it survives the
+  // swap. Effect below (mirroring NotebookPanel's wasConfirming ref) gives it
+  // back the moment the ordinary lock screen is back on screen.
+  const forgotTriggerRef = useRef<HTMLButtonElement>(null);
+  const wasResetOpen = useRef(false);
+  useEffect(() => {
+    if (resetOpen) {
+      wasResetOpen.current = true;
+    } else if (wasResetOpen.current) {
+      wasResetOpen.current = false;
+      forgotTriggerRef.current?.focus();
+    }
+  }, [resetOpen]);
 
   const wrongPass =
     unlock.isError &&
@@ -391,6 +487,14 @@ function LockScreen() {
       },
     });
   };
+
+  if (resetOpen) {
+    return (
+      <VaultFrame>
+        <ResetVaultPanel onCancel={() => setResetOpen(false)} />
+      </VaultFrame>
+    );
+  }
 
   return (
     <VaultFrame>
@@ -417,6 +521,31 @@ function LockScreen() {
           autoFocus
           ariaInvalid={wrongPass}
         />
+        {/* Quiet on purpose - reuses vault-note's own token (12px, the
+            card's muted text colour), just underlined to read as a control.
+            Sits between the field it answers and the error/submit below it,
+            never above or beside Unlock, so a mis-click reaching for the
+            passphrase box lands on plain text, not a destructive door. Type
+            ="button": it cannot submit the unlock form, and opening it below
+            only swaps in an explanation + typed confirmation - nothing here
+            can wipe anything by itself. */}
+        <button
+          ref={forgotTriggerRef}
+          type="button"
+          className="vault-note"
+          style={{
+            background: "none",
+            border: "none",
+            padding: 0,
+            textAlign: "left",
+            textDecoration: "underline",
+            cursor: "pointer",
+            alignSelf: "flex-start",
+          }}
+          onClick={() => setResetOpen(true)}
+        >
+          Forgot your passphrase?
+        </button>
         {unlock.isError && (
           <p className="vault-error" role="alert">
             {isApiError(unlock.error)
@@ -437,5 +566,115 @@ function LockScreen() {
         </button>
       </form>
     </VaultFrame>
+  );
+}
+
+/* ── Lock screen: forgotten passphrase -> reset the vault ─────────────
+   There is no recovery, so this is the one honest door: wipe and start
+   over. Shaped to be hard to reach by accident and impossible to trigger
+   by a slip - explanation first, then a typed phrase, and the destructive
+   call fires from exactly one place, guarded by that phrase matching. */
+function ResetVaultPanel({ onCancel }: { onCancel: () => void }) {
+  const reset = useResetVault();
+  const [confirmText, setConfirmText] = useState("");
+  const cancelButtonRef = useRef<HTMLButtonElement>(null);
+
+  // House standard from NotebookPanel's confirm row: the SAFE choice takes
+  // focus on open, so a reflexive Enter keeps the vault rather than erasing
+  // it. The destructive button is reachable, just never the reflex.
+  useEffect(() => {
+    cancelButtonRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      // Same stop as NotebookPanel's: Composer binds Escape at the window to
+      // "stop generating", and this panel can appear while a reply from
+      // before the lock is still technically registered. One Escape here
+      // must close only this, never reach past it.
+      event.stopPropagation();
+      event.preventDefault();
+      onCancel();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [onCancel]);
+
+  const canSubmit = confirmText === RESET_CONFIRM_PHRASE && !reset.isPending;
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    // Checked again here, not just via the button's disabled attribute - a
+    // near-miss phrase followed by Enter in the text field still reaches
+    // this handler, and disabled alone would not have stopped it.
+    if (!canSubmit) return;
+    reset.mutate(confirmText);
+  };
+
+  return (
+    <form className="vault-card" onSubmit={submit} aria-label="Reset the vault">
+      <div className="vault-head">
+        <span className="vault-brand">
+          <ElysiumMark size={114} />
+          <Wordmark size={27} tone="onDark" />
+        </span>
+        <h1 className="vault-title">Start over instead</h1>
+        <p className="vault-note">
+          This does not recover your passphrase - nothing does. It deletes
+          everything the vault holds: chats, characters, personas, notes,
+          uploads, generated images, saved voice, and the saved API key. All
+          of it, at once, and it cannot be undone.
+        </p>
+        <p className="vault-note">
+          Afterwards Elysium opens on the same setup screen first run used.
+          You choose a new passphrase there, and the app starts empty.
+        </p>
+      </div>
+      <label className="vault-label">
+        {`Type "${RESET_CONFIRM_PHRASE}" to continue`}
+        <input
+          type="text"
+          className="sidebar-dialog-field vault-input"
+          value={confirmText}
+          onChange={(e) => setConfirmText(e.target.value)}
+          autoComplete="off"
+          spellCheck={false}
+          disabled={reset.isPending}
+        />
+      </label>
+      {reset.isError && (
+        <p className="vault-error" role="alert">
+          {/* No vault_reset_failed entry exists yet in errorMessages.ts (out
+              of scope here - that catalogue is shared ground). An unmapped
+              code falls through to its own honest generic sentence rather
+              than borrowing unlock's, which would name the wrong failure. */}
+          {getErrorMessage(isApiError(reset.error) ? reset.error.detail : null)}
+        </p>
+      )}
+      <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.3rem" }}>
+        <button
+          ref={cancelButtonRef}
+          type="button"
+          className="sidebar-dialog-cancel vault-submit"
+          style={{ flex: 1 }}
+          onClick={onCancel}
+        >
+          Cancel
+        </button>
+        <button
+          type="submit"
+          className="sidebar-dialog-action vault-submit"
+          style={{ flex: 1 }}
+          disabled={!canSubmit}
+        >
+          {reset.isPending ? (
+            <Loader2 size={14} className="animate-spin" />
+          ) : (
+            "Delete everything"
+          )}
+        </button>
+      </div>
+    </form>
   );
 }

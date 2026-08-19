@@ -4,6 +4,7 @@ Routes:
     GET    /settings              - current config state (no secrets)
     POST   /settings/api-key      - store API key in keyring
     DELETE /settings/api-key      - remove API key from keyring
+    POST   /settings/api-key/check - is the STORED key still accepted
     POST   /settings/proxy        - store proxy config
     DELETE /settings/proxy        - remove proxy config
     GET    /settings/proxy/health - proxy health probe result
@@ -346,6 +347,83 @@ async def delete_api_key() -> dict:
     # a key leaked. Saying "done" to that is the failure this field exists to
     # end - the same shape /vault/lock reports with audio_left.
     return {"ok": True, "legacy_copy_left": left_behind}
+
+
+# ---------------------------------------------------------------------------
+# POST /settings/api-key/check
+# ---------------------------------------------------------------------------
+
+def _read_api_key_sync() -> str | None:
+    """Worker-thread body (audit KOK 8): the stored-key read.
+
+    A vault read is a SQLite open, a reader lock and a decrypt, exactly the
+    work _get_settings_sync was moved off the loop for. The settings panel is
+    the screen people open mid-reply, and this button is the slowest thing on
+    it, so a stall here would freeze every live stream.
+    """
+    return get_secret(SECRET_API_KEY)
+
+
+@router.post("/api-key/check")
+async def check_api_key() -> dict:
+    """Ask OpenRouter whether the key ALREADY STORED is still accepted.
+
+    save_api_key answers this question for a key being typed, which is the one
+    moment nobody needs to ask it. The key that quietly stops working is the
+    one saved last month: revoked on the provider's dashboard, expired, or out
+    of credit. Until this route existed the only way to find that out was to
+    send a message and read the failure, or to retype the whole key into the
+    save box - and retyping a key to test it is not a test, it is a save.
+
+    POST rather than GET, and not as a matter of style. This handler puts the
+    stored key on the wire every time it runs, so it must fire exactly when a
+    person presses the button: never from a prefetch, a browser retry, or the
+    parameterless-GET sweep in tests/test_privacy_promises.py that calls every
+    such route the app serves. GET /settings/proxy/health is a GET because it
+    is cached and safe to repeat. This is neither.
+
+    Four answers, and the middle two are the point:
+        {"key_status": "valid"}                  - OpenRouter accepted it.
+        {"key_status": "invalid"}                - OpenRouter rejected it.
+        {"key_status": "validation_unavailable"} - no answer ever arrived.
+        {"key_status": "not_set"}                - nothing stored to check.
+    "invalid" and "validation_unavailable" are OPPOSITE facts. One says replace
+    the key; the other says the key was never even asked about. Collapsing them
+    into a single failure is how a proxy outage gets read as a dead key and a
+    perfectly good key gets thrown away.
+
+    A rejection is not an HTTP error here, and that differs from save_api_key
+    on purpose. There, 422 is right because the request - store this key -
+    failed. Here the request is "check it", and a check that comes back
+    "rejected" SUCCEEDED. Making it a 4xx would also route it through the
+    frontend's parseApiError, where it would arrive wearing the same generic
+    sentence as an unreachable provider: the exact collapse this route exists
+    to prevent.
+
+    The key never leaves this function. Not in the response, not in the log
+    line - only the verdict does.
+    """
+    from openrouter import validate_api_key
+
+    # The same gate as every other outbound path, in the same order and for the
+    # reason written on enforce_proxy_gate itself: this is a LIVE request
+    # carrying the key. It runs BEFORE the vault is read, so an armed
+    # kill-switch with no usable proxy refuses without the secret ever being
+    # loaded into this process's memory.
+    await enforce_proxy_gate()
+
+    stored = await anyio.to_thread.run_sync(_read_api_key_sync)
+    if stored is None:
+        # Answered, not raised. "There is nothing stored to check" is a state
+        # of the app, not a failure of the request, and the UI hides the button
+        # in that state anyway - this is what the race answers with when the key
+        # was removed in another window between the render and the click.
+        return {"key_status": "not_set"}
+
+    status = await validate_api_key(stored)
+    # Three fixed words, never the key and never the provider's body.
+    logger.info("Stored API key checked; verdict: %s.", status)
+    return {"key_status": status}
 
 
 # ---------------------------------------------------------------------------

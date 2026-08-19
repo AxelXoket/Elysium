@@ -470,3 +470,54 @@ def discard_premigrate_backup() -> None:
         secure_delete.discard(premigrate_backup_path())
     except OSError:
         logger.warning("uploads-migration: premigrate backup delete failed.")
+
+
+def premigrate_backup_present() -> bool:
+    """True while a stale pre-migration snapshot of the whole vault sits on
+    disk.
+
+    ensure_premigrate_backup() writes it before the first uploads-migration
+    pass that could delete a row, and it is NOT gated on the `pending` flag
+    computed before that pass runs (see the caller's own comment) - so it
+    survives long after whatever made a pass dirty is gone, on any machine
+    where a pass never comes back fully clean. It is a complete copy of every
+    chat, persona, secret and image, encrypted under the same key as the live
+    vault, and until now no route reported it and no route removed it - the
+    only trace was a log line from the one unlock that wrote it.
+    """
+    return premigrate_backup_path().exists()
+
+
+def discard_premigrate_backup_now(key: bytes) -> tuple[bool, str]:
+    """Shred the premigrate backup on the user's own word, from a route.
+
+    Distinct from discard_premigrate_backup() above, which the unlock
+    bootstrap calls automatically once a pass comes back with zero failures -
+    at that point ensure_premigrate_backup already proved the file opens with
+    the current key, in the same unlock, so that path never has to ask again.
+
+    This one is reachable at any time a pass has not come back clean, so it
+    makes no such assumption: the key is checked here first, the same way
+    database.discard_orphaned_enc_tmp checks an orphaned copy before touching
+    it, and refused for the same reason - an encrypted file that does not
+    open under the key this vault currently holds is not a stale duplicate to
+    tidy away, it may be the only copy of something from an era this
+    passphrase does not reach. Same reason vocabulary as that function
+    ("not_present", "different_key", "in_use"), so a caller only has to learn
+    it once.
+    """
+    path = premigrate_backup_path()
+    if not path.exists():
+        return False, "not_present"
+    if not database.check_key(key, str(path)):
+        logger.warning(
+            "Refusing to delete %s: it does not open with the current key, "
+            "so it may be a snapshot from a passphrase this vault no longer "
+            "holds.", path.name)
+        return False, "different_key"
+    if not secure_delete.shred(path):
+        logger.warning("%s could not be deleted and is still on disk.",
+                       path.name)
+        return False, "in_use"
+    logger.info("Discarded the premigrate backup on the user's word.")
+    return True, ""

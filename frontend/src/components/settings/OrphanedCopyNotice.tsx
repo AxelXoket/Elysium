@@ -16,7 +16,7 @@
  * is the only copy of something under a passphrase we do not have. Which of
  * those it is decides whether the user is offered a delete button at all.
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertCircle, Loader2, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -26,6 +26,37 @@ export function OrphanedCopyNotice() {
   const status = useVaultStatus();
   const discard = useDiscardOrphanedCopy();
   const [confirming, setConfirming] = useState(false);
+
+  // Same fix as PlaintextBackupNotice, same reason: the confirm row replaces
+  // the trigger it grew out of, so an unhelped keyboard user loses focus to
+  // <body> asking to delete an irreversible second copy of the vault. Focus
+  // the SAFE choice on open, hand it back to the trigger on close, and let
+  // Escape close without also stopping a reply generating behind the panel.
+  const deleteTriggerRef = useRef<HTMLButtonElement>(null);
+  const keepButtonRef = useRef<HTMLButtonElement>(null);
+  const wasConfirming = useRef(false);
+
+  useEffect(() => {
+    if (confirming) {
+      wasConfirming.current = true;
+      keepButtonRef.current?.focus();
+    } else if (wasConfirming.current) {
+      wasConfirming.current = false;
+      deleteTriggerRef.current?.focus();
+    }
+  }, [confirming]);
+
+  useEffect(() => {
+    if (!confirming) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      event.preventDefault();
+      setConfirming(false);
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [confirming]);
 
   if (!status.data?.orphaned_copy) return null;
   const readable = status.data.orphaned_copy_readable;
@@ -49,7 +80,7 @@ export function OrphanedCopyNotice() {
           A second copy of the vault
         </h4>
       </div>
-      <p className="settings-hint">
+      <p className="text-xs leading-relaxed text-muted-foreground">
         An interrupted move left a second, complete copy of your database on
         disk, beside the vault and named after it (
         <code>app.db.enc-tmp</code>, or <code>app.db.enc-tmp.orphan.bak-…</code>
@@ -58,14 +89,14 @@ export function OrphanedCopyNotice() {
       </p>
 
       {readable === true && (
-        <p className="settings-hint">
+        <p className="text-xs leading-relaxed text-muted-foreground">
           It opens with your current passphrase, so it is yours and it is
           readable. Recovery left it behind because your live database was
           already healthy, which makes it a leftover rather than a rescue.
         </p>
       )}
       {readable === false && (
-        <p className="settings-hint">
+        <p className="text-xs leading-relaxed text-muted-foreground">
           This copy does <strong>not</strong> open with your current
           passphrase. It may belong to an older one - so it could be the only
           copy of chats this vault cannot show you. Elysium will not delete it.
@@ -73,14 +104,14 @@ export function OrphanedCopyNotice() {
         </p>
       )}
       {readable == null && (
-        <p className="settings-hint">
+        <p className="text-xs leading-relaxed text-muted-foreground">
           Unlock the vault to find out whether this copy is a duplicate or
           something only an older passphrase can open.
         </p>
       )}
 
       {discard.data?.removed === false && discard.data.reason === "in_use" && (
-        <p className="settings-error" role="alert">
+        <p className="persona-local-error" role="alert">
           Still on disk: something else has the file open.
         </p>
       )}
@@ -89,13 +120,13 @@ export function OrphanedCopyNotice() {
           disabled button with a tooltip - there is no safe version of it. */}
       {readable === true && !confirming && (
         <Button
+          ref={deleteTriggerRef}
           type="button"
           variant="ghost"
           size="sm"
           disabled={discard.isPending}
           onClick={() => setConfirming(true)}
-          className="gap-1 text-xs"
-          style={{ color: "var(--color-es-danger)" }}
+          className="persona-danger-action gap-1 text-xs"
         >
           <Trash2 size={12} />
           Delete the duplicate
@@ -111,13 +142,14 @@ export function OrphanedCopyNotice() {
           </span>
           <Button
             type="button"
+            variant="ghost"
             size="sm"
             disabled={discard.isPending}
             onClick={() => {
               setConfirming(false);
               discard.mutate();
             }}
-            className="inline-confirm-button is-danger gap-1 text-xs"
+            className="persona-danger-action gap-1 text-xs"
           >
             {discard.isPending ? (
               <Loader2 size={12} className="animate-spin" />
@@ -127,12 +159,13 @@ export function OrphanedCopyNotice() {
             Delete
           </Button>
           <Button
+            ref={keepButtonRef}
             type="button"
             variant="ghost"
             size="sm"
             disabled={discard.isPending}
             onClick={() => setConfirming(false)}
-            className="text-xs"
+            className="persona-ghost-action text-xs"
           >
             Keep
           </Button>

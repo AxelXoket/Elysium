@@ -3,6 +3,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { mockFetch } from "@/test/mocks/api";
+import { delayRoute } from "@/test/helpers/delayRoute";
 import {
   settingsFixture,
   proxyHealthFixture,
@@ -450,5 +451,196 @@ describe("Proxy Section Tests", () => {
       await screen.findByText("Something went wrong. Please try again."),
     ).toBeInTheDocument();
     expect(screen.queryByText("RAW_UPSTREAM_DETAIL")).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The "Proxy configured" indicator - pending / error / resolved.
+ *
+ * `settings?.proxy_configured ? "Proxy configured" : "No proxy"` used to
+ * collapse the in-flight window into "No proxy" - milder than the API-key
+ * dot because the dot was already muted, not danger, but the same wrong
+ * claim about a proxy that IS configured. Held open with delayRoute so the
+ * assertions land inside that window instead of after it.
+ */
+describe("configured-status indicator - pending must not read as unconfigured", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("says it is checking, not 'No proxy', while settings are in flight", async () => {
+    const fetchMock = mockFetch({
+      "/settings/proxy/health": { body: proxyHealthFixture },
+      "/settings": { body: { ...settingsFixture, proxy_configured: true } },
+    });
+    const release = delayRoute(fetchMock, "GET", "/settings", {
+      body: { ...settingsFixture, proxy_configured: true },
+    });
+    const { container } = renderWithQueryClient(<ProxySection />, { wrapper });
+
+    expect(screen.getByText("Checking…")).toBeInTheDocument();
+    expect(
+      container.querySelector('[data-state="pending"]'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("No proxy")).not.toBeInTheDocument();
+    expect(screen.queryByText("Proxy configured")).not.toBeInTheDocument();
+
+    release();
+    await waitFor(() => {
+      expect(screen.getByText("Proxy configured")).toBeInTheDocument();
+    });
+  });
+
+  it("reports an unreachable settings fetch as its own state, not 'No proxy'", async () => {
+    mockFetch({
+      "/settings/proxy/health": { body: proxyHealthFixture },
+      "/settings": { status: 500, body: { detail: "internal_error" } },
+    });
+    const { container } = renderWithQueryClient(<ProxySection />, { wrapper });
+
+    expect(
+      await screen.findByText("Could not check whether a proxy is configured."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("No proxy")).not.toBeInTheDocument();
+    expect(
+      container.querySelector('[data-state="error"]'),
+    ).toBeInTheDocument();
+  });
+
+  // GROUND: a genuinely unconfigured proxy still reports "No proxy" once
+  // the query actually resolves - the fix must not silence the true alarm.
+  it("still reports 'No proxy' once settings resolves for real - the ground", async () => {
+    mockFetch({
+      "/settings/proxy/health": { body: proxyHealthFixture },
+      "/settings": { body: { ...settingsFixture, proxy_configured: false } },
+    });
+    renderWithQueryClient(<ProxySection />, { wrapper });
+    expect(await screen.findByText("No proxy")).toBeInTheDocument();
+  });
+
+  // POSITIVE CONTROL.
+  it("reports 'Proxy configured' once settings resolves for real - the positive control", async () => {
+    mockFetch({
+      "/settings/proxy/health": { body: proxyHealthFixture },
+      "/settings": { body: { ...settingsFixture, proxy_configured: true } },
+    });
+    renderWithQueryClient(<ProxySection />, { wrapper });
+    expect(await screen.findByText("Proxy configured")).toBeInTheDocument();
+  });
+});
+
+/**
+ * The proxy-health indicator - the worst of the three defects, because it is
+ * the one that used to wear the real danger colour: `health?.healthy ?
+ * "Healthy" : "Unhealthy"` painted a red "Unhealthy" over a healthy proxy for
+ * every millisecond between the settings fetch landing and this component's
+ * own, uncached health probe answering.
+ */
+describe("proxy-health indicator - pending must not read as unhealthy", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("shows a muted checking state, never the danger colour, while the probe is in flight", async () => {
+    const fetchMock = mockFetch({
+      "/settings/proxy/health": { body: proxyHealthFixture },
+      "/settings": { body: { ...settingsFixture, proxy_configured: true } },
+    });
+    // Settings resolve immediately, so the health block mounts; only the
+    // health probe itself is held open.
+    const release = delayRoute(fetchMock, "GET", "/settings/proxy/health", {
+      body: proxyHealthFixture,
+    });
+    renderWithQueryClient(<ProxySection />, { wrapper });
+
+    await screen.findByText("Proxy configured");
+    const indicator = await screen.findByTestId("proxy-health-indicator");
+    expect(indicator.parentElement).toHaveAttribute("data-state", "pending");
+    expect(screen.getByText("Checking…")).toBeInTheDocument();
+    expect(screen.queryByText("Unhealthy")).not.toBeInTheDocument();
+    expect(screen.queryByText("Healthy")).not.toBeInTheDocument();
+    // Positively muted, not merely "not styled" - this is what stands in for
+    // the colour a collapsed branch would have painted here instead.
+    expect(indicator).toHaveStyle({ color: "var(--color-es-text-muted)" });
+
+    release();
+    await waitFor(() => {
+      // Regex, not an exact string: the fixture carries a latency suffix
+      // ("Healthy · 42ms") in the same text node, same as the pre-existing
+      // T-13 test above.
+      expect(screen.getByText(/^Healthy/)).toBeInTheDocument();
+    });
+  });
+
+  it("reports a failed health probe as its own state, not as Unhealthy", async () => {
+    mockFetch({
+      "/settings/proxy/health": { status: 500, body: { detail: "internal_error" } },
+      "/settings": { body: { ...settingsFixture, proxy_configured: true } },
+    });
+    renderWithQueryClient(<ProxySection />, { wrapper });
+
+    expect(await screen.findByText("Could not check the proxy.")).toBeInTheDocument();
+    expect(screen.queryByText("Unhealthy")).not.toBeInTheDocument();
+    const indicator = await screen.findByTestId("proxy-health-indicator");
+    expect(indicator.parentElement).toHaveAttribute("data-state", "error");
+  });
+
+  // GROUND: a genuinely unhealthy proxy still reports "Unhealthy" once the
+  // probe actually resolves - the fix must not silence the true alarm.
+  it("still reports 'Unhealthy' once the probe resolves for real - the ground", async () => {
+    mockFetch({
+      "/settings/proxy/health": { body: { ...proxyHealthFixture, healthy: false } },
+      "/settings": { body: { ...settingsFixture, proxy_configured: true } },
+    });
+    renderWithQueryClient(<ProxySection />, { wrapper });
+    expect(await screen.findByText(/^Unhealthy/)).toBeInTheDocument();
+  });
+
+  // POSITIVE CONTROL.
+  it("reports 'Healthy' once the probe resolves for real - the positive control", async () => {
+    mockFetch({
+      "/settings/proxy/health": { body: proxyHealthFixture },
+      "/settings": { body: { ...settingsFixture, proxy_configured: true } },
+    });
+    renderWithQueryClient(<ProxySection />, { wrapper });
+    expect(await screen.findByText(/^Healthy/)).toBeInTheDocument();
+  });
+});
+
+describe("whether a proxy is REQUIRED, while the answer is still loading", () => {
+  // The third instance of the same defect in this one file. "No" is not a
+  // neutral placeholder here: it says the app may reach the network with no
+  // proxy at all, which is the opposite of what somebody who configured one
+  // needs to read - and it says it to them about their own machine.
+  it("says it is checking rather than that no proxy is required", async () => {
+    const required = { ...settingsFixture, proxy_configured: true,
+                       proxy_required: true };
+    const fetchMock = mockFetch({
+      "/settings/proxy/health": { body: proxyHealthFixture },
+      "/settings": { body: required },
+    });
+    const release = delayRoute(fetchMock, "GET", "/settings", { body: required });
+    renderWithQueryClient(<ProxySection />, { wrapper });
+
+    const line = await screen.findByTestId("proxy-required");
+    expect(line).toHaveAttribute("data-state", "pending");
+    release();
+    await waitFor(() =>
+      expect(screen.getByTestId("proxy-required"))
+        .toHaveAttribute("data-state", "required"));
+  });
+
+  it("still says optional once the answer really is optional", async () => {
+    // Ground. A fix that swallowed the true answer would be worse than the
+    // bug: this line is how somebody checks their own setup.
+    mockFetch({
+      "/settings/proxy/health": { body: proxyHealthFixture },
+      "/settings": { body: { ...settingsFixture, proxy_configured: true,
+                             proxy_required: false } },
+    });
+    renderWithQueryClient(<ProxySection />, { wrapper });
+    await waitFor(() =>
+      expect(screen.getByTestId("proxy-required"))
+        .toHaveAttribute("data-state", "optional"));
   });
 });

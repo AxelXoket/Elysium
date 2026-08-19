@@ -42,6 +42,11 @@ export const MessageSchema = z.object({
   active: z.boolean().default(true),
   variant_index: z.number().default(0),
   variant_count: z.number().default(1),
+  /** The reply stopped because it hit the token ceiling, not because the
+   *  model finished its sentence. Nullish so a vault that predates the
+   *  column still parses - z.object STRIPS unknown keys, so a field the
+   *  server sends and this schema omits vanishes with no error at all. */
+  truncated: z.boolean().nullish(),
 });
 
 // POST /chats/{id}/messages/{mid}/activate response
