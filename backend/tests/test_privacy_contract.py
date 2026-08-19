@@ -172,6 +172,21 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "tests/test_privacy_at_rest.py::TestTheDatabaseFileIsCiphertext"
         "::test_an_image_blob_is_not_findable_in_the_raw_bytes",
     )),
+    # KADEME: the "At rest" paragraph used to name only what IS sealed, and
+    # the Features list said the wallpaper was "the one exception" - which
+    # made the two files that matter more read as encrypted. Registered as
+    # prose because it is a paragraph, not a bullet; the audio half is proven
+    # by the same wipe tests SECURITY.md registers, and the clone-reference
+    # half by the refs test that reads clip and transcript back off disk.
+    ("Three things are deliberately outside the vault", (
+        "tests/test_bounded_resources.py"
+        "::test_generated_audio_older_than_the_window_is_cleared",
+        "tests/test_audio_cache_launch_wipe.py"
+        "::TestLaunchClearsWhatTheLastSessionLeft"
+        "::test_audio_from_a_previous_session_does_not_survive",
+        "tests/test_tts_refs.py::TestSavingAClip"
+        "::test_a_clip_and_its_words_are_stored_together",
+    )),
     ("served images carry `Cache-Control: no-store`", (
         "tests/test_security_headers.py"
         "::test_a_served_image_carries_nosniff_and_no_store",
@@ -186,7 +201,7 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
 #: test would notice. This closes that by refusing ANY change to the section
 #: until somebody comes here, decides what the change claims, and registers a
 #: proof for it. Updating this constant is the deliberate act.
-SECTION_DIGEST = "46f3593841cbf1a09cc99fbac8f18d5e8c16ee7bd45440ffd748f2f42f29afe0"
+SECTION_DIGEST = "fbd48b45de33c68c5c8d028976da1e61a0a254d79dae7ce788b7aac2bb820293"
 
 
 def _section() -> str:

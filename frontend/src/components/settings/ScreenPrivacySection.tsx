@@ -28,7 +28,18 @@ export function ScreenPrivacySection() {
 
   return (
     <section className="space-y-2" aria-label="Screen privacy">
-      <h4 className="settings-section-title">Screen privacy</h4>
+      {/* `settings-section-title` is the dark dialog's heading class - 12px
+          uppercase at rgba(202,212,224,0.62), about 1.2:1 here and the worst
+          case on this surface: it is the label of a SECURITY control. The
+          sibling notebook panels already carry the right idiom for a
+          heading on `.glass-right`: an `h4` in `--color-es-text-light`. */}
+      <h4
+        data-testid="screen-privacy-heading"
+        className="text-xs font-semibold"
+        style={{ color: "var(--color-es-text-light)" }}
+      >
+        Screen privacy
+      </h4>
 
       <label className="flex items-center gap-2">
         <Switch
@@ -39,20 +50,27 @@ export function ScreenPrivacySection() {
           disabled={save.isPending || !settings.isSuccess}
           onCheckedChange={(v) => save.mutate(v)}
         />
-        <span className="settings-hint flex items-center gap-1.5">
+        {/* Same defect as the two paragraphs below, on the one line that
+            names the control. `text-muted-foreground` is the sibling
+            panels' hint idiom - it reads `--muted-foreground`, which
+            `.glass-right` redefines for this surface. */}
+        <span
+          data-testid="screen-privacy-switch-label"
+          className="flex items-center gap-1.5 text-xs leading-relaxed text-muted-foreground"
+        >
           <MonitorOff size={13} className="shrink-0" />
           Hide this window from screen capture
         </span>
       </label>
 
-      <p className="settings-hint">
+      <p data-testid="screen-privacy-hint-1" className="text-xs leading-relaxed text-muted-foreground">
         Screenshots, screen recording and screen sharing see a blank window
         instead of your conversation. It is not applied while the vault is
         locked - there is nothing on that screen to protect - and it comes
         back the moment you unlock.
       </p>
 
-      <p className="settings-hint">
+      <p data-testid="screen-privacy-hint-2" className="text-xs leading-relaxed text-muted-foreground">
         A layer, not a guarantee: it stops the ordinary Windows capture paths,
         not every possible way a screen can be read. Off by default, so your
         own screenshots keep working until you say otherwise.

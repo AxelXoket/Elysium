@@ -12,7 +12,10 @@ Written against version 1.1.0.
 ## The short version
 
 - Everything you write lives in **one encrypted file**. Without your passphrase
-  it cannot be opened, not even as a plain database.
+  it cannot be opened, not even as a plain database. Two things are written
+  outside it: spoken replies, as plain audio wiped at every lock, and, only for
+  a voice model that CLONES, the reference clip you record and a transcript of
+  the words in it, which nothing purges.
 - Your passphrase is **never stored**. Lose it and the data is gone. That is the
   design, not a bug.
 - The app talks to **one address on the internet** (OpenRouter), and refuses
@@ -36,7 +39,10 @@ Everything is under one folder:
 | `app.db` - messages, characters, personas, images, your notebook and limits, what the note reader has read and spent, your API key, proxy URL | **Yes**, AES-256 (SQLCipher), including the journal files |
 | `salt.bin`, `verifier.bin`, `kdf.json` - passphrase machinery | No, and they are not secret. Knowing them does not reveal your key |
 | `app.db.plain.bak-*` - a pre-vault copy kept after a one-time upgrade | **No, plaintext.** Settings > Secrets lists it and deletes it on request |
-| `voice/models`, `voice/refs` - voice model weights, your reference recordings | No |
+| `app.db.premigrate.bak` - a COMPLETE encrypted copy of the vault, taken before an uploads migration touches anything and kept whenever that migration does not finish cleanly | **Yes**, same cipher, and a passphrase change re-keys it so the old one stops opening it. But no screen reports it and no button removes it: only a later clean migration does |
+| `app.db.premigrate.bak.unreadable-<ts>` - that same snapshot, moved aside because it did not open with this vault's key | Encrypted, under a passphrase this vault does not hold. It is moved rather than deleted because it may be the only copy of an older vault, and nothing removes it for you |
+| `voice/models` - voice model weights you downloaded | No. Files you chose and put there; they hold none of your conversation |
+| `voice/refs` - only for a voice model that CLONES: the reference clip you record and a transcript of the words in it | **No, plaintext.** Nothing purges these: not the lock, not shutdown, not the next launch. They go when you delete that voice, or the folder |
 | `voice/cache` - generated speech, your conversation as audio | No. Cleared at every lock, every launch and every shutdown; anything older than 30 minutes is cleared as the next reply is spoken |
 | `webview/` - the app window's browser profile | No. Cache, history and session files are wiped at every launch and exit; only cosmetic settings and your wallpaper are kept |
 | `elysium.log` - application log | No. It carries no message text, no note text, no keys and no passphrases - but it does record that things happened: chat and note ids, counts, and the TYPE name of an error. A plaintext record of which chats have notes, sitting beside an otherwise opaque vault |
@@ -90,6 +96,23 @@ says so: copies exist that Python cannot reach, including anything Windows
 paged to disk. Overwriting one buffer is worth doing; claiming more would be a
 lie.
 
+### One window per vault
+
+Locking is per process. Two Elysium windows against the same data folder each
+kept their own copy of the vault key in their own memory, so locking one - or
+letting it lock itself - cleared that copy and left the other window sitting on
+a fully decryptable database. The one gesture the whole at-rest design rests on
+did half of what it appeared to do, and the idle auto-lock had the same blind
+spot.
+
+So a second launch is now refused rather than unsupported. It raises the window
+that is already open and exits before it touches the data folder at all, which
+also stops it overwriting the launch token the running window is using. The
+claim is a Windows kernel object named after the folder rather than a lock file,
+so a crash or an End Task releases it with nothing left to clean up and nothing
+to guess about. Two different data folders (`ELYSIUM_DATA_DIR`) still get a
+window each, because they share no key and no database.
+
 ### Deleting things
 
 Anything sensitive is overwritten with random bytes before being unlinked, by a
@@ -127,6 +150,11 @@ are not watching. It goes to the same single host under the same locked
 policy, and it is off entirely until you pick a model, but it is a second
 sender and it spends your credits. What it did and what it cost is in the
 Notes tab; the ceiling is sixty calls a day and it is a block, not a warning.
+
+A third request reaches the same host and carries none of your conversation:
+the Security tab's key check asks OpenRouter whether the key you already stored
+is still accepted. It happens only when you press it, and a provider it cannot
+reach is reported as exactly that rather than as a bad key.
 
 The one other egress is the optional voice engine setup, which you start
 yourself. It downloads from GitHub and PyPI, uploads nothing, and no chat,
@@ -296,6 +324,11 @@ you can find the one you care about.
 
 ### Limits of secure deletion
 
+- **Deleting every chat does not delete what the notebook spent.**
+  `notebook_spend` keeps one row per day - calls, tokens and cost - inside the
+  vault. It is what makes the sixty-a-day ceiling survive a restart, so nothing
+  prunes it and it outlives every chat you delete: a record of which days you
+  used the note reader, and how much it cost, for as long as the folder exists.
 - **Deleted is not shredded on an SSD.** Overwriting defeats undelete tools, not
   a controller that quietly moved the original blocks. Full-disk encryption is
   the answer, and it is yours to enable.
@@ -343,8 +376,9 @@ machines it was some other program that switched this on in the first place.
 
 ## If I delete Elysium, what is left?
 
-Delete `%LOCALAPPDATA%\Elysium` and the encrypted database, the passphrase
-files, the voice models, the browser profile and the log all go with it. The
+Delete `%LOCALAPPDATA%\Elysium` and the encrypted database, any premigrate
+snapshot beside it, the passphrase files, the voice models, your reference
+clips, the browser profile and the log all go with it. The
 application files are separate and hold no user data.
 
 Five things that folder does not cover:

@@ -110,33 +110,52 @@ export function VoiceSettingsPage() {
 // ── 1. global toggle ────────────────────────────────────────────────────────
 
 function VoiceModeToggle() {
-  const { data } = useVoiceMode();
+  const { data, isPending, isError } = useVoiceMode();
   const setMode = useSetVoiceMode();
   const pushModeError = useErrorStore((s) => s.pushError);
   const enabled = data?.enabled ?? false;
+  // Same shape as the two settings-panel indicators: while GET /tts/voice-mode
+  // is still in flight, `enabled` above reads false, and the caption used to
+  // say "Off - replies are written plainly" to someone who had it ON - a
+  // false statement about their own configuration, not merely a stale one.
+  // The toggle stayed disabled the whole time (data == null below), so no
+  // wrong click was ever possible; only the SENTENCE was wrong.
+  const modeStatus: "pending" | "error" | "on-active" | "on-idle" | "off" =
+    isPending
+      ? "pending"
+      : isError
+        ? "error"
+        : enabled && data?.active
+          ? "on-active"
+          : enabled
+            ? "on-idle"
+            : "off";
   return (
     <button
       type="button"
       className="settings-toggle-row"
       role="switch"
       aria-checked={enabled}
+      data-state={modeStatus}
       // The SAME words the row shows. They had drifted - the screen said
       // "Performed replies" while a screen reader was told "Voice replies",
       // so the two users of this control were reading different labels.
       aria-label="Performed replies"
       disabled={setMode.isPending || data == null}
-      onClick={() =>
-        setMode.mutate(!enabled, { onError: (err) => pushModeError(err) })
-      }
+      onClick={() => setMode.mutate(!enabled, { onError: (err) => pushModeError(err) })}
     >
       <span className="min-w-0 flex-1 text-left">
         <span className="settings-label">Performed replies</span>
         <span className="settings-category-desc">
-          {enabled && data?.active
-            ? "On - every reply is written with delivery directions"
-            : enabled
-              ? "On - select a voice model below to hear them performed"
-              : "Off - replies are written plainly"}
+          {modeStatus === "pending"
+            ? "Checking…"
+            : modeStatus === "error"
+              ? "Could not check whether performed replies are on."
+              : modeStatus === "on-active"
+                ? "On - every reply is written with delivery directions"
+                : modeStatus === "on-idle"
+                  ? "On - select a voice model below to hear them performed"
+                  : "Off - replies are written plainly"}
         </span>
       </span>
       <span className="settings-switch" data-on={enabled ? "true" : "false"}>

@@ -6,6 +6,7 @@ import { ChatCanvas } from "@/components/chat/ChatCanvas";
 import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
 import { useUiStore } from "@/lib/store/uiStore";
 import { mockFetch } from "../mocks/api";
+import { getErrorMessage } from "@/lib/errors/errorMessages";
 import {
   mockFetchWithStreams,
   sseEventsFor,
@@ -85,7 +86,7 @@ describe("Composer", () => {
     renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await waitFor(() => {
-      expect(screen.getByText(/api key is not set/i)).toBeInTheDocument();
+      expect(screen.getByText(/no api key is set yet/i)).toBeInTheDocument();
     });
 
     const textarea = screen.getByLabelText("Message");
@@ -493,5 +494,101 @@ describe("Composer", () => {
     // jsdom never resolves min()/calc() - assert the literal formula pieces.
     expect(ta.style.maxHeight).toContain("min(11rem");
     expect(ta.style.maxHeight).toContain("0.75rem");
+  });
+});
+
+
+/**
+ * The preflight helper line, read as copy rather than as state.
+ *
+ * All four sentences below were audited as factually wrong: three named a
+ * "Secrets" tab that no control is labelled with (RightPanel prints
+ * "Security"; only the STORED tab value is still "secrets"), and the fourth
+ * asked the reader whether the backend was running, in an app whose backend
+ * they have never started by hand. VaultGate had already been through this
+ * exact argument and fixed it by routing through the shared error map.
+ *
+ * These assert the wording BEHAVIOURALLY - through a rendered composer, from
+ * the state that produces each line - so a future edit that puts "Secrets"
+ * back, or that re-hardcodes a guess about the backend, fails here rather
+ * than being caught by a reader.
+ */
+describe("Composer preflight copy", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({
+      selectedChatId: null,
+      selectedModelId: null,
+      selectedCharacterId: null,
+      activeRightPanelTab: "models",
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("names the Security tab for a missing API key, never a Secrets tab", async () => {
+    setupReadyState();
+    mockFetch({
+      "/settings": { body: { ...settingsFixture, api_key_set: false } },
+      "/chats/1/messages": { body: [messageFixture] },
+    });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
+
+    const line = await screen.findByText(/no api key is set yet/i);
+    expect(line).toHaveTextContent(/Security tab/);
+    // The bug this replaces: a tab name that is printed nowhere on screen.
+    expect(line).not.toHaveTextContent(/Secrets/i);
+  });
+
+  it("names the Security tab for a missing proxy, never a Secrets tab", async () => {
+    setupReadyState();
+    mockFetch({
+      "/settings": {
+        body: { ...settingsFixture, proxy_required: true, proxy_configured: false },
+      },
+      "/chats/1/messages": { body: [messageFixture] },
+    });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
+
+    const line = await screen.findByText(/a proxy is required/i);
+    expect(line).toHaveTextContent(/Security tab/);
+    expect(line).not.toHaveTextContent(/Secrets/i);
+  });
+
+  it("the helper's shortcut is labelled Go to Security and still opens the secrets-valued tab", async () => {
+    setupReadyState();
+    mockFetch({
+      "/settings": { body: { ...settingsFixture, api_key_set: false } },
+      "/chats/1/messages": { body: [messageFixture] },
+    });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
+
+    const cta = await screen.findByRole("button", { name: "Go to Security" });
+    expect(screen.queryByRole("button", { name: "Go to Secrets" })).toBeNull();
+
+    await userEvent.click(cta);
+    // The LABEL changed; the stored value did not. Renaming the value would
+    // cost a persist version bump for nothing, so this pins the split.
+    expect(useUiStore.getState().activeRightPanelTab).toBe("secrets");
+  });
+
+  it("a broken settings load reports the real cause instead of asking about the backend", async () => {
+    setupReadyState();
+    mockFetch({
+      "/settings": { status: 500, body: { detail: "internal_error" } },
+      "/chats/1/messages": { body: [messageFixture] },
+    });
+    renderWithQueryClient(<ChatCanvas />, { wrapper });
+
+    const line = await screen.findByText(/settings could not be loaded/i);
+    // Routed through the shared map, exactly as VaultGate does - so the code
+    // that arrived is the sentence that shows, and a new code needs no edit
+    // here to be reported properly.
+    expect(line).toHaveTextContent(getErrorMessage("internal_error"));
+    expect(line).not.toHaveTextContent(/backend running/i);
+    // The line still has to say what it means for the composer.
+    expect(screen.getByLabelText("Message")).toBeDisabled();
   });
 });

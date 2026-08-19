@@ -47,7 +47,10 @@ export function EmptyStubNotice() {
           A leftover file from a recovery
         </h4>
       </div>
-      <p className="settings-hint">
+      {/* `settings-hint` and `settings-error`, painted for the dark dialog -
+          `text-muted-foreground` and `persona-local-error` are the sibling
+          panels' idioms on `.glass-right`. */}
+      <p data-testid="empty-stub-hint" className="text-xs leading-relaxed text-muted-foreground">
         Elysium once recovered your database after an interrupted move, and set
         the empty file it replaced aside as{" "}
         <code>app.db.empty-stub-bak</code> instead of deleting it. It is empty
@@ -55,13 +58,13 @@ export function EmptyStubNotice() {
       </p>
 
       {discard.data?.removed === false && discard.data.reason === "not_empty" && (
-        <p className="settings-error" role="alert">
+        <p className="persona-local-error" role="alert">
           Left alone: that file is not empty any more, so something other than
           the recovery wrote to it. Look at it before removing it by hand.
         </p>
       )}
       {discard.data?.removed === false && discard.data.reason === "not_removed" && (
-        <p className="settings-error" role="alert">
+        <p className="persona-local-error" role="alert">
           Still on disk: something else has the file open.
         </p>
       )}

@@ -188,3 +188,53 @@ describe("a deletion that did not happen", () => {
     });
   });
 });
+
+/**
+ * Same defect as PlaintextBackupNotice, same fix: the confirm row replaces
+ * its own trigger, so an unhelped keyboard user loses focus to <body> asking
+ * to delete a second, irreversible copy of the vault.
+ */
+describe("answering the delete question from the keyboard", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("focuses the SAFE choice when the question opens", async () => {
+    const user = userEvent.setup();
+    withStatus(true, true);
+    renderWithQueryClient(<OrphanedCopyNotice />);
+    await user.click(await screen.findByRole("button", DELETE));
+
+    expect(screen.getByRole("button", { name: /^keep$/i })).toHaveFocus();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(screen.getByRole("button", { name: /^delete$/i })).not.toHaveFocus();
+  });
+
+  it("Escape backs out and hands focus back to the trigger", async () => {
+    const user = userEvent.setup();
+    withStatus(true, true);
+    renderWithQueryClient(<OrphanedCopyNotice />);
+    await user.click(await screen.findByRole("button", DELETE));
+    await user.keyboard("{Escape}");
+
+    const trigger = await screen.findByRole("button", DELETE);
+    expect(trigger).toHaveFocus();
+    const called = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.some(([url]) =>
+        String(url).includes("/vault/discard-orphaned-copy"),
+      );
+    expect(called).toBe(false);
+  });
+
+  it("keeping it hands focus back to the trigger too", async () => {
+    // Ground for the Escape test: the same return happens on the button
+    // path, so the key handler is not the only thing holding this together.
+    const user = userEvent.setup();
+    withStatus(true, true);
+    renderWithQueryClient(<OrphanedCopyNotice />);
+    await user.click(await screen.findByRole("button", DELETE));
+    await user.click(screen.getByRole("button", { name: /^keep$/i }));
+
+    expect(await screen.findByRole("button", DELETE)).toHaveFocus();
+  });
+});

@@ -15,8 +15,16 @@ import { parseApiError } from "@/lib/errors";
 import { Shield, Trash2, RefreshCw, Check, AlertCircle, Loader2 } from "lucide-react";
 
 export function ProxySection() {
-  const { data: settings } = useSettings();
-  const { data: health } = useProxyHealth();
+  const {
+    data: settings,
+    isPending: settingsPending,
+    isError: settingsIsError,
+  } = useSettings();
+  const {
+    data: health,
+    isPending: healthPending,
+    isError: healthIsError,
+  } = useProxyHealth();
   const setProxy = useSetProxy();
   const setRequired = useSetProxyRequired();
   const setAlias = useSetProxyAlias();
@@ -128,6 +136,40 @@ export function ProxySection() {
     setAlias.isPending ||
     deleteProxy.isPending;
 
+  /**
+   * Same collapse as ApiKeySection, on the "Proxy configured" line: while
+   * GET /settings is still in flight, `settings?.proxy_configured` reads
+   * false, and a user who already has a proxy configured briefly saw "No
+   * proxy" - the muted dot made this milder than the danger-red key alarm,
+   * but it is the identical wrong claim. `pending` and `error` get their own
+   * branch so neither one can be read as the true unconfigured state.
+   */
+  const configuredStatus: "pending" | "error" | "configured" | "unconfigured" =
+    settingsPending
+      ? "pending"
+      : settingsIsError
+        ? "error"
+        : settings?.proxy_configured
+          ? "configured"
+          : "unconfigured";
+
+  /**
+   * The health probe is a REAL network call to the user's own proxy, fired
+   * only from this component - nothing prefetches it, so it lags the
+   * settings fetch by tens of milliseconds in practice. `health?.healthy`
+   * collapsing straight to false during that window painted a danger-red
+   * "Unhealthy" over a proxy that was fine; this is the worst of the three
+   * defects because it is the one that wears the actual alarm colour.
+   */
+  const healthStatus: "pending" | "error" | "healthy" | "unhealthy" =
+    healthPending
+      ? "pending"
+      : healthIsError
+        ? "error"
+        : health?.healthy
+          ? "healthy"
+          : "unhealthy";
+
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
@@ -145,17 +187,37 @@ export function ProxySection() {
         className="space-y-1 rounded-lg px-3 py-2 text-xs"
         style={{ backgroundColor: "var(--color-es-surface-elevated)" }}
       >
-        <div className="flex items-center gap-2">
-          <div
-            className="h-2 w-2 rounded-full"
-            style={{
-              backgroundColor: settings?.proxy_configured
-                ? "var(--color-es-success)"
-                : "var(--color-es-text-muted)",
-            }}
-          />
+        <div className="flex items-center gap-2" data-state={configuredStatus}>
+          {configuredStatus === "pending" ? (
+            // Spinning, not coloured: the same idiom the Save/Delete buttons
+            // below already use for "in flight", so "we do not know yet"
+            // never borrows the static muted dot that means "no proxy".
+            <Loader2
+              size={8}
+              className="animate-spin"
+              style={{ color: "var(--color-es-text-muted)" }}
+            />
+          ) : (
+            <div
+              className="h-2 w-2 rounded-full"
+              style={{
+                backgroundColor:
+                  configuredStatus === "configured"
+                    ? "var(--color-es-success)"
+                    : configuredStatus === "error"
+                      ? "var(--color-es-danger)"
+                      : "var(--color-es-text-muted)",
+              }}
+            />
+          )}
           <span style={{ color: "var(--color-es-text-muted)" }}>
-            {settings?.proxy_configured ? "Proxy configured" : "No proxy"}
+            {configuredStatus === "pending"
+              ? "Checking…"
+              : configuredStatus === "error"
+                ? "Could not check whether a proxy is configured."
+                : configuredStatus === "configured"
+                  ? "Proxy configured"
+                  : "No proxy"}
           </span>
         </div>
         {settings?.proxy_alias && (
@@ -163,8 +225,26 @@ export function ProxySection() {
             Alias: {settings.proxy_alias}
           </div>
         )}
-        <div style={{ color: "var(--color-es-text-muted)" }}>
-          Required: {settings?.proxy_required ? "Yes" : "No"}
+        <div
+          data-testid="proxy-required"
+          data-state={
+            settingsPending
+              ? "pending"
+              : settingsIsError
+                ? "error"
+                : settings?.proxy_required ? "required" : "optional"
+          }
+          style={{ color: "var(--color-es-text-muted)" }}
+        >
+          {/* Same collapse as the two indicators above, and the same fix.
+              "No" here means the app is free to reach the network without a
+              proxy, which is the opposite of what a user who set one wants
+              to read while the answer is still loading. */}
+          Required: {settingsPending
+            ? "checking"
+            : settingsIsError
+              ? "unknown"
+              : settings?.proxy_required ? "Yes" : "No"}
         </div>
       </div>
 
@@ -174,18 +254,39 @@ export function ProxySection() {
           className="flex items-center justify-between rounded-lg px-3 py-2 text-xs"
           style={{ backgroundColor: "var(--color-es-surface-elevated)" }}
         >
-          <div className="flex items-center gap-2">
-            <div
-              className="h-2 w-2 rounded-full"
-              data-testid="proxy-health-indicator"
-              style={{
-                backgroundColor: health?.healthy
-                  ? "var(--color-es-success)"
-                  : "var(--color-es-danger)",
-              }}
-            />
+          <div className="flex items-center gap-2" data-state={healthStatus}>
+            {healthStatus === "pending" ? (
+              // This probe is a real round trip to the user's own proxy and
+              // nothing prefetches it, so it is the slowest of the three
+              // queries this screen waits on - the danger-red dot used to
+              // sit here for tens of milliseconds on every load of a healthy
+              // proxy. Spinning-and-muted instead of red-and-wrong.
+              <Loader2
+                size={8}
+                className="animate-spin"
+                data-testid="proxy-health-indicator"
+                style={{ color: "var(--color-es-text-muted)" }}
+              />
+            ) : (
+              <div
+                className="h-2 w-2 rounded-full"
+                data-testid="proxy-health-indicator"
+                style={{
+                  backgroundColor:
+                    healthStatus === "healthy"
+                      ? "var(--color-es-success)"
+                      : "var(--color-es-danger)",
+                }}
+              />
+            )}
             <span style={{ color: "var(--color-es-text-muted)" }}>
-              {health?.healthy ? "Healthy" : "Unhealthy"}
+              {healthStatus === "pending"
+                ? "Checking…"
+                : healthStatus === "error"
+                  ? "Could not check the proxy."
+                  : healthStatus === "healthy"
+                    ? "Healthy"
+                    : "Unhealthy"}
               {health?.latency_ms != null && ` · ${health.latency_ms}ms`}
               {health?.cached && " · cached"}
             </span>

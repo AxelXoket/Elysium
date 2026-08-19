@@ -4,6 +4,26 @@ import { useErrorStore } from "@/lib/errors";
 import type { ErrorEvent } from "@/lib/errors";
 
 const AUTO_DISMISS_MS = 4_500;
+
+/** Reading time for a longer message, on top of the base window.
+ *
+ *  The toast used to truncate to one line, and an audit measured the cost:
+ *  26 of the catalogue's sentences did not fit, and because every one of them
+ *  is written problem-first, the half that vanished was always what to DO.
+ *  The safeword message - the one somebody reads at the worst moment they
+ *  expect to have - was cut mid-clause.
+ *
+ *  So the text wraps, and a message that takes longer to read gets longer to
+ *  be read. Roughly 220ms per line at a comfortable pace, capped so a toast
+ *  cannot camp on the screen.
+ */
+const READING_MS_PER_40_CHARS = 900;
+const MAX_DISMISS_MS = 14_000;
+
+function dismissDelayFor(message: string): number {
+  const extra = Math.floor(message.length / 40) * READING_MS_PER_40_CHARS;
+  return Math.min(MAX_DISMISS_MS, AUTO_DISMISS_MS + extra);
+}
 const EXIT_ANIMATION_MS = 180;
 
 export function ErrorToastStack() {
@@ -80,7 +100,7 @@ function ErrorToast({
   const [hidden, setHidden] = useState(
     () => typeof document !== "undefined" && document.visibilityState === "hidden",
   );
-  const remainingRef = useRef(AUTO_DISMISS_MS);
+  const remainingRef = useRef(dismissDelayFor(error.message));
 
   useEffect(() => {
     const onVisibility = () =>
@@ -91,8 +111,8 @@ function ErrorToast({
 
   // A new error id is a new toast: give it the whole window again.
   useEffect(() => {
-    remainingRef.current = AUTO_DISMISS_MS;
-  }, [error.id]);
+    remainingRef.current = dismissDelayFor(error.message);
+  }, [error.id, error.message]);
 
   useEffect(() => {
     if (hovered || hidden) return;
@@ -124,12 +144,13 @@ function ErrorToast({
       // READING it, which is the one moment it must not disappear.
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      title={error.message}
     >
       <span className="error-toast-accent" aria-hidden="true">
         <AlertCircle size={14} strokeWidth={1.8} />
       </span>
-      <span className="min-w-0 flex-1 truncate text-xs font-medium">
+      {/* Wraps. `truncate` put the fix off-screen and left it reachable only
+          by a mouse hover on a toast that expires in a few seconds. */}
+      <span className="min-w-0 flex-1 text-xs font-medium">
         {error.message}
       </span>
       <button

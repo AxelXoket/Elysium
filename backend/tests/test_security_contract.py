@@ -105,6 +105,39 @@ CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "tests/test_plaintext_backup_discard.py::TestTheCopyCanBeRemoved"
         "::test_discarding_deletes_it",
     )),
+    # The clone reference, and the reason the sentence is conditional. A
+    # reference clip only exists for an engine that clones, so an unconditional
+    # "you have a recording on disk" would be false for every user whose model
+    # cannot. save_upload writing the clip AND transcript.txt as ordinary files
+    # under voice/refs/<id>/ is what the row claims, and that is what the test
+    # reads back off the filesystem.
+    ("only for a voice model that CLONES, the reference clip you record "
+     "and a transcript of the words in it", (
+        "tests/test_tts_refs.py::TestSavingAClip"
+        "::test_a_clip_and_its_words_are_stored_together",
+        "tests/test_tts_refs.py::TestDeleting::test_deleting_removes_the_folder",
+    )),
+    ("the reference clip you record and a transcript of the words in it", (
+        "tests/test_tts_refs.py::TestSavingAClip"
+        "::test_a_clip_and_its_words_are_stored_together",
+    )),
+    # app.db.premigrate.bak. Named in no document until now, which is exactly
+    # the shape of claim this registry exists to make impossible in reverse:
+    # the FILE existed, the sentence did not. Three proofs for three halves of
+    # the row - a dirty pass keeps it, a clean pass is the only thing that
+    # removes it, and a passphrase rotation re-keys it so the old passphrase
+    # stops opening a complete copy of the vault.
+    ("a COMPLETE encrypted copy of the vault, taken before an uploads "
+     "migration touches anything", (
+        "tests/test_legacy_migration.py::test_a_failed_pass_still_keeps_the_snapshot",
+        "tests/test_legacy_migration.py"
+        "::test_a_clean_pass_discards_a_snapshot_left_by_an_earlier_dirty_one",
+        "tests/test_vault_audit.py::test_rekey_file_moves_a_snapshot_to_the_new_key",
+    )),
+    ("moved aside because it did not open with this vault's key", (
+        "tests/test_legacy_migration.py::TestAHalfWrittenSnapshotIsNotASnapshot"
+        "::test_a_snapshot_that_does_not_open_is_replaced_not_trusted",
+    )),
     ("anything older than 30 minutes is cleared as the next reply is spoken", (
         "tests/test_bounded_resources.py"
         "::test_generated_audio_older_than_the_window_is_cleared",
@@ -200,6 +233,44 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("the vault never locked on a busy chat", (
         "tests/test_notebook_worker.py::TestALockedVaultIsNotAFailure"
         "::test_cancellation_propagates_and_does_not_open_the_breaker",
+    )),
+    # One window per vault. Every proof here is a behaviour test and three of
+    # them drive a real second process, which is the only place the property
+    # that matters - a hard kill releases the claim - can be observed at all.
+    ("a second launch is now refused rather than unsupported", (
+        "tests/test_single_instance.py"
+        "::test_a_second_claim_on_the_same_folder_is_refused",
+        "tests/test_single_instance.py"
+        "::test_a_second_instance_exits_zero_and_says_so",
+        "tests/test_single_instance.py"
+        "::test_a_window_of_ours_is_found_and_raised",
+    )),
+    ("a crash or an End Task releases it", (
+        "tests/test_single_instance.py"
+        "::test_a_hard_killed_instance_leaves_nothing_behind",
+        "tests/test_single_instance.py"
+        "::test_releasing_lets_the_next_launch_in",
+    )),
+    ("Two different data folders (`ELYSIUM_DATA_DIR`) still get a "
+     "window each", (
+        "tests/test_single_instance.py"
+        "::test_a_different_data_folder_runs_alongside",
+        "tests/test_single_instance.py"
+        "::test_the_name_follows_the_folder_not_its_spelling",
+    )),
+    # The key check is a THIRD outbound path, so it belongs in the section
+    # that counts them. The registered proofs are the two that make the
+    # sentence true rather than merely present: nothing goes out until the
+    # button is pressed, and an unreachable provider is not reported as a
+    # rejected key.
+    ("the Security tab's key check asks OpenRouter whether the key you "
+     "already stored is still accepted", (
+        "tests/test_api_key_check.py"
+        "::test_nothing_is_checked_until_the_route_is_called",
+        "tests/test_api_key_check.py"
+        "::test_an_unreachable_provider_reports_something_else_entirely",
+        "tests/test_api_key_check.py"
+        "::test_the_key_is_never_returned_or_logged",
     )),
     ("On by default, 5 minutes", (
         "tests/test_auto_lock.py::TestTheSettingIsReadSafely"
@@ -401,10 +472,20 @@ ACKNOWLEDGED_UNTESTABLE: tuple[
      "construction, not something a unit test demonstrates by running "
      "code.",
      None, None),
-    ("voice model weights, your reference recordings", ReasonCategory.DEFINITIONAL,
+    ("voice model weights you downloaded", ReasonCategory.DEFINITIONAL,
      "a bare table-row disclosure ('No', unencrypted) rather than a "
      "protection claim. Registered so the row is not silently upgraded to "
-     "a promise later without anyone noticing.",
+     "a promise later without anyone noticing. The reference clips used to "
+     "share this row and no longer do: they ARE testable, they are now their "
+     "own row, and they are registered as proven in CLAIMS above.",
+     None, None),
+    ("any premigrate snapshot beside it", ReasonCategory.DEFINITIONAL,
+     "that deleting a folder removes the files inside it is a property of "
+     "the filesystem, not of this app. The sentence exists because the "
+     "snapshot was in no document at all, so a reader counting what leaves "
+     "with the folder could not know it was there; what it claims about "
+     "Elysium is only that the file lives under that folder, which the "
+     "premigrate_backup_path proofs in CLAIMS already establish.",
      None, None),
     ("the port the server last used", ReasonCategory.DEFINITIONAL,
      "same as the row above: one unencrypted number, nothing to protect, "
@@ -485,6 +566,25 @@ UNPROVEN: tuple[tuple[str, str], ...] = (
      "the document's own hedge about the legacy Credential Manager entry, "
      "registered here so the debt it already names is tracked by code and "
      "not just by a sentence."),
+    ("Nothing purges these",
+     "the lock, shutdown and launch paths are each tested for the AUDIO "
+     "cache; no test asserts the opposite for voice/refs - that a reference "
+     "clip and its transcript are still on disk after a lock and a relaunch. "
+     "Testable the same way test_audio_cache_launch_wipe.py tests the cache, "
+     "and it is the more valuable half, because here survival is the "
+     "behaviour being promised."),
+    ("no screen reports it and no button removes it",
+     "nothing asserts that /vault/status omits app.db.premigrate.bak, nor "
+     "that no route deletes it. Testable directly (the status payload names "
+     "three sidecar families and this is in none of them), and it is written "
+     "down here rather than proven because the honest fix is a UI that "
+     "reports the file, at which point the sentence changes rather than "
+     "gaining a test."),
+    ("Deleting every chat does not delete what the notebook spent",
+     "test_notebook_spend_cap.py proves the ledger accumulates and blocks; "
+     "nothing deletes every chat and then asserts the rows survive, and "
+     "nothing asserts no code path prunes them. Testable in one short test, "
+     "not written."),
     ("It does not look at your Desktop, your user profile, your Documents, "
      "or anywhere else",
      "true by inspection (narrow_data_dir is only ever called with the "
@@ -664,7 +764,7 @@ def _acknowledged_problems(
 #: sample - so this covers all of it. Updating this constant is the
 #: deliberate act that means a human decided what a change claims and
 #: registered a proof for it.
-DOCUMENT_DIGEST = "acbffdc32492d81099dd0eb9b4d14a8179c8476cd141f8bed273fc73af47e3eb"
+DOCUMENT_DIGEST = "12021284eca91b9ed60b438fccd871c37a240157999caa9658752c1b61301b09"
 
 
 class TestEveryProvenClaimHasAProof:

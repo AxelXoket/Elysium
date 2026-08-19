@@ -210,7 +210,6 @@ class TestLimitsThatDoNotFitStopTheTurn:
                 boundary_block=huge,
             )
         assert "boundaries_do_not_fit" in str(exc.value)
-        assert config is not None
 
     def test_a_boundary_block_that_FITS_does_not_refuse(self, client) -> None:
         """The positive control. Without it the assertion above is satisfied
@@ -430,5 +429,9 @@ class TestTheDropOrder:
                                      importance=3)
         blocks = notebook.build_notebook_blocks(chat_id, 8000)
         dropped = {e[0] for e in blocks["excluded"]}
-        assert cheap["id"] in dropped
-        assert dear["id"] not in dropped or len(dropped) > 25
+        assert cheap["id"] in dropped, "the cheap note survived"
+        # No `or len(dropped) > N` escape hatch here. There was one, and it
+        # measured 30 against a ceiling of 25 - unconditionally true, so the
+        # assertion beside it was never read and the tiebreak regression this
+        # class exists to catch would have passed straight through it.
+        assert dear["id"] not in dropped, "the most important note was dropped"

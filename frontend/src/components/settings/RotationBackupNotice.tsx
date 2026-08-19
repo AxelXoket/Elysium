@@ -47,14 +47,17 @@ export function RotationBackupNotice() {
           A copy from before a passphrase change
         </h4>
       </div>
-      <p className="settings-hint">
+      {/* `settings-hint` painted for the dark dialog, same as everywhere
+          else in this folder - `text-muted-foreground` is the sibling
+          panels' idiom on `.glass-right`. */}
+      <p data-testid="rotation-hint-1" className="text-xs leading-relaxed text-muted-foreground">
         A passphrase change that was interrupted left a complete copy of your
         database beside the vault. It is encrypted, but with the{" "}
         <strong>previous</strong> passphrase - so anyone who knows the old one
         can still open it, and changing your passphrase again will not close
         that.
       </p>
-      <p className="settings-hint">
+      <p data-testid="rotation-hint-2" className="text-xs leading-relaxed text-muted-foreground">
         Elysium will not delete it, because it cannot read it and it may be the
         only copy of something. Delete it yourself, or move it somewhere safe,
         from the Elysium data folder:
@@ -62,7 +65,7 @@ export function RotationBackupNotice() {
       <ul className="space-y-1">
         {names.map((name) => (
           <li key={name}>
-            <code className="settings-hint">{name}</code>
+            <code data-testid={`rotation-name-${name}`} className="text-xs leading-relaxed text-muted-foreground">{name}</code>
           </li>
         ))}
       </ul>

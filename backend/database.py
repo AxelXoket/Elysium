@@ -214,6 +214,19 @@ def _migrate(con: sqlite3.Connection) -> None:
     con.execute(
         "UPDATE messages SET updated_at = created_at WHERE updated_at IS NULL"
     )
+    if "truncated" not in cols:
+        # The model's reply may have been cut off by the token ceiling
+        # mid-sentence rather than finished, and until now nothing recorded
+        # that - the half sentence was stored and shown exactly like a
+        # complete one. 0 is a constant, unlike updated_at's datetime()
+        # default, so this can be NOT NULL straight from the ALTER with no
+        # follow-up UPDATE. Every row written before this build shipped
+        # backfills to "not known to be cut off": that is not a claim the row
+        # is complete, only that nothing here can tell any more, and 0 is the
+        # honest default for a fact that was simply never recorded.
+        con.execute(
+            "ALTER TABLE messages ADD COLUMN truncated INTEGER NOT NULL DEFAULT 0"
+        )
     # Schema version history: 0/1 = pre-v1.1 (implicit), 2 = messages.updated_at.
     # Nothing branches on this yet - it exists so future migrations CAN.
     if con.execute("PRAGMA user_version").fetchone()[0] < 2:
@@ -400,6 +413,21 @@ CREATE TABLE IF NOT EXISTS notebook_spend (
           cost       REAL    NOT NULL DEFAULT 0
         )
     """)
+
+    # WHOSE words the quote came from. Free, exact, and the one signal no
+    # classifier can beat: a note distilled from the model's own reply is the
+    # class that can be invented, because the grounding check passes by
+    # construction when the model is quoting itself.
+    #
+    # The measured alternatives are all worse. Extraction-stage fabrication
+    # runs at 0.3 to 1.2% in the only benchmark that measures it, and at that
+    # rate the best published detector flags a pile that is 96 to 99% correct
+    # notes. This is not a probability. It is a fact about the transcript.
+    entry_cols = {r[1] for r in
+                  con.execute("PRAGMA table_info(notebook_entries)").fetchall()}
+    if "evidence_role" not in entry_cols:
+        con.execute(
+            "ALTER TABLE notebook_entries ADD COLUMN evidence_role TEXT")
 
     chat_cols = {r[1] for r in con.execute("PRAGMA table_info(chats)").fetchall()}
     if "use_global_boundaries" not in chat_cols:

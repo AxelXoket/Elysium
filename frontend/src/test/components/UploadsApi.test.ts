@@ -11,6 +11,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { uploadImage, imageUrl, UploadedImageSchema } from "@/lib/api/uploads";
 import { isApiError } from "@/lib/api/client";
+import { getErrorMessage } from "@/lib/errors/errorMessages";
 
 const uploadedFixture = {
   id: 42,
@@ -137,7 +138,10 @@ describe("uploads API", () => {
     expect(err).toMatchObject({
       status: 201,
       detail: "invalid_response_shape",
-      message: "Unexpected response format from server.",
+      // Pinned to the map, not to a retyped sentence: this test guards the
+      // status and the CODE surviving a malformed 201, and the wording moved
+      // when invalid_response_shape gained a next step for the reader.
+      message: getErrorMessage("invalid_response_shape"),
     });
   });
 

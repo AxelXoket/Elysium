@@ -28,6 +28,8 @@ function statusBody(over: Record<string, unknown> = {}) {
     stats,
     spend: { calls: 3, tokens_in: 900, tokens_out: 40, cost: 0.0004,
              ...((over.spend as object) ?? {}) },
+    spend_lifetime: { calls: 3, tokens_in: 900, tokens_out: 40, cost: 0.0004,
+                      ...((over.spend_lifetime as object) ?? {}) },
     worker,
     daily_cap: 60,
   };
@@ -52,6 +54,33 @@ describe("WorkerPanel", () => {
     expect(box.textContent).toMatch(/3 runs/);
     expect(box.textContent).toMatch(/3 of 60 calls today/);
     expect(box.textContent).toMatch(/0\.00040 credits/);
+  });
+
+  it("a fresh vault shows a lifetime total of zero, not blank", async () => {
+    mount({
+      stats: { done: 0, failed: 0, skipped: 0, skip_reasons: {} },
+      spend: { calls: 0, tokens_in: 0, tokens_out: 0, cost: 0 },
+      spend_lifetime: { calls: 0, tokens_in: 0, tokens_out: 0, cost: 0 },
+    });
+    const box = await screen.findByTestId("worker-status");
+    expect(box.textContent).toMatch(/0 of 60 calls today/);
+    expect(box.textContent).toMatch(/0 lifetime/);
+  });
+
+  it("shows the lifetime total beside today's, and the two can differ",
+     async () => {
+    // The positive control the feature would be untested without: seeded so
+    // today's count and the lifetime total are NOT the same number, and both
+    // must be readable on screen at once.
+    mount({
+      spend: { calls: 3, tokens_in: 900, tokens_out: 40, cost: 0.0004 },
+      spend_lifetime: { calls: 47, tokens_in: 9000, tokens_out: 400,
+                        cost: 0.0091 },
+    });
+    const box = await screen.findByTestId("worker-status");
+    expect(box.textContent).toMatch(/3 of 60 calls today/);
+    expect(box.textContent).toMatch(/47 lifetime/);
+    expect(box.textContent).not.toMatch(/47 of 60 calls today/);
   });
 
   it("says WHY runs were skipped, in words", async () => {

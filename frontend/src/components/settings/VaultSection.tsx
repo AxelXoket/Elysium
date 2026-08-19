@@ -90,13 +90,61 @@ export function VaultSection() {
           Vault passphrase
         </h4>
       </div>
-      <p className="settings-hint">
-        Everything on disk is encrypted with this passphrase, except the
-        decorative chat wallpaper. Changing it re-encrypts the database in place.
+      {/* The complete list lives here; the setup card in VaultGate carries a
+          shorter true version, because a lock screen is not a policy document
+          and the wallpaper is the least of the three. Both must stay honest.
+
+          Why each one is listed - do not trim this back to the wallpaper:
+          1. Spoken replies: tts/host.py writes every reply as a plain wav
+             under the data folder. routers/vault.py calls that cache "the
+             user's conversation in audible form, in the clear, next to a
+             database that is encrypted". Wiped at lock, launch and shutdown
+             and trimmed at thirty minutes, so it is transient, not encrypted.
+          2. The cloning reference: tts/refs.py stores the recorded clip and
+             its transcript as plain files under voice/refs/ and nothing ever
+             purges them. Conditional wording on purpose - reference clips
+             only exist for engines that clone, so a user without such a model
+             must not be told they have files they do not have.
+          3. The wallpaper: it lives as a blob in the browser profile's
+             IndexedDB, outside the vault entirely.
+
+          Checked and deliberately not listed: the voice models folder (the
+          user's own weights, not their content) and elysium.log (audited in
+          run_app.py to carry no chat content, keys or passphrases).
+
+          This sentence has been wrong once before and was only half fixed:
+          audit FF15 in v1.1 caught it claiming images were encrypted while
+          the wallpaper was not, added the wallpaper, and stopped there. */}
+      {/* `settings-hint` again - see ScreenPrivacySection for the measured
+          numbers. `text-muted-foreground` is the sibling panels' idiom. */}
+      <p data-testid="vault-disclosure-hint" className="text-xs leading-relaxed text-muted-foreground">
+        Everything on disk is encrypted with this passphrase, with three
+        exceptions. Spoken replies are written as plain audio files, your
+        conversation in audible form, and are wiped at every lock, launch and
+        shutdown. Any voice clip you add for cloning stays as a plain file
+        with its transcript, and is not wiped. The decorative chat wallpaper
+        is not encrypted. Changing the passphrase re-encrypts the database in
+        place.
       </p>
+      {/* `settings-label` has no colour rule of its own on the dark dialog -
+          it just inherits. `color` is an inherited property fixed once at
+          `body`, and nothing between
+          `body` and this label re-declares it, so `.glass-right`'s
+          redefined token never gets a chance to apply. Measured at
+          1.05-1.14:1 here - effectively invisible. There is no
+          `persona-label` counterpart, so this borrows the nearest idiom
+          that IS proven on this surface: the same `text-xs font-semibold`
+          + explicit `--color-es-text-light` the sibling panels use for
+          their headings, applied to the caption span instead of an h4. */}
       <form className="space-y-2" onSubmit={submit}>
-        <label className="settings-label block space-y-1">
-          <span>Current passphrase</span>
+        <label className="block space-y-1">
+          <span
+            data-testid="vault-label-current"
+            className="text-xs font-semibold"
+            style={{ color: "var(--color-es-text-light)" }}
+          >
+            Current passphrase
+          </span>
           <input
             type="password"
             maxLength={1024}
@@ -108,8 +156,14 @@ export function VaultSection() {
             style={inputStyle}
           />
         </label>
-        <label className="settings-label block space-y-1">
-          <span>New passphrase</span>
+        <label className="block space-y-1">
+          <span
+            data-testid="vault-label-new"
+            className="text-xs font-semibold"
+            style={{ color: "var(--color-es-text-light)" }}
+          >
+            New passphrase
+          </span>
           <input
             type="password"
             maxLength={1024}
@@ -121,8 +175,14 @@ export function VaultSection() {
             style={inputStyle}
           />
         </label>
-        <label className="settings-label block space-y-1">
-          <span>Repeat new passphrase</span>
+        <label className="block space-y-1">
+          <span
+            data-testid="vault-label-repeat"
+            className="text-xs font-semibold"
+            style={{ color: "var(--color-es-text-light)" }}
+          >
+            Repeat new passphrase
+          </span>
           <input
             type="password"
             maxLength={1024}
@@ -134,14 +194,23 @@ export function VaultSection() {
             style={inputStyle}
           />
         </label>
+        {/* `persona-local-error`, the notebook panels' refusal class on
+            this exact surface, in place of `settings-error`. */}
         {(localError ?? serverError) && (
-          <p className="settings-error" role="alert">
+          <p className="persona-local-error" role="alert">
             {localError ?? serverError}
           </p>
         )}
+        {/* `settings-value` carried the same broken hardcoded colour as
+            `settings-hint` (see above) underneath its own inline override -
+            the inline `color` here already wins the cascade, since neither
+            rule uses `!important`, so this swap is about the size/line-height
+            the class also carried, not the colour. `text-xs leading-relaxed`
+            is the sibling panels' base for a line of this kind. */}
         {done && !localError && (
           <p
-            className="settings-value font-semibold"
+            data-testid="vault-success-message"
+            className="text-xs leading-relaxed font-semibold"
             style={{ color: "var(--color-es-primary-sage-deep)" }}
           >
             Passphrase changed.

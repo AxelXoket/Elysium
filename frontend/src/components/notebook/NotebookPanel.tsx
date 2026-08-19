@@ -24,7 +24,7 @@
  */
 import { useContextNotesStore } from "@/lib/chat/contextNotes";
 import { useSeenNotesStore } from "@/lib/chat/seenNotes";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Pin, PinOff, Plus, Trash2, X, Check, Loader2, Undo2, Search,
 } from "lucide-react";
@@ -121,6 +121,28 @@ export function NotebookPanel() {
   const [query, setQuery] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
 
+  // The filter belongs to the chat it was typed in, and this panel does not
+  // unmount when the chat changes - so without this the search follows the
+  // reader into the next chat. That is not a cosmetic leak. The search box
+  // only renders above five notes, so filtering a forty-note chat and then
+  // opening a three-note one hides all three behind a filter whose input has
+  // itself unmounted: an empty notebook, no visible cause, and no control
+  // that would clear it.
+  //
+  // Adjusted during render rather than in an effect on purpose. An effect
+  // runs after the DOM is painted, so the reader would still get one frame of
+  // the new chat filtered to nothing - which is the exact frame being fixed.
+  // React re-runs this render with the new state before committing anything.
+  //
+  // `confirmDeleteId` is deliberately NOT reset with it: notebook entry ids
+  // are AUTOINCREMENT over the whole table, so an id carried in from another
+  // chat matches no row here and the open question has nothing to attach to.
+  const [filterChatId, setFilterChatId] = useState(chatId);
+  if (chatId !== filterChatId) {
+    setFilterChatId(chatId);
+    setQuery("");
+  }
+
   const busy = create.isPending || patch.isPending || remove.isPending
     || accept.isPending;
 
@@ -134,8 +156,18 @@ export function NotebookPanel() {
   const turn = useContextNotesStore((s) =>
     chatId == null ? undefined : s.byChat[chatId]);
   const live = all.filter((e) => noteState(e) === "live").length;
+  // Counted the way the SERVER counts it, which is the whole job of a
+  // fallback: build_notebook_blocks takes `total` from the accepted,
+  // non-retired rows and nothing else. `all.length` counted every row on
+  // screen instead, proposals and retired ones included, so a notebook with
+  // five accepted notes and two hundred waiting proposals read "5 of 205
+  // sent" and then "5 of 5" one message later, when the server's number
+  // arrived. Same notebook, two numbers, and the one before the first turn
+  // was measuring a set that is never sent.
+  const inForce = all.filter(
+    (e) => e.status === "accepted" && !e.retired_at).length;
   const sent = turn?.notebook_sent ?? live;
-  const total = turn?.notebook_total ?? all.length;
+  const total = turn?.notebook_total ?? inForce;
 
   // Accepted, written by the model, and never announced. `proposed` rows are
   // deliberately excluded: those already announce themselves by sitting in
@@ -225,7 +257,16 @@ export function NotebookPanel() {
           {/* Persistent, not a toast. errorStore merges by code and chat, so a
               per-turn count would announce itself once and then go quiet just
               as the ceiling starts biting every turn. */}
-          <span className="text-xs leading-relaxed text-muted-foreground" data-testid="notebook-sent-count">
+          {/* `role="status"` because this number changes on its own: it is
+              rewritten by the `done` frame of a turn the user spent in the
+              composer, not by anything they did here. A note quietly going
+              from sent to not sent is the one event in this panel a reader
+              who is not watching it must still be told about. */}
+          <span
+            className="text-xs leading-relaxed text-muted-foreground"
+            data-testid="notebook-sent-count"
+            role="status"
+          >
             {sent} of {total} sent
           </span>
         </div>
@@ -234,9 +275,20 @@ export function NotebookPanel() {
             model wrote reaches the prompt having been seen by nobody - and
             "the write was invisible" is the complaint every shipped version
             of this feature collected. Announced once, takeable back, and
-            then remembered as announced. */}
+            then remembered as announced.
+
+            `role="status"` for that same reason taken one step further: the
+            strip appears after NO user action, so a reader who is not looking
+            at this panel gets no signal at all that something was written
+            into their prompt. Silent for a sighted user is the complaint this
+            strip answers; silent for a screen reader is the same complaint
+            with nothing left to answer it. */}
         {justSaved.length > 0 && (
-          <div className="persona-card space-y-2" data-testid="just-saved">
+          <div
+            className="persona-card space-y-2"
+            data-testid="just-saved"
+            role="status"
+          >
             <p className="text-xs leading-relaxed text-muted-foreground">
               Saved {justSaved.length === 1 ? "a note" : `${justSaved.length} notes`}{" "}
               the model wrote{justSaved.length === 1
@@ -305,6 +357,12 @@ export function NotebookPanel() {
             value={draft}
             maxLength={ENTRY_MAX_CHARS}
             placeholder="Something this story has established..."
+            // The placeholder is a prompt, not a name. It is the only thing
+            // that named this box, and a placeholder stops being read out the
+            // moment there is a value - so the control announced itself by
+            // its own contents while the user typed, and as nothing at all
+            // once they paused. The label stays put.
+            aria-label="New note"
             disabled={busy}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
@@ -336,15 +394,28 @@ export function NotebookPanel() {
 
         {isLoading && <p className="text-xs leading-relaxed text-muted-foreground">Loading...</p>}
 
-        {!isLoading && entries.length === 0 && (
+        {/* One or the other, never both. `entries` is the FILTERED list, so
+            an empty notebook and a filter that matched nothing produce the
+            same empty list and used to print both sentences at once: "Nothing
+            yet." sitting directly above "No note matches that. 3 are still
+            here." The two contradict each other, and one of them is telling
+            the reader their notes are gone. The filter decides which is
+            true. */}
+        {!isLoading && entries.length === 0 && query === "" && (
           <p className="text-xs leading-relaxed text-muted-foreground">
             Nothing yet. Notes are sent with every message, so the character
             stops forgetting what you write here.
           </p>
         )}
 
-        {query !== "" && entries.length === 0 && (
-          <p className="text-xs leading-relaxed text-muted-foreground">
+        {/* `role="status"`: the list empties out under the reader's own
+            typing, and for anyone not watching the rows the count is the only
+            evidence that the notes are still there and only hidden. */}
+        {!isLoading && entries.length === 0 && query !== "" && (
+          <p
+            className="text-xs leading-relaxed text-muted-foreground"
+            role="status"
+          >
             No note matches that. {all.length} are still here - the search
             covers the note and the words it was taken from.
           </p>
@@ -402,6 +473,53 @@ function NoteRow({
 }) {
   const state = noteState(entry);
   const original = originalOf(entry);
+
+  // The confirm REPLACES its trigger, which means React unmounts the element
+  // the keyboard was standing on and focus drops to <body>. From there the
+  // question the user just opened is reachable only by tabbing in from the
+  // top of the document, and Escape answered nothing. A keyboard user could
+  // ask to delete a note and then not practically be able to finish, or back
+  // out. MessageBubble's confirm already solves this; this is the same three
+  // behaviours - autofocus, Escape closes, focus returns to the trigger.
+  //
+  // With one deliberate difference: MessageBubble focuses the DESTRUCTIVE
+  // button, so a reflexive Enter deletes. The SAFE choice takes the focus
+  // here, so the same reflex keeps the note. The destructive button is one
+  // Tab away, which is the right amount of work for the irreversible one.
+  const deleteTriggerRef = useRef<HTMLButtonElement>(null);
+  const keepButtonRef = useRef<HTMLButtonElement>(null);
+  // Whether focus is OURS to give back. Without it every row in the list
+  // would grab focus on its first render, when nothing has been confirmed.
+  const wasConfirming = useRef(false);
+
+  useEffect(() => {
+    if (confirming) {
+      wasConfirming.current = true;
+      keepButtonRef.current?.focus();
+    } else if (wasConfirming.current) {
+      wasConfirming.current = false;
+      // The trigger was remounted by the render this effect follows, so the
+      // ref points at a live element again by the time this runs.
+      deleteTriggerRef.current?.focus();
+    }
+  }, [confirming]);
+
+  useEffect(() => {
+    if (!confirming) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      // Stopped for the same reason MessageBubble stops it: Composer binds
+      // Escape at the WINDOW to "stop generating", and document bubbles to
+      // window - so one press would both dismiss this question and kill a
+      // reply streaming in the chat behind the panel.
+      event.stopPropagation();
+      event.preventDefault();
+      onCancelDelete();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [confirming, onCancelDelete]);
+
   return (
     <div
       className="persona-card flex items-start gap-2"
@@ -423,6 +541,18 @@ function NoteRow({
         {state === "proposed" && (
           <p className="text-xs leading-relaxed text-muted-foreground">
             Waiting for you - not sent until you keep it.
+          </p>
+        )}
+        {/* The distinction that matters inside "written by the model": a note
+            taken from what the USER said is a paraphrase of something that was
+            really said, and one taken from the model's own reply may be the
+            model's own invention - the verbatim check cannot tell, because it
+            passes by construction when the model quotes itself. Marked, not
+            withheld: the research on review queues says an honest label
+            somebody can see beats a queue nobody reads. */}
+        {entry.provenance === "model" && entry.evidence_role === "assistant" && (
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            Taken from the model's own reply, not from something you wrote.
           </p>
         )}
         {entry.provenance === "model" && (
@@ -476,6 +606,7 @@ function NoteRow({
 
       {!confirming && (
         <Button
+          ref={deleteTriggerRef}
           type="button"
           size="sm"
           variant="ghost"
@@ -506,6 +637,7 @@ function NoteRow({
             <Check size={12} className="size-3" />
           </Button>
           <Button
+            ref={keepButtonRef}
             type="button"
             size="sm"
             variant="ghost"

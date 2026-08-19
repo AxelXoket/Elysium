@@ -24,7 +24,7 @@
  * file invented a brown/amber pair, which is precisely the mistake index.css
  * already documents having made once and retired.
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertCircle, Loader2, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -34,6 +34,47 @@ export function PlaintextBackupNotice() {
   const status = useVaultStatus();
   const discard = useDiscardPlaintextBackup();
   const [confirming, setConfirming] = useState(false);
+
+  // The confirm row REPLACES the trigger it grew out of, so the element the
+  // keyboard was standing on is unmounted and focus drops to <body> - reachable
+  // again only by tabbing in from the top of the document, with no Escape.
+  // Same three behaviours NotebookPanel's NoteRow already solved for a delete
+  // that IS undoable: autofocus the SAFE choice, Escape backs out, focus
+  // returns to the trigger. This delete is not undoable at all, which is the
+  // argument for the safe-focus rule, not against it.
+  const deleteTriggerRef = useRef<HTMLButtonElement>(null);
+  const keepButtonRef = useRef<HTMLButtonElement>(null);
+  // Whether focus is ours to give back. Without it the row would try to
+  // refocus a trigger that was never left on its first render.
+  const wasConfirming = useRef(false);
+
+  useEffect(() => {
+    if (confirming) {
+      wasConfirming.current = true;
+      keepButtonRef.current?.focus();
+    } else if (wasConfirming.current) {
+      wasConfirming.current = false;
+      // The trigger was remounted by the render this effect follows, so the
+      // ref points at a live element again by the time this runs.
+      deleteTriggerRef.current?.focus();
+    }
+  }, [confirming]);
+
+  useEffect(() => {
+    if (!confirming) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      // Stopped here for the same reason it is stopped in MessageBubble:
+      // Composer binds Escape at the WINDOW to "stop generating", and
+      // document bubbles to window - one press would otherwise dismiss this
+      // question and kill a reply streaming in the chat behind the panel.
+      event.stopPropagation();
+      event.preventDefault();
+      setConfirming(false);
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [confirming]);
 
   const backups = status.data?.plaintext_backups ?? [];
   const stuck = discard.data?.left ?? [];
@@ -45,7 +86,7 @@ export function PlaintextBackupNotice() {
     if (removed > 0) {
       return (
         <p
-          className="settings-value font-semibold"
+          className="text-xs font-semibold"
           style={{ color: "var(--color-es-primary-sage-deep)" }}
         >
           Unencrypted copy deleted.
@@ -76,7 +117,7 @@ export function PlaintextBackupNotice() {
           Unencrypted copy on disk
         </h4>
       </div>
-      <p className="settings-hint">
+      <p className="text-xs leading-relaxed text-muted-foreground">
         {one
           ? "A copy of your database from before the vault is still on disk."
           : `${backups.length} copies of your database from before the vault are still on disk.`}{" "}
@@ -85,13 +126,13 @@ export function PlaintextBackupNotice() {
         went wrong - remove {one ? "it" : "them"} once you are sure your chats
         are all there.
       </p>
-      <ul className="settings-hint space-y-0.5 font-mono">
+      <ul className="text-xs leading-relaxed text-muted-foreground space-y-0.5 font-mono">
         {backups.map((name) => (
           <li key={name}>{name}</li>
         ))}
       </ul>
       {stuck.length > 0 && (
-        <p className="settings-error" role="alert">
+        <p className="persona-local-error" role="alert">
           Still readable on disk and could not be deleted (something else has{" "}
           {stuck.length === 1 ? "the file" : "them"} open): {stuck.join(", ")}
         </p>
@@ -103,7 +144,7 @@ export function PlaintextBackupNotice() {
           under the other. Saying "could not delete" here is what sent people
           off doing exactly that. */}
       {shared.length > 0 && (
-        <p className="settings-error" role="alert">
+        <p className="persona-local-error" role="alert">
           Left alone on purpose: {shared.join(", ")} shares its contents with
           another file on this disk, so erasing it would destroy that one too.
           Deleting it yourself will not remove the data either - the other name
@@ -116,13 +157,13 @@ export function PlaintextBackupNotice() {
           to recover afterwards - by design. */}
       {!confirming && (
         <Button
+          ref={deleteTriggerRef}
           type="button"
           variant="ghost"
           size="sm"
           disabled={discard.isPending}
           onClick={() => setConfirming(true)}
-          className="gap-1 text-xs"
-          style={{ color: "var(--color-es-danger)" }}
+          className="persona-danger-action gap-1 text-xs"
         >
           <Trash2 size={12} />
           Delete the unencrypted {one ? "copy" : "copies"}
@@ -138,13 +179,14 @@ export function PlaintextBackupNotice() {
           </span>
           <Button
             type="button"
+            variant="ghost"
             size="sm"
             disabled={discard.isPending}
             onClick={() => {
               setConfirming(false);
               discard.mutate();
             }}
-            className="inline-confirm-button is-danger gap-1 text-xs"
+            className="persona-danger-action gap-1 text-xs"
           >
             {discard.isPending ? (
               <Loader2 size={12} className="animate-spin" />
@@ -154,12 +196,13 @@ export function PlaintextBackupNotice() {
             Delete
           </Button>
           <Button
+            ref={keepButtonRef}
             type="button"
             variant="ghost"
             size="sm"
             disabled={discard.isPending}
             onClick={() => setConfirming(false)}
-            className="text-xs"
+            className="persona-ghost-action text-xs"
           >
             Keep
           </Button>

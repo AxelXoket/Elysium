@@ -39,6 +39,19 @@ export const VaultStatusSchema = z.object({
    *  passphrase that was rotated away, which Elysium will not delete because
    *  it cannot read it. Optional so an older backend still parses. */
   rotation_backups: z.array(z.string()).optional(),
+  /** app.db.premigrate.bak: an encrypted snapshot legacy_migration.py takes
+   *  before the first pass of an old uploads migration, so a row-deleting
+   *  step that goes wrong partway through cannot cost anything. Discarded
+   *  only when that migration finishes with zero failures; when it does not,
+   *  the snapshot survives every later unlock. It opens with the current
+   *  passphrase, so it is not a plaintext leak - the reason it still matters
+   *  is that it is a STALE full copy: a message deleted from the live vault
+   *  afterward keeps living inside it. z.object STRIPS unknown keys, so this
+   *  field has to be named here or the backend's answer vanishes silently
+   *  (see PremigrateBackupNotice). Optional so an older backend still parses,
+   *  and because the exact field name is this component's own assumption
+   *  until the backend route lands - see that file's header comment. */
+  premigrate_backup: z.boolean().optional(),
 });
 export type VaultStatus = z.infer<typeof VaultStatusSchema>;
 

@@ -9,6 +9,7 @@ import {
   modelFixture,
   modelListFixture,
   modelListFallbackFixture,
+  settingsFixture,
 } from "@/test/mocks/fixtures";
 import { ModelPanel } from "@/components/models/ModelPanel";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -462,5 +463,79 @@ describe("Context usage meter", () => {
     const empty = await screen.findByTestId("context-usage-empty");
     expect(empty).toHaveTextContent("Select a chat to see context usage");
     expect(screen.queryByTestId("context-usage-meter")).not.toBeInTheDocument();
+  });
+});
+
+// ── Provenance and key state ─────────────────────────────────────
+//
+// The Models tab is the DEFAULT tab, so the catalogue renders seconds after
+// the passphrase - before any API key exists - and selecting a card is a pure
+// local write. Nothing here used to say the list was borrowed or that none of
+// it could be used yet. These tests pin BOTH arms plus the ground: with the
+// settings query unanswered the panel commits to neither claim.
+
+describe("Model list provenance and key state", () => {
+  beforeEach(() => {
+    useErrorStore.getState().clearAll();
+    useUiStore.setState({ selectedModelId: null, selectedChatId: null });
+  });
+
+  afterEach(() => {
+    useErrorStore.getState().clearAll();
+    vi.restoreAllMocks();
+  });
+
+  it("says the list is borrowed and unusable while no key is stored", async () => {
+    mockFetch({
+      "/models/openrouter": { body: modelListFixture },
+      "/settings": { body: { ...settingsFixture, api_key_set: false } },
+    });
+
+    renderWithQueryClient(<ModelPanel />, { wrapper });
+
+    const notice = await screen.findByTestId("model-key-missing");
+    expect(notice).toHaveTextContent(/came from OpenRouter/i);
+    expect(notice).toHaveTextContent(/Security tab/i);
+    expect(notice).toHaveTextContent(/no model here can be used/i);
+    // Not both at once, and not the wrong one.
+    expect(screen.queryByTestId("model-key-ready")).not.toBeInTheDocument();
+  });
+
+  it("turns into a quiet confirmation once a key is stored", async () => {
+    mockFetch({
+      "/models/openrouter": { body: modelListFixture },
+      "/settings": { body: { ...settingsFixture, api_key_set: true } },
+    });
+
+    renderWithQueryClient(<ModelPanel />, { wrapper });
+
+    const ready = await screen.findByTestId("model-key-ready");
+    expect(ready).toHaveTextContent("API key is set.");
+    expect(screen.queryByTestId("model-key-missing")).not.toBeInTheDocument();
+    // The warning is gone in substance, not just by testid.
+    expect(screen.queryByText(/no model here can be used/i)).not.toBeInTheDocument();
+  });
+
+  // GROUND. Without this, a notice hard-coded to render (or one derived from
+  // `!settings?.api_key_set`, which is true while the query is still in
+  // flight) would pass both tests above. The settings call fails here, so the
+  // panel knows nothing about the key and must claim nothing - even though the
+  // catalogue itself loaded fine.
+  it("claims neither state while the settings query has not answered", async () => {
+    mockFetch({
+      "/models/openrouter": { body: modelListFixture },
+      "/settings": { status: 503, body: { detail: "settings_unavailable" } },
+    });
+
+    renderWithQueryClient(<ModelPanel />, { wrapper });
+
+    // Wait for the panel to be fully rendered, so absence is a real absence
+    // and not a test that finished before the notice had a chance to mount.
+    await waitFor(() => {
+      expect(screen.getByText("GPT-4o")).toBeInTheDocument();
+    });
+
+    expect(screen.queryByTestId("model-key-missing")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("model-key-ready")).not.toBeInTheDocument();
   });
 });

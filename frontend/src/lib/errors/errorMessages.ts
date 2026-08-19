@@ -12,8 +12,12 @@ const ERROR_MESSAGES: Record<string, string> = {
     "No API key is configured. Please add your OpenRouter API key in Settings.",
   api_key_invalid:
     "API key is invalid. Please check it and try again.",
+  // Not a failure to save that happened to be reported badly: settings.py
+  // returns {ok: false} on this path and does NOT store the key. The old
+  // sentence said only that validation failed, so somebody who read it as
+  // "saved but unverified" closed the panel with no key set at all.
   validation_unavailable:
-    "Could not validate the API key because the network or proxy is unavailable.",
+    "The API key could not be checked because OpenRouter could not be reached, so it was not saved. Check your connection, and your proxy if you use one, then enter the key again.",
   auth_failed:
     "Authentication failed. Please check your API key.",
 
@@ -34,12 +38,21 @@ const ERROR_MESSAGES: Record<string, string> = {
     "The proxy URL is not valid. Please check it and try again.",
 
   // OpenRouter
+  // Was byte-identical to `timeout` below. Both codes reached this map, so
+  // the two were indistinguishable to a reader; this one is the only one of
+  // the pair with a real producer (openrouter.py raises it in six places), so
+  // it gets the sentence that names who went quiet.
   openrouter_timeout:
-    "The request timed out. Please try again.",
+    "OpenRouter did not answer in time, so nothing came back. Try again - a busy model often answers on the second attempt.",
   openrouter_rate_limited:
     "Rate limited by the provider. Please wait a moment and try again.",
+  // Named the problem and stopped. The account is the only place this can be
+  // fixed, so the sentence says so rather than leaving the reader to guess
+  // whether Elysium has a billing screen (it does not). The provider's address
+  // is NOT printed here: S-01 in static-safety.test.ts bans that literal from
+  // every source file, and a sentence is not an exception to it.
   openrouter_insufficient_credits:
-    "Insufficient credits on your OpenRouter account.",
+    "Your OpenRouter account does not have enough credits, so nothing was sent. Top up the account this API key belongs to, then try again.",
   openrouter_no_provider_meets_privacy:
     "This model may not be available with Elysium's strict privacy routing. Try another model.",
   openrouter_completion_error:
@@ -61,10 +74,18 @@ const ERROR_MESSAGES: Record<string, string> = {
   // Generation params
   context_too_large:
     "The context is too large for this model. Try reducing the context budget or clearing some messages.",
+  // These two were byte-identical, and both are still emitted - by different
+  // producers, which is what the sentences now say. `invalid_generation_params`
+  // is synthesised in the FRONTEND (client.ts, stream.ts, parseApiError.ts)
+  // when a 422 body carries a structured detail instead of a code string, so
+  // the specific parameter never arrives. `invalid_gen_params` is the
+  // BACKEND's own 422 from validate_and_filter_gen_params. Same next action
+  // for both, because Generation Settings is where either one is fixed, and
+  // its Reset all button is the control that clears a bad value.
   invalid_generation_params:
-    "One or more generation parameters are invalid.",
+    "A generation setting was rejected, and the reason did not arrive in a form Elysium could read. Open Generation Settings and press Reset all, then send again.",
   invalid_gen_params:
-    "One or more generation parameters are invalid.",
+    "One of the generation settings is outside the range this model accepts, so nothing was sent. Open Generation Settings and press Reset all, then send again.",
   // `unsupported_generation_params` lived here with a sentence and no sender.
   // Removed 2026-08-10: the catalogue's producer check found zero raise sites
   // in Python and zero throw sites in TypeScript. It existed only here and in
@@ -147,14 +168,27 @@ const ERROR_MESSAGES: Record<string, string> = {
     "The selected model does not support image input. Remove the images or choose another model.",
 
   // Response / network
+  // Synthesised by the frontend in two places (client.ts when a JSON body is
+  // not the shape the schema expects, stream.ts when a stream ends with no
+  // terminal event). Neither knows WHAT was wrong with it, so the sentence
+  // does not pretend to - but "unexpected response format" told the reader
+  // nothing they could act on, and the escalation is real.
   invalid_response_shape:
-    "Unexpected response format from server.",
+    "Elysium could not read the server's reply, so nothing was applied. Try again - if it keeps happening, close Elysium and start it again.",
   invalid_openrouter_completion_response:
     "The provider returned an unexpected response. Please try again.",
   network_error:
     "Could not reach the server. Please check your connection.",
+  // Byte-identical to `openrouter_timeout` until now, which made the two
+  // indistinguishable to a reader - and they are not the same event at all.
+  // This one is a PROXY failure: proxy_health.py raises HTTPException(503,
+  // health["reason"]) and "timeout" is one of its six PROXY_REASONS, meaning
+  // the proxy health probe went quiet. Its own comment block records that this
+  // code "was believed for months to be a client-side code with no backend
+  // producer" - so the generic sentence was not just vague, it was the wrong
+  // subsystem, and it sent people retrying a model that was never asked.
   timeout:
-    "The request timed out. Please try again.",
+    "The proxy did not answer in time, so nothing was sent. Check that your proxy is running and reachable, then try again.",
 
   // Character import
   character_json_too_large:
@@ -182,10 +216,15 @@ const ERROR_MESSAGES: Record<string, string> = {
     "This voice engine is not supported yet.",
   // Setting the runtime up is Elysium's job, not the user's - so this says what
   // to press, never "edit runtimes.json".
+  // The button in VoiceSettingsPage reads "Set up" and, once a setup has been
+  // attempted or the runtime is broken, "Set up again". These two sentences
+  // said "Set up voice" and "Set up voice again", which is not a control that
+  // exists - so the reader scanned the page for a button that was right there
+  // under a different name.
   tts_runtime_missing:
-    "The voice engine is not set up yet. Use Set up voice in Settings to enable it.",
+    "The voice engine is not set up yet. Press Set up in Settings to install it.",
   tts_runtime_broken:
-    "The voice engine was set up before but its files are gone now. Set up voice again to restore it.",
+    "The voice engine was set up before but its files are gone now. Press Set up again in Settings to reinstall it.",
   tts_runtime_installing:
     "Voice engine setup is already running. Wait for it to finish, or cancel it first.",
   tts_runtime_install_failed:
@@ -212,25 +251,36 @@ const ERROR_MESSAGES: Record<string, string> = {
     "This voice model does not speak the selected language. Pick another language or another model.",
   tts_model_already_loading:
     "A voice model is already loading. Wait for it to finish.",
+  // The three below named a problem and stopped. All three are recoverable by
+  // the same act, because VoiceHost starts the worker on demand (host.py
+  // _start_worker, reached from the speak path): asking again IS the retry,
+  // and there is no Load button in the UI to send anyone hunting for.
+  // worker_client raises tts_load_timeout after the worker goes quiet past the
+  // budget and then takes it down, so nothing is left half-loaded to wait on.
   tts_load_timeout:
-    "The voice model took too long to load and was stopped.",
+    "The voice model stopped answering while it loaded, so it was shut down. Press speak again - the first load of a model is the slow one, so a second attempt usually works. If it stops again, a smaller model will load.",
   tts_worker_failed:
-    "The voice engine could not start.",
+    "The voice engine could not start, so nothing was spoken. Press speak again to retry it - if it keeps failing, press Set up again in Settings to reinstall the engine.",
   tts_worker_crashed:
     "The voice engine stopped unexpectedly. Voice is off until it is loaded again.",
   tts_worker_unavailable:
-    "The voice engine is not running right now.",
+    "The voice engine is not running, so nothing was spoken. It starts again on the next request, so press speak again.",
   // Not the same advice as tts_insufficient_vram: this one ran out mid-flight,
   // so the fix is a smaller setting, not closing another program.
   tts_out_of_memory:
     "The voice model ran out of GPU memory while working. Lower its memory settings, or use a smaller model.",
   tts_synthesis_failed:
-    "The voice could not be generated for this message.",
+    "The voice could not be generated for this message. Press speak again, or choose a different voice model in Settings. The message itself is unaffected.",
   // The spoken reply is the conversation read aloud, so it is kept where the
   // conversation is kept. If the audio folder points somewhere else on disk,
   // nothing is written rather than something being left there forever.
+  // ELYSIUM_DATA_DIR was called a "setting", which sent people looking through
+  // Settings for a row that has never existed. It is read once by config.py
+  // from the environment; nothing in the UI writes it, and the frontend does
+  // not mention it anywhere else. The sentence now says which kind of thing it
+  // is, so the reader knows to stop looking in the app.
   tts_cache_outside_data_dir:
-    "The voice folder points outside Elysium's own data folder, so nothing was written there. Move it back, or move the whole data folder with the ELYSIUM_DATA_DIR setting.",
+    "The voice folder points outside Elysium's own data folder, so nothing was written there. Move it back inside the data folder - the data folder itself moves only with the ELYSIUM_DATA_DIR environment variable, not from Settings.",
   tts_reference_too_short:
     "That voice clip is too short to clone from. Around ten seconds of clear speech works best.",
   // Not a problem with the clip. The folder this voice would be saved into
@@ -264,8 +314,11 @@ const ERROR_MESSAGES: Record<string, string> = {
     "That audio is no longer available - spoken replies are cleared when Elysium locks. Press speak again to hear it.",
   tts_reference_invalid:
     "That reference recording could not be used. Try a clear 10-20 second clip.",
+  // The failure is on this computer, not in the reply, and the last sentence
+  // is there because "no audio device" next to a message reads as though the
+  // message itself failed.
   tts_audio_device_error:
-    "No audio output device is available to play the voice.",
+    "No audio output device is available, so the voice could not be played. Connect or enable an output device, then press speak again. The reply itself is unaffected.",
   tts_nothing_streaming:
     "That reply has already finished. Use the speaker button on the message to hear it.",
 
@@ -273,6 +326,19 @@ const ERROR_MESSAGES: Record<string, string> = {
     "Something went wrong on the server. Please try again.",
   vault_locked:
     "Elysium locked. Enter your passphrase to continue.",
+
+  // Both of these belong to the reset route, and both are refusals of a
+  // destructive request, so neither may read as a fault the user should
+  // work around. The route exists for somebody who has lost their
+  // passphrase; it is reachable while locked BECAUSE of that, which is
+  // exactly why it says no twice.
+  vault_unlocked:
+    "Elysium is already unlocked, so there is nothing to reset from here. " +
+    "Starting over is only offered to someone who cannot get in at all.",
+
+  reset_confirmation_mismatch:
+    "That did not match, so nothing was deleted. The words have to be typed " +
+    "exactly as they are shown.",
 
   // Vault. The gate used to map only wrong_passphrase and passphrase_too_short
   // and collapse everything else into "Is the backend running?" - which is
@@ -336,10 +402,20 @@ const ERROR_MESSAGES: Record<string, string> = {
   // say no.
   notebook_entry_empty:
     "That note is empty. Write something for the character to remember.",
+  // "One short sentence" undersold the real cap by half: notebook_store's
+  // ENTRY_MAX_CHARS is 240, which NotebookPanel mirrors as the textarea's
+  // maxLength. Two or three sentences fit, and a reader who trimmed to one was
+  // giving up room the app was willing to give them.
   notebook_entry_too_long:
-    "That note is too long. Keep it to one short sentence - the notebook is sent with every message, so every note costs room the conversation would otherwise use.",
+    "That note is too long. Keep it under 240 characters - the notebook is sent with every message, so every note costs room the conversation would otherwise use.",
+  // There is no type control and no importance control in the add-note row -
+  // the whole row is one textarea, so this sentence pointed at two things that
+  // are not on the screen. What the backend actually refuses here is a kind,
+  // durability, importance or status value it does not recognise, none of
+  // which the panel lets anyone type. That makes it an app-side mismatch, and
+  // the only honest next action is to reload and write the note again.
   notebook_entry_invalid:
-    "That note could not be saved. Check the type and importance and try again.",
+    "That note could not be saved: something in it was not a value Elysium recognises. Reload Elysium and write it again - the wording itself is fine to reuse.",
   notebook_field_not_editable:
     "That part of a note cannot be changed after it is written. Who wrote a note - you or the model - is recorded once and stays.",
   // The list has to arrive whole. Pass two of the renumber writes positions by
@@ -357,8 +433,11 @@ const ERROR_MESSAGES: Record<string, string> = {
     "Choose a model for the notebook first. Nothing is extracted until you pick one - it is your API key, and picking one for you would spend it on a model you never chose.",
   notebook_nothing_to_read:
     "There is nothing new in this chat to read yet. Send a few messages and try again.",
+  // "One of the two available" named a count and not the two. The router
+  // accepts "en" and "tr"; the select in ExtractionSettings offers exactly
+  // English and Turkce, so the sentence can simply say which.
   notebook_language_unknown:
-    "That instruction language is not one of the two available.",
+    "The notebook's instructions come in English or Turkce only. Pick one of those two.",
   // The only limit in this app that is enforced rather than requested. The
   // sentence says so, because a user who reaches for it deserves to know it
   // worked rather than hoping the model listened.
@@ -372,10 +451,15 @@ const ERROR_MESSAGES: Record<string, string> = {
     "A safeword has to be short enough to type in a hurry. Sixty-four characters at most.",
   notebook_daily_cap_reached:
     "The notebook has used its calls for today and stopped. It will start again tomorrow, and nothing was lost - the messages it has not read yet stay unread, not skipped.",
+  // The field accepts typing, so "instead of typing it" told somebody off for
+  // using the control as built. The rule it broke is a shape (_MODEL_ID wants
+  // author/model), so the sentence names the shape and leaves both routes open.
   notebook_model_id_invalid:
-    "That is not an OpenRouter model id. Pick one from the list instead of typing it.",
+    "That is not an OpenRouter model id. They look like author/model - pick one from the list, or type it in that form.",
+  // Its sibling `model_id_too_long` is plain about the same rule. "Too long to
+  // be real" called the reader's input a lie for crossing a 128 character cap.
   notebook_model_id_too_long:
-    "That model id is too long to be real. Pick one from the list.",
+    "That model id is too long. Pick one from the list.",
   // The four below are relayed from OpenRouter through the notebook's own
   // routes. They used to arrive as raw reasons with no record and no
   // sentence, so an expired key read "Something went wrong. Please try
@@ -390,12 +474,32 @@ const ERROR_MESSAGES: Record<string, string> = {
     "There is no API key saved yet. Open Security and add one before the notebook can read anything.",
   notebook_entry_not_found:
     "That note is no longer there. It may have been removed in another window.",
+  // "A name AND the wording" described a two-field form. BoundaryPanel has one
+  // text field and sends its text as both label and phrasing, so the reader was
+  // told to fill in a second box that is not there. The backend refuses when
+  // either is blank, which through this UI can only mean the one field was
+  // empty or held nothing but spaces and newlines.
   boundary_empty:
-    "A limit needs both a name and the wording the model will see.",
+    "A limit needs some wording. Type what to keep out of the story, then add it.",
+  // Severity is a select that starts on "never" and cannot be cleared, so
+  // "choose how strict it is" asked for something already chosen. The backend
+  // checks four enums here, not just severity, and the panel never offers an
+  // invalid value for any of them - so reaching this means the app sent
+  // something its own store refused.
   boundary_invalid:
-    "That limit could not be saved. Choose how strict it is and try again.",
+    "That limit could not be saved: one of its settings was not a value Elysium recognises. Reload Elysium and add the limit again.",
   boundary_not_found:
     "That limit is no longer there. It may have been removed in another window.",
+  // Both ceilings are notebook_store.BOUNDARY_MAX_CHARS and
+  // BOUNDARY_SET_MAX_CHARS, and both sentences have to say WHY a limit is
+  // held to something stricter than a note. A note that does not fit is
+  // dropped and reported; a limit that does not fit refuses the whole send,
+  // because a limit silently left out is worse than no limit. So the cure is
+  // named here rather than left to the reader to guess.
+  boundary_too_long:
+    "That limit is too long. Keep it under 160 characters - limits are sent with every message and are never trimmed to make room, so a long enough one would stop every message in this chat from being sent at all.",
+  boundary_set_too_long:
+    "Your limits are already as long as they can be together, so this one was not added. They are never trimmed to make room, so the whole set has to fit beside the conversation. Shorten or remove one of the limits you have, then add this one again.",
   unknown_error:
     "Something went wrong. Please try again.",
 

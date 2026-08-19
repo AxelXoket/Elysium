@@ -44,6 +44,8 @@
 | POST | /vault/discard-plaintext-backup | Shred the pre-vault plaintext copies | Part K (vault) |
 | POST | /vault/discard-orphaned-copy | Shred an encrypted copy stranded mid-migration | Part K (vault) |
 | POST | /vault/discard-empty-stub | Remove the 0-byte stub crash recovery moved aside (refuses a non-empty file) | Part K (vault) |
+| POST | /vault/discard-premigrate-backup | Shred a stale pre-migration snapshot (requires unlocked) | Part K (vault) |
+| POST | /vault/reset | Wipe every artefact of the vault (locked-state only, exact typed confirmation) | Part K (vault) |
 | GET | /notebook/{chat_id} | Notes for one chat, retired rows included | FAZ 1 (notebook) |
 | POST | /notebook/{chat_id} | Add a note | FAZ 1 (notebook) |
 | PATCH | /notebook/entries/{id} | Edit a note's text or flags; provenance is not editable | FAZ 1 (notebook) |
@@ -56,7 +58,7 @@
 | POST | /notebook/{chat_id}/use-global | Whether this chat follows the global limits | FAZ 1 (notebook) |
 | GET | /notebook/safeword | The phrase that stops a turn. Empty means off | Since 1.1.0 (notebook) |
 | POST | /notebook/safeword | Set or clear it. **The only limit in this app enforced in code**: matched before the provider is called, and when it matches nothing is sent and nothing is stored (`400 safeword_triggered` from every completion route) | Since 1.1.0 (notebook) |
-| GET | /notebook/worker | What the background extractor has done: counters, today's spend, and the circuit-breaker state. A refusal nobody can see is the same screen as a notebook that found nothing | FAZ 5 (notebook) |
+| GET | /notebook/worker | What the background extractor has done: counters, today's spend, lifetime spend (`spend_lifetime`, same shape as `spend`, summed over every day - never gates anything, `spend` alone governs the daily cap), and the circuit-breaker state. A refusal nobody can see is the same screen as a notebook that found nothing | FAZ 5 (notebook) |
 | POST | /notebook/worker/reset | Lift a tripped or stopped circuit breaker by hand. Without it, recovering from a provider outage means restarting the whole application | FAZ 5 (notebook) |
 | GET | /notebook/auto-accept | Whether proposals are accepted without review. **Unset is ON** - the default, not "off" | FAZ 5 (notebook) |
 | POST | /notebook/auto-accept | Turn review on or off. A chat opened from an imported card overrides this to OFF for itself, whatever the global says | FAZ 5 (notebook) |
@@ -68,6 +70,7 @@
 | GET | /settings | Current config state (no secrets) | Existing |
 | POST | /settings/api-key | Store API key (validates first) | Modified Part B |
 | DELETE | /settings/api-key | Remove API key | Existing |
+| POST | /settings/api-key/check | Ask OpenRouter whether the key ALREADY STORED is still accepted, without it being retyped. No body. `{key_status}` is one of `valid`, `invalid`, `validation_unavailable`, `not_set` - a rejection is a 200, not a 4xx, because the check succeeded; only the key failed. `invalid` and `validation_unavailable` are opposite facts and must never share a sentence in the UI. Passes `enforce_proxy_gate` like every outbound path; the key is never returned or logged. |
 | POST | /settings/proxy | Store proxy config | Existing |
 | POST | /settings/proxy/alias | `{proxy_alias}` - rename the configured proxy without rewriting its URL (the URL is write-only and never displayed). 400 `proxy_url_required` when none is configured. |
 | POST | /settings/proxy/required | Arm/disarm the proxy kill-switch alone (400 `proxy_url_required` when no proxy is configured) | Existing |
@@ -412,6 +415,27 @@ side; never persist attachments in browser storage.
 
 ---
 
+## Message `truncated` Field
+
+Every message object (GET /chats/{id}/messages, and the `user_message`/
+`assistant_message` objects returned or streamed by `/complete`,
+`/regenerate`, `/edit` and their `/stream` variants, plus `/activate`)
+carries a `truncated: bool`. It is only ever true on an assistant row, and
+means the reply was cut off before the model reached a natural stop rather
+than finishing the sentence it was on:
+
+- the provider reported a token-ceiling finish reason (`length` or an
+  equivalent upstream spelling),
+- the connection closed without ever saying how it ended (no `[DONE]`, no
+  finish reason at all), or
+- the reader disconnected or the provider dropped mid-stream and the partial
+  text already received was kept instead of discarded.
+
+A user message, and the character's first_mes greeting, are always `false` -
+neither one is model output. Render this as a visible "cut off" marker on the
+bubble; do not treat it as an error, the text that is there is real and was
+kept on purpose.
+
 ## Model List `fallback_reason` Values
 
 When `/models/openrouter` falls back to the public list, `fallback_reason`
@@ -744,6 +768,19 @@ the two is the single most expensive wound this design inherits.
 `dropped_by_reason` exists because one integer cannot tell "a quote was
 invented" - the defence working - from "a Turkish quote failed a byte
 comparison" - the defence eating a true fact.
+
+Every note carries **`evidence_role`** on `GET /notebook/{chat_id}`: `"user"`,
+`"assistant"`, or `null` for a note somebody typed themselves. It records
+whose sentence the note's quote was lifted from, read off the `role:` prefix
+of the transcript line the quote was found in.
+
+It is the one signal no verifier can supply. The grounding check asks whether
+a note is supported by its quote; nothing can ask whether the QUOTE was
+invented, and when the chat model quotes its own reply the check passes by
+construction. The panel therefore MARKS an `"assistant"` note and does not
+withhold it - at the measured rate of fabrication a queue of these would be
+almost entirely correct notes, and a queue nobody reads is worse than a label
+somebody can see.
 
 Both routes that reach OpenRouter pass `enforce_proxy_gate()` first and are
 counted against `NOTEBOOK_DAILY_CALL_CAP`, which refuses with **429

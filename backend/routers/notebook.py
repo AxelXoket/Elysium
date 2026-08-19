@@ -91,6 +91,14 @@ class BoundaryBody(BaseModel):
     # `source` is absent: a limit created through this route is one a person
     # typed, so it is `explicit` by construction. The database refuses an
     # inferred hard limit, and this route cannot produce an inferred one at all.
+    #
+    # `max_length` is absent too, and that is the same choice EntryBody makes
+    # about notes. The ceiling is notebook_store.BOUNDARY_MAX_CHARS and it is
+    # enforced in the domain function, so no route can be added that skips it.
+    # Declaring it here as well would only change WHICH refusal arrives first:
+    # pydantic would answer 422 with a validation structure instead of the 400
+    # carrying `boundary_too_long`, and the reader would get "Something went
+    # wrong" in place of the sentence written for exactly this case.
 
 
 class UseGlobalBody(BaseModel):
@@ -154,6 +162,11 @@ async def worker_status() -> dict:
             return {
                 "stats": notebook.extraction_stats(con),
                 "spend": notebook.spend_today(con),
+                # Same connection, same poll - not a second round trip and
+                # not a new one. See notebook.spend_lifetime for why a plain
+                # SUM over the whole table is the cheap answer here, not the
+                # expensive one.
+                "spend_lifetime": notebook.spend_lifetime(con),
             }
 
     body = await anyio.to_thread.run_sync(_read)

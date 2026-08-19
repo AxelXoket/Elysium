@@ -12,13 +12,19 @@
  * when it comes back, and the state of the boxes afterwards. The re-encryption
  * itself is the server's, and backend/tests own it.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { afterAll, beforeAll, describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { VaultSection } from "@/components/settings/VaultSection";
 import { mockFetch } from "../mocks/api";
+import {
+  loadGlassRightCss,
+  injectCss,
+  wrapInGlassRight,
+  surfaceToken,
+} from "@/test/helpers/glassSurfaceCss";
 
 /** Enough to clear the client-side length floor without naming it twice. */
 const LONG_ENOUGH = "correct horse battery";
@@ -214,5 +220,167 @@ describe("VaultSection - the leftovers it has to show", () => {
     expect(screen.getByTestId("orphaned-copy-notice")).toBeInTheDocument();
     expect(screen.getByTestId("rotation-backup-notice")).toBeInTheDocument();
     expect(screen.getByTestId("empty-stub-notice")).toBeInTheDocument();
+  });
+});
+
+describe("VaultSection - what the encryption promise leaves out", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  /** The panel's encryption promise, as the reader sees it. */
+  async function promise(): Promise<string> {
+    mockFetch({
+      "/vault/status": { body: { initialized: true, unlocked: true } },
+      "/settings": { body: { auto_lock_minutes: 0 } },
+    });
+    renderWithQueryClient(<VaultSection />);
+    const hint = await screen.findByText(
+      /Everything on disk is encrypted with this passphrase/i,
+    );
+    return hint.textContent ?? "";
+  }
+
+  it("names the spoken audio, not the wallpaper alone", async () => {
+    // This panel is the complete list (the setup card carries the short true
+    // version). The one that must never be dropped again is the audio: every
+    // reply is written as a plain wav under the data folder, and it is the
+    // conversation itself, unencrypted, for as long as it is there. FF15
+    // caught this same sentence once, added the wallpaper, and stopped.
+    const text = await promise();
+
+    expect(text, "the complete list is missing the spoken audio")
+      .toMatch(/spoken replies are written as plain audio files/i);
+    expect(text, "the reader is not told the audio ever goes away")
+      .toMatch(/wiped at every lock/i);
+    expect(text, "the wallpaper dropped out of the complete list")
+      .toMatch(/wallpaper/i);
+    // Ground: a phrase of the same shape that this panel does not carry.
+    // Without it, a matcher that matched anything would pass the three above.
+    expect(text).not.toMatch(/spoken replies are encrypted/i);
+  });
+
+  it("keeps the cloning clip conditional for users whose model cannot clone", async () => {
+    // Reference clips exist only for cloning engines. The clause has to warn
+    // the user who has one without inventing a file for the user who does not.
+    const text = await promise();
+
+    expect(text, "the clip is claimed to exist unconditionally")
+      .toMatch(/any voice clip you add for cloning/i);
+    expect(text, "the reader is not told this one survives a lock")
+      .toMatch(/is not wiped/i);
+    expect(text, "the copy asserts the reader already has a clip on disk")
+      .not.toMatch(/your voice clip (is|lives|sits) /i);
+  });
+});
+
+/**
+ * This form renders inside `.glass-right`, the app's one light surface, but
+ * `settings-label` (the three passphrase captions), `settings-hint` (the
+ * disclosure paragraph), `settings-error` and `settings-value` are painted
+ * for the dark settings dialog. `settings-label` is the sharpest case: it has
+ * no colour rule of its own, so it just inherits body's - measured at
+ * 1.05-1.14:1 here. See helpers/glassSurfaceCss.ts for why these tests read
+ * custom-property tokens rather than `.color`.
+ */
+describe("VaultSection - light surface contrast", () => {
+  let styleEl: HTMLStyleElement;
+
+  beforeAll(async () => {
+    styleEl = injectCss(await loadGlassRightCss());
+  }, 20000);
+
+  afterAll(() => styleEl.remove());
+
+  afterEach(() => {
+    document.querySelectorAll(".glass-right").forEach((el) => el.remove());
+  });
+
+  it("the three passphrase labels and the disclosure hint read .glass-right's own tokens", async () => {
+    const glassRight = wrapInGlassRight();
+    mockFetch({
+      "/vault/status": {
+        body: { initialized: true, unlocked: true, auto_lock_minutes: 0 },
+      },
+      "/settings": { body: { auto_lock_minutes: 0 } },
+    });
+    renderWithQueryClient(<VaultSection />, {
+      container: glassRight,
+      baseElement: document.body,
+    });
+
+    const disclosure = await screen.findByTestId("vault-disclosure-hint");
+    const current = screen.getByTestId("vault-label-current");
+    const next = screen.getByTestId("vault-label-new");
+    const repeat = screen.getByTestId("vault-label-repeat");
+
+    const lightText = surfaceToken(glassRight, "--color-es-text-light");
+    const mutedText = surfaceToken(glassRight, "--muted-foreground");
+    expect(lightText, "the surface never resolved a text-light token").not.toBe("");
+    expect(mutedText, "the surface never resolved a muted token").not.toBe("");
+
+    expect(surfaceToken(disclosure, "--muted-foreground")).toBe(mutedText);
+    for (const label of [current, next, repeat]) {
+      expect(surfaceToken(label, "--color-es-text-light")).toBe(lightText);
+      expect(label.className).not.toMatch(/settings-/);
+    }
+    expect(disclosure.className).not.toMatch(/settings-/);
+
+    // Negative control: settings-label declares no colour of its own, so it
+    // just inherits - the fixed label's explicit inline
+    // `color: var(--color-es-text-light)` is what settings-label never had.
+    // The custom-property TOKEN is still reachable at this DOM position
+    // either way (inheritance of a custom property is unaffected by which
+    // class is on the element); what differs, provably, is whether `color`
+    // itself is ever set to consume it.
+    const oldLabel = document.createElement("span");
+    oldLabel.className = "settings-label";
+    glassRight.appendChild(oldLabel);
+    expect(
+      getComputedStyle(oldLabel).color,
+      "settings-label must not coincidentally already declare the fix's colour",
+    ).not.toBe(getComputedStyle(current).color);
+  });
+
+  it("a refused change uses persona-local-error, and a saved one drops settings-value", async () => {
+    const user = userEvent.setup();
+    const glassRight = wrapInGlassRight();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        const json = (body: unknown, status = 200) =>
+          new Response(JSON.stringify(body), {
+            status,
+            headers: { "Content-Type": "application/json" },
+          });
+        if (url.includes("/vault/change-passphrase")) {
+          return json({ detail: "wrong_passphrase" }, 403);
+        }
+        if (url.includes("/vault/status")) {
+          return json({ initialized: true, unlocked: true, auto_lock_minutes: 0 });
+        }
+        return json({});
+      }),
+    );
+    renderWithQueryClient(<VaultSection />, {
+      container: glassRight,
+      baseElement: document.body,
+    });
+
+    await user.type(await screen.findByLabelText("Current passphrase"), "wrong one");
+    await user.type(screen.getByLabelText("New passphrase"), "correct horse battery");
+    await user.type(screen.getByLabelText("Repeat new passphrase"), "correct horse battery");
+    await user.click(screen.getByRole("button", { name: "Change passphrase" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.className).not.toMatch(/settings-error/);
+    expect(alert.className).toMatch(/persona-local-error/);
+    // settings-error and persona-local-error both read the same :root-only
+    // --color-es-danger token, which jsdom cannot resolve either way - see
+    // AutoLockControl's contrast tests for the same note. Font-size is the
+    // real, measured difference between the two hand-written rules.
+    expect(getComputedStyle(alert).fontSize).toBe("12px");
+
+    vi.unstubAllGlobals();
   });
 });

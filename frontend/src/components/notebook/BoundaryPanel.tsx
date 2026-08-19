@@ -12,7 +12,7 @@
  * camera turned away. The third level is the soft preference between them.
  */
 import { SlideIn } from "@/components/motion/SlideIn";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Plus, Trash2, Check, X, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -22,6 +22,7 @@ import { useUiStore } from "@/lib/store/uiStore";
 import { useErrorStore } from "@/lib/errors/errorStore";
 import {
   useChatBoundaries,
+  useGlobalBoundaries,
   useCreateBoundary,
   useDeleteBoundary,
   useSetUseGlobalBoundaries,
@@ -29,6 +30,21 @@ import {
   useSetSafeword,
 } from "@/lib/query/notebook";
 import type { Boundary } from "@/lib/schemas/notebook";
+
+/**
+ * notebook_store.BOUNDARY_MAX_CHARS. The field used to stop at 240 - the NOTE
+ * ceiling - which was the wrong number twice over: the backend had no ceiling
+ * for limits at all, so the cap read as enforcement while being nothing of the
+ * kind, and 240 is the figure for a block that gets TRIMMED. Limits are never
+ * trimmed, so theirs is smaller, and it is arithmetic: see the derivation on
+ * the constant itself.
+ *
+ * Exported so the test can hold the field to this number instead of hard-coding
+ * a copy of it, which is how the two would drift apart without anything saying
+ * so. The real enforcement is create_boundary's, and a limit that gets past
+ * this field by any other route still comes back as `boundary_too_long`.
+ */
+export const BOUNDARY_MAX_CHARS = 160;
 
 const SEVERITY_LABEL: Record<string, string> = {
   hard: "never",
@@ -39,6 +55,19 @@ const SEVERITY_LABEL: Record<string, string> = {
 export function BoundaryPanel() {
   const chatId = useUiStore((s) => s.selectedChatId);
   const { data } = useChatBoundaries(chatId);
+  // Called unconditionally, per the rules of hooks - the hook takes no
+  // `enabled` of its own to gate on chatId. With a chat open its answer goes
+  // unused below: `data` above is already the MERGED view, global rows
+  // included, because that is what list_chat_boundaries returns and what the
+  // "use my global limits here" switch controls. With no chat open this is
+  // the only source of truth the panel has left, because useChatBoundaries
+  // is disabled entirely there - and before this fix nothing stood in its
+  // place but an empty array, so the panel said "No limits set." to someone
+  // whose global limits were sitting in the database the whole time. A
+  // safety feature that reads as gone is worse than one that costs an extra
+  // request to prove it is not, so this is called every render rather than
+  // only when a chat is closed.
+  const globalBoundaries = useGlobalBoundaries();
   const create = useCreateBoundary();
   const remove = useDeleteBoundary();
   const setUseGlobal = useSetUseGlobalBoundaries();
@@ -71,7 +100,11 @@ export function BoundaryPanel() {
   const useGlobal = pendingGlobal ?? data?.use_global ?? true;
 
   const busy = create.isPending || remove.isPending || setUseGlobal.isPending;
-  const rows: Boundary[] = data?.boundaries ?? [];
+  // With no chat open there is nothing to merge global limits INTO, so the
+  // global set is shown as-is rather than as an always-empty per-chat list.
+  const rows: Boundary[] = chatId == null
+    ? (globalBoundaries.data?.boundaries ?? [])
+    : (data?.boundaries ?? []);
 
   async function handleAdd() {
     const text = label.trim();
@@ -177,7 +210,7 @@ export function BoundaryPanel() {
       <div className="flex items-center gap-2">
         <Input
           value={label}
-          maxLength={240}
+          maxLength={BOUNDARY_MAX_CHARS}
           placeholder="Something to keep out of the story..."
           disabled={busy}
           onChange={(e) => setLabel(e.target.value)}
@@ -233,66 +266,142 @@ export function BoundaryPanel() {
 
       <div className="space-y-1">
         {rows.map((row) => (
-          <div
+          <BoundaryRow
             key={row.id}
-            data-testid={`boundary-${row.id}`}
-            className="persona-card flex items-start gap-2"
-          >
-            <div className="min-w-0 flex-1">
-              <p className="break-words text-sm font-medium">{row.label}</p>
-              <p className="text-xs leading-relaxed text-muted-foreground">
-                {SEVERITY_LABEL[row.severity] ?? row.severity}
-                {row.scope === "global" ? " - everywhere" : " - this chat"}
-              </p>
-            </div>
-            {confirmId !== row.id && (
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                disabled={busy}
-                onClick={() => setConfirmId(row.id)}
-                aria-label="Delete limit"
-                className="persona-danger-action h-7 w-7 p-0"
-              >
-                <Trash2 size={12} className="size-3" />
-              </Button>
-            )}
-            {confirmId === row.id && (
-              <>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  disabled={busy}
-                  aria-label="Confirm delete limit"
-                  className="persona-danger-action h-7 w-7 p-0"
-                  onClick={() => {
-                    setConfirmId(null);
-                    void remove.mutateAsync([row.id]).catch((err) =>
-                      pushError(err, "error", { chatId: chatId ?? undefined }),
-                    );
-                  }}
-                >
-                  <Check size={12} className="size-3" />
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  disabled={busy}
-                  onClick={() => setConfirmId(null)}
-                  aria-label="Keep limit"
-                  className="persona-ghost-action h-7 w-7 p-0"
-                >
-                  <X size={12} className="size-3" />
-                </Button>
-              </>
-            )}
-          </div>
+            row={row}
+            busy={busy}
+            confirming={confirmId === row.id}
+            onAskDelete={() => setConfirmId(row.id)}
+            onCancelDelete={() => setConfirmId(null)}
+            onDelete={() => {
+              setConfirmId(null);
+              void remove.mutateAsync([row.id]).catch((err) =>
+                pushError(err, "error", { chatId: chatId ?? undefined }),
+              );
+            }}
+          />
         ))}
       </div>
     </section>
     </SlideIn>
+  );
+}
+
+function BoundaryRow({
+  row,
+  busy,
+  confirming,
+  onAskDelete,
+  onCancelDelete,
+  onDelete,
+}: {
+  row: Boundary;
+  busy: boolean;
+  confirming: boolean;
+  onAskDelete: () => void;
+  onCancelDelete: () => void;
+  onDelete: () => void;
+}) {
+  // The house confirm pattern, copied from NotebookPanel's NoteRow rather
+  // than reinvented: the confirm buttons REPLACE the trigger in place, so
+  // React unmounts the element the keyboard was standing on and focus falls
+  // silently to <body>. From there the question just opened is reachable
+  // only by tabbing in from the top of the document, and Escape answered
+  // nothing - a keyboard user asking to delete a limit could not practicably
+  // finish, or back out. A limit is the thing this whole panel exists to
+  // protect, so its own delete confirm gets no less care than the notebook's.
+  //
+  // Same three behaviours, same reasoning: focus lands on the SAFE button so
+  // a reflexive Enter keeps the limit rather than deleting it, Escape cancels
+  // without bubbling into Composer's own binding, and focus returns to the
+  // trigger on cancel so the keyboard is left where it was.
+  const deleteTriggerRef = useRef<HTMLButtonElement>(null);
+  const keepButtonRef = useRef<HTMLButtonElement>(null);
+  // Whether focus is ours to give back - without it every row would grab
+  // focus on its first render, when nothing has been confirmed yet.
+  const wasConfirming = useRef(false);
+
+  useEffect(() => {
+    if (confirming) {
+      wasConfirming.current = true;
+      keepButtonRef.current?.focus();
+    } else if (wasConfirming.current) {
+      wasConfirming.current = false;
+      // The trigger was remounted by the render this effect follows, so the
+      // ref points at a live element again by the time this runs.
+      deleteTriggerRef.current?.focus();
+    }
+  }, [confirming]);
+
+  useEffect(() => {
+    if (!confirming) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      // Stopped for the same reason NoteRow stops it: Composer binds Escape
+      // at the WINDOW to "stop generating", and document bubbles to window -
+      // so one press would both dismiss this question and kill a reply
+      // streaming in the chat behind the panel.
+      event.stopPropagation();
+      event.preventDefault();
+      onCancelDelete();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [confirming, onCancelDelete]);
+
+  return (
+    <div
+      data-testid={`boundary-${row.id}`}
+      className="persona-card flex items-start gap-2"
+    >
+      <div className="min-w-0 flex-1">
+        <p className="break-words text-sm font-medium">{row.label}</p>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          {SEVERITY_LABEL[row.severity] ?? row.severity}
+          {row.scope === "global" ? " - everywhere" : " - this chat"}
+        </p>
+      </div>
+      {!confirming && (
+        <Button
+          ref={deleteTriggerRef}
+          type="button"
+          size="sm"
+          variant="ghost"
+          disabled={busy}
+          onClick={onAskDelete}
+          aria-label="Delete limit"
+          className="persona-danger-action h-7 w-7 p-0"
+        >
+          <Trash2 size={12} className="size-3" />
+        </Button>
+      )}
+      {confirming && (
+        <>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            disabled={busy}
+            aria-label="Confirm delete limit"
+            className="persona-danger-action h-7 w-7 p-0"
+            onClick={onDelete}
+          >
+            <Check size={12} className="size-3" />
+          </Button>
+          <Button
+            ref={keepButtonRef}
+            type="button"
+            size="sm"
+            variant="ghost"
+            disabled={busy}
+            onClick={onCancelDelete}
+            aria-label="Keep limit"
+            className="persona-ghost-action h-7 w-7 p-0"
+          >
+            <X size={12} className="size-3" />
+          </Button>
+        </>
+      )}
+    </div>
   );
 }

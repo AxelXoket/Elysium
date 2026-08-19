@@ -236,3 +236,71 @@ describe("PlaintextBackupNotice - the file that will never come free", () => {
     expect(alert.textContent).not.toMatch(/has the file open/i);
   });
 });
+
+/**
+ * The confirm row replaces its own trigger, which unmounts the element the
+ * keyboard was standing on. Without help, focus drops to <body> and the
+ * question - delete the only unencrypted fallback copy of the whole database
+ * - is reachable only by tabbing back in from the top of the document, with
+ * no Escape. NotebookPanel's NoteRow already solved this for an undoable
+ * delete; this one is not undoable at all.
+ */
+describe("answering the delete question from the keyboard", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("focuses the SAFE choice when the question opens", async () => {
+    const user = userEvent.setup();
+    withStatus([BACKUP]);
+    renderWithQueryClient(<PlaintextBackupNotice />);
+    await user.click(
+      await screen.findByRole("button", { name: /delete the unencrypted/i }),
+    );
+
+    expect(screen.getByRole("button", { name: /^keep$/i })).toHaveFocus();
+    // Ground, twice over: not <body> (the unfixed behaviour) and not the
+    // destructive button, which would put an irreversible delete under a
+    // reflexive Enter.
+    expect(document.activeElement).not.toBe(document.body);
+    expect(screen.getByRole("button", { name: /^delete$/i })).not.toHaveFocus();
+  });
+
+  it("Escape backs out and hands focus back to the trigger", async () => {
+    const user = userEvent.setup();
+    withStatus([BACKUP]);
+    renderWithQueryClient(<PlaintextBackupNotice />);
+    await user.click(
+      await screen.findByRole("button", { name: /delete the unencrypted/i }),
+    );
+    await user.keyboard("{Escape}");
+
+    const trigger = await screen.findByRole(
+      "button", { name: /delete the unencrypted/i },
+    );
+    expect(trigger).toHaveFocus();
+    // Ground: backing out never asked the backend to delete anything.
+    const called = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.some(([url]) =>
+        String(url).includes("/vault/discard-plaintext-backup"),
+      );
+    expect(called).toBe(false);
+  });
+
+  it("keeping it hands focus back to the trigger too", async () => {
+    // Ground for the Escape test: the same return happens on the button
+    // path, so the trigger is genuinely refocusable and the key handler is
+    // not the only thing holding this together.
+    const user = userEvent.setup();
+    withStatus([BACKUP]);
+    renderWithQueryClient(<PlaintextBackupNotice />);
+    await user.click(
+      await screen.findByRole("button", { name: /delete the unencrypted/i }),
+    );
+    await user.click(screen.getByRole("button", { name: /^keep$/i }));
+
+    expect(
+      await screen.findByRole("button", { name: /delete the unencrypted/i }),
+    ).toHaveFocus();
+  });
+});

@@ -16,6 +16,7 @@ import { VoiceSettingsPage } from "@/components/settings/VoiceSettingsPage";
 import { getErrorMessage } from "@/lib/errors";
 import { useErrorStore } from "@/lib/errors/errorStore";
 import { mockFetch } from "../mocks/api";
+import { delayRoute } from "../helpers/delayRoute";
 
 
 const VOICE_MODE = { enabled: false, active: false, prompt_chars: 3200 };
@@ -741,6 +742,89 @@ describe("VoiceSettingsPage - what the voice toggle actually controls", () => {
     renderWithQueryClient(<VoiceSettingsPage />);
     expect(
       await screen.findByText(/works with this off too/i),
+    ).toBeInTheDocument();
+  });
+});
+
+/**
+ * The "Performed replies" caption - pending / error / resolved.
+ *
+ * `data?.enabled ?? false` used to make the caption say "Off - replies are
+ * written plainly" to a user whose GET /tts/voice-mode had not answered yet,
+ * even one who had it ON. The switch stayed disabled the whole time (`data
+ * == null` in the disabled expression), so no wrong click was ever possible
+ * - only the sentence was a false statement of the user's own configuration.
+ * These tests hold the fetch open with delayRoute so the assertion lands
+ * inside that window, not after it.
+ */
+describe("Performed replies caption - pending must not read as Off", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useErrorStore.getState().clearAll();
+  });
+
+  it("says it is checking, not Off, while the toggle would resolve to ON", async () => {
+    const ON = { enabled: true, active: false, prompt_chars: 3200 };
+    const fetchMock = mockFetch({ ...baseRoutes(), "/tts/voice-mode": { body: ON } });
+    const release = delayRoute(fetchMock, "GET", "/tts/voice-mode", { body: ON });
+    renderWithQueryClient(<VoiceSettingsPage />);
+
+    const toggle = screen.getByRole("switch", { name: "Performed replies" });
+    expect(toggle).toHaveAttribute("data-state", "pending");
+    expect(screen.getByText("Checking…")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Off - replies are written plainly"),
+    ).not.toBeInTheDocument();
+    // The ground rule the pending fix must not break: still no click possible.
+    expect(toggle).toBeDisabled();
+
+    release();
+    await waitFor(() => {
+      expect(
+        screen.getByText("On - select a voice model below to hear them performed"),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("reports an unreachable voice-mode fetch as its own state, not Off", async () => {
+    mockFetch({
+      ...baseRoutes(),
+      "/tts/voice-mode": { status: 500, body: { detail: "internal_error" } },
+    });
+    renderWithQueryClient(<VoiceSettingsPage />);
+
+    expect(
+      await screen.findByText("Could not check whether performed replies are on."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Off - replies are written plainly"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: "Performed replies" }),
+    ).toHaveAttribute("data-state", "error");
+  });
+
+  // GROUND: a genuinely-off setup still reports Off once the query actually
+  // resolves - the fix must not silence the true state.
+  it("still reports Off once voice-mode resolves for real - the ground", async () => {
+    mockFetch(baseRoutes()); // VOICE_MODE.enabled is false
+    renderWithQueryClient(<VoiceSettingsPage />);
+    expect(
+      await screen.findByText("Off - replies are written plainly"),
+    ).toBeInTheDocument();
+  });
+
+  // POSITIVE CONTROL.
+  it("reports On once voice-mode resolves for real - the positive control", async () => {
+    mockFetch({
+      ...baseRoutes(),
+      "/tts/voice-mode": {
+        body: { enabled: true, active: false, prompt_chars: 3200 },
+      },
+    });
+    renderWithQueryClient(<VoiceSettingsPage />);
+    expect(
+      await screen.findByText("On - select a voice model below to hear them performed"),
     ).toBeInTheDocument();
   });
 });

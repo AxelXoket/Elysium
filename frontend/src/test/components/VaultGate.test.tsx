@@ -82,15 +82,41 @@ describe("VaultGate", () => {
     expect(await screen.findByTestId("app-root")).toBeInTheDocument();
   });
 
-  it("FF15: setup copy names the wallpaper as the encryption exception", async () => {
+  /** The setup card's encryption promise, as the reader sees it. */
+  async function setupPromise(): Promise<string> {
     stubVaultFetch({ initialized: false, unlocked: false, passphrase: null });
     renderWithQueryClient(<VaultGate>{APP_MARKER}</VaultGate>);
-
     await screen.findByText("Protect your world");
-    // The claim is narrowed: the decorative wallpaper is NOT encrypted.
-    expect(
-      screen.getByText(/except the decorative chat wallpaper/i),
-    ).toBeInTheDocument();
+    return screen.getByText(/is encrypted on disk with this passphrase/i)
+      .textContent ?? "";
+  }
+
+  it("setup copy names the spoken audio as an encryption exception", async () => {
+    // FF15 narrowed this sentence once already, to the wallpaper alone, and
+    // the exception clause then read as exhaustive over everything else -
+    // including the spoken reply, which tts/host.py writes as a plain wav and
+    // routers/vault.py itself calls the conversation in audible form, in the
+    // clear. A promise screen that omits it is the promise being wrong.
+    const promise = await setupPromise();
+
+    expect(promise, "the setup promise never mentions the spoken audio")
+      .toMatch(/spoken replies/i);
+    // Ground: the same matcher against copy this card does not carry. Without
+    // it, a query that matched anything would pass the line above.
+    expect(promise).not.toMatch(/spoken replies are encrypted/i);
+  });
+
+  it("does not tell every user they have a cloning voice clip on disk", async () => {
+    // Reference clips only exist for engines that clone, and tts/refs.py never
+    // purges the ones that do. So the clause has to be true for both readers:
+    // conditional for the user who has no such model, and still a warning for
+    // the user who does. "any voice clip you add" carries both.
+    const promise = await setupPromise();
+
+    expect(promise, "the clip is claimed to exist unconditionally")
+      .toMatch(/any voice clip you add for cloning/i);
+    expect(promise, "the copy asserts the reader already has a clip on disk")
+      .not.toMatch(/your voice clip (is|lives|sits) /i);
   });
 
   it("rejects mismatched entries locally without calling the API", async () => {

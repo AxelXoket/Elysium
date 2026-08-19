@@ -171,13 +171,50 @@ class Worker:
         # perfectly healthy.
         self.queue: asyncio.Queue[int] | None = None
         self.breaker = Breaker()
-        self.dropped_offers = 0
+        # Two different events, counted apart. Both used to land in
+        # `dropped_offers`, and only ONE of them means what the status panel
+        # says it means: a queue that overflowed is a worker falling behind,
+        # while an offer arriving with no queue at all is the ordinary state
+        # before startup and during every vault lock. Auto-lock fires all day,
+        # `quiesce()` nulls the queue each time, and every turn sent while
+        # locked added to the number labelled "turns went unqueued while it was
+        # behind" - so the one counter that was supposed to reveal a backlog
+        # was dominated by the most routine event in the application.
+        self.queue_overflows = 0
+        self.offers_while_down = 0
         self.refused_by_breaker = 0
         self.died: str | None = None
         self.unhandled = 0
         self.last_error: str | None = None
         self.runs = 0
         self.task: asyncio.Task | None = None
+
+    @property
+    def dropped_offers(self) -> int:
+        """Every offer that never reached the queue, whatever the reason.
+
+        Derived rather than stored, because the two causes above are now
+        counted separately and this name is a WIRE field: `status()` publishes
+        it, the client schema requires it, and the panel renders it. A counter
+        that is split in the backend and silently dropped from the response is
+        a status screen that goes blank, which is the one thing a status screen
+        may not do. So the total stays, exact, and the two causes travel beside
+        it for whoever wants to tell them apart.
+        """
+        return self.queue_overflows + self.offers_while_down
+
+    @dropped_offers.setter
+    def dropped_offers(self, value: int) -> None:
+        # Only a reset is meaningful on a derived counter - the test suite
+        # zeroes this between tests, since the worker is process-wide state.
+        # Splitting an arbitrary total back into two causes would be a guess,
+        # and a guess written into a counter is worse than no counter.
+        if value:
+            raise ValueError(
+                "dropped_offers is derived; set queue_overflows or "
+                "offers_while_down")
+        self.queue_overflows = 0
+        self.offers_while_down = 0
 
     # ── the send path's only entry point ────────────────────────────────
     def offer(self, chat_id: int) -> None:
@@ -192,7 +229,12 @@ class Worker:
             # Offered before the worker started, or after the loop it belonged
             # to went away. Counted rather than raised: the send path must not
             # care whether the notebook is running.
-            self.dropped_offers += 1
+            #
+            # Its OWN counter, because this is not a backlog. The vault locks
+            # on an idle timer many times a day and `quiesce()` nulls the queue
+            # every time, so counting these as dropped-while-behind buried the
+            # rare, real overflow under the most ordinary event there is.
+            self.offers_while_down += 1
             return
         try:
             queue.put_nowait(chat_id)
@@ -203,10 +245,16 @@ class Worker:
                 queue.put_nowait(chat_id)
             except (asyncio.QueueEmpty, asyncio.QueueFull):   # pragma: no cover
                 pass
-            self.dropped_offers += 1
+            # This one really is "behind": the worker is up, the queue is at
+            # its bound, and a turn was lost because the drain could not keep
+            # pace. It is the number the panel's sentence describes.
+            self.queue_overflows += 1
             logger.info("Notebook queue full; oldest offer dropped.")
         except Exception:                                     # pragma: no cover
-            self.dropped_offers += 1
+            # A live queue that refused an offer for some other reason is
+            # still a turn lost while the worker was running, so it belongs
+            # with the overflows rather than with the locks.
+            self.queue_overflows += 1
             logger.warning("Notebook offer could not be queued.")
 
     # ── the loop ────────────────────────────────────────────────────────
@@ -293,6 +341,36 @@ class Worker:
             await _record_skip(chat_id, exc.code, plan)
             return
 
+        # The claim commits in its OWN transaction, BEFORE the request, so from
+        # this line on the day's budget is spent whatever happens next. That
+        # left one hole nothing covered: a cancellation in flight - the vault
+        # locking while the provider is generating, which this module expects
+        # rather than defends against - unwinds through `raise` and recorded
+        # NOTHING. `calls` was +1, the cost was never attributed to it, and
+        # there was no extraction row of ANY status, so the identical work key
+        # was re-planned and re-billed at the next threshold.
+        #
+        # The schema has carried `status = 'running'` and `started_at` for
+        # exactly this since the table was written - "so a crash leaves a
+        # trace" - and nothing in the repository ever wrote them. This is that
+        # row. It is not a lock and it does not refuse anything: it is the
+        # evidence that a paid call left, and the success and failure paths
+        # below settle it into `done` or `failed` through the same
+        # `commit_extraction`, which updates a prior non-`done` row in place.
+        if not await _record_running(chat_id, plan):
+            # No trace could be written, so a call made now would be exactly
+            # the unaccountable spend the row exists to prevent - and since the
+            # bookkeeping is what just failed, the OUTCOME could not be
+            # recorded either. The claim is already gone; one wasted claim is
+            # much cheaper than an invisible billed call, so this stops here
+            # and says so on the status screen rather than in a log line.
+            self.unhandled += 1
+            self.last_error = "running_row_unwritable"
+            logger.warning(
+                "Notebook extraction abandoned before the call for "
+                "chat_id=%d: its trace could not be written.", chat_id)
+            return
+
         import openrouter
         try:
             # Everything from here on is INSIDE the claim. A failure between
@@ -357,8 +435,34 @@ class Worker:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            await _record_failure(chat_id, plan, "write_" + type(exc).__name__,
-                                  usage=usage)
+            # COUNTED, not merely recorded. A row was written and nothing else
+            # was: the breaker stayed closed, `unhandled` stayed at zero and
+            # `runs` never moved, so a chat that fails to commit every time -
+            # a vault that locked between the reply and the commit, a chat
+            # deleted mid-call so the foreign key fires, a disk error - burned
+            # one billed call per threshold, forever, while the panel said
+            # "Running. 0 runs." Only the daily cap ever stopped it, and a cap
+            # is a ceiling on the damage, not a report of it.
+            #
+            # A locked vault is deliberately NOT a failure elsewhere in this
+            # file (see `run`), and this is the considered exception rather
+            # than an oversight: that rule exists so cancellations which cost
+            # NOTHING cannot walk the breaker towards "stopped" every time
+            # somebody steps away. By this line the call has been sent,
+            # generated and paid for, and the work is lost. Five of those in a
+            # row is precisely what the breaker is for.
+            self.breaker.failed(loop.time())
+            self.unhandled += 1
+            error_type = "write_" + type(exc).__name__
+            if not await _record_failure(chat_id, plan, error_type,
+                                         usage=usage):
+                # `_record` swallows its own failure to keep the loop alive,
+                # which is right, and it did so SILENTLY, which is not: when
+                # the vault is still locked the row is lost as well as the
+                # write, and then the database also says nothing happened. The
+                # in-memory counter is the last witness, so it names it.
+                error_type += "_unrecorded"
+            self.last_error = error_type
             return
         self.breaker.succeeded()
         self.runs += 1
@@ -391,7 +495,14 @@ class Worker:
             "failures": self.breaker.failures,
             "total_failures": self.breaker.total_failures,
             "queued": self.queue.qsize() if self.queue is not None else 0,
+            # The total, kept because the client requires this key. The two
+            # keys after it are the same number taken apart: an overflow is
+            # the worker falling behind, an offer while it was down is an
+            # ordinary vault lock, and reporting only the sum let the second
+            # answer for the first.
             "dropped_offers": self.dropped_offers,
+            "queue_overflows": self.queue_overflows,
+            "offers_while_down": self.offers_while_down,
             "refused_by_breaker": self.refused_by_breaker,
             # 3: a dead loop used to report "closed" with a growing queue
             # forever. The screen and the truth diverging is the one failure
@@ -533,9 +644,18 @@ def _plan_work(chat_id: int, model_id: str, language: str,
     from database import get_db
 
     with get_db() as con:
+        # Before anything is planned, close out the trace of a call that was
+        # made and never settled - the app killed with the window, or the
+        # vault locked mid-request. See notebook.settle_orphaned_running: the
+        # money for that range is already spent, and a cursor that will not
+        # move past it re-sends and re-bills the identical range on every
+        # later cycle.
+        abandoned = notebook.settle_orphaned_running(con, chat_id)
         last = con.execute(
             "SELECT COALESCE(MAX(to_message_id), 0) FROM notebook_extractions "
-            "WHERE chat_id = ? AND status = 'done'", (chat_id,)).fetchone()[0]
+            "WHERE chat_id = ? AND (status = 'done' "
+            "     OR (status = 'failed' AND error_type = ?))",
+            (chat_id, notebook.ABANDONED_IN_FLIGHT)).fetchone()[0]
         # COUNT before SELECT. Nineteen offers in twenty return here, and the
         # version that fetched the rows first decrypted every pending message
         # body to do it - a hundred and ninety message bodies per cycle, to
@@ -631,11 +751,27 @@ def _write(chat_id: int, plan: dict, proposals: list[dict],
             con, work_key=plan["work_key"], chat_id=chat_id,
             from_id=plan["from_id"], to_id=plan["to_id"],
             proposals=proposals, existing_ids=plan["existing_ids"],
-            usage=usage, status="done")
+            # This path ALWAYS wrote a `running` row first. If it is gone,
+            # an edit or a delete rolled the cursor back under us on purpose,
+            # and these notes describe wording the user has since taken back.
+            usage=usage, status="done", require_trace=True)
+
+
+async def _record_running(chat_id: int, plan: dict) -> bool:
+    """The trace a paid call leaves before it is made. True if it landed.
+
+    Written between the claim and the request, so that a cancellation in
+    flight - or the process dying with the window, which this module accepts
+    as unavoidable - leaves something behind instead of a billed call with no
+    row of any status. `commit_extraction` settles this same row into `done`
+    or `failed` afterwards; it is a row updated in place, never a second one.
+    """
+    return await anyio.to_thread.run_sync(
+        functools.partial(_record, chat_id, plan, "running"))
 
 
 async def _record_skip(chat_id: int, reason: str,
-                       plan: dict | None = None) -> None:
+                       plan: dict | None = None) -> bool:
     """A47: a skipped extraction is not silent.
 
     Without a row, "the notebook has not proposed anything for a week" and
@@ -643,27 +779,35 @@ async def _record_skip(chat_id: int, reason: str,
     same screen.
     """
     if plan is None:
-        return
+        return False
     # Declared or it does not ship. These reach a reader as sentences, so an
     # undeclared one is a snake_case token in prose - the same failure the
     # error catalogue exists to prevent, in a vocabulary the catalogue does
     # not cover.
     assert reason in SKIP_REASONS, reason
-    await anyio.to_thread.run_sync(
+    return await anyio.to_thread.run_sync(
         functools.partial(_record, chat_id, plan, "skipped",
                           skip_reason=reason))
 
 
 async def _record_failure(chat_id: int, plan: dict, error_type: str,
-                          usage: dict | None = None) -> None:
-    await anyio.to_thread.run_sync(
+                          usage: dict | None = None) -> bool:
+    return await anyio.to_thread.run_sync(
         functools.partial(_record, chat_id, plan, "failed",
                           error_type=error_type, usage=usage))
 
 
 def _record(chat_id: int, plan: dict, status: str, *,
             skip_reason: str | None = None, error_type: str | None = None,
-            usage: dict | None = None) -> None:
+            usage: dict | None = None) -> bool:
+    """Write one outcome row. Returns whether it was actually written.
+
+    The return value is the point. This function must swallow its own failure
+    or a locked vault takes the loop down with it, and swallowing it silently
+    meant the caller believed a row existed when none did - so the failure
+    that lost the work ALSO lost the only record of the work, and every screen
+    agreed that nothing had happened.
+    """
     from database import get_db
     try:
         with get_db() as con:
@@ -673,7 +817,19 @@ def _record(chat_id: int, plan: dict, status: str, *,
                 from_id=plan["from_id"], to_id=plan["to_id"],
                 usage=usage, status=status, skip_reason=skip_reason,
                 error_type=error_type)
+            if status == "running":
+                # In the same transaction as the row it stamps.
+                # `commit_extraction` does not set `started_at`, and it is the
+                # only field that says WHEN the call left - which is what
+                # separates a row abandoned by a crash hours ago from one that
+                # is genuinely still in flight. `created_at` cannot answer
+                # that, because the settled statuses share it.
+                con.execute(
+                    "UPDATE notebook_extractions SET started_at = "
+                    "datetime('now') WHERE work_key = ?", (plan["work_key"],))
+        return True
     except Exception:
         # The vault may have locked between the attempt and the bookkeeping.
         # Losing the row is regrettable; losing the loop is not acceptable.
         logger.info("Notebook outcome could not be recorded.")
+        return False

@@ -5,6 +5,8 @@ import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { mockFetch } from "@/test/mocks/api";
 import { settingsFixture, proxyHealthFixture } from "@/test/mocks/fixtures";
 import { ApiKeySection } from "@/components/settings/ApiKeySection";
+import { SettingsPanel } from "@/components/settings/SettingsPanel";
+import { useUiStore } from "@/lib/store/uiStore";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 function wrapper({ children }: { children: React.ReactNode }) {
@@ -261,5 +263,107 @@ describe("Settings Panel Tests", () => {
     await user.click(screen.getByRole("button", { name: /remove api key/i }));
     await user.click(screen.getByRole("button", { name: /^remove$/i }));
     await waitFor(() => expect(deleteCalls()).toBe(1));
+  });
+});
+
+/**
+ * The privacy note above the API key and proxy sections.
+ *
+ * This block exists because the note previously made two absolute claims that
+ * the code contradicted: "Nothing is stored in the browser" (uiStore persists
+ * selectedCharacterId / selectedChatId / selectedModelId to localStorage) and
+ * "nothing leaves this machine" (the whole app sends the conversation, and the
+ * API key, to the provider). The ids stay in localStorage by decision, so the
+ * SENTENCE is what has to stay honest, and a sentence with nothing guarding it
+ * drifts back to the tidier lie on the next edit.
+ *
+ * Every negative assertion here is paired with a positive control on the
+ * RETIRED wording, so a matcher that has quietly stopped matching anything
+ * fails loudly instead of passing.
+ */
+const RETIRED_NOTE =
+  "Secrets are sealed inside your encrypted vault - locked with your " +
+  "passphrase, together with everything else. Nothing is stored in the " +
+  "browser, and nothing leaves this machine.";
+
+const NO_BROWSER_STORAGE_CLAIM = /nothing\s+is\s+stored\s+in\s+the\s+browser/i;
+const NO_EGRESS_CLAIM = /nothing\s+leaves\s+this\s+machine/i;
+
+describe("Settings Panel privacy note", () => {
+  beforeEach(() => {
+    mockFetch({
+      "/settings/proxy/health": { body: proxyHealthFixture },
+      "/settings": { body: settingsFixture },
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function noteText() {
+    const note = await screen.findByRole("note", { name: "Privacy note" });
+    return note.textContent?.replace(/\s+/g, " ").trim() ?? "";
+  }
+
+  // GROUND. If the panel fails to render, every "does not say X" assertion
+  // below passes for the wrong reason. This is the test that has to fail
+  // first when that happens.
+  it("renders the privacy note above the key and proxy sections", async () => {
+    renderWithQueryClient(<SettingsPanel />, { wrapper });
+    expect(await noteText()).toMatch(/encrypted vault/i);
+  });
+
+  it("does not claim that nothing is stored in the browser", async () => {
+    // Positive control: the matcher does catch the claim when it is present.
+    expect(RETIRED_NOTE).toMatch(NO_BROWSER_STORAGE_CLAIM);
+
+    renderWithQueryClient(<SettingsPanel />, { wrapper });
+    expect(await noteText()).not.toMatch(NO_BROWSER_STORAGE_CLAIM);
+  });
+
+  it("names what the browser does keep: the last open character, chat and model", async () => {
+    renderWithQueryClient(<SettingsPanel />, { wrapper });
+    const text = await noteText();
+
+    // Not a wording check - these three are exactly the identifiers uiStore's
+    // `partialize` writes to localStorage, so if the note stops naming one of
+    // them it has stopped describing what is actually on disk.
+    expect(text).toMatch(/browser/i);
+    expect(text).toMatch(/character/i);
+    expect(text).toMatch(/chat/i);
+    expect(text).toMatch(/model/i);
+  });
+
+  it("keeps naming exactly what uiStore persists", () => {
+    // The other half of the pair above: the note is measured against the store
+    // rather than against a remembered sentence. If somebody adds a new
+    // user-identifying id to `partialize`, this fails and the note gets
+    // updated with it.
+    useUiStore.setState({
+      selectedCharacterId: 3,
+      selectedChatId: 9,
+      selectedModelId: "some/model",
+    });
+    const persisted = JSON.parse(
+      localStorage.getItem("elysium-ui-state") ?? "{}",
+    );
+    const state = (persisted.state ?? {}) as Record<string, unknown>;
+    expect(state).toHaveProperty("selectedCharacterId", 3);
+    expect(state).toHaveProperty("selectedChatId", 9);
+    expect(state).toHaveProperty("selectedModelId", "some/model");
+    // The claim the note is allowed to keep making.
+    expect(Object.keys(state)).not.toContain("apiKey");
+  });
+
+  it("does not claim that nothing leaves this machine, and says where what you send goes", async () => {
+    // Positive control for the second retired absolute.
+    expect(RETIRED_NOTE).toMatch(NO_EGRESS_CLAIM);
+
+    renderWithQueryClient(<SettingsPanel />, { wrapper });
+    const text = await noteText();
+    expect(text).not.toMatch(NO_EGRESS_CLAIM);
+    // What replaced it: one named destination, chosen by the user.
+    expect(text).toMatch(/provider you chose/i);
   });
 });

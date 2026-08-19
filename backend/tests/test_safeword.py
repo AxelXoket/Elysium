@@ -103,11 +103,9 @@ class TestTheTurnDoesNotHAPPEN:
         key configured would get "add an API key" when they typed their
         safeword - the app answering a question they did not ask, at the worst
         possible moment."""
-        import database
         import secrets_service
 
         secrets_service.delete_secret(config.SECRET_API_KEY)
-        assert database is not None
 
         chat_id = self._chat(client)
         resp = client.post(f"/api/v1/chats/{chat_id}/complete",

@@ -71,7 +71,18 @@ function TabsContent({ className, ...props }: TabsPrimitive.Panel.Props) {
   return (
     <TabsPrimitive.Panel
       data-slot="tabs-content"
-      className={cn("flex-1 text-sm outline-none", className)}
+      // base-ui hands this panel a real tab stop (role="tabpanel", tabIndex 0)
+      // whenever it is the open one, so `outline-none` alone leaves a focused
+      // panel with no indicator at all - the same shape scroll-area.tsx already
+      // pairs correctly. Kept on the BASE class list, not appended after
+      // `className`, so a caller's own className cannot displace it: cn's
+      // tailwind-merge only lets a later utility win within the same
+      // variant+property group, and no caller here passes its own
+      // outline/ring utilities to collide with.
+      className={cn(
+        "flex-1 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1",
+        className
+      )}
       {...props}
     />
   )
