@@ -234,3 +234,68 @@ class TestPlaintextNeverReachesATempFile:
             assert con.execute("PRAGMA temp_store").fetchone()[0] == 2
         finally:
             con.close()
+
+
+class TestTheSelfHealActuallyConverges:
+    """Two independent reviews reproduced the same permanent lockout.
+
+    The first version added a flat +100000 to every loser, which turns N rows
+    sharing a position into N-1 rows sharing a NEW one. The unique index then
+    aborts, `init_db` has no error path, and the vault never opens again -
+    identically on every subsequent unlock. The original test constructed the
+    only shape that happened to survive: two rows, no row already sitting at
+    the shifted number.
+    """
+
+    def _plant(self, con, chat: int, n: int, at: int = 7) -> None:
+        con.execute("DROP INDEX IF EXISTS idx_notebook_order_v1")
+        for i in range(n):
+            con.execute(
+                "INSERT INTO notebook_entries (chat_id, position, text) "
+                "VALUES (?, ?, ?)", (chat, at, f"dupe{i}"))
+
+    def test_three_rows_on_one_position(self, db) -> None:
+        with database.get_db() as con:
+            chat = _a_chat(con)
+            self._plant(con, chat, 3)
+
+        database.init_db()          # must not raise
+
+        with database.get_db() as con:
+            rows = con.execute(
+                "SELECT text, position FROM notebook_entries "
+                "WHERE chat_id = ?", (chat,)).fetchall()
+        assert len(rows) == 3, "a note was deleted"
+        assert len({r["position"] for r in rows}) == 3, "still colliding"
+
+    def test_a_loser_does_not_land_on_an_occupied_slot(self, db) -> None:
+        """The other shape that aborted: a row already sitting where the
+        shifted one would go."""
+        with database.get_db() as con:
+            chat = _a_chat(con)
+            con.execute(
+                "INSERT INTO notebook_entries (chat_id, position, text) "
+                "VALUES (?, 100007, 'already there')", (chat,))
+            self._plant(con, chat, 2)
+
+        database.init_db()
+
+        with database.get_db() as con:
+            positions = [r[0] for r in con.execute(
+                "SELECT position FROM notebook_entries WHERE chat_id = ?",
+                (chat,)).fetchall()]
+        assert len(positions) == len(set(positions)) == 3
+
+    def test_two_chats_do_not_renumber_each_other(self, db) -> None:
+        with database.get_db() as con:
+            a = _a_chat(con)
+            b = _a_chat(con)
+            self._plant(con, a, 2)
+            self._plant(con, b, 2)
+        database.init_db()
+        with database.get_db() as con:
+            for chat in (a, b):
+                pos = [r[0] for r in con.execute(
+                    "SELECT position FROM notebook_entries WHERE chat_id = ?",
+                    (chat,)).fetchall()]
+                assert len(pos) == len(set(pos)) == 2

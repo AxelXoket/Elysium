@@ -50,6 +50,21 @@ def _key_pragma(con: "sqlite3.Connection", key: bytes, *, rekey: bool = False) -
     so string interpolation is injection-safe; PRAGMA takes no parameters."""
     stmt = "rekey" if rekey else "key"
     con.execute(f"PRAGMA {stmt} = \"x'{key.hex()}'\"")
+    # Deleted rows are overwritten rather than left on the freelist. Without
+    # this a note the user deleted stays verbatim in its page until something
+    # reuses it - readable by anyone holding the passphrase, which is exactly
+    # the audience "delete" is meant to exclude. It matters more than usual
+    # here because full copies of this database exist under the SAME key (the
+    # premigrate and rekey sidecars), so residue outlives a rotation.
+    con.execute("PRAGMA secure_delete = ON")
+    # Temporary tables and sort spills stay in RAM. SQLCipher's own design note
+    # names disabling the file-based temp store as a required step and it was
+    # missing: with the default, a spilling ORDER BY, a materialised subquery
+    # or a VACUUM writes PLAINTEXT rows into a temp file beside the encrypted
+    # database. Applied on the same funnel as the key so no connection can open
+    # without it - except the unkeyed source in migrate_plaintext_to_encrypted,
+    # which never passes through here and is handled at its own site.
+    con.execute("PRAGMA temp_store = MEMORY")
     # Temporary tables and sort spills stay in RAM. SQLCipher's own design note
     # calls this out as a required step and it was missing: with the default
     # file-backed temp store, an ORDER BY that spills, a subquery that
@@ -261,8 +276,13 @@ def _migrate_notebook(con: sqlite3.Connection) -> None:
     machine that already ran the old one. A new name is the only way to make
     the change actually happen.
     """
-    con.executescript("""
-        CREATE TABLE IF NOT EXISTS notebook_entries (
+    # con.execute per statement, NOT executescript. executescript commits
+    # any pending transaction and leaves autocommit on - which would throw
+    # away the only reason these tables are here instead of in _SCHEMA. The
+    # docstring above promises the shape and the stamp land together; with
+    # executescript that promise was simply false.
+    con.execute("""
+CREATE TABLE IF NOT EXISTS notebook_entries (
           id                INTEGER PRIMARY KEY AUTOINCREMENT,
           chat_id           INTEGER NOT NULL REFERENCES chats(id),
           position          INTEGER NOT NULL,
@@ -287,9 +307,10 @@ def _migrate_notebook(con: sqlite3.Connection) -> None:
           source_message_id INTEGER REFERENCES messages(id),
           created_at        TEXT    NOT NULL DEFAULT (datetime('now')),
           updated_at        TEXT    NOT NULL DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS boundaries (
+        )
+    """)
+    con.execute("""
+CREATE TABLE IF NOT EXISTS boundaries (
           id                INTEGER PRIMARY KEY AUTOINCREMENT,
           scope             TEXT    NOT NULL CHECK (scope IN ('global','chat')),
           chat_id           INTEGER REFERENCES chats(id),
@@ -316,15 +337,24 @@ def _migrate_notebook(con: sqlite3.Connection) -> None:
           CHECK (NOT (source = 'inferred' AND severity = 'hard')),
           -- Scope and owner say the same thing or the row is nonsense.
           CHECK ((scope = 'global') = (chat_id IS NULL))
-        );
-
-        CREATE TABLE IF NOT EXISTS notebook_extractions (
-          work_key        TEXT    PRIMARY KEY,
+        )
+    """)
+    con.execute("""
+CREATE TABLE IF NOT EXISTS notebook_extractions (
+          -- NOT NULL is not implied: SQLite's legacy quirk lets a non-INTEGER
+          -- PRIMARY KEY hold unlimited NULLs, so an idempotency key computed
+          -- as None would silently stop deduplicating anything.
+          work_key        TEXT    PRIMARY KEY NOT NULL,
           chat_id         INTEGER NOT NULL REFERENCES chats(id),
           from_message_id INTEGER NOT NULL,
           to_message_id   INTEGER NOT NULL,
+          -- 'running' exists so a crash leaves a trace. Without it a row only
+          -- appears after the call returns, the same range recomputes the same
+          -- key on the next attempt, and the model is paid twice for work the
+          -- first attempt may already have finished.
           status          TEXT    NOT NULL
-                          CHECK (status IN ('done','failed','skipped')),
+                          CHECK (status IN ('running','done','failed','skipped')),
+          started_at      TEXT,
           request_id      TEXT,
           finish_reason   TEXT,
           skip_reason     TEXT,
@@ -333,15 +363,16 @@ def _migrate_notebook(con: sqlite3.Connection) -> None:
           tokens_out      INTEGER,
           cost            REAL,
           created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS notebook_spend (
+        )
+    """)
+    con.execute("""
+CREATE TABLE IF NOT EXISTS notebook_spend (
           day        TEXT    PRIMARY KEY,
           calls      INTEGER NOT NULL DEFAULT 0,
           tokens_in  INTEGER NOT NULL DEFAULT 0,
           tokens_out INTEGER NOT NULL DEFAULT 0,
           cost       REAL    NOT NULL DEFAULT 0
-        );
+        )
     """)
 
     chat_cols = {r[1] for r in con.execute("PRAGMA table_info(chats)").fetchall()}
@@ -370,6 +401,10 @@ def _migrate_notebook(con: sqlite3.Connection) -> None:
         "WHERE chat_id NOT IN (SELECT id FROM chats)"
     )
     con.execute(
+        "DELETE FROM notebook_extractions "
+        "WHERE chat_id NOT IN (SELECT id FROM chats)"
+    )
+    con.execute(
         "DELETE FROM boundaries "
         "WHERE scope = 'chat' AND chat_id NOT IN (SELECT id FROM chats)"
     )
@@ -378,12 +413,28 @@ def _migrate_notebook(con: sqlite3.Connection) -> None:
     # one above: duplicate positions would abort the CREATE on every boot with
     # no way back in. Renumber the losers to the end rather than deleting them -
     # the owner's rule is that a note never disappears.
-    con.execute("""
-        UPDATE notebook_entries SET position = position + 100000
+    #
+    # A FLAT OFFSET IS NOT ENOUGH, and the first version of this used one. It
+    # added the same constant to every loser, which turns N rows sharing a
+    # position into N-1 rows sharing a NEW position - the index still aborts,
+    # every boot, with the vault refusing to open and no way back in. It also
+    # lands on whatever already sits at the shifted number. Two independent
+    # reviews reproduced it before it shipped.
+    #
+    # Each loser therefore gets its own slot past its chat's current maximum,
+    # taken one at a time so the maximum moves with them, ordered by id so the
+    # outcome is the same on every machine.
+    for entry_id, chat in con.execute("""
+        SELECT id, chat_id FROM notebook_entries
         WHERE id NOT IN (
           SELECT MIN(id) FROM notebook_entries GROUP BY chat_id, position
-        )
-    """)
+        ) ORDER BY chat_id, id
+    """).fetchall():
+        top = con.execute(
+            "SELECT COALESCE(MAX(position), -1) + 1 FROM notebook_entries "
+            "WHERE chat_id = ?", (chat,)).fetchone()[0]
+        con.execute("UPDATE notebook_entries SET position = ? WHERE id = ?",
+                    (top, entry_id))
     con.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_notebook_order_v1 "
         "ON notebook_entries(chat_id, position)"
@@ -1108,6 +1159,11 @@ def migrate_plaintext_to_encrypted(key: bytes) -> str:
 
     con = sqlite3.connect(str(src))  # unkeyed: reads the plaintext source
     try:
+        # Never passes through _key_pragma, so the rule is repeated rather
+        # than inherited. This connection runs the whole database through
+        # sqlcipher_export() - the single largest statement the app issues
+        # and the likeliest one to spill.
+        con.execute("PRAGMA temp_store = MEMORY")
         # Fold any un-checkpointed WAL frames into the main file FIRST, so the
         # plaintext backup (which is the main file only) is complete and the
         # export sees the same state.
