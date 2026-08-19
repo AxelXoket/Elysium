@@ -21,6 +21,7 @@
  * flush synchronously, so no text is ever lost).
  */
 
+import { useContextNotesStore } from "./contextNotes";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { keys } from "../query/keys";
@@ -87,6 +88,20 @@ function reportStreamNotice(event: { code: string; count?: number }): void {
       getCountMessage(event.code, event.count),
       "warning",
     );
+}
+
+
+/** What the turn actually carried, taken from the frame rather than guessed.
+ *
+ *  Called from every `done` handler - append, regenerate and edit - because
+ *  a number that is correct on two paths out of three is worse than none:
+ *  the panel would go stale exactly on the path the user just took. */
+function recordContextNotes(
+  chatId: number,
+  event: { notebook_sent?: number; notebook_total?: number;
+           history_trimmed?: number },
+) {
+  useContextNotesStore.getState().record(chatId, event);
 }
 
 export interface StreamingEntry {
@@ -465,6 +480,7 @@ export function useStreamingCompletion() {
             break;
           case "done":
             sawDone = true;
+            recordContextNotes(chatId, event);
             flusher.flushNow();
             // A refetch dispatched mid-stream would resolve with PRE-append
             // server state and clobber the rows we are about to write - kill
@@ -751,6 +767,7 @@ export function useStreamingCompletion() {
             break;
           case "done": {
             sawDone = true;
+            recordContextNotes(chatId, event);
             flusher.flushNow();
             // Kill any mid-stream refetch: it would resolve with PRE-append
             // server state and erase the variant we are about to write.
@@ -969,6 +986,7 @@ export function useStreamingCompletion() {
             break;
           case "done":
             sawDone = true;
+            recordContextNotes(chatId, event);
             flusher.flushNow();
             void qc.cancelQueries({ queryKey: keys.messages(chatId) });
             qc.setQueryData<Message[]>(keys.messages(chatId), (prev) => {

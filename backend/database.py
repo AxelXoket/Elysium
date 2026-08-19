@@ -365,9 +365,31 @@ CREATE TABLE IF NOT EXISTS notebook_extractions (
           created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
         )
     """)
+    # The NOT NULL defence three lines above was applied to one table and not
+    # its neighbour. A `day` computed as None would accumulate unlimited NULL
+    # rows, the daily total would never aggregate them, and a spend cap built
+    # on this table would pass forever by summing rows it can never find - a
+    # cap that reads as enforced and is not.
+    #
+    # Rebuilt rather than patched because ALTER cannot add NOT NULL to an
+    # existing column. Safe only while the table has no rows, so that is
+    # checked rather than assumed: a populated table is left alone and the
+    # weaker constraint kept, because losing somebody's spend history to a
+    # tightening migration would be the worse bug.
+    spend_cols = {r[1]: r for r in
+                  con.execute("PRAGMA table_info(notebook_spend)").fetchall()}
+    if spend_cols and not spend_cols["day"][3]:      # 3 == notnull
+        rows = con.execute("SELECT COUNT(*) FROM notebook_spend").fetchone()[0]
+        if rows == 0:
+            con.execute("DROP TABLE notebook_spend")
+        else:
+            logger.warning(
+                "notebook_spend keeps its nullable day column: %d rows present.",
+                rows)
+
     con.execute("""
 CREATE TABLE IF NOT EXISTS notebook_spend (
-          day        TEXT    PRIMARY KEY,
+          day        TEXT    PRIMARY KEY NOT NULL,
           calls      INTEGER NOT NULL DEFAULT 0,
           tokens_in  INTEGER NOT NULL DEFAULT 0,
           tokens_out INTEGER NOT NULL DEFAULT 0,

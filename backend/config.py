@@ -256,3 +256,38 @@ TTS_REF_MIN_S: float = 3.0
 TTS_REF_MAX_S: float = 30.0
 TTS_REF_MAX_BYTES: int = 30 * 1024 * 1024
 
+
+# ---------------------------------------------------------------------------
+# Notebook extraction (FAZ 4/5)
+# ---------------------------------------------------------------------------
+#: Which model proposes notes. NO DEFAULT: unset means extraction never runs.
+#: A background job spending somebody's own API credits on a model they never
+#: chose is not a convenience, and the list they choose from is filtered to
+#: endpoints that both honour a strict JSON schema and carry the same
+#: zero-retention policy the conversation itself does.
+SETTING_NOTEBOOK_MODEL = "notebook_extract_model"
+
+#: Which language the extraction INSTRUCTIONS are written in ("en" or "tr").
+#: English by default. The assumption that English instructions are safer is
+#: unmeasured - the literature is model-dependent and its direction is not
+#: predictable - so both exist and the dry run is what settles it.
+SETTING_NOTEBOOK_PROMPT_LANG = "notebook_prompt_language"
+
+#: Automatic acceptance. ON by default, and the reason is measured: a review
+#: queue nobody empties makes the feature useless, and the comparable domain
+#: shows a 90% dismissal rate for alerts that INTERRUPT, which this does not.
+#: What it costs is stated where it is used - in automatic mode human review is
+#: not a defence, and the code filter, the weak slot, the ceiling and the
+#: source stamp become load-bearing.
+SETTING_NOTEBOOK_AUTO_ACCEPT = "notebook_auto_accept"
+
+#: Turns between extractions.
+NOTEBOOK_EXTRACT_EVERY_TURNS = int(os.environ.get(
+    "ELYSIUM_NOTEBOOK_EVERY_TURNS", "20"))
+
+#: A hard daily ceiling, enforced as a BLOCK before the call rather than an
+#: alert after it. The largest documented runaway in this space was not a loop:
+#: it was a context that grew every call while a budget alarm dutifully fired.
+NOTEBOOK_DAILY_CALL_CAP = int(os.environ.get(
+    "ELYSIUM_NOTEBOOK_DAILY_CALLS", "60"))
+

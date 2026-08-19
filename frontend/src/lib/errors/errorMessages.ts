@@ -353,6 +353,30 @@ const ERROR_MESSAGES: Record<string, string> = {
   // gap. Generating is refused instead.
   boundaries_do_not_fit:
     "Your limits do not fit in this model's context, so nothing was sent. Shorten them, or choose a model with more room.",
+  notebook_model_not_chosen:
+    "Choose a model for the notebook first. Nothing is extracted until you pick one - it is your API key, and picking one for you would spend it on a model you never chose.",
+  notebook_nothing_to_read:
+    "There is nothing new in this chat to read yet. Send a few messages and try again.",
+  notebook_language_unknown:
+    "That instruction language is not one of the two available.",
+  notebook_daily_cap_reached:
+    "The notebook has used its calls for today and stopped. It will start again tomorrow, and nothing was lost - the messages it has not read yet stay unread, not skipped.",
+  notebook_model_id_invalid:
+    "That is not an OpenRouter model id. Pick one from the list instead of typing it.",
+  notebook_model_id_too_long:
+    "That model id is too long to be real. Pick one from the list.",
+  // The four below are relayed from OpenRouter through the notebook's own
+  // routes. They used to arrive as raw reasons with no record and no
+  // sentence, so an expired key read "Something went wrong. Please try
+  // again." on this panel while the chat screen named it exactly.
+  notebook_extract_failed:
+    "The notebook could not reach the model. Nothing was written, and this chat is unchanged.",
+  openrouter_unreachable:
+    "OpenRouter could not be reached. Check your connection - if you use a proxy, check that it is running.",
+  openrouter_auth_failed:
+    "OpenRouter rejected your API key. Open Security and enter it again.",
+  api_key_not_set:
+    "There is no API key saved yet. Open Security and add one before the notebook can read anything.",
   notebook_entry_not_found:
     "That note is no longer there. It may have been removed in another window.",
   boundary_empty:

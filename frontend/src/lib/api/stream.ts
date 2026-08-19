@@ -31,6 +31,18 @@ export const StreamEventSchema = z.discriminatedUnion("type", [
     assistant_message: MessageSchema,
     // Regenerate only: the sibling variant deactivated by this append.
     deactivated_message_id: z.number().nullable().optional(),
+    // What this turn actually carried. Declared here or DISCARDED here: zod's
+    // z.object strips unknown keys rather than rejecting them, so the backend
+    // shipped all three and the client silently dropped them - a field added
+    // on one side and never seen on the other, with nothing red anywhere.
+    //
+    // Both numbers together, and the second is the older debt: history has
+    // always been trimmed oldest-first with nothing recording it, and
+    // announcing the notebook alone would teach that dropped context gets
+    // announced.
+    notebook_sent: z.number().optional(),
+    notebook_total: z.number().optional(),
+    history_trimmed: z.number().optional(),
   }),
   z.object({
     type: z.literal("error"),

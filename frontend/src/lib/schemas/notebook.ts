@@ -77,3 +77,69 @@ export const UseGlobalSchema = z.object({
   ok: z.boolean(),
   use_global: z.boolean(),
 });
+
+/** A model a background extraction may use. The list is already filtered to
+ *  endpoints that keep no data AND honour a strict JSON schema, so nothing
+ *  here needs to be re-checked on screen - a model that cannot do the job has
+ *  no business being pickable and then failing at request time.
+ *
+ *  `endpoints` is how many independent providers can serve it. With provider
+ *  fallback disabled a single-endpoint model is pinned to one machine, and
+ *  when that machine is down extraction simply stops. */
+export const ExtractionModelSchema = z.object({
+  id: z.string(),
+  provider: z.string().nullish(),
+  prompt_price: z.number(),
+  context_length: z.number().nullish(),
+  endpoints: z.number(),
+});
+
+export const ExtractionModelListSchema = z.object({
+  models: z.array(ExtractionModelSchema),
+});
+
+export const ExtractSettingsSchema = z.object({
+  /** null means extraction never runs. There is no default on purpose. */
+  model_id: z.string().nullable(),
+  prompt_language: z.string().default("en"),
+});
+
+/** What one dry run produced, beside the text it read.
+ *
+ *  `source` and `raw` travel together because a dry run whose output cannot be
+ *  compared against its input is a number, not evidence - and the whole point
+ *  of this screen is looking at the six ways a small model mishandles a
+ *  non-English transcript. */
+export const DryRunSchema = z.object({
+  model_id: z.string(),
+  prompt_language: z.string(),
+  source: z.string(),
+  raw: z.string().nullish(),
+  proposals: z.array(z.object({
+    text: z.string(),
+    evidence: z.string(),
+    kind: z.string(),
+    durability: z.string(),
+    importance: z.number(),
+    supersedes: z.number().nullish(),
+  })),
+  /** Returned by the model MINUS what survived the code filter. The gap is the
+   *  interesting number: it is where ungrounded quotes and off-enum answers
+   *  land, and it is invisible in the proposals alone. */
+  dropped: z.number().default(0),
+  /** The same total, broken out by REASON. One integer cannot tell "a quote
+   *  was invented" - the defence working - from "a Turkish quote failed a byte
+   *  comparison" - the defence eating a true fact, which is what an unfolded
+   *  NFD diacritic or a curly apostrophe used to do silently. */
+  dropped_by_reason: z.record(z.string(), z.number()).default({}),
+  failure: z.string().nullish(),
+  usage: z.object({
+    tokens_in: z.number().nullish(),
+    tokens_out: z.number().nullish(),
+    cost: z.number().nullish(),
+    request_id: z.string().nullish(),
+    finish_reason: z.string().nullish(),
+  }),
+});
+
+export type DryRunResult = z.infer<typeof DryRunSchema>;

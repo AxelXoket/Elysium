@@ -54,6 +54,10 @@
 | DELETE | /notebook/boundaries/{id} | Remove a limit | FAZ 1 (notebook) |
 | GET | /notebook/{chat_id}/boundaries | Limits actually in force for this chat | FAZ 1 (notebook) |
 | POST | /notebook/{chat_id}/use-global | Whether this chat follows the global limits | FAZ 1 (notebook) |
+| GET | /notebook/extract/models | Models a background extraction may use. Filtered to endpoints that keep no data AND honour a strict JSON schema - a model that cannot do the job has no business being pickable and then failing at request time | FAZ 4 (notebook) |
+| GET | /notebook/extract/settings | The chosen extraction model and instruction language. `model_id: null` means extraction never runs | FAZ 4 (notebook) |
+| POST | /notebook/extract/settings | Choose the model and the instruction language (`en` or `tr`) | FAZ 4 (notebook) |
+| POST | /notebook/{chat_id}/extract/dry-run | Run the extractor once against this chat and return what it produced, beside the text it read. **Writes nothing.** Exists so the one thing that could not be measured - whether a small model reads the user's Turkish well enough - can be looked at rather than argued about | FAZ 4 (notebook) |
 | GET | /settings | Current config state (no secrets) | Existing |
 | POST | /settings/api-key | Store API key (validates first) | Modified Part B |
 | DELETE | /settings/api-key | Remove API key | Existing |
@@ -474,7 +478,12 @@ Note: `context` (bare) is not a generation param and is never accepted.
 - UI preferences (tab state, sidebar state, model search text)
 - Unsent drafts
 - Frontend-sent `zdr`, `data_collection`, `allow_fallbacks`
-- `tools`, `tool_choice`, `response_format`
+- `tools`, `tool_choice`
+- `response_format` **from the frontend** - it is sent on exactly one backend
+  path, the notebook's note extractor, and only ever as a fixed schema defined
+  in this repository. Nothing the frontend sends can add it to any request,
+  and no request carrying a conversation to a chat model carries it. Until
+  v1.2 nothing sent it at all and this list said so without the qualifier
 - Any stored-but-not-selected data
 - `image_url` - EXCEPT images the user explicitly attached (Part H): the
   backend builds `image_url` content parts (base64 data URLs) only for
@@ -629,6 +638,69 @@ Codex uses:
 - `GET /personas` includes `is_active: bool` derived from `settings.selected_persona_id`. Not a DB column.
 
 ---
+
+
+### The notebook's extraction routes (FAZ 4)
+
+`prompt_price` is **USD per MILLION prompt tokens**, converted at the backend
+boundary. OpenRouter quotes it per token; passed through raw, every cheap model
+renders as `$0.000` and the price column stops distinguishing anything, which
+is the whole reason it is on screen. Do not confuse it with the `/models`
+catalogue's `pricing` object, which IS OpenRouter's native per-token value.
+
+```
+GET /notebook/extract/models
+-> { "models": [ { "id": "vendor/slug",
+                   "provider": "Name" | null,
+                   "prompt_price": 0.06,          // USD per 1M prompt tokens
+                   "context_length": 131072 | null,
+                   "endpoints": 3 } ] }           // how many providers serve it
+```
+
+`endpoints: 1` means the model is pinned to one machine: provider fallback is
+off for this call, so when that machine is down extraction simply stops.
+
+```
+GET  /notebook/extract/settings
+-> { "model_id": "vendor/slug" | null, "prompt_language": "en" | "tr" }
+
+POST /notebook/extract/settings
+<- { "model_id"?: "vendor/slug", "prompt_language"?: "en" | "tr" }
+-> { "ok": true }
+```
+
+`model_id: null` means extraction never runs. There is deliberately no
+default: a background job spending somebody's credits on a model they never
+chose is not a convenience. A `model_id` is shape-checked (`author/slug`, at
+most 128 characters) - `notebook_model_id_invalid` / `_too_long`.
+
+```
+POST /notebook/{chat_id}/extract/dry-run       // writes NOTHING
+-> { "model_id": ..., "prompt_language": ...,
+     "source": "the exact text it read",
+     "raw": "the model's reply, verbatim" | null,
+     "proposals": [ { "text", "evidence", "kind", "durability",
+                      "importance", "supersedes" } ],
+     "dropped": 3,
+     "dropped_by_reason": { "ungrounded": 2, "too_long": 1 },
+     "failure": "truncated" | null,
+     "usage": { "tokens_in", "tokens_out", "cost",
+                "request_id", "finish_reason" } }
+```
+
+`failure` and an empty `proposals` list are **different answers**. A truncated
+or unusable reply is a failure; `[]` with `failure: null` is the model
+legitimately finding nothing, which for a quiet scene is correct. Collapsing
+the two is the single most expensive wound this design inherits.
+
+`dropped_by_reason` exists because one integer cannot tell "a quote was
+invented" - the defence working - from "a Turkish quote failed a byte
+comparison" - the defence eating a true fact.
+
+Both routes that reach OpenRouter pass `enforce_proxy_gate()` first and are
+counted against `NOTEBOOK_DAILY_CALL_CAP`, which refuses with **429
+`notebook_daily_cap_reached`** *before* the request rather than after it.
+
 
 ## Character Rules
 

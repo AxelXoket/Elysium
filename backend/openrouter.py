@@ -292,8 +292,19 @@ def _normalise_model(raw: dict) -> dict:
 
 
 def invalidate_model_cache() -> None:
-    """Clear model cache. Called when API key or proxy config changes."""
+    """Clear the model caches. Called when the API key or the proxy changes.
+
+    BOTH of them. `_zdr_cache` is a second, independent cache with the same
+    TTL, and the four callers all mean "the cached provider view is now
+    wrong": key saved, key deleted, proxy saved, proxy deleted. The proxy case
+    is the sharp one - `reset_client()` and `invalidate_health_cache()` are
+    called on the adjacent lines precisely so that nothing fetched over the
+    previous egress path is reused, and a cache this function did not know
+    about walked straight through that for five minutes.
+    """
+    global _zdr_cache
     _model_cache.clear()
+    _zdr_cache = None
 
 
 def get_cached_model_metadata(model_id: str) -> dict | None:
@@ -511,7 +522,12 @@ async def complete(
     model_id: str,
     gen_params: dict,
     provider: dict,
+    # Keyword-only. Two optional payload switches that both change what leaves
+    # the machine; passed positionally they are one argument-order slip away
+    # from swapping places at a call site nobody re-reads.
+    *,
     modalities: tuple[str, ...] | list[str] | None = None,
+    response_format: dict | None = None,
 ) -> dict:
     """Send a non-streaming completion request. Returns the raw OpenRouter response.
 
@@ -550,6 +566,18 @@ async def complete(
         # AFTER the gen_params spread so a stray key of the same name in a
         # validated param dict could never decide this.
         payload["modalities"] = list(modalities)
+    if response_format:
+        # Same placement, same reason. And an explicit parameter rather than a
+        # gen_param: validate_and_filter_gen_params is a NUMERIC allow-list, so
+        # a dict handed to it is dropped without a word - the request would go
+        # out unconstrained and the caller would parse whatever came back.
+        #
+        # This only binds because the provider policy carries
+        # `require_parameters: true`. Without it the field is a soft preference
+        # that a non-supporting endpoint silently ignores; with it, such an
+        # endpoint is removed from candidacy and an empty candidate set is a
+        # 503 rather than a plausible answer in the wrong shape.
+        payload["response_format"] = response_format
 
     timeout = httpx.Timeout(COMPLETION_TIMEOUT)
     client = get_client()
@@ -999,3 +1027,119 @@ async def complete_stream(
         # through untouched, preserving client-abort semantics.
         logger.warning("Streaming completion failed: %s", type(exc).__name__)
         raise OpenRouterError("openrouter_error") from exc
+
+
+# ---------------------------------------------------------------------------
+# FAZ 4 - the models a background extraction may use
+# ---------------------------------------------------------------------------
+
+#: The ONLY authoritative source for per-endpoint data policy. Measured, not
+#: assumed: `/models/{author}/{slug}/endpoints` carries no policy field at all
+#: AND silently ignores `?zdr=true`, so a list built there would show models
+#: that look compliant and die at request time. `/models?zdr=true` filters at
+#: MODEL level ("has at least one such endpoint"), which is not the same
+#: question either.
+_ZDR_ENDPOINTS_PATH = "/endpoints/zdr"
+
+_zdr_cache: tuple[float, list[dict]] | None = None
+
+
+async def fetch_extraction_models(refresh: bool = False) -> list[dict]:
+    """Models that can serve a background extraction without breaking a promise.
+
+    Two conditions, both required, and neither is a preference:
+
+    - the endpoint appears in the zero-data-retention list, because the
+      extraction reads the same private conversation the chat does and must not
+      leave under weaker terms than the chat did;
+    - the endpoint advertises `structured_outputs`, not merely `response_format`
+      - those are different values and 21 models carry the second without the
+        first, which means `json_object` but not a schema.
+
+    Returns one row per MODEL with its cheapest qualifying endpoint, because
+    the picker is a list of models and the cheapest is the one a background job
+    should default to.
+    """
+    global _zdr_cache
+    now = time.monotonic()
+    if not refresh and _zdr_cache and now - _zdr_cache[0] < MODEL_LIST_TTL:
+        return _zdr_cache[1]
+
+    client = get_client()
+    url = f"{OPENROUTER_BASE_URL}{_ZDR_ENDPOINTS_PATH}"
+    # The key is optional here (the policy list is public) but sending it when
+    # we have one keeps this request indistinguishable from every other one the
+    # app makes: one host, one identity, one rate-limit bucket.
+    # Off the loop: reading it opens SQLCipher, and blocking here freezes
+    # every live stream in the process. A locked vault is not an error - the
+    # policy list is public - but it does mean the request goes out
+    # unauthenticated, which is why it is not allowed to raise.
+    try:
+        api_key = await anyio.to_thread.run_sync(get_secret, SECRET_API_KEY)
+    except Exception:
+        api_key = None
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        response = await client.get(
+            url, headers=headers, timeout=httpx.Timeout(MODELS_FETCH_TIMEOUT))
+    # The module's own shape, and not decoration: a narrow `except
+    # httpx.HTTPError` lets anything the transport raises that is NOT an
+    # httpx error - a proxy library, an SSL layer, a resolver - escape as a
+    # raw 500 with a traceback instead of a code the UI can name.
+    except httpx.TimeoutException as exc:
+        raise OpenRouterError("openrouter_timeout") from exc
+    except httpx.ProxyError as exc:
+        raise OpenRouterError("proxy_auth_failed") from exc
+    except Exception as exc:
+        logger.warning("Extraction model list failed: %s", type(exc).__name__)
+        raise OpenRouterError("openrouter_unreachable") from exc
+    if not response.is_success:
+        raise OpenRouterError(_status_to_reason(
+            response.status_code, _parse_error_payload(response.content)))
+
+    best: dict[str, dict] = {}
+    for endpoint in (response.json().get("data") or []):
+        params = set(endpoint.get("supported_parameters") or [])
+        if "structured_outputs" not in params:
+            continue
+        model_id = endpoint.get("model_id") or endpoint.get("name")
+        if not model_id:
+            continue
+        # `:free` variants sit behind a training/logging consent that the ZDR
+        # list does not describe, so membership there is not the same promise
+        # for them as it is for a paid endpoint. A background job reading the
+        # user's conversation is the last place to accept a policy this app
+        # cannot read.
+        if str(model_id).endswith(":free"):
+            continue
+        # OpenRouter quotes prompt price per TOKEN ("0.00000006"). Converted
+        # here, at the only place the wire unit is known, because a picker
+        # showing "$0.000" for every cheap model is a picker nobody can use.
+        pricing = endpoint.get("pricing") or {}
+        try:
+            price = float(pricing.get("prompt") or 0) * 1_000_000
+        except (TypeError, ValueError):
+            price = 0.0
+        row = {
+            "id": model_id,
+            "provider": endpoint.get("provider_name"),
+            "prompt_price": price,   # USD per million prompt tokens
+            "context_length": endpoint.get("context_length"),
+            # How many independent providers can serve it. With
+            # allow_fallbacks disabled a single-endpoint model is pinned to one
+            # machine, and when that machine is down extraction simply stops.
+            "endpoints": 1,
+        }
+        seen = best.get(model_id)
+        if seen is None:
+            best[model_id] = row
+        else:
+            seen["endpoints"] += 1
+            if price < seen["prompt_price"]:
+                seen.update({k: row[k] for k in
+                             ("provider", "prompt_price", "context_length")})
+
+    models = sorted(best.values(), key=lambda m: (m["prompt_price"], m["id"]))
+    _zdr_cache = (now, models)
+    return models
+

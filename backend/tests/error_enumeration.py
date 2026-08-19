@@ -108,6 +108,18 @@ DECLARED_ALPHABETS: dict[tuple[str, str], str] = {
         "routers.completions:CONFLICT_DETAILS",
     ("routers/models_router.py", "reason"):
         "routers.models_router:RELAY_DETAILS",
+    # Two different exception families reach this router. NotebookError
+    # carries its own finite set. OpenRouterError went through `str(exc)`
+    # pointed at completions:RELAY_DETAILS - which was simply WRONG, and
+    # invisibly so: RELAY_DETAILS holds the MAPPED details of _ERROR_MAP
+    # (`auth_failed`, `api_key_missing`) while `str(exc)` yields the raw
+    # REASONS (`openrouter_auth_failed`, `api_key_not_set`). The census
+    # therefore credited this router with ten codes it could never send and
+    # never saw the five it could, so an expired API key reached this panel as
+    # "Something went wrong" while the chat path named it. The router now maps
+    # through its own relay, which is what this declaration points at.
+    ("routers/notebook.py", "detail"):
+        "routers.notebook:RELAY_DETAILS",
     ("routers/notebook.py", "exc.code"):
         "notebook_store:ALL_CODES",
     ("routers/tts_runtime.py", "exc.code"):
