@@ -483,6 +483,12 @@ app.include_router(models_router.router, prefix="/api/v1")
 from routers import personas as personas_router
 app.include_router(personas_router.router, prefix="/api/v1")
 #
+# FAZ 1 - Notebook + boundaries (active). Sits behind the vault gate like every
+# other data route: its rows are derived from chat content and are therefore
+# chat content.
+from routers import notebook as notebook_router
+app.include_router(notebook_router.router, prefix="/api/v1")
+#
 # Part H - Image attachments (active)
 from routers import uploads as uploads_router
 app.include_router(uploads_router.router, prefix="/api/v1")

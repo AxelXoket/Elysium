@@ -330,6 +330,26 @@ const ERROR_MESSAGES: Record<string, string> = {
     "That passphrase is correct, but it does not open the database that is here - the key files and the database are from different vaults. This usually means one of them was restored from a backup without the other. Put back the matching app.db, or the matching salt.bin and verifier.bin, from the same backup.",
   change_passphrase_failed:
     "The passphrase was not changed - nothing was lost, and your current passphrase still works. Close anything else using Elysium and retry.",
+  // FAZ 1 - the notebook. Its rows are sent with every message, so the two
+  // refusals a person actually meets are "that is too long" and "that field is
+  // not yours to change" - and both have to explain the cost rather than just
+  // say no.
+  notebook_entry_empty:
+    "That note is empty. Write something for the character to remember.",
+  notebook_entry_too_long:
+    "That note is too long. Keep it to one short sentence - the notebook is sent with every message, so every note costs room the conversation would otherwise use.",
+  notebook_entry_invalid:
+    "That note could not be saved. Check the type and importance and try again.",
+  notebook_field_not_editable:
+    "That part of a note cannot be changed after it is written. Who wrote a note - you or the model - is recorded once and stays.",
+  notebook_entry_not_found:
+    "That note is no longer there. It may have been removed in another window.",
+  boundary_empty:
+    "A limit needs both a name and the wording the model will see.",
+  boundary_invalid:
+    "That limit could not be saved. Choose how strict it is and try again.",
+  boundary_not_found:
+    "That limit is no longer there. It may have been removed in another window.",
   unknown_error:
     "Something went wrong. Please try again.",
 

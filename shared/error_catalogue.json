@@ -80,6 +80,29 @@
       ]
     },
     {
+      "code": "boundary_empty",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "boundary_invalid",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "boundary_not_found",
+      "statuses": [
+        404
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
       "code": "change_passphrase_failed",
       "statuses": [
         500
@@ -172,20 +195,6 @@
       "statuses": [],
       "channels": [
         "sse"
-      ]
-    },
-    {
-      "code": "provider_frame_dropped",
-      "statuses": [],
-      "channels": [
-        "notice"
-      ]
-    },
-    {
-      "code": "stream_ended_without_done",
-      "statuses": [],
-      "channels": [
-        "notice"
       ]
     },
     {
@@ -352,6 +361,45 @@
       ]
     },
     {
+      "code": "notebook_entry_empty",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "notebook_entry_invalid",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "notebook_entry_not_found",
+      "statuses": [
+        404
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "notebook_entry_too_long",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "notebook_field_not_editable",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
       "code": "openrouter_completion_error",
       "statuses": [],
       "channels": [
@@ -463,6 +511,13 @@
       ]
     },
     {
+      "code": "provider_frame_dropped",
+      "statuses": [],
+      "channels": [
+        "notice"
+      ]
+    },
+    {
       "code": "proxy_auth_failed",
       "statuses": [],
       "channels": [
@@ -520,6 +575,13 @@
       ]
     },
     {
+      "code": "stream_ended_without_done",
+      "statuses": [],
+      "channels": [
+        "notice"
+      ]
+    },
+    {
       "code": "timeout",
       "statuses": [],
       "channels": [
@@ -562,18 +624,18 @@
       ]
     },
     {
-      "code": "tts_cache_outside_data_dir",
-      "statuses": [],
+      "code": "tts_audio_expired",
+      "statuses": [
+        404
+      ],
       "channels": [
         "http",
         "voice_sse"
       ]
     },
     {
-      "code": "tts_audio_expired",
-      "statuses": [
-        404
-      ],
+      "code": "tts_cache_outside_data_dir",
+      "statuses": [],
       "channels": [
         "http",
         "voice_sse"
@@ -741,7 +803,7 @@
       ]
     },
     {
-      "code": "tts_reference_invalid",
+      "code": "tts_reference_clip_stuck",
       "statuses": [],
       "channels": [
         "http",
@@ -757,7 +819,7 @@
       ]
     },
     {
-      "code": "tts_reference_clip_stuck",
+      "code": "tts_reference_invalid",
       "statuses": [],
       "channels": [
         "http",
@@ -923,6 +985,15 @@
       ]
     },
     {
+      "code": "vault_identity_mismatch",
+      "statuses": [
+        409
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
       "code": "vault_init_failed",
       "statuses": [
         500
@@ -943,15 +1014,6 @@
     },
     {
       "code": "vault_not_initialized",
-      "statuses": [
-        409
-      ],
-      "channels": [
-        "http"
-      ]
-    },
-    {
-      "code": "vault_identity_mismatch",
       "statuses": [
         409
       ],

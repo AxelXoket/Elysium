@@ -50,6 +50,14 @@ def _key_pragma(con: "sqlite3.Connection", key: bytes, *, rekey: bool = False) -
     so string interpolation is injection-safe; PRAGMA takes no parameters."""
     stmt = "rekey" if rekey else "key"
     con.execute(f"PRAGMA {stmt} = \"x'{key.hex()}'\"")
+    # Temporary tables and sort spills stay in RAM. SQLCipher's own design note
+    # calls this out as a required step and it was missing: with the default
+    # file-backed temp store, an ORDER BY that spills, a subquery that
+    # materialises, or a VACUUM writes PLAINTEXT rows into a temp file next to
+    # the encrypted database - outside the file every promise in this module is
+    # about. Applied on the same funnel as the key so no connection can be
+    # opened without it, including the backup and rekey paths.
+    con.execute("PRAGMA temp_store = MEMORY")
 
 # ---------------------------------------------------------------------------
 # Schema
@@ -149,6 +157,26 @@ def _migrate(con: sqlite3.Connection) -> None:
     boot). ADD COLUMN ... DEFAULT backfills existing rows, so every
     pre-migration message becomes its own active singleton.
     """
+    # DOWNGRADE GUARD, and it runs before a single DDL statement. SQLite has no
+    # protection of its own: an older build opening a newer file will happily
+    # write rows that the newer schema's constraints would have refused, and
+    # nothing notices until the newer build comes back to a database it can no
+    # longer trust. Refusing is louder than repairing, and this is the only
+    # moment where refusing is still free.
+    #
+    # It fails the unlock, deliberately. `init_db` has no error path, so this
+    # propagates out of _bootstrap_unlocked and the vault does not open - which
+    # is the correct direction: a database written by a future build is not
+    # something this build should be quietly editing.
+    on_disk = con.execute("PRAGMA user_version").fetchone()[0]
+    if on_disk > _SCHEMA_VERSION:
+        raise RuntimeError(
+            f"This database was written by a newer version of Elysium "
+            f"(schema {on_disk}, this build understands {_SCHEMA_VERSION}). "
+            f"Nothing was changed. Use the newer version, or restore a backup "
+            f"taken with this one."
+        )
+
     cols = {r[1] for r in con.execute("PRAGMA table_info(messages)").fetchall()}
     if "variant_group" not in cols:
         # NULL = never regenerated; else the id of the group's FIRST row (the
@@ -207,6 +235,170 @@ def _migrate(con: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_attachments_sha256 "
         "ON attachments(sha256)"
     )
+    _migrate_notebook(con)
+
+
+#: What THIS build understands. The guard at the top of _migrate refuses a file
+#: stamped higher; the bump at the bottom of _migrate_notebook records success.
+#: History: 0/1 pre-v1.1 · 2 messages.updated_at · 3 notebook + boundaries.
+_SCHEMA_VERSION = 3
+
+
+def _migrate_notebook(con: sqlite3.Connection) -> None:
+    """The notebook, the boundaries, and their bookkeeping.
+
+    DELIBERATELY HERE AND NOT IN _SCHEMA, and the reason is measured rather
+    than stylistic: init_db runs _SCHEMA through executescript(), which commits
+    implicitly before every statement (see its docstring). Tables created there
+    could not share a transaction with the user_version bump that records them,
+    so a crash mid-way would leave a database that says it migrated and has not.
+    Everything in _migrate runs inside the transaction init_db closes, so the
+    tables and the stamp land together or not at all.
+
+    Index names carry a version suffix on purpose. CREATE INDEX IF NOT EXISTS
+    is a no-op when the NAME exists, whatever the definition says - so an index
+    whose columns change later would silently keep its old shape on every
+    machine that already ran the old one. A new name is the only way to make
+    the change actually happen.
+    """
+    con.executescript("""
+        CREATE TABLE IF NOT EXISTS notebook_entries (
+          id                INTEGER PRIMARY KEY AUTOINCREMENT,
+          chat_id           INTEGER NOT NULL REFERENCES chats(id),
+          position          INTEGER NOT NULL,
+          kind              TEXT    NOT NULL DEFAULT 'fact'
+                            CHECK (kind IN ('fact','event','relationship',
+                                            'open_thread','entity','state',
+                                            'knowledge','preference')),
+          text              TEXT    NOT NULL,
+          evidence          TEXT,
+          durability        TEXT    NOT NULL DEFAULT 'permanent'
+                            CHECK (durability IN ('scene','session','permanent')),
+          importance        INTEGER NOT NULL DEFAULT 2
+                            CHECK (importance BETWEEN 1 AND 3),
+          pinned            INTEGER NOT NULL DEFAULT 0,
+          retired_at        TEXT,
+          superseded_by     INTEGER REFERENCES notebook_entries(id),
+          excluded_reason   TEXT,
+          status            TEXT    NOT NULL DEFAULT 'accepted'
+                            CHECK (status IN ('proposed','accepted')),
+          provenance        TEXT    NOT NULL DEFAULT 'user'
+                            CHECK (provenance IN ('user','model')),
+          source_message_id INTEGER REFERENCES messages(id),
+          created_at        TEXT    NOT NULL DEFAULT (datetime('now')),
+          updated_at        TEXT    NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS boundaries (
+          id                INTEGER PRIMARY KEY AUTOINCREMENT,
+          scope             TEXT    NOT NULL CHECK (scope IN ('global','chat')),
+          chat_id           INTEGER REFERENCES chats(id),
+          label             TEXT    NOT NULL,
+          phrasing          TEXT    NOT NULL,
+          severity          TEXT    NOT NULL
+                            CHECK (severity IN ('hard','veiled','soft')),
+          polarity          TEXT    NOT NULL DEFAULT 'avoid'
+                            CHECK (polarity IN ('avoid','seek')),
+          on_violation      TEXT    NOT NULL DEFAULT 'pause'
+                            CHECK (on_violation IN ('rewind','fast_forward',
+                                                    'pause','hard_stop')),
+          source            TEXT    NOT NULL DEFAULT 'explicit'
+                            CHECK (source IN ('explicit','inferred')),
+          rating_ceiling    TEXT    CHECK (rating_ceiling IN ('G','PG','PG-13','R')),
+          exempt_from_trim  INTEGER NOT NULL DEFAULT 1,
+          last_confirmed_at TEXT,
+          active            INTEGER NOT NULL DEFAULT 1,
+          created_at        TEXT    NOT NULL DEFAULT (datetime('now')),
+          updated_at        TEXT    NOT NULL DEFAULT (datetime('now')),
+          -- A boundary this app INFERRED may never be a hard limit. Enforced by
+          -- the engine and not by a code path, because a code path can be
+          -- bypassed by the next writer and this one cannot.
+          CHECK (NOT (source = 'inferred' AND severity = 'hard')),
+          -- Scope and owner say the same thing or the row is nonsense.
+          CHECK ((scope = 'global') = (chat_id IS NULL))
+        );
+
+        CREATE TABLE IF NOT EXISTS notebook_extractions (
+          work_key        TEXT    PRIMARY KEY,
+          chat_id         INTEGER NOT NULL REFERENCES chats(id),
+          from_message_id INTEGER NOT NULL,
+          to_message_id   INTEGER NOT NULL,
+          status          TEXT    NOT NULL
+                          CHECK (status IN ('done','failed','skipped')),
+          request_id      TEXT,
+          finish_reason   TEXT,
+          skip_reason     TEXT,
+          error_type      TEXT,
+          tokens_in       INTEGER,
+          tokens_out      INTEGER,
+          cost            REAL,
+          created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS notebook_spend (
+          day        TEXT    PRIMARY KEY,
+          calls      INTEGER NOT NULL DEFAULT 0,
+          tokens_in  INTEGER NOT NULL DEFAULT 0,
+          tokens_out INTEGER NOT NULL DEFAULT 0,
+          cost       REAL    NOT NULL DEFAULT 0
+        );
+    """)
+
+    chat_cols = {r[1] for r in con.execute("PRAGMA table_info(chats)").fetchall()}
+    if "use_global_boundaries" not in chat_cols:
+        # NOT NULL DEFAULT 1 is legal in ALTER because 1 is a constant, unlike
+        # the datetime() default that forced messages.updated_at to be nullable.
+        con.execute(
+            "ALTER TABLE chats ADD COLUMN "
+            "use_global_boundaries INTEGER NOT NULL DEFAULT 1"
+        )
+    if "notebook_auto_accept_override" not in chat_cols:
+        # NULL = follow the app-wide setting. A chat opened from an imported
+        # card gets 0, so a stranger's text can never be auto-accepted even
+        # while the global switch is on.
+        con.execute(
+            "ALTER TABLE chats ADD COLUMN notebook_auto_accept_override INTEGER"
+        )
+
+    # Orphan sweep BEFORE the indexes. An older build restored from
+    # app.db.premigrate.bak can carry rows whose chat is gone, and foreign keys
+    # are not enforced on this connection (init_db does not set the pragma), so
+    # nothing stopped them arriving. integrity_check would not find these
+    # either - only foreign_key_check does, and it reports rather than repairs.
+    con.execute(
+        "DELETE FROM notebook_entries "
+        "WHERE chat_id NOT IN (SELECT id FROM chats)"
+    )
+    con.execute(
+        "DELETE FROM boundaries "
+        "WHERE scope = 'chat' AND chat_id NOT IN (SELECT id FROM chats)"
+    )
+
+    # Self-heal before the unique index, same reasoning as the variant-group
+    # one above: duplicate positions would abort the CREATE on every boot with
+    # no way back in. Renumber the losers to the end rather than deleting them -
+    # the owner's rule is that a note never disappears.
+    con.execute("""
+        UPDATE notebook_entries SET position = position + 100000
+        WHERE id NOT IN (
+          SELECT MIN(id) FROM notebook_entries GROUP BY chat_id, position
+        )
+    """)
+    con.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_notebook_order_v1 "
+        "ON notebook_entries(chat_id, position)"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_notebook_live_v1 "
+        "ON notebook_entries(chat_id, status, retired_at)"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_boundaries_scope_v1 "
+        "ON boundaries(scope, chat_id, active)"
+    )
+
+    if con.execute("PRAGMA user_version").fetchone()[0] < _SCHEMA_VERSION:
+        con.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
 
 def init_db() -> None:

@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field, field_validator
 
 import anyio.to_thread
 
+import notebook_store as notebook
 from database import get_db, iter_chunks
 from attachments_service import delete_for_messages
 
@@ -399,6 +400,10 @@ def _delete_character_sync(character_id: int) -> int:
             ).fetchall()]
             # Rows + orphaned blobs in this same transaction (E6).
             delete_for_messages(con, msg_ids)
+            # Inside the chunk loop, not after it: `chunk` is what this pass
+            # is about to delete, and this is the path that orphans at scale -
+            # deleting a character takes every chat it ever had.
+            notebook.delete_for_chats(con, chunk)
             con.execute(
                 f"DELETE FROM messages WHERE chat_id IN ({placeholders})", chunk,
             )
