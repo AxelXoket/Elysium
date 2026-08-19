@@ -5,6 +5,7 @@ import { useUiStore } from "@/lib/store/uiStore";
 import { ModelPanel } from "@/components/models/ModelPanel";
 import { SettingsPanel } from "@/components/settings/SettingsPanel";
 import { ExtractionSettings } from "@/components/notebook/ExtractionSettings";
+import { WorkerPanel } from "@/components/notebook/WorkerPanel";
 import { BoundaryPanel } from "@/components/notebook/BoundaryPanel";
 import { NotebookPanel } from "@/components/notebook/NotebookPanel";
 import { PersonaPanel } from "@/components/persona/PersonaPanel";
@@ -94,6 +95,7 @@ export function RightPanel() {
           <NotebookPanel />
           <BoundaryPanel />
           <ExtractionSettings />
+          <WorkerPanel />
         </TabsContent>
       </Tabs>
     </aside>

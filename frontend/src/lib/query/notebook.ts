@@ -12,6 +12,11 @@ import {
   createNote,
   patchNote,
   deleteNote,
+  acceptNote,
+  getWorkerStatus,
+  resetWorker,
+  getAutoAccept,
+  setAutoAccept,
   reorderNotes,
   listGlobalBoundaries,
   listChatBoundaries,
@@ -85,6 +90,9 @@ export const usePatchNote = () =>
 
 export const useDeleteNote = () =>
   useNotebookMutation((id: number) => deleteNote(id));
+
+export const useAcceptNote = () =>
+  useNotebookMutation((id: number) => acceptNote(id));
 
 export const useReorderNotes = () =>
   useNotebookMutation((chatId: number, ids: number[]) =>
@@ -188,3 +196,45 @@ export function useDryRun() {
   });
 }
 
+
+// ── FAZ 5: the background extractor ────────────────────────────────────────
+//
+// Keyed outside the `["notebook"]` prefix, like the model picker and for the
+// same reason: a note mutation must not drag a status poll along with it.
+
+export function useWorkerStatus() {
+  return useQuery({
+    queryKey: ["extraction", "worker"] as const,
+    queryFn: getWorkerStatus,
+    // The worker runs on its own clock. A poll is the only way the panel
+    // learns that a run happened while the user was reading something else.
+    refetchInterval: 20_000,
+  });
+}
+
+export function useResetWorker() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => resetWorker(),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["extraction", "worker"] });
+    },
+  });
+}
+
+export function useAutoAccept() {
+  return useQuery({
+    queryKey: ["extraction", "auto-accept"] as const,
+    queryFn: getAutoAccept,
+  });
+}
+
+export function useSetAutoAccept() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: [boolean]) => setAutoAccept(...args),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["extraction", "auto-accept"] });
+    },
+  });
+}

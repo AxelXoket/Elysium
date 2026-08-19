@@ -1,6 +1,8 @@
 import { request } from "./client";
 import {
   NotebookEntrySchema,
+  WorkerStatusSchema,
+  AutoAcceptSchema,
   NotebookListSchema,
   BoundarySchema,
   BoundaryListSchema,
@@ -53,6 +55,16 @@ export function patchNote(
   return request(`/notebook/entries/${id}`, NotebookEntrySchema, {
     method: "PATCH",
     body: JSON.stringify(payload),
+  });
+}
+
+/** Promote one proposal. Deliberately NOT `patchNote(id, {status})`: the
+ *  patch body has no `status` field and must not grow one, because the same
+ *  door would then be open to `provenance` - and a proposal that can rewrite
+ *  who wrote it is the classic promotion bypass. */
+export function acceptNote(id: number) {
+  return request(`/notebook/entries/${id}/accept`, NotebookEntrySchema, {
+    method: "POST",
   });
 }
 
@@ -126,5 +138,28 @@ export function saveExtractSettings(payload: {
 export function dryRun(chatId: number) {
   return request(`/notebook/${chatId}/extract/dry-run`, DryRunSchema, {
     method: "POST",
+  });
+}
+
+// ── FAZ 5: the background extractor ────────────────────────────────────────
+
+export function getWorkerStatus() {
+  return request("/notebook/worker", WorkerStatusSchema);
+}
+
+export function resetWorker() {
+  return request("/notebook/worker/reset", NotebookOkSchema, {
+    method: "POST",
+  });
+}
+
+export function getAutoAccept() {
+  return request("/notebook/auto-accept", AutoAcceptSchema);
+}
+
+export function setAutoAccept(enabled: boolean) {
+  return request("/notebook/auto-accept", NotebookOkSchema, {
+    method: "POST",
+    body: JSON.stringify({ enabled }),
   });
 }

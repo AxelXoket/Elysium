@@ -143,3 +143,38 @@ export const DryRunSchema = z.object({
 });
 
 export type DryRunResult = z.infer<typeof DryRunSchema>;
+
+/** What the background extractor has done, and whether it may keep going.
+ *
+ *  A47: a refused extraction is not silent. Without these counters, "the
+ *  notebook has proposed nothing this week" and "the notebook refused sixty
+ *  times for a reason nobody can see" are the same screen. */
+export const WorkerStatusSchema = z.object({
+  stats: z.object({
+    done: z.number(),
+    failed: z.number(),
+    skipped: z.number(),
+    skip_reasons: z.record(z.string(), z.number()).default({}),
+  }),
+  spend: z.object({
+    calls: z.number(),
+    tokens_in: z.number(),
+    tokens_out: z.number(),
+    cost: z.number(),
+  }),
+  worker: z.object({
+    /** closed = running · open = cooling down · stopped = waiting for you */
+    state: z.string(),
+    failures: z.number(),
+    total_failures: z.number(),
+    queued: z.number(),
+    dropped_offers: z.number(),
+    runs: z.number(),
+    batch_size: z.number(),
+  }),
+  daily_cap: z.number(),
+});
+
+export type WorkerStatus = z.infer<typeof WorkerStatusSchema>;
+
+export const AutoAcceptSchema = z.object({ enabled: z.boolean() });

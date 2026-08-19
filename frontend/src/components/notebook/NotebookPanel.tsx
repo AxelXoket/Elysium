@@ -36,6 +36,7 @@ import {
   useCreateNote,
   usePatchNote,
   useDeleteNote,
+  useAcceptNote,
 } from "@/lib/query/notebook";
 import type { NotebookEntry } from "@/lib/schemas/notebook";
 
@@ -43,8 +44,14 @@ import type { NotebookEntry } from "@/lib/schemas/notebook";
  *  it; this only stops the user typing a paragraph they will lose. */
 const ENTRY_MAX_CHARS = 240;
 
-function noteState(entry: NotebookEntry): "live" | "retired" | "over" {
+function noteState(
+  entry: NotebookEntry,
+): "live" | "proposed" | "retired" | "over" {
   if (entry.retired_at) return "retired";
+  // Before `excluded_reason`: a proposal is not being sent for a much more
+  // important reason than not fitting, and reading as "live" would tell the
+  // user a note is in force while it is still waiting for them.
+  if (entry.status === "proposed") return "proposed";
   if (entry.excluded_reason) return "over";
   return "live";
 }
@@ -55,12 +62,14 @@ export function NotebookPanel() {
   const create = useCreateNote();
   const patch = usePatchNote();
   const remove = useDeleteNote();
+  const accept = useAcceptNote();
   const pushError = useErrorStore((s) => s.pushError);
 
   const [draft, setDraft] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
 
-  const busy = create.isPending || patch.isPending || remove.isPending;
+  const busy = create.isPending || patch.isPending || remove.isPending
+    || accept.isPending;
   const entries = data?.entries ?? [];
   // The number the SERVER computed for the last turn, when there has been
   // one. Counting live notes here is a client-side guess that is right only
@@ -87,6 +96,14 @@ export function NotebookPanel() {
   async function handlePin(entry: NotebookEntry) {
     try {
       await patch.mutateAsync([entry.id, { pinned: !entry.pinned }]);
+    } catch (err) {
+      pushError(err, "error", { chatId: chatId ?? undefined });
+    }
+  }
+
+  async function handleAccept(id: number) {
+    try {
+      await accept.mutateAsync([id]);
     } catch (err) {
       pushError(err, "error", { chatId: chatId ?? undefined });
     }
@@ -177,6 +194,7 @@ export function NotebookPanel() {
               busy={busy}
               confirming={confirmDeleteId === entry.id}
               onPin={() => void handlePin(entry)}
+              onAccept={() => void handleAccept(entry.id)}
               onAskDelete={() => setConfirmDeleteId(entry.id)}
               onCancelDelete={() => setConfirmDeleteId(null)}
               onDelete={() => void handleDelete(entry.id)}
@@ -193,6 +211,7 @@ function NoteRow({
   busy,
   confirming,
   onPin,
+  onAccept,
   onAskDelete,
   onCancelDelete,
   onDelete,
@@ -201,6 +220,7 @@ function NoteRow({
   busy: boolean;
   confirming: boolean;
   onPin: () => void;
+  onAccept: () => void;
   onAskDelete: () => void;
   onCancelDelete: () => void;
   onDelete: () => void;
@@ -225,10 +245,32 @@ function NoteRow({
             Did not fit this turn - kept, not sent. Pin it to protect it.
           </p>
         )}
+        {state === "proposed" && (
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            Waiting for you - not sent until you keep it.
+          </p>
+        )}
         {entry.provenance === "model" && (
           <p className="text-xs leading-relaxed text-muted-foreground">Written by the model.</p>
         )}
       </div>
+
+      {/* Only for a proposal, and it is the only thing that promotes one:
+          `provenance` stays `model` forever, so the row keeps saying who
+          wrote it after the user keeps it. */}
+      {state === "proposed" && (
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          disabled={busy}
+          onClick={onAccept}
+          aria-label="Keep note"
+          className="persona-ghost-action h-7 w-7 p-0"
+        >
+          <Check size={12} className="size-3" />
+        </Button>
+      )}
 
       {/* One button per action, icon swapped in place - no second control
           appears and nothing remounts when the state flips. */}

@@ -66,6 +66,23 @@ async def lifespan(app: FastAPI):
     # unlock so there is exactly one of it for the process lifetime.
     watchdog = asyncio.create_task(auto_lock.watch())
 
+    # The notebook's extractor, beside the watchdog and for the same reason:
+    # exactly one for the process lifetime. It is inert until a model is
+    # chosen, and it holds its own task reference - the event loop keeps only
+    # a WEAK one, so a worker started and forgotten is collected at an
+    # arbitrary moment and the feature simply stops with nothing in the log.
+    # Guarded like every other optional subsystem in this lifespan. A raise
+    # here aborts ASGI startup: uvicorn never binds, the vault can never be
+    # unlocked, and a notebook that failed to import presents as "the app does
+    # not start" rather than "the notebook is off".
+    try:
+        import notebook_worker
+        notebook_worker.start()
+    except Exception:
+        notebook_worker = None
+        logger.warning("Startup: the notebook worker did not start.",
+                       exc_info=True)
+
     yield
 
     watchdog.cancel()
@@ -88,6 +105,13 @@ async def lifespan(app: FastAPI):
         logger.warning("Shutdown: voice teardown failed.", exc_info=True)
     logger.info("Shutdown: closing HTTP client.")
     await close_client()
+
+    # LAST. Its database writes run in a worker thread anyio will not abandon,
+    # under a 15-second busy timeout, so this await can hold shutdown for that
+    # long - and nothing else should wait behind it. Best effort either way:
+    # in the packaged app uvicorn is a daemon thread and this never runs.
+    if notebook_worker is not None:
+        await notebook_worker.stop()
 
 
 app = FastAPI(

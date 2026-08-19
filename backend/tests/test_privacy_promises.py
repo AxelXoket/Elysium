@@ -169,7 +169,11 @@ class TestWhatIsNeverSent:
                 for kw in node.keywords:
                     if kw.arg == "response_format":
                         senders.append(path.relative_to(root).as_posix())
-        assert sorted(set(senders)) == ["routers/notebook.py"], senders
+        # The extractor, and only the extractor: the route the user presses
+        # by hand and the worker that runs it unattended are the same feature
+        # asking the same question with the same fixed schema.
+        assert sorted(set(senders)) == ["notebook_worker.py",
+                                        "routers/notebook.py"], senders
 
     def test_the_context_budget_is_an_app_side_number_only(
         self, client, monkeypatch: pytest.MonkeyPatch

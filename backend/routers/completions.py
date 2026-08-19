@@ -1264,6 +1264,7 @@ async def complete_chat(chat_id: int, body: CompleteRequest) -> dict:
         logger.warning("DB write failed after successful completion: chat_id=%d", chat_id)
         raise
 
+    _offer_to_notebook(chat_id)
     notices = _with_refusals(notices, refused)
 
     logger.info(
@@ -1409,6 +1410,23 @@ class EditConflictError(Exception):
     Declared beside its two siblings rather than next to _finalize_edit: the
     shared streaming body maps all three to one 409 branch, so the map has to
     be able to name them all."""
+
+
+
+def _offer_to_notebook(chat_id: int) -> None:
+    """Tell the extractor a turn landed. Never blocks, never raises.
+
+    Called from EVERY path that persists a turn - the streaming generator and
+    the three non-streaming routes. A version wired only into the streaming
+    one worked in the live UI and silently stopped extracting for any client
+    that used the plain routes, with the status screen reporting a perfectly
+    healthy idle worker.
+    """
+    try:
+        import notebook_worker
+        notebook_worker.worker.offer(chat_id)
+    except Exception:                              # pragma: no cover - belt
+        logger.info("Notebook worker could not be notified.")
 
 
 def _append_variant(
@@ -1817,6 +1835,11 @@ async def _stream_exchange(
             "Streaming %s success: chat_id=%d asst_msg_id=%s",
             label, chat_id, done.get("assistant_message", {}).get("id"),
         )
+        # AFTER the rows are safely down and BEFORE `done` goes out, because
+        # this neither blocks nor can fail: `offer` is a put on a bounded
+        # queue that swallows everything, including a full queue. A background
+        # feature that can make a message fail to send is not a feature.
+        _offer_to_notebook(chat_id)
         # Before `done`, always. A reader that learns a sentence went missing
         # AFTER being told the reply is complete has been told two things in
         # the wrong order.
@@ -2189,6 +2212,7 @@ async def regenerate_message(chat_id: int, message_id: int,
         logger.warning("DB write failed after successful regeneration: chat_id=%d", chat_id)
         raise
 
+    _offer_to_notebook(chat_id)
     asst_row = result["asst_row"]
     variant_count = result["variant_count"]
     logger.info(
@@ -2411,7 +2435,12 @@ def _finalize_edit(
         # the same shape as deleting a turn: accepted notes stay, unaccepted
         # suggestions from the discarded turns go, and every survivor lets go
         # of its reference so the delete can proceed.
-        notebook_store.forget_proposals_from_messages(con, swept)
+        # The edited message ITSELF goes in the list, not only what came
+        # after it. Its text is about to be rewritten, and the reading record
+        # covering it must roll back or the new wording is never extracted
+        # while notes distilled from the old wording stay accepted.
+        notebook_store.forget_proposals_from_messages(
+            con, [*swept, message_id])
         deleted = con.execute(
             "DELETE FROM messages WHERE chat_id = ? AND id > ?",
             (chat_id, message_id),
@@ -2502,6 +2531,7 @@ async def edit_message(chat_id: int, message_id: int, body: EditRequest) -> dict
     except EditConflictError:
         raise HTTPException(409, "edit_conflict")
 
+    _offer_to_notebook(chat_id)
     logger.info(
         "Edit success: chat_id=%d user_msg_id=%d new_asst_id=%d swept=%d",
         chat_id, message_id, result["assistant_message"]["id"],
