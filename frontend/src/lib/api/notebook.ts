@@ -6,6 +6,9 @@ import {
   BoundaryListSchema,
   NotebookOkSchema,
   UseGlobalSchema,
+  ExtractionModelListSchema,
+  ExtractSettingsSchema,
+  DryRunSchema,
 } from "../schemas/notebook";
 import type {
   NotebookEntry,
@@ -99,5 +102,29 @@ export function setUseGlobalBoundaries(chatId: number, useGlobal: boolean) {
   return request(`/notebook/${chatId}/use-global`, UseGlobalSchema, {
     method: "POST",
     body: JSON.stringify({ use_global: useGlobal }),
+  });
+}
+
+export function listExtractionModels() {
+  return request("/notebook/extract/models", ExtractionModelListSchema);
+}
+
+export function getExtractSettings() {
+  return request("/notebook/extract/settings", ExtractSettingsSchema);
+}
+
+export function saveExtractSettings(payload: {
+  model_id?: string | null;
+  prompt_language?: string;
+}) {
+  return request("/notebook/extract/settings", NotebookOkSchema, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function dryRun(chatId: number) {
+  return request(`/notebook/${chatId}/extract/dry-run`, DryRunSchema, {
+    method: "POST",
   });
 }

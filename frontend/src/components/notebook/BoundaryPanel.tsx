@@ -11,6 +11,7 @@
  * ago with lines and veils: a LINE never appears, a VEIL happens with the
  * camera turned away. The third level is the soft preference between them.
  */
+import { SlideIn } from "@/components/motion/SlideIn";
 import { useState } from "react";
 import { Plus, Trash2, Check, X, Loader2 } from "lucide-react";
 
@@ -82,8 +83,17 @@ export function BoundaryPanel() {
   }
 
   return (
+    <SlideIn>
     <section className="space-y-3 p-4" aria-label="Limits">
-      <h4 className="settings-section-title">
+      {/* `settings-section-title` is painted for the DARK settings dialog -
+          rgba(202,212,224,.62) - and this panel lives in `.glass-right`, the
+          app's one light island. It rendered at roughly 1.2:1 here: present in
+          the DOM, invisible on screen. The heading vocabulary of this surface
+          is the one its siblings use. */}
+      <h4
+        className="text-xs font-semibold"
+        style={{ color: "var(--color-es-text-light)" }}
+      >
         Limits
       </h4>
 
@@ -115,19 +125,19 @@ export function BoundaryPanel() {
           onKeyDown={(e) => {
             if (e.key === "Enter") void handleAdd();
           }}
-          className="text-xs"
+          className="persona-field text-xs"
         />
         <select
           value={severity}
           disabled={busy}
           onChange={(e) => setSeverity(e.target.value)}
           aria-label="How strict"
-          className="settings-value rounded-md px-2 py-1 text-xs"
-          style={{
-            backgroundColor: "rgba(255,255,255,0.20)",
-            border: "1px solid rgba(28,38,50,0.12)",
-            color: "var(--color-es-text-light)",
-          }}
+          // `.persona-field` is this surface's form-control class, focus ring
+          // included. The hand-written rgba below it was a third unmanaged
+          // variant of one control, and `settings-value` also carried an 11px
+          // size that beat the `text-xs` beside it - so the same select
+          // rendered at two sizes in two sibling panels.
+          className="persona-field rounded-md px-2 py-1 text-xs"
         >
           <option value="hard">never</option>
           <option value="veiled">off the page</option>
@@ -214,5 +224,6 @@ export function BoundaryPanel() {
         ))}
       </div>
     </section>
+    </SlideIn>
   );
 }

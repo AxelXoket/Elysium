@@ -137,6 +137,40 @@ class TestWhatIsNeverSent:
         bodies = _send(client, monkeypatch, **{field: value})
         assert field not in bodies[0]
 
+    def test_response_format_is_sent_by_the_extractor_and_nowhere_else(
+        self,
+    ) -> None:
+        """The amended claim, proved by counting rather than by reading.
+
+        Until v1.2 nothing in the app sent `response_format` and the README
+        said so flatly. The notebook's extractor now does - it is the reason a
+        cheap model returns a schema at all - and the sentence was left
+        standing, certified by a test that only ever drove the chat route. A
+        per-route promise checked on one route will keep certifying claims it
+        does not visit, so this one asks the whole tree.
+
+        What must stay true is narrower and is what the README now says: no
+        request carrying a CONVERSATION to a chat model carries the field, and
+        nothing the frontend sends can add it. The two tests around this one
+        hold the second half; this holds the first.
+        """
+        import ast
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parent.parent
+        senders = []
+        for path in root.rglob("*.py"):
+            if ".venv" in path.parts or path.parts[-2:][0] == "tests":
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                for kw in node.keywords:
+                    if kw.arg == "response_format":
+                        senders.append(path.relative_to(root).as_posix())
+        assert sorted(set(senders)) == ["routers/notebook.py"], senders
+
     def test_the_context_budget_is_an_app_side_number_only(
         self, client, monkeypatch: pytest.MonkeyPatch
     ) -> None:

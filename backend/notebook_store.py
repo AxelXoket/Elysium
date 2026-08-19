@@ -58,6 +58,7 @@ ALL_CODES: frozenset[str] = frozenset({
     "notebook_field_not_editable",
     "notebook_entry_not_found",
     "notebook_reorder_incomplete",
+    "notebook_daily_cap_reached",
     "boundary_empty",
     "boundary_invalid",
     "chat_not_found",
@@ -572,3 +573,61 @@ def record_exclusions(chat_id: int, excluded) -> None:
             con.execute(
                 "UPDATE notebook_entries SET excluded_reason = ? WHERE id = ?",
                 (reason, entry_id))
+
+
+# ── The daily spend ceiling ─────────────────────────────────────────────────
+#
+# config.NOTEBOOK_DAILY_CALL_CAP existed as a number nothing read. A constant
+# whose comment says "enforced as a BLOCK before the call" and which no code
+# imports is worse than no cap at all: it reads, in review, as a control.
+#
+# The block is here rather than in the worker so that BOTH callers inherit it -
+# the unattended worker and the dry run the user can press as fast as they can
+# click.
+
+def spend_today(con) -> dict:
+    """Calls and cost recorded for the current local day."""
+    row = con.execute(
+        "SELECT calls, tokens_in, tokens_out, cost FROM notebook_spend "
+        "WHERE day = date('now', 'localtime')").fetchone()
+    if row is None:
+        return {"calls": 0, "tokens_in": 0, "tokens_out": 0, "cost": 0.0}
+    return {"calls": row[0], "tokens_in": row[1],
+            "tokens_out": row[2], "cost": row[3]}
+
+
+def claim_call(con, cap: int) -> int:
+    """Reserve one call against today's ceiling, or raise.
+
+    Reserved BEFORE the request, not recorded after it. A counter incremented
+    on success cannot bound anything: the calls that fail are billed too, and a
+    failing model is exactly the one a retry loop calls hardest.
+
+    Returns the number used today INCLUDING this one.
+    """
+    used = spend_today(con)["calls"]
+    if used >= cap:
+        raise NotebookError("notebook_daily_cap_reached")
+    con.execute(
+        "INSERT INTO notebook_spend (day, calls) "
+        "VALUES (date('now', 'localtime'), 1) "
+        "ON CONFLICT(day) DO UPDATE SET calls = calls + 1")
+    return used + 1
+
+
+def record_usage(con, usage: dict) -> None:
+    """Add what the call actually cost to today's row.
+
+    Separate from claim_call because the claim must survive a failed request:
+    if this were the only writer, every failure would be free and the ceiling
+    would only ever count successes.
+    """
+    con.execute(
+        "INSERT INTO notebook_spend (day, calls, tokens_in, tokens_out, cost) "
+        "VALUES (date('now', 'localtime'), 0, ?, ?, ?) "
+        "ON CONFLICT(day) DO UPDATE SET "
+        "  tokens_in  = tokens_in  + excluded.tokens_in, "
+        "  tokens_out = tokens_out + excluded.tokens_out, "
+        "  cost       = cost       + excluded.cost",
+        (int(usage.get("tokens_in") or 0), int(usage.get("tokens_out") or 0),
+         float(usage.get("cost") or 0.0)))

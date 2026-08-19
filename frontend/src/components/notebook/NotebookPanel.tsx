@@ -22,6 +22,7 @@
  * the trigger is replaced in place by confirm/cancel, which is what every
  * other destructive action here does.
  */
+import { useContextNotesStore } from "@/lib/chat/contextNotes";
 import { useState } from "react";
 import { Pin, PinOff, Plus, Trash2, X, Check, Loader2 } from "lucide-react";
 
@@ -61,7 +62,16 @@ export function NotebookPanel() {
 
   const busy = create.isPending || patch.isPending || remove.isPending;
   const entries = data?.entries ?? [];
-  const sent = entries.filter((e) => noteState(e) === "live").length;
+  // The number the SERVER computed for the last turn, when there has been
+  // one. Counting live notes here is a client-side guess that is right only
+  // while nothing was trimmed - and the case where something was is the whole
+  // reason this number is on screen. Before a turn has run there is nothing to
+  // report, so the count stands in.
+  const turn = useContextNotesStore((s) =>
+    chatId == null ? undefined : s.byChat[chatId]);
+  const live = entries.filter((e) => noteState(e) === "live").length;
+  const sent = turn?.notebook_sent ?? live;
+  const total = turn?.notebook_total ?? entries.length;
 
   async function handleAdd() {
     const text = draft.trim();
@@ -117,7 +127,7 @@ export function NotebookPanel() {
               per-turn count would announce itself once and then go quiet just
               as the ceiling starts biting every turn. */}
           <span className="text-xs leading-relaxed text-muted-foreground" data-testid="notebook-sent-count">
-            {sent} of {entries.length} sent
+            {sent} of {total} sent
           </span>
         </div>
 

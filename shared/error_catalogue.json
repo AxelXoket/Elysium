@@ -22,6 +22,13 @@
       ]
     },
     {
+      "code": "api_key_not_set",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
       "code": "api_key_required_by_openrouter",
       "statuses": [],
       "channels": [
@@ -370,6 +377,13 @@
       ]
     },
     {
+      "code": "notebook_daily_cap_reached",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
       "code": "notebook_entry_empty",
       "statuses": [],
       "channels": [
@@ -402,6 +416,13 @@
       ]
     },
     {
+      "code": "notebook_extract_failed",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
       "code": "notebook_field_not_editable",
       "statuses": [],
       "channels": [
@@ -409,7 +430,59 @@
       ]
     },
     {
+      "code": "notebook_language_unknown",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "notebook_model_id_invalid",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "notebook_model_id_too_long",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "notebook_model_not_chosen",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "notebook_nothing_to_read",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
       "code": "notebook_reorder_incomplete",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "openrouter_auth_failed",
       "statuses": [],
       "channels": [
         "http"
@@ -470,6 +543,13 @@
       "channels": [
         "http",
         "sse"
+      ]
+    },
+    {
+      "code": "openrouter_unreachable",
+      "statuses": [],
+      "channels": [
+        "http"
       ]
     },
     {

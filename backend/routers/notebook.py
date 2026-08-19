@@ -18,8 +18,16 @@ Privacy invariants:
       data through eighteen INFO-level statements; the notebook is the most
       distilled text this app holds, so the rule here is absolute rather than
       case-by-case.
-    - This module does NOT import httpx, requests, urllib.request, keyring,
-      openrouter, network_client, or proxy_health.
+    - The CRUD half of this module imports no network code at all: no httpx,
+      requests, urllib.request or keyring, anywhere.
+    - The extraction half (the four /extract routes) does import `openrouter`
+      and `proxy_health`, because a route that reaches OpenRouter must pass
+      the same gate as every other outbound path. The imports are function-
+      local so the boundary is visible at the two call sites rather than at
+      the top of a file whose other twenty routes never leave the machine.
+      This paragraph used to claim the module imported neither - written when
+      that was true, left standing when it stopped being true, which is the
+      kind of line a later reader trusts instead of re-checking.
 
 Every handler hops off the event loop before touching the database (audit
 KÖK 8). The reads are small, but "small" is a property of today's data and the
@@ -27,11 +35,13 @@ loop being stalled at a fixed cadence is how the last one of these was found.
 """
 
 import logging
+import re
 
 import anyio.to_thread
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+import config
 import notebook_store as notebook
 
 logger = logging.getLogger(__name__)
@@ -214,3 +224,265 @@ async def set_use_global(chat_id: int, body: UseGlobalBody) -> dict:
     await anyio.to_thread.run_sync(
         lambda: notebook.set_use_global_boundaries(chat_id, body.use_global))
     return {"ok": True, "use_global": body.use_global}
+
+
+# ---------------------------------------------------------------------------
+# FAZ 4 - choosing an extractor, and trying it before trusting it
+# ---------------------------------------------------------------------------
+
+class ExtractSettingsBody(BaseModel):
+    model_id: str | None = None
+    prompt_language: str | None = None
+
+
+
+def _relay(exc) -> tuple[int, str]:
+    """An OpenRouter failure, translated into something a reader has a
+    sentence for.
+
+    `raise HTTPException(502, str(exc))` looked harmless and was not: the
+    string is the RAW reason (`openrouter_auth_failed`, `api_key_not_set`,
+    `openrouter_unreachable`), and none of those are in the catalogue. An
+    expired key on the chat path reads "your API key was rejected"; the same
+    key, on this panel, read "Something went wrong. Please try again."
+
+    The elif chain relays `reason` rather than literals for the same reason
+    models_router does, so RELAY_DETAILS below is what enumerates it.
+    """
+    reason = getattr(exc, "reason", None) or str(exc)
+    if reason in ("api_key_invalid", "api_key_not_set",
+                  "openrouter_auth_failed", "api_key_required_by_openrouter"):
+        return 401, reason
+    if reason == "proxy_auth_failed":
+        # The user's OWN proxy refused the tunnel. Never blamed on the
+        # provider, so the UI can point at the proxy settings.
+        return 502, reason
+    if reason == "openrouter_timeout":
+        return 504, reason
+    if reason == "openrouter_unreachable":
+        return 502, reason
+    return 502, "notebook_extract_failed"
+
+
+#: Every detail the two provider-facing notebook routes can put in front of a
+#: reader. Five of the six are relayed variables rather than literals, so a
+#: reader of the raise sites sees `reason` and nothing about what it holds -
+#: which is exactly how the raw-reason leak survived review in the first
+#: place. `tests/error_enumeration.py` reads this.
+RELAY_DETAILS: frozenset[str] = frozenset({
+    "api_key_invalid",
+    "api_key_not_set",
+    "openrouter_auth_failed",
+    "api_key_required_by_openrouter",
+    "proxy_auth_failed",
+    "openrouter_timeout",
+    "openrouter_unreachable",
+    "notebook_extract_failed",
+})
+
+
+@router.get("/extract/models")
+async def list_extraction_models() -> dict:
+    """Models a background extraction may use. Filtered, not ranked by taste.
+
+    Two conditions and both are promises rather than preferences: the endpoint
+    keeps no data, and it honours a strict JSON schema. Everything else is
+    hidden - a model that cannot do the job has no business being pickable and
+    then failing at request time.
+    """
+    import openrouter
+    from proxy_health import enforce_proxy_gate
+
+    # THE gate every outbound path must pass. Skipping it here would be the
+    # exact failure its docstring records: in the proxy_required + no-proxy
+    # state that every other path refuses, this one would still have gone out
+    # unproxied, carrying the user's real IP and their key.
+    await enforce_proxy_gate()
+    try:
+        models = await openrouter.fetch_extraction_models()
+    except openrouter.OpenRouterError as exc:
+        # Unpacked into named locals rather than starred into the call: the
+        # error census reads raise sites syntactically, and `HTTPException(
+        # *_relay(exc))` is invisible to it - the route would ship codes the
+        # gate believed nobody could produce.
+        status, detail = _relay(exc)
+        raise HTTPException(status, detail) from None
+    return {"models": models}
+
+
+@router.get("/extract/settings")
+async def get_extract_settings() -> dict:
+    def _read() -> dict:
+        from database import get_setting
+        return {
+            # None means extraction never runs. There is deliberately no
+            # default: a background job spending somebody's credits on a model
+            # they never chose is not a convenience.
+            "model_id": get_setting(config.SETTING_NOTEBOOK_MODEL) or None,
+            "prompt_language":
+                get_setting(config.SETTING_NOTEBOOK_PROMPT_LANG) or "en",
+        }
+    return await anyio.to_thread.run_sync(_read)
+
+
+#: An OpenRouter model id is `author/slug`, optionally `:variant`. The check
+#: is a SHAPE check, not a membership check: membership would need a network
+#: call on every save, and the wire guarantee does not depend on it anyway -
+#: PROVIDER_POLICY pins zdr/deny/no-fallbacks on the request itself, so a
+#: model whose endpoint policy changed gets no qualifying endpoint rather than
+#: a downgraded one. What this stops is an unbounded string reaching the
+#: settings table and, from there, the payload.
+_MODEL_ID = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._:-]+$")
+MODEL_ID_MAX_CHARS = 128
+
+
+@router.post("/extract/settings")
+async def set_extract_settings(body: ExtractSettingsBody) -> dict:
+    if body.prompt_language is not None and body.prompt_language not in ("en", "tr"):
+        raise HTTPException(400, "notebook_language_unknown")
+    if body.model_id:
+        if len(body.model_id) > MODEL_ID_MAX_CHARS:
+            raise HTTPException(400, "notebook_model_id_too_long")
+        if not _MODEL_ID.match(body.model_id):
+            raise HTTPException(400, "notebook_model_id_invalid")
+
+    def _write() -> None:
+        from database import set_setting
+        if body.model_id is not None:
+            set_setting(config.SETTING_NOTEBOOK_MODEL, body.model_id)
+        if body.prompt_language is not None:
+            set_setting(config.SETTING_NOTEBOOK_PROMPT_LANG,
+                        body.prompt_language)
+    await anyio.to_thread.run_sync(_write)
+    # The id is not logged as a secret but it is not interesting either; what
+    # matters in the log is that the choice changed.
+    logger.info("Notebook extraction settings updated.")
+    return {"ok": True}
+
+
+@router.post("/{chat_id}/extract/dry-run")
+async def dry_run(chat_id: int) -> dict:
+    """Run the extractor once and SHOW the result. Store nothing.
+
+    This exists because of the one thing that could not be measured for the
+    owner: whether a small, cheap model reads THEIR Turkish well enough. The
+    literature says structured output degrades on non-English input and that
+    the commonest failure is the model answering schema fields in the user's
+    language - but nobody has measured it for Turkish, and no amount of
+    reasoning here substitutes for one look at real output.
+
+    So: real transcript, real prompt, real schema, nothing written. The reply
+    comes back beside the source text so the six failure shapes are visible
+    rather than described - fields answered in the wrong language, quotes
+    translated instead of copied, diacritics flattened, the wrong speaker
+    credited, a schema violation, or a hypothetical recorded as a fact.
+    """
+    import notebook_extract
+    import openrouter
+    from proxy_health import enforce_proxy_gate
+
+    model_id = await anyio.to_thread.run_sync(notebook_extract.extract_model)
+    if not model_id:
+        raise HTTPException(400, "notebook_model_not_chosen")
+    # Same gate as every other outbound path, and before the transcript is
+    # read: refusing after loading messages would have done the work anyway.
+    await enforce_proxy_gate()
+
+    def _load() -> tuple[list[str], list[str], str, list[str]]:
+        from database import get_db
+        with get_db() as con:
+            rows = con.execute(
+                "SELECT role, content FROM messages "
+                "WHERE chat_id = ? AND active = 1 ORDER BY id DESC LIMIT 12",
+                (chat_id,)).fetchall()
+            card_row = con.execute(
+                "SELECT c.description FROM chats ch "
+                "JOIN characters c ON c.id = ch.character_id WHERE ch.id = ?",
+                (chat_id,)).fetchone()
+        lines = [f"{r['role']}: {r['content']}" for r in reversed(rows)]
+        existing = [e["text"] for e in
+                    notebook.list_entries(chat_id, include_retired=False)]
+        return lines[:-4], lines[-4:], (card_row[0] if card_row else ""), existing
+
+    recent, new, card, existing = await anyio.to_thread.run_sync(_load)
+    if not new:
+        raise HTTPException(400, "notebook_nothing_to_read")
+
+    lang = await anyio.to_thread.run_sync(
+        lambda: (__import__("database").get_setting(
+            config.SETTING_NOTEBOOK_PROMPT_LANG) or "en"))
+    messages = [
+        {"role": "system",
+         "content": notebook_extract.system_prompt(lang)},
+        {"role": "user",
+         "content": notebook_extract.build_user_message(
+             card=card, existing=existing, recent=recent, new=new)},
+    ]
+
+    # The block, before the request and not after it. Reserved rather than
+    # recorded: a failed call is billed too, and a counter that only counts
+    # successes bounds nothing.
+    def _claim() -> int:
+        from database import get_db
+        with get_db() as con:
+            return notebook.claim_call(con, config.NOTEBOOK_DAILY_CALL_CAP)
+
+    try:
+        await anyio.to_thread.run_sync(_claim)
+    except notebook.NotebookError as exc:
+        raise HTTPException(429, exc.code) from None
+
+    try:
+        reply = await openrouter.complete(
+            messages, model_id,
+            {"max_tokens": notebook_extract.MAX_TOKENS, "temperature": 0},
+            dict(config.PROVIDER_POLICY),
+            response_format=notebook_extract.RESPONSE_FORMAT,
+        )
+    except openrouter.OpenRouterError as exc:
+        # Unpacked into named locals rather than starred into the call: the
+        # error census reads raise sites syntactically, and `HTTPException(
+        # *_relay(exc))` is invisible to it - the route would ship codes the
+        # gate believed nobody could produce.
+        status, detail = _relay(exc)
+        raise HTTPException(status, detail) from None
+
+    chunk = chr(10).join(new)
+    usage = notebook_extract.usage_of(reply)
+
+    def _record() -> None:
+        from database import get_db
+        with get_db() as con:
+            notebook.record_usage(con, usage)
+
+    await anyio.to_thread.run_sync(_record)
+    try:
+        proposals, dropped = notebook_extract.parse_reply(reply, chunk, existing)
+        failure = None
+    except notebook_extract.ExtractionFailed as exc:
+        proposals, dropped, failure = [], {}, str(exc)
+
+    raw = ((reply.get("choices") or [{}])[0].get("message") or {}).get("content")
+    return {
+        "model_id": model_id,
+        "prompt_language": lang,
+        # The source beside the answer: a dry run whose output cannot be
+        # compared against what it read is a number, not evidence.
+        "source": chunk,
+        "raw": raw,
+        "proposals": proposals,
+        # Everything the model returned MINUS what survived the code filter.
+        # The gap is the interesting part - but broken out by REASON, because
+        # one integer cannot tell "a quote was invented" (the defence working)
+        # from "a Turkish quote failed a byte comparison" (the defence eating
+        # a true fact), and those call for opposite responses.
+        #
+        # It is counted by the parser rather than by re-parsing `raw` here:
+        # that version called .get() on whatever JSON came back, so an array
+        # reply turned a billed call into an AttributeError.
+        "dropped": sum(dropped.values()),
+        "dropped_by_reason": dropped,
+        "failure": failure,
+        "usage": usage,
+    }
+
