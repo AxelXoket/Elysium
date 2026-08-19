@@ -4,6 +4,8 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { useUiStore } from "@/lib/store/uiStore";
 import { ModelPanel } from "@/components/models/ModelPanel";
 import { SettingsPanel } from "@/components/settings/SettingsPanel";
+import { BoundaryPanel } from "@/components/notebook/BoundaryPanel";
+import { NotebookPanel } from "@/components/notebook/NotebookPanel";
 import { PersonaPanel } from "@/components/persona/PersonaPanel";
 
 /**
@@ -34,21 +36,26 @@ export function RightPanel() {
       <Tabs
         value={activeTab}
         onValueChange={(v) =>
-          setActiveTab(v as "models" | "secrets" | "persona")
+          setActiveTab(v as "models" | "secrets" | "persona" | "notebook")
         }
         className="flex h-full flex-col"
       >
         {/* Tab strip - soft pill style */}
         <TabsList
-          className="mx-3 mt-3 grid h-9 w-auto grid-cols-3 items-center rounded-xl px-1"
+          className="mx-3 mt-3 grid h-9 w-auto grid-cols-4 items-center rounded-xl px-1 text-xs"
           style={{
             backgroundColor: "rgba(28, 38, 50, 0.06)",
             border: "1px solid var(--color-es-glass-border-dark)",
           }}
         >
           <TabsTrigger value="models">Models</TabsTrigger>
-          <TabsTrigger value="secrets">Secrets</TabsTrigger>
+          {/* LABEL only. The stored value stays "secrets": renaming it would
+              cost a persist version bump and a normalizeTab entry, and buy
+              nothing - the panel now holds the switches that protect the
+              secrets as well as the secrets themselves. */}
+          <TabsTrigger value="secrets">Security</TabsTrigger>
           <TabsTrigger value="persona">Persona</TabsTrigger>
+          <TabsTrigger value="notebook">Notes</TabsTrigger>
         </TabsList>
 
         {/* Panels remount per switch ON PURPOSE: the model-list cascade is a
@@ -74,6 +81,11 @@ export function RightPanel() {
         {/* Persona tab - shell only in Phase 6E-A, no persistence */}
         <TabsContent value="persona" className="flex-1 overflow-hidden">
           <PersonaPanel />
+        </TabsContent>
+
+        <TabsContent value="notebook" className="flex-1 overflow-y-auto">
+          <NotebookPanel />
+          <BoundaryPanel />
         </TabsContent>
       </Tabs>
     </aside>

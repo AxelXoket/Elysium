@@ -97,6 +97,10 @@ export function useDeleteChat() {
       // The chat is gone - drop its message cache entirely instead of leaving
       // a stale entry behind.
       qc.removeQueries({ queryKey: keys.messages(chatId) });
+      // The notes went with the chat server-side; leaving them cached means
+      // the next chat to reuse this id renders somebody else's notebook.
+      qc.removeQueries({ queryKey: keys.notebookEntries(chatId) });
+      qc.removeQueries({ queryKey: keys.notebookBoundaries(chatId) });
     },
     onError: (err) => {
       pushError(err);
@@ -119,6 +123,9 @@ export function useClearChat() {
       // Messages are known to be empty - set directly; only the chat list
       // (message_count/updated_at) needs a refetch.
       qc.setQueryData(keys.messages(chatId), []);
+      // Clearing a chat clears its notebook too, so the cache must not keep
+      // showing what the server just discarded.
+      qc.removeQueries({ queryKey: keys.notebookEntries(chatId) });
       qc.invalidateQueries({ queryKey: keys.chats() });
     },
     onError: (err) => {

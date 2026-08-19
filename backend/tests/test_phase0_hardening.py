@@ -87,6 +87,10 @@ def test_get_settings_shape_unchanged(client):
         # passphrase - a lock timeout somebody else can read and change is not
         # a lock timeout. 0 (never) unless the row says otherwise.
         "auto_lock_minutes",
+        # FAZ 3: the capture-exclusion switch. Lives in the vault, not in
+        # browser storage - a protection setting readable without the
+        # passphrase is not one.
+        "screen_privacy_enabled",
     }
     # conftest seeds an api key in the vault.
     assert body["api_key_set"] is True

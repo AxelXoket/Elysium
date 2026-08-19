@@ -303,6 +303,18 @@ def list_boundaries(chat_id: int | None = None) -> list[dict]:
     return [_row(r) for r in rows]
 
 
+def uses_global_boundaries(chat_id: int) -> bool:
+    """Whether this chat follows the global set. Its own function because the
+    screen needs the answer without also fetching the rows."""
+    with get_db() as con:
+        row = con.execute(
+            "SELECT use_global_boundaries FROM chats WHERE id = ?",
+            (chat_id,)).fetchone()
+    if row is None:
+        raise NotebookError("chat_not_found")
+    return bool(row[0])
+
+
 def create_boundary(label: str, phrasing: str, severity: str, *,
                     chat_id: int | None = None, polarity: str = "avoid",
                     on_violation: str = "pause", source: str = "explicit",

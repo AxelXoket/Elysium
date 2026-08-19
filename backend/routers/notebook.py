@@ -195,11 +195,18 @@ async def reorder(chat_id: int, body: ReorderBody) -> dict:
 async def list_chat_boundaries(chat_id: int) -> dict:
     """What is actually in force here - global plus this chat's, or this
     chat's alone when it has been told to stand on its own."""
+    def _read() -> dict:
+        rows = notebook.list_boundaries(chat_id)
+        # The flag comes back with the rows, because the screen has to show the
+        # switch in the position it is actually in. Left to a local default it
+        # reads "on" after every remount - which is precisely the "you believe
+        # it is in force and it is not" failure this panel warns about.
+        return {"boundaries": rows,
+                "use_global": notebook.uses_global_boundaries(chat_id)}
     try:
-        rows = await anyio.to_thread.run_sync(notebook.list_boundaries, chat_id)
+        return await anyio.to_thread.run_sync(_read)
     except notebook.NotebookError as exc:
         raise HTTPException(404, exc.code) from None
-    return {"boundaries": rows}
 
 
 @router.post("/{chat_id}/use-global")

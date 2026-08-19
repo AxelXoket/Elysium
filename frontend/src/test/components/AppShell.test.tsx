@@ -62,13 +62,19 @@ describe("the app shell comes up", () => {
   // the same render under the same beforeEach asserting the same
   // getByRole("tab", {name: /secrets/i}) - not a second angle on the tab, a
   // second copy of this test.
-  it("renders the right panel with Secrets tab", () => {
+  // FAZ 3 renamed the LABEL to "Security" - the panel now holds the switches
+  // that protect the secrets as well as the secrets themselves. The stored
+  // VALUE is still "secrets", so no persist migration was needed; asserting
+  // all four labels together means the next tab added has to change this line.
+  it("renders the right panel with all four tabs", () => {
     render(
       <Providers>
         <AppShell />
       </Providers>,
     );
-    expect(screen.getByRole("tab", { name: /secrets/i })).toBeInTheDocument();
+    for (const name of [/models/i, /security/i, /persona/i, /notes/i]) {
+      expect(screen.getByRole("tab", { name })).toBeInTheDocument();
+    }
   });
 
   it("renders the composer", () => {

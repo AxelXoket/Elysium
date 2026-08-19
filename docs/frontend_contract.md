@@ -63,6 +63,7 @@
 | DELETE | /settings/proxy | Remove proxy config | Existing |
 | POST | /settings/image-output | `{image_output_enabled}` - allow a model to answer with a generated picture. Off by default. Stored in the vault, not browser storage, because it changes the outgoing request. No capability check on write: whether the model selected right now can draw is decided per request from the cached catalogue. |
 | POST | /settings/auto-lock | `{auto_lock_minutes}` - lock the vault after this many minutes with nothing happening; 0 disables it. Refuses anything outside 0-1440. Stored in the vault, not browser storage: a protection setting somebody can read and change without the passphrase is not one. A request in flight counts as activity, so a streamed reply is never interrupted. |
+| POST | /settings/screen-privacy | `{screen_privacy_enabled}` - hide this window from screen capture and screen sharing. Off by default; the owner takes screenshots. Stored in the vault, not browser storage: a protection setting readable without the passphrase is not one. Applied on vault transitions only - the window exists before the vault is open, and a locked screen has nothing to hide. |
 | POST | /settings/stop-sequences | `{stop_sequences}` - up to 4, 100 chars each, clamped rather than rejected so a stale UI cannot 422 a save. |
 | GET | /settings/proxy/health | Proxy health status | Existing |
 | GET | /characters | List all characters | Existing |

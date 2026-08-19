@@ -10,6 +10,7 @@ import { useGenerationSettings } from "@/components/generation/GenerationSetting
 import { buildActiveContextPreview } from "@/lib/preview";
 import { findModelById, TEXT_ONLY_NOTE } from "@/lib/models";
 import { useVoiceMode } from "@/lib/query/tts";
+import { useNotebook } from "@/lib/query/notebook";
 import { estimateContextUsage, formatTokensCompact } from "@/lib/context";
 
 /**
@@ -71,6 +72,7 @@ export function ActiveContextPreviewCard() {
     ? characters?.find((c) => c.id === selectedChat.character_id) ?? null
     : null;
   const { data: voiceMode } = useVoiceMode();
+  const notebook = useNotebook(selectedChatId);
   const contextUsage = estimateContextUsage({
     model,
     character: chatCharacter,
@@ -82,6 +84,9 @@ export function ActiveContextPreviewCard() {
     // inject it. While the flag is unknown (query loading/error) charge
     // nothing - matching a backend that cannot inject what it cannot read.
     voicePromptChars: voiceMode?.active ? voiceMode.prompt_chars : 0,
+    // Same shape, same reason: a server-measured number, charged identically
+    // by both gauges so they cannot disagree with each other or the backend.
+    notebookChars: notebook.data?.notebook_chars ?? 0,
   });
   const messagesValue =
     contextUsage && contextUsage.totalMessages > 0

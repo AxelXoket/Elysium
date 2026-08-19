@@ -453,6 +453,45 @@ describe("buildSystemBlock", () => {
     ).toBe("[Character: Estimator]\n\n".length);
   });
 
+
+  it("charges the notebook, and charges it from the SERVER's number", () => {
+    // The gauge rebuilds almost every other block in TypeScript, and that is
+    // how the character header drifted: two languages building one string,
+    // undercounting every conversation until somebody noticed. The notebook is
+    // measured once, in Python, and carried - so this asserts the number is
+    // ADDED, not that it is recomputed correctly here.
+    //
+    // Untested until an audit pointed it out: both call sites could have been
+    // deleted and the whole suite stayed green.
+    const base = {
+      model: ctx1200,
+      character: character100,
+      personas: persona50,
+      messages: [msg(1, "hi")],
+    };
+    const withNotes = { ...base, notebookChars: 300 };
+    const before = estimateContextUsage(base)!;
+    const after = estimateContextUsage(withNotes)!;
+    expect(after.usedTokens - before.usedTokens).toBe(300 / 3);
+  });
+
+  it("treats a missing or negative count as zero", () => {
+    // An older backend sends no field at all, and the schema defaults it -
+    // but a gauge that then charged NaN would read as a full context window.
+    const base = {
+      model: ctx1200,
+      character: character100,
+      personas: persona50,
+      messages: [msg(1, "hi")],
+    };
+    const plain = estimateContextUsage(base)!;
+    for (const notebookChars of [undefined, null, -50]) {
+      expect(
+        estimateContextUsage({ ...base, notebookChars })!.usedTokens,
+      ).toBe(plain.usedTokens);
+    }
+  });
+
   it("renders labeled sections in backend order and skips blank ones", () => {
     // Mirrors completions.py _build_system_block: "[Label]\n{value}" joined
     // by "\n\n"; whitespace-only sections (description here) are skipped.

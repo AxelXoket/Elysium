@@ -11,7 +11,7 @@ import {
 // ── Tab type (Phase 6E-A: renamed from "model|info|settings") ──────────────
 // Old persisted values ("model", "info", "settings") are migrated in the
 // persist config below. Any stale localStorage is normalized on first load.
-type RightPanelTab = "models" | "secrets" | "persona";
+type RightPanelTab = "models" | "secrets" | "persona" | "notebook";
 
 // ── Appearance defaults ────────────────────────────────────────────────────
 // Chosen to exactly match the pre-settings look (bubble text was text-sm +

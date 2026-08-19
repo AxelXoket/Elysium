@@ -551,3 +551,51 @@ def harden(data_dir: Path | str) -> dict[str, bool | int]:
         "shared_with": shared,
         "narrowed": narrowed,
     }
+
+
+def restore_screen_capture(hwnd: int) -> bool:
+    """Undo the exclusion for one window. The mirror of the function above.
+
+    Read back like its twin, because SetWindowDisplayAffinity reports success
+    for a call the compositor did not honour - and "the setting says off while
+    the window is still black in every capture" is the shape of complaint
+    nobody can diagnose.
+    """
+    if not _on_windows():
+        return False
+    try:
+        user32 = ctypes.windll.user32
+        setter = user32.SetWindowDisplayAffinity
+        setter.argtypes = [wintypes.HWND, wintypes.DWORD]
+        setter.restype = wintypes.BOOL
+        getter = user32.GetWindowDisplayAffinity
+        getter.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        getter.restype = wintypes.BOOL
+        if not setter(hwnd, _WDA_NONE):
+            return False
+        affinity = wintypes.DWORD()
+        if not getter(hwnd, ctypes.byref(affinity)):
+            return False
+        return affinity.value == _WDA_NONE
+    except OSError:
+        return False
+
+
+def set_screen_privacy(enabled: bool) -> int:
+    """Turn capture exclusion on or off for every window this process owns.
+
+    Called on VAULT TRANSITIONS, not at launch, and that is not a detail:
+    `harden()` runs before the server starts and long before a passphrase has
+    been entered, so a setting stored inside the vault is unreadable there.
+    The lock-aware rule resolves it - protection belongs on only while a
+    conversation is on screen, and while the vault is locked there is nothing
+    on screen but a passphrase box.
+
+    Returns how many windows took the change; 0 on a build with no window
+    (a bare uvicorn run), where this is a silent no-op by design.
+    """
+    fn = exclude_from_screen_capture if enabled else restore_screen_capture
+    changed = sum(1 for hwnd in own_top_level_windows() if fn(hwnd))
+    log.info("screen capture: %s on %d window(s)",
+             "excluded" if enabled else "restored", changed)
+    return changed

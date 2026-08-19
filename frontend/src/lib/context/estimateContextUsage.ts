@@ -102,6 +102,15 @@ export interface ContextUsageInput {
    * actually inject it (GET /tts/voice-mode: active ? prompt_chars : 0).
    * Charged to fixed cost exactly like the backend budget does (G2). */
   voicePromptChars?: number | null;
+  /** Characters the notebook and the boundaries will cost, MEASURED BY THE
+   * BACKEND and carried here (GET /notebook/{chatId} -> notebook_chars).
+   *
+   * Deliberately not rebuilt in this file. Everything else here duplicates a
+   * Python function and the two can drift silently - the character header did
+   * exactly that once, and the gauge undercounted every conversation until
+   * somebody noticed. A number that crosses the wire cannot drift, which is
+   * why the voice block is the one fixed cost this estimator never got wrong. */
+  notebookChars?: number | null;
 }
 
 export interface ContextUsageEstimate {
@@ -287,8 +296,10 @@ export function estimateContextUsage(
   // like the PHI; charging it here keeps the gauge and the backend budget in
   // agreement the moment the toggle flips.
   const voiceChars = Math.max(0, input.voicePromptChars ?? 0);
+  const notebookChars = Math.max(0, input.notebookChars ?? 0);
   const fixedChars =
-    systemBlock.length + personaBlock.length + phi.length + voiceChars;
+    systemBlock.length + personaBlock.length + phi.length + voiceChars
+    + notebookChars;
 
   // completions.py _assemble_messages: trim history from the OLDEST end
   // until it fits what is left after the fixed cost.

@@ -23,5 +23,13 @@ export const keys = {
   models: () => ["models", "openrouter"] as const,
   personas: () => ["personas"] as const,
   persona: (id: number) => ["persona", id] as const,
+  // Namespaced so a chat delete can sweep every notebook query for that chat
+  // with one call. `invalidateQueries` matches by PREFIX and fails SILENTLY on
+  // a shape mismatch, so both halves come from here rather than being spelled
+  // out at the three sweep sites.
+  notebook: () => ["notebook"] as const,
+  notebookEntries: (chatId: number) => ["notebook", "entries", chatId] as const,
+  notebookBoundaries: (chatId: number | null) =>
+    ["notebook", "boundaries", chatId] as const,
   vault: () => ["vault"] as const,
 };
