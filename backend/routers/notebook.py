@@ -38,6 +38,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/notebook", tags=["notebook"])
 
+#: Large enough that the fraction never binds, so the gauge reports what the
+#: notebook actually costs rather than what one particular model would allow.
+_GAUGE_AVAILABLE = 10_000_000
+
 
 class EntryBody(BaseModel):
     text: str = Field(min_length=1)
@@ -119,8 +123,29 @@ async def delete_boundary(boundary_id: int) -> dict:
 
 @router.get("/{chat_id}")
 async def list_entries(chat_id: int) -> dict:
-    entries = await anyio.to_thread.run_sync(notebook.list_entries, chat_id)
-    return {"entries": entries}
+    """The notes, and what they COST - measured here, not re-derived there.
+
+    `notebook_chars` crosses the wire the way `/tts/voice-mode` sends
+    `prompt_chars`: the frontend charges an opaque number instead of rebuilding
+    the block. The voice block is the one part of the fixed cost the estimator
+    does not duplicate, and it is the one part that cannot drift. The character
+    header drifted once already because two languages built the same string;
+    this is that lesson applied before it can happen again.
+    """
+    def _read() -> dict:
+        entries = notebook.list_entries(chat_id)
+        blocks = notebook.build_notebook_blocks(chat_id, _GAUGE_AVAILABLE)
+        return {
+            "entries": entries,
+            # Gauge figure only: the real ceiling depends on the model chosen
+            # for the turn, which this route does not know. Sized against a
+            # generous budget so it reports the full cost rather than a
+            # truncated one, and the per-turn truth arrives in the done frame.
+            "notebook_chars": (len(blocks["user_block"])
+                               + len(blocks["model_block"])
+                               + len(blocks["boundary_block"])),
+        }
+    return await anyio.to_thread.run_sync(_read)
 
 
 @router.post("/{chat_id}")

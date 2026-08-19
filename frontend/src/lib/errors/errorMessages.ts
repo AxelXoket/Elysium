@@ -342,6 +342,17 @@ const ERROR_MESSAGES: Record<string, string> = {
     "That note could not be saved. Check the type and importance and try again.",
   notebook_field_not_editable:
     "That part of a note cannot be changed after it is written. Who wrote a note - you or the model - is recorded once and stays.",
+  // The list has to arrive whole. Pass two of the renumber writes positions by
+  // list index, so a list missing one of the chat's notes hands a number a row
+  // outside the list still holds - and a drag becomes a crash.
+  notebook_reorder_incomplete:
+    "The notebook changed while you were rearranging it. Reload and try again.",
+  // The one refusal that is a feature. Limits are never trimmed to make room,
+  // because a limit that silently stops being sent is worse than no limit: you
+  // believe it is in force, the model never sees it, and nothing reports the
+  // gap. Generating is refused instead.
+  boundaries_do_not_fit:
+    "Your limits do not fit in this model's context, so nothing was sent. Shorten them, or choose a model with more room.",
   notebook_entry_not_found:
     "That note is no longer there. It may have been removed in another window.",
   boundary_empty:

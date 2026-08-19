@@ -246,3 +246,68 @@ class TestTheFourPlacesRowsMustDie:
         client.delete(f"/api/v1/chats/{chat}")
         rows = client.get(f"{API}/boundaries").json()["boundaries"]
         assert [r["label"] for r in rows] == ["keep me"]
+
+
+class TestWhatTheFirstAuditFound:
+    """Six defects found by the read-only audit while FAZ 2 was being written.
+    Each one shipped in FAZ 1 looking correct."""
+
+    def test_an_incomplete_reorder_is_refused_not_a_500(self, db, chat) -> None:
+        """Pass two writes 0..N-1 by list index, so a list missing one of the
+        chat's notes assigns a number a row outside the list still holds. The
+        unique index fires, nothing catches it, and a drag becomes a 500."""
+        ids = [notebook.create_entry(chat, t)["id"] for t in ("a", "b", "c")]
+        with pytest.raises(notebook.NotebookError) as exc:
+            notebook.reorder(chat, [ids[1], ids[0]])       # one short
+        assert exc.value.code == "notebook_reorder_incomplete"
+        assert [e["text"] for e in notebook.list_entries(chat)] == \
+            ["a", "b", "c"], "a refused reorder still moved rows"
+
+    def test_a_foreign_id_in_the_list_is_refused(self, db, chat) -> None:
+        with database.get_db() as con:
+            _, other = _seed(con)
+        stranger = notebook.create_entry(other, "not yours")["id"]
+        mine = notebook.create_entry(chat, "mine")["id"]
+        with pytest.raises(notebook.NotebookError):
+            notebook.reorder(chat, [stranger, mine])
+
+    def test_a_note_for_a_chat_that_is_gone_is_a_404_not_a_crash(self, db):
+        """The foreign key would fire and surface as a 500 - for asking about
+        a chat that simply is not there any more."""
+        with pytest.raises(notebook.NotebookError) as exc:
+            notebook.create_entry(999999, "orphan")
+        assert exc.value.code == "chat_not_found"
+
+    @pytest.mark.parametrize("field,bad", [
+        ("polarity", "sideways"),
+        ("on_violation", "explode"),
+        ("rating_ceiling", "NC-17"),
+    ])
+    def test_every_boundary_enum_is_checked_here_not_by_the_engine(
+        self, db, field, bad
+    ) -> None:
+        """The database refuses these too, but an IntegrityError arrives as a
+        500 with no sentence - so the guard stops being something the user can
+        act on and becomes a crash."""
+        with pytest.raises(notebook.NotebookError) as exc:
+            notebook.create_boundary("l", "p", "soft", **{field: bad})
+        assert exc.value.code == "boundary_invalid"
+
+    def test_a_deleted_note_is_overwritten_not_left_on_the_freelist(self, db):
+        """`PRAGMA secure_delete` is OFF by default and SQLCipher does not turn
+        it on. Without it a deleted note stays verbatim in the page until
+        something reuses it - readable by anyone holding the passphrase, which
+        is precisely the audience "delete" is meant to exclude."""
+        with database.get_db() as con:
+            assert con.execute("PRAGMA secure_delete").fetchone()[0] == 1
+
+    def test_the_migration_source_connection_keeps_scratch_in_ram(self, db):
+        """It never passes through _key_pragma, and it runs the whole database
+        through one statement - the likeliest spill in the app."""
+        import inspect
+        import database as db_mod
+        src = inspect.getsource(db_mod.migrate_plaintext_to_encrypted)
+        # Behaviour would need a real plaintext migration; what is asserted
+        # here is that the connection carries the pragma at all, because the
+        # module docstring claimed coverage this path did not have.
+        assert 'PRAGMA temp_store = MEMORY' in src

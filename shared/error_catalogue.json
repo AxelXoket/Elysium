@@ -80,6 +80,15 @@
       ]
     },
     {
+      "code": "boundaries_do_not_fit",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
       "code": "boundary_empty",
       "statuses": [],
       "channels": [
@@ -394,6 +403,13 @@
     },
     {
       "code": "notebook_field_not_editable",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "notebook_reorder_incomplete",
       "statuses": [],
       "channels": [
         "http"

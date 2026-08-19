@@ -49,6 +49,7 @@ from config import (
     IMAGE_TOKEN_ESTIMATE,
     MAX_ATTACHMENTS_PER_MESSAGE,
 )
+import notebook_store
 import voice_tags
 from database import get_db
 from typing import Literal
@@ -410,6 +411,17 @@ def _assemble_messages(
     image_blobs: dict[str, bytes] | None = None,
     voice_block: str = "",
     omitted_images: list[int] | None = None,
+    # FAZ 2. Three blocks, three different authorities, and they default to
+    # empty so every existing caller keeps its exact behaviour:
+    #   boundary_block      - standing rules; counted, never dropped
+    #   notebook_user_block - what the person wrote; system channel, by persona
+    #   notebook_model_block- what the model wrote; tail, by the PHI
+    boundary_block: str = "",
+    notebook_user_block: str = "",
+    notebook_model_block: str = "",
+    # Out-param, same shape as omitted_images: the trim loop counts what it
+    # drops so the turn can say so instead of dropping history in silence.
+    trimmed_out: list[int] | None = None,
 ) -> list[dict]:
     """Build the final messages list with context budget truncation.
 
@@ -430,13 +442,30 @@ def _assemble_messages(
     # The voice-delivery block (V4) is reserved like the PHI: injected
     # unconditionally when voice is on, so unbudgeted it would silently push
     # the payload past the model context on long chats.
+    # BEFORE the trim, and this ordering is the whole of it. `system_chars` is
+    # what the loop below subtracts from `available` to decide how much history
+    # survives; a block added after this sum would be sent anyway and the trim
+    # would over-drop by exactly its size, with no counter noticing.
+    #
+    # Boundaries are counted here too but are NOT in the droppable set - see
+    # notebook_store.BoundariesDoNotFit. They are the one block that refuses
+    # rather than shrinks.
+    notebook_chars = (len(notebook_user_block) + len(notebook_model_block)
+                      + len(boundary_block))
     system_chars = (len(system_block) + len(persona_block) + phi_chars
-                    + len(voice_block))
+                    + len(voice_block) + notebook_chars)
     user_msg_chars = _entry_chars(user_message, pending_attachments,
                                   include_images)
     min_required = system_chars + user_msg_chars
 
     if min_required > available:
+        # The limits are the one block that refuses instead of shrinking. If
+        # they do not fit, generating anyway would mean speaking WITHOUT rules
+        # the user believes are in force - and nothing would say so. That is
+        # the documented lorebook failure: the budget runs out and entries stop
+        # activating while their keywords are right there in the prompt.
+        if boundary_block and len(boundary_block) + user_msg_chars > available:
+            raise HTTPException(400, "boundaries_do_not_fit")
         raise HTTPException(400, "context_too_large")
 
     # Trim history from oldest end until it fits
@@ -446,12 +475,22 @@ def _assemble_messages(
                      role=m["role"])
         for m in history
     )
+    # The count exists because the silence did. History has always been trimmed
+    # oldest-first with nothing recording it - so a conversation could lose ten
+    # turns and the only trace was the frontend gauge. Shipping a notice for the
+    # notebook's own truncation while leaving this silent would teach the user
+    # that dropped context gets announced, which would then be false.
+    trimmed = 0
     while history_chars > remaining and history:
         dropped = history.pop(0)
+        trimmed += 1
         history_chars -= _entry_chars(
             dropped["content"], dropped.get("attachments"), include_images,
             role=dropped["role"],
         )
+
+    if trimmed_out is not None:
+        trimmed_out.append(trimmed)
 
     # Build final list
     blobs = image_blobs or {}
@@ -466,6 +505,17 @@ def _assemble_messages(
     # V4: HOW to speak - injected at call level, invisible to the user, never
     # stored on the character. After the persona (stable identity first),
     # before the history (so the examples read as instruction, not dialogue).
+    # Limits before anything the story can argue with. They are standing rules
+    # set by the person, not content produced inside the fiction.
+    if boundary_block:
+        messages.append({"role": "system", "content": boundary_block})
+
+    # What the USER wrote about this chat. Same channel as the persona because
+    # it is the same trust class - a person typing into their own app - and the
+    # primacy end of the prompt is where a stable fact belongs.
+    if notebook_user_block:
+        messages.append({"role": "system", "content": notebook_user_block})
+
     if voice_block:
         messages.append({"role": "system", "content": voice_block})
 
@@ -485,6 +535,17 @@ def _assemble_messages(
             omitted_images,
         ),
     })
+
+    # What the MODEL wrote, at the tail beside the post-history instruction
+    # rather than up in the system channel with the persona. Same table, same
+    # ceiling, lower authority - and the split only means anything because
+    # nothing can relabel a row's provenance on the way here.
+    #
+    # This was budgeted and never appended for one commit: charged for, not
+    # sent. A read-only review caught it mid-flight, which is exactly the
+    # class of defect that ships looking correct.
+    if notebook_model_block:
+        messages.append({"role": "system", "content": notebook_model_block})
 
     phi = post_history_instruction.strip() if post_history_instruction else ""
     if phi:
@@ -804,6 +865,21 @@ async def _prepare_completion(
     # so a completion answered from a payload with a picture missing looked
     # exactly like one that had it. This is the wire it was missing.
     omitted_images: list[int] = []
+    trimmed_out: list[int] = []
+
+    # FAZ 2. Off the loop, one hop, like every other disk read here. `available`
+    # is what the ceiling is a fraction of, so it is computed the same way the
+    # assembler does - a block sized against a different number than the one it
+    # is budgeted into is the shape of a silent overrun.
+    notebook = await anyio.to_thread.run_sync(
+        lambda: notebook_store.build_notebook_blocks(
+            chat_id, context_budget_chars - max_tokens_chars))
+    if notebook["excluded"]:
+        # Written down rather than dropped quietly: a note that stops being
+        # sent looks identical to one that was never written.
+        await anyio.to_thread.run_sync(
+            lambda: notebook_store.record_exclusions(
+                chat_id, notebook["excluded"]))
 
     messages = _assemble_messages(
         system_block,
@@ -820,7 +896,21 @@ async def _prepare_completion(
         # and one slow disk must not stall every in-flight request (audit-2).
         voice_block=await anyio.to_thread.run_sync(voice_tags.voice_block),
         omitted_images=omitted_images,
+        boundary_block=notebook["boundary_block"],
+        notebook_user_block=notebook["user_block"],
+        notebook_model_block=notebook["model_block"],
+        trimmed_out=trimmed_out,
     )
+
+    # Both numbers, together, and the second one is the older debt. History has
+    # always been trimmed oldest-first with nothing recording it; shipping a
+    # count for the notebook alone would teach that dropped context gets
+    # announced, which would then be false for the bigger case.
+    context_notes = {
+        "notebook_sent": notebook["sent"],
+        "notebook_total": notebook["total"],
+        "history_trimmed": trimmed_out[0] if trimmed_out else 0,
+    }
 
     # ── Validate and filter gen_params ─────────────────────────────────────
     try:
@@ -872,7 +962,8 @@ async def _prepare_completion(
         else None
     )
 
-    return messages, filtered_gen_params, provider_dict, notices, modalities
+    return (messages, filtered_gen_params, provider_dict, notices,
+            modalities, context_notes)
 
 
 def _with_refusals(notices: list[dict], refused: int) -> list[dict]:
@@ -1005,7 +1096,7 @@ async def _call_provider_for_chat(
     Raises HTTPException on any failure.
     """
     (messages, filtered_gen_params, provider_dict, notices,
-     modalities) = await _prepare_completion(
+     modalities, context_notes) = await _prepare_completion(
         chat_id=chat_id,
         model_id=model_id,
         user_message_text=user_message_text,
@@ -1228,6 +1319,11 @@ def _delete_message_row(
                 "UPDATE attachments SET message_id = NULL WHERE message_id = ?",
                 (message_id,),
             )
+            # The fifth delete path, and it was missed. This one swallows its
+            # exception and only logs - so an aborted foreign key would leave
+            # the orphan message row behind silently, degrading a cleanup that
+            # used to be reliable.
+            notebook_store.forget_proposals_from_messages(con, [message_id])
             con.execute(
                 "DELETE FROM messages WHERE id = ? AND chat_id = ?",
                 (message_id, chat_id),
@@ -1487,6 +1583,11 @@ async def _stream_exchange(
     finalize,
     rescue=None,
     modalities: tuple[str, ...] | list[str] | None = None,
+    # FAZ 2. What the assembler decided about THIS turn, carried to the `done`
+    # frame. Not a toast: errorStore merges by code and chat, so a per-turn
+    # count would speak once and then go quiet exactly when the ceiling starts
+    # biting every turn. One frame per turn, no merging, nothing persisted.
+    context_notes: dict | None = None,
 ):
     """Stream one provider reply and commit it. The body all three share.
 
@@ -1725,6 +1826,7 @@ async def _stream_exchange(
             "type": "done",
             "chat_id": chat_id,
             "model_id": model_id,
+            **(context_notes or {}),
             **done,
         })
 
@@ -1826,7 +1928,7 @@ async def complete_chat_stream(chat_id: int, body: CompleteRequest) -> Streaming
     pending_rows = _validate_request_attachments(body.attachments, body.model_id)
 
     (messages, filtered_gen_params, provider_dict, notices,
-     modalities) = await _prepare_completion(
+     modalities, context_notes) = await _prepare_completion(
         chat_id=chat_id,
         model_id=body.model_id,
         user_message_text=body.message,
@@ -1917,6 +2019,7 @@ async def complete_chat_stream(chat_id: int, body: CompleteRequest) -> Streaming
 
     return StreamingResponse(
         _stream_exchange(
+            context_notes=context_notes,
             chat_id=chat_id,
             model_id=model_id_stripped,
             label="completion",
@@ -2136,7 +2239,7 @@ async def regenerate_message_stream(chat_id: int, message_id: int,
     model_id_stripped = body.model_id
 
     (messages, filtered_gen_params, provider_dict, notices,
-     modalities) = await _prepare_completion(
+     modalities, context_notes) = await _prepare_completion(
         chat_id=chat_id,
         model_id=body.model_id,
         user_message_text=user_text,
@@ -2178,6 +2281,7 @@ async def regenerate_message_stream(chat_id: int, message_id: int,
 
     return StreamingResponse(
         _stream_exchange(
+            context_notes=context_notes,
             chat_id=chat_id,
             model_id=model_id_stripped,
             label="regenerate",
@@ -2303,6 +2407,11 @@ def _finalize_edit(
             (chat_id, message_id),
         ).fetchall()]
         delete_for_messages(con, swept)  # rows + orphan blobs, same txn (E6)
+        # The sixth. Editing a message discards everything after it, which is
+        # the same shape as deleting a turn: accepted notes stay, unaccepted
+        # suggestions from the discarded turns go, and every survivor lets go
+        # of its reference so the delete can proceed.
+        notebook_store.forget_proposals_from_messages(con, swept)
         deleted = con.execute(
             "DELETE FROM messages WHERE chat_id = ? AND id > ?",
             (chat_id, message_id),
@@ -2430,7 +2539,7 @@ async def edit_message_stream(chat_id: int, message_id: int,
     model_id_stripped = body.model_id
 
     (messages, filtered_gen_params, provider_dict, notices,
-     modalities) = await _prepare_completion(
+     modalities, context_notes) = await _prepare_completion(
         chat_id=chat_id,
         model_id=body.model_id,
         user_message_text=new_content,
@@ -2466,6 +2575,7 @@ async def edit_message_stream(chat_id: int, message_id: int,
 
     return StreamingResponse(
         _stream_exchange(
+            context_notes=context_notes,
             chat_id=chat_id,
             model_id=model_id_stripped,
             label="edit",
