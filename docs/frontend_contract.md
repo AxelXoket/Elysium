@@ -44,6 +44,16 @@
 | POST | /vault/discard-plaintext-backup | Shred the pre-vault plaintext copies | Part K (vault) |
 | POST | /vault/discard-orphaned-copy | Shred an encrypted copy stranded mid-migration | Part K (vault) |
 | POST | /vault/discard-empty-stub | Remove the 0-byte stub crash recovery moved aside (refuses a non-empty file) | Part K (vault) |
+| GET | /notebook/{chat_id} | Notes for one chat, retired rows included | FAZ 1 (notebook) |
+| POST | /notebook/{chat_id} | Add a note | FAZ 1 (notebook) |
+| PATCH | /notebook/entries/{id} | Edit a note's text or flags; provenance is not editable | FAZ 1 (notebook) |
+| DELETE | /notebook/entries/{id} | Remove a note the user no longer wants | FAZ 1 (notebook) |
+| POST | /notebook/{chat_id}/reorder | Set the order notes are sent in | FAZ 1 (notebook) |
+| GET | /notebook/boundaries | The global limits | FAZ 1 (notebook) |
+| POST | /notebook/boundaries | Add a limit, global or chat-scoped | FAZ 1 (notebook) |
+| DELETE | /notebook/boundaries/{id} | Remove a limit | FAZ 1 (notebook) |
+| GET | /notebook/{chat_id}/boundaries | Limits actually in force for this chat | FAZ 1 (notebook) |
+| POST | /notebook/{chat_id}/use-global | Whether this chat follows the global limits | FAZ 1 (notebook) |
 | GET | /settings | Current config state (no secrets) | Existing |
 | POST | /settings/api-key | Store API key (validates first) | Modified Part B |
 | DELETE | /settings/api-key | Remove API key | Existing |
@@ -239,6 +249,14 @@ shield like every other data route.
 | 400 | tts_reference_too_short | Clip is under the minimum length for cloning | Say how short it was; ~10 s of clear speech works |
 | 400 | tts_reference_folder_redirected | The folder for this voice is a junction or a symlink, so saving would write into a directory that is not the app's | Nothing was saved; say the link has to be moved or removed |
 | 409 | tts_reference_clip_stuck | The clip already saved for this voice could not be destroyed - something has the file open | Nothing was saved and nothing was lost; say to try again shortly, NOT to re-record |
+| 400 | notebook_entry_empty | The note was blank once line breaks were collapsed | That note is empty. |
+| 400 | notebook_entry_too_long | Over the per-entry character limit; refused rather than truncated | That note is too long. |
+| 400 | notebook_entry_invalid | A field outside its allowed set (kind, durability, importance) | That note could not be saved. |
+| 400 | notebook_field_not_editable | An edit tried to change provenance, chat or source; refused loudly rather than dropped silently | That part of a note cannot be changed after it is written. |
+| 404 | notebook_entry_not_found | No such entry id | That note is no longer there. |
+| 400 | boundary_empty | label or phrasing blank | A limit needs both a name and the wording the model will see. |
+| 400 | boundary_invalid | severity outside hard/veiled/soft | That limit could not be saved. |
+| 404 | boundary_not_found | No such boundary id | That limit is no longer there. |
 | 500 | tts_cache_outside_data_dir | The generated-audio folder resolves outside the app's data directory | Nothing was written; say the folder has to move back, or the whole data dir with ELYSIUM_DATA_DIR |
 | - | provider_frame_dropped | An SSE frame could not be parsed and its text was lost | Say a piece of the reply is missing; the rest is unaffected |
 | - | stream_ended_without_done | The stream closed with no [DONE] and no finish_reason | Say the reply may be cut short |

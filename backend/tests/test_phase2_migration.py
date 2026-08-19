@@ -5,6 +5,7 @@ drive it directly on throwaway connections that replicate the REAL v1.0
 schema - the honest equivalent of opening an old DB copy with the new build.
 """
 
+import database
 import sqlite3
 
 from database import _migrate, _SCHEMA
@@ -68,7 +69,8 @@ def test_migrate_adds_updated_at_with_deterministic_backfill():
     ).fetchone()
     # Never-edited rows stamp updated_at = created_at (I13 determinism).
     assert row["updated_at"] == row["created_at"] == "2025-01-02 03:04:05"
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert (con.execute("PRAGMA user_version").fetchone()[0]
+            == database._SCHEMA_VERSION)
 
 
 def test_migrate_is_idempotent():
@@ -78,7 +80,8 @@ def test_migrate_is_idempotent():
     _migrate(con)  # second boot on an already-migrated DB
     after = con.execute("SELECT id, updated_at FROM messages").fetchall()
     assert [tuple(r) for r in before] == [tuple(r) for r in after]
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert (con.execute("PRAGMA user_version").fetchone()[0]
+            == database._SCHEMA_VERSION)
 
 
 def test_migrate_heals_crash_window_nulls():

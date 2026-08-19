@@ -24,6 +24,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlcipher3 import dbapi2 as sqlite3
 
+import notebook_store as notebook
 from database import get_db, iter_chunks
 from attachments_service import (
     load_for_messages,
@@ -395,6 +396,12 @@ def _delete_chat_sync(chat_id: int) -> None:
         # Rows AND orphaned blobs go in this same transaction (E6) - there is
         # no post-commit file phase anymore.
         delete_for_messages(con, msg_ids)
+        # BEFORE the chat row, and in this same transaction. notebook_entries
+        # references chats(id) with no cascade and foreign keys are ON, so
+        # leaving these behind does not orphan them - it makes the chat
+        # UNDELETABLE, and the route 500s on a chat the user can then never
+        # remove.
+        notebook.delete_for_chats(con, [chat_id])
         con.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
         con.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
     _forget_spoken_audio(msg_ids)
@@ -427,6 +434,11 @@ def _clear_chat_sync(chat_id: int) -> int:
             "SELECT id FROM messages WHERE chat_id = ?", (chat_id,)
         ).fetchall()]
         delete_for_messages(con, msg_ids)  # rows + orphan blobs, same txn (E6)
+        # The chat survives, so its notes could have too - and that is exactly
+        # what must not happen. "I cleared this conversation" and "the app kept
+        # what it distilled from it" is the promise breaking quietly: derived
+        # text outliving the source it was derived from.
+        notebook.delete_for_chats(con, [chat_id])
         deleted = con.execute(
             "DELETE FROM messages WHERE chat_id = ?", (chat_id,)
         ).rowcount
@@ -481,6 +493,12 @@ def _delete_message_sync(chat_id: int, message_id: int) -> int:
             (chat_id, start_id),
         ).fetchall()]
         delete_for_messages(con, msg_ids)  # rows + orphan blobs, same txn (E6)
+        # Accepted notes STAY. Deleting a turn is removing a message, not
+        # retracting a fact that was approved - and an approved fact was
+        # usually established in more than one place. Unaccepted suggestions
+        # from these messages go: their only evidence is leaving, so reviewing
+        # one later would mean judging a quote nobody can check.
+        notebook.forget_proposals_from_messages(con, msg_ids)
         deleted = con.execute(
             "DELETE FROM messages WHERE chat_id = ? AND id >= ?",
             (chat_id, start_id),

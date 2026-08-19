@@ -108,6 +108,8 @@ DECLARED_ALPHABETS: dict[tuple[str, str], str] = {
         "routers.completions:CONFLICT_DETAILS",
     ("routers/models_router.py", "reason"):
         "routers.models_router:RELAY_DETAILS",
+    ("routers/notebook.py", "exc.code"):
+        "notebook_store:ALL_CODES",
     ("routers/tts_runtime.py", "exc.code"):
         "tts.errors:ALL_CODES",
     ("routers/tts_runtime.py", "_code_for_error(err)"):
