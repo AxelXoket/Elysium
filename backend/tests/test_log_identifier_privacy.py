@@ -48,7 +48,14 @@ _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 #: Everything under backend/ that ships, which is everything that is not the
 #: virtualenv, not bytecode, and not a test. Tests are excluded because they
 #: are not in the exe and because fixtures log deliberately noisy things.
-_SKIP_PREFIXES = (".venv/", "tests/")
+#: `voice/` is the runtime download tree - engine venvs, model weights, and
+#: PyTorch's inductor kernel cache, which alone is a hundred generated .py
+#: files. All of it is gitignored, none of it is Elysium's code, and it is
+#: not on this machine at all after a fresh clone. Sweeping it did not just
+#: waste time: the floors below were CALIBRATED against it, so a clean
+#: checkout measured 72 files against a floor of 130 and the whole gate
+#: errored out. Three privacy assertions never ran anywhere but here.
+_SKIP_PREFIXES = (".venv/", "tests/", "voice/", "build/", "dist/")
 
 
 def _swept() -> list[tuple[str, str]]:
@@ -65,8 +72,13 @@ def _swept() -> list[tuple[str, str]]:
 #: measured at 175 files / 61688 lines on 2026-08-20. Well under that, so a
 #: path that resolved wrong or a sweep that quietly matched nothing fails
 #: loudly instead of passing clean.
-_FILE_FLOOR = 130
-_LINE_FLOOR = 45000
+#: Measured against TRACKED source only, on a clean checkout, with headroom
+#: for the tree to shrink a little before somebody has to think about it.
+#: They exist so an empty read cannot pass for a clean tree - never raise
+#: them to whatever today happens to be, or they become a chore rather than
+#: a guard.
+_FILE_FLOOR = 60
+_LINE_FLOOR = 28000
 
 #: Files this pass FIXED. They may never appear in the content ledger again.
 _MUST_STAY_CLEAN = (

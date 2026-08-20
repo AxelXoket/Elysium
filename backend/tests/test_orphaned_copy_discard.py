@@ -33,6 +33,11 @@ def _orphan(readable: bool = True) -> Path:
     that do not, standing in for a copy keyed to another passphrase.
     """
     live = Path(config.DB_PATH)
+    # Fails loudly rather than reading the developer's own vault. The suite
+    # redirects DB_PATH per test; if that ever stops happening this line is
+    # the difference between a red test and a silent copy of real content.
+    assert "pytest" in str(live).lower() or "tmp" in str(live).lower(), (
+        f"DB_PATH was not redirected to a temporary file: {live}")
     orphan = live.with_name(live.name + ".enc-tmp")
     orphan.write_bytes(live.read_bytes() if readable
                        else b"SQLite format 3\x00" + os.urandom(4096))
@@ -40,7 +45,15 @@ def _orphan(readable: bool = True) -> Path:
 
 
 @pytest.fixture(autouse=True)
-def _no_stray_orphan():
+def _no_stray_orphan(db):
+    """Depends on `db` ON PURPOSE, and that is the whole point of the argument.
+
+    Without it this fixture is autouse with no dependency, so pytest is free
+    to set it up before `db` monkeypatches DB_PATH - and then its teardown
+    globs and UNLINKS in the real data folder beside the owner's own vault.
+    It also made `_orphan(readable=True)` read the live database, which is
+    the one file this suite exists to never touch.
+    """
     yield
     live = Path(config.DB_PATH)
     for stray in live.parent.glob(live.name + database.ORPHAN_GLOB):
