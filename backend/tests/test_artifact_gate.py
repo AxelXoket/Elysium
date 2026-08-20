@@ -78,7 +78,7 @@ EXE_CANDIDATES = (REPO / "Elysium.exe", REPO / "backend" / "dist" / "Elysium.exe
 #: Tracked backend files whose contents cannot change what the exe contains, so
 #: touching one does not make the build stale. K-37 measured the cost of not
 #: having this list: `backend/ruff.toml` is a lint config that is never
-#: packaged, and editing it demanded a 33 MB rebuild.
+#: packaged, and editing it demanded a 29 MB rebuild.
 #:
 #: The test below proves each entry is ABSENT from the archive. That is
 #: necessary but not sufficient and the asymmetry is deliberate:

@@ -6,7 +6,26 @@ it. README links here rather than carrying its own copy.
 
 ## Since 1.1.5
 
-Nothing yet. The next release is **v1.2.0**, which is where RAG lands.
+The next release is **v1.2.0**, which is where RAG lands.
+
+### Fixed
+
+- **PyInstaller's own GPL modules are no longer frozen into the shipped exe.**
+  Both spec files added the package to `excludes`, along with the two hook
+  packages that dragged it in. 23 modules of `PyInstaller.compat`,
+  `.utils.hooks`, `.building` and `.depend` were being embedded in the binary,
+  which is outside the scope of the bootloader exception; that exception names
+  only `./bootloader/` and `./PyInstaller/loader`, both of which still ship and
+  are still covered. This is a property of the **already published v1.1.5
+  binary**, so it is recorded here rather than edited into the v1.1.5 block.
+  `collect_all()` was also sweeping the two hook packages in as data files, so
+  the spec now filters those four sources out too
+- **Three more dependencies that no runtime path can reach left with it.**
+  `pygments` (336 modules, reached only from httpx's command line half, which
+  cannot load here because `rich` is not installed), `setuptools` (133) and
+  `pefile`. The exe went from 33,642,105 to 29,130,534 bytes, a drop of 13.4
+  per cent, with the headless boot check still green on the frontend, the
+  SQLCipher native library and the voice payload
 
 ## v1.1.5
 

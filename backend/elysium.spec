@@ -59,6 +59,12 @@ for pkg in (
     "keyring",        # Windows Credential Locker backend
 ):
     d, b, h = collect_all(pkg)
+    # collect_all sweeps a package whole, which drags webview/__pyinstaller
+    # and pythonnet/_pyinstaller in as DATA files - four .py sources that
+    # exist only to be read by PyInstaller at build time and that quote the
+    # GPL package in their import lines. The excludes list above cannot see
+    # datas, so the sources shipped anyway until this filter.
+    d = [entry for entry in d if "_pyinstaller" not in entry[0]]
     datas += d
     binaries += b
     hiddenimports += h
@@ -76,7 +82,64 @@ a = Analysis(
     # (image upload validation/resize) - excluding it made the frozen exe die
     # on startup with ModuleNotFoundError. tkinter stays excluded; Pillow
     # works without ImageTk.
-    excludes=["tkinter", "matplotlib", "numpy", "pytest"],
+    excludes=[
+        # Never used by this app, and each drags a large tree behind it.
+        "tkinter", "matplotlib", "numpy",
+        # The test runner. Note this removes the thin pytest facade only:
+        # _pytest (3 modules) and pluggy (8) still ship, because
+        # collect_all("keyring") sweeps in keyring/devpi_client.py, which
+        # imports pluggy. So this is size, not a closed door.
+        "pytest",
+        # PyInstaller's Python package is GPL-2.0-or-later. Its bootloader
+        # exception names exactly two directories, ./bootloader/ and
+        # ./PyInstaller/loader, and the authors relicensed hooks/rthooks to
+        # Apache separately, which is direct evidence they did not read the
+        # exception as covering everything embedded. 23 modules of
+        # PyInstaller.compat, .utils.hooks, .building and .depend were being
+        # frozen into the shipped exe, outside that scope, while this project
+        # still has no LICENSE of its own. Measured 20 August 2026; the
+        # v1.1.5 binary that is already published contains them.
+        #
+        # They arrived through the two hook packages below, which do
+        # module-level `from PyInstaller.utils.hooks import ...` and were
+        # added as hiddenimports by the collect_all loop above. Excluding
+        # those two is what actually does the work; naming PyInstaller here
+        # is belt and braces.
+        "PyInstaller",
+        "webview.__pyinstaller", "pythonnet._pyinstaller",
+        # Both hooks still RUN. PyInstaller discovers hook directories in a
+        # separate isolated subprocess through the pyinstaller40 entry point
+        # (building/build_main.py, discover_hook_directories), and the
+        # excludes list is assigned to the Analysis object afterwards and
+        # reaches only the module graph. Verified in the resulting manifest:
+        # the WebView2 DLLs, the WinForms interop and Python.Runtime.dll are
+        # all still collected, so the CLR window is untouched.
+        #
+        # 336 modules of syntax highlighting. Reached only from
+        # httpx/_main.py, which httpx/__init__.py DOES import at module level
+        # - inside a try/except ImportError that falls back to a stub. That
+        # module has never once loaded here anyway: it also imports rich,
+        # which is not installed. Dead weight the graph walker collected.
+        #
+        # ONE THING TO KNOW BEFORE ADDING PICTURE CODE. pygments was the only
+        # importer of PIL.ImageDraw, ImageDraw2, ImageFont, ImagePath and
+        # ImageText, so those five modules and the FreeType binding
+        # _imagingft.pyd left with it. attachments_service uses Image,
+        # UnidentifiedImageError and ImageOps only, which all stay. Anything
+        # that later wants to DRAW on an image or measure text has to name
+        # those modules as hiddenimports here; without that it fails at
+        # runtime, not at build time.
+        "pygments",
+        # A PE parser reached only through peutils, which nothing imports,
+        # and through PyInstaller's own build-time dependency analysis.
+        "pefile",
+        # 133 modules of packaging machinery. Nothing here uses setuptools at
+        # runtime; keyring finds its backends through importlib.metadata via
+        # keyring/compat/py312.py, which is stdlib and stays. pkg_resources
+        # is not installed in this environment at all, so it is not listed:
+        # a future dependency that pulls it in would need its own line.
+        "setuptools",
+    ],
     noarchive=False,
 )
 pyz = PYZ(a.pure)
