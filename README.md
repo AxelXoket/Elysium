@@ -5,12 +5,11 @@
   </p>
   <p align="center">
     <img src="https://img.shields.io/badge/python-3.13-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
-    <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License">
     <img src="https://img.shields.io/badge/version-1.1.5-brightgreen?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/privacy-ZDR_enforced-brightgreen?style=flat-square" alt="Privacy">
     <img src="https://img.shields.io/badge/at--rest-SQLCipher_vault-brightgreen?style=flat-square" alt="Encryption">
     <img src="https://img.shields.io/badge/streaming-SSE-brightgreen?style=flat-square" alt="Streaming">
-    <img src="https://img.shields.io/badge/frontend_tests-1655_passed-success?style=flat-square" alt="Frontend Tests">
+    <img src="https://img.shields.io/badge/frontend_tests-1675_passed-success?style=flat-square" alt="Frontend Tests">
     <img src="https://img.shields.io/badge/frontend-React_19-61DAFB?style=flat-square&logo=react&logoColor=white" alt="React">
   </p>
   <p align="center">
