@@ -7,6 +7,7 @@ import { SettingsPanel } from "@/components/settings/SettingsPanel";
 import { ExtractionSettings } from "@/components/notebook/ExtractionSettings";
 import { WorkerPanel } from "@/components/notebook/WorkerPanel";
 import { BoundaryPanel } from "@/components/notebook/BoundaryPanel";
+import { Separator } from "@/components/ui/separator";
 import { NotebookPanel } from "@/components/notebook/NotebookPanel";
 import { PersonaPanel } from "@/components/persona/PersonaPanel";
 
@@ -91,10 +92,23 @@ export function RightPanel() {
           <PersonaPanel />
         </TabsContent>
 
+        {/* Four sibling panels with nothing between them read as one
+            column: four peer h4 headings were the only landmarks across
+            roughly 1600px of scroll, and there was no signal at all for
+            where one idea ended. At full token strength rather than
+            SettingsPanel's opacity-15: --border inside .glass-right is
+            rgba(30,45,62,0.16), and multiplying that by 0.15 lands at about
+            0.024 alpha, which is five values of 255 away from the panel it
+            sits on. A landmark nobody can see is not a landmark. The
+            sub-section rules inside SettingsPanel can stay faint because
+            they divide parts of one idea; these divide four features. */}
         <TabsContent value="notebook" className="flex-1 overflow-y-auto">
           <NotebookPanel />
+          <Separator />
           <BoundaryPanel />
+          <Separator />
           <ExtractionSettings />
+          <Separator />
           <WorkerPanel />
         </TabsContent>
       </Tabs>

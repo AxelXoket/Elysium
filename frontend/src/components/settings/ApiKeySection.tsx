@@ -258,11 +258,20 @@ export function ApiKeySection() {
           type="submit"
           size="sm"
           disabled={busy || !keyInput.trim()}
+          /* Was an inline backgroundColor + --color-es-text-dark, which
+             broke two things at once. It painted #1C2632 on #3E72B0 at
+             3.09:1, under the 4.5:1 floor and against the theme law stated
+             on .composer-send-button ("white-on-primary"); and an inline
+             background outranks hover:bg-primary/80, so this was one of the
+             two primary CTAs on the panel that did not react to the pointer
+             at all. The default Button variant already IS bg-primary with
+             text-primary-foreground (#FFFFFF, 4.95:1 AA), so the fix is to
+             stop overriding it.
+
+             Its stock hover is NOT kept: bg-primary/80 lightens toward this
+             near-white panel and takes the label to 3.45:1, under the floor.
+             index.css deepens it instead, scoped to .glass-right. */
           className="gap-1"
-          style={{
-            backgroundColor: "var(--color-es-primary-sage)",
-            color: "var(--color-es-text-dark)",
-          }}
         >
           {setApiKey.isPending ? (
             <Loader2 size={12} className="animate-spin" />
@@ -321,8 +330,15 @@ export function ApiKeySection() {
           <span className="text-xs" style={{ color: "var(--color-es-text-muted)" }}>
             Remove the stored key?
           </span>
+          {/* variant="ghost" like the trigger one branch up. Without it the
+              Button falls back to bg-primary and painted --color-es-danger
+              (rose) on the blue fill at 1.11:1: the word "Remove" on the
+              control that destroys the stored API key was not legible, at
+              rest or on hover. Danger is ink in this app, never a filled
+              button. */}
           <Button
             type="button"
+            variant="ghost"
             size="sm"
             disabled={busy}
             onClick={handleDelete}

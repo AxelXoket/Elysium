@@ -192,8 +192,7 @@ export function BoundaryPanel() {
 
       <p className="text-xs leading-relaxed text-muted-foreground">
         Sent with every message and never trimmed to make room. If they do not
-        fit, nothing is sent at all - a limit you believe is in force and is
-        not would be worse than none.
+        fit, nothing is sent at all.
       </p>
 
       {chatId != null && (

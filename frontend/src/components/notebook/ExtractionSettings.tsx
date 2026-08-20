@@ -113,8 +113,7 @@ export function ExtractionSettings() {
 
         <p className="text-xs leading-relaxed text-muted-foreground">
           A cheap model can read the last few turns and propose notes. It runs
-          on your own API key, so nothing is chosen for you - and until you pick
-          a model, nothing runs at all.
+          on your own API key, so nothing is chosen for you.
         </p>
 
         <label className="block space-y-1">
@@ -154,8 +153,8 @@ export function ExtractionSettings() {
         ) : (
           <p className="text-xs leading-relaxed text-muted-foreground">
             Only models that keep no copy of what they read and can return a
-            strict schema are listed. A single-provider model stops working
-            when that one provider does.
+            strict schema are listed. A model with one provider stops working
+            when that provider does.
           </p>
         )}
 
@@ -183,9 +182,8 @@ export function ExtractionSettings() {
         </label>
 
         <p className="text-xs leading-relaxed text-muted-foreground">
-          Notes are written in English either way. Which language the
-          INSTRUCTIONS use is not settled - try both and keep the one that reads
-          your messages better.
+          Notes are written in English either way. Try both and keep whichever
+          reads your messages better.
         </p>
 
         <Button

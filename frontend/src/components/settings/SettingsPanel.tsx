@@ -16,7 +16,18 @@ export function SettingsPanel() {
             needed one - this panel had no heading at all. The stored tab
             value stays "secrets": renaming it would cost a persist version
             bump and buy nothing. */}
-        <h3 className="text-sm font-semibold">{"Secrets & Security"}</h3>
+        <h3
+          className="text-sm font-semibold"
+          /* This heading had NO colour, so it inherited the value body
+             computed once from :root (#EAEEF3, the DARK theme text) and
+             painted it on the app's one LIGHT panel: about 1.08:1, which
+             is invisible. .glass-right redefines --color-es-text-light,
+             but an inherited rgb value is not a var lookup, so the
+             override could never reach it. Same defect that was fixed in
+             ScreenPrivacySection and BoundaryPanel; this one was missed
+             because no test asserts the tab title is visible. */
+          style={{ color: "var(--color-es-text-light)" }}
+        >{"Secrets & Security"}</h3>
 
         {/* Privacy note (E5).
 
@@ -85,9 +96,9 @@ export function SettingsPanel() {
         </div>
 
         <ApiKeySection />
-        <Separator className="opacity-15" />
+        <Separator />
         <ProxySection />
-        <Separator className="opacity-15" />
+        <Separator />
         {/* Its three siblings (Plaintext/Orphaned/Rotation) live INSIDE
             VaultSection, above the passphrase form. This one is wired here
             instead - not by choice of layout but of ownership: VaultSection.tsx
@@ -98,7 +109,7 @@ export function SettingsPanel() {
             form: a stale full copy of the vault outranks the form that follows. */}
         <PremigrateBackupNotice />
         <VaultSection />
-        <Separator className="opacity-15" />
+        <Separator />
         <ScreenPrivacySection />
       </div>
     </SlideIn>

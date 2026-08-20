@@ -49,7 +49,7 @@ function Chip({
       style={{
         backgroundColor: active ? "rgba(62, 114, 176, 0.16)" : "transparent",
         border: `1px solid ${
-          active ? "rgba(62, 114, 176, 0.38)" : "var(--color-es-border-dark)"
+          active ? "rgba(62, 114, 176, 0.38)" : "var(--color-es-glass-border-dark)"
         }`,
         color: active
           ? "var(--color-es-primary-sage)"
@@ -115,8 +115,15 @@ export function ModelFilters({
     >
       <div className="flex flex-wrap items-center gap-1.5">
         <span
-          className="text-[10px] uppercase tracking-wide"
-          style={{ color: "var(--color-es-text-muted)", opacity: 0.7 }}
+          /* No opacity multiplier. The sidebar's heading idiom dampens this
+             token to 0.75, and copying that here landed the label at 2.8 to
+             3.2:1, under the 4.5:1 floor that 11px text needs (the bold
+             exemption starts at 18.66px, so semibold buys nothing). At full
+             strength the token reads about 4.9 to 5.05:1 where this row
+             sits. The sidebar instances have the same defect on their own
+             surface and are NOT fixed here; that is a separate change. */
+          className="text-[11px] font-semibold uppercase tracking-widest"
+          style={{ color: "var(--color-es-text-muted)" }}
         >
           Can
         </span>
@@ -182,7 +189,7 @@ export function ModelFilters({
             border: `1px solid ${
               sort === "capable"
                 ? "rgba(62, 114, 176, 0.38)"
-                : "var(--color-es-border-dark)"
+                : "var(--color-es-glass-border-dark)"
             }`,
             color:
               sort === "capable"

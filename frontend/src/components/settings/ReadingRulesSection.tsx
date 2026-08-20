@@ -87,7 +87,7 @@ export function ReadingRulesSection() {
 
   if (loadError) {
     return (
-      <p role="alert" className="text-sm text-[var(--color-es-ink-dim)]">
+      <p role="alert" className="settings-hint">
         {loadError}
       </p>
     );

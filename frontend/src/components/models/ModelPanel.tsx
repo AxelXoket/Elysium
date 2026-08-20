@@ -233,7 +233,7 @@ export function ModelPanel() {
                 variant="outline"
                 className="text-[10px]"
                 style={{
-                  borderColor: "var(--color-es-border-dark)",
+                  borderColor: "var(--color-es-glass-border-dark)",
                   color: "var(--color-es-text-muted)",
                 }}
               >

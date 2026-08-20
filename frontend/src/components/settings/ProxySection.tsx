@@ -348,11 +348,20 @@ export function ProxySection() {
           size="sm"
           disabled={busy || !canSave}
           onClick={handleSave}
+          /* Was an inline backgroundColor + --color-es-text-dark, which
+             broke two things at once. It painted #1C2632 on #3E72B0 at
+             3.09:1, under the 4.5:1 floor and against the theme law stated
+             on .composer-send-button ("white-on-primary"); and an inline
+             background outranks hover:bg-primary/80, so this was one of the
+             two primary CTAs on the panel that did not react to the pointer
+             at all. The default Button variant already IS bg-primary with
+             text-primary-foreground (#FFFFFF, 4.95:1 AA), so the fix is to
+             stop overriding it.
+
+             Its stock hover is NOT kept: bg-primary/80 lightens toward this
+             near-white panel and takes the label to 3.45:1, under the floor.
+             index.css deepens it instead, scoped to .glass-right. */
           className="gap-1"
-          style={{
-            backgroundColor: "var(--color-es-primary-sage)",
-            color: "var(--color-es-text-dark)",
-          }}
         >
           {setProxy.isPending || setRequired.isPending ? (
             <Loader2 size={12} className="animate-spin" />

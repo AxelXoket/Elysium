@@ -312,4 +312,53 @@ describe("motion guard", () => {
     ).toHaveLength(1);
     expect(overrides[0]).toMatch(/animation:\s*none/);
   });
+
+  /* The settings surface shipped for three versions with hover lifts, press
+     scales, a sliding switch thumb and two rotating chevrons, and not one
+     .settings-* class named in any reduced-motion block. docs/V1_1_PLAN.md
+     requires the opposite of every new animation, so the promise is checked
+     here rather than remembered. */
+  it("answers prefers-reduced-motion for the settings surface", () => {
+    const css = readFileSync(CSS, "utf8");
+    const blocks = [
+      ...css.matchAll(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{/g),
+    ].map((m) => css.slice(m.index!, m.index! + 2200));
+    expect(blocks.length, "no reduced-motion blocks found at all").toBeGreaterThan(0);
+    const covered = blocks.join(" | ");
+
+    // The interactive classes, not the decorative ones. Each of these carries
+    // a transform in a hover or an active state somewhere in this file.
+    for (const cls of [
+      ".settings-category-row",
+      ".settings-toggle-row",
+      ".settings-back-button",
+      ".settings-segment-option",
+      ".settings-segment-button",
+      ".settings-tint-chip",
+      ".settings-inline-reset",
+      ".settings-switch-thumb",
+      ".settings-voice-pick",
+      ".settings-voice-disclosure",
+      ".settings-voice-button",
+    ]) {
+      expect(covered, `${cls} keeps moving under reduced motion`).toContain(cls);
+    }
+
+    // transition does not inherit, so naming the BUTTON never reaches the
+    // chevron inside it. Both disclosure arrows need their own selector.
+    expect(
+      covered,
+      "the disclosure chevrons rotate from a rule on the svg, not the button",
+    ).toContain(".settings-voice-disclosure svg");
+    expect(covered).toContain(".settings-param-group-toggle svg");
+  });
+
+  it("GROUND: a class nothing reduces would be caught", () => {
+    // Without this the assertions above pass on any string long enough.
+    const css = readFileSync(CSS, "utf8");
+    const blocks = [
+      ...css.matchAll(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{/g),
+    ].map((m) => css.slice(m.index!, m.index! + 2200));
+    expect(blocks.join(" | ")).not.toContain(".settings-no-such-class");
+  });
 });

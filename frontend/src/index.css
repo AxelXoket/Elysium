@@ -839,14 +839,72 @@
   background: linear-gradient(180deg, rgba(252, 253, 255, 0.97), rgba(238, 244, 250, 0.94));
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
-  --foreground: #1C2632;
+  /* Softened with --color-es-text-light below, not left behind it. These
+     two were the same value and the panel has exactly one primary ink; the
+     shadcn token feeds the tab strip (ui/tabs.tsx) while the es- token feeds
+     every heading, so moving one and not the other left some right-panel
+     headings LIGHTER than plain text beside them. Inconsistent hierarchy
+     reads as a bug; uniformly softer reads as a choice.
+
+     The tab strip's inactive labels move from /75 to /85 in the same change:
+     at /75 against the strip's own rgba(28,38,50,0.06) fill this ink reads
+     3.69:1, under the floor. /85 reads 4.70:1, and the active label at full
+     strength reads 6.88:1, so the strip keeps a visible active state and
+     both states clear AA. */
+  --foreground: #3A4A5C;
   --muted-foreground: #5E6B7A;
   --background: rgba(250, 252, 255, 0.86);
   --muted: rgba(30, 45, 62, 0.10);
   --border: rgba(30, 45, 62, 0.16);
   --input: rgba(30, 45, 62, 0.14);
-  --color-es-text-light: #1C2632;
+  /* Softened from #1C2632 on 21 August 2026. That value put this panel's
+     entire primary tier at 12.2 to 14.2:1 against the panel's own gradient,
+     which is near-black on near-white: louder than the panel's OWN body
+     text, and against the sidebar, whose item text runs 5.45 to 10.24:1
+     depending on where its gradient is, it was the loudest ink in the app by
+     a wide margin.
+     The right panel had inverted the app's hierarchy, painting its headings
+     with the strongest ink it owns.
+
+     #3A4A5C measures 8.39:1 against the top gradient stop as painted and
+     7.26:1 against the bottom one, so every reading still clears WCAG AAA
+     for normal text (7:1) while landing inside the band the rest of the app
+     uses. Cool slate, same family as --muted-foreground below it, so
+     palette-guard's warm and green detectors stay quiet.
+
+     THE COST, because it is real and it is not visible in any ratio above.
+     Softening one ink of a set compresses the set: the gap between this and
+     --muted-foreground below went from 2.81:1 to 1.67:1, so a semibold
+     heading and the paragraph under it are now separated mostly by WEIGHT
+     rather than by tone. That is the app's own mechanism elsewhere and it
+     is why the floor below is a SEPARATION floor as well as a contrast one.
+     Anything softer than this and the two tiers stop being two tiers.
+
+     Eight tests read this token through the live cascade (AutoLockControl,
+     EmptyStubNotice, RotationBackupNotice, ScreenPrivacySection,
+     VaultSection and friends). They all assert that an element resolves the
+     SAME value the panel declares rather than a literal, which is exactly
+     why moving the value here is safe and hardcoding one anywhere is not. */
+  --color-es-text-light: #3A4A5C;
   --color-es-text-muted: #5E6B7A;
+
+  /* The context meter's middle tier was #B9D4F0, chosen at index.css:79-83
+     to sit about 3.2:1 against the NORMAL fill. Nobody measured it against
+     the TRACK. That track is rgba(28,38,50,0.12) painted inside the
+     Selected Model card, which is itself rgba(255,255,255,0.34) on the panel
+     gradient, so it composites between rgb(222,224,226) at the top of the
+     panel and rgb(210,215,220) at the bottom. The pale azure measured 1.05
+     to 1.15:1 on it: the warning tier silently did not exist and the meter
+     went straight from normal to danger.
+
+     Escalation here is by depth, not by a new hue, because amber is dead in
+     this theme (index.css:3148, "severity is carried by weight and position
+     instead of colour"). Against that track: normal #3E72B0 reads 3.4 to
+     3.7:1, this reads 5.4 to 5.9:1, and danger is the rose, which differs by
+     hue as well. The
+     root value and its rationale are left intact above; this token is
+     consumed only by ModelPanel, which renders only here. */
+  --color-es-meter-warning: #2B5384;
   --color-es-surface-elevated: rgba(255, 255, 255, 0.55);
   --color-es-glass-border-dark: rgba(30, 45, 62, 0.14);
   --color-es-glass-border-warm: rgba(30, 45, 62, 0.12);
@@ -3588,4 +3646,439 @@ input::-ms-clear {
   .surface-metallic .message-bubble-shell {
     background-image: none !important;
   }
+}
+
+
+/* =========================================================
+   SETTINGS COHERENCE PASS - 21 August 2026
+
+   The settings surface was never badly animated; it was speaking a
+   slightly different dialect from the rest of the app. An audit counted
+   six interaction durations, four segmented controls, two switches, two
+   focus indicators, and - the one a person actually feels - thirty-odd
+   clickable things that never asked for a pointer.
+
+   That last one is not a new discovery. The same defect was diagnosed and
+   fixed for the chat at index.css:2600-2604 ("the words look interactive
+   and the buttons do not") and the fix was simply never carried across the
+   dialog boundary. Everything below is the carry-across, plus the press
+   states and the reduced-motion coverage that the house style already
+   promised (docs/V1_1_PLAN.md:16, "reduced-motion destegi her yeni
+   animasyonda") and this one surface never delivered.
+
+   Appended rather than edited in place: every rule here has the same
+   specificity as the one it completes, so source order decides, and the
+   original blocks stay readable as the record of what they were.
+   ========================================================= */
+
+/* 1. A control has to ask for the pointer.
+      button.settings-toggle-row, not the bare class: AppSettingsDialog
+      :552 and :620 put the SAME class on a div role="radiogroup" that
+      only holds chips, so the bare selector would promise a click the
+      wrapper does not accept. */
+button.settings-category-row:not(:disabled),
+button.settings-toggle-row:not(:disabled),
+.settings-back-button:not(:disabled),
+.settings-segment-option:not(:disabled),
+.settings-segment-button:not(:disabled),
+.settings-tint-chip:not(:disabled),
+.settings-inline-reset:not(:disabled),
+.settings-voice-pick:not(:disabled),
+.settings-voice-disclosure:not(:disabled) {
+  cursor: pointer;
+}
+
+/* 2. The div rows must stop pretending. index.css:2075 lifts anything
+      carrying the class, so the two radiogroup wrappers rose under the
+      pointer and shrank when a chip inside them was pressed, while doing
+      nothing themselves. The chips keep their own states. */
+div.settings-toggle-row:hover,
+div.settings-toggle-row:active {
+  transform: none;
+  background: rgba(200, 216, 236, 0.05);
+  border-color: rgba(200, 216, 236, 0.10);
+}
+
+/* 3. The press states. Twelve of sixteen clickable classes had a hover and
+      nothing under the finger, which is the exact texture of "not smooth".
+      Values come from the house set already in this file (0.99 rows and
+      pills, 0.985 medium buttons, 0.92 small icon buttons compress harder)
+      rather than a new number. */
+.settings-segment-option:active:not(:disabled),
+.settings-segment-button:active:not(:disabled),
+.settings-inline-reset:active:not(:disabled),
+.settings-voice-pick:active:not(:disabled) {
+  transform: translateY(0) scale(0.99);
+}
+
+.settings-voice-button:active:not(:disabled) {
+  transform: translateY(0) scale(0.985);
+}
+
+.settings-tint-chip:active:not(:disabled),
+.settings-voice-disclosure:active:not(:disabled) {
+  transform: translateY(0) scale(0.92);
+}
+
+/* 3b. Three of the controls given a press above never had `transform` in
+      their own transition list, so the scale would have SNAPPED. Adding it
+      rather than removing the press, because these are the three that most
+      need to answer the finger: the model pick row, the settings chevron,
+      and every segmented chip. */
+.settings-voice-pick {
+  transition:
+    background var(--duration-fast) var(--ease-smooth),
+    transform var(--duration-fast) var(--ease-smooth);
+}
+
+.settings-voice-disclosure {
+  transition:
+    background var(--duration-fast) var(--ease-smooth),
+    color var(--duration-fast) var(--ease-smooth),
+    transform var(--duration-fast) var(--ease-smooth);
+}
+
+.settings-segment-button {
+  transition:
+    background-color var(--duration-fast) var(--ease-smooth),
+    border-color var(--duration-fast) var(--ease-smooth),
+    transform var(--duration-fast) var(--ease-smooth);
+}
+
+/* 4. Four controls animate a disabled OPACITY that was absent from their
+      own transition-property list, so the dim snapped while everything
+      around it faded. The lists below are the originals plus opacity;
+      nothing else moves. */
+.settings-tint-chip {
+  transition:
+    transform var(--duration-fast) var(--ease-smooth),
+    box-shadow var(--duration-fast) var(--ease-smooth),
+    border-color var(--duration-fast) var(--ease-smooth),
+    opacity var(--duration-fast) var(--ease-smooth);
+}
+
+.settings-inline-reset {
+  transition:
+    color var(--duration-fast) var(--ease-smooth),
+    transform var(--duration-fast) var(--ease-smooth),
+    opacity var(--duration-fast) var(--ease-smooth);
+}
+
+.settings-voice-button {
+  transition:
+    background-color var(--duration-fast) var(--ease-smooth),
+    border-color var(--duration-fast) var(--ease-smooth),
+    transform var(--duration-fast) var(--ease-smooth),
+    opacity var(--duration-fast) var(--ease-smooth);
+}
+
+/* The switch changed its border-color on [data-on] with only
+   background-color in the list, so the fill crossfaded and the edge
+   jumped. */
+.settings-switch {
+  transition:
+    background-color var(--duration-fast) var(--ease-smooth),
+    border-color var(--duration-fast) var(--ease-smooth);
+}
+
+/* 5. The snap list: things that changed appearance with no transition at
+      all, sitting beside things that faded.
+
+      The voice model card is the loudest. One click produced three visual
+      events at three timings: the card snapped its border and fill (0ms),
+      the radio dot faded (180ms), the pick row background faded (180ms).
+      Now all three agree. */
+.settings-voice-model {
+  transition:
+    background-color var(--duration-fast) var(--ease-smooth),
+    border-color var(--duration-fast) var(--ease-smooth);
+}
+
+/* .settings-section-disabled carries the identical two declarations as
+   .generation-control.is-disabled (index.css:1666) but was the only one of
+   the pair with no transition, so on the chat background page the wrapper
+   snapped to 58 percent while a .generation-control inside it faded. */
+/* On the STABLE base class, not on the dim modifier. A transition declared
+   on a modifier only exists while the modifier is applied, so it animates
+   the way in and snaps the way back out at the instant the rule stops
+   matching. .generation-control does not have that problem because its
+   transition sits on the always-present base, and this is the same shape one
+   level up. */
+.settings-section-dimmable {
+  transition:
+    opacity var(--duration-fast) var(--ease-smooth),
+    filter var(--duration-fast) var(--ease-smooth);
+}
+
+/* .settings-preview is the element a person is JUDGING their choices by.
+   Font size, line height, contrast preset and ink all jumped on it. Only
+   colour is transitioned; font-size is left alone on purpose, because
+   animating it reflows the sample text while it is being read. */
+.settings-preview {
+  transition:
+    background-color var(--duration-normal) var(--ease-smooth),
+    color var(--duration-normal) var(--ease-smooth);
+}
+
+/* 6. Two text inputs in one dialog had two focus behaviours.
+      .settings-voice-input transitions its border on :focus-visible;
+      .settings-text-input used bare :focus, which also fires on a mouse
+      click, and had no transition. The border-color: currentColor at
+      its own rule is deliberate and measured at 12.43:1, so it is kept
+      exactly; only HOW FAST it arrives changes.
+
+      Being precise about what this does NOT fix: the sibling uses
+      :focus-visible and this one uses bare :focus, which also fires on a
+      mouse click. A :focus-visible rule here would be byte-identical to the
+      :focus rule and could never change a computed value, and DELETING the
+      :focus rule is not free, because this class has no `outline: none` on
+      its base rule the way .settings-voice-input does, so the UA ring would
+      come back on click. The mismatch is left standing and named. */
+.settings-text-input {
+  transition: border-color var(--duration-fast) var(--ease-smooth);
+}
+
+/* 7. Reduced motion. Eleven blocks in this file enumerate class names and
+      not one of them named a settings class, so every hover lift, press
+      scale, switch thumb and chevron rotation on this surface kept moving
+      for somebody who asked the OS for less.
+
+      Following the house answer rather than inventing one: kill the
+      TRANSFORM, keep a short opacity fade so the control still
+      acknowledges the pointer. Freezing is not the reduced-motion answer
+      (index.css:3232) and a control that does nothing at all reads as
+      broken rather than as calm.
+
+      This block deliberately does NOT name .settings-voice-progress::after
+      - palette-guard.test.ts:298 requires exactly one block to claim it,
+      and index.css:3215 already does. */
+@media (prefers-reduced-motion: reduce) {
+  .settings-category-row,
+  .settings-toggle-row,
+  .settings-back-button,
+  .settings-segment-option,
+  .settings-segment-button,
+  .settings-tint-chip,
+  .settings-inline-reset,
+  .settings-switch,
+  .settings-switch-thumb,
+  .settings-voice-model,
+  .settings-voice-pick,
+  .settings-voice-disclosure,
+  .settings-voice-button,
+  .settings-voice-input,
+  .settings-voice-select,
+  .settings-voice-textarea,
+  .settings-text-input,
+  .settings-section-disabled,
+  .settings-preview {
+    transition: opacity 120ms ease-out !important;
+    animation-duration: 1ms !important;
+  }
+
+  .settings-category-row:hover,
+  .settings-category-row:active,
+  .settings-toggle-row:hover,
+  .settings-toggle-row:active,
+  .settings-back-button:hover,
+  .settings-back-button:active,
+  .settings-segment-option:hover,
+  .settings-segment-option:active,
+  .settings-segment-button:active,
+  .settings-tint-chip:hover,
+  .settings-tint-chip:active,
+  .settings-inline-reset:active,
+  .settings-voice-pick:active,
+  .settings-voice-disclosure:active,
+  .settings-voice-button:active {
+    transform: none !important;
+  }
+
+  /* The thumb is the one place where killing the transform would destroy
+     the information: an unmoved thumb says "off". It jumps instead of
+     sliding, which is the same answer the rest of this file gives. */
+  .settings-switch-thumb {
+    transition: none !important;
+  }
+
+  /* The chevrons. `transition` does not inherit, so naming the BUTTON above
+     never reached the svg inside it, and both disclosure arrows kept
+     rotating. One is animated by a rule (.settings-voice-disclosure svg),
+     the other by a Tailwind utility on the svg itself, which is why an
+     enumeration of `transform:` declarations missed them both. */
+  .settings-voice-disclosure svg,
+  .settings-param-group-toggle svg {
+    transition: none !important;
+  }
+}
+
+
+/* ---------------------------------------------------------
+   VOICE SECTION BREATHING ROOM - 21 August 2026
+
+   The complaint was that the section LOOKS complicated. The measured
+   cause was not the number of controls; it was that three levels of box
+   were nested inside a 448px column, and that the whitespace told you
+   nothing about which of them you were in.
+
+   .settings-voice-model is a bordered, tinted card. Inside it
+   .settings-voice-params adds a border-top. Inside THAT, every single
+   slider, select and text field is wrapped in .generation-control, which
+   is another 1px border plus 0.75rem of padding. A model with eight
+   parameters open drew eight boxes inside a box inside a box.
+
+   The innermost border is the one to lose, and only here: .generation-
+   control is shared with the generation settings dialog, where it is the
+   only box there is and does real work. Scoping the flattening to
+   .settings-voice-params leaves that alone.
+
+   Nothing is hidden and no control changes. The rows keep their fill, so
+   they still read as separate rows; they stop reading as separate cards.
+   --------------------------------------------------------- */
+
+.settings-voice-params .generation-control {
+  border-color: transparent;
+  background: rgba(200, 216, 236, 0.03);
+  padding: 0.5rem 0.6rem;
+}
+
+/* Boolean params do not use .generation-control at all: ParamControl
+   renders them as .settings-toggle-row, which carries its own border and a
+   larger padding. Flattening only the sliders and selects left a column of
+   borderless rows with bordered switches among them, which reads LESS
+   consistent than before. Same treatment, same scope. */
+.settings-voice-params .settings-toggle-row {
+  border-color: transparent;
+  background: rgba(200, 216, 236, 0.03);
+  padding: 0.5rem 0.6rem;
+}
+
+/* The flattener above is specificity 0-2-0, exactly tied with the shared
+   .settings-toggle-row:hover, and it is later in the file - so it won the
+   tie and took the hover fill with it. A boolean row was left lifting under
+   the pointer with no colour change at all. Restated at the flattened
+   weights. */
+.settings-voice-params .settings-toggle-row:hover {
+  background: rgba(200, 216, 236, 0.09);
+  border-color: rgba(200, 216, 236, 0.16);
+}
+
+/* The one row that must keep an edge is the inert one. .settings-param-
+   disabled carries a DASHED border, and once every live row went borderless
+   it became the most boxed thing in the column: the opposite of what a row
+   that cannot be touched should look like. Quieted to match. */
+.settings-voice-params .settings-param-disabled {
+  border-style: solid;
+  border-color: rgba(200, 216, 236, 0.10);
+}
+
+/* Section spacing. Rows sat 0.5rem apart and sections 1rem apart, so the
+   difference between "two unrelated ideas" and "two rows of one list" was
+   half a centimetre and a hairline. Widening only the OUTER gap is what
+   creates the air; touching the inner one would just make the page
+   longer. */
+/* Adjacent-sibling margins collapse with Tailwind's space-y-4 (1rem), so
+   this is max(1rem, 1.4rem) and the real gain is 0.4rem. Paired with a
+   matching padding-top below, because the existing 0.75rem left the hairline
+   sitting 1.4rem under one section and 0.75rem over the next: a 65/35 split
+   that reads as belonging to the heading below rather than dividing the two. */
+.settings-voice-page > section + section {
+  margin-top: 1.3rem;
+  padding-top: 1.3rem;
+}
+
+
+
+/* ---------------------------------------------------------
+   The named doors inside a model's parameter panel.
+
+   These were first written to borrow .settings-voice-disclosure, and that
+   was wrong twice over: that class is a 26px SQUARE for an icon alone,
+   and it centres its content. index.css is unlayered while Tailwind v4
+   puts its utilities in @layer utilities, and an unlayered rule beats a
+   layered one whatever the specificity says, so `justify-between` and the
+   height utilities on the element lost to the class and a 12px label sat
+   in a 13.8px content box.
+
+   A row with a label in it is not that control, so it gets its own.
+   --------------------------------------------------------- */
+.settings-param-group-toggle {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  text-align: left;
+  padding: 0.4rem 0.1rem;
+  margin-top: 0.15rem;
+  border: 0;
+  border-top: 1px solid rgba(200, 216, 236, 0.08);
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  transition:
+    color var(--duration-fast) var(--ease-smooth),
+    border-color var(--duration-fast) var(--ease-smooth);
+}
+
+.settings-param-group-toggle:hover {
+  border-top-color: rgba(200, 216, 236, 0.16);
+}
+
+/* `rotate`, not `transform`. Tailwind v4 compiles rotate-180 to the
+   individual `rotate` property, and this rule is unlayered while the utility
+   is in @layer utilities, so naming only `transform` here beat the utility
+   and narrowed the list to a property the chevron never sets. Both are
+   named so the rule survives either spelling. */
+.settings-param-group-toggle svg {
+  flex-shrink: 0;
+  opacity: 0.7;
+  transition:
+    rotate var(--duration-fast) var(--ease-smooth),
+    transform var(--duration-fast) var(--ease-smooth);
+}
+
+/* Keyboard focus rings were being clipped. The global :focus-visible draws
+   a 2px outline at a 2px offset, so 4px outside the element box, and
+   .es-collapse-inner sets overflow: hidden to do the height animation.
+   Before the params panel moved inside a Collapse it had no clipping
+   ancestor; now the Save and Reset buttons at the bottom edge and both
+   sides of every control lose their ring. Four pixels of inner room is the
+   whole fix, and it has to be INSIDE the clipping box. */
+.settings-voice-params {
+  padding: 0.3rem 4px 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-param-group-toggle,
+  .settings-param-group-toggle svg {
+    transition: none !important;
+  }
+}
+
+
+/* ---------------------------------------------------------
+   The filled CTA on the app's one LIGHT surface.
+
+   shadcn's default Button hover is `bg-primary/80`. On every dark surface
+   in this app that reads as a deepening, because 80 percent of a mid blue
+   over a dark ground lands darker. On .glass-right it does the opposite:
+   the fill composites toward a near-white panel, so the button gets
+   PALER under the pointer and the white label goes from 4.95:1 at rest to
+   3.47:1 on hover, under the 4.5:1 floor, on the two primary actions of
+   the Security panel.
+
+   The flat-control law already says which way a hover moves (index.css
+   1979-1988: "hover DEEPENS the fill instead of glowing"), and the
+   composer's send button is the worked example. This is the same answer
+   applied to the only other filled CTA that renders on a light ground.
+   White on #2B5384 is 7.86:1, so hover ends up MORE readable than rest,
+   which is the correct direction for the state a pointer is on.
+
+   Scoped to .glass-right on purpose: on the dark surfaces the stock hover
+   is right and this rule must not reach them.
+   --------------------------------------------------------- */
+.glass-right [data-slot="button"].bg-primary:hover:not(:disabled) {
+  background-color: var(--color-es-primary-sage-deep);
 }

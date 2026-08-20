@@ -76,11 +76,20 @@ export function AutoLockControl() {
                 selected
                   ? {
                       backgroundColor: "var(--color-es-primary-sage-deep)",
-                      color: "var(--color-es-text-light)",
+                      // The theme law is white-on-primary (index.css
+                      // :1975). This chip used --color-es-text-light,
+                      // which .glass-right repaints to a DARK value, so
+                      // the SELECTED preset was dark ink on dark navy:
+                      // 1.95:1 against the token as it stood then, and
+                      // 1.16:1 against the softer one this same change
+                      // ships. Either way it was the one chip you need to
+                      // read and the only unreadable one. White on
+                      // #2B5384 measures 7.86:1.
+                      color: "var(--primary-foreground)",
                       fontWeight: 600,
                     }
                   : {
-                      border: "1px solid var(--color-es-border-subtle)",
+                      border: "1px solid var(--color-es-glass-border-dark)",
                       color: "var(--color-es-text-muted)",
                     }
               }
