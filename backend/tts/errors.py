@@ -24,6 +24,7 @@ TTS_MODEL_INCOMPLETE = "tts_model_incomplete"        # 422 engine known, files m
 TTS_ENGINE_UNKNOWN = "tts_engine_unknown"            # 400 engine id not registered
 TTS_RUNTIME_MISSING = "tts_runtime_missing"          # 409 never set up
 TTS_RUNTIME_BROKEN = "tts_runtime_broken"            # 409 set up once, gone now
+TTS_RUNTIME_UNTRUSTED = "tts_runtime_untrusted"      # 409 set up, then changed
 
 # ── compatibility (not failures - things the user must know BEFORE trying) ──
 # Voice must never be a surprise. A model is always inspectable, so these say
@@ -103,7 +104,8 @@ TTS_NOTHING_STREAMING = "tts_nothing_streaming"      # 404 that reply is over
 ALL_CODES: frozenset[str] = frozenset({
     TTS_MODEL_NOT_FOUND, TTS_MODEL_UNKNOWN, TTS_MODEL_UNRECOGNIZED,
     TTS_MODEL_INCOMPLETE, TTS_ENGINE_UNKNOWN, TTS_RUNTIME_MISSING,
-    TTS_RUNTIME_BROKEN, TTS_GPU_UNAVAILABLE, TTS_LANGUAGE_UNSUPPORTED,
+    TTS_RUNTIME_BROKEN, TTS_RUNTIME_UNTRUSTED, TTS_GPU_UNAVAILABLE,
+    TTS_LANGUAGE_UNSUPPORTED,
     TTS_RUNTIME_INSTALLING, TTS_RUNTIME_INSTALL_FAILED, TTS_PYTHON_NOT_FOUND,
     TTS_INSUFFICIENT_DISK,
     TTS_PARAM_INVALID, TTS_SIDECAR_WRITE_FAILED, TTS_VALUES_TOO_LARGE,

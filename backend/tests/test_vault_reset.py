@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import sys
+
 import pytest
 
 import config
@@ -27,10 +29,31 @@ import database
 import keyring_service
 import legacy_migration
 import vault_state
+from routers import vault as vault_router
 from routers.vault import RESET_CONFIRMATION_PHRASE
 
 PASSPHRASE = "correct horse battery staple reset"
 
+
+
+@pytest.fixture(autouse=True)
+def _reset_door_armed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Open the reset door for the tests in this file.
+
+    The route is unreachable unless the process is frozen AND the launch-token
+    gate is armed, which is true of the shipped app and false of pytest. Every
+    test here exercises what the route DOES, so each one has to stand where the
+    lock screen stands.
+
+    The predicate itself is replaced rather than its two ingredients, and that
+    is deliberate. Monkeypatching sys.frozen reaches three subsystems that have
+    nothing to do with the vault and would make these tests measure a different
+    program. Replacing the seam keeps the blast radius at one function, and the
+    cost - that these tests no longer prove the door is consulted at all - is
+    paid off by TestTheDoorIsShutOnEveryOtherBuild, which asserts exactly that
+    and would go red if the guard were deleted.
+    """
+    monkeypatch.setattr(vault_router, "_reset_door_is_open", lambda: True)
 
 def _real_locked_vault(tmp_path: Path, monkeypatch) -> tuple[Path, bytes]:
     """A real, fully identified vault with a real schema, then locked.
@@ -90,7 +113,7 @@ def _populate_every_artefact(tmp_path: Path, db_path: Path,
         paths[f"db_sidecar{suffix}"] = p
 
     vault_dir = db_path.parent
-    for name in ("salt.bin", "verifier.bin", "kdf.json"):
+    for name in ("salt.bin", "verifier.bin", "kdf.json", "vault.recovery"):
         staged = vault_dir / f"{name}.new"
         staged.write_bytes(b"an identity a crashed rotation staged")
         paths[f"{name}.new"] = staged
@@ -443,3 +466,85 @@ class TestTheSurvivorsAreExactlyWhatTheScreenPromises:
                 f"{label} survived. If that is deliberate, the reset panel "
                 f"must say so - it currently promises the engine is the only "
                 f"thing left standing.")
+
+
+class TestTheDoorIsShutOnEveryOtherBuild:
+    """The half the autouse fixture above deliberately gives away.
+
+    Every other test in this file opens the door for itself so it can measure
+    what the route does. These four measure whether the door exists, using the
+    real predicate, and they are the reason replacing that seam elsewhere is
+    honest rather than convenient: delete the guard in routers/vault.py and
+    the first test here goes red.
+    """
+
+    def test_a_development_tree_has_no_reset_door(
+        self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        legacy_keyring,
+    ) -> None:
+        # pytest is not frozen, so this is the real answer for `uvicorn
+        # main:app` and for `python run_app.py` out of a checkout. Nothing is
+        # patched here except the fixture being taken back.
+        monkeypatch.undo()
+        db_path, _key = _real_locked_vault(tmp_path, monkeypatch)
+        ground = _populate_every_artefact(tmp_path, db_path, legacy_keyring)
+
+        response = client.post("/api/v1/vault/reset",
+                               json={"confirm": RESET_CONFIRMATION_PHRASE})
+
+        assert response.status_code == 404, response.text
+        assert response.json()["detail"] == "vault_reset_unavailable"
+        assert db_path.exists(), "a closed door still destroyed the database"
+        for name, artefact in ground.items():
+            assert artefact.exists(), f"a closed door destroyed {name}"
+
+    def test_a_closed_door_answers_before_the_unlocked_check(
+        self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Ordering, and it is not cosmetic. The 409 branch lives inside
+        # _vault_lock; the guard sits above it so a door that does not exist
+        # in this build never queues behind an unlock in flight. If the guard
+        # slipped below the lock this would come back 409.
+        monkeypatch.undo()
+        _db_path, key = _real_locked_vault(tmp_path, monkeypatch)
+        vault_state.set_key(key)          # unlocked: the 409 state
+
+        response = client.post("/api/v1/vault/reset",
+                               json={"confirm": RESET_CONFIRMATION_PHRASE})
+
+        assert response.status_code == 404, response.text
+
+    def test_being_the_packaged_build_is_not_on_its_own_enough(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # sys.frozen describes THIS PROCESS, not the caller. A curl at the
+        # packaged exe is exactly as frozen as the window is.
+        monkeypatch.undo()      # take back the armed door above
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(vault_router.launch_token, "configured",
+                            lambda: None)
+        assert vault_router._reset_door_is_open() is False
+
+    def test_an_armed_token_gate_is_not_on_its_own_enough(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # run_app issues a token on the development path too, and configured()
+        # falls back to the environment as a developer seam. Armed alone would
+        # hand the door straight back to the checkout.
+        monkeypatch.undo()      # take back the armed door above
+        monkeypatch.delattr(sys, "frozen", raising=False)
+        monkeypatch.setattr(vault_router.launch_token, "configured",
+                            lambda: "a-token")
+        assert vault_router._reset_door_is_open() is False
+
+    def test_both_together_open_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # GROUND. Without this the three refusals above would also pass for a
+        # predicate that returned False unconditionally, which would ship an
+        # app whose lock screen cannot reset anything.
+        monkeypatch.undo()      # take back the armed door above
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(vault_router.launch_token, "configured",
+                            lambda: "a-token")
+        assert vault_router._reset_door_is_open() is True

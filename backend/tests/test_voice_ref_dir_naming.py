@@ -16,6 +16,7 @@ either drives the module through its public functions or inspects the real
 files the module reads and writes.
 """
 import json
+import logging
 import os
 import subprocess
 import wave
@@ -137,6 +138,41 @@ class TestMigratingAnExistingInstall:
         assert voice.label == "legacyvoice"
         assert voice.transcript == "the words in the clip"
         assert voice.path == str(new_folder)
+
+    def test_a_blocked_migration_does_not_log_the_legacy_folder_name(
+        self, refs_root, caplog
+    ):
+        """The collision warning fires ONLY for a legacy folder, and there the
+        folder name is the slug of the label the person typed - a name they
+        read on screen, written to elysium.log in plaintext, at WARNING, on an
+        install that is not brand new. The AST scanner in log_leak_scan.py
+        structurally cannot catch this: it follows denylisted variable names
+        and this was `child.name`, an attribute."""
+        _make_legacy_folder(refs_root, "grandma")
+        # Put a voice ALREADY in final form exactly where the legacy one is
+        # about to move - the shape a restore-from-backup leaves, where both
+        # the migrated folder and its pre-migration original are on disk. An
+        # empty directory will not do: the loop adopts a nameless folder,
+        # writes it a voice.json and renames it out of the way, so the
+        # collision never happens and this test would pass on nothing.
+        occupied = refs_root / refs._hash_name("grandma")
+        occupied.mkdir()
+        (occupied / refs.META_NAME).write_text(
+            json.dumps({"voice_id": "grandma", "label": "grandma"}),
+            encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger="tts.refs"):
+            result = refs.migrate_legacy_voice_dirs()
+
+        # GROUND: the branch under test really did run. Without this the
+        # assertion below passes on any tree where nothing was logged at all.
+        assert result["skipped"] == ["grandma"]
+        assert caplog.records, "the collision warning did not fire"
+
+        logged = " ".join(r.getMessage() for r in caplog.records)
+        assert "grandma" not in logged, logged
+        # And it still says which voice, opaquely, or it would be useless.
+        assert refs._hash_name("grandma") in logged
 
     def test_the_migrated_folder_now_carries_its_own_id(self, refs_root):
         """So a later list_voices() (which cannot read the opaque folder
@@ -292,6 +328,114 @@ class TestTheIndexKeyStaysStable:
         assert len(first) == 32, "a text-mode write silently grew the file"
         assert first == second == fixed
 
+    def test_an_empty_key_file_is_rebuilt_rather_than_used(
+        self, refs_root, monkeypatch
+    ):
+        """A 0-byte .voice-index-key is what a crash between the O_EXCL create
+        and the write leaves behind, and the FileExistsError branch used to
+        return it unchecked. From then on _hash_name salted with b"" forever:
+        a bare sha256 of the voice id, which is exactly the guess-and-match
+        attack the key exists to stop - silently, permanently, with no way to
+        tell from the outside."""
+        (refs_root / refs.INDEX_KEY_NAME).write_bytes(b"")
+        fixed = bytes(range(32))
+        monkeypatch.setattr(os, "urandom", lambda n: fixed)
+
+        key = refs._index_key()
+
+        assert key == fixed
+        assert len(key) == 32, "an empty file was accepted as the salt"
+        # And it is durable, not just correct in memory - the next call has to
+        # read the same 32 bytes back off disk.
+        assert refs._index_key() == fixed
+        assert (refs_root / refs.INDEX_KEY_NAME).read_bytes() == fixed
+        assert not (refs_root / (refs.INDEX_KEY_NAME + ".new")).exists()
+
+    def test_the_salt_actually_changes_the_folder_name(self, refs_root, monkeypatch):
+        """The discriminating control for the test above. If the repaired key
+        made no difference to the hash, that test would pass while proving
+        nothing - so measure that an unsalted sha256 is NOT what lands on
+        disk."""
+        import hashlib
+
+        fixed = bytes(range(32))
+        monkeypatch.setattr(os, "urandom", lambda n: fixed)
+
+        salted = refs._hash_name("ayse")
+        unsalted = hashlib.sha256(b"ayse").hexdigest()
+
+        assert salted != unsalted
+        assert salted == hashlib.sha256(fixed + b"ayse").hexdigest()
+
+    def test_a_crlf_expanded_key_is_used_as_is_not_refused(
+        self, refs_root, monkeypatch
+    ):
+        """The install this module has actually broken before: written by the
+        pre-O_BINARY code, so every 0x0A in the key became 0x0D 0x0A and the
+        file is 33-36 bytes. Those bytes still resolve every folder that
+        install has ever made. Replacing them - or refusing them - would take
+        a working install and cut it off from its own voices, which is a worse
+        outcome than the non-canonical encoding it is fixing.
+
+        Honest about what this guards: it is NOT a regression test, because
+        the code it replaced already returned these bytes unchanged. It went
+        in because the FIRST draft of the empty-key repair raised on any
+        length other than 32, which would have bricked exactly these installs.
+        It exists to keep the next person from making that same tightening."""
+        expanded = bytes(range(32)).replace(b"\x0a", b"\x0d\x0a")
+        assert len(expanded) == 33  # ground: the fixture really is oversized
+        (refs_root / refs.INDEX_KEY_NAME).write_bytes(expanded)
+        monkeypatch.setattr(refs.time, "sleep", lambda _s: None)
+
+        assert refs._index_key() == expanded
+        # Ground: left exactly as found, and still resolving the same folder
+        # on the next call rather than drifting.
+        assert (refs_root / refs.INDEX_KEY_NAME).read_bytes() == expanded
+        assert refs._hash_name("ayse") == refs._hash_name("ayse")
+
+    def test_concurrent_repairs_do_not_collide_or_disagree(
+        self, refs_root, monkeypatch
+    ):
+        """The wait loop SYNCHRONISES every caller: they all give up at the
+        same instant and all arrive at the repair together. A single shared
+        temp name made that four threads racing on one file, and on Windows
+        os.replace answers with an unhandled WinError 32 - a 500, not a TTS
+        error. Worse, a loser that returned its own unwritten key would hash
+        differently from the winner forever after, which is the exact
+        disagreement O_EXCL exists to prevent."""
+        import threading
+
+        (refs_root / refs.INDEX_KEY_NAME).write_bytes(b"")
+        # time.sleep is NOT patched out here on purpose: the retries are the
+        # mechanism under test, and a no-op sleep would spin all 50 attempts
+        # inside a single rename and measure nothing.
+        counter = iter(range(1000))
+        monkeypatch.setattr(
+            os, "urandom",
+            lambda n: bytes([next(counter) % 256]) * n)
+
+        start = threading.Barrier(4)
+        results: list = []
+
+        def run():
+            start.wait()
+            try:
+                results.append(refs._index_key())
+            except BaseException as exc:        # noqa: BLE001 - the point
+                results.append(exc)
+
+        threads = [threading.Thread(target=run) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert all(isinstance(r, bytes) for r in results), results
+        assert len(set(results)) == 1, "threads disagreed about the salt"
+        assert results[0] == (refs_root / refs.INDEX_KEY_NAME).read_bytes()
+        # No temp files left lying around in the refs root.
+        assert [p.name for p in refs_root.glob("*.new*")] == []
+
     def test_save_upload_resolves_to_the_same_folder_it_created(
         self, refs_root, monkeypatch
     ):
@@ -306,3 +450,58 @@ class TestTheIndexKeyStaysStable:
 
         assert Path(voice.path).is_dir()
         assert voice.voice_id == "ayse"
+
+
+class TestTheIdSurvivesAPowerCut:
+    """migrate_legacy_voice_dirs() sells its own crash-safety in its docstring:
+    the id is written into voice.json and "that write is flushed to disk BEFORE
+    the rename is attempted", so a crash between the two leaves a folder whose
+    voice.json already carries the id and the next run resumes from it.
+
+    Without an fsync that is a hope, not a promise. The rename can reach the
+    disk while the file's bytes are still in the page cache, and what survives
+    is a folder under its new opaque name holding an empty voice.json - which
+    list_voices() skips and _voice_dir() cannot find. The voice is gone from
+    the app while every one of its files is still sitting there.
+
+    Modelled on test_tts_runtime.py's registry test: watch os.fsync and
+    os.replace/rename through the real calls and assert the ORDER, because
+    ordering is the whole claim.
+    """
+
+    def test_the_id_is_synced_before_the_folder_is_renamed(
+        self, refs_root, monkeypatch
+    ):
+        # Mint the index key FIRST, outside the window being watched. Without
+        # this the key file's own fsync (also correct, also new) satisfies the
+        # ordering assertion below and the test passes with _write_meta's
+        # fsync deleted - measured. Now the only fsync that can happen inside
+        # the watched call is voice.json's.
+        refs._index_key()
+        _make_legacy_folder(refs_root, "legacyvoice")
+        events: list[tuple[str, int]] = []
+        real_fsync = os.fsync
+        real_rename = Path.rename
+
+        def watched_fsync(fd):
+            # Size THROUGH THE SAME DESCRIPTOR, so this is the file being made
+            # durable rather than some other file that happens to exist.
+            events.append(("fsync", os.fstat(fd).st_size))
+            return real_fsync(fd)
+
+        def watched_rename(self, target):
+            events.append(("rename", 0))
+            return real_rename(self, target)
+
+        monkeypatch.setattr(os, "fsync", watched_fsync)
+        monkeypatch.setattr(Path, "rename", watched_rename)
+
+        refs.migrate_legacy_voice_dirs()
+
+        names = [name for name, _ in events]
+        assert "rename" in names, "the migration never renamed anything"
+        assert "fsync" in names, "voice.json was renamed into place unsynced"
+        assert names.index("fsync") < names.index("rename"), names
+        # And it synced something with content in it, not an empty handle.
+        synced = next(size for name, size in events if name == "fsync")
+        assert synced > 0

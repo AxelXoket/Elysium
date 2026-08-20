@@ -20,7 +20,8 @@ Privacy:
 import logging
 import httpx
 
-from config import OPENROUTER_BASE_URL, SECRET_PROXY_URL
+import config
+from config import SECRET_PROXY_URL
 from secrets_service import get_secret
 
 logger = logging.getLogger(__name__)
@@ -83,20 +84,96 @@ class EgressRefused(RuntimeError):
     """An outbound request named a host this app does not talk to."""
 
 
+#: The three spellings of "this machine". One list, used by BOTH gates below,
+#: because two lists of the same three strings drift apart and the drift is
+#: silent: the day one gains an entry the other does not, a host is reachable
+#: over plain http that the allowlist never admitted, or the reverse.
+_PLAINTEXT_OK = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
 def allowed_hosts() -> frozenset[str]:
     """The complete set of hosts this process may open a connection to.
 
-    Derived from the configured provider rather than hardcoded, so the local
-    mock provider used for end-to-end smoke tests still works and so does an
-    OPENROUTER_BASE_URL override - which config.py already logs loudly,
-    because it is where the Authorization header goes.
+    PINNED to the shipped provider, not derived from the configured one.
 
-    Loopback is on the list because the app IS a local server: the health
-    probe and the launcher talk to it, and a proxy the user configured on
-    127.0.0.1 (Tor, a local SOCKS tunnel) is the ordinary case.
+    It used to be derived, and that inverted the whole control: `allowed_hosts`
+    read `OPENROUTER_BASE_URL`, and so did every caller building a URL, so the
+    gate always agreed with wherever the request was already going. One
+    environment variable - writable by any program running as the user, no
+    elevation, persistent across restarts - moved the destination AND the
+    permission together, and `Authorization: Bearer` went with them. The list
+    took its contents from the thing it existed to check.
+
+    A non-default host is honoured only when `ELYSIUM_ALLOW_BASE_URL_OVERRIDE`
+    is exactly "1". That keeps a real mock or staging provider usable - the
+    owner needs one - while making the poisoned-variable path fail loudly at
+    the chokepoint instead of succeeding in silence.
+
+    Read through `config.` rather than from a name bound at import, so a test
+    that sets them is honoured. That is the whole of the claim: the callers in
+    openrouter.py and proxy_health.py DO hold import-time copies, so anything
+    rewriting `config.OPENROUTER_BASE_URL` after import would widen this gate
+    without moving where the requests actually go. Both values are born from
+    the same environment at import, so production never sees the two disagree.
+
+    Loopback is NOT on the default list, and it used to be. The paragraph that
+    stood here gave two reasons and both were measured false on 20 August 2026:
+
+      * "a proxy the user configured on 127.0.0.1 needs it". It does not. This
+        hook fires on the request built from the CALLER's target url, one layer
+        above the proxy substitution: httpcore builds a separate url carrying
+        the proxy origin and puts the original in as the request-target, so a
+        request through a local Tor or SOCKS hop still arrives here with the
+        provider as its host. The proxy never touches this list.
+      * "the health probe and the launcher talk to it". They do, and not
+        through this client. The launcher has its own opener at run_app.py:45,
+        built with an empty ProxyHandler for exactly the same reason this
+        client passes trust_env=False. And proxy_health.py probes the PROVIDER,
+        not the local server.
+
+    So the entries bought nothing and cost the obvious thing: any program that
+    can start a listener on this machine, which is any program at all, was a
+    permitted destination for a request carrying the API key. Loopback now
+    returns only behind ELYSIUM_ALLOW_BASE_URL_OVERRIDE, the same switch that
+    admits a foreign host, because it is the same decision said out loud: this
+    run may talk somewhere other than the shipped provider.
     """
-    provider = httpx.URL(OPENROUTER_BASE_URL).host or ""
-    return frozenset({provider.lower(), "127.0.0.1", "localhost", "::1"})
+    hosts = {
+        (httpx.URL(config._DEFAULT_OPENROUTER_BASE_URL).host or "").lower(),
+    }
+    if config.BASE_URL_OVERRIDE_ALLOWED:
+        hosts.update(_PLAINTEXT_OK)
+        override = (httpx.URL(config.OPENROUTER_BASE_URL).host or "").lower()
+        if override:
+            hosts.add(override)
+    return frozenset(hosts)
+
+
+def _say_why_once(host: str) -> None:
+    """Name the cause where it is known, because nobody downstream can.
+
+    EgressRefused is never caught by name anywhere in this app: six call sites
+    in openrouter.py and proxy_health.py swallow it into `except Exception`
+    and report `type(exc).__name__`. Measured, with OPENROUTER_BASE_URL set to
+    a foreign host and the flag absent, the user gets five different codes and
+    six different sentences, and TWO of them tell them to go and check a proxy
+    that is working fine.
+
+    The fact is only available here, so it is said here. The HOST only, never
+    the path and never a header: a url can carry an account name and this file
+    is the one place that sees every outbound request.
+    """
+    if (config.OPENROUTER_BASE_URL_OVERRIDDEN
+            and not config.BASE_URL_OVERRIDE_ALLOWED):
+        logger.warning(
+            "egress: refused %s. OPENROUTER_BASE_URL names a host that is not "
+            "the shipped provider and ELYSIUM_ALLOW_BASE_URL_OVERRIDE is not "
+            "1, so every request this run makes will fail. That variable is "
+            "the cause, not the network", host)
+    else:
+        logger.warning(
+            "egress: refused an outbound request to %s; this app talks to "
+            "exactly one host and that is not it", host)
 
 
 async def _one_host_only(request: httpx.Request) -> None:
@@ -115,9 +192,21 @@ async def _one_host_only(request: httpx.Request) -> None:
     """
     host = (request.url.host or "").lower()
     if host not in allowed_hosts():
+        _say_why_once(host)
         raise EgressRefused(
             f"refused an outbound request to {host!r}: this app talks to "
             f"exactly one host and that is not it"
+        )
+    # The scheme matters as much as the host, and only the host was checked.
+    # `http://openrouter.ai/api/v1` passed - same host, right name, and the
+    # Authorization header left over port 80 in the clear for anyone on the
+    # path to read. Loopback is exempt because a local mock provider on plain
+    # http never leaves the machine.
+    if request.url.scheme != "https" and host not in _PLAINTEXT_OK:
+        raise EgressRefused(
+            f"refused an outbound request to {host!r} over "
+            f"{request.url.scheme!r}: anything that is not loopback must be "
+            f"https, or the API key crosses the network in the clear"
         )
 
 

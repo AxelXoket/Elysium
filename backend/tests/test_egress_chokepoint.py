@@ -29,24 +29,139 @@ class TestWhatIsAllowed:
         assert httpx.URL(config.OPENROUTER_BASE_URL).host \
             in network_client.allowed_hosts()
 
-    def test_loopback_is_on_the_list(self) -> None:
-        # The app IS a local server, and a user's proxy on 127.0.0.1 - Tor, a
-        # local SOCKS tunnel - is the ordinary case rather than the exotic one.
+    def test_loopback_is_not_on_the_list(self) -> None:
+        # This assertion is the reverse of the one it replaces. The old test
+        # recorded two reasons for admitting loopback and both were measured
+        # false: the proxy hop never reaches this hook (httpcore substitutes
+        # the proxy origin a layer lower and leaves the original url as the
+        # request-target), and the launcher probe has its own opener at
+        # run_app.py:45. What the entries did buy was a permitted destination
+        # for a request carrying the API key, reachable by any program that can
+        # open a listening socket on this machine.
         allowed = network_client.allowed_hosts()
-        assert "127.0.0.1" in allowed
-        assert "localhost" in allowed
+        assert httpx.URL(config._DEFAULT_OPENROUTER_BASE_URL).host in allowed
+        assert "127.0.0.1" not in allowed
+        assert "localhost" not in allowed
+        assert "::1" not in allowed
 
-    def test_the_list_is_derived_not_hardcoded(
+    def test_loopback_comes_back_behind_the_same_switch_as_a_foreign_host(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # tests/mock_provider.py exists so end-to-end smoke runs need no
-        # network at all. A hardcoded openrouter.ai would have refused it, and
-        # somebody would have deleted this check rather than the constant.
+        # network at all, and it lives on loopback. It is still reachable, but
+        # the operator now has to say so out loud - the same sentence that
+        # admits a staging provider, because it is the same decision: this run
+        # may talk somewhere other than the shipped provider.
         monkeypatch.setattr(config, "OPENROUTER_BASE_URL",
                             "http://127.0.0.1:9797/api/v1")
-        monkeypatch.setattr(network_client, "OPENROUTER_BASE_URL",
-                            "http://127.0.0.1:9797/api/v1")
-        assert "127.0.0.1" in network_client.allowed_hosts()
+        monkeypatch.setattr(config, "BASE_URL_OVERRIDE_ALLOWED", True)
+        allowed = network_client.allowed_hosts()
+        assert "127.0.0.1" in allowed
+        assert "localhost" in allowed
+        assert "::1" in allowed
+
+    def test_the_switch_admits_all_three_spellings_or_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 127.0.0.1, localhost and ::1 are three names for one decision, and
+        # the gate compares strings. Admitting two of the three would leave a
+        # mock provider that works when addressed one way and is refused when
+        # addressed another, which reads as a bug in the mock.
+        monkeypatch.setattr(config, "BASE_URL_OVERRIDE_ALLOWED", False)
+        closed = network_client.allowed_hosts()
+        monkeypatch.setattr(config, "BASE_URL_OVERRIDE_ALLOWED", True)
+        opened = network_client.allowed_hosts()
+        assert not (closed & network_client._PLAINTEXT_OK)     # ground
+        assert network_client._PLAINTEXT_OK <= opened
+
+    def test_a_poisoned_base_url_does_not_admit_itself(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The defect this whole class exists for, and it was REPORTED TWICE
+        and lost twice before the list stopped deriving itself.
+
+        `allowed_hosts()` used to be computed FROM `OPENROUTER_BASE_URL`, so
+        the gate agreed with whatever the request already said. One
+        environment variable - any program running as the user, no elevation,
+        persistent - redirected the destination and granted itself permission
+        in the same stroke, and `Authorization: Bearer` went with it.
+
+        The test that used to sit here asserted the list WAS derived, which
+        pinned the defect in place. Worse, it asserted it by pointing at
+        loopback, which is on the list unconditionally - so after the fix it
+        went on passing while proving nothing at all."""
+        # Driven through the ENVIRONMENT and a module reload, not by setting
+        # the attribute. The attack is an environment variable read at import,
+        # so a test that patches the already-imported attribute does not
+        # reproduce it: measured, the literal pre-fix code passes such a test
+        # because it read a name bound at import while the test rewrote
+        # `config.`. test_release_hardening.py:429 uses the same reload shape.
+        import importlib
+
+        monkeypatch.setenv("OPENROUTER_BASE_URL",
+                           "https://collect.evil.example/api/v1")
+        monkeypatch.delenv("ELYSIUM_ALLOW_BASE_URL_OVERRIDE", raising=False)
+        importlib.reload(config)
+        importlib.reload(network_client)
+        try:
+            # GROUND: the poisoning really took - the app IS about to talk to
+            # that host, which is what makes the refusal below meaningful.
+            assert config.OPENROUTER_BASE_URL.startswith(
+                "https://collect.evil.example")
+
+            allowed = network_client.allowed_hosts()
+            assert "collect.evil.example" not in allowed
+            # And the real provider is still reachable, so this is not an
+            # empty set passing an absence check.
+            assert "openrouter.ai" in allowed
+        finally:
+            monkeypatch.undo()
+            importlib.reload(config)
+            importlib.reload(network_client)
+
+    @pytest.mark.parametrize("value,opens", [
+        ("1", True),
+        ("true", False),      # only exactly "1" - a typo must not open it
+        ("True", False),
+        ("", False),
+        (" 1", False),
+    ])
+    def test_only_the_exact_flag_value_opens_the_door(
+        self, monkeypatch: pytest.MonkeyPatch, value: str, opens: bool
+    ) -> None:
+        """The flag is read from the environment at import, and nothing else
+        tested that reading. Without this, `BASE_URL_OVERRIDE_ALLOWED` could
+        become permanently True and the suite would not notice."""
+        import importlib
+
+        monkeypatch.setenv("ELYSIUM_ALLOW_BASE_URL_OVERRIDE", value)
+        monkeypatch.setenv("OPENROUTER_BASE_URL", "https://staging.example/api/v1")
+        importlib.reload(config)
+        importlib.reload(network_client)
+        try:
+            assert config.BASE_URL_OVERRIDE_ALLOWED is opens
+            assert ("staging.example" in network_client.allowed_hosts()) is opens
+        finally:
+            monkeypatch.undo()
+            importlib.reload(config)
+            importlib.reload(network_client)
+
+    def test_an_explicit_opt_in_admits_a_real_staging_provider(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The owner needs a non-loopback test server sometimes, so the door
+        is not nailed shut - it needs a second, differently named switch that
+        says out loud what it does. Two variables are not a wall against
+        somebody who can already write one; what they remove is the SILENT
+        path."""
+        monkeypatch.setattr(config, "OPENROUTER_BASE_URL",
+                            "https://staging.example/api/v1")
+        monkeypatch.setattr(config, "BASE_URL_OVERRIDE_ALLOWED", True)
+
+        allowed = network_client.allowed_hosts()
+
+        assert "staging.example" in allowed
+        assert "openrouter.ai" in allowed
 
 
 class TestWhatIsRefused:
@@ -64,6 +179,54 @@ class TestWhatIsRefused:
         with pytest.raises(network_client.EgressRefused) as caught:
             await network_client._one_host_only(request)
         assert httpx.URL(url).host in str(caught.value)
+
+    @pytest.mark.anyio
+    async def test_the_right_host_over_plain_http_is_still_refused(
+        self, anyio_backend
+    ) -> None:
+        """The second hole, and the one only the SCHEME catches.
+
+        `http://openrouter.ai/api/v1` names the correct host, so the host
+        check waved it through and `Authorization: Bearer` left over port 80
+        in the clear for anyone on the path. Nothing in this class covered
+        it: every URL above is already https, so the check could be deleted
+        and the suite would not notice - measured, 29/29 green with the
+        scheme branch removed."""
+        request = httpx.Request(
+            "POST", "http://openrouter.ai/api/v1/chat/completions")
+        with pytest.raises(network_client.EgressRefused) as caught:
+            await network_client._one_host_only(request)
+        assert "http" in str(caught.value)
+
+    @pytest.mark.anyio
+    async def test_loopback_is_refused_by_the_host_gate_before_the_scheme_gate(
+        self, anyio_backend, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Which gate refuses it, not merely that it is refused.
+
+        With loopback out of the default set the host check fires first, so
+        the message names the host rather than the scheme. That ordering is
+        worth pinning: a refusal that blamed plain http would send somebody
+        looking for a certificate, and the real answer is that the address is
+        not on the list at all.
+        """
+        monkeypatch.setattr(config, "BASE_URL_OVERRIDE_ALLOWED", False)
+        request = httpx.Request("POST", "http://127.0.0.1:9797/api/v1/models")
+        with pytest.raises(network_client.EgressRefused) as caught:
+            await network_client._one_host_only(request)
+        assert "exactly one host" in str(caught.value)
+
+    @pytest.mark.anyio
+    async def test_loopback_over_plain_http_is_allowed_once_it_is_admitted(
+        self, anyio_backend, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The discriminating control, now behind the switch. A blanket https
+        rule would break the local mock provider, which is plain http and
+        never leaves the machine, so the exemption still has to be measured
+        rather than assumed."""
+        monkeypatch.setattr(config, "BASE_URL_OVERRIDE_ALLOWED", True)
+        request = httpx.Request("POST", "http://127.0.0.1:9797/api/v1/models")
+        await network_client._one_host_only(request)   # must not raise
 
     @pytest.mark.anyio
     async def test_the_provider_itself_passes(self, anyio_backend) -> None:
@@ -168,9 +331,14 @@ class TestTheHostComparisonFailsInTheSafeDirection:
         await network_client._one_host_only(request)
 
     @pytest.mark.anyio
-    async def test_an_ipv6_loopback_literal_passes(self, anyio_backend
-                                                    ) -> None:
-        # A user's local proxy or the mock provider can be addressed this way.
+    async def test_an_ipv6_loopback_literal_passes_once_admitted(
+        self, anyio_backend, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The mock provider can be addressed this way, and httpx hands the
+        # hook "::1" with the brackets stripped. That stripping is the point
+        # of the test: if it ever changed, the string compare against the
+        # admitted set would silently stop matching.
+        monkeypatch.setattr(config, "BASE_URL_OVERRIDE_ALLOWED", True)
         request = httpx.Request("GET", "http://[::1]:9797/api/v1/models")
         await network_client._one_host_only(request)
 
@@ -295,3 +463,64 @@ class TestNothingElseBuildsAClient:
         door = re.compile(pattern)
         assert door.search(offender), pattern
         assert not door.search(clean), pattern
+
+
+class TestARefusalSaysWhyInTheLog:
+    """Nothing downstream can say it, so this says it.
+
+    EgressRefused is never caught by name anywhere in the app: six call sites
+    swallow it into `except Exception` and report type(exc).__name__.
+    Measured, with OPENROUTER_BASE_URL naming a foreign host and the flag
+    absent: five different error codes and six different sentences reach the
+    user, and two of them tell them to check a proxy that is working.
+    """
+
+    @pytest.mark.anyio
+    async def test_a_poisoned_variable_is_named_as_the_cause(
+        self, anyio_backend, monkeypatch: pytest.MonkeyPatch, caplog
+    ) -> None:
+        monkeypatch.setattr(config, "OPENROUTER_BASE_URL_OVERRIDDEN", True)
+        monkeypatch.setattr(config, "BASE_URL_OVERRIDE_ALLOWED", False)
+        request = httpx.Request("POST", "https://evil.example.com/api/v1/x")
+        with caplog.at_level("WARNING", logger=network_client.logger.name):
+            with pytest.raises(network_client.EgressRefused):
+                await network_client._one_host_only(request)
+        said = " ".join(r.getMessage() for r in caplog.records)
+        assert "ELYSIUM_ALLOW_BASE_URL_OVERRIDE" in said
+        assert "evil.example.com" in said
+
+    @pytest.mark.anyio
+    async def test_an_ordinary_refusal_does_not_blame_the_variable(
+        self, anyio_backend, monkeypatch: pytest.MonkeyPatch, caplog
+    ) -> None:
+        # The discriminating half. A refusal that has nothing to do with the
+        # override must not send somebody hunting for an environment variable
+        # they never set.
+        monkeypatch.setattr(config, "OPENROUTER_BASE_URL_OVERRIDDEN", False)
+        monkeypatch.setattr(config, "BASE_URL_OVERRIDE_ALLOWED", False)
+        request = httpx.Request("POST", "https://evil.example.com/api/v1/x")
+        with caplog.at_level("WARNING", logger=network_client.logger.name):
+            with pytest.raises(network_client.EgressRefused):
+                await network_client._one_host_only(request)
+        said = " ".join(r.getMessage() for r in caplog.records)
+        assert "evil.example.com" in said          # ground: it did report
+        assert "ELYSIUM_ALLOW_BASE_URL_OVERRIDE" not in said
+
+    @pytest.mark.anyio
+    async def test_the_refusal_log_carries_no_path_and_no_header(
+        self, anyio_backend, monkeypatch: pytest.MonkeyPatch, caplog
+    ) -> None:
+        # This function sees every outbound request, so it is the one place a
+        # url path or an Authorization header could reach the log.
+        monkeypatch.setattr(config, "OPENROUTER_BASE_URL_OVERRIDDEN", True)
+        monkeypatch.setattr(config, "BASE_URL_OVERRIDE_ALLOWED", False)
+        request = httpx.Request(
+            "POST", "https://evil.example.com/api/v1/chat/a-chat-title",
+            headers={"Authorization": "Bearer sk-secret-value"})
+        with caplog.at_level("WARNING", logger=network_client.logger.name):
+            with pytest.raises(network_client.EgressRefused):
+                await network_client._one_host_only(request)
+        said = " ".join(r.getMessage() for r in caplog.records)
+        assert "a-chat-title" not in said
+        assert "sk-secret-value" not in said
+        assert "Bearer" not in said

@@ -131,7 +131,8 @@ class TestItRemovesNothingElse:
         folder = Path(config.DB_PATH).parent
         neighbours = {
             name: f"identity-{name}".encode()
-            for name in ("salt.bin", "verifier.bin", "kdf.json")
+            for name in ("salt.bin", "verifier.bin", "kdf.json",
+                         "vault.recovery")
         }
         for name, content in neighbours.items():
             (folder / name).write_bytes(content)

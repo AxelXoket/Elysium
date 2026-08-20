@@ -212,7 +212,7 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
 #: test would notice. This closes that by refusing ANY change to the section
 #: until somebody comes here, decides what the change claims, and registers a
 #: proof for it. Updating this constant is the deliberate act.
-SECTION_DIGEST = "20480082d3a2baf9b1978e5844a3fac70ec9b794178df6476dc3ba229aaf0fcf"
+SECTION_DIGEST = "f10b0209cb7e22f9933b8e460072ea8c17e8184ded9e80188e492b395fd9e10a"
 
 
 def _section() -> str:

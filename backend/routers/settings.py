@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 
 import anyio.to_thread
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 import auto_lock
 import keyring_service
@@ -89,7 +89,17 @@ class ProxyAliasBody(BaseModel):
     write-only, cleared after every save and never shown again. So once a proxy
     existed, naming it meant retyping a URL nobody could see. It was not a
     hard path; it was an impossible one.
+
+    `forbid` for the same reason as ModelSelectionBody, which is the only
+    other body in this file with NO required field: absence means "clear",
+    so an unknown field name is not a harmless typo. Under the default
+    `ignore` a request carrying `proxy_allias` reached the route as
+    `proxy_alias=None`, the route wrote "", the stored label was DELETED, and
+    the answer was `{"ok": true}`. Every other body here has at least one
+    required field and so already 422s on a misspelling; these two did not.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     proxy_alias: str | None = None
 
@@ -519,6 +529,17 @@ async def save_stop_sequences(body: StopSequencesBody) -> dict:
 # ---------------------------------------------------------------------------
 
 class ModelSelectionBody(BaseModel):
+    # `forbid`, not the `ignore` the completions bodies use, because the two
+    # failure modes are not the same shape. Here the field is OPTIONAL and its
+    # absence is meaningful: a missing `selected_model_id` means "clear the
+    # selection". So under `ignore`, a caller that sends the wrong field name
+    # gets the value dropped, the model set to None, the stored selection
+    # DELETED, and `{"ok": true}` back - a silent destructive write reported
+    # as a success. docs/frontend_contract.md spelled the field `model_id`
+    # until 2026-08-20, so the public contract described exactly that request.
+    # An unknown field is now a 422 and the stored value is left alone.
+    model_config = ConfigDict(extra="forbid")
+
     selected_model_id: str | None = None
 
 

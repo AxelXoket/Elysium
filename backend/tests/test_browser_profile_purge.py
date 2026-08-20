@@ -367,3 +367,57 @@ class TestPurgeStaysInsideTheProfile:
 
         assert vault.read_bytes() == b"SQLite format 3\x00encrypted"
         assert salt.read_bytes() == b"0123456789abcdef"
+
+
+class TestTheServerSweepsAProfileTheLastSessionAbandoned:
+    """The exit sweep is not enough, and the gap was measured rather than
+    imagined.
+
+    A first draft of this docstring said `run_app.clear_session_residue()`
+    runs on the way OUT and that a crash therefore escapes it. That was
+    wrong, and the same wrong sentence was caught and corrected in main.py
+    while this copy survived. run_app calls it on the way IN, before the
+    window opens, and calls `browser_profile.purge()` on the way out, so a
+    crash IS cleaned up by the next launch of the packaged app.
+
+    The real gap is narrower and it is the dev path: `start_backend.bat`
+    runs uvicorn directly and never imports run_app at all, so nothing
+    sweeps anything there. On 2026-08-20 that left 21 MB of WebView2
+    cache in the dev tree, dated 25 July, with ten files carrying `first_mes`
+    and ten carrying `system_prompt` as plain readable JSON - and `git status`
+    said nothing, because the folder is gitignored.
+
+    So the sweep also runs at SERVER STARTUP, which is the one thing both
+    entry points share. Driven through the real ASGI lifespan rather than by
+    calling the helper, because "purge works" was already true; what was
+    missing was anybody calling it on this path.
+    """
+
+    def test_starting_the_server_shreds_what_a_killed_session_left(
+        self, profile: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import config
+        import main
+        from fastapi.testclient import TestClient
+
+        # DATA_DIR is read inside the lifespan, so patch the module attribute
+        # the lifespan actually reads.
+        monkeypatch.setattr(config, "DATA_DIR", str(profile.parent),
+                            raising=False)
+        leak = profile / "EBWebView" / "Default" / "Cache" / "Cache_Data" / "f_000066"
+        keep = profile / "EBWebView" / "Default" / "IndexedDB" / "wallpaper" / "1.ldb"
+        # GROUND: the leak is really there before the server starts, or the
+        # assertion below passes on an empty directory.
+        assert leak.exists() and CANARY in leak.read_bytes()
+        assert keep.exists()
+
+        with TestClient(main.app):
+            pass
+
+        assert not leak.exists(), (
+            "a cached API response survived server startup - the only sweep "
+            "on this path"
+        )
+        # And the sweep stayed a sweep: the profile still exists for what it
+        # is for. A startup that wiped the wallpaper would be a worse bug.
+        assert keep.exists() and keep.read_bytes() == b"PNGDATA"

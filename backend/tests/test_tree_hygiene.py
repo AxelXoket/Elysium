@@ -249,3 +249,55 @@ def test_the_retired_verify_scripts_stay_retired():
         "the harness is back. It left 136 test vaults in %TEMP% over twelve "
         "days, and the tests that reaped them went with it."
     )
+
+
+def test_every_name_crypto_writes_beside_the_vault_is_ignored():
+    """The vault's identity files, and the backups crypto.py makes of them,
+    must never be committable.
+
+    `salt.bin` + `verifier.bin` together are an offline, unlimited-rate oracle
+    against the passphrase. That is why the bare names are ignored - but until
+    2026-08-20 the BACKUPS were not. `.gitignore` carried `*.bak`, and its own
+    comment claimed that covered "salt.bin.new, verifier.bin.bak"; crypto.py
+    has never written a bare `.bak`. It writes `<name>.bak-<unix ts>` in three
+    places, and `*.bak` wants a name that ENDS in `.bak`. In a dev checkout
+    DATA_DIR is `backend/`, so a passphrase change dropped both files straight
+    into the work tree as untracked files `git add -A` would have staged, in a
+    repository that is public.
+
+    The names here are written to the SHAPE crypto.py builds - stem plus
+    `.bak-<ts>` - rather than imported, because crypto.py has no constant to
+    import: it composes them inline in initialize, in change_passphrase, and
+    in the shelve path that follows it. Say that plainly
+    rather than claim more: if somebody renames the stems, this test goes on
+    passing while the new names sit unignored. The stems are also asserted
+    bare, so at least the live files stay covered. Asked of git itself, not of the .gitignore text: a rule can be
+    present and still be shadowed by a later negation.
+    """
+    ts = 1755690000
+    names = []
+    for stem in ("salt.bin", "verifier.bin", "kdf.json",
+                 "vault.recovery"):
+        names.append(f"backend/{stem}")
+        names.append(f"backend/{stem}.bak-{ts}")   # the three shelve sites
+        names.append(f"backend/{stem}.new")        # the crash-safe temporary
+    # GROUND: the check can report "not ignored", or it proves nothing.
+    control = "backend/main.py"
+    proc = subprocess.run(
+        ["git", "check-ignore", "--stdin", "-v"],
+        cwd=hygiene.REPO_ROOT, capture_output=True,
+        input="\n".join(names + [control]).encode(),
+    )
+    ignored = {
+        line.split("\t")[-1].replace("\\", "/")
+        for line in proc.stdout.decode().splitlines() if "\t" in line
+    }
+    assert control not in ignored, (
+        "the control file is ignored too, so this test cannot tell an ignored "
+        "path from an unignored one and its result means nothing"
+    )
+    missing = [n for n in names if n not in ignored]
+    assert not missing, (
+        f"these vault identity artefacts are NOT ignored and could be "
+        f"committed to a public repository: {missing}"
+    )

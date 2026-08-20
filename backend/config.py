@@ -64,7 +64,26 @@ _DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_BASE_URL: str = os.environ.get(
     "OPENROUTER_BASE_URL", _DEFAULT_OPENROUTER_BASE_URL
 )
-#: True when the sole permitted network destination has been replaced.
+#: The ONE explicit opt-in that lets a non-default base URL reach the egress
+#: allowlist. Nothing else does, and OPENROUTER_BASE_URL on its own does not.
+#:
+#: Until 2026-08-20 the allowlist was DERIVED from OPENROUTER_BASE_URL, which
+#: meant the gate took its guest list from the guest. One environment variable,
+#: writable by any program running as the user with no elevation, moved both
+#: the destination and the permission to reach it - and the Authorization
+#: header went along. The single defence was a log line in a file nobody opens.
+#:
+#: Two variables instead of one is not a wall against a targeted attacker who
+#: can already write HKCU; say that plainly rather than oversell it. What it
+#: does buy is that the SILENT path is gone: a poisoned base URL alone now
+#: fails loudly at the chokepoint instead of quietly succeeding, and the second
+#: name says out loud what turning it on costs.
+BASE_URL_OVERRIDE_ALLOWED: bool = (
+    os.environ.get("ELYSIUM_ALLOW_BASE_URL_OVERRIDE", "") == "1"
+)
+
+#: True when the sole permitted network destination has been replaced. Says
+#: nothing about whether that replacement is HONOURED - see the flag above.
 OPENROUTER_BASE_URL_OVERRIDDEN: bool = (
     OPENROUTER_BASE_URL != _DEFAULT_OPENROUTER_BASE_URL
 )
@@ -98,8 +117,10 @@ def warn_if_base_url_overridden() -> None:
     _BASE_URL_WARNED = True
     import logging as _logging
     _logging.getLogger(__name__).warning(
-        "OPENROUTER_BASE_URL overridden to %s - API requests (including the "
-        "Authorization header) go to this host.", OPENROUTER_BASE_URL,
+        "OPENROUTER_BASE_URL overridden to %s. Requests are REFUSED at the "
+        "egress chokepoint unless ELYSIUM_ALLOW_BASE_URL_OVERRIDE=1 is also "
+        "set; with it, API requests including the Authorization header go to "
+        "this host.", OPENROUTER_BASE_URL,
     )
 
 # Injected under the "provider" key in every chat completion request body.

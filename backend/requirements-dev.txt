@@ -30,3 +30,15 @@ piexif>=1.1.3
 # rule set moved between them. A version below the floor would run, stay quiet
 # and look like a pass.
 ruff>=0.16.3
+
+# The test runner itself, which was never declared. README tells a reader to
+# run `python -m pytest tests -q` and a fresh clone answered "No module named
+# pytest": the whole suite was undeclared infrastructure that happened to be
+# installed on the machines that ran it. Found on 20 August 2026 by walking
+# README as a first-time downloader.
+#
+# anyio is the async plugin the egress and vault route tests run under
+# (@pytest.mark.anyio); pytest alone collects them and skips every one, which
+# is the quiet failure this file exists to prevent.
+pytest>=8.0
+anyio>=4.0

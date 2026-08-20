@@ -78,6 +78,7 @@ from __future__ import annotations
 import ctypes
 import logging
 import os
+import re
 import subprocess
 from collections.abc import MutableMapping
 from ctypes import wintypes
@@ -160,6 +161,93 @@ _WEBVIEW2_ARGUMENTS_ENV = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"
 #: renderers are its own children, not ours, and are not consulted.
 _WEBVIEW2_IMAGE = "msedgewebview2.exe"
 
+#: Every environment variable the WebView2 loader consults, taken from
+#: Microsoft's CreateCoreWebView2EnvironmentWithOptions reference rather than
+#: from memory. All nine are writable by any program running as this user
+#: with one setx and no elevation, and each one changes the browser that
+#: renders the decrypted conversation:
+#:
+#:   BROWSER_EXECUTABLE_FOLDER  - supplies msedgewebview2.exe itself, so every
+#:                                other check on this page is checking a binary
+#:                                the attacker provided
+#:   USER_DATA_FOLDER           - moves the browser profile somewhere
+#:                                browser_profile.purge() has never heard of,
+#:                                so the cache of the conversation outlives the
+#:                                sweep that is supposed to remove it
+#:   ADDITIONAL_BROWSER_ARGUMENTS - --remote-debugging-port and friends
+#:   CHANNEL_SEARCH_KIND        - which runtime gets picked
+#:   RELEASE_CHANNELS           - the same, by channel
+#:   WAIT_FOR_SCRIPT_DEBUGGER   - halts the browser for a debugger to attach
+#:   PIPE_FOR_SCRIPT_DEBUGGER   - hands the debugger a pipe
+#:   RELEASE_CHANNEL_PREFERENCE - which channel is preferred
+#:   USE_EDGE_VIEW              - a different hosting mode entirely
+#:
+#: The last two are the only ones this function can close COMPLETELY, and that
+#: is worth stating precisely: Microsoft documents no registry equivalent for
+#: them, while the other seven have one under Software\Policies\Microsoft\Edge
+#: \WebView2 readable from HKCU as well as HKLM. Deleting a variable therefore
+#: closes the environment door and says nothing about the registry door. See
+#: webview2_policy_overrides, which looks at the second door without claiming
+#: to shut it.
+_WEBVIEW2_OVERRIDE_ENV = (
+    "WEBVIEW2_BROWSER_EXECUTABLE_FOLDER",
+    "WEBVIEW2_USER_DATA_FOLDER",
+    _WEBVIEW2_ARGUMENTS_ENV,
+    "WEBVIEW2_CHANNEL_SEARCH_KIND",
+    "WEBVIEW2_RELEASE_CHANNELS",
+    "WEBVIEW2_RELEASE_CHANNEL_PREFERENCE",
+    "WEBVIEW2_USE_EDGE_VIEW",
+    "WEBVIEW2_WAIT_FOR_SCRIPT_DEBUGGER",
+    "WEBVIEW2_PIPE_FOR_SCRIPT_DEBUGGER",
+)
+
+#: Why these are DELETED rather than pinned to a value of our own, which is
+#: the question a reader will ask, because a disassembly of loader_x64.dll on
+#: 20 August 2026 answered it in the opposite direction first.
+#:
+#: The loader resolves each field independently, environment variable first
+#: and the registry policy only when the variable is EMPTY. So setting a
+#: non-empty value would suppress that field's policy lookup as well, and
+#: deleting leaves the policy door for that field open. That reads like an
+#: argument for pinning, and it is not one:
+#:
+#:   * The policy door is shut by Windows on a default install, not by us.
+#:     HKCU\Software\Policies has a protected ACL owned by SYSTEM which grants
+#:     the interactive user read only, and creating the subkey was measured to
+#:     be DENIED without elevation on this machine. The hive the attacker can
+#:     write is the environment; the hive they cannot is policy. Deleting aims
+#:     at the door that is actually open.
+#:   * A pinned BROWSER_EXECUTABLE_FOLDER has to name a real folder, and the
+#:     installed runtime is evergreen: the version number in that path changes
+#:     under us without warning. Pinning would trade an attack nobody can
+#:     currently mount for an app that stops opening after a Microsoft update.
+#:
+#: Stated as a limit rather than a footnote: this is measured on one machine
+#: and on one runtime version. A managed machine whose administrator has
+#: relaxed that ACL is outside what was measured.
+
+
+#: Switches that turn the window rendering the decrypted conversation into
+#: something another program can read, and which therefore make "our flag is
+#: present" the wrong question. A DENYLIST rather than an allowlist, and that
+#: is deliberate: the WebView2 browser process carries dozens of switches it
+#: gives itself, so an allowlist would report every future Chromium version as
+#: hostile and be switched off within a week.
+#:
+#: What a denylist cannot do is catch the next dangerous switch before anyone
+#: has heard of it. That is the honest limit, and it is why this sits beside
+#: the environment scrub rather than replacing it.
+_WEBVIEW2_DANGEROUS_SWITCHES = frozenset({
+    "--remote-debugging-port",        # the DevTools protocol, over a socket
+    "--remote-debugging-pipe",        # the same, over a pipe
+    "--remote-allow-origins",         # who may speak to the above
+    "--auto-open-devtools-for-tabs",
+    "--disable-web-security",
+    "--disable-site-isolation-trials",
+    "--headless",                     # a window nobody sees is not our window
+    "--dump-dom",
+})
+
 
 def _on_windows() -> bool:
     return os.name == "nt"
@@ -192,6 +280,163 @@ def reset_dll_search_path() -> bool:
         return bool(fn(None))
     except (AttributeError, OSError):
         return False
+
+
+#: What the process keeps for itself after narrow_own_process runs, spelled
+#: out because every bit in it was a decision and a future edit will want to
+#: know which ones are load-bearing.
+#:
+#:   PROCESS_TERMINATE               Task Manager, taskkill, and the job the
+#:                                   launcher puts children in. Measured: with
+#:                                   this removed the app cannot be killed
+#:                                   normally, which is a support nightmare
+#:                                   for a protection nobody asked for.
+#:   PROCESS_QUERY_LIMITED_INFORMATION
+#:                                   run_app._own_image() and the single
+#:                                   instance handover read it. Measured open
+#:                                   with error 0 after narrowing.
+#:   SYNCHRONIZE                     waiting on us to exit, which the
+#:                                   PyInstaller bootloader does.
+#:   READ_CONTROL                    reading the DACL back, which is how this
+#:                                   function verifies its own work.
+_PROCESS_KEEP_MASK = 0x00121001
+
+#: The OWNER RIGHTS well known SID. Without an ACE for it this whole function
+#: is theatre, and that was MEASURED rather than reasoned: Windows grants the
+#: object's owner an implicit READ_CONTROL and WRITE_DAC, and we own our own
+#: process. Three calls defeated the first version - OpenProcess(WRITE_DAC),
+#: SetSecurityInfo putting PROCESS_ALL_ACCESS back, reopen with VM_READ - and
+#: the planted secret came back verbatim. An OWNER RIGHTS ACE replaces that
+#: implicit grant with an explicit one, and the same three calls then fail
+#: with error 5.
+_OWNER_RIGHTS_SID = "S-1-3-4"
+
+_SE_KERNEL_OBJECT = 6
+_DACL_SECURITY_INFORMATION = 0x00000004
+#: PROTECTED, so nothing inherits its way back in. Measured honestly: removing
+#: this flag changes NOTHING on this machine and no test goes red, because a
+#: process object has no inheritable parent DACL to receive. It stays because
+#: it costs a constant and states the intent, and because "it happens not to
+#: matter here" is a worse reason to omit a protection than to include one.
+_PROTECTED_DACL_SECURITY_INFORMATION = 0x80000000
+
+
+def narrow_own_process() -> bool:
+    """Take PROCESS_VM_READ and friends away from everything, including us.
+
+    WHAT THIS STOPS, and it is exactly one thing: a program running as this
+    same user, with no elevation, opening this process by pid and reading the
+    vault key, the decrypted API key or the launch token straight out of its
+    memory. That is not hypothetical here. launch_token.py's docstring carries
+    the evidence of a working exploit against this very project, "handle
+    opened with error 0", and the fix applied that day moved the secret from
+    the environment block into a module global - four kilobytes away, not out
+    of reach.
+
+    WHEN IT RUNS, and this is the whole reason the function exists at all. It
+    must NOT go in harden(). That was tried on 20 August 2026 and measured:
+    with the mask below in place before the window is created, the .NET CLR
+    that pywebview's WinForms backend needs cannot initialise, `import clr`
+    raises "Failed to initialize Python.Runtime.dll", and the app has no
+    window. Every right that is not itself a full bypass was added back and it
+    still failed, so the CLR needs one of VM_READ, VM_WRITE, DUP_HANDLE,
+    CREATE_THREAD or WRITE_DAC, and every one of those hands the whole thing
+    back.
+
+    Called LATE it works. Measured three times with a real WebView2 window on
+    a throwaway vault: the browser process starts, the renderer answers, a
+    second navigation works, WebGL composites, and OpenProcess(VM_READ) from
+    another process goes from error 0 to error 5. The CLR is already up by
+    then and does not ask again.
+
+    WHAT THE TIMING COSTS, said plainly rather than left for a reader to work
+    out. The launch token is issued before the window and is therefore
+    readable for the few seconds until this runs. That is not the loss it
+    looks like: the token is handed to the browser in a URL fragment, so the
+    WebView2 renderer holds it too, and that process is not ours and cannot be
+    narrowed. The vault key is the prize here, and it does not exist until
+    somebody types a passphrase, which is long after this.
+
+    THE CEILING. An attacker who already held a handle before this ran keeps
+    it, because Windows checks access when a handle is opened and not after.
+    An administrator with SeDebugPrivilege ignores the DACL entirely. And the
+    conversation itself is rendered by msedgewebview2.exe, a process this app
+    does not own and cannot protect, so this denies the durable capability -
+    offline decryption of app.db forever, plus the API key - and does nothing
+    about what is on the screen right now. SECURITY.md says so and this does
+    not make that sentence false.
+    """
+    if not _on_windows():
+        return False
+    try:
+        advapi = ctypes.windll.advapi32
+        kernel = ctypes.windll.kernel32
+
+        kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        me = kernel.GetCurrentProcess()
+
+        user = _own_user_sid()
+        if not user:
+            return False
+        sddl = (f"D:P(A;;0x{_PROCESS_KEEP_MASK:08X};;;{user})"
+                f"(A;;0x{_PROCESS_KEEP_MASK:08X};;;{_OWNER_RIGHTS_SID})"
+                f"(A;;GA;;;SY)")
+
+        descriptor = ctypes.c_void_p()
+        convert = advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW
+        convert.argtypes = [wintypes.LPCWSTR, wintypes.DWORD,
+                            ctypes.POINTER(ctypes.c_void_p),
+                            ctypes.POINTER(wintypes.DWORD)]
+        convert.restype = wintypes.BOOL
+        if not convert(sddl, 1, ctypes.byref(descriptor), None):
+            return False
+
+        dacl = ctypes.c_void_p()
+        present = wintypes.BOOL()
+        defaulted = wintypes.BOOL()
+        get_dacl = advapi.GetSecurityDescriptorDacl
+        get_dacl.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL),
+                             ctypes.POINTER(ctypes.c_void_p),
+                             ctypes.POINTER(wintypes.BOOL)]
+        get_dacl.restype = wintypes.BOOL
+        if not get_dacl(descriptor, ctypes.byref(present),
+                        ctypes.byref(dacl), ctypes.byref(defaulted)):
+            kernel.LocalFree(descriptor)
+            return False
+
+        set_info = advapi.SetSecurityInfo
+        set_info.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.DWORD,
+                             ctypes.c_void_p, ctypes.c_void_p,
+                             ctypes.c_void_p, ctypes.c_void_p]
+        set_info.restype = wintypes.DWORD
+        rc = set_info(me, _SE_KERNEL_OBJECT,
+                      _DACL_SECURITY_INFORMATION
+                      | _PROTECTED_DACL_SECURITY_INFORMATION,
+                      None, None, dacl, None)
+        kernel.LocalFree(descriptor)
+    except (AttributeError, OSError, ValueError):
+        return False
+    ok = rc == 0
+    log.info("process memory: %s", "closed to other processes as this user"
+             if ok else "READABLE by any program running as this user")
+    return ok
+
+
+def _own_user_sid() -> str | None:
+    """This process's user SID as a string, or None if it cannot be had."""
+    try:
+        out = subprocess.run(["whoami", "/user", "/fo", "csv", "/nh"],
+                             capture_output=True, text=True, timeout=10,
+                             creationflags=_NO_WINDOW)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    parts = [p.strip().strip('"') for p in (out.stdout or "").split(",")]
+    for part in parts:
+        if part.startswith("S-1-"):
+            return part
+    return None
 
 
 def restrict_crash_dump_contents() -> bool:
@@ -387,6 +632,164 @@ def accessibility_privacy_requested() -> bool:
         ACCESSIBILITY_PRIVACY_ENV, "") != ACCESSIBILITY_PRIVACY_OFF
 
 
+#: A WebView2 switch name and nothing else, used to decide what may be NAMED
+#: in the log below. The value half of a switch carries whatever the person who
+#: planted it chose - a path with the account name in it, a redirected profile
+#: directory, pasted text - so it is cut off at the first "=" and the residue
+#: still has to look like a switch before it is printed. This pattern admits no
+#: backslash, no colon, no space and nothing outside ASCII, so a bare path or a
+#: fragment of somebody's writing cannot reach elysium.log through it.
+_SWITCH_NAME = re.compile(r"^--[a-z0-9][a-z0-9-]*$")
+
+
+#: Where the same five overrides live when they come from the registry rather
+#: than the environment. HKLM is checked first and then HKCU, and HKCU needs no
+#: elevation, which is what makes this worth looking at.
+_WEBVIEW2_POLICY_KEY = r"Software\Policies\Microsoft\Edge\WebView2"
+
+#: Written this way so the separator is never a lone escape in a source
+#: line. It is the registry path separator, nothing more.
+_SEP = chr(92)
+
+#: The five policy names, in the order Microsoft lists them.
+_WEBVIEW2_POLICY_NAMES = (
+    "BrowserExecutableFolder",
+    "ChannelSearchKind",
+    "ReleaseChannels",
+    "AdditionalBrowserArguments",
+    "UserDataFolder",
+)
+
+
+def webview2_policy_overrides(open_key=None) -> list[str]:
+    """Which WebView2 policy keys exist on this machine. Names, never values.
+
+    LOOKS, does not touch. Nothing in this project writes to another product's
+    policy keys, and a registry key under the Microsoft Edge WebView2 policy path is
+    shared with every WebView2 application on this machine, not ours
+    to edit.
+
+    Reported because the honest limit of the environment scrub is exactly here.
+    A policy value under HKCU is writable without elevation and can hand
+    WebView2 a browserExecutableFolder of somebody else's choosing, at which
+    point accessibility_privacy_verified is reading a command line off a binary
+    the attacker supplied. Saying "the browser arguments are ours" while that
+    is unexamined would be the kind of half-true claim this module exists to
+    avoid.
+
+    What is deliberately NOT claimed: Microsoft's reference says "if none of
+    those environment variables exist, then the registry is examined next",
+    and whether that is per field or for the block as a whole is not stated
+    anywhere in the documentation. So setting our variable MIGHT suppress the
+    registry entirely and might not. This function does not rely on either
+    reading; it reports what is there and lets the log say so.
+
+    open_key is an injection point for the test, in the same spirit as the
+    environ argument on apply_accessibility_privacy: the alternative would be
+    a test that writes to the machine's real policy hive to prove a read.
+    """
+    if open_key is None:
+        if not _on_windows():
+            return []
+        import winreg
+
+        roots = (("HKLM", winreg.HKEY_LOCAL_MACHINE),
+                 ("HKCU", winreg.HKEY_CURRENT_USER))
+
+        def open_key(root, subkey):                      # noqa: F811
+            return winreg.OpenKey(root, subkey)
+    else:
+        roots = (("HKLM", "HKLM"), ("HKCU", "HKCU"))
+    found = []
+    for label, root in roots:
+        for name in _WEBVIEW2_POLICY_NAMES:
+            try:
+                handle = open_key(root, _WEBVIEW2_POLICY_KEY + _SEP + name)
+            except OSError:
+                continue
+            close = getattr(handle, "Close", None)
+            if close is not None:
+                close()
+            found.append(label + _SEP + name)
+    if found:
+        log.warning(
+            "webview2 policy: %s present under %s - a policy value can replace "
+            "the browser binary or its profile folder, and this app does not "
+            "and will not edit another product's policy keys",
+            ", ".join(found), _WEBVIEW2_POLICY_KEY)
+    return found
+
+
+def _scrub_webview2_environment(env) -> list[str]:
+    """Delete every WebView2 override variable. Returns the ones that were set.
+
+    All nine, not just the one we care about, because the variable we set is
+    the least dangerous member of the family. A planted
+    WEBVIEW2_USER_DATA_FOLDER moves the browser profile out from under
+    browser_profile.purge, which means the cached conversation survives the
+    sweep written to remove it, and nothing about closing the accessibility
+    tree would have noticed.
+
+    Deletes rather than blanks. An empty variable is still a variable, and
+    Microsoft's reference distinguishes "exist" from "non-empty" for some of
+    these and not others, so the only state with one documented meaning is
+    absent.
+    """
+    was_set = [name for name in _WEBVIEW2_OVERRIDE_ENV if env.get(name, "")]
+    if _WEBVIEW2_ARGUMENTS_ENV in was_set:
+        _report_planted_arguments(env.get(_WEBVIEW2_ARGUMENTS_ENV, ""))
+    others = [name for name in was_set if name != _WEBVIEW2_ARGUMENTS_ENV]
+    if others:
+        # Names only. Two of these carry a filesystem path and a path on
+        # this machine carries the account name; the rest carry channel
+        # names and debugger flags. The value is withheld for all of them
+        # rather than for the two, because a rule with an exception is a
+        # rule somebody has to get right every time it changes.
+        log.warning("webview2 environment: discarded %s - their values are "
+                    "not printed here", ", ".join(others))
+    for name in _WEBVIEW2_OVERRIDE_ENV:
+        try:
+            env.pop(name, None)
+        except (KeyError, OSError):   # a mapping that refuses to forget
+            pass
+    stubborn = [name for name in _WEBVIEW2_OVERRIDE_ENV if env.get(name, "")]
+    if stubborn:
+        log.warning("webview2 environment: %s could NOT be cleared and the "
+                    "contents will reach the browser process",
+                    ", ".join(stubborn))
+    return was_set
+
+
+def _report_planted_arguments(existing: str) -> None:
+    """Say that somebody had written to the WebView2 variable. Names only.
+
+    Silence here would be the worst outcome of the scrub: the value is gone,
+    the attempt is invisible, and the machine looks healthy. So it is a
+    warning rather than an info - a value on this variable is either an
+    attacker or a misconfigured machine, and both are worth a line.
+
+    Counts what it will not name rather than dropping it, because "two tokens
+    were discarded and I would not repeat them" is a different fact from
+    "nothing was there".
+    """
+    tokens = existing.split()
+    if not tokens:
+        return
+    heads = [token.split("=", 1)[0] for token in tokens]
+    printable = [head for head in heads if _SWITCH_NAME.match(head)]
+    named = sorted(set(printable))
+    # Against the printable LIST, not the deduplicated set: two copies of the
+    # same switch are two named tokens, and subtracting the set would report
+    # the duplicate as something we refused to name.
+    unnamed = len(tokens) - len(printable)
+    log.warning(
+        "webview2 arguments: discarded %d pre-existing token(s) from %s - %s%s",
+        len(tokens), _WEBVIEW2_ARGUMENTS_ENV,
+        ", ".join(named) or "none in switch form",
+        f" (and {unnamed} token(s) whose names are not printed here)"
+        if unnamed else "")
+
+
 def apply_accessibility_privacy(
     environ: MutableMapping[str, str] | None = None,
 ) -> bool:
@@ -411,22 +814,44 @@ def apply_accessibility_privacy(
     proves the variable says what we meant, not that WebView2 honoured it.
     accessibility_privacy_verified() is the half that asks the browser process.
 
-    Appends rather than assigns, and skips a duplicate: something else in the
-    environment may already be passing arguments to WebView2, and clobbering
-    somebody else's flags to set ours would be a fine way to break a machine we
-    have never seen.
+    Assigns rather than appends, and the reversal is the point. This function
+    used to append, on the argument that something else in the environment may
+    already be passing arguments to WebView2 and that clobbering somebody
+    else's flags would break a machine we have never seen. That argument was
+    measured on 20 August 2026 and does not hold: pywebview supplies its own
+    flags through CoreWebView2CreationProperties.AdditionalBrowserArguments
+    (webview/platforms/edgechromium.py:82-90), a channel this variable does not
+    touch, and nothing else in this repository writes the variable at all. So
+    the only thing appending preserved was a value somebody else put there.
+
+    Which is the whole problem. The variable is writable by any program running
+    as this user with a single setx and no elevation, and what it carries goes
+    onto the browser process command line. --remote-debugging-port opens the
+    DevTools protocol on the window that is rendering the decrypted
+    conversation, and hands over the launch token in the URL fragment besides.
+    Appending politely forwarded that. Assigning refuses it.
+
+    Both branches scrub, including the one where the user refused the switch.
+    That branch used to return without touching the variable at all, which
+    meant the user who turned this off was the one user whose planted flags
+    sailed through - and a user who turned it off to run assistive technology
+    is exactly the user least able to notice a warning on screen. The refusal
+    branch DELETES the key rather than blanking it, because an empty variable
+    is still a variable and harden's own refusal test asks whether the name is
+    absent.
     """
     env = os.environ if environ is None else environ
+    _scrub_webview2_environment(env)
     if not accessibility_privacy_requested():
         log.info("accessibility tree: left OPEN at the user's request - the "
                  "conversation is readable by any program running as this user")
         return False
-    existing = env.get(_WEBVIEW2_ARGUMENTS_ENV, "")
-    if _RENDERER_ACCESSIBILITY_OFF not in existing.split():
-        env[_WEBVIEW2_ARGUMENTS_ENV] = (
-            f"{existing} {_RENDERER_ACCESSIBILITY_OFF}".strip())
-    armed = _RENDERER_ACCESSIBILITY_OFF in env.get(
-        _WEBVIEW2_ARGUMENTS_ENV, "").split()
+    env[_WEBVIEW2_ARGUMENTS_ENV] = _RENDERER_ACCESSIBILITY_OFF
+    # Equality, not membership. Membership would call a variable carrying our
+    # flag AND a planted one armed, which is the state this function exists to
+    # make impossible.
+    armed = env.get(
+        _WEBVIEW2_ARGUMENTS_ENV, "").split() == [_RENDERER_ACCESSIBILITY_OFF]
     log.info("accessibility tree: %s", "closed" if armed else "NOT closed")
     return armed
 
@@ -624,7 +1049,36 @@ def accessibility_privacy_verified() -> bool | None:
             lines.append(line)
     if not lines:
         return None
-    return all(_RENDERER_ACCESSIBILITY_OFF in line.split() for line in lines)
+    return all(ours and not dangerous
+               for ours, dangerous in map(_command_line_is_ours, lines))
+
+
+def _command_line_is_ours(line: str) -> tuple[bool, frozenset[str]]:
+    """Our switch present, and which denylisted switches came with it.
+
+    Returns the two halves SEPARATELY because a caller that cannot tell them
+    apart writes the wrong sentence. The first draft returned one boolean, and
+    report_accessibility_privacy then logged "the browser did not get
+    --disable-renderer-accessibility" for a browser that had got it and was
+    ALSO carrying --remote-debugging-port. Measured: the two cases produced a
+    byte-identical warning, and the switch that was actually listening on the
+    process rendering the conversation was named nowhere in the log.
+
+    This function used to ask only whether _RENDERER_ACCESSIBILITY_OFF was
+    present, which was the wrong question in a way that mattered: because the
+    loader APPENDS what it finds to what the host set, a planted
+    --remote-debugging-port arrives alongside our flag rather than instead of
+    it. So the old check found our flag, returned True, and
+    report_accessibility_privacy logged "verified closed on the browser
+    process" while the DevTools protocol was listening on that same process.
+    A verification that reports success during the attack it was written to
+    notice is worse than no verification, because somebody reads that line and
+    stops looking.
+    """
+    switches = {token.split("=", 1)[0] for token in line.split()}
+    if _RENDERER_ACCESSIBILITY_OFF not in switches:
+        return False, frozenset()
+    return True, frozenset(switches & _WEBVIEW2_DANGEROUS_SWITCHES)
 
 
 def report_accessibility_privacy() -> bool | None:
@@ -634,6 +1088,20 @@ def report_accessibility_privacy() -> bool | None:
     zero-argument handler with none.
     """
     verdict = accessibility_privacy_verified()
+    # Which of the two failures happened, so the line names the real one.
+    planted: set[str] = set()
+    if verdict is False:
+        for pid in own_child_processes(_WEBVIEW2_IMAGE):
+            line = command_line_of(pid)
+            if line is not None:
+                planted |= _command_line_is_ours(line)[1]
+    if verdict is False and planted:
+        log.warning(
+            "accessibility tree: the flag IS on the WebView2 browser process, "
+            "but so is %s - something has opened a debugging channel on the "
+            "process drawing the conversation. Switch names only; no values "
+            "are printed here", ", ".join(sorted(planted)))
+        return verdict
     if verdict is True:
         log.info("accessibility tree: verified closed on the browser process")
     elif verdict is False:
@@ -892,6 +1360,13 @@ def harden(data_dir: Path | str) -> dict[str, bool | int]:
         # Also has to be early. It is read when the WebView2 environment is
         # created, and after that the tree exists or it does not.
         "accessibility_tree_closed": apply_accessibility_privacy(),
+        # LOOKS, does not touch, and it has to be called from here or the
+        # claim is false. It was written, tested and then never wired in:
+        # SECURITY.md told the reader that Elysium reports a WebView2 policy
+        # key while the only thing that ever called this was pytest. A control
+        # that runs nowhere is a sentence, and this file exists to not write
+        # those.
+        "webview2_policy_overrides": webview2_policy_overrides(),
         "crash_dump_heap_excluded": restrict_crash_dump_contents(),
         "search_index_excluded": exclude_from_search_index(data_dir),
         "windows_excluded_from_capture": apply_screen_privacy(),

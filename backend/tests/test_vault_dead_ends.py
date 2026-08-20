@@ -150,6 +150,156 @@ class TestParametersScryptWillNotTake:
             "the vault opened but nothing wrote the working parameters back")
 
 
+
+class TestTheMirrorSurvivesAPassphraseChange:
+    """The rotation half, which had no coverage at all.
+
+    Eight separate mutations to the rotation's mirror handling were applied
+    and every one of them left the suite green: deleting the replace, deleting
+    the staged write, dropping the bounds check, writing without staging,
+    dropping the repair, dropping the leftover sweep, dropping the shelve, and
+    removing the name from the artefact gate. That is not a gap in one test,
+    it is the absence of the tests.
+    """
+
+    def _vault(self, tmp_path):
+        import crypto
+        vault = crypto.KeyVault(tmp_path)
+        vault.initialize("first-passphrase-long-enough")
+        return vault
+
+    def _rotate(self, vault, phrase="second-passphrase-long-enough"):
+        return vault.change_passphrase(phrase, rekey_fn=lambda key: None,
+                                       verify_fn=lambda key: True)
+
+    def test_ground_a_rotation_leaves_a_live_mirror_for_the_new_salt(
+        self, tmp_path: Path
+    ):
+        # GROUND. Without it every assertion below would also pass for a
+        # rotation that wrote no mirror at all, which is exactly what two of
+        # the surviving mutations produced.
+        vault = self._vault(tmp_path)
+        self._rotate(vault)
+        assert vault.mirror_path.exists(), "the rotation left no live mirror"
+        mirrored = vault._read_mirror()
+        assert mirrored is not None
+        assert mirrored[0] == vault.salt_path.read_bytes()
+        assert vault.left_behind == []
+
+    def test_the_rotation_leaves_no_staging_file_behind(self, tmp_path: Path):
+        # vault.recovery.new.new. _write_mirror staged a path that was already
+        # a staging path, producing a name nothing in the tree knew: the reset
+        # route enumerates <name>, <name>.new and <name>.bak-*, so a full wipe
+        # walked straight past it, and what it walked past was a JSON object
+        # holding the salt and its parameters in plain text.
+        vault = self._vault(tmp_path)
+        self._rotate(vault)
+        leftovers = sorted(p.name for p in tmp_path.iterdir()
+                           if p.name.startswith("vault.recovery")
+                           and p.name != "vault.recovery")
+        assert leftovers == [], f"the rotation left {leftovers}"
+
+    def test_no_second_staging_file_is_created_for_a_named_target(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # The discriminating half of the test above, which only sees the
+        # residue when a rename fails. _write_mirror used to stage a path that
+        # was ALREADY a staging path, so `vault.recovery.new.new` existed for
+        # the length of one rename and survived any rename that did not
+        # happen. This refuses the rename that should never be attempted: with
+        # the composition removed there is no `.new.new` to replace, so
+        # nothing raises and nothing is left.
+        vault = self._vault(tmp_path)
+        real_replace = Path.replace
+
+        def refuse_double_staging(self, target):
+            if Path(self).name.endswith(".new.new"):
+                raise OSError(32, "file is in use by another process")
+            return real_replace(self, target)
+
+        monkeypatch.setattr(Path, "replace", refuse_double_staging)
+        self._rotate(vault)
+
+        residue = sorted(p.name for p in tmp_path.iterdir()
+                         if p.name.endswith(".new.new"))
+        assert residue == [], f"a name nothing in the tree knows: {residue}"
+
+    def test_a_mirror_with_impossible_parameters_is_not_used(
+        self, tmp_path: Path
+    ):
+        # The bounds check exists because kdf.json taught this module the
+        # lesson once already (K-06): a single flipped digit in a decimal
+        # makes hashlib.scrypt raise rather than return, and the mirror is
+        # read on the recovery path, which is the one path that must not
+        # throw. Refusing the file is how it stays a convenience.
+        vault = self._vault(tmp_path)
+        vault.mirror_path.write_text(json.dumps(
+            {"kdf": "scrypt", "salt": "00" * 16,
+             "n": 2 ** 30, "r": 8, "p": 1}), encoding="utf-8")
+        assert vault._read_mirror() is None
+
+    def test_a_mirror_that_could_not_be_replaced_is_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The revoked-key resurrection, and the measurement that found it.
+
+        Both renames that touch this name go through the same file, so ONE
+        open handle on vault.recovery fails the shelve AND the replace. The
+        rotation then completes correctly for salt.bin and verifier.bin while
+        the mirror still describes the salt it just revoked. Before this, the
+        route answered {"unrevoked": []} and the OLD passphrase opened the
+        vault again through recover_with_db, which manufactures a verifier
+        from whatever key the mirrored salt produces.
+        """
+        vault = self._vault(tmp_path)
+        old_salt = vault.salt_path.read_bytes()
+        real_replace = Path.replace
+
+        def refuse_the_mirror(self, target):
+            if "vault.recovery" in Path(self).name or (
+                    "vault.recovery" in Path(target).name):
+                raise OSError(32, "file is in use by another process")
+            return real_replace(self, target)
+
+        monkeypatch.setattr(Path, "replace", refuse_the_mirror)
+        self._rotate(vault)
+
+        assert vault.salt_path.read_bytes() != old_salt   # ground: it rotated
+        assert vault.mirror_path.name in vault.left_behind, (
+            "the rotation left a recipe for the revoked key and said nothing")
+
+    def test_the_mirror_is_shelved_and_shredded_with_the_rest(
+        self, tmp_path: Path
+    ):
+        # It is the same material as salt.bin and it leaves by the same door.
+        # Left on disk, a superseded mirror is the ONE file that carries the
+        # salt and its parameters together.
+        vault = self._vault(tmp_path)
+        self._rotate(vault)
+        shelved = sorted(p.name for p in tmp_path.glob("*.bak-*"))
+        assert shelved == [], f"a superseded identity survived: {shelved}"
+
+    def test_the_old_passphrase_cannot_be_recovered_after_a_rotation(
+        self, tmp_path: Path
+    ):
+        # The property the mirror must not break, asserted directly rather
+        # than inferred from a file format. A first version of this asserted
+        # the verifier bytes were absent from the mirror and called that
+        # revocation; it is not, because recover_with_db writes a verifier for
+        # whatever key the mirrored salt produces.
+        import crypto
+        vault = self._vault(tmp_path)
+        old_key = vault.unlock("first-passphrase-long-enough")
+        assert old_key is not None
+        new_key = self._rotate(vault)
+        assert new_key != old_key
+
+        recovered = crypto.KeyVault(tmp_path).recover_with_db(
+            "first-passphrase-long-enough", db_check=lambda k: k == old_key)
+        assert recovered is None, (
+            "the revoked passphrase opened the vault again after a rotation")
+
+
 class TestARotationThatDiedBetweenTwoRenames:
     """K-05. The state recovery was written for, and the route refused."""
 
@@ -203,19 +353,119 @@ class TestARotationThatDiedBetweenTwoRenames:
         self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # The discriminating half. Widening the gate must not turn it into no
-        # gate: with neither salt on disk there is genuinely nothing to derive
-        # from, and 409 is the honest answer.
+        # gate: with NO salt anywhere on disk there is genuinely nothing to
+        # derive from, and 409 is the honest answer.
+        #
+        # Three files, not one. A salt now lives in three possible places and
+        # this test is about the state where none of them has one. Deleting
+        # only salt.bin stopped being that state the day the mirror landed,
+        # and a test that keeps its name while quietly measuring a different
+        # situation is worse than one that fails.
         import vault_state
 
         vault, _ = _vault_with_db(tmp_path, monkeypatch)
         vault_state.clear_key()
         vault.salt_path.unlink()
+        vault.mirror_path.unlink()
+        assert not vault.salt_path.with_name("salt.bin.new").exists()
+        assert not vault.can_recover()          # ground: nothing is left
 
         response = client.post("/api/v1/vault/unlock",
                                json={"passphrase": PASSPHRASE})
 
         assert response.status_code == 409
         assert response.json()["detail"] == "vault_not_initialized"
+
+    def test_the_mirror_alone_still_opens_the_vault(
+        self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Deleting salt.bin was a sixteen byte total loss. It is not now.
+
+        Measured before the mirror existed: with salt.bin gone and the correct
+        passphrase in hand, recover_with_db returned None, can_recover() said
+        False, /vault/status reported "initialized: false" so the screen
+        offered to set up a passphrase, and /vault/init then refused because
+        the database is encrypted. Every door shut on a vault whose data was
+        intact.
+
+        What this does NOT claim: that the folder is protected. It is an
+        ordinary folder, it moves and copies and deletes like any other, and
+        somebody who removes every copy has removed every copy. This closes
+        the accident and the one known filename, not the intent.
+        """
+        import vault_state
+
+        vault, _ = _vault_with_db(tmp_path, monkeypatch)
+        vault_state.clear_key()
+        vault.salt_path.unlink()
+        assert vault.mirror_path.exists(), "ground: the mirror was written"
+
+        response = client.post("/api/v1/vault/unlock",
+                               json={"passphrase": PASSPHRASE})
+
+        assert response.status_code == 200, response.text
+        assert vault.salt_path.exists(), (
+            "the vault opened but salt.bin was not put back, so the next "
+            "launch would depend on the mirror again")
+
+    def test_a_deleted_mirror_is_rebuilt_on_the_next_unlock(
+        self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Otherwise the protection rots silently. Nothing on the ordinary
+        # unlock path touches disk, so a mirror deleted while every other file
+        # is healthy would stay deleted forever, and the second copy would
+        # turn out not to exist on the one day it was needed.
+        import vault_state
+
+        vault, _ = _vault_with_db(tmp_path, monkeypatch)
+        vault_state.clear_key()
+        vault.mirror_path.unlink()
+
+        response = client.post("/api/v1/vault/unlock",
+                               json={"passphrase": PASSPHRASE})
+
+        assert response.status_code == 200, response.text
+        assert vault.mirror_path.exists(), "the mirror was not rebuilt"
+        rebuilt = vault._read_mirror()
+        assert rebuilt is not None
+        assert rebuilt[0] == vault.salt_path.read_bytes()
+
+    def test_the_mirror_never_carries_the_verifier(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Not an aesthetic rule. change_passphrase deliberately shreds the old
+        # verifier so a rotation actually revokes the old key for snapshots
+        # still encrypted under it. A mirror carrying one would quietly put
+        # that oracle back and make the route's {"unrevoked": []} a lie again,
+        # which is the K-07 defect this class already has scar tissue for.
+        vault, _ = _vault_with_db(tmp_path, monkeypatch)
+        body = vault.mirror_path.read_bytes()
+        verifier = vault.verifier_path.read_bytes()
+
+        assert vault.salt_path.read_bytes().hex().encode() in body  # ground
+        assert verifier not in body
+        assert verifier.hex().encode() not in body
+
+    def test_a_single_flipped_byte_in_the_salt_is_survivable(
+        self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Corruption was as fatal as deletion and harder to diagnose, because
+        # the file is still sitting there looking healthy. Sixteen random
+        # bytes carry no checksum to repair from, so the only answer is a
+        # second copy.
+        import vault_state
+
+        vault, _ = _vault_with_db(tmp_path, monkeypatch)
+        vault_state.clear_key()
+        good = vault.salt_path.read_bytes()
+        vault.salt_path.write_bytes(bytes([good[0] ^ 0x01]) + good[1:])
+
+        response = client.post("/api/v1/vault/unlock",
+                               json={"passphrase": PASSPHRASE})
+
+        assert response.status_code == 200, response.text
+        assert vault.salt_path.read_bytes() == good, (
+            "the vault opened but the corrupt salt was left in place")
 
 
     def test_status_offers_the_unlock_screen_rather_than_setup(

@@ -248,8 +248,9 @@ describe("runs that were paid for and lost", () => {
   // question when a late reply finds its running row gone: does the LAST
   // message of the range still exist? Probed against the real routes, an
   // edit that lands on the range end gives `plan_invalidated`; a deleted
-  // message, a regenerated reply, a cleared chat and an edit whose swept
-  // tail was the range end all give `range_cleared`. So "you edited OR
+  // message, a cleared chat, an aborted send's cleanup and an edit whose
+  // swept tail was the range end all give `range_cleared`. NOT a regenerated
+  // reply: that deletes nothing, so it reaches neither key. So "you edited OR
   // DELETED a message" was wrong about every delete, and "the chat was
   // cleared" was one of four ways into its sibling.
   // -------------------------------------------------------------------
@@ -274,10 +275,17 @@ describe("runs that were paid for and lost", () => {
                      skip_reasons: { range_cleared: 1 } } });
     const box = await screen.findByTestId("worker-status");
     expect(box.textContent).not.toMatch(/range_cleared/);
-    // All three of the common ways in are named, not just the clear.
+    // The ways in are named, not just the clear.
     expect(box.textContent).toMatch(/delete/i);
-    expect(box.textContent).toMatch(/regenerated/i);
     expect(box.textContent).toMatch(/cleared/i);
+    // And NOT a regenerated reply. This assertion used to require the word
+    // "regenerated" and so held the panel to a claim that was not true:
+    // regenerating deletes nothing, `forget_proposals_from_messages` is never
+    // called on that path, and the extraction lands and is written like any
+    // other. Telling the reader it was thrown away was the sixth instance in
+    // this repository of a test nailing down a sentence the code does not
+    // honour, so it is asserted in the negative now.
+    expect(box.textContent).not.toMatch(/regenerat/i);
     // And the old claim that this range has nothing left in it at all. Only
     // the removed messages are gone; the rest of the stretch is re-read.
     expect(box.textContent).toMatch(/whatever survives/i);

@@ -1,9 +1,15 @@
 """mock_provider.py - Minimal local OpenRouter stand-in for E2E smoke tests.
 
 Run:    python tests/mock_provider.py [port]        (default 9797)
-Then:   set OPENROUTER_BASE_URL=http://127.0.0.1:9797/api/v1  and start the
-        backend; the full app works end-to-end with zero network egress and
-        zero credits spent.
+Then:   set ELYSIUM_ALLOW_BASE_URL_OVERRIDE=1
+        set OPENROUTER_BASE_URL=http://127.0.0.1:9797/api/v1
+        and start the backend; the full app works end-to-end with zero
+        network egress and zero credits spent.
+
+        The flag is not optional and was not needed before 20 Aug 2026.
+        Loopback used to be a permitted egress destination unconditionally;
+        it now takes the same opt-in as any other address, because it was
+        the same decision all along.
 
 Serves:
     GET  /api/v1/models            - two fake models with realistic metadata

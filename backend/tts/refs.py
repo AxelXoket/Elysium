@@ -165,6 +165,22 @@ def refs_dir() -> Path:
     return Path(config.TTS_REFS_DIR)
 
 
+#: Serialises _index_key WITHIN this process. O_EXCL settles the race between
+#: PROCESSES - two of them cannot both create the file - but it settles nothing
+#: for threads that arrive at the empty-file repair together: each mints its
+#: own key, each replaces the file, and each re-reads at a different instant,
+#: so three threads walked away with three different salts and therefore three
+#: different folder names for the same voice. Measured with four threads
+#: before this lock existed. The lock is uncontended in the normal path (the
+#: file is there and is read), so the cost is a few nanoseconds on a call that
+#: already touches the disk.
+_index_key_lock = threading.Lock()
+
+#: Set once the odd-size warning below has been emitted, so it is not repeated
+#: on every _hash_name call for the lifetime of the process.
+_odd_key_size_reported = False
+
+
 def _index_key() -> bytes:
     """32 random bytes, generated once per refs folder, read back forever
     after. This is what makes `_hash_name` more than a bare hash of the id:
@@ -175,10 +191,18 @@ def _index_key() -> bytes:
     already open `voice.json` directly), but it closes the cheapest version
     of the same leak the folder rename exists to close.
 
-    O_CREAT | O_EXCL makes the create race-safe: a second process (or thread)
-    that loses the race to create it simply reads what the winner wrote,
-    rather than each computing its own key and disagreeing forever after.
+    O_CREAT | O_EXCL makes the create race-safe ACROSS PROCESSES: a second
+    process that loses the race to create it simply reads what the winner
+    wrote, rather than each computing its own key and disagreeing forever
+    after. Threads inside one process are held apart by `_index_key_lock`
+    instead - see the note on that lock for what happened without it.
     """
+    with _index_key_lock:
+        return _index_key_locked()
+
+
+def _index_key_locked() -> bytes:
+    global _odd_key_size_reported
     path = refs_dir() / INDEX_KEY_NAME
     try:
         data = path.read_bytes()
@@ -203,10 +227,118 @@ def _index_key() -> bytes:
     try:
         fd = os.open(str(path), flags, 0o600)
     except FileExistsError:
-        # Lost the race - somebody else's key is now the file's content.
-        return path.read_bytes()
+        # Lost the race - somebody else's key is now the file's content, or
+        # will be in a moment.
+        #
+        # This branch used to `return path.read_bytes()` unchecked, and that
+        # was a silent, permanent loss of the salt. Two ways to get a file
+        # here that is not 32 bytes: the winner of the race has created it but
+        # has not written to it YET (a real, sub-millisecond window between
+        # the os.open and the os.write below), or a crash/power loss landed in
+        # exactly that window and left a 0-byte file forever. In the second
+        # case every later call returned b"" and `_hash_name` degraded to a
+        # bare sha256 of the voice id - which is precisely the dictionary
+        # attack this file exists to prevent, running with no sign that
+        # anything was wrong and no way to notice or recover.
+        #
+        # So: give the winner a moment, then repair - but ONLY an empty file.
+        #
+        # Empty is the one length that is both broken and safe to replace.
+        # Broken, because b"" is not a salt. Safe, because a key that was
+        # never returned can never have named a folder, so there is nothing
+        # to orphan by choosing a different one.
+        #
+        # ANY other length is left exactly as it is, and that is deliberate.
+        # A first draft of this raised on "wrong size", and it would have
+        # bricked the installs it was meant to protect: the one corruption
+        # this module has actually SEEN makes the file LONGER, not shorter -
+        # pre-O_BINARY text mode rewrote each 0x0A in the key as 0x0D 0x0A,
+        # so those installs carry 33 to 36 bytes. The old code returned them
+        # unchanged, `_hash_name` was self-consistent with them, and every
+        # voice folder resolved. The bytes are still 32 bytes of entropy in a
+        # non-canonical encoding; refusing them would take a working install
+        # and cut it off from its own voices to fix nothing. Same argument for
+        # a hypothetical short-but-not-empty file: whatever wrote it, the
+        # install has been hashing with it and is internally consistent.
+        for _ in range(50):                     # ~0.5s, generous for a write
+            try:
+                data = path.read_bytes()
+            except OSError:
+                data = b""
+            if data:
+                if len(data) != 32 and not _odd_key_size_reported:
+                    # ONCE per process, not once per call. _hash_name calls
+                    # this for every voice, so list_voices() on a CRLF-expanded
+                    # install logged two warnings per voice per refresh -
+                    # measured at six lines for three voices, and elysium.log
+                    # grew on every listing. It names nothing either way (a
+                    # file length is not content and not an on-screen name),
+                    # but a fact that does not change does not need repeating.
+                    _odd_key_size_reported = True
+                    logger.warning(
+                        "tts: the voice index key is %d bytes, not 32; "
+                        "using it as-is", len(data))
+                return data
+            time.sleep(0.01)
+        # Still empty after the wait: rebuild it. Atomic, so a reader that
+        # arrives mid-repair sees either the old empty file or a whole key,
+        # never a half-written one.
+        #
+        # The temp name carries pid and thread id because the wait loop above
+        # SYNCHRONISES every waiter: they all give up at the same moment and
+        # all arrive here together. With one shared `.new` name that is four
+        # threads racing on one file, and on Windows os.replace answers that
+        # with an unhandled WinError 32 - a 500, not a handled TTS error.
+        # Measured, four threads, three died. Losing the race is also not an
+        # error: the winner's key is just as good, so re-read rather than
+        # return the local `key` that never reached the disk.
+        tmp = path.with_name(
+            f"{path.name}.new-{os.getpid()}-{threading.get_ident()}")
+        try:
+            fd2 = os.open(str(tmp), os.O_CREAT | os.O_TRUNC | os.O_WRONLY
+                          | getattr(os, "O_BINARY", 0), 0o600)
+            try:
+                os.write(fd2, key)
+                os.fsync(fd2)
+            finally:
+                os.close(fd2)
+            os.replace(str(tmp), str(path))
+            logger.warning("tts: the voice index key was empty and was rebuilt")
+        except OSError:
+            # Somebody else got there first, or the disk said no. Either way
+            # the file on disk is the authority, not this thread's `key`.
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+        # Re-read with patience, and not only because a loser needs the
+        # winner's bytes. On Windows the read ITSELF fails with
+        # PermissionError while somebody else's os.replace is in flight over
+        # the same name - measured here with four threads, where two died on
+        # a read that sat outside this loop. A rename is not instantaneous
+        # from a reader's point of view, so treat a refused read as "not yet"
+        # rather than as an answer.
+        final = b""
+        for _ in range(50):
+            try:
+                final = path.read_bytes()
+            except OSError:
+                final = b""
+            if final:
+                break
+            time.sleep(0.01)
+        if len(final) != 32:
+            # Nothing wrote a usable key and this thread's attempt did not
+            # land either. Refusing is right here: returning b"" would put the
+            # unsalted hash back, which is the whole defect.
+            raise RefError(
+                TTS_REFERENCE_INVALID, "the voice index key could not be built")
+        return final
     try:
         os.write(fd, key)
+        # The whole point of this file is that it survives; an fsync here is
+        # what makes the crash window above rare rather than merely narrow.
+        os.fsync(fd)
     finally:
         os.close(fd)
     return key
@@ -293,9 +425,18 @@ def migrate_legacy_voice_dirs() -> dict:
             # guess which copy is right - the same choice save_upload makes
             # for a clip that will not die: destroying either one is the
             # wrong direction to fail in.
+            # `child.name` is NOT logged here, and that is the whole point of
+            # this line's shape. The only folders this loop ever sees in
+            # legacy form are the ones named before the hash existed, and
+            # there the folder name IS the slug of the label the user typed -
+            # an on-screen name, outside the vault, in plaintext, at WARNING
+            # level. The opaque target name says which voice this is just as
+            # well for diagnosis and gives nothing away. The AST scanner in
+            # tests/log_leak_scan.py could not have caught this: it follows
+            # denylisted variable NAMES, and `child.name` is an attribute.
             logger.warning(
-                "tts: cannot migrate voice folder %s - %s already exists",
-                child.name, target_name)
+                "tts: cannot migrate a legacy voice folder - %s already exists",
+                target_name)
             skipped.append(child.name)
             continue
         child.rename(target)
@@ -322,9 +463,24 @@ def _read_meta(folder: Path) -> dict:
 
 
 def _write_meta(folder: Path, data: dict) -> None:
+    """Write voice.json, and make sure it is ON DISK before returning.
+
+    The flush/fsync is not housekeeping. migrate_legacy_voice_dirs() writes
+    the id into voice.json FIRST and renames the folder SECOND, and its
+    docstring sells that order as crash-safe: the id is meant to be durable
+    before the only thing that still carries it (the legacy folder name) goes
+    away. Without the fsync that promise was a hope - the rename can reach the
+    disk while the file contents are still in the page cache, and a power loss
+    in between leaves a folder in its new opaque name holding an empty or
+    stale voice.json. list_voices() then skips it and _voice_dir() cannot find
+    it: the voice is gone from the app while every one of its files is still
+    sitting there.
+    """
     folder.mkdir(parents=True, exist_ok=True)
     with open(folder / META_NAME, "w", encoding="utf-8") as fh:
         json.dump(data, fh, ensure_ascii=False, indent=2)
+        fh.flush()
+        os.fsync(fh.fileno())
 
 
 def _audio_in(folder: Path) -> Path | None:

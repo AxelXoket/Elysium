@@ -38,6 +38,7 @@ from .errors import (
     TTS_RUNTIME_BROKEN,
     TTS_RUNTIME_MISSING,
     TTS_WORKER_FAILED,
+    TTS_RUNTIME_UNTRUSTED,
 )
 from .host import worker_script
 from .preflight import FitResult, check_fit
@@ -120,6 +121,13 @@ _RUNTIME_ISSUE = {
     # Deliberately distinct: "set it up" and "set it up again, something removed
     # it" are different sentences, and collapsing them makes the second a lie.
     "broken": (TTS_RUNTIME_BROKEN, "the voice engine was set up but is gone now"),
+    # And a third, for the same reason the second exists. "Gone" and "not the
+    # one we installed" send the user to the same button and mean very
+    # different things; reporting a tampered interpreter as a routine disk
+    # cleanup is exactly the collapse the comment above refuses to make.
+    "untrusted": (TTS_RUNTIME_UNTRUSTED,
+                   "the voice engine on this machine is not the one Elysium "
+                   "installed"),
 }
 
 

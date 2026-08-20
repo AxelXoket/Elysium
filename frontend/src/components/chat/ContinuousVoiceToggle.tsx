@@ -53,13 +53,18 @@ export function ContinuousVoiceToggle() {
       }
       onClick={toggle}
       className="composer-icon-button shrink-0 rounded-xl p-2.5"
+      // The two fallbacks are what actually SHIP: neither
+      // `--color-es-accent-soft` nor `--color-es-accent` is declared anywhere
+      // in index.css, so every render has always resolved to the value after
+      // the comma. Stated outright rather than reached through a dead var(),
+      // for the reason index.css now gives at .settings-segment-button: the
+      // day somebody declares either token, this button changes colour in a
+      // diff that never mentions it.
       style={{
         backgroundColor: on
-          ? "var(--color-es-accent-soft, rgba(28, 38, 50, 0.16))"
+          ? "rgba(28, 38, 50, 0.16)"
           : "rgba(28, 38, 50, 0.08)",
-        color: on
-          ? "var(--color-es-accent, currentColor)"
-          : "var(--color-es-asst-bubble-text)",
+        color: on ? "currentColor" : "var(--color-es-asst-bubble-text)",
       }}
     >
       {on ? <Volume2 size={15} /> : <VolumeX size={15} />}

@@ -54,6 +54,39 @@ class TestTheRouteRoundTrips:
         assert r.json()["selected_model_id"] is None
         assert client.get("/api/v1/settings").json()["selected_model_id"] is None
 
+    def test_a_misspelt_field_is_refused_not_treated_as_a_clear(
+        self, client
+    ) -> None:
+        """docs/frontend_contract.md named this field `model_id` until
+        2026-08-20, and the body model used to ignore unknown fields. A client
+        written from the published contract therefore sent a field nobody
+        read, `selected_model_id` defaulted to None, and the endpoint DELETED
+        the stored selection and answered `{"ok": true}` - a destructive write
+        reported as a success. Absence means "clear" here, so `ignore` and
+        `forbid` are not interchangeable on this route the way they are on the
+        completions bodies."""
+        client.post(
+            "/api/v1/settings/model-selection",
+            json={"selected_model_id": "anthropic/claude-3.5-sonnet"},
+        )
+        # GROUND: it really is stored, so the assertion below is about the
+        # misspelt request and not about an empty setting.
+        assert (
+            client.get("/api/v1/settings").json()["selected_model_id"]
+            == "anthropic/claude-3.5-sonnet"
+        )
+
+        r = client.post(
+            "/api/v1/settings/model-selection",
+            json={"model_id": "openai/gpt-4o"},
+        )
+
+        assert r.status_code == 422
+        assert (
+            client.get("/api/v1/settings").json()["selected_model_id"]
+            == "anthropic/claude-3.5-sonnet"
+        ), "a request nobody could read still wiped the stored selection"
+
     def test_an_empty_string_clears_it_too(self, client) -> None:
         # A stray "" from a client-side bug must behave exactly like an
         # explicit null - it is not itself a model id.

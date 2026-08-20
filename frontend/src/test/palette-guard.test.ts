@@ -233,16 +233,57 @@ describe("Azure palette guard", () => {
 describe("motion guard", () => {
   const css = readFileSync(CSS, "utf-8");
 
+  /**
+   * The text of ONE brace-balanced block starting at `from`.
+   *
+   * Both tests below used to reach for the rest of the file instead - one
+   * with `.split(...).slice(1).join(...)`, one with a bare `css.slice(idx)`.
+   *
+   * For the install bar that was a live hole, measured:
+   * `.settings-voice-progress::after` appears twice (once outside any media
+   * block, once inside the reduced-motion one), and `animation: none` appears
+   * in two places, so `css.slice(idx)` reached past the override it named and
+   * matched a `[data-voice-loading]` rule 280 lines further down. Deleting the
+   * reduced-motion override entirely left that test GREEN.
+   *
+   * For the spinner it was not. Re-measured after a first draft of this
+   * comment said otherwise: `.animate-spin` occurs exactly ONCE in the whole
+   * stylesheet and it is already inside a reduced-motion block, so deleting
+   * that block turned the old test red too. The rewrite there is hardening
+   * against a shape that could hide a hole, not a fix for one that did.
+   *
+   * Written with a depth counter rather than `indexOf("}")` because a media
+   * query nests, and the first closing brace inside one belongs to a rule,
+   * not to the block.
+   */
+  function blockAt(from: number): string {
+    const open = css.indexOf("{", from);
+    if (open === -1) return "";
+    let depth = 0;
+    for (let i = open; i < css.length; i += 1) {
+      if (css[i] === "{") depth += 1;
+      else if (css[i] === "}") {
+        depth -= 1;
+        if (depth === 0) return css.slice(from, i + 1);
+      }
+    }
+    return css.slice(from);
+  }
+
   it("honours prefers-reduced-motion for spinners", () => {
     // Every busy state in the app is a rotating Loader2. Eight reduced-motion
     // blocks existed and none of them covered it - so the one animation a
     // vestibular-sensitive reader meets most often was the one that ignored
     // their setting.
-    const blocks = css
-      .split("@media (prefers-reduced-motion: reduce)")
-      .slice(1)
-      .join("\n");
-    expect(blocks).toMatch(/\.animate-spin/);
+    const marker = "@media (prefers-reduced-motion: reduce)";
+    const blocks: string[] = [];
+    for (let i = css.indexOf(marker); i !== -1; i = css.indexOf(marker, i + 1)) {
+      blocks.push(blockAt(i));
+    }
+    // GROUND: the file really does carry reduced-motion blocks, so a failure
+    // below means "the spinner is not in one" and not "there are none".
+    expect(blocks.length).toBeGreaterThan(0);
+    expect(blocks.join("\n")).toMatch(/\.animate-spin/);
   });
 
   it("slows the spinner rather than freezing it", () => {
@@ -255,10 +296,20 @@ describe("motion guard", () => {
   });
 
   it("the indeterminate install bar stops moving under reduced motion", () => {
-    const idx = css.indexOf(".settings-voice-progress::after {");
-    expect(idx).toBeGreaterThan(-1);
-    const after = css.slice(idx);
-    // Its reduced-motion override exists and kills the sweep.
-    expect(after).toMatch(/animation:\s*none/);
+    // The override that matters is the one INSIDE a reduced-motion block, so
+    // that is what is looked for. Reading forward from the first mention of
+    // the selector found `animation: none` in a `[data-voice-loading]` rule
+    // far below and reported success while the override itself was gone.
+    const marker = "@media (prefers-reduced-motion: reduce)";
+    const overrides: string[] = [];
+    for (let i = css.indexOf(marker); i !== -1; i = css.indexOf(marker, i + 1)) {
+      const block = blockAt(i);
+      if (block.includes(".settings-voice-progress::after")) overrides.push(block);
+    }
+    expect(
+      overrides,
+      "no reduced-motion block mentions the install bar's sweep",
+    ).toHaveLength(1);
+    expect(overrides[0]).toMatch(/animation:\s*none/);
   });
 });

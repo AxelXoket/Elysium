@@ -3078,7 +3078,15 @@ input::-ms-clear {
 
 .settings-voice-disclosure:hover {
   background: rgba(200, 216, 236, 0.08);
-  color: var(--color-es-text, #e6eaef);
+  /* --color-es-text does not exist, so the fallback was doing all the work.
+     The real token is --color-es-text-light. It is defined five times and it
+     is NOT one value: four of those say #EAEEF3 and the one inside
+     .glass-right says #1C2632, which is near black. That is deliberate there
+     and would invert this control, so the safety of using the bare token here
+     rests on where this renders: the voice settings live inside
+     AppSettingsDialog, never inside .glass-right. If that ever moves, this
+     line has to move with it. */
+  color: var(--color-es-text-light);
 }
 
 .settings-voice-disclosure svg {
@@ -3310,7 +3318,16 @@ input::-ms-clear {
 }
 
 .settings-segment-button[data-active="true"] {
-  border-color: var(--color-es-accent, currentColor);
+  /* `currentColor`, stated rather than reached by accident. This read
+     `var(--color-es-accent, currentColor)`, and `--color-es-accent` has never
+     been declared anywhere in this stylesheet - the real tokens are
+     `--color-es-accent-amber` and `--color-es-accent-strong`. So the fallback
+     was ALWAYS what shipped, and it happens to be the best of the options:
+     measured against this control's own background, currentColor (the
+     dialog's ink) gives 12.43:1, --color-es-accent-amber would give 3.64:1.
+     A dead var() is a trap either way - the day somebody declares that token,
+     every one of these borders changes without a diff that mentions them. */
+  border-color: currentColor;
   background-color: rgba(200, 216, 236, 0.16);
   font-weight: 600;
 }
@@ -3329,7 +3346,12 @@ input::-ms-clear {
 
 .settings-text-input:focus {
   outline: none;
-  border-color: var(--color-es-accent, currentColor);
+  /* Same dead token as the segment buttons above, same conclusion, and here
+     it is the focus indicator: currentColor is `--color-es-text-light` on
+     this input, 12.43:1 against its own background, well clear of the 3:1
+     WCAG 2.4.11 floor. Naming it is the fix; changing it would be a
+     regression. */
+  border-color: currentColor;
 }
 
 /* A setting this engine cannot act on (V9-5). Text, not a dead input: a
