@@ -1608,23 +1608,19 @@ describe("Static safety tests", () => {
       why: string;
       openDefect: boolean;
     }[] = [
-      {
-        file: "src/components/settings/VoiceSettingsPage.tsx",
-        identity: "id={`voice-${param.name}`}",
-        why:
-          "The free-text TTS engine parameter. Its id is load-bearing: the " +
-          "label directly above it pairs by htmlFor and is the field's only " +
-          'accessible name. But it is type="text" with no autoComplete="off", ' +
-          "so at runtime its DOM id (e.g. `voice-ref_text`) IS a valid " +
-          "autofill key and whatever is typed there can reach `Web Data`. " +
-          "What it holds is an engine parameter rather than a chat or " +
-          "character name, so this is not the owner's rule broken - it is the " +
-          "weakest point in this rule's coverage, and it is recorded here " +
-          'rather than hidden. Fix: add autoComplete="off", or drop the id ' +
-          "and use aria-label the way the sibling select in the same " +
-          "component already does.",
-        openDefect: true,
-      },
+      // CLOSED 21 August 2026, and the entry is deleted rather than kept with
+      // openDefect flipped, because this comment block says a stale exemption
+      // excuses the next one. The field was the free-text TTS engine
+      // parameter in VoiceSettingsPage: a type="text" input with a DOM id and
+      // no autoComplete, so its id was a valid autofill key and an engine
+      // parameter typed there could reach Chromium's Web Data file, outside
+      // the vault. It took the first of the two fixes this file suggested,
+      // autoComplete="off", because the id is still load-bearing: the label
+      // above it pairs by htmlFor.
+      //
+      // The list is deliberately empty. If it stays empty, the count below
+      // stays 0 and any NEW id-bearing text field has to be argued for in a
+      // diff rather than quietly added.
     ];
 
     const tsxFiles = getAppSourceFiles("**/*.tsx");
@@ -1686,7 +1682,7 @@ describe("Static safety tests", () => {
       "the number of KNOWN-BAD id-bearing text fields changed. Going up needs " +
         "an argument in the diff; going down means one was fixed, so delete " +
         "its entry.",
-    ).toBe(1);
+    ).toBe(0);
     for (const e of ID_BEARING_FIELDS) {
       expect(
         e.why.length,

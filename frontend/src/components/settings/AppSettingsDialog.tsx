@@ -791,7 +791,14 @@ function BackgroundSettingsPage() {
 
       {/* Dim-only class: generation-control's padding/border must not appear
           and vanish with the toggle, or the page reflows on image add/remove. */}
-      <div className={chatBgOn ? "" : "settings-section-disabled"}>
+      {/* The dim class is a modifier, so a transition declared ON it only
+          exists while it is applied: the fade out worked and the fade back
+          in snapped. settings-section-dimmable is the stable base that
+          carries the transition, which is the shape .generation-control
+          already uses for the same effect one level down. */}
+      <div
+        className={`settings-section-dimmable${chatBgOn ? "" : " settings-section-disabled"}`}
+      >
         <div className="generation-control">
           <div className="flex items-center justify-between gap-3">
             <label className="settings-label">Framing</label>

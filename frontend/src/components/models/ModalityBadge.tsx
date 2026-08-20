@@ -46,7 +46,7 @@ export function ModalityBadge({ modality, direction }: ModalityBadgeProps) {
       style={{
         borderColor: out
           ? "rgba(62, 114, 176, 0.35)"
-          : "var(--color-es-border-dark)",
+          : "var(--color-es-glass-border-dark)",
         color: out
           ? "var(--color-es-primary-sage)"
           : "var(--color-es-text-muted)",

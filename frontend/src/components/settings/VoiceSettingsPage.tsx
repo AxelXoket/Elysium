@@ -30,6 +30,7 @@ import {
 } from "./voiceParamDrafts";
 import { ReadingRulesSection } from "./ReadingRulesSection";
 import { useMemo, useState } from "react";
+import { Collapse } from "@/components/motion/Collapse";
 import {
   AudioLines,
   Check,
@@ -77,7 +78,7 @@ import {
 
 export function VoiceSettingsPage() {
   return (
-    <div className="space-y-4">
+    <div className="settings-voice-page space-y-4">
       <VoiceModeToggle />
       {/* What the toggle above actually DOES, stated once.
           Its old copy said "Off - chat stays text-only", which describes the
@@ -248,7 +249,17 @@ function EngineRow({
                 ? "Installed and ready"
                 : state === "broken"
                   ? getErrorMessage("tts_runtime_broken")
-                  : `Not set up yet · ${sizeNote}`}
+                  : // "untrusted" means the runtime's interpreter failed its
+                    // fingerprint or path check. It fell through to "Not set
+                    // up yet", which reports a security verdict as a benign
+                    // one and invites a reinstall as if nothing had happened.
+                    // The backend was changed to stop collapsing this into
+                    // "broken" precisely so it could be shown, and the
+                    // sentence has existed in errorMessages with nothing
+                    // calling it ever since.
+                    state === "untrusted"
+                    ? getErrorMessage("tts_runtime_untrusted")
+                    : `Not set up yet · ${sizeNote}`}
         </span>
         {running && (
           <>
@@ -319,6 +330,18 @@ function ModelsSection() {
   const rescan = useRescanTtsModels();
   const pushScanError = useErrorStore((s) => s.pushError);
   const [openUid, setOpenUid] = useState<string | null>(null);
+  // Every uid this session has opened at least once. Collapse keeps its
+  // child MOUNTED, and ModelParams fetches a schema and a settings row on
+  // mount, so wrapping the bare {open && ...} would fire two requests per
+  // model on first paint instead of two per model the person actually
+  // opens. This set keeps the first-open cost exactly where it was and
+  // still buys the closing animation, which a plain unmount cannot have.
+  // It lives here, in the handler that already owns openUid, because both
+  // react-hooks/refs and react-hooks/set-state-in-effect forbid latching it
+  // inside the row.
+  const [everOpened, setEverOpened] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
 
   if (models.isPending) return <SectionSkeleton label="Voice models" />;
 
@@ -385,9 +408,13 @@ function ModelsSection() {
           model={model}
           selected={active.data?.uid === model.uid}
           open={openUid === model.uid}
-          onToggleOpen={() =>
-            setOpenUid((cur) => (cur === model.uid ? null : model.uid))
-          }
+          everOpened={everOpened.has(model.uid)}
+          onToggleOpen={() => {
+            setOpenUid((cur) => (cur === model.uid ? null : model.uid));
+            setEverOpened((cur) =>
+              cur.has(model.uid) ? cur : new Set(cur).add(model.uid),
+            );
+          }}
         />
       ))}
     </section>
@@ -398,11 +425,13 @@ function ModelRow({
   model,
   selected,
   open,
+  everOpened,
   onToggleOpen,
 }: {
   model: TtsModel;
   selected: boolean;
   open: boolean;
+  everOpened: boolean;
   onToggleOpen: () => void;
 }) {
   const select = useSelectTtsModel();
@@ -413,6 +442,11 @@ function ModelRow({
   const warnings = model.readiness.issues.filter(
     (i) => i.severity === "warning",
   );
+
+  // Latches true the first time this row is opened and never goes back, so
+  // Collapse has something to animate on the way out. See the comment at
+  // the Collapse below for why this is not just `open`.
+  const wantsParams = open && model.readiness.settings_available;
 
   return (
     <div
@@ -492,9 +526,19 @@ function ModelRow({
 
       {/* Settings stay available whatever the verdict says - that is the
           product rule the readiness system exists to keep. */}
-      {open && model.readiness.settings_available && (
-        <ModelParams uid={model.uid} />
-      )}
+      {/* The chevron above rotates over 180ms and used to point at a bare
+          {open && ...}, so an animated arrow announced an instant reveal.
+          Collapse is the house primitive for exactly this (ModelPanel,
+          ActiveContextPreviewCard, both character dialogs) and it also sets
+          inert + aria-hidden when closed, which a conditional mount cannot
+          get wrong.
+
+          The everOpened latch is not decoration; the parent explains it. */}
+      <Collapse open={wantsParams}>
+        {everOpened && model.readiness.settings_available ? (
+          <ModelParams uid={model.uid} />
+        ) : null}
+      </Collapse>
     </div>
   );
 }
@@ -587,23 +631,69 @@ function ModelParams({ uid }: { uid: string }) {
           status: "supported" as const,
           reason: "",
         }));
-  const params = rows.filter((p) => !p.advanced);
-  const advanced = rows.filter((p) => p.advanced);
+  // The backend has ALWAYS shipped this split. base.py marks a ParamSpec
+  // `advanced`, and matrix.py marks a row uneditable with the reason why.
+  // Both were computed here and then thrown away by rendering
+  // [...params, ...advanced] into one flat column, so on Fish S2 `language`
+  // and `temperature` sat at exactly the same visual weight as `top_p`,
+  // `top_k`, `max_new_tokens` and `kv_cache_len` - and beneath them, a run of
+  // rows for knobs this engine does not even have. Nothing is removed here;
+  // the two quiet tiers move behind their own named doors.
+  // Filter on STATUS, not on `editable`. Three different things are
+  // uneditable and matrix.py's opening paragraph exists to say they must not
+  // be flattened into one:
+  //
+  //   unsupported  this engine has no such setting. The door's label.
+  //   app_level    `speed`. Elysium implements it for every engine, and the
+  //                row is the only in-panel pointer saying it lives under
+  //                Delivery. On XTTS the engine implements it NATIVELY, so
+  //                filing it under "not available on this engine" would deny
+  //                the one parameter that engine does best.
+  //   dead         `repetition_penalty` on Fish S2. The engine accepts the
+  //                value and never applies it. matrix.py: "Calling that
+  //                'unsupported' would be a lie in the direction of making
+  //                us look tidy."
+  //
+  // So only `unsupported` goes behind the door. The other two stay where the
+  // `advanced` flag puts them, carrying their own reason text, which says
+  // the true thing in each case. At most one `dead` row exists on any
+  // shipped engine and exactly one `app_level` row does, so this costs two
+  // lines of the airiness and buys back an honest label.
+  const hidden = (p: TtsMatrixRow) => p.status === "unsupported";
+  const params = rows.filter((p) => !hidden(p) && !p.advanced);
+  const advanced = rows.filter((p) => !hidden(p) && p.advanced);
+  const unavailable = rows.filter(hidden);
+
+  const paramControl = (param: TtsMatrixRow) => (
+    <ParamControl
+      key={param.name}
+      uid={uid}
+      param={param}
+      disabled={!param.editable}
+      reason={param.reason}
+      value={effective[param.name] ?? (param.default as TtsParamValue)}
+      onChange={(value) =>
+        setDraft((cur) => ({ ...cur, [param.name]: value }))
+      }
+    />
+  );
 
   return (
     <div className="settings-voice-params" data-testid={`voice-params-${uid}`}>
-      {[...params, ...advanced].map((param) => (
-        <ParamControl
-          key={param.name}
-          param={param}
-          disabled={!param.editable}
-          reason={param.reason}
-          value={effective[param.name] ?? (param.default as TtsParamValue)}
-          onChange={(value) =>
-            setDraft((cur) => ({ ...cur, [param.name]: value }))
-          }
-        />
-      ))}
+      {params.map(paramControl)}
+      {advanced.length > 0 && (
+        <ParamGroup label="Advanced" testId={`voice-advanced-${uid}`}>
+          {advanced.map(paramControl)}
+        </ParamGroup>
+      )}
+      {unavailable.length > 0 && (
+        <ParamGroup
+          label="Not available on this engine"
+          testId={`voice-unavailable-${uid}`}
+        >
+          {unavailable.map(paramControl)}
+        </ParamGroup>
+      )}
       <div className="flex items-center gap-2">
         <button
           type="button"
@@ -646,13 +736,66 @@ function ModelParams({ uid }: { uid: string }) {
   );
 }
 
+/** A named door for the quiet half of a model's settings.
+
+    Same shape as every other disclosure in the app (ModelPanel's "Model
+    Source", ActiveContextPreviewCard, both character dialogs): a full-width
+    button carrying aria-expanded, a chevron that rotates, and Collapse doing
+    the height. Collapse is what sets inert and aria-hidden on the way out,
+    which is the part a bare {open && ...} always gets wrong.
+
+    Closed by default and never persisted. Somebody who opens `top_k` once
+    does not want to be handed it again next week; somebody who wants it
+    twice is one click away. */
+function ParamGroup({
+  label,
+  testId,
+  children,
+}: {
+  label: string;
+  testId: string;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <button
+        type="button"
+        aria-expanded={open}
+        data-testid={testId}
+        className="settings-param-group-toggle"
+        onClick={() => setOpen((cur) => !cur)}
+      >
+        <span className="settings-label">{label}</span>
+        <ChevronDown
+          size={13}
+          className={`shrink-0 transition-transform ${open ? "rotate-180" : ""}`}
+          aria-hidden
+        />
+      </button>
+      <Collapse open={open}>{children}</Collapse>
+    </div>
+  );
+}
+
 function ParamControl({
+  uid,
   param,
   value,
   onChange,
   disabled = false,
   reason = "",
 }: {
+  /** The model these controls belong to. Load-bearing, not decoration: ids
+      used to be minted from the param name alone, which was unique only
+      because exactly one ModelParams was ever mounted. Now that a row stays
+      mounted after its first open so it can animate closed, several are, and
+      `reference_voice` exists on all three engines while `language` exists
+      on two. Duplicate ids bind a visible label to the FIRST match in tree
+      order, which is inside a closed, inert Collapse: clicking the label did
+      nothing, and the on-screen select was left with no accessible name at
+      all. */
+  uid: string;
   param: TtsParam;
   value: TtsParamValue;
   onChange: (value: TtsParamValue) => void;
@@ -700,11 +843,12 @@ function ParamControl({
   if (param.type === "enum" && param.choices) {
     return (
       <div className="generation-control">
-        <label className="settings-label" htmlFor={`voice-${param.name}`}>
+        <label className="settings-label" htmlFor={`voice-${uid}-${param.name}`}>
           {param.label}
         </label>
         <select
-          id={`voice-${param.name}`}
+          id={`voice-${uid}-${param.name}`}
+          aria-label={param.label}
           className="settings-voice-select"
           value={String(value)}
           onChange={(event) => onChange(event.currentTarget.value)}
@@ -734,12 +878,23 @@ function ParamControl({
     return (
       <div className="generation-control">
         <div className="flex items-center justify-between gap-3">
-          <label className="settings-label">{param.label}</label>
+          {/* The label had no htmlFor and did not wrap the input, so it was a
+              caption rather than a label: clicking it did nothing. The
+              aria-label still wins for the accessible name, deliberately -
+              "Expressiveness slider" says what kind of control it is and the
+              visible word alone does not. */}
+          <label
+            className="settings-label"
+            htmlFor={`voice-${uid}-${param.name}`}
+          >
+            {param.label}
+          </label>
           <span className="settings-value">
             {param.type === "int" ? Math.round(num) : num.toFixed(2)}
           </span>
         </div>
         <input
+          id={`voice-${uid}-${param.name}`}
           type="range"
           aria-label={`${param.label} slider`}
           min={min}
@@ -760,20 +915,29 @@ function ParamControl({
   // text / voice_ref - voice_ref stores a voice id from the section below.
   return (
     <div className="generation-control">
-      <label className="settings-label" htmlFor={`voice-${param.name}`}>
+      <label className="settings-label" htmlFor={`voice-${uid}-${param.name}`}>
         {param.label}
       </label>
-      <VoiceRefOrTextInput param={param} value={String(value ?? "")} onChange={onChange} />
+      <VoiceRefOrTextInput
+        uid={uid}
+        param={param}
+        value={String(value ?? "")}
+        onChange={onChange}
+      />
       {param.help && <p className="generation-helper">{param.help}</p>}
     </div>
   );
 }
 
 function VoiceRefOrTextInput({
+  uid,
   param,
   value,
   onChange,
 }: {
+  /** See ParamControl: the id has to carry the model, because more than one
+      model's parameters can be mounted at the same time now. */
+  uid: string;
   param: TtsParam;
   value: string;
   onChange: (value: TtsParamValue) => void;
@@ -782,7 +946,7 @@ function VoiceRefOrTextInput({
   if (param.type === "voice_ref") {
     return (
       <select
-        id={`voice-${param.name}`}
+        id={`voice-${uid}-${param.name}`}
         className="settings-voice-select"
         value={value}
         onChange={(event) => onChange(event.currentTarget.value)}
@@ -800,8 +964,15 @@ function VoiceRefOrTextInput({
   }
   return (
     <input
-      id={`voice-${param.name}`}
+      id={`voice-${uid}-${param.name}`}
       type="text"
+      /* S-27b recorded this field as an open defect: a text input with a DOM
+         id and no autoComplete is a valid autofill key, so an engine
+         parameter typed here could be stored in the browser's Web Data file,
+         outside the vault, and suggested back on screen later. The id has to
+         stay because the label above pairs by htmlFor. This is the other
+         half of that fix. */
+      autoComplete="off"
       className="settings-voice-input"
       value={value}
       onChange={(event) => onChange(event.currentTarget.value)}
