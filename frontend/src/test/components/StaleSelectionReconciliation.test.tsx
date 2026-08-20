@@ -17,6 +17,7 @@ import {
   chatFixture,
   characterFixture,
   modelListFixture,
+  settingsFixture,
 } from "../mocks/fixtures";
 import {
   createTestQueryClient,
@@ -29,6 +30,25 @@ function mockAllListsValid() {
     "/characters": { body: [characterFixture] },
     "/models/openrouter": { body: modelListFixture },
     "/chats": { body: [chatFixture] },
+  });
+}
+
+/**
+ * The same three lists, plus GET /settings (for the model's vault hydration)
+ * and POST /settings/model-selection (for the push side). `selectedModelId`
+ * is the ONE selection that no longer lives in localStorage (v1.2 privacy
+ * fix) - see uiStore.ts's version-3 migrate - so its round trip through the
+ * vault is the thing these tests exist to prove.
+ */
+function mockAllListsAndSettings(
+  overrides: Partial<typeof settingsFixture> = {},
+) {
+  return mockFetch({
+    "/characters": { body: [characterFixture] },
+    "/models/openrouter": { body: modelListFixture },
+    "/chats": { body: [chatFixture] },
+    "GET /settings": { body: { ...settingsFixture, ...overrides } },
+    "POST /settings/model-selection": { body: { ok: true, selected_model_id: null } },
   });
 }
 
@@ -243,5 +263,161 @@ describe("useStaleSelectionReconciliation", () => {
     expect(useUiStore.getState().selectedChatId).toBe(999);
     expect(useUiStore.getState().selectedCharacterId).toBe(999);
     expect(useUiStore.getState().selectedModelId).toBe("vendor/removed-model");
+  });
+});
+
+/**
+ * The model selection's vault round trip (v1.2 privacy fix).
+ *
+ * selectedChatId/selectedCharacterId still persist in localStorage (bare row
+ * ids, which the owner's rule permits). selectedModelId does not: it is a
+ * model NAME, and now lives in the encrypted settings table instead - these
+ * are the tests that prove the hydrate-once-then-push bridge in
+ * useStaleSelectionReconciliation actually does that job.
+ */
+describe("useStaleSelectionReconciliation - the model's vault round trip", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({
+      selectedChatId: null,
+      selectedCharacterId: null,
+      selectedModelId: null,
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("hydrates the model selection from the vault when nothing is chosen locally", async () => {
+    mockAllListsAndSettings({ selected_model_id: "openai/gpt-4o" });
+
+    renderHookWithQueryClient(() => useStaleSelectionReconciliation());
+
+    await waitFor(() => {
+      expect(useUiStore.getState().selectedModelId).toBe("openai/gpt-4o");
+    });
+  });
+
+  it("does NOT overwrite a selection already made in memory (GROUND: local wins)", async () => {
+    // The device-vs-vault tie-break narrationMigration.ts also uses: what is
+    // already showing is what the user believes they chose.
+    mockAllListsAndSettings({ selected_model_id: "vendor/other-model" });
+    useUiStore.setState({ selectedModelId: "openai/gpt-4o" });
+
+    renderHookWithQueryClient(() => useStaleSelectionReconciliation());
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 25));
+    });
+    expect(useUiStore.getState().selectedModelId).toBe("openai/gpt-4o");
+  });
+
+  it("leaves the selection null when the vault has nothing stored either (GROUND)", async () => {
+    mockAllListsAndSettings({ selected_model_id: null });
+
+    renderHookWithQueryClient(() => useStaleSelectionReconciliation());
+
+    await waitFor(() => {
+      expect(useUiStore.getState().selectedModelId).toBeNull();
+    });
+  });
+
+  it("does not hydrate at all while the settings read has not succeeded", async () => {
+    // Same lists as normal, but no /settings mock at all - the fetch mock's
+    // own default (404) means the query never reaches isSuccess. A stale
+    // local selection must survive: hydration must never run on an error.
+    mockFetch({
+      "/characters": { body: [characterFixture] },
+      "/models/openrouter": { body: modelListFixture },
+      "/chats": { body: [chatFixture] },
+    });
+    useUiStore.setState({ selectedModelId: "openai/gpt-4o" });
+
+    renderHookWithQueryClient(() => useStaleSelectionReconciliation());
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 25));
+    });
+    expect(useUiStore.getState().selectedModelId).toBe("openai/gpt-4o");
+  });
+
+  it("pushes a later change to the vault", async () => {
+    const fetchMock = mockAllListsAndSettings({ selected_model_id: null });
+
+    renderHookWithQueryClient(() => useStaleSelectionReconciliation());
+
+    // Let hydration settle first (vault has nothing, local has nothing - no
+    // push yet) before making the change this test is actually about.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 25));
+    });
+
+    act(() => {
+      useUiStore.getState().selectModel("openai/gpt-4o");
+    });
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([url, init]) =>
+        String(url).includes("/settings/model-selection") &&
+        (init as RequestInit)?.method === "POST",
+      );
+      expect(call, "no POST /settings/model-selection was ever sent").toBeDefined();
+      expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual({
+        selected_model_id: "openai/gpt-4o",
+      });
+    });
+  });
+
+  it("hydrating from a non-null vault value does not itself trigger a push", async () => {
+    // MUTATION-SENSITIVE: this is the test that would fail red if the guard
+    // ordering in the hook regressed and the hydration write echoed straight
+    // back out as a POST before the render carrying it had even landed.
+    const fetchMock = mockAllListsAndSettings({ selected_model_id: "openai/gpt-4o" });
+
+    renderHookWithQueryClient(() => useStaleSelectionReconciliation());
+
+    await waitFor(() => {
+      expect(useUiStore.getState().selectedModelId).toBe("openai/gpt-4o");
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 25));
+    });
+
+    const pushed = fetchMock.mock.calls.some(([url, init]) =>
+      String(url).includes("/settings/model-selection") &&
+      (init as RequestInit)?.method === "POST",
+    );
+    expect(pushed, "hydration echoed itself back as a spurious save").toBe(false);
+  });
+
+  it("pushes null when reconciliation clears a stale model (vault stays in sync)", async () => {
+    const fetchMock = mockFetch({
+      "/characters": { body: [characterFixture] },
+      "/models/openrouter": { body: modelListFixture }, // does not contain the vendor id below
+      "/chats": { body: [chatFixture] },
+      "GET /settings": {
+        body: { ...settingsFixture, selected_model_id: "vendor/removed-model" },
+      },
+      "POST /settings/model-selection": { body: { ok: true, selected_model_id: null } },
+    });
+
+    renderHookWithQueryClient(() => useStaleSelectionReconciliation());
+
+    // Hydrates to the stale id, then the models-list reconciliation clears it.
+    await waitFor(() => {
+      expect(useUiStore.getState().selectedModelId).toBeNull();
+    });
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([url, init]) =>
+        String(url).includes("/settings/model-selection") &&
+        (init as RequestInit)?.method === "POST",
+      );
+      expect(call, "the cleared model was never pushed to the vault").toBeDefined();
+      expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual({
+        selected_model_id: null,
+      });
+    });
   });
 });

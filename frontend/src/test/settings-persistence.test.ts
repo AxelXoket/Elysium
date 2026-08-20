@@ -48,7 +48,6 @@ import { seedDeviceNarration, seedRawUiState } from "./mocks/legacyStorage";
 const PERSISTED = [
   "selectedCharacterId",
   "selectedChatId",
-  "selectedModelId",
   "activeRightPanelTab",
   "sidebarCollapsed",
   "msgFontPx",
@@ -87,6 +86,17 @@ const NEVER = [
   // streamed and another when the Speak button repeated it. A device copy is
   // the wrong home for a setting the server also has to know.
   "narrationVoice",
+  // v1.2 privacy fix (audit finding): an OpenRouter model id such as
+  // "anthropic/claude-3.5-sonnet" is a NAME a person reads on screen, not a
+  // bare number - the shape the owner's own rule bans from ever sitting
+  // outside the vault. It moved into the encrypted settings table (see
+  // lib/query/settings.ts's useSetSelectedModel); version-3 `migrate` strips
+  // the old plaintext copy out of every install that already has one, proven
+  // below in "cleans a stale plaintext model id out of an existing install".
+  // The other two selections next to it in the old blob - selectedChatId,
+  // selectedCharacterId - are bare numbers and the owner's rule permits
+  // those to stay device-local, so they remain in PERSISTED above.
+  "selectedModelId",
   // Character names are user content and localStorage is not encrypted. The
   // answer was the encrypted settings table, not "do not persist at all" -
   // which is what made them a per-session retyping chore. The vault round
@@ -202,6 +212,53 @@ describe("every preference survives a restart", () => {
     );
 
     expect((await relaunch()).activeRightPanelTab).toBe("models");
+  });
+
+  it("cleans a stale plaintext model id out of an existing install", async () => {
+    // The migration that protects everyone who already has the leak: an
+    // install from before v1.2 carries all three selections in this blob,
+    // written by a version-2 store. THIS is the test that proves an existing
+    // user's disk stops holding the plaintext model name - the other tests
+    // in this file only prove a FRESH write is already clean, which a broken
+    // migrate would pass trivially by never being exercised at all.
+    seedRawUiState(
+      JSON.stringify({
+        version: 2,
+        state: {
+          selectedChatId: 7,
+          selectedCharacterId: 3,
+          selectedModelId: "anthropic/claude-3.5-sonnet",
+          activeRightPanelTab: "models",
+        },
+      }),
+    );
+
+    // Not `relaunch()`: that helper discards the fresh module's store
+    // reference and hands back only a state snapshot, and this test needs
+    // the store itself to force a write afterwards. Same re-import it uses
+    // internally, so this is still "what the next launch builds".
+    const store = (await import("@/lib/store/uiStore")).useUiStore;
+    expect(store, "the module was reused, so nothing was rehydrated")
+      .not.toBe(useUiStore);
+    const next = store.getState();
+
+    // The bare numeric ids survive the migration untouched - the owner's own
+    // rule permits them to stay device-local, so there is nothing to clean.
+    expect(next.selectedChatId).toBe(7);
+    expect(next.selectedCharacterId).toBe(3);
+    // The model NAME does not: it is gone from the live store...
+    expect(next.selectedModelId).toBeNull();
+
+    // ...and, the part that actually protects an existing user, gone from
+    // what lands back on disk.
+    store.getState().setMsgFontPx(15); // force one write of the whole blob
+    const blob = stored();
+    expect(
+      "selectedModelId" in blob,
+      "the plaintext model id is still on disk after the migration ran",
+    ).toBe(false);
+    expect(blob.selectedChatId).toBe(7);
+    expect(blob.selectedCharacterId).toBe(3);
   });
 
   it("is read by the narration migration under the name it writes", () => {

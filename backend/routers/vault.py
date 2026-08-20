@@ -1329,18 +1329,68 @@ def _reset_runtime_files(vault_dir: Path) -> list[str]:
     that a clean install would not have, and the docstring made no exception
     for it.
 
-    Best effort, like every family above: this very process may be the one
-    with elysium.log open right now. That does not stop the shred - Python's
-    default file handles on Windows do not exclude other openers of the same
-    name, so a second handle can still overwrite and unlink it out from under
-    the live one - but if it ever does fail, the name is reported here like
-    any other held-open file rather than silently skipped.
+    THIS PROCESS IS THE ONE HOLDING THE LOG OPEN, and that had to be dealt
+    with rather than reasoned around. An earlier version of this comment
+    claimed Python's file handles do not exclude other openers of the same
+    name, so the shred could unlink it out from under the live handle. Half
+    true and the wrong half: the OVERWRITE succeeds, the UNLINK does not,
+    because CPython opens without FILE_SHARE_DELETE. Measured - discard()
+    returns False and the name survives with its contents destroyed.
+
+    The consequence was not cosmetic. `elysium.log` exists only on a frozen
+    build, which is the only build a user ever runs, so every reset in the
+    shipped app would have answered {"ok": false, "left": ["elysium.log"]}
+    while three documents and this docstring promised it was destroyed. The
+    test that vouched for the sweep passed because it runs UNFROZEN, where
+    no handler is attached and the file is an ordinary closed file.
+
+    So the handlers are detached and closed first. Logging survives it: the
+    root logger keeps whatever other handlers it has, and a frozen build
+    that wants a log again gets a fresh file on the next write, which is
+    correct - the old trail is exactly what the user asked to erase.
     """
+    _close_log_handlers(vault_dir / "elysium.log")
     left: list[str] = []
     for name in ("elysium.log", "elysium.log.1", "port"):
         if not secure_delete.discard(vault_dir / name):
             left.append(name)
     return left
+
+
+def _close_log_handlers(log_path: Path) -> None:
+    """Detach every logging handler writing to this file, and close it.
+
+    Scoped by resolved path rather than by handler class: a caller that
+    attached its own handler to the same file is holding the same lock, and
+    a class check would miss it. Anything that cannot be closed is left
+    attached - a half-detached logger that then raises on the next log line
+    would turn a reset into a crash.
+    """
+    import logging
+
+    try:
+        target = log_path.resolve()
+    except OSError:
+        target = log_path
+    for logger in [logging.getLogger()] + [
+        logging.getLogger(name) for name in
+        list(logging.Logger.manager.loggerDict)
+    ]:
+        for handler in list(getattr(logger, "handlers", [])):
+            stream_name = getattr(handler, "baseFilename", None)
+            if not stream_name:
+                continue
+            try:
+                same = Path(stream_name).resolve() == target
+            except OSError:
+                same = str(stream_name) == str(log_path)
+            if not same:
+                continue
+            try:
+                logger.removeHandler(handler)
+                handler.close()
+            except Exception:
+                logger.addHandler(handler)
 
 
 def _reset_vault_sync() -> dict:
@@ -1396,10 +1446,16 @@ def _reset_vault_sync() -> dict:
     families are encrypted under that SAME identity, so if the identity was
     held back the live vault stays exactly as recoverable with them gone as
     with them present; and uploads, the voice cache, voice references, the
-    browser profile and the legacy keyring do not depend on app.db or its
-    identity in any way. Stopping the whole route at the first held-open
-    file would leave more readable on disk than getting as far as it safely
-    can and saying exactly what did not go - the same reasoning this
+    browser profile, the legacy keyring and the runtime files
+    (_reset_runtime_files: elysium.log, the one rotated twin backupCount=1
+    allows, and the remembered `port`) do not depend on app.db or its
+    identity in any way. The runtime files belong in that list and not in
+    the paragraph above for the same reason as the rest: a log line and a
+    TCP port number are not the recipe for anything, so sweeping them can
+    leave a surviving database no less openable than it already was.
+    Stopping the whole route at the first held-open file would leave more
+    readable on disk than getting as far as it safely can and saying
+    exactly what did not go - the same reasoning this
     function's own docstring already gives for a single stuck file, applied
     now to the one pair where the ORDER of "as far as it safely can" matters.
     """

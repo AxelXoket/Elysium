@@ -17,6 +17,8 @@ Behaviour is driven by the request, so one script covers every scenario:
     op=load, mode=crash          -> dies instantly, no frame
     op=load, mode=coded          -> a named failure the app can say out loud
     op=synthesize                -> writes a tiny wav, returns its path
+    op=synthesize, mode=echo_text-> fails with the spoken text in the detail
+    op=synthesize, mode=shouty_code -> fails with prose where the code goes
     op=noise                     -> prints junk to stdout FIRST (see below)
 """
 import os
@@ -83,6 +85,22 @@ def handle(op, req, send):
         return {"loaded": True, "vram_mb": 4096}
 
     if op == _wire.OP_SYNTHESIZE:
+        if mode == "echo_text":
+            # What a REAL engine does: fish_s2 formats its failures as
+            # f"{what}: {type(exc).__name__}: {exc}", and the innermost
+            # exception is the tokeniser complaining about the sentence it was
+            # handed. So the detail that crosses the pipe contains the words
+            # the model wrote. Nothing may repeat them on the other side.
+            raise _wire.WorkerError(
+                _wire.CODE_SYNTHESIS_FAILED,
+                "encode: TokenizerError: cannot encode %r"
+                % (req.get("text") or ""))
+        if mode == "shouty_code":
+            # A code that is not a code: the frontend's vocabulary does not
+            # contain it AND it is prose, so neither half of it may be
+            # repeated verbatim.
+            raise _wire.WorkerError(
+                "Cannot speak: " + (req.get("text") or ""), "boom")
         out = req.get("out")
         if not out:
             raise _wire.WorkerError(_wire.CODE_SYNTHESIS_FAILED, "no output path")

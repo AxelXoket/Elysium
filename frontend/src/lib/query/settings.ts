@@ -11,6 +11,7 @@ import {
   setAutoLock,
   setScreenPrivacy,
   setImageOutput,
+  setSelectedModel,
   deleteProxy,
   getProxyHealth,
 } from "../api/settings";
@@ -173,6 +174,27 @@ export function useSetAutoLock() {
     onSuccess: (data) => {
       qc.setQueryData<Settings>(keys.settings(), (prev) =>
         prev ? { ...prev, auto_lock_minutes: data.auto_lock_minutes } : prev,
+      );
+    },
+  });
+}
+
+/**
+ * Persist which model is selected, in the vault.
+ *
+ * Called by useStaleSelectionReconciliation whenever uiStore's in-memory
+ * `selectedModelId` changes - never directly by a component, so this hook has
+ * no UI-facing consumer of its own. Same write-through shape as its
+ * neighbours: the vault is the truth, so the cache is updated from the
+ * server's own answer.
+ */
+export function useSetSelectedModel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (modelId: string | null) => setSelectedModel(modelId),
+    onSuccess: (data) => {
+      qc.setQueryData<Settings>(keys.settings(), (prev) =>
+        prev ? { ...prev, selected_model_id: data.selected_model_id } : prev,
       );
     },
   });

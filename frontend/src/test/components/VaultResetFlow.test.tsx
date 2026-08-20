@@ -9,9 +9,11 @@
  * to it must keep working untouched.
  *
  * RESET_CONFIRM_PHRASE is imported from the component rather than retyped
- * here - it is an ASSUMED value (backend/routers/vault.py has no /vault/reset
- * route yet; see the comment above the constant), so this test file must
- * track whatever VaultGate.tsx actually sends, not a copy that could drift.
+ * here, so this test file tracks whatever VaultGate.tsx actually sends
+ * rather than a copy that could drift. It is no longer an assumed value:
+ * backend/routers/vault.py's RESET_CONFIRMATION_PHRASE is the true one and
+ * the two agree today, but the frontend copy is what this screen sends and
+ * therefore what these tests must exercise.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
@@ -30,9 +32,17 @@ interface VaultSim {
   resetLeft?: string[];
 }
 
+/** The database file's own name, which is what /vault/reset reports in `left`
+ *  when the sweep could not remove it: backend/config.py's DB_PATH ends in
+ *  app.db, and backend/tests/test_vault_reset_hardening.py asserts
+ *  `db_path.name in body["left"]` for exactly that case. The fake below
+ *  branches on it because the real route does. */
+const DB_FILE_NAME = "app.db";
+
 /** Same stateful backend stand-in shape as VaultGate.test.tsx, extended with
- *  /vault/reset: it wipes the sim back to first-run on success, exactly what
- *  the real route is expected to do (a boot-state transition, like init). */
+ *  /vault/reset: on a COMPLETE wipe it drops the sim back to first-run, which
+ *  is what the real route leaves behind (a boot-state transition, like init).
+ *  A partial wipe is not that, and the rule for it is spelled out inline. */
 function stubVaultFetch(sim: VaultSim) {
   vi.stubGlobal(
     "fetch",
@@ -57,14 +67,32 @@ function stubVaultFetch(sim: VaultSim) {
           return json({ detail: "vault_reset_failed" }, 500);
         }
         const left = sim.resetLeft ?? [];
-        // The real route sweeps the DATABASE first and only then the other
-        // artefact families, so a partial failure still leaves the vault
-        // uninitialised. Simulating it as "nothing changed" would make the
-        // screen's guard look load-bearing when it was not: the panel would
-        // stay up on its own and the test would pass for the wrong reason.
-        sim.initialized = false;
+        // What the vault's boot state actually is after this call, which is
+        // NOT "always first-run". _reset_vault_sync in backend/routers/
+        // vault.py sweeps the database, then checks whether app.db is still
+        // on disk, and when it IS the identity files are held back
+        // ENTIRELY - the whole reason that branch exists is that destroying
+        // salt.bin/verifier.bin over a database that survived would brick a
+        // vault the owner could otherwise still open. /vault/status derives
+        // `initialized` from those two files existing (crypto.py's
+        // is_initialized), so a reset that could not remove the database
+        // leaves the vault initialised AND unlockable with the old
+        // passphrase. Sweeping first does not imply succeeding; the
+        // database surviving is the condition, not the ordering.
+        const dbSurvives = left.includes(DB_FILE_NAME);
+        // When the database did go, the identity sweep ran, and only the
+        // names reported back in `left` are still there. is_initialized
+        // wants BOTH files, and the encrypted-database recovery branch
+        // cannot apply with no database left to classify.
+        const identitySurvives =
+          dbSurvives ||
+          (left.includes("salt.bin") && left.includes("verifier.bin"));
+        sim.initialized = identitySurvives;
         sim.unlocked = false;
-        sim.passphrase = null;
+        // Unlocking needs the database and the identity that opens it. Only
+        // the held-back case keeps both, and keeping the passphrase here is
+        // what lets a test prove the vault was not bricked.
+        sim.passphrase = dbSurvives ? sim.passphrase : null;
         return json({ ok: left.length === 0, left });
       }
       return json({}, 404);
@@ -87,6 +115,13 @@ async function openLockScreen(sim: VaultSim) {
 }
 
 const APP_MARKER = <div data-testid="app-root">app</div>;
+
+/** The first-run stage's own heading. VaultGate has no fourth stage for a
+ *  reset: a complete wipe simply makes /vault/status answer
+ *  initialized: false and the gate lands here. Naming it once keeps the
+ *  "did we go to setup" assertions below reading the same thing the
+ *  complete-wipe test waits for. */
+const SETUP_HEADING = "Protect your world";
 
 describe("VaultGate lock screen - forgot passphrase / reset", () => {
   beforeEach(() => {
@@ -276,7 +311,10 @@ describe("VaultGate lock screen - forgot passphrase / reset", () => {
     await user.click(screen.getByRole("button", { name: "Delete everything" }));
 
     // Reuses VaultGate's OWN existing setup stage - no new fourth state.
-    await screen.findByText("Protect your world");
+    // This is also the positive control for the two "not the setup screen"
+    // assertions below: the heading they query for does appear when the
+    // wipe really was complete.
+    await screen.findByText(SETUP_HEADING);
     expect(resetCallCount()).toBe(1);
   });
 
@@ -358,9 +396,48 @@ describe("a reset that only partly worked", () => {
     await wipe(user);
 
     await screen.findByTestId("reset-left");
-    // Ground: still the reset panel, not the first-run screen, and the app
-    // behind the gate is still not showing.
+    // The assertion that names the failure: the first-run screen is what a
+    // reset normally swings to, and it must not swing there while survivors
+    // are still on the panel. Live query, not a vacuous one - the complete
+    // wipe test above finds this same heading after an ok:true reset.
+    expect(screen.queryByText(SETUP_HEADING)).not.toBeInTheDocument();
+    // And the app behind the gate is still not showing either.
     expect(screen.queryByTestId("app-root")).not.toBeInTheDocument();
+  });
+
+  it("a reset that could not remove the DATABASE leaves the vault openable and says so", async () => {
+    // The case the "do not brick the vault" branch exists for, and the one
+    // no test covered. app.db is held open (a hardlink, an indexer, a second
+    // instance), so the route holds the identity files back and the user is
+    // exactly where they started: locked, intact, able to unlock. They asked
+    // for everything to be destroyed and effectively nothing was, so the
+    // screen owes them the survivors and must not hand them a setup screen
+    // for a vault that is still full.
+    const user = userEvent.setup();
+    const sim = partial([DB_FILE_NAME, `${DB_FILE_NAME}-wal`]);
+    await openLockScreen(sim);
+    await wipe(user);
+
+    // 1. It does not imply success: the survivors are named, database first.
+    const left = await screen.findByTestId("reset-left");
+    expect(left.textContent).toMatch(/app\.db/);
+
+    // 2. It does not send them to first-run setup. That screen offers to
+    //    mint a new passphrase, and over a surviving encrypted database the
+    //    backend refuses to (encrypted_db_without_identity) - a dead end
+    //    presented as a fresh start.
+    expect(screen.queryByText(SETUP_HEADING)).not.toBeInTheDocument();
+
+    // 3. The vault is not bricked, proved by using it rather than by
+    //    inspecting state: back out of the panel and the ORIGINAL passphrase
+    //    still opens everything.
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await user.type(
+      await screen.findByLabelText("Passphrase"),
+      "right-horse-42",
+    );
+    await user.click(screen.getByRole("button", { name: "Unlock" }));
+    expect(await screen.findByTestId("app-root")).toBeInTheDocument();
   });
 
   it("says nothing extra when the wipe really was complete", async () => {

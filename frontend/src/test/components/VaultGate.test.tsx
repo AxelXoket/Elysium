@@ -521,13 +521,31 @@ describe("VaultGate - the states nobody rendered", () => {
 /**
  * The reset confirmation screen's destruction list, checked artefact by
  * artefact against _reset_vault_sync (backend/routers/vault.py) - see the
- * comment above the sentence in VaultGate.tsx for the full mapping. Two
- * defects: the sentence never named DATA_DIR/webview (the wallpaper, its
- * framing, text-size settings and the last-open ids), and it said nothing
- * about elysium.log surviving with a record of which chats had notes -
- * letting "all of it, at once" be read as covering a file that is not swept.
+ * comment above the sentence in VaultGate.tsx for the full mapping.
+ *
+ * The last test here used to pin a FALSEHOOD: it asserted the screen said
+ * elysium.log "survives this reset", while _reset_runtime_files shreds
+ * elysium.log, elysium.log.1 and `port`. Both landed in commit 075506f, so
+ * the suite was defending a sentence that was never true - the worst failure
+ * mode a test has, because correcting the screen would have read as a
+ * regression. The intent behind it was sound and is kept: the survival
+ * question must be ANSWERED on this screen, not left unsaid. It is now
+ * answered with what the route actually does.
  */
 describe("VaultGate - the reset confirmation screen", () => {
+  /**
+   * Shared vocabulary for the two runtime-file tests below, deliberately
+   * wider than the exact words the copy uses so a reworded lie is caught
+   * too. Kept as ONE pair of patterns on purpose: the survivors test
+   * asserts SURVIVAL_WORDS matches, and the log test asserts the SAME
+   * pattern does not - so a typo that made it match nothing could not pass
+   * the negative assertion for free. That is the positive control for the
+   * negative assertion.
+   */
+  const SURVIVAL_WORDS =
+    /(survive|left alone|left behind|untouched|kept|stays|remains|not deleted|spared)/i;
+  const DESTRUCTION_WORDS = /(destroyed|deleted|shredded|wiped|goes with it)/i;
+
   beforeEach(() => {
     vi.unstubAllGlobals();
   });
@@ -574,19 +592,49 @@ describe("VaultGate - the reset confirmation screen", () => {
       "uploads",
       "generated images",
       "saved voice",
+      "cached spoken replies",
       "saved API key",
+      "proxy address",
     ]) {
       expect(promise, `missing "${word}"`).toMatch(new RegExp(word, "i"));
     }
   });
 
-  it("does not let the diagnostic log's survival go unsaid", async () => {
-    // elysium.log is untouched by _reset_vault_sync and still records which
-    // chats triggered a note-taking pass (notebook_worker.py logs chat_id on
-    // a failed extraction). The screen has to name the exception rather than
-    // let "all of it, at once" read as covering it too.
+  it("says the diagnostic log is destroyed, not spared", async () => {
+    // _reset_runtime_files shreds elysium.log, elysium.log.1 and `port`.
+    // The log is worth naming at all because notebook_worker.py logs chat_id
+    // on a failed extraction, so it holds a record of which chats had
+    // note-taking activity - and this screen used to promise that record
+    // outlived the wipe. The paragraph carrying the filename has to say the
+    // opposite now, and has to keep saying it in ANY wording.
     await openResetPanel();
-    expect(await screen.findByText(/elysium\.log/i)).toBeInTheDocument();
-    expect(screen.getByText(/survives this reset/i)).toBeInTheDocument();
+    const named = await screen.findByText("elysium.log");
+    const said = named.closest("p")?.textContent ?? "";
+    expect(said).toMatch(DESTRUCTION_WORDS);
+    expect(said).not.toMatch(SURVIVAL_WORDS);
+    // The other two names _reset_runtime_files sweeps, and the reason the
+    // log matters. Drop any of them and the paragraph stops matching the
+    // route it describes.
+    expect(said).toMatch(/rotated copy/i);
+    expect(said).toMatch(/port/i);
+    expect(said).toMatch(/note-taking/i);
+  });
+
+  it("still answers the survival question, and answers it with the engine", async () => {
+    // Ground for the test above, and the reason the old test existed: a
+    // person about to destroy everything is owed an explicit answer to
+    // "what is left afterwards", not silence. The honest answer is now the
+    // TTS engine software _reset_vault_sync deliberately keeps
+    // (TTS_MODELS_DIR, the runtimes, the uv/python caches) - and nothing
+    // else, so the log must not be the thing this paragraph names.
+    await openResetPanel();
+    const survivors = screen.getByText(SURVIVAL_WORDS, { selector: "p" });
+    const said = survivors.textContent ?? "";
+    expect(said).toMatch(/voice/i);
+    expect(said).toMatch(/models/i);
+    expect(said).not.toMatch(/elysium\.log/i);
+    // TTS_REFS_DIR is swept, so the user's own recorded voice is NOT a
+    // survivor - the one place "voice" could be misread on this screen.
+    expect(said).toMatch(/your own recorded voice is not/i);
   });
 });

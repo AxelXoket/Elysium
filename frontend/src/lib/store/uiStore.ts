@@ -103,6 +103,21 @@ function clampGenSettings(
 interface UiState {
   selectedCharacterId: number | null;
   selectedChatId: number | null;
+  /**
+   * The currently-chosen model id. SESSION-ONLY in this store since v1.2 -
+   * NOT written to localStorage (see `partialize` below). An OpenRouter
+   * model id ("anthropic/claude-3.5-sonnet") is a NAME a person reads on
+   * screen, which the owner's own rule bans from ever sitting outside the
+   * vault; the other two selections above are bare numbers, which the rule
+   * permits to stay device-local.
+   *
+   * It now lives in the encrypted settings table instead (POST
+   * /settings/model-selection, GET /settings' selected_model_id). This
+   * field starts null on every launch and is hydrated from the vault, once,
+   * by useStaleSelectionReconciliation - which also pushes every later
+   * change back to the vault. That hook only runs after unlock, so there is
+   * NOTHING to read here while the vault is locked.
+   */
   selectedModelId: string | null;
   activeRightPanelTab: RightPanelTab;
   sidebarCollapsed: boolean;
@@ -388,18 +403,38 @@ export const useUiStore = create<UiState>()(
     }),
     {
       name: "elysium-ui-state",
+      // Version 3: v1.2 privacy fix - selectedModelId (a plaintext model NAME)
+      // no longer persists to localStorage; see the migrate branch below and
+      // the field's own doc comment on UiState.
+      //
       // Version 2: tab names renamed (model→models, settings→secrets, info→models).
       // The original persist config had no explicit version, which Zustand treats as 0.
       // Bumping to 2 triggers the migrate function for all existing localStorage entries.
-      version: 2,
+      version: 3,
       migrate: (persisted: unknown, fromVersion: number) => {
-        const state = (persisted ?? {}) as Record<string, unknown>;
+        const state = { ...(persisted ?? {}) } as Record<string, unknown>;
         if (fromVersion < 2) {
           // Normalize old tab value to new tab name
-          return {
-            ...state,
-            activeRightPanelTab: normalizeTab(state.activeRightPanelTab),
-          };
+          state.activeRightPanelTab = normalizeTab(state.activeRightPanelTab);
+        }
+        if (fromVersion < 3) {
+          // v1.2 privacy fix (audit finding): selectedModelId was a plaintext
+          // model NAME sitting in this blob, in the clear, inside WebView2's
+          // on-disk localStorage - readable with no passphrase, and outliving
+          // every lock, relaunch and shutdown because browser_profile.purge()
+          // deliberately spares Local Storage. It now lives in the encrypted
+          // settings table (see lib/query/settings.ts's useSetSelectedModel).
+          //
+          // DELETING it here, rather than merely leaving it out of
+          // `partialize` going forward, is what actually cleans an existing
+          // install: `partialize` only controls what gets WRITTEN on the next
+          // save. Without this line the stale copy would stay parked in this
+          // rehydrated state - and therefore in this blob, since nothing here
+          // would ever prune a key partialize just drops from its own output
+          // - and would flow into the live store on every future launch too,
+          // pushed straight back into the vault by the reconciliation hook's
+          // hydration guard reading a non-null local value first.
+          delete state.selectedModelId;
         }
         return state;
       },
@@ -408,7 +443,9 @@ export const useUiStore = create<UiState>()(
       partialize: (state) => ({
         selectedCharacterId: state.selectedCharacterId,
         selectedChatId: state.selectedChatId,
-        selectedModelId: state.selectedModelId,
+        // selectedModelId is deliberately ABSENT (v1.2 privacy fix): it is a
+        // model NAME, not a bare id, and now lives in the vault instead - see
+        // UiState's doc comment on the field and the migrate branch above.
         activeRightPanelTab: state.activeRightPanelTab,
         sidebarCollapsed: state.sidebarCollapsed,
         msgFontPx: state.msgFontPx,

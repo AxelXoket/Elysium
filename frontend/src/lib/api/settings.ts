@@ -7,6 +7,7 @@ import {
   StopSequencesResponseSchema,
   AutoLockResponseSchema,
   ImageOutputResponseSchema,
+  ModelSelectionResponseSchema,
 } from "../schemas/settings";
 import type {
   Settings,
@@ -16,6 +17,7 @@ import type {
   StopSequencesResponse,
   AutoLockResponse,
   ImageOutputResponse,
+  ModelSelectionResponse,
 } from "../schemas/settings";
 
 export function getSettings(): Promise<Settings> {
@@ -110,6 +112,25 @@ export function setScreenPrivacy(enabled: boolean): Promise<OkResponse> {
   return request("/settings/screen-privacy", OkResponseSchema, {
     method: "POST",
     body: JSON.stringify({ screen_privacy_enabled: enabled }),
+  });
+}
+
+/**
+ * Persist which model is selected, in the VAULT rather than the browser.
+ *
+ * An OpenRouter model id ("anthropic/claude-3.5-sonnet") is a NAME a person
+ * reads on screen, the exact shape S-09b (and the owner's own rule) bans from
+ * localStorage. It used to be one of three keys in uiStore's
+ * `elysium-ui-state` blob; it lives here now, next to the API key and the
+ * stop sequences. See uiStore.ts's version-3 migrate, which cleans the
+ * plaintext copy out of any install that already has one.
+ */
+export function setSelectedModel(
+  modelId: string | null,
+): Promise<ModelSelectionResponse> {
+  return request("/settings/model-selection", ModelSelectionResponseSchema, {
+    method: "POST",
+    body: JSON.stringify({ selected_model_id: modelId }),
   });
 }
 

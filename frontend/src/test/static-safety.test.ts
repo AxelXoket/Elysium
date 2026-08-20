@@ -26,6 +26,18 @@ import catalogue from "../../../shared/error_catalogue.json";
 // answer "is this scaffolding" the same way. No types, and none wanted: a .d.ts
 // beside it would be a second declaration of the same thing.
 import { SUPPORT_FILES, isScaffolding } from "../../privacy-scope.js";
+// S-09c reads the store's REAL defaults and the REAL bounds rather than
+// retyping them. A shape table that only agrees with itself is a comment.
+import {
+  useUiStore,
+  MSG_FONT_MIN,
+  MSG_FONT_MAX,
+  MSG_LINE_MIN,
+  MSG_LINE_MAX,
+  MSG_OPACITY_MIN,
+  MSG_OPACITY_MAX,
+} from "@/lib/store/uiStore";
+import { CHAT_BG_ZOOM_MIN } from "@/lib/appearance/chatBackground";
 
 const SRC_DIR = path.resolve(__dirname, "../../");
 const THIS_FILE = path.resolve(__filename);
@@ -73,6 +85,376 @@ function stripComments(source: string): string {
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
 }
+
+/**
+ * The `partialize` object literal out of uiStore.ts, brace-balanced.
+ *
+ * Lifted to module scope because two rules need it (S-09b checks the SHAPE of
+ * every entry, S-09c checks what each persisted key is allowed to HOLD) and a
+ * second copy of a brace walker is a second place for it to be wrong.
+ *
+ * Brace-balances from `=> ({` to its matching `})`. A non-greedy regex stops
+ * at the FIRST `})`, so a value containing one truncates the scanned region
+ * and every later key escapes unread.
+ */
+function readPartializeBody(): string {
+  const uiStorePath = path.resolve(SRC_DIR, "src", "lib", "store", "uiStore.ts");
+  const content = readFileSync(uiStorePath, "utf-8");
+  const head = /partialize:\s*\([^)]*\)\s*=>\s*\(\s*\{/.exec(content);
+  if (!head) throw new Error("Could not locate partialize(...) in uiStore.ts");
+  const openBrace = head.index + head[0].length - 1; // index of the '{'
+  let depth = 0;
+  for (let i = openBrace; i < content.length; i++) {
+    const ch = content[i];
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return content.slice(openBrace + 1, i);
+    }
+  }
+  throw new Error("Unbalanced partialize object braces in uiStore.ts");
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+ * S-09c: what an allowlisted persisted key is allowed to HOLD.
+ *
+ * S-09b answers "may this key be persisted" and "does it mirror its own
+ * field". Neither question can tell `msgFontPx: state.msgFontPx` (a number
+ * about type size) from `chatTitle: state.chatTitle` (a name a person reads
+ * on screen) once somebody adds the second one to the allowlist - the entry
+ * is well formed, the name is not on the forbidden-substring list, and both
+ * rules go green. localStorage is plaintext on disk, outside the vault, and
+ * survives every purge browser_profile.py performs, so that key would put a
+ * chat's real name where any process on the machine can read it.
+ *
+ * The vibe version of this rule is "do not allowlist anything content-like",
+ * which is unenforceable. The testable version is: every allowlisted key
+ * declares the SHAPE of what it may hold, and the whole table is then swept
+ * with a list of names and sentences a person would actually see in this app.
+ * A key whose declared shape accepts any of them fails. Adding `chatTitle`
+ * means writing a guard that accepts a chat title, and that guard cannot
+ * survive the sweep - so the rule bites at the moment of the mistake rather
+ * than relying on a reviewer noticing.
+ *
+ * Three anti-cheats, because a declaration is only worth what checks it:
+ *  - each guard must ACCEPT its own stated sample, so `accepts: () => false`
+ *    cannot be used to slip past the name sweep;
+ *  - each guard must ACCEPT the store's live default for that key, so the
+ *    declared shape is measured against the running app, not against itself;
+ *  - the table and `partialize` must name the SAME keys in both directions,
+ *    so an entry cannot rot into a description of a field nobody persists.
+ *
+ * FORMER HONEST LIMIT, now moot. `selectedModelId` used to live in this
+ * table and held a provider/model slug shaped like `a/b` - the same shape as
+ * a nickname somebody might type ("he/him"), which no shape guard here could
+ * tell apart from a real slug. v1.2 removed the whole question rather than
+ * answering it: that key is a NAME a person reads on screen, so it moved out
+ * of localStorage into the encrypted settings table (see uiStore.ts's
+ * version-3 migrate) and is no longer in `partialize` or in this table at
+ * all. The name sweep below uses names of the kind this app really renders
+ * (chat titles, character names, message text).
+ * ──────────────────────────────────────────────────────────────────────── */
+
+interface PersistedShape {
+  /** Why a device-readable copy of this is acceptable. */
+  why: string;
+  /** What this key may hold. Must reject every NAME_PROBE. */
+  accepts: (value: unknown) => boolean;
+  /** A legitimate value. Proves `accepts` is not simply always false. */
+  sample: unknown;
+}
+
+const isBool = (v: unknown) => typeof v === "boolean";
+const inRange =
+  (min: number, max: number) =>
+  (v: unknown): boolean =>
+    typeof v === "number" && Number.isFinite(v) && v >= min && v <= max;
+const oneOf =
+  (...allowed: string[]) =>
+  (v: unknown): boolean =>
+    typeof v === "string" && allowed.includes(v);
+/** A database row id, or nothing selected. Never a title. */
+const rowId = (v: unknown) =>
+  v === null || (typeof v === "number" && Number.isInteger(v) && v >= 0);
+const HEX = /^#[0-9a-fA-F]{6}$/;
+
+const PERSISTED_KEY_SHAPES: Record<string, PersistedShape> = {
+  selectedCharacterId: {
+    why: "A row id. The owner's rule allows a numeric id outside the vault; the NAME that id resolves to is fetched over 127.0.0.1 and never stored here.",
+    accepts: rowId,
+    sample: 7,
+  },
+  selectedChatId: {
+    why: "A row id, same argument as selectedCharacterId. This is the exact key a `chatTitle` sibling would be added next to, which is why the sweep below exists.",
+    accepts: rowId,
+    sample: 42,
+  },
+  activeRightPanelTab: {
+    why: "Which of four fixed panels was open.",
+    accepts: oneOf("models", "secrets", "persona", "notebook"),
+    sample: "models",
+  },
+  sidebarCollapsed: {
+    why: "One boolean about window furniture.",
+    accepts: isBool,
+    sample: true,
+  },
+  msgFontPx: {
+    why: "Reader type size, bounded by the store's own constants.",
+    accepts: inRange(MSG_FONT_MIN, MSG_FONT_MAX),
+    sample: MSG_FONT_MIN,
+  },
+  msgLineHeight: {
+    why: "Reader line height, bounded by the store's own constants.",
+    accepts: inRange(MSG_LINE_MIN, MSG_LINE_MAX),
+    sample: MSG_LINE_MIN,
+  },
+  msgContrast: {
+    why: "One of three contrast presets.",
+    accepts: oneOf("soft", "default", "high"),
+    sample: "high",
+  },
+  narrationEnabled: {
+    why: "Style asterisk spans. A display flag.",
+    accepts: isBool,
+    sample: false,
+  },
+  quoteTintEnabled: {
+    why: "Tint quoted spans. A display flag.",
+    accepts: isBool,
+    sample: false,
+  },
+  continuousVoice: {
+    why: "Speak replies aloud. Says nothing about WHAT was said.",
+    accepts: isBool,
+    sample: true,
+  },
+  voiceHintDismissed: {
+    why: "A hint was closed. UI chrome.",
+    accepts: isBool,
+    sample: true,
+  },
+  narrationMigrated: {
+    why: "The one-shot flag saying the old device-local narration mode was moved into the vault.",
+    accepts: isBool,
+    sample: true,
+  },
+  msgInk: {
+    why: "A six-digit hex colour for message text, or nothing chosen.",
+    accepts: (v) => v === null || (typeof v === "string" && HEX.test(v)),
+    sample: "#c8d8ec",
+  },
+  surfaceFinish: {
+    why: "One of three bubble finishes.",
+    accepts: oneOf("matte", "glossy", "metallic"),
+    sample: "glossy",
+  },
+  msgOpacity: {
+    why: "How solid a bubble is, bounded by the store's own constants.",
+    accepts: inRange(MSG_OPACITY_MIN, MSG_OPACITY_MAX),
+    sample: MSG_OPACITY_MIN,
+  },
+  chatBgOn: {
+    why: "Is the wallpaper shown. The picture itself is a Blob in the S-13 store; no filename or path is ever persisted.",
+    accepts: isBool,
+    sample: true,
+  },
+  chatBgLum: {
+    why: "Average luminance of that picture, 0..1. One number about brightness.",
+    accepts: inRange(0, 1),
+    sample: 0.5,
+  },
+  chatBgContrast: {
+    why: "Scrim strength, 0..0.85.",
+    accepts: inRange(0, 0.85),
+    sample: 0.35,
+  },
+  chatBgTint: {
+    why: "The literal 'auto', or a six-digit hex tint.",
+    accepts: (v) => v === "auto" || (typeof v === "string" && HEX.test(v)),
+    sample: "auto",
+  },
+  chatBgFocusX: {
+    why: "Which part of the picture to show, as a percentage.",
+    accepts: inRange(0, 100),
+    sample: 50,
+  },
+  chatBgFocusY: {
+    why: "Which part of the picture to show, as a percentage.",
+    accepts: inRange(0, 100),
+    sample: 50,
+  },
+  chatBgZoom: {
+    why: "How far the picture is cropped in.",
+    accepts: inRange(CHAT_BG_ZOOM_MIN, 100),
+    sample: CHAT_BG_ZOOM_MIN,
+  },
+  chatBgAspect: {
+    why: "Width over height of that picture, or unknown. A ratio, not a size and not a name.",
+    accepts: (v) => v === null || inRange(0.01, 100)(v),
+    sample: 1.5,
+  },
+  ambientFogOn: {
+    why: "A decorative effect flag.",
+    accepts: isBool,
+    sample: false,
+  },
+  genTemperature: {
+    why: "Sampling scalar, 0..2.",
+    accepts: inRange(0, 2),
+    sample: 0.8,
+  },
+  genTopP: { why: "Sampling scalar, 0..1.", accepts: inRange(0, 1), sample: 0.9 },
+  genTopK: { why: "Sampling scalar, 0..500.", accepts: inRange(0, 500), sample: 40 },
+  genRepetitionPenalty: {
+    why: "Sampling scalar, 0..2.",
+    accepts: inRange(0, 2),
+    sample: 1.05,
+  },
+  genMaxOutput: {
+    why: "A token budget. A count, not a text.",
+    accepts: inRange(1, 2_000_000),
+    sample: 1024,
+  },
+  genSeed: {
+    why: "The ONE free string here, and the reason it is narrow: the field is `type=\"number\"`, so it holds digits with an optional sign, or nothing. A guard of `typeof v === 'string'` would have let a title in through this key.",
+    accepts: (v) => typeof v === "string" && /^-?\d*$/.test(v),
+    sample: "12345",
+  },
+  genContextBudget: {
+    why: "A token budget. A count, not a text.",
+    accepts: inRange(512, 2_000_000),
+    sample: 16384,
+  },
+};
+
+/**
+ * Things a person actually reads on screen in THIS app: chat titles, character
+ * names, and message text. No allowlisted key may accept any of them.
+ *
+ * Deliberately not slug-shaped and not digit-only, per the HONEST LIMIT note:
+ * this list is what the rule claims to catch, and claiming more than it
+ * catches is the failure the file exists to prevent.
+ */
+const NAME_PROBES: string[] = [
+  "Aria",
+  "Ada Lovelace",
+  "Dr. Vale",
+  "Untitled chat",
+  "My chat about the divorce",
+  "hey, are you there?",
+  "Chat 3 (draft)",
+  "Мария",
+  // Slug-shaped, and a real thing somebody types into a name field. This
+  // probe could not be here while selectedModelId was persisted, because no
+  // guard can tell "he/him" from "anthropic/claude-sonnet-4". That key left
+  // localStorage in v1.2, so the shape is now free to be forbidden outright -
+  // and forbidding it is what keeps the exception from being reintroduced
+  // under a different name.
+  "he/him",
+  "The assistant said something I would not want read off my disk.",
+];
+
+/** Every (key, probe) pair the table would wave through. Empty is the pass. */
+function keysAcceptingAProbe(table: Record<string, PersistedShape>): string[] {
+  const bad: string[] = [];
+  for (const [key, shape] of Object.entries(table)) {
+    for (const probe of NAME_PROBES) {
+      if (shape.accepts(probe)) bad.push(`${key} accepts ${JSON.stringify(probe)}`);
+    }
+  }
+  return bad;
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+ * S-27 support: reading text-entry elements out of JSX.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/** One opening tag for a text-entry element, with its attribute text. */
+interface FieldTag {
+  tag: string;
+  attrs: string;
+  file: string;
+  line: number;
+}
+
+/**
+ * Every `<input>` / `<textarea>` opening tag in a source file.
+ *
+ * `Input` and `Textarea` are in the list because both wrappers end with
+ * `{...props}` (src/components/ui/input.tsx, ui/textarea.tsx), so an
+ * attribute written on the wrapper lands on the real DOM element. Scanning
+ * only the lowercase tags would miss every dialog field in the app.
+ *
+ * Walks forward from the tag name to the `>` that closes the opening tag,
+ * tracking `{}` depth and quotes so that `id={`a-${b}`}` is read as one
+ * attribute rather than ending the tag at the first `>` inside an expression.
+ * Comments are NOT stripped first: line numbers have to survive so a failure
+ * names a place somebody can go to, and a commented-out `<input name="x">`
+ * tripping this rule is the right outcome anyway.
+ */
+function findFieldTags(source: string, file: string): FieldTag[] {
+  const out: FieldTag[] = [];
+  const openRe = /<(input|textarea|Input|Textarea|InputPrimitive)(?=[\s/>])/g;
+  for (const m of source.matchAll(openRe)) {
+    const start = m.index + m[0].length;
+    let depth = 0;
+    let quote = "";
+    let i = start;
+    for (; i < source.length; i++) {
+      const ch = source[i];
+      if (quote) {
+        if (ch === quote) quote = "";
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === "`") {
+        quote = ch;
+        continue;
+      }
+      if (ch === "{") depth++;
+      else if (ch === "}") depth--;
+      else if (ch === ">" && depth === 0) break;
+    }
+    out.push({
+      tag: m[1],
+      attrs: source.slice(start, i),
+      file,
+      line: source.slice(0, m.index).split("\n").length,
+    });
+  }
+  return out;
+}
+
+/** `name=` written as an attribute of this tag (not `aria-...` or `data-...`). */
+const NAME_ATTR = /(^|\s)name\s*=/;
+/** `id=` written as an attribute of this tag. */
+const ID_ATTR = /(^|\s)id\s*=/;
+/** `autoComplete="off"`, in either the string or the brace form. */
+const AUTOCOMPLETE_OFF =
+  /(^|\s)autoComplete\s*=\s*(?:["']off["']|\{\s*["']off["']\s*\})/;
+/** A literal `type="..."` on the tag, if there is one. */
+const TYPE_ATTR = /(^|\s)type\s*=\s*["']([a-z]+)["']/;
+
+/**
+ * Input types that cannot reach Chromium's form-history table at all.
+ *
+ * `AutocompleteHistoryManager` stores a submitted field only when
+ * `FormFieldData::IsTextInputElement()` is true, which covers text, search,
+ * tel, url, email, number and password and nothing else. A range, a checkbox,
+ * a colour swatch or a file picker has no typed text to remember.
+ */
+const NON_TEXT_INPUT_TYPES = new Set([
+  "range",
+  "checkbox",
+  "radio",
+  "file",
+  "color",
+  "button",
+  "submit",
+  "reset",
+  "hidden",
+  "image",
+]);
 
 describe("Static safety tests", () => {
   const allSrcFiles = getSourceFiles("**/*.{ts,tsx,css}");
@@ -243,97 +625,25 @@ describe("Static safety tests", () => {
   // localStorage - literal `localStorage.setItem` scans (S-09) miss this path
   // entirely because the store persists via partialize, not a direct call.
   it("S-09b: uiStore partialize persists only allowlisted keys", () => {
-    const uiStorePath = path.resolve(SRC_DIR, "src", "lib", "store", "uiStore.ts");
-    const content = readFile(uiStorePath);
+    // The brace-balanced parse moved to readPartializeBody() at module scope
+    // when S-09c was added, so both rules read the same region by the same
+    // walk. The reason it is a walk and not a regex is unchanged: a non-greedy
+    // pattern stops at the FIRST `})`, so a value containing one truncates the
+    // scanned region and every later key escapes.
+    const body = readPartializeBody();
 
-    // v1.1 audit L8: extract the partialize object body by BRACE-BALANCING
-    // from `=> ({` to its matching `})`. The old non-greedy regex stopped at
-    // the FIRST `})`, so a value literal containing `})` (e.g. Object.assign({}))
-    // would truncate the scanned region and let every later key escape.
-    const head = /partialize:\s*\([^)]*\)\s*=>\s*\(\s*\{/.exec(content);
-    expect(head, "Could not locate partialize(...) in uiStore.ts").not.toBeNull();
-    const openBrace = head!.index + head![0].length - 1; // index of the '{'
-    let depth = 0;
-    let closeBrace = -1;
-    for (let i = openBrace; i < content.length; i++) {
-      const ch = content[i];
-      if (ch === "{") depth++;
-      else if (ch === "}") {
-        depth--;
-        if (depth === 0) {
-          closeBrace = i;
-          break;
-        }
-      }
-    }
-    expect(closeBrace, "Unbalanced partialize object braces").toBeGreaterThan(
-      openBrace,
-    );
-    const body = content.slice(openBrace + 1, closeBrace);
-
-    const ALLOWED_PERSISTED_KEYS = new Set([
-      "selectedCharacterId",
-      "selectedChatId",
-      "selectedModelId",
-      "activeRightPanelTab",
-      "sidebarCollapsed",
-      // Appearance preferences (Settings panel) - harmless reader/display
-      // numbers and flags; never content, drafts, or secrets.
-      "msgFontPx",
-      "msgLineHeight",
-      // Message contrast preset (Soft/Default/High) - a display preference.
-      "msgContrast",
-      "narrationEnabled",
-      "quoteTintEnabled",
-      // Continuous voice (V9-1) - one boolean saying "speak replies aloud".
-      // No content, no id, nothing about WHAT was said. Persisted because
-      // somebody who turned it on meant to leave it on; it defaults to false
-      // so a fresh profile is silent.
-      "continuousVoice",
-      // "The device-local narration mode has been moved into the vault." One
-      // boolean, and the reason the old `narrationVoice` key is gone from this
-      // list: a setting the server also reads cannot have a second home here.
-      "narrationMigrated",
-      // "I closed the 'voice is set up but nothing is chosen' hint." One
-      // boolean about a piece of UI chrome - no content, no id. Persisted
-      // because a hint that returns every launch is a nag; the dialog's own
-      // open state is deliberately NOT persisted.
-      "voiceHintDismissed",
-      // Appearance only (V11): a hex string for message ink and one of three
-      // finish names. Neither is content, an id, or anything about a person.
-      "msgInk",
-      "surfaceFinish",
-      // How solid a message bubble's fill is, 0.35..1. A number about paint,
-      // in the same family as msgInk and surfaceFinish above it.
-      "msgOpacity",
-      // Chat background scalars - the image itself lives as a Blob in the
-      // approved appearance store (see S-13), never in localStorage.
-      "chatBgOn",
-      "chatBgLum",
-      "chatBgContrast",
-      "chatBgTint",
-      // Framing: which part of that Blob to show, as percentages, plus how
-      // far in it is cropped and the picture's own width-to-height ratio.
-      // Four numbers describing a rectangle over an image the user chose -
-      // no filename, no path, nothing about the picture's contents. The LIVE
-      // chat-area ratio (chatAreaAspect) is deliberately absent: it measures
-      // this window rather than stating a preference, so it is session-only.
-      "chatBgFocusX",
-      "chatBgFocusY",
-      "chatBgZoom",
-      "chatBgAspect",
-      "ambientFogOn",
-      // Generation sampling scalars (v1.1 FF7) - neutral names, no user
-      // content. stopSequences (character names) are deliberately NOT here:
-      // they stay in-memory in the GenerationSettingsProvider.
-      "genTemperature",
-      "genTopP",
-      "genTopK",
-      "genRepetitionPenalty",
-      "genMaxOutput",
-      "genSeed",
-      "genContextBudget",
-    ]);
+    // The allowlist is now the key set of PERSISTED_KEY_SHAPES (module scope),
+    // where each key also declares WHAT it may hold. Deriving it here rather
+    // than keeping a second list means a key cannot be allowlisted in one
+    // place and left undescribed in the other. S-09c enforces the description.
+    const ALLOWED_PERSISTED_KEYS = new Set(Object.keys(PERSISTED_KEY_SHAPES));
+    // The names this used to be spelled as, kept only as a floor: if the table
+    // above were emptied or renamed away, every later assertion would still be
+    // structurally valid and would guard nothing.
+    expect(
+      ALLOWED_PERSISTED_KEYS.size,
+      "the persisted-key allowlist emptied itself",
+    ).toBeGreaterThan(25);
 
     // v1.1 audit L8 (value provenance): every persisted entry must be exactly
     // `key: state.<sameKey>,` - a direct mirror of the store field, with the
@@ -941,5 +1251,470 @@ describe("Static safety tests", () => {
     );
     // Windows hands out backslashes; the list is written with forward ones.
     expect(isScaffolding("src\\test\\mocks\\api.ts")).toBe(true);
+  });
+
+  /**
+   * S-09c (persisted-store allowlist, second half): a NAME cannot be added.
+   *
+   * See PERSISTED_KEY_SHAPES at module scope for the full argument and for the
+   * one honest limit this rule does not cover.
+   */
+  it("S-09c: no persisted key may hold a name a person reads on screen", () => {
+    const body = readPartializeBody();
+    const persisted = [
+      ...body.matchAll(/([A-Za-z_$][\w$]*)\s*:\s*state\.[A-Za-z_$][\w$]*\s*,/g),
+    ].map((m) => m[1]);
+    expect(
+      persisted.length,
+      "S-09c parsed no keys out of partialize (broken scan guard)",
+    ).toBeGreaterThan(25);
+
+    // Both directions. A key persisted but undescribed is a key nobody argued
+    // for; a key described but not persisted is a stale argument that makes
+    // the table look more considered than it is.
+    expect(
+      persisted.slice().sort(),
+      "uiStore persists a key with no entry in PERSISTED_KEY_SHAPES, or the " +
+        "table describes a key nothing persists. Every persisted key has to " +
+        "say what it may hold, because localStorage is plaintext on disk and " +
+        "outside the vault.",
+    ).toEqual(Object.keys(PERSISTED_KEY_SHAPES).sort());
+
+    // Anti-cheat 1: a guard that rejects everything would sail through the
+    // name sweep below while describing nothing.
+    for (const [key, shape] of Object.entries(PERSISTED_KEY_SHAPES)) {
+      expect(
+        shape.accepts(shape.sample),
+        `"${key}" declares a shape that rejects its own sample ` +
+          `${JSON.stringify(shape.sample)}. A guard that accepts nothing is ` +
+          `not a description, it is a way past the name sweep.`,
+      ).toBe(true);
+      expect(
+        shape.why.length,
+        `"${key}" is persisted with no reason written down. Putting a value ` +
+          `on the device outside the vault is a decision, not a default.`,
+      ).toBeGreaterThan(20);
+    }
+
+    // Anti-cheat 2: measured against the running store, not against itself.
+    const live = useUiStore.getState() as unknown as Record<string, unknown>;
+    for (const [key, shape] of Object.entries(PERSISTED_KEY_SHAPES)) {
+      expect(
+        shape.accepts(live[key]),
+        `"${key}" holds ${JSON.stringify(live[key])} in the real store but ` +
+          `its declared shape rejects it. Either the field changed and the ` +
+          `declaration rotted, or the declaration was never true.`,
+      ).toBe(true);
+    }
+
+    // THE RULE. Nothing on this list may be storable under any allowlisted key.
+    expect(
+      keysAcceptingAProbe(PERSISTED_KEY_SHAPES),
+      "A persisted key accepts something a person reads on screen. That key " +
+        "would write a chat or character NAME into localStorage, which is " +
+        "plaintext, sits outside the SQLCipher vault, and is not among the " +
+        "paths browser_profile.py purges. Ids may leave the vault; names " +
+        "never may. Narrow the shape, or keep the value in the vault.",
+    ).toEqual([]);
+
+    // POSITIVE CONTROL. The sweep above passes by finding nothing, which is
+    // also what it would do if every guard had stopped being consulted. Same
+    // function, same probe list, fed the exact mistake the rule exists for:
+    // somebody adds the chat's title next to the chat's id.
+    const withATitle: Record<string, PersistedShape> = {
+      chatTitle: {
+        why: "so the sidebar remembers what it was called",
+        accepts: (v) => typeof v === "string",
+        sample: "Untitled chat",
+      },
+    };
+    expect(
+      keysAcceptingAProbe(withATitle).length,
+      "S-09c went blind: a `typeof v === 'string'` guard was not flagged",
+    ).toBeGreaterThan(0);
+    // A subtler one: somebody narrows the guard to "short, no punctuation"
+    // and believes that excludes names. It does not.
+    const withAShortName: Record<string, PersistedShape> = {
+      lastPersonaName: {
+        why: "just a short label, surely harmless",
+        accepts: (v) => typeof v === "string" && v.length <= 32,
+        sample: "Aria",
+      },
+    };
+    expect(
+      keysAcceptingAProbe(withAShortName).length,
+      "S-09c went blind to a length-capped free string",
+    ).toBeGreaterThan(0);
+    // ...and discriminating: the shapes actually in use must stay silent, or
+    // the control is just an assertion that everything fails.
+    expect(
+      keysAcceptingAProbe({ msgFontPx: PERSISTED_KEY_SHAPES.msgFontPx }),
+    ).toEqual([]);
+    expect(
+      keysAcceptingAProbe({ genSeed: PERSISTED_KEY_SHAPES.genSeed }),
+    ).toEqual([]);
+    expect(
+      keysAcceptingAProbe({ chatBgTint: PERSISTED_KEY_SHAPES.chatBgTint }),
+    ).toEqual([]);
+  });
+
+  /**
+   * S-26: the window title never says what the app is showing.
+   *
+   * Setting `document.title` in a chat app is the most ordinary feature there
+   * is - the tab, or the taskbar, showing which conversation is open. In this
+   * app it is a leak, and a quiet one.
+   *
+   * WHY IT LEAKS. The page title becomes the top-level window's title, and
+   * window titles are ENUMERABLE: any process on the machine can walk the
+   * window list with EnumWindows/GetWindowText, at no privilege at all, and
+   * read it. That is the whole vault defeated by a string - the conversation
+   * stays encrypted at rest while its name sits in a list anyone can read.
+   *
+   * WHY IT LOOKS SAFE. Under pywebview the native window title is set once at
+   * creation and is NOT re-synced from the document, so setting
+   * `document.title` leaves the visible window still reading "Elysium".
+   * Somebody testing this by eye concludes it did nothing. Whether the string
+   * reaches the native title is a property of the host build, not of this
+   * code, and it is not a property worth betting a vault on.
+   *
+   * FOUR VECTORS, not one. A `document.title` scan alone is not enough here:
+   *
+   *  1. `document.title = chat.name` - the obvious one.
+   *  2. Reaching the element (`querySelector("title").textContent = ...`).
+   *  3. A `<title>` rendered ANYWHERE in the tree. This is React 19, which
+   *     hoists a rendered title element into the head by itself. No helmet
+   *     library, no import, no `document` reference - one JSX tag in a
+   *     component and the window title is live. A `document.title` grep never
+   *     sees it, which is exactly why it is listed separately.
+   *  4. A document-head library (react-helmet and its forks) doing 3 for you.
+   *
+   * And index.html's own title must stay a fixed literal, since a build-time
+   * substitution there would be the same leak one layer earlier.
+   */
+  it("S-26: the document title is never set from anything the app is showing", () => {
+    const patterns: { re: RegExp; leak: string }[] = [
+      {
+        re: /\bdocument\s*\.\s*title\b/,
+        leak:
+          "assigning document.title publishes that string on the window title, " +
+          "which any process can read with EnumWindows. pywebview does not " +
+          "re-sync it to the native window, so the visible title staying " +
+          '"Elysium" is not evidence that nothing left.',
+      },
+      {
+        re: /(?:querySelector|getElementsByTagName)\s*\(\s*["'`][^"'`]*\btitle\b/i,
+        leak:
+          "reaching the title element and writing to it is the same leak as " +
+          "document.title, one indirection further from the grep that looks " +
+          "for it.",
+      },
+      {
+        re: /<title[\s>]/,
+        leak:
+          "React 19 hoists a rendered title element into the head from " +
+          "anywhere in the tree, so a title tag holding chat.name in an " +
+          "ordinary component sets the window title without ever naming " +
+          "`document`.",
+      },
+      {
+        re: /\breact-helmet\b|from\s+["']react-head["']/,
+        leak:
+          "a document-head library exists to write the title element, which " +
+          "is the one thing this app must not write.",
+      },
+    ];
+
+    const appFiles = getAppSourceFiles("**/*.{ts,tsx}");
+    expect(
+      appFiles.length,
+      "S-26 scanned too few files (guard against a broken glob)",
+    ).toBeGreaterThan(50);
+    for (const file of appFiles) {
+      const content = stripComments(readFile(file));
+      for (const { re, leak } of patterns) {
+        expect(
+          re.test(content),
+          `${path.relative(SRC_DIR, file)} matches ${re}: ${leak}`,
+        ).toBe(false);
+      }
+    }
+
+    // index.html: exactly one title, and a fixed literal. A build-time
+    // substitution here is the same leak moved one layer earlier.
+    const html = readFile(path.resolve(SRC_DIR, "index.html"));
+    const titles = [...html.matchAll(/<title[^>]*>([\s\S]*?)<\/title>/gi)];
+    expect(titles.length, "index.html should have exactly one title element").toBe(1);
+    expect(
+      titles[0][1].trim(),
+      "index.html's title must stay a fixed word that says nothing about what " +
+        "is open. It is the window title before any script runs.",
+    ).toBe("Elysium");
+
+    // POSITIVE CONTROL, on the SAME RegExp objects the scan just used. Every
+    // vector gets the one-line version of the feature request it stands for.
+    const knownBad: [string, number][] = [
+      ["document.title = chat.name;", 0],
+      ["window.document . title = `${c.name} in Elysium`;", 0],
+      ['document.querySelector("head > title").textContent = chat.name;', 1],
+      ['document.getElementsByTagName("title")[0].text = n;', 1],
+      ["return <title>{chat.name}</title>;", 2],
+      ['import { Helmet } from "react-helmet-async";', 3],
+    ];
+    for (const [bad, idx] of knownBad) {
+      expect(patterns[idx].re.test(bad), `S-26 went blind to: ${bad}`).toBe(true);
+    }
+    // ...and discriminating. All of these are in the tree today and none of
+    // them is a window title, so a rule that fired on them would be deleted
+    // by the next person who hit it.
+    for (const good of [
+      "title={attachTitle}",
+      'const title = chat.name ?? "New chat";',
+      '<h2 className="chat-title">{title}</h2>',
+      "document.titleBarHeight",
+      "aria-label={`Rename chat ${title}`}",
+    ]) {
+      expect(
+        patterns.some((p) => p.re.test(good)),
+        `S-26 would reject a legitimate line: ${good}`,
+      ).toBe(false);
+    }
+  });
+
+  /**
+   * S-27: no text field carries an autofill identity.
+   *
+   * WHAT THE LEAK IS. Chromium keeps a form-history table in `Web Data`, a
+   * plain unencrypted SQLite file in the WebView2 profile. On form submission
+   * it copies typed values into that table so it can offer them back later.
+   * `backend/browser_profile.py` purges Cache, Network, History, Sessions,
+   * Top Sites and the Crashpad reports - `Web Data` is on none of those lists
+   * (measured against its `_BODY_DIRS` / `_BODY_FILES`). So a chat title typed
+   * once would sit in cleartext on disk, outside the vault, across every
+   * launch, and be offered back as a dropdown suggestion the next time
+   * somebody renames a chat. That is the owner's rule broken twice over: the
+   * name is outside the vault, and it is back on screen unasked.
+   *
+   * WHY IT IS CLEAN TODAY, AND WHY THAT IS AN ACCIDENT. Nothing is stored
+   * because Chromium skips a field whose autofill name is empty, and the
+   * autofill name comes from the `name` attribute falling back to `id`
+   * (Blink's HTMLFormControlElement::NameForAutofill). Not one input or
+   * textarea in this tree carries a `name`, and the chat-title form has
+   * neither - but nothing said so, and neither attribute is unusual to add.
+   *
+   * WHICH MECHANISM IS HONEST. Not `autoComplete="off"`. Chromium's stated
+   * position is that it overrides `autocomplete=off` for the password manager
+   * and for structured address/credit-card Autofill, on the grounds that users
+   * want their own data filled regardless of what a site asked for. A field
+   * labelled "Title" sitting next to a name is exactly the shape those
+   * heuristics classify, so `off` is a request, not a guarantee. ABSENCE OF
+   * IDENTITY is structural instead: the form-history row is KEYED on the field
+   * name, so a field with no name has nothing to be stored under. That is the
+   * primary rule here. `autoComplete="off"` is accepted only as the second
+   * line for a field that genuinely needs an `id`, and never on its own.
+   *
+   * WHAT THIS RULE DOES NOT CLAIM. `select` is out of scope: Chromium's
+   * single-field history only stores text inputs, so a select cannot reach
+   * that table and banning ids on selects would cost accessibility for
+   * nothing. `textarea` IS in scope even though it is likewise skipped by form
+   * history, because it is where message text and character descriptions live
+   * and the cost of covering it is zero.
+   */
+  it("S-27: no input or textarea carries a name attribute", () => {
+    const tsxFiles = getAppSourceFiles("**/*.tsx");
+    expect(
+      tsxFiles.length,
+      "S-27 found no components to scan (broken glob guard)",
+    ).toBeGreaterThan(30);
+
+    const tags: FieldTag[] = [];
+    for (const file of tsxFiles) {
+      tags.push(...findFieldTags(readFile(file), path.relative(SRC_DIR, file)));
+    }
+    // Floor on the PARSE, not just the file list. A tag walker that stopped
+    // matching would hand back an empty array from a healthy file list.
+    expect(
+      tags.length,
+      "S-27 parsed no input/textarea tags at all - the JSX walker is broken, " +
+        "not the tree clean",
+    ).toBeGreaterThan(20);
+
+    const named = tags
+      .filter((t) => NAME_ATTR.test(t.attrs))
+      .map((t) => `${t.file}:${t.line} <${t.tag}>`);
+    expect(
+      named,
+      "A text field carries a `name` attribute. `name` is the key Chromium " +
+        "files typed values under in the unencrypted `Web Data` form-history " +
+        "table, which browser_profile.py does not purge - so whatever is typed " +
+        "here would persist in cleartext outside the vault and be suggested " +
+        "back on screen later. This app never submits a form natively, so " +
+        "`name` buys nothing. Delete it and use aria-label for the accessible " +
+        "name. If a label association is genuinely needed, use `id` plus " +
+        '`autoComplete="off"` and add the field to ID_BEARING_FIELDS.',
+    ).toEqual([]);
+
+    // POSITIVE CONTROL, on the SAME walker and the SAME attribute pattern.
+    // This rule passes by finding nothing, so a walker that returned nothing
+    // and a clean tree are indistinguishable without this.
+    const synthetic = [
+      '<input name="chatTitle" value={draftTitle} />',
+      "<textarea\n  name={`chat-${id}`}\n  value={draft}\n/>",
+      '<Input name="title" value={titleInput} />',
+    ];
+    for (const bad of synthetic) {
+      const parsed = findFieldTags(bad, "synthetic.tsx");
+      expect(parsed.length, `S-27's walker went blind to: ${bad}`).toBe(1);
+      expect(
+        NAME_ATTR.test(parsed[0].attrs),
+        `S-27 went blind to a name attribute in: ${bad}`,
+      ).toBe(true);
+    }
+    // ...and discriminating. Every one of these is real code in this tree and
+    // none of them is an autofill identity.
+    for (const good of [
+      '<input type="text" aria-label={`Rename chat ${title}`} value={draftTitle} />',
+      '<input type="range" data-name="x" aria-label="Speed slider" />',
+      "<textarea ref={textareaRef} value={draft} onChange={handleInput} />",
+    ]) {
+      const parsed = findFieldTags(good, "synthetic.tsx");
+      expect(parsed.length).toBe(1);
+      expect(
+        NAME_ATTR.test(parsed[0].attrs),
+        `S-27 would reject a legitimate field: ${good}`,
+      ).toBe(false);
+    }
+  });
+
+  it("S-27b: a text field with an id must also switch autofill off", () => {
+    /**
+     * Text fields allowed to carry an `id`, each with the argument for it.
+     *
+     * `id` is the FALLBACK autofill name, so a text input carrying one sits in
+     * exactly the position a `name` would put it. The only reason to accept
+     * one is a label pairing through `htmlFor`, which is a real accessibility
+     * need, and the price of accepting it is `autoComplete="off"` on the same
+     * tag.
+     *
+     * `openDefect` is not a blessing. It marks a field that is on this list
+     * because it exists and could not be changed from here, NOT because the
+     * argument for it is good. The count of those is pinned below, so the list
+     * cannot quietly grow, and fixing one turns this test red until the entry
+     * is deleted - which is the point.
+     */
+    const ID_BEARING_FIELDS: {
+      file: string;
+      identity: string;
+      why: string;
+      openDefect: boolean;
+    }[] = [
+      {
+        file: "src/components/settings/VoiceSettingsPage.tsx",
+        identity: "id={`voice-${param.name}`}",
+        why:
+          "The free-text TTS engine parameter. Its id is load-bearing: the " +
+          "label directly above it pairs by htmlFor and is the field's only " +
+          'accessible name. But it is type="text" with no autoComplete="off", ' +
+          "so at runtime its DOM id (e.g. `voice-ref_text`) IS a valid " +
+          "autofill key and whatever is typed there can reach `Web Data`. " +
+          "What it holds is an engine parameter rather than a chat or " +
+          "character name, so this is not the owner's rule broken - it is the " +
+          "weakest point in this rule's coverage, and it is recorded here " +
+          'rather than hidden. Fix: add autoComplete="off", or drop the id ' +
+          "and use aria-label the way the sibling select in the same " +
+          "component already does.",
+        openDefect: true,
+      },
+    ];
+
+    const tsxFiles = getAppSourceFiles("**/*.tsx");
+    const tags: FieldTag[] = [];
+    for (const file of tsxFiles) {
+      tags.push(...findFieldTags(readFile(file), path.relative(SRC_DIR, file)));
+    }
+    expect(tags.length, "S-27b parsed no tags (broken walker guard)").toBeGreaterThan(
+      20,
+    );
+
+    /** Can this tag's value ever reach Chromium's form-history table? */
+    const isTextCapable = (t: FieldTag) => {
+      const type = TYPE_ATTR.exec(t.attrs)?.[2];
+      return !(type && NON_TEXT_INPUT_TYPES.has(type));
+    };
+
+    const offenders: string[] = [];
+    const claimed = new Set<string>();
+    for (const t of tags) {
+      if (!ID_ATTR.test(t.attrs)) continue;
+      if (!isTextCapable(t)) continue; // a range/checkbox/file has no typed text
+      if (AUTOCOMPLETE_OFF.test(t.attrs)) continue; // paid the price
+      const rel = t.file.split("\\").join("/");
+      const hit = ID_BEARING_FIELDS.find(
+        (e) => e.file === rel && t.attrs.includes(e.identity),
+      );
+      if (hit) {
+        claimed.add(hit.identity);
+        continue;
+      }
+      offenders.push(`${t.file}:${t.line} <${t.tag}>`);
+    }
+
+    expect(
+      offenders,
+      "A text field carries an `id` and does not switch autofill off. Blink " +
+        "uses the `id` attribute as the autofill name when there is no `name` " +
+        "(HTMLFormControlElement::NameForAutofill), so this field has a valid " +
+        "key for Chromium's form-history table in the unencrypted `Web Data` " +
+        "file - which browser_profile.py does not purge. Anything typed here " +
+        "would outlive the session in cleartext outside the vault. Either " +
+        "drop the id and name the field with aria-label, or add " +
+        '`autoComplete="off"` and write the field into ID_BEARING_FIELDS ' +
+        "with the reason the id is needed.",
+    ).toEqual([]);
+
+    // The exemption list cannot rot in either direction: an entry that no
+    // longer matches anything is a stale argument, and the number of entries
+    // standing on "it exists" rather than "it is fine" is pinned so it cannot
+    // creep upward one commit at a time.
+    expect(
+      [...claimed].sort(),
+      "an ID_BEARING_FIELDS entry matches nothing in the tree - the field was " +
+        "fixed or moved, and a stale exemption excuses the next one",
+    ).toEqual(ID_BEARING_FIELDS.map((e) => e.identity).sort());
+    expect(
+      ID_BEARING_FIELDS.filter((e) => e.openDefect).length,
+      "the number of KNOWN-BAD id-bearing text fields changed. Going up needs " +
+        "an argument in the diff; going down means one was fixed, so delete " +
+        "its entry.",
+    ).toBe(1);
+    for (const e of ID_BEARING_FIELDS) {
+      expect(
+        e.why.length,
+        `${e.file} is exempt with no reason written down`,
+      ).toBeGreaterThan(40);
+    }
+
+    // POSITIVE CONTROL, on the SAME three patterns the scan just used.
+    const cases: [string, boolean][] = [
+      // [source, should this be reported]
+      ['<input id="chat-title" type="text" value={draftTitle} />', true],
+      ["<textarea id={`edit-${id}`} value={editDraft} />", true],
+      ['<Input id="seed" type="number" value={seed} />', true],
+      // The escape hatch has to actually work, or nobody can satisfy the rule.
+      ['<input id="chat-title" type="text" autoComplete="off" value={t} />', false],
+      // Not text-capable: no typed value can reach the form-history table.
+      ['<input id="fog" type="checkbox" checked={on} />', false],
+      ['<input id="zoom" type="range" value={z} />', false],
+      ['<input id="pick" type="file" onChange={h} />', false],
+      // No identity at all: the shape the whole tree already uses.
+      ['<input type="text" aria-label="Search characters" value={v} />', false],
+    ];
+    for (const [source, expected] of cases) {
+      const [t] = findFieldTags(source, "synthetic.tsx");
+      expect(t, `S-27b's walker went blind to: ${source}`).toBeDefined();
+      const reported =
+        ID_ATTR.test(t.attrs) && isTextCapable(t) && !AUTOCOMPLETE_OFF.test(t.attrs);
+      expect(reported, `S-27b misjudged: ${source}`).toBe(expected);
+    }
   });
 });

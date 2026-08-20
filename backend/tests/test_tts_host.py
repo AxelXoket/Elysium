@@ -493,6 +493,88 @@ class TestNothingOutlivesTheSession:
         assert host.snapshot()["error_code"] is None
 
 
+class TestAStuckFileGetsAnotherTry:
+    """K-46. The lock wipe already reports what it could not remove
+    (`on_vault_locked`'s return value, `_last_wipe_left`) - what it never did
+    is try AGAIN. A file Windows refuses to release (a browser tab mid-
+    stream, Defender mid-scan) used to sit there, readable and playable,
+    until the next unlock+speak called wipe_cache() a second time - which,
+    while the vault stays locked, may be never.
+
+    The message id in its name is not what this closes: the owner's rule
+    permits a numeric id outside the vault, and nothing here disputes that.
+    What it closes is the audible content surviving indefinitely - by
+    piggybacking on poll_health, which already beats regardless of lock
+    state (it is how a dead worker gets noticed with nobody looking at the
+    UI), so a released handle is picked up within one health tick instead of
+    waiting for the user to unlock and speak again.
+    """
+
+    def _speak_and_capture(self, host):
+        host.load(_model(), {})
+        host.speak("something private", {})
+        cache = Path(config.TTS_CACHE_DIR)
+        wavs = list(cache.glob("*.wav"))
+        assert len(wavs) == 1
+        return wavs[0]
+
+    def test_a_released_file_is_cleared_on_the_next_health_beat(
+        self, host, monkeypatch
+    ):
+        from tts import host as tts_host_module
+
+        wav = self._speak_and_capture(host)
+        real_shred = tts_host_module.secure_delete.shred
+        released = {"now": False}
+
+        def flaky(path):
+            if Path(path).name == wav.name and not released["now"]:
+                return False
+            return real_shred(path)
+
+        monkeypatch.setattr(tts_host_module.secure_delete, "shred", flaky)
+
+        left = host.on_vault_locked()
+        assert left == [wav.name], "ground: the lock really could not clear it"
+        assert wav.exists(), "the reply is still audible after a locked vault"
+
+        # Whatever was holding it lets go, and the health beat runs again -
+        # exactly what happens every TTS_HEALTH_POLL_S regardless of lock
+        # state, with nobody touching the UI.
+        released["now"] = True
+        host.poll_health()
+
+        assert not wav.exists(), "poll_health did not retry the stuck file"
+        assert host._last_wipe_left == []
+
+    def test_a_file_that_stays_stuck_is_never_falsely_reported_cleared(
+        self, host, monkeypatch
+    ):
+        from tts import host as tts_host_module
+
+        wav = self._speak_and_capture(host)
+        monkeypatch.setattr(
+            tts_host_module.secure_delete, "shred",
+            lambda path: Path(path).name != wav.name)
+
+        host.on_vault_locked()
+        host.poll_health()
+        host.poll_health()  # a second beat must not misbehave either
+
+        assert wav.exists(), "still stuck - must not have been deleted"
+        assert host._last_wipe_left == [wav.name]
+
+    def test_nothing_stuck_is_a_quiet_no_op(self, host):
+        wav = self._speak_and_capture(host)
+        host.on_vault_locked()
+        assert host._last_wipe_left == []
+        assert not wav.exists()
+
+        host.poll_health()  # must not raise, must not invent stuck entries
+
+        assert host._last_wipe_left == []
+
+
 class TestCrashHousekeeping:
     def test_a_crashed_workers_client_is_fully_closed(self, host):
         """Noticing the death is not enough: the dead worker's client still

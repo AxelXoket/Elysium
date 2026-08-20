@@ -56,6 +56,19 @@ than it is:
   * The heap is excluded from a dump; stack memory is not.
   * The search-index attribute is set on one directory, not recursively, and
     does not retroactively remove anything already in the index.
+  * Screen-capture exclusion covers PIXELS and nothing else. It was measured
+    to defeat PrintWindow and BitBlt, and it was ALSO measured to leave the
+    conversation fully readable as text through the accessibility tree, with
+    the affinity flag confirmed set. That second leak is what the accessibility
+    switch here closes, and the two are not substitutes for one another.
+  * Closing the accessibility tree stops the DOM being read. It does not hide
+    the WINDOW: its title, its class and its position stay visible to any
+    process, as they are for every window on the desktop. Elysium's title is
+    the constant "Elysium" and no code makes it say anything about the chat,
+    which is what keeps that acceptable rather than merely unavoidable.
+  * Nothing here touches ReadProcessMemory. A process running as this user can
+    read the renderer's memory and recover the conversation from it whatever
+    these switches say, and that cannot be closed from inside the app.
 
 Measured on the target machine before it was written - see the test file for
 the assertions that keep each call honest.
@@ -66,6 +79,7 @@ import ctypes
 import logging
 import os
 import subprocess
+from collections.abc import MutableMapping
 from ctypes import wintypes
 from pathlib import Path
 
@@ -96,7 +110,55 @@ _WDA_NONE = 0x00000000
 #: their OWN app come out black, with nothing on screen to explain why. What
 #: remains is real but narrower - screenshot-grabbing malware, and sharing a
 #: screen by accident - so it ships as a switch the user turns on knowingly.
+#:
+#: What it covers, and what it does NOT, now that both have been measured. It
+#: does stop the pixels: PrintWindow and BitBlt against an excluded window come
+#: back a fully black buffer, so the capture paths this was bought for are
+#: genuinely closed. It does NOTHING about the accessibility tree, because that
+#: is not pixels - it is the same conversation as TEXT, offered to any process
+#: running as this user through UI Automation and MSAA. An audit read the whole
+#: transcript out of it with the affinity flag confirmed set to 0x11. That leak
+#: is closed by the switch below, not by this one.
 _SCREEN_PRIVACY_ENV = "ELYSIUM_SCREEN_PRIVACY"
+
+#: The Chromium switch that stops the renderer from building an accessibility
+#: tree at all, spelled exactly as content_switches.cc spells it. The spelling
+#: is load-bearing in a way that hurts: Chromium ignores a switch it does not
+#: recognise, in silence, so one wrong character here is a privacy control that
+#: never runs and never says so. That is the whole reason this module verifies
+#: the browser process below instead of trusting that the string was passed.
+#:
+#: Chromium's own description of it is "Disables the accessibility tree for the
+#: renderer process", and it is checked once, in BrowserAccessibilityStateImpl,
+#: where it also forbids later changes to the accessibility mode. Both halves
+#: matter here. Chromium builds this tree ON DEMAND - the first client that
+#: asks escalates it - so a switch that only refused the first request would be
+#: reopened by the second. And it is ONE tree: IAccessible/MSAA, IAccessible2
+#: and UI Automation are all served from the same browser-process cache of it,
+#: which is why suppressing the tree closes all three, while blocking any one
+#: API surface would close none of the others.
+_RENDERER_ACCESSIBILITY_OFF = "--disable-renderer-accessibility"
+
+#: How the switch reaches WebView2. Its loader reads this variable and APPENDS
+#: what it finds to the arguments the host process already set - measured on 20
+#: August 2026 against runtime 151.0.4129.93, where pywebview's own
+#: --disable-features=ElasticOverscroll and --allow-file-access-from-files were
+#: still on the browser process command line beside ours.
+#:
+#: The environment rather than CoreWebView2CreationProperties.
+#: AdditionalBrowserArguments, deliberately: that property is set inside
+#: webview/platforms/edgechromium.py, which is a dependency this app does not
+#: own. Reaching in to patch it would mean shipping a modified pywebview, and
+#: a protection that lives in somebody else's file survives exactly until the
+#: next `pip install -U`.
+#:
+#: Inherited by every child this process starts, which is harmless: the voice
+#: worker and uv.exe are not WebView2 hosts and ignore it.
+_WEBVIEW2_ARGUMENTS_ENV = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"
+
+#: The WebView2 browser process, which is the one carrying the arguments. Its
+#: renderers are its own children, not ours, and are not consulted.
+_WEBVIEW2_IMAGE = "msedgewebview2.exe"
 
 
 def _on_windows() -> bool:
@@ -298,6 +360,288 @@ def apply_screen_privacy() -> int:
                    if exclude_from_screen_capture(hwnd))
     log.info("screen capture: %d window(s) excluded", excluded)
     return excluded
+
+
+def accessibility_privacy_requested() -> bool:
+    """Whether the accessibility tree should be closed. ON unless refused.
+
+    The mirror image of screen_privacy_requested, and the asymmetry is the
+    point. That one is off until somebody types "1" because its cost is
+    immediate and visible. This one is on until somebody types "0" because its
+    cost falls on assistive technology, which most users do not run, while what
+    it prevents is any program on this machine reading the conversation as
+    text without asking anyone for permission.
+
+    Exactly "0" turns it off. "false", "no", "off" and an empty value do not,
+    because a privacy control that a typo can disable is a privacy control that
+    reports its own state wrongly. apply_accessibility_privacy logs which state
+    took effect, so a value that did not do what its author meant is visible in
+    elysium.log rather than silent.
+    """
+    # config is imported here rather than at module scope on purpose: this
+    # module is imported by run_app before the data directory is resolved, and
+    # config computes DATA_DIR at import time from the environment.
+    from config import ACCESSIBILITY_PRIVACY_ENV, ACCESSIBILITY_PRIVACY_OFF
+
+    return os.environ.get(
+        ACCESSIBILITY_PRIVACY_ENV, "") != ACCESSIBILITY_PRIVACY_OFF
+
+
+def apply_accessibility_privacy(
+    environ: MutableMapping[str, str] | None = None,
+) -> bool:
+    """Arm the switch for the WebView2 that has not been created yet.
+
+    Everything else in this module acts on something that already exists - a
+    process, a folder, a window. This one cannot: browser arguments are read
+    once, when the WebView2 environment is created, and after that the tree is
+    either being built or it is not. So this runs on the launch path, BEFORE
+    the window, and what it changes is the environment the browser process will
+    inherit.
+
+    Which also means this switch cannot follow the vault lock the way
+    set_screen_privacy does, and cannot be changed while the app runs. Nothing
+    here is stored in the vault either: the decision has to be made before a
+    passphrase exists, and the way out of it has to work for somebody who
+    cannot read the screen at all.
+
+    Returns whether the argument is in place, read back out of the environment
+    rather than assumed from having written it. That read-back is the weaker
+    half of the house rule and this module should not pretend otherwise: it
+    proves the variable says what we meant, not that WebView2 honoured it.
+    accessibility_privacy_verified() is the half that asks the browser process.
+
+    Appends rather than assigns, and skips a duplicate: something else in the
+    environment may already be passing arguments to WebView2, and clobbering
+    somebody else's flags to set ours would be a fine way to break a machine we
+    have never seen.
+    """
+    env = os.environ if environ is None else environ
+    if not accessibility_privacy_requested():
+        log.info("accessibility tree: left OPEN at the user's request - the "
+                 "conversation is readable by any program running as this user")
+        return False
+    existing = env.get(_WEBVIEW2_ARGUMENTS_ENV, "")
+    if _RENDERER_ACCESSIBILITY_OFF not in existing.split():
+        env[_WEBVIEW2_ARGUMENTS_ENV] = (
+            f"{existing} {_RENDERER_ACCESSIBILITY_OFF}".strip())
+    armed = _RENDERER_ACCESSIBILITY_OFF in env.get(
+        _WEBVIEW2_ARGUMENTS_ENV, "").split()
+    log.info("accessibility tree: %s", "closed" if armed else "NOT closed")
+    return armed
+
+
+class _UNICODE_STRING(ctypes.Structure):
+    _fields_ = [
+        ("Length", wintypes.USHORT),
+        ("MaximumLength", wintypes.USHORT),
+        ("Buffer", ctypes.c_void_p),
+    ]
+
+
+class _PROCESS_BASIC_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("Reserved1", ctypes.c_void_p),
+        ("PebBaseAddress", ctypes.c_void_p),
+        ("Reserved2", ctypes.c_void_p * 2),
+        ("UniqueProcessId", ctypes.c_void_p),
+        ("Reserved3", ctypes.c_void_p),
+    ]
+
+
+class _PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", wintypes.DWORD),
+        ("cntUsage", wintypes.DWORD),
+        ("th32ProcessID", wintypes.DWORD),
+        ("th32DefaultHeapID", ctypes.c_size_t),
+        ("th32ModuleID", wintypes.DWORD),
+        ("cntThreads", wintypes.DWORD),
+        ("th32ParentProcessID", wintypes.DWORD),
+        ("pcPriClassBase", ctypes.c_long),
+        ("dwFlags", wintypes.DWORD),
+        ("szExeFile", ctypes.c_wchar * 260),
+    ]
+
+
+#: Offsets into the 64-bit PEB. Undocumented in the sense that Microsoft
+#: reserves the right to move them, and stable in the sense that they have not
+#: moved in twenty years - which is why every failure below returns "cannot
+#: tell" instead of "not protected". A wrong offset must never be reported as
+#: a broken protection: that is a false alarm on every launch, and a warning
+#: nobody can act on is a warning people learn to ignore.
+_PEB_PROCESS_PARAMETERS = 0x20
+_PARAMETERS_COMMAND_LINE = 0x70
+
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_PROCESS_VM_READ = 0x0010
+_TH32CS_SNAPPROCESS = 0x00000002
+_INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+
+def _same_bitness(handle: int) -> bool:
+    """Whether another process runs under the same PEB layout as this one."""
+    kernel32 = ctypes.windll.kernel32
+    is_wow64 = kernel32.IsWow64Process
+    is_wow64.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)]
+    is_wow64.restype = wintypes.BOOL
+    theirs, ours = wintypes.BOOL(), wintypes.BOOL()
+    if not is_wow64(wintypes.HANDLE(handle), ctypes.byref(theirs)):
+        return False
+    if not is_wow64(kernel32.GetCurrentProcess(), ctypes.byref(ours)):
+        return False
+    return bool(theirs.value) == bool(ours.value)
+
+
+def command_line_of(pid: int) -> str | None:
+    """Another process's command line, or None if it cannot be read.
+
+    Windows has no supported API for this. WMI is the usual answer and is not
+    one here: it means starting a process, on the launch path, to check a flag.
+    So this reads the PEB, the way every process explorer does, and treats
+    every way that can go wrong as "cannot tell" rather than as an answer.
+    """
+    if not _on_windows():
+        return None
+    try:
+        kernel32 = ctypes.windll.kernel32
+        ntdll = ctypes.windll.ntdll
+        handle = kernel32.OpenProcess(
+            _PROCESS_QUERY_LIMITED_INFORMATION | _PROCESS_VM_READ, False, pid)
+        if not handle:
+            return None
+        try:
+            if not _same_bitness(handle):
+                return None
+            info = _PROCESS_BASIC_INFORMATION()
+            written = wintypes.ULONG()
+            if ntdll.NtQueryInformationProcess(
+                    handle, 0, ctypes.byref(info), ctypes.sizeof(info),
+                    ctypes.byref(written)) != 0:
+                return None
+            if not info.PebBaseAddress:
+                return None
+
+            def read(address: int, size: int) -> bytes | None:
+                buffer = (ctypes.c_char * size)()
+                got = ctypes.c_size_t()
+                if not kernel32.ReadProcessMemory(
+                        handle, ctypes.c_void_p(address), buffer, size,
+                        ctypes.byref(got)) or got.value != size:
+                    return None
+                return buffer.raw
+
+            pointer = read(info.PebBaseAddress + _PEB_PROCESS_PARAMETERS, 8)
+            if pointer is None:
+                return None
+            raw = read(int.from_bytes(pointer, "little")
+                       + _PARAMETERS_COMMAND_LINE,
+                       ctypes.sizeof(_UNICODE_STRING))
+            if raw is None:
+                return None
+            text = _UNICODE_STRING.from_buffer_copy(raw)
+            if not text.Buffer or not text.Length:
+                return None
+            body = read(text.Buffer, text.Length)
+            if body is None:
+                return None
+            return body.decode("utf-16-le", "replace")
+        finally:
+            kernel32.CloseHandle(handle)
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def own_child_processes(image_name: str) -> list[int]:
+    """Process ids of THIS process's direct children with that exe name.
+
+    Direct children only, matched on the parent id, for the same reason
+    own_top_level_windows matches on the process id: another copy of the same
+    program running for somebody else is not the question being asked.
+    """
+    if not _on_windows():
+        return []
+    found: list[int] = []
+    try:
+        kernel32 = ctypes.windll.kernel32
+        snapshot = kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
+        if snapshot == _INVALID_HANDLE_VALUE or not snapshot:
+            return []
+        try:
+            entry = _PROCESSENTRY32W()
+            entry.dwSize = ctypes.sizeof(_PROCESSENTRY32W)
+            own = os.getpid()
+            more = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+            while more:
+                if (entry.th32ParentProcessID == own
+                        and entry.szExeFile.lower() == image_name.lower()):
+                    found.append(entry.th32ProcessID)
+                more = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+        finally:
+            kernel32.CloseHandle(snapshot)
+    except (AttributeError, OSError):
+        return []
+    return found
+
+
+def accessibility_privacy_verified() -> bool | None:
+    """Did the browser process actually get the switch? None means unknown.
+
+    Three answers rather than two, and the third one is the honest part. True
+    means the argument was found on the command line of every WebView2 browser
+    process this app started. False means one of them started WITHOUT it, which
+    is the silent failure this whole function exists for - pywebview changing
+    how it builds those arguments, or a WebView2 loader that stops reading the
+    environment variable, would otherwise look exactly like success.
+
+    None means the question could not be answered: no browser process yet, or
+    the PEB could not be read. It is deliberately not False. Reporting "not
+    protected" when the truth is "could not check" trains everybody to ignore
+    the message, and this one has to still mean something the day it fires.
+
+    Only THIS process's own children are asked, and that is not tidiness. An
+    earlier attempt at this check enumerated every WebView2 process on the
+    machine and cheerfully reported an argument that this run had never
+    carried, picked up from something else's leftover browser process.
+
+    The stronger version of this check, and why it is not here: the app could
+    attack its own window through UI Automation and assert the web document
+    exposes no children and no text, which would test the EFFECT rather than
+    the argument. It was designed and deliberately not shipped. It needs a
+    separate MTA thread or a child process to avoid deadlocking against our own
+    UI thread, and neither could be measured on this machine under the
+    constraint the work was finished under - so it would have gone into the
+    launch path unproven, which is the one thing this module has twice refused
+    to do. It exists instead in tests/accessibility_tree_harness.py, run by
+    hand, where it is the attack rather than a claim.
+    """
+    if not accessibility_privacy_requested():
+        return None
+    lines = []
+    for pid in own_child_processes(_WEBVIEW2_IMAGE):
+        line = command_line_of(pid)
+        if line is not None:
+            lines.append(line)
+    if not lines:
+        return None
+    return all(_RENDERER_ACCESSIBILITY_OFF in line.split() for line in lines)
+
+
+def report_accessibility_privacy() -> bool | None:
+    """Log what the browser process really got. Wired to the window's events.
+
+    Takes no arguments because pywebview inspects the signature and calls a
+    zero-argument handler with none.
+    """
+    verdict = accessibility_privacy_verified()
+    if verdict is True:
+        log.info("accessibility tree: verified closed on the browser process")
+    elif verdict is False:
+        log.warning(
+            "accessibility tree: the switch is ON but the WebView2 browser "
+            "process did not get %s - the conversation is readable as text by "
+            "any program running as this user", _RENDERER_ACCESSIBILITY_OFF)
+    return verdict
 
 
 #: SDDL aliases and raw SIDs that mean "more than this machine's owner".
@@ -545,6 +889,9 @@ def harden(data_dir: Path | str) -> dict[str, bool | int]:
     return {
         # First: it changes what every child spawned after this point can load.
         "dll_search_path_reset": reset_dll_search_path(),
+        # Also has to be early. It is read when the WebView2 environment is
+        # created, and after that the tree exists or it does not.
+        "accessibility_tree_closed": apply_accessibility_privacy(),
         "crash_dump_heap_excluded": restrict_crash_dump_contents(),
         "search_index_excluded": exclude_from_search_index(data_dir),
         "windows_excluded_from_capture": apply_screen_privacy(),

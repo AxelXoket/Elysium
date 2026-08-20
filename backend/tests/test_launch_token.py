@@ -22,10 +22,18 @@ import launch_token
 
 @pytest.fixture()
 def armed(monkeypatch: pytest.MonkeyPatch):
-    """A launch with a token, as the packaged app runs."""
+    """A launch with a token, as the packaged app runs.
+
+    The module global and NOTHING ELSE. This fixture used to also set
+    ENV_VAR, which matched an issue() that published the secret to the process
+    environment - where any program running as the same user could read it
+    back out of our PEB. Now that issue() keeps it in memory, arming it here
+    the same way means every armed test below is also evidence that the gate
+    needs no environment variable to work.
+    """
     secret = "test-launch-token-value"
     monkeypatch.setattr(launch_token, "_token", secret)
-    monkeypatch.setenv(launch_token.ENV_VAR, secret)
+    monkeypatch.delenv(launch_token.ENV_VAR, raising=False)
     return secret
 
 
@@ -190,14 +198,25 @@ class TestTheTokenItself:
         finally:
             launch_token.reset()
 
-    def test_it_is_published_where_the_server_can_read_it(
+    def test_the_server_can_read_it_without_any_environment_variable(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """The reason publishing it was never needed.
+
+        uvicorn runs on a THREAD of the process that issued the token
+        (run_app.serve), so configured() reads the same module global the
+        launcher wrote. This test is what replaced one asserting the opposite
+        property - that os.environ carried it - which is how the leak below
+        survived review for as long as it did.
+        """
         import os
         monkeypatch.setattr(launch_token, "_token", None)
+        monkeypatch.delenv(launch_token.ENV_VAR, raising=False)
         issued = launch_token.issue()
         try:
-            assert os.environ[launch_token.ENV_VAR] == issued
+            assert launch_token.configured() == issued
+            assert launch_token.accepts(issued) is True
+            assert os.environ.get(launch_token.ENV_VAR) is None
         finally:
             launch_token.reset()
 
@@ -281,3 +300,161 @@ class TestTheTokenDoesNotReachOurOwnSubprocesses:
         provision._run(["uv", "--version"], on_line=lambda line: None,
                        cancel=None, timeout=5.0, env={})
         assert captured["env"]["ELYSIUM_HARMLESS"] == "keep-me"
+
+
+def _win32_environment_block() -> list[str]:
+    """This process's environment as the KERNEL holds it, not as Python
+    remembers it.
+
+    GetEnvironmentStringsW hands back the very block that PEB
+    ProcessParameters.Environment points at, which is the block an attacker
+    reads with OpenProcess(QUERY_INFORMATION|VM_READ) plus ReadProcessMemory.
+    Same bytes, same address space, one API call instead of a struct walk over
+    undocumented offsets - so it is evidence at the level the attack actually
+    uses, without the fragility that would make it a bad tenant of a suite.
+
+    It also sees things os.environ cannot. os.environ is Python's own dict; a
+    bare os.putenv, or a ctypes SetEnvironmentVariableW, would publish the
+    secret to exactly this block while leaving that dict clean.
+    """
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetEnvironmentStringsW.restype = ctypes.c_void_p
+    kernel32.FreeEnvironmentStringsW.argtypes = [ctypes.c_void_p]
+    block = kernel32.GetEnvironmentStringsW()
+    if not block:
+        raise OSError(ctypes.get_last_error(), "GetEnvironmentStringsW failed")
+    try:
+        entries: list[str] = []
+        offset = 0
+        while True:
+            # NAME=VALUE strings, NUL separated, terminated by an empty one.
+            entry = ctypes.wstring_at(block + offset)
+            if not entry:
+                return entries
+            entries.append(entry)
+            offset += (len(entry) + 1) * ctypes.sizeof(ctypes.c_wchar)
+    finally:
+        kernel32.FreeEnvironmentStringsW(block)
+
+
+class TestTheTokenIsNeverPublishedToTheProcessEnvironment:
+    """The leak that a working exploit found, kept shut.
+
+    issue() used to end with `os.environ[ENV_VAR] = _token`. A separate,
+    unprivileged process running as the same user opened this one with
+    QUERY_INFORMATION|VM_READ (error 0; being the same user was enough),
+    walked the PEB to ProcessParameters.Environment, and read back the literal
+    string `ELYSIUM_LAUNCH_TOKEN=<token>`. That token is the whole gate on
+    /chats, /messages, /characters and everything else. The module had
+    reasoned carefully about query strings, localStorage and session restore
+    files, and then handed the secret to the one reader it named as the
+    adversary.
+
+    The publication bought nothing: the server runs on a thread of this same
+    process, and configured() prefers the module global anyway.
+    """
+
+    def test_issuing_a_token_does_not_put_it_in_os_environ(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import os
+
+        monkeypatch.setattr(launch_token, "_token", None)
+        monkeypatch.delenv(launch_token.ENV_VAR, raising=False)
+        issued = launch_token.issue()
+        try:
+            # POSITIVE CONTROL, first: a token really was issued, and it is
+            # really armed. Without this the assertions below would pass just
+            # as happily if issue() had returned an empty string or done
+            # nothing at all.
+            assert issued and len(issued) >= 32
+            assert launch_token.configured() == issued
+
+            assert launch_token.ENV_VAR not in os.environ
+            # Not just under that name. A rename would be the same leak.
+            assert issued not in os.environ.values()
+        finally:
+            launch_token.reset()
+
+    def test_issuing_a_token_does_not_put_it_in_the_win32_environment_block(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The same property, proved where the attack reads."""
+        import os
+
+        monkeypatch.setattr(launch_token, "_token", None)
+        monkeypatch.delenv(launch_token.ENV_VAR, raising=False)
+        # POSITIVE CONTROL for the READER: prove this block shows what a
+        # publication would look like, so that a silent GetEnvironmentStringsW
+        # failure cannot pass as an absence of the token.
+        monkeypatch.setenv("ELYSIUM_ENV_BLOCK_PROBE", "sentinel-is-readable")
+
+        issued = launch_token.issue()
+        try:
+            assert launch_token.configured() == issued   # a token exists
+            block = _win32_environment_block()
+            assert any("sentinel-is-readable" in entry for entry in block), (
+                "the environment block reader saw nothing; the absence of the "
+                "token below would prove nothing")
+            assert not [entry for entry in block if issued in entry]
+            assert not [entry for entry in block
+                        if entry.startswith(launch_token.ENV_VAR + "=")]
+        finally:
+            launch_token.reset()
+            os.environ.pop("ELYSIUM_ENV_BLOCK_PROBE", None)
+
+    def test_a_real_issued_token_still_gates_the_api_over_http(
+        self, client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """End to end, with no environment variable anywhere.
+
+        The behavioural answer to "was the publication load bearing?". The
+        gate arms, refuses a request without the header and accepts one with
+        it, on a token that exists only in this process's memory.
+        """
+        monkeypatch.setattr(launch_token, "_token", None)
+        monkeypatch.delenv(launch_token.ENV_VAR, raising=False)
+        issued = launch_token.issue()
+        try:
+            assert client.get("/api/v1/settings").status_code == 403
+            with_header = client.get(
+                "/api/v1/settings", headers={launch_token.HEADER: issued})
+            assert with_header.status_code == 200
+        finally:
+            launch_token.reset()
+
+
+class TestTheDeveloperPathIsUnchanged:
+    """`uvicorn main:app` by hand, before and after the leak was closed.
+
+    Recorded as behaviour because it is the one thing removing the write could
+    have broken quietly: the env read in configured() is now the ONLY use that
+    variable has, and it belongs to whoever starts a server without run_app.
+    """
+
+    def test_a_hand_started_server_has_no_token_and_stays_open(
+        self, client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Nothing issued, nothing in the environment: exactly the state a
+        # developer's shell leaves the module in.
+        monkeypatch.setattr(launch_token, "_token", None)
+        monkeypatch.delenv(launch_token.ENV_VAR, raising=False)
+        assert launch_token.configured() is None
+        assert client.get("/api/v1/settings").status_code == 200
+
+    def test_a_developer_can_still_arm_it_from_their_own_shell(
+        self, client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Reading ENV_VAR is safe in a way writing it is not: another process
+        # cannot put a value into this process's environment. Kept so the gate
+        # can be exercised without building the exe.
+        monkeypatch.setattr(launch_token, "_token", None)
+        monkeypatch.setenv(launch_token.ENV_VAR, "a-developers-own-token")
+        assert launch_token.configured() == "a-developers-own-token"
+        assert client.get("/api/v1/settings").status_code == 403
+        armed_response = client.get(
+            "/api/v1/settings",
+            headers={launch_token.HEADER: "a-developers-own-token"})
+        assert armed_response.status_code == 200

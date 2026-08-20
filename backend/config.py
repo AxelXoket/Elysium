@@ -195,6 +195,47 @@ ALLOWED_IMAGE_MIMES: dict[str, str] = {    # mime -> file extension
 # estimator (lib/context).
 IMAGE_TOKEN_ESTIMATE: int = 1100
 
+# ── Windows hardening ─────────────────────────────────────────────────────────
+# The accessibility-tree switch, and the only protection switch in this app
+# that is ON when nobody asked for it.
+#
+# ELYSIUM_SCREEN_PRIVACY defaults OFF because its cost is visible and lands on
+# the user's own screenshots. This one is the other way round. An audit built
+# an unprivileged probe - no token, no HTTP, no elevation, just the same user -
+# and read the whole conversation out of the WebView2 accessibility tree:
+# chat title, character name, message bodies, verbatim. Screen-capture
+# exclusion does not touch that path, because it excludes PIXELS and the
+# accessibility tree is text.
+#
+# So the owner chose the stronger default knowingly. The cost is real and is
+# not hidden: while this is on, a screen reader cannot read the app either.
+# Anyone who needs one turns it off, WITHOUT editing code, from a command
+# prompt, and this is the whole way out:
+#
+#     setx ELYSIUM_ACCESSIBILITY_PRIVACY 0
+#
+# then start Elysium again. An environment variable rather than a checkbox in
+# the app, and that is the requirement rather than the easy option: a blind
+# user cannot navigate to a setting inside an app their screen reader cannot
+# read, and the switch has to be reachable before the vault is unlocked, which
+# rules out anything stored inside it.
+#
+# It takes effect at STARTUP ONLY. Changing it while Elysium is running does
+# nothing at all - not on the next unlock, not on the next chat. That is not a
+# missing feature: the switch is a command-line argument to the WebView2
+# browser process, read once when that process is created, and WebView2
+# exposes no setting to change it afterwards. Anybody expecting this to behave
+# like the screen-privacy switch, which the vault stores and applies on every
+# lock transition, will be wrong; that one can follow the lock precisely
+# because it is a Win32 call on a window that already exists.
+ACCESSIBILITY_PRIVACY_ENV: str = "ELYSIUM_ACCESSIBILITY_PRIVACY"
+
+# Exactly "0" and nothing else. A privacy control must not be turned off by a
+# typo: "false", "no", "off" and an empty value all leave it ON, and the launch
+# log says which state took effect so a mistyped value is visible rather than
+# silently obeyed.
+ACCESSIBILITY_PRIVACY_OFF: str = "0"
+
 # ── Voice / TTS (V0) ──────────────────────────────────────────────────────────
 # Elysium ships the TTS INFRASTRUCTURE only - no model weights are bundled or
 # committed. The user drops a model directory into TTS_MODELS_DIR and it is
@@ -255,6 +296,27 @@ TTS_UV_CACHE_DIR: str = str(TTS_DIR / "uv-cache")
 TTS_REF_MIN_S: float = 3.0
 TTS_REF_MAX_S: float = 30.0
 TTS_REF_MAX_BYTES: int = 30 * 1024 * 1024
+
+
+# ---------------------------------------------------------------------------
+# Selected model (v1.2 privacy fix)
+# ---------------------------------------------------------------------------
+#: Which model is currently chosen in the UI. An OpenRouter model id such as
+#: "anthropic/claude-3.5-sonnet" is a NAME a person reads on screen - exactly
+#: the shape the owner's own rule bans from ever sitting outside the vault -
+#: so it lives here, next to the API key and the stop sequences, and never in
+#: the browser's localStorage. It used to be one of three keys in uiStore's
+#: `elysium-ui-state` blob; the other two (selectedChatId, selectedCharacterId)
+#: are bare numbers and stay in localStorage, which the rule permits. See
+#: routers/settings.py's POST /settings/model-selection and uiStore.ts's
+#: version-3 `migrate`, which cleans the plaintext copy out of any install
+#: that already has one.
+SETTING_SELECTED_MODEL_ID = "selected_model_id"
+#: OpenRouter model ids are short slugs ("vendor/name"); this is a generous
+#: ceiling against a malformed or hostile value, not a real-world size. This
+#: setting is UI state, not a security boundary, so it clamps rather than
+#: rejects - the same choice save_stop_sequences and the proxy alias make.
+SELECTED_MODEL_ID_MAX_CHARS = 200
 
 
 # ---------------------------------------------------------------------------

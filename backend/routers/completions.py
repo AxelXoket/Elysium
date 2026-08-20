@@ -1066,16 +1066,28 @@ def _decode_generated_images(
             out.append(prepared)
         except RemoteImageURL as exc:
             remote += 1
+            # NOT exc: RemoteImageURL carries the scheme text the model put
+            # before the first colon of its own "url", so exc IS a slice of
+            # the reply - the exact "looks harmless" shape the vault-lock
+            # promise exists to close. The type name says a link was refused
+            # without repeating anything the model wrote.
             logger.warning(
-                "Refused a remotely hosted generated image (scheme=%s): chat_id=%d",
-                exc, chat_id,
+                "Refused a remotely hosted generated image (%s): chat_id=%d",
+                type(exc).__name__, chat_id,
             )
         except ValueError as exc:
             rejected += 1
-            # The reason is ours (a length, a media type, a decode failure) and
-            # carries no model output, so it is safe to log.
+            # NOT exc, for the same reason as above: decode_data_url's
+            # messages are length/media-type/decode failures TODAY, but they
+            # are ordinary exception text, not a contract, and nothing here
+            # would notice the day one of them starts quoting the payload.
+            # The type name is the fact worth a log line: something about
+            # this data: URL did not decode. If which-of-four-reasons turns
+            # out to matter later, decode_data_url should hand back a
+            # sanitized reason code the way AttachmentError already does,
+            # not a message this call site has to trust blind.
             logger.warning("Rejected a generated image: chat_id=%d reason=%s",
-                           chat_id, exc)
+                           chat_id, type(exc).__name__)
         except AttachmentError as exc:
             rejected += 1
             logger.warning("Generated image failed validation: chat_id=%d reason=%s",

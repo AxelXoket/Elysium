@@ -365,11 +365,17 @@ def enforce_single_instance() -> None:
     """The second double click ends here, and it ends BEFORE anything touches
     the data folder.
 
-    Order matters more than it looks. launch_token.issue() writes the secret
-    that gates the API, and a second process reaching it would overwrite the
-    token the live window is already using, locking the running app out of its
-    own backend. win_hardening.harden and the vault come after that. So this is
-    the first thing main() does with any knowledge of DATA_DIR.
+    Order matters more than it looks, though not for the reason this comment
+    used to give. It claimed a second process reaching launch_token.issue()
+    would overwrite the token the live window is using and lock the app out of
+    its own backend. That was never true: issue() has always been per process,
+    and now that it writes nothing outside this process's memory it plainly
+    cannot touch another launch. The real reason is the vault. A second copy
+    that gets past this line holds its own copy of the vault key against the
+    same folder, so locking one window would leave the other one open, and
+    that is a half locked vault rather than an inconvenience.
+    win_hardening.harden and the vault come after this, so it is the first
+    thing main() does with any knowledge of DATA_DIR.
 
     IT APPLIES IN DEV TOO. The split key is a property of the code, not of the
     packaging: `python run_app.py` twice against the same folder produces the
@@ -669,8 +675,10 @@ def clear_session_residue(profile) -> dict[str, object]:
 def main() -> None:
     _setup_frozen_logging()
     # First, and before anything reads or writes the data folder. A second copy
-    # that gets past this line would reissue the launch token and then hold its
-    # own copy of the vault key.
+    # that gets past this line would hold its own copy of the vault key against
+    # the same folder. (It would also issue its own launch token, which is
+    # harmless: the token lives in one process's memory and gates only that
+    # process's server.)
     enforce_single_instance()
     # Before the vault key can exist in this process, and before the data
     # directory has anything worth indexing: a crash dump that excludes the
@@ -759,6 +767,14 @@ def main() -> None:
     # window is shown. Off unless ELYSIUM_SCREEN_PRIVACY=1, so for everyone
     # else this handler enumerates nothing and returns.
     window.events.shown += win_hardening.apply_screen_privacy
+    # The accessibility switch itself was already armed by harden(), before the
+    # server started, because WebView2 reads its arguments once and this window
+    # did not exist then. What runs here is only the read-back, and it hangs on
+    # `loaded` rather than `shown`: the browser process is what carries the
+    # argument, and by the time a page has loaded it is certainly running,
+    # while at `shown` it may not be yet. An unanswerable question is logged as
+    # unanswered, never as a failure.
+    window.events.loaded += win_hardening.report_accessibility_privacy
     # Persistent WebView2 profile: pywebview's default private mode wipes
     # localStorage/IndexedDB on every close, which would reset font size,
     # narration style, the wallpaper, and the last-open chat each launch.

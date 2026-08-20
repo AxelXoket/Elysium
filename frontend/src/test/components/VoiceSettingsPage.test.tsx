@@ -236,16 +236,120 @@ describe("VoiceSettingsPage", () => {
     expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
   });
 
-  // ── Audit: "Add clip" derives the voice id, and POST is an UPSERT ──────
+  // ── Audit: the voice id must never be built from what the user typed ───
+  //
+  // The id used to be a slug of the typed name (or, failing that, the
+  // filename), and that slug became a URL path segment, a folder name on
+  // disk, and the text in the collision dialog itself - the owner's rule is
+  // that a name a person reads on screen never sits outside the vault, and a
+  // roleplay reference voice is named after the character it belongs to. The
+  // id is opaque now (a UUID the label plays no part in producing), the
+  // collision question moved to comparing what voices are CALLED rather than
+  // their ids, and "replace" reuses the existing voice's id instead of
+  // minting a new one beside it.
 
-  it("an id collision asks before destroying the existing clip", async () => {
+  const EXISTING_ANNA_ID = "3f2a9c11-58cc-4372-a567-0e02b2c3d479";
+
+  function voicePostCalls(fetchMock: ReturnType<typeof mockFetch>) {
+    return fetchMock.mock.calls.filter(
+      ([url, init]) =>
+        String(url).includes("/tts/voices/") && init?.method === "POST",
+    );
+  }
+
+  it("the decisive test: a distinctive typed name reaches the server in the body, never in a URL", async () => {
+    const fetchMock = mockFetch(baseRoutes());
+    renderWithQueryClient(<VoiceSettingsPage />);
+
+    const distinctiveName = "Persimmon Vale Ashworth";
+    await userEvent.type(
+      await screen.findByLabelText("New voice name"),
+      distinctiveName,
+    );
+    await userEvent.upload(
+      screen.getByLabelText("Upload a reference clip"),
+      new File(["x"], "take.wav", { type: "audio/wav" }),
+    );
+
+    await waitFor(() => expect(voicePostCalls(fetchMock)).toHaveLength(1));
+    const [url, init] = voicePostCalls(fetchMock)[0];
+
+    // The name is nowhere in the URL - not verbatim, not slugified.
+    expect(String(url).toLowerCase()).not.toContain("persimmon");
+    expect(String(url).toLowerCase()).not.toContain("ashworth");
+    // The id really is opaque, not just "not the name".
+    const idSegment = String(url).split("/tts/voices/")[1];
+    expect(idSegment).toMatch(
+      /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/,
+    );
+
+    // The name DID reach the server - in the body, not the path.
+    const form = init!.body as FormData;
+    expect(form.get("label")).toBe(distinctiveName);
+  });
+
+  // GROUND: nothing typed still has to work - refusing to upload without a
+  // name would be its own broken promise.
+  it("the ground: a voice with no typed name still uploads", async () => {
+    const fetchMock = mockFetch(baseRoutes());
+    renderWithQueryClient(<VoiceSettingsPage />);
+
+    await userEvent.upload(
+      await screen.findByLabelText("Upload a reference clip"),
+      new File(["x"], "sunday-clip.wav", { type: "audio/wav" }),
+    );
+
+    await waitFor(() => expect(voicePostCalls(fetchMock)).toHaveLength(1));
+    const [url, init] = voicePostCalls(fetchMock)[0];
+    // The file's own name is not a leak this app created - but it must not
+    // become the id either, same as a typed name would not.
+    expect(String(url).toLowerCase()).not.toContain("sunday-clip");
+    const idSegment = String(url).split("/tts/voices/")[1];
+    expect(idSegment).toMatch(
+      /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/,
+    );
+    // The label still falls back to something readable, drawn from the
+    // user's own file, so the list does not show a raw id as a name.
+    const form = init!.body as FormData;
+    expect(form.get("label")).toBe("sunday-clip");
+  });
+
+  // POSITIVE CONTROL: the label really does render back where the person
+  // can see it, and the opaque id never does.
+  it("the positive control: the label renders back in the list, the id never does", async () => {
+    mockFetch({
+      ...baseRoutes(),
+      "/tts/voices": {
+        body: {
+          voices: [
+            {
+              voice_id: EXISTING_ANNA_ID,
+              label: "Zinnia Combe",
+              audio_name: "ref.wav",
+              transcript: "",
+              transcript_source: "none",
+              seconds: 9.5,
+              needs_conversion: false,
+              has_transcript: false,
+            },
+          ],
+        },
+      },
+    });
+    renderWithQueryClient(<VoiceSettingsPage />);
+
+    expect(await screen.findByText("Zinnia Combe")).toBeInTheDocument();
+    expect(screen.queryByText(/3f2a9c11/)).not.toBeInTheDocument();
+  });
+
+  it("a matching label asks before destroying the existing clip, and reuses its id to replace it", async () => {
     const fetchMock = mockFetch({
       ...baseRoutes(),
       "/tts/voices": {
         body: {
           voices: [
             {
-              voice_id: "anna", label: "Anna", path: "C:/v/anna",
+              voice_id: EXISTING_ANNA_ID, label: "Anna", path: "C:/v/anna",
               audio_name: "ref.wav", transcript: "hand corrected",
               transcript_source: "user", seconds: 10, needs_conversion: false,
             },
@@ -264,24 +368,19 @@ describe("VoiceSettingsPage", () => {
     );
 
     // Nothing uploaded yet - the old recording is still there.
-    expect(
-      fetchMock.mock.calls.filter(
-        ([url, init]) =>
-          String(url).includes("/tts/voices/anna") && init?.method === "POST",
-      ),
-    ).toHaveLength(0);
+    expect(voicePostCalls(fetchMock)).toHaveLength(0);
+    // The dialog names the voice, not the id (there was no id to derive from).
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      /already exists/i,
+      /Anna.*already exists/i,
     );
 
     await userEvent.click(screen.getByRole("button", { name: "Replace it" }));
     await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.filter(
-          ([url, init]) =>
-            String(url).includes("/tts/voices/anna") && init?.method === "POST",
-        ),
-      ).toHaveLength(1);
+      const calls = voicePostCalls(fetchMock);
+      expect(calls).toHaveLength(1);
+      // Lands on the EXISTING voice's id - a fresh one here would leave the
+      // old voice behind under its own id instead of replacing it.
+      expect(String(calls[0][0])).toContain(`/tts/voices/${EXISTING_ANNA_ID}`);
     });
   });
 
@@ -292,7 +391,7 @@ describe("VoiceSettingsPage", () => {
         body: {
           voices: [
             {
-              voice_id: "anna", label: "Anna", path: "C:/v/anna",
+              voice_id: EXISTING_ANNA_ID, label: "Anna", path: "C:/v/anna",
               audio_name: "ref.wav", transcript: "hand corrected",
               transcript_source: "user", seconds: 10, needs_conversion: false,
             },
@@ -312,12 +411,7 @@ describe("VoiceSettingsPage", () => {
     );
 
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(
-      fetchMock.mock.calls.filter(
-        ([url, init]) =>
-          String(url).includes("/tts/voices/anna") && init?.method === "POST",
-      ),
-    ).toHaveLength(0);
+    expect(voicePostCalls(fetchMock)).toHaveLength(0);
   });
 
   it("a fresh name uploads immediately, with no prompt", async () => {
@@ -330,14 +424,10 @@ describe("VoiceSettingsPage", () => {
       new File(["x"], "take.wav", { type: "audio/wav" }),
     );
 
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.filter(
-          ([url, init]) =>
-            String(url).includes("/tts/voices/bella") && init?.method === "POST",
-        ),
-      ).toHaveLength(1);
-    });
+    await waitFor(() => expect(voicePostCalls(fetchMock)).toHaveLength(1));
+    expect(String(voicePostCalls(fetchMock)[0][0]).toLowerCase()).not.toContain(
+      "bella",
+    );
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 

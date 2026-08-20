@@ -61,6 +61,15 @@ const RESTRICTED_PROPERTIES = [
     { object: obj, property: 'caches', message: 'S-17: no cache storage.' },
   ]),
   { object: 'document', property: 'cookie', message: 'S-14: no cookies.' },
+  // S-26. The window title is enumerable by every process on the machine
+  // (EnumWindows/GetWindowText, no privilege needed), so a chat name written
+  // here leaves the vault the moment it is assigned. pywebview does not
+  // re-sync it to the native window, so the title bar still reading "Elysium"
+  // is not evidence that nothing left. static-safety.test.ts also covers the
+  // three shapes this selector cannot see: reaching the element through
+  // querySelector, a React 19 title element hoisted out of the tree, and a
+  // document-head library.
+  { object: 'document', property: 'title', message: 'S-26: the window title never says which chat is open. It is readable by any process on the machine.' },
   { object: 'navigator', property: 'sendBeacon', message: 'S-15: nothing is beaconed anywhere.' },
   { object: 'navigator', property: 'serviceWorker', message: 'S-16: no service worker.' },
 ]
