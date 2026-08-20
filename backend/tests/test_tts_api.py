@@ -385,7 +385,11 @@ class TestRuntimes:
         monkeypatch.setattr(
             config, "TTS_RUNTIMES_PATH", str(tmp_path / "runtimes.json"), raising=False
         )
-        exe = tmp_path / "python.exe"; exe.write_bytes(b"")
+        monkeypatch.setattr(config, "TTS_ENVS_DIR", str(tmp_path / "envs"),
+                            raising=False)
+        exe = tmp_path / "envs" / "fish_s2" / "Scripts" / "python.exe"
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        exe.write_bytes(b"")
         runtimes.register("fish_s2", str(exe))
         body = client.get("/api/v1/tts/runtimes").json()
         fish = next(r for r in body["runtimes"] if r["engine_id"] == "fish_s2")

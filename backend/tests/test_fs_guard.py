@@ -81,11 +81,14 @@ class TestItRefusesEveryDoorToTheRealData:
             dbapi2.connect(str(real_vault()))
 
     @pytest.mark.parametrize("name", [
-        "salt.bin", "verifier.bin", "kdf.json",
+        "salt.bin", "verifier.bin", "kdf.json", "vault.recovery",
     ])
     def test_the_identity_files_are_guarded_by_name(self, name: str) -> None:
         # The near-miss this guard was opened for: one vault call inside the
-        # wrong try block would have rewritten these three.
+        # wrong try block would have rewritten the developer's own identity
+        # files. vault.recovery joins them because it is the same material:
+        # overwriting it would destroy the copy that exists to survive the
+        # loss of the others.
         with pytest.raises(ForbiddenWrite):
             (Path(config.DATA_DIR) / name).write_bytes(b"x")
 

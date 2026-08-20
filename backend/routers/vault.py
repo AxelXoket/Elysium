@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
+import sys
 import time
 from functools import partial
 from pathlib import Path
@@ -35,6 +36,7 @@ from pydantic import BaseModel, Field
 
 import config
 import database
+import launch_token
 import passphrase_strength
 import secure_delete
 import vault_state
@@ -1188,7 +1190,12 @@ def _reset_identity_files(vault_dir: Path) -> list[str]:
     is that NOTHING of this vault is left, not that what is left is harmless.
     """
     left: list[str] = []
-    for name in ("salt.bin", "verifier.bin", "kdf.json"):
+    # vault.recovery is identity, not user data, and belongs in THIS family
+    # rather than one of the independent ones. If app.db survives the wipe -
+    # a hardlink, a lock, a read-only bit - this whole family is held back so
+    # the surviving database is not bricked worse than it already is, and the
+    # mirror is the last copy of the recipe for it.
+    for name in ("salt.bin", "verifier.bin", "kdf.json", "vault.recovery"):
         candidates = [vault_dir / name, vault_dir / f"{name}.new"]
         candidates += sorted(vault_dir.glob(f"{name}.bak-*"))
         for path in candidates:
@@ -1513,6 +1520,45 @@ class VaultResetBody(BaseModel):
     confirm: str = Field(min_length=1, max_length=RESET_CONFIRM_MAX_LEN)
 
 
+def _reset_door_is_open() -> bool:
+    """Whether this build offers the reset door at all. TWO conditions.
+
+    Neither is sufficient alone, and saying why is the whole value of this
+    function, because "only from the app window" is what was asked for and
+    neither half delivers it.
+
+    sys.frozen is a property of THIS PROCESS, not of the caller. A curl at the
+    packaged exe is exactly as frozen as the window is. All it establishes is
+    "this is the shipped app rather than a development tree", which is the
+    half about the build and not the half about who is asking.
+
+    An ARMED launch-token gate is the half that speaks about the caller. When
+    launch_token.configured() is not None, main.py's launch_token_gate has
+    already refused every /api/v1 request that did not carry this launch's own
+    secret before any handler ran, and its one exemption is GET-only and bound
+    by regex to two other paths. So reaching this line with the gate armed
+    means the token was presented and compared with hmac.compare_digest. This
+    function deliberately does NOT re-read that header: checking a second time
+    would add a second place for the comparison to be got wrong.
+
+    Armed alone is not enough either. run_app.py issues a token on the
+    development path too, and configured() falls back to ELYSIUM_LAUNCH_TOKEN
+    out of the environment as a deliberate developer seam. Requiring BOTH is
+    what leaves `uvicorn main:app` - not frozen, no token - with no reset door
+    at all, which is the point.
+
+    What this does NOT claim, stated here rather than left for a reader to
+    assume: it does not distinguish the window from another local process
+    holding this launch's token. That residual is the one the route's own
+    docstring already states, and nothing short of an out-of-band channel
+    closes it. This narrows the door from "any build at all" to "the shipped
+    build with an armed gate". It does not narrow it to the renderer.
+    """
+    if not getattr(sys, "frozen", False):
+        return False
+    return launch_token.configured() is not None
+
+
 @router.post("/reset")
 async def vault_reset(body: VaultResetBody) -> dict:
     """Wipe every artefact of this vault and leave DATA_DIR as if Elysium had
@@ -1578,6 +1624,10 @@ async def vault_reset(body: VaultResetBody) -> dict:
     is the only answer to that class, and it is the user's to enable, not
     this app's to fake.
     """
+    # Before the lock, not inside it: a door that does not exist in this
+    # build should not queue behind an unlock in flight.
+    if not _reset_door_is_open():
+        raise HTTPException(404, "vault_reset_unavailable")
     async with _vault_lock:
         # Checked FIRST, before the confirmation phrase is even read - see
         # the docstring above for why the order is load-bearing and not

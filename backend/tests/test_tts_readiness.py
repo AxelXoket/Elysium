@@ -41,7 +41,9 @@ def _runtime_ready(monkeypatch, tmp_path, engine="fish_s2"):
     reg = tmp_path / "voice" / "runtimes.json"
     reg.parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(config, "TTS_RUNTIMES_PATH", str(reg), raising=False)
-    exe = tmp_path / "env" / "python.exe"
+    monkeypatch.setattr(config, "TTS_ENVS_DIR", str(tmp_path / "envs"),
+                        raising=False)
+    exe = tmp_path / "envs" / engine / "Scripts" / "python.exe"
     exe.parent.mkdir(parents=True, exist_ok=True)
     exe.write_bytes(b"")
     runtimes.register(engine, str(exe))

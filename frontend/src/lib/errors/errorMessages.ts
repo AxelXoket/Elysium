@@ -225,6 +225,12 @@ const ERROR_MESSAGES: Record<string, string> = {
     "The voice engine is not set up yet. Press Set up in Settings to install it.",
   tts_runtime_broken:
     "The voice engine was set up before but its files are gone now. Press Set up again in Settings to reinstall it.",
+  // Not the same sentence as tts_runtime_broken, deliberately. "Its files are
+  // gone" and "its files are not the ones we installed" ask for the same
+  // button but mean very different things, and collapsing them would hide the
+  // second one behind a routine reinstall prompt.
+  tts_runtime_untrusted:
+    "The voice engine on this machine is not the one Elysium installed, so it was not started. Press Set up again in Settings to reinstall it.",
   tts_runtime_installing:
     "Voice engine setup is already running. Wait for it to finish, or cancel it first.",
   tts_runtime_install_failed:
@@ -339,6 +345,14 @@ const ERROR_MESSAGES: Record<string, string> = {
   reset_confirmation_mismatch:
     "That did not match, so nothing was deleted. The words have to be typed " +
     "exactly as they are shown.",
+
+  // The door is not refused here, it is absent: this build does not carry it.
+  // A development checkout has no reset route at all, so the sentence has to
+  // explain a missing feature rather than a rejected request, and it must not
+  // send somebody looking for a passphrase or a permission they could fix.
+  vault_reset_unavailable:
+    "Starting over is only offered by the installed Elysium app, on its lock " +
+    "screen. This build does not have that option.",
 
   // Vault. The gate used to map only wrong_passphrase and passphrase_too_short
   // and collapse everything else into "Is the backend running?" - which is

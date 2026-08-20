@@ -39,6 +39,21 @@ WINDOWS_ONLY = pytest.mark.skipif(os.name != "nt", reason="Win32 API surface")
 #: if the test dies before its finally block.
 _CHILD_LIFETIME = "20"
 
+#: The registry path separator. Named rather than typed inline so no test
+#: below carries a lone escape character.
+SEP = chr(92)
+
+#: A planted value with a person's account name in it. The point of the tests
+#: below is that this string never reaches elysium.log, so it is built here
+#: once rather than retyped in each of them.
+#:
+#: JOINED rather than written as a literal, and that is not style. An absolute
+#: path spelled out in a source file publishes whose machine built the tree,
+#: which is hygiene rule H-04, and requirements.lock.txt carried exactly that
+#: into a public repository 47 times. A test about not leaking a name is a
+#: poor place to leak one.
+SECRET_PATH = SEP.join(("C:", "Users", "Somebody", "a-chat-title"))
+
 
 def _sleeping_child(marker: str) -> subprocess.Popen:
     """A real child process carrying a marker on its command line.
@@ -103,14 +118,21 @@ class TestArmingTheSwitch:
         assert flag.split() == [flag]
         assert flag.startswith("--")
 
-    def test_it_does_not_clobber_arguments_somebody_else_set(self) -> None:
-        # pywebview puts its own flags on this WebView2 through the same
-        # property, and a machine we have never seen may add more. Taking
-        # theirs away to add ours would break the app to protect it.
-        env = {win_hardening._WEBVIEW2_ARGUMENTS_ENV: "--already-here"}
+    def test_it_clobbers_arguments_somebody_else_set(self) -> None:
+        # This assertion is the reverse of the one it replaces, and the
+        # reversal is the fix. The old test enforced appending, on the belief
+        # that pywebview passed its own flags through this variable. It does
+        # not: it sets CoreWebView2CreationProperties.AdditionalBrowserArguments
+        # directly (webview/platforms/edgechromium.py:82-90), and nothing else
+        # in this repository writes the variable at all. So the only thing
+        # appending preserved was whatever a program running as this user had
+        # planted with setx, and a debugging port planted there opens the
+        # DevTools protocol on the window showing the decrypted conversation.
+        env = {win_hardening._WEBVIEW2_ARGUMENTS_ENV:
+               "--remote-debugging-port=9222"}
         assert win_hardening.apply_accessibility_privacy(env) is True
         assert env[win_hardening._WEBVIEW2_ARGUMENTS_ENV].split() == [
-            "--already-here", win_hardening._RENDERER_ACCESSIBILITY_OFF]
+            win_hardening._RENDERER_ACCESSIBILITY_OFF]
 
     def test_arming_twice_arms_it_once(self) -> None:
         env: dict[str, str] = {}
@@ -133,14 +155,130 @@ class TestArmingTheSwitch:
         env = Deaf()
         assert win_hardening.apply_accessibility_privacy(env) is False
 
-    def test_refusing_it_touches_nothing(
+    def test_refusing_it_still_scrubs_what_somebody_else_planted(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # The refusal branch used to return without touching the variable,
+        # which made the user who turned this off the one user whose planted
+        # flags reached the browser untouched. Refusing the accessibility
+        # switch is a statement about assistive technology; it is not consent
+        # to a debugging port. And somebody who turned the switch off to use a
+        # screen reader is the least able to notice a warning on screen.
         monkeypatch.setenv(config.ACCESSIBILITY_PRIVACY_ENV,
                            config.ACCESSIBILITY_PRIVACY_OFF)
-        env = {win_hardening._WEBVIEW2_ARGUMENTS_ENV: "--already-here"}
+        env = {win_hardening._WEBVIEW2_ARGUMENTS_ENV:
+               "--remote-debugging-port=9222"}
         assert win_hardening.apply_accessibility_privacy(env) is False
-        assert env == {win_hardening._WEBVIEW2_ARGUMENTS_ENV: "--already-here"}
+        assert win_hardening._WEBVIEW2_ARGUMENTS_ENV not in env
+
+    def test_refusing_it_does_not_believe_a_mapping_that_kept_the_value(
+        self, monkeypatch: pytest.MonkeyPatch, caplog
+    ) -> None:
+        # The read-back rule, applied to the delete. The armed branch has had
+        # a Deaf-mapping test since this module was written; the refusal
+        # branch had none, so an environment that silently kept the planted
+        # value would have been reported as scrubbed.
+        class Stubborn(dict):
+            def pop(self, key, default=None):     # accepts, forgets nothing
+                return default
+
+        monkeypatch.setenv(config.ACCESSIBILITY_PRIVACY_ENV,
+                           config.ACCESSIBILITY_PRIVACY_OFF)
+        env = Stubborn({win_hardening._WEBVIEW2_ARGUMENTS_ENV:
+                        "--remote-debugging-port=9222"})
+        with caplog.at_level("WARNING", logger=win_hardening.log.name):
+            assert win_hardening.apply_accessibility_privacy(env) is False
+        assert any("could NOT be cleared" in r.getMessage()
+                   for r in caplog.records)
+
+    def test_it_names_the_switch_it_discarded_but_never_its_value(
+        self, caplog
+    ) -> None:
+        # Scrubbing in silence would be the worst outcome: the flag is gone,
+        # the attempt is invisible, and the machine looks healthy. So it warns.
+        # But the value half of a switch is chosen by whoever planted it, and
+        # a path carries an account name, so only the name may be printed.
+        secret = SECRET_PATH
+        env = {win_hardening._WEBVIEW2_ARGUMENTS_ENV:
+               f"--user-data-dir={secret}"}
+        with caplog.at_level("WARNING", logger=win_hardening.log.name):
+            win_hardening.apply_accessibility_privacy(env)
+        said = " ".join(r.getMessage() for r in caplog.records)
+        assert "--user-data-dir" in said          # ground: it did report
+        assert secret not in said                 # and it named only names
+        assert "Somebody" not in said
+
+    def test_a_planted_token_that_is_not_a_switch_is_counted_not_printed(
+        self, caplog
+    ) -> None:
+        # The filter has to fail closed on shapes it was not designed for. A
+        # bare path is not a switch, so it cannot be named; saying nothing
+        # about it would under-report the discard, so it is counted instead.
+        env = {win_hardening._WEBVIEW2_ARGUMENTS_ENV: SECRET_PATH}
+        with caplog.at_level("WARNING", logger=win_hardening.log.name):
+            win_hardening.apply_accessibility_privacy(env)
+        said = " ".join(r.getMessage() for r in caplog.records)
+        assert "Somebody" not in said
+        assert "1 token(s) whose names are not printed" in said
+
+    def test_it_scrubs_every_variable_the_webview2_loader_reads(self) -> None:
+        # Not just the one this function sets. The variable we care about is
+        # the least dangerous member of the family: a planted
+        # WEBVIEW2_BROWSER_EXECUTABLE_FOLDER supplies msedgewebview2.exe
+        # itself, at which point every other check on this page is inspecting
+        # a binary the attacker provided.
+        env = {name: "planted" for name in win_hardening._WEBVIEW2_OVERRIDE_ENV}
+        # GROUND, by name rather than by count: a count rots every time
+        # Microsoft documents another one, and the three named here are the
+        # three whose absence would make this test pass while proving nothing.
+        assert "WEBVIEW2_BROWSER_EXECUTABLE_FOLDER" in env
+        assert "WEBVIEW2_USER_DATA_FOLDER" in env
+        assert win_hardening._WEBVIEW2_ARGUMENTS_ENV in env
+        assert win_hardening.apply_accessibility_privacy(env) is True
+        assert set(env) == {win_hardening._WEBVIEW2_ARGUMENTS_ENV}
+        assert env[win_hardening._WEBVIEW2_ARGUMENTS_ENV].split() == [
+            win_hardening._RENDERER_ACCESSIBILITY_OFF]
+
+    def test_a_planted_profile_redirect_does_not_survive(self) -> None:
+        # WEBVIEW2_USER_DATA_FOLDER moves the browser profile somewhere
+        # browser_profile.purge has never heard of, so the cached conversation
+        # would outlive the sweep written to remove it. Closing the
+        # accessibility tree would not have noticed.
+        key = "WEBVIEW2_USER_DATA_FOLDER"
+        assert key in win_hardening._WEBVIEW2_OVERRIDE_ENV
+        env = {key: SECRET_PATH}
+        win_hardening.apply_accessibility_privacy(env)
+        assert key not in env
+
+    def test_the_debugger_variables_go_even_when_the_switch_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # These two attach a script debugger and Microsoft documents no
+        # registry equivalent for them, which makes them the only members of
+        # the family this can close completely. Refusing the accessibility
+        # switch is a statement about assistive technology, not consent to a
+        # debugger.
+        monkeypatch.setenv(config.ACCESSIBILITY_PRIVACY_ENV,
+                           config.ACCESSIBILITY_PRIVACY_OFF)
+        env = {"WEBVIEW2_WAIT_FOR_SCRIPT_DEBUGGER": "1",
+               "WEBVIEW2_PIPE_FOR_SCRIPT_DEBUGGER": "1"}
+        assert win_hardening.apply_accessibility_privacy(env) is False
+        assert env == {}
+
+    def test_the_family_is_discarded_by_name_never_by_value(
+        self, caplog
+    ) -> None:
+        # BROWSER_EXECUTABLE_FOLDER and USER_DATA_FOLDER carry a
+        # filesystem path, and a path on this machine carries the
+        # account name. The value is withheld for the whole family
+        # rather than for those two.
+        env = {"WEBVIEW2_BROWSER_EXECUTABLE_FOLDER": SECRET_PATH}
+        with caplog.at_level("WARNING", logger=win_hardening.log.name):
+            win_hardening.apply_accessibility_privacy(env)
+        said = " ".join(r.getMessage() for r in caplog.records)
+        assert "WEBVIEW2_BROWSER_EXECUTABLE_FOLDER" in said   # ground
+        assert SECRET_PATH not in said
+        assert "Somebody" not in said
 
     def test_it_defaults_to_the_real_environment(
         self, monkeypatch: pytest.MonkeyPatch
@@ -402,6 +540,56 @@ class TestTheVerdictHasThreeAnswers:
                 f"{win_hardening._RENDERER_ACCESSIBILITY_OFF}-x"})
         assert win_hardening.accessibility_privacy_verified() is False
 
+    def test_our_flag_beside_a_debugging_port_is_a_no(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The reason this cannot be answered by presence alone. The WebView2
+        # loader APPENDS what it finds to what the host set, so a planted
+        # --remote-debugging-port arrives BESIDE our flag rather than instead
+        # of it. Asking only "is our flag there" answered True during exactly
+        # the attack this function exists to notice, and logged "verified
+        # closed" while the DevTools protocol was listening on that process.
+        monkeypatch.delenv(config.ACCESSIBILITY_PRIVACY_ENV, raising=False)
+        self._browser_processes(monkeypatch, {
+            11: f"msedgewebview2.exe {win_hardening._RENDERER_ACCESSIBILITY_OFF}"
+                f" --remote-debugging-port=9222"})
+        assert win_hardening.accessibility_privacy_verified() is False
+
+    def test_the_same_holds_for_the_pipe_form(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # --remote-debugging-pipe reaches the same protocol without opening a
+        # socket, so a check written around the word "port" would miss it.
+        monkeypatch.delenv(config.ACCESSIBILITY_PRIVACY_ENV, raising=False)
+        self._browser_processes(monkeypatch, {
+            11: f"msedgewebview2.exe --remote-debugging-pipe "
+                f"{win_hardening._RENDERER_ACCESSIBILITY_OFF}"})
+        assert win_hardening.accessibility_privacy_verified() is False
+
+    def test_the_ordinary_switches_webview2_gives_itself_are_still_a_yes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # GROUND, and the reason the check is a denylist. The browser process
+        # carries dozens of switches it sets for itself; an allowlist would
+        # call the next Chromium version hostile and be turned off in a week.
+        monkeypatch.delenv(config.ACCESSIBILITY_PRIVACY_ENV, raising=False)
+        self._browser_processes(monkeypatch, {
+            11: f"msedgewebview2.exe --embedded-browser-webview=1 "
+                f"--webview-exe-name=Elysium.exe --mojo-named-platform-channel"
+                f" --disable-features=ElasticOverscroll "
+                f"{win_hardening._RENDERER_ACCESSIBILITY_OFF}"})
+        assert win_hardening.accessibility_privacy_verified() is True
+
+    def test_one_clean_process_does_not_excuse_a_dirty_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(config.ACCESSIBILITY_PRIVACY_ENV, raising=False)
+        flag = win_hardening._RENDERER_ACCESSIBILITY_OFF
+        self._browser_processes(monkeypatch, {
+            11: f"msedgewebview2.exe {flag}",
+            12: f"msedgewebview2.exe {flag} --remote-debugging-port=9222"})
+        assert win_hardening.accessibility_privacy_verified() is False
+
     def test_no_browser_process_yet_is_unknown(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -448,3 +636,165 @@ class TestTheVerdictHasThreeAnswers:
         monkeypatch.delenv(config.ACCESSIBILITY_PRIVACY_ENV, raising=False)
         assert win_hardening.command_line_of(-1) is None
         assert win_hardening.own_child_processes("") == []
+
+
+
+class TestTheReportNamesTheFailureThatHappened:
+    """Two ways to fail, and they used to share one sentence.
+
+    _command_line_is_ours returns False when our flag is missing AND when a
+    denylisted switch is present. The report collapsed both into "the browser
+    did not get --disable-renderer-accessibility", so in the second case, the
+    case the check was rewritten for, the log named a cause that was not true
+    and never mentioned the debugging port it had just found. A reader
+    following that line rechecks a control that is working.
+    """
+
+    def _browser(self, monkeypatch, line: str) -> None:
+        monkeypatch.setattr(win_hardening, "own_child_processes",
+                            lambda image: [11])
+        monkeypatch.setattr(win_hardening, "command_line_of", lambda pid: line)
+
+    def test_a_missing_flag_still_reads_as_a_missing_flag(
+        self, monkeypatch: pytest.MonkeyPatch, caplog
+    ) -> None:
+        # GROUND. The sentence that was always correct must stay correct.
+        monkeypatch.delenv(config.ACCESSIBILITY_PRIVACY_ENV, raising=False)
+        self._browser(monkeypatch, "msedgewebview2.exe --embedded-browser-webview=1")
+        with caplog.at_level("WARNING", logger=win_hardening.log.name):
+            assert win_hardening.report_accessibility_privacy() is False
+        said = " ".join(r.getMessage() for r in caplog.records)
+        assert win_hardening._RENDERER_ACCESSIBILITY_OFF in said
+        assert "--remote-debugging-port" not in said
+
+    def test_a_debugging_port_beside_our_flag_is_named(
+        self, monkeypatch: pytest.MonkeyPatch, caplog
+    ) -> None:
+        monkeypatch.delenv(config.ACCESSIBILITY_PRIVACY_ENV, raising=False)
+        self._browser(
+            monkeypatch,
+            f"msedgewebview2.exe {win_hardening._RENDERER_ACCESSIBILITY_OFF} "
+            f"--remote-debugging-port=9222")
+        with caplog.at_level("WARNING", logger=win_hardening.log.name):
+            assert win_hardening.report_accessibility_privacy() is False
+        said = " ".join(r.getMessage() for r in caplog.records)
+        assert "--remote-debugging-port" in said
+        # and it must NOT blame the flag, which is present
+        assert "did not get" not in said
+
+    def test_the_port_number_is_not_printed(
+        self, monkeypatch: pytest.MonkeyPatch, caplog
+    ) -> None:
+        # Names, never values. The same rule the environment scrub follows,
+        # and it has to hold here too because this string comes off another
+        # process's command line.
+        monkeypatch.delenv(config.ACCESSIBILITY_PRIVACY_ENV, raising=False)
+        self._browser(
+            monkeypatch,
+            f"msedgewebview2.exe {win_hardening._RENDERER_ACCESSIBILITY_OFF} "
+            f"--user-data-dir={SECRET_PATH} --remote-debugging-port=9222")
+        with caplog.at_level("WARNING", logger=win_hardening.log.name):
+            win_hardening.report_accessibility_privacy()
+        said = " ".join(r.getMessage() for r in caplog.records)
+        assert "9222" not in said
+        assert SECRET_PATH not in said
+        assert "Somebody" not in said
+
+
+@WINDOWS_ONLY
+class TestTheLaunchPathActuallyLooksAtThePolicyDoor:
+    def test_harden_calls_the_policy_check(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The control existed, was tested, and was wired to nothing.
+
+        Measured on 20 August 2026: the only callers of
+        webview2_policy_overrides were five tests. It never ran in the shipped
+        app, while SECURITY.md told the reader that Elysium reports a WebView2
+        policy key. This asserts the wiring rather than the function, because
+        the function already has its own tests and the wiring is what was
+        missing.
+        """
+        called: list[bool] = []
+
+        def spy():
+            called.append(True)
+            return []
+
+        monkeypatch.setattr(win_hardening, "webview2_policy_overrides", spy)
+        result = win_hardening.harden(tmp_path)
+        assert called, "harden() does not consult the policy door"
+        assert "webview2_policy_overrides" in result
+
+
+class TestTheSecondDoorIsLookedAtButNotShut:
+    """The registry half of the same override mechanism.
+
+    Microsoft's reference lists five policy values that override the same
+    environment options, read from HKLM and then HKCU, and HKCU needs no
+    elevation. Deleting an environment variable says nothing about them, so
+    this module reports them rather than pretending the environment scrub
+    covered both doors. It does not edit them: a key under the Microsoft Edge
+    WebView2 policy path is shared with every WebView2 application on the
+    machine and is not this app's to change.
+    """
+
+    @staticmethod
+    def _hive(*present: str):
+        """A registry stand-in. present is ("HKCU", "BrowserExecutableFolder")
+        style pairs joined by the separator, exactly as the real subkey reads.
+        """
+        class _Handle:
+            def Close(self) -> None:
+                pass
+
+        def open_key(root, subkey):
+            leaf = subkey.rsplit(SEP, 1)[-1]
+            if f"{root}{SEP}{leaf}" in present:
+                return _Handle()
+            raise OSError(2, "not found")
+
+        return open_key
+
+    def test_a_machine_with_no_policy_values_reports_nothing(self) -> None:
+        # GROUND. Without this the refusal below would also pass for a reader
+        # that never manages to open anything.
+        assert win_hardening.webview2_policy_overrides(self._hive()) == []
+
+    def test_a_policy_value_under_hkcu_is_reported(self) -> None:
+        planted = "HKCU" + SEP + "BrowserExecutableFolder"
+        found = win_hardening.webview2_policy_overrides(self._hive(planted))
+        assert found == [planted]
+
+    def test_both_hives_are_looked_at(self) -> None:
+        # HKLM is where a real administrator would put it and HKCU is where an
+        # attacker running as this user can. Reading only one would report a
+        # clean machine for half the ways it can be dirty.
+        planted = ("HKLM" + SEP + "UserDataFolder",
+                   "HKCU" + SEP + "AdditionalBrowserArguments")
+        found = win_hardening.webview2_policy_overrides(self._hive(*planted))
+        assert sorted(found) == sorted(planted)
+
+    def test_it_reports_the_name_and_never_reads_the_value(
+        self, caplog
+    ) -> None:
+        # The value of BrowserExecutableFolder is a path the attacker chose,
+        # and a path carries the account name. This function opens the key to
+        # learn that it exists and closes it again; it never calls QueryValue.
+        planted = "HKCU" + SEP + "BrowserExecutableFolder"
+        with caplog.at_level("WARNING", logger=win_hardening.log.name):
+            win_hardening.webview2_policy_overrides(self._hive(planted))
+        said = " ".join(r.getMessage() for r in caplog.records)
+        assert "BrowserExecutableFolder" in said      # ground: it did report
+        assert SECRET_PATH not in said
+
+    def test_every_name_microsoft_documents_is_looked_for(self) -> None:
+        asked = []
+
+        def open_key(root, subkey):
+            asked.append(subkey.rsplit(SEP, 1)[-1])
+            raise OSError(2, "not found")
+
+        win_hardening.webview2_policy_overrides(open_key)
+        assert set(asked) == set(win_hardening._WEBVIEW2_POLICY_NAMES)
+        assert len(win_hardening._WEBVIEW2_POLICY_NAMES) == 5

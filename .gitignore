@@ -10,11 +10,34 @@ __pycache__/
 *.db-shm
 
 # Vault identity + migration/rekey artifacts - never commit any of these.
-# salt.bin/verifier.bin are the vault's key-derivation identity; *.plain.bak-*
-# is the plaintext DB backup the one-time migration leaves; *.bak/*.new are
-# crash-safe rekey temporaries (salt.bin.new, verifier.bin.bak, ...).
-salt.bin
-verifier.bin
+# salt.bin/verifier.bin/kdf.json are the vault's key-derivation identity;
+# *.plain.bak-* is the plaintext DB backup the one-time migration leaves;
+# *.bak/*.new are crash-safe rekey temporaries.
+#
+# The trailing * on the three identity names is the whole point and was missing
+# until 20 Aug 2026. crypto.py never writes a bare `.bak`: initialize(),
+# change_passphrase() and its shelve path all write
+# `<name>.bak-<unix ts>`, which `*.bak` does NOT match - the pattern wants a
+# name ENDING in `.bak`. The old comment named "verifier.bin.bak" as if that
+# were the shape on disk; it never was. In a dev checkout DATA_DIR is
+# `backend/`, so a reset or a passphrase change dropped
+# `backend/salt.bin.bak-<ts>` and `backend/verifier.bin.bak-<ts>` straight into
+# the work tree as untracked files that `git add -A` would have staged, into a
+# PUBLIC repo. salt + verifier together are an offline, unlimited-rate oracle
+# against the passphrase - which is exactly why the bare names are ignored.
+# The history was scanned when this was found: neither has ever been committed.
+# kdf.json had the same hole for the live file (only kdf.json.new was covered
+# by *.new); routers/vault.py's _reset_identity_files and tests/fs_guard.py
+# treat the four as one
+# unit, so the ignore rules now do too.
+salt.bin*
+verifier.bin*
+kdf.json*
+# The salt mirror. Same material as salt.bin and therefore the same rule, and
+# the trailing star for the same reason the others carry one: crypto.py
+# writes <name>.new and <name>.bak-<unix ts> beside it, and a pattern without
+# the star matches none of them.
+vault.recovery*
 *.plain.bak-*
 *.bak
 *.new

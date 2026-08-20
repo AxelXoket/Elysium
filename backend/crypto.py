@@ -25,6 +25,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import secrets
 import time
 from pathlib import Path
@@ -108,6 +109,13 @@ def _scrypt_kwargs(params: dict) -> dict:
                 maxmem=128 * n * r + 1024 * 1024)
 
 
+def _cost(params: dict) -> dict:
+    """The three fields the mirror records, as ints. One place, because two
+    spellings of "the cost parameters" drift and the drift is a silent
+    rewrite of a file that is only read when everything else is gone."""
+    return {field: int(params[field]) for field in ("n", "r", "p")}
+
+
 def new_salt() -> bytes:
     return secrets.token_bytes(16)
 
@@ -168,6 +176,36 @@ class KeyVault:
         # not help anyone guess the passphrase, and NOT knowing them would
         # make the vault unopenable the moment the default changed.
         self.kdf_path = self.dir / "kdf.json"
+        #: A SECOND copy of the salt and the parameters it was derived with.
+        #:
+        #: salt.bin was a sixteen byte single point of total loss, and that
+        #: was measured rather than feared: delete it and recover_with_db
+        #: returns None with the correct passphrase in hand, because scrypt
+        #: needs that exact salt and the loop looking for one had exactly two
+        #: entries. Flip one byte and the same thing happens, except the file
+        #: is still sitting there looking healthy. verifier.bin and kdf.json
+        #: both already survive their own loss; the salt did not.
+        #:
+        #: NOT named to hide. A file called app.db.idx would fool a person for
+        #: about a minute and would fool the next maintainer into deleting it
+        #: as a regenerable index, which is the opposite of the point. It is
+        #: named for what it is, and the accepted limit is stated plainly: a
+        #: person who reads this and removes both copies has removed both
+        #: copies. What it defends against is the accident, the single byte,
+        #: and the program that surgically removes one known filename.
+        #:
+        #: It carries NO VERIFIER, and the reason is narrower than a first
+        #: draft of this comment claimed. That draft said omitting the
+        #: verifier is what keeps a passphrase change revoking the old key.
+        #: It is not: recover_with_db MANUFACTURES a verifier from whatever
+        #: key the mirrored salt produces, so the oracle comes back the
+        #: moment the mirror is used. What omitting it actually buys is that
+        #: this one file is not, on its own, the complete offline attack kit.
+        #:
+        #: What keeps a rotation honest is the read-back in
+        #: change_passphrase: a mirror that could not be replaced still
+        #: describes the revoked salt, and the rotation says so.
+        self.mirror_path = self.dir / "vault.recovery"
 
     # -- state ---------------------------------------------------------------
     def is_initialized(self) -> bool:
@@ -192,9 +230,84 @@ class KeyVault:
         init answered 409 because the database is encrypted, and unlock
         answered 409 because salt.bin was gone. Every door shut, on a vault
         whose data was intact and whose passphrase the user knew.
+
+        The mirror joins the same list for the same reason. Without it the
+        route would answer "not initialized" for a vault whose only surviving
+        salt is the one written to survive exactly this, and the repair would
+        be correct, present, and unreachable, which is K-05 verbatim.
         """
         return (self.salt_path.exists()
-                or self.salt_path.with_name("salt.bin.new").exists())
+                or self.salt_path.with_name("salt.bin.new").exists()
+                or self._read_mirror() is not None)
+
+    # -- the salt mirror ------------------------------------------------------
+    def _write_mirror(self, salt: bytes, params: dict,
+                      path: Path | None = None) -> None:
+        """Stage, flush, replace. Never a partial file under the live name.
+
+        JSON rather than the raw sixteen bytes, and that is not decoration: a
+        half-written JSON object fails to parse and is skipped, while a
+        half-written raw salt is indistinguishable from a good one and would
+        be tried, fail db_check, and read as a wrong passphrase.
+
+        Carries the parameters WITH the salt. A salt recovered under the wrong
+        cost derives a key that opens nothing, which is the exact bug the
+        comment above the recover_with_db loop already documents for
+        salt.bin.new.
+
+        Best effort by contract: every caller is in the middle of a sequence
+        that must not fail because a second copy could not be written.
+        """
+        target = path or self.mirror_path
+        body = json.dumps({"kdf": "scrypt", "salt": salt.hex(),
+                           **{f: int(params[f]) for f in ("n", "r", "p")}})
+        # When a caller names the target it is ALREADY a staging file it will
+        # replace itself, so this writes it in place. Staging a staging file
+        # produced `vault.recovery.new.new`, a name nothing in the tree knew:
+        # _reset_identity_files enumerates `<name>`, `<name>.new` and
+        # `<name>.bak-*`, so a wipe left it behind, and what it left behind is
+        # a self-describing JSON object holding the salt and its parameters.
+        staged = target if path is not None else target.with_name(
+            f"{target.name}.new")
+        try:
+            with open(staged, "w", encoding="utf-8") as fh:
+                fh.write(body)
+                fh.flush()
+                os.fsync(fh.fileno())
+            if staged != target:
+                staged.replace(target)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            # Not silent. A mirror that could not be written is the whole
+            # protection quietly not existing, and the class this file exists
+            # for is the loss nobody was told about.
+            logger.warning(
+                "vault: could not write the salt mirror (%s); the vault is "
+                "back to having exactly one copy of its salt",
+                type(exc).__name__)
+
+    def _read_mirror(self, path: Path | None = None) -> tuple[bytes, dict] | None:
+        """The mirrored salt and its parameters, or None for anything wrong.
+
+        Returns None rather than raising for every failure - absent, torn,
+        not JSON, a salt that is not hex, parameters outside the bounds
+        _check_scrypt_bounds enforces. A mirror is a convenience; a mirror
+        that can throw would turn a recoverable vault into a 500.
+
+        It is also never TRUSTED. db_check is the only authority on whether a
+        key is right, so a stale or hostile mirror simply fails it and costs
+        one derivation.
+        """
+        target = path or self.mirror_path
+        try:
+            data = json.loads(target.read_text(encoding="utf-8"))
+            salt = bytes.fromhex(data["salt"])
+            params = {field: int(data[field]) for field in ("n", "r", "p")}
+            _check_scrypt_bounds(**params)
+        except Exception:                                # noqa: BLE001
+            return None
+        if not salt:
+            return None
+        return salt, params
 
     # -- KDF parameters -------------------------------------------------------
     def read_params(self, path: Path | None = None) -> dict:
@@ -238,7 +351,8 @@ class KeyVault:
         deleted."""
         self.dir.mkdir(parents=True, exist_ok=True)
         ts = int(time.time())
-        for p in (self.salt_path, self.verifier_path, self.kdf_path):
+        for p in (self.salt_path, self.verifier_path,
+                  self.kdf_path, self.mirror_path):
             if p.exists():
                 try:
                     p.replace(p.with_name(f"{p.name}.bak-{ts}"))
@@ -265,6 +379,11 @@ class KeyVault:
         # the salt it had just moved aside.
         self.write_params(params)
         self.salt_path.write_bytes(salt)
+        # After the live salt, never before. A mirror describing a salt that
+        # does not exist yet would be tried first by a recovery that ran in
+        # the crash window between these two lines, and would hand back a key
+        # for a database that had not been created with it.
+        self._write_mirror(salt, params)
         self.verifier_path.write_bytes(make_verifier(key))
         return key
 
@@ -275,8 +394,19 @@ class KeyVault:
             return None
         try:
             salt = self.salt_path.read_bytes()
-            key = derive_key(passphrase, salt, self.read_params())
+            params = self.read_params()
+            key = derive_key(passphrase, salt, params)
             if check_verifier(key, self.verifier_path.read_bytes()):
+                # The mirror rots silently otherwise. Nothing else on the
+                # ordinary path touches disk, so a mirror deleted while every
+                # other file is healthy would stay deleted forever and the
+                # protection would simply not exist on the day it was needed.
+                # Inside its own try because unlock promises not to throw.
+                try:
+                    if self._read_mirror() != (salt, _cost(params)):
+                        self._write_mirror(salt, params)
+                except Exception:                        # noqa: BLE001
+                    pass
                 return key
         except Exception as exc:                         # noqa: BLE001
             # "unlock does not throw; recovery takes over" is the contract the
@@ -312,6 +442,8 @@ class KeyVault:
         salt_new = self.salt_path.with_name("salt.bin.new")
         ver_new = self.verifier_path.with_name("verifier.bin.new")
         kdf_new = self.kdf_path.with_name("kdf.json.new")
+        mirror_new = self.mirror_path.with_name(
+            f"{self.mirror_path.name}.new")
         # Each candidate salt is paired with the parameters it was written
         # WITH. A half-finished change stages both, and deriving the staged
         # salt under the live parameters would produce a key that opens
@@ -342,7 +474,9 @@ class KeyVault:
                         self.salt_path.write_bytes(salt)
                     self.verifier_path.write_bytes(make_verifier(key))
                     self.write_params(params)
-                    for leftover in (salt_new, ver_new, kdf_new):
+                    self._write_mirror(salt, params)
+                    for leftover in (salt_new, ver_new, kdf_new,
+                                    mirror_new):
                         if leftover.exists() and not secure_delete.discard(
                                 leftover):
                             # K-07. discard returns False and says nothing for
@@ -350,6 +484,44 @@ class KeyVault:
                             # except OSError that a False return never even
                             # reaches. A staged identity surviving here is the
                             # recipe for a key, left beside the vault.
+                            self.left_behind.append(leftover.name)
+                except OSError:
+                    pass
+                return key
+        # The mirror, LAST, so the ordinary case and the half-finished
+        # rotation keep the cost they have today. It is not trusted for a
+        # moment: db_check is the only authority on whether a key is right, so
+        # a stale or hostile mirror costs one derivation and is skipped. That
+        # is the whole reason a second COPY is safe where a second source of
+        # truth would not be.
+        mirrored = self._read_mirror()
+        if mirrored is not None:
+            salt, params = mirrored
+            try:
+                key = derive_key(passphrase, salt, params)
+            except Exception:                            # noqa: BLE001
+                key = None
+            if key is not None and db_check(key):
+                try:
+                    if self.salt_path.exists():
+                        # The salt being replaced may still open snapshots on
+                        # this disk, so it leaves by the same door as every
+                        # other superseded identity file rather than being
+                        # handed back to the filesystem with its bytes intact.
+                        self.left_behind.extend(
+                            [] if secure_delete.discard(self.salt_path)
+                            else [self.salt_path.name])
+                    self.salt_path.write_bytes(salt)
+                    self.verifier_path.write_bytes(make_verifier(key))
+                    self.write_params(params)
+                    # The same sweep the staged-salt branch above does. Its
+                    # absence here was measured: recovering through the mirror
+                    # left the whole staged identity family on disk,
+                    # unshredded and unreported, which is the K-07 defect in a
+                    # new place.
+                    for leftover in (salt_new, ver_new, kdf_new, mirror_new):
+                        if leftover.exists() and not secure_delete.discard(
+                                leftover):
                             self.left_behind.append(leftover.name)
                 except OSError:
                     pass
@@ -399,15 +571,18 @@ class KeyVault:
         salt_new = self.salt_path.with_name("salt.bin.new")
         ver_new = self.verifier_path.with_name("verifier.bin.new")
         kdf_new = self.kdf_path.with_name("kdf.json.new")
+        mirror_new = self.mirror_path.with_name(
+            f"{self.mirror_path.name}.new")
         salt_new.write_bytes(salt)
         ver_new.write_bytes(make_verifier(key))
         self.write_params(params, kdf_new)
+        self._write_mirror(salt, params, mirror_new)
         try:
             rekey_fn(key)
             if not verify_fn(key):
                 raise RuntimeError("rekey_did_not_take")
         except Exception:
-            for leftover in (salt_new, ver_new, kdf_new):
+            for leftover in (salt_new, ver_new, kdf_new, mirror_new):
                 # The half-written NEW identity. Same material as the old one,
                 # so it leaves by the same door.
                 if not secure_delete.discard(leftover):
@@ -417,13 +592,34 @@ class KeyVault:
         # (rather than overwriting) the old identity is belt-and-suspenders
         # for the tiny crash window before the replaces land.
         ts = int(time.time())
-        for p in (self.salt_path, self.verifier_path):
+        for p in (self.salt_path, self.verifier_path, self.mirror_path):
             if p.exists():
                 try:
                     p.replace(p.with_name(f"{p.name}.bak-{ts}"))
                 except OSError:
                     pass
         salt_new.replace(self.salt_path)
+        # With the salt and before the verifier, so the mirror never describes
+        # a salt the live file has not reached yet.
+        try:
+            mirror_new.replace(self.mirror_path)
+        except OSError:
+            pass
+        # READ IT BACK, and this is not belt and braces. Both renames that
+        # touch this name - the shelve above and the replace here - go through
+        # the same file, so ONE open handle on vault.recovery fails both, and
+        # a handle is exactly what a backup agent, an indexer or an antivirus
+        # scanner holds. The rotation then completes loudly and correctly for
+        # salt.bin and verifier.bin while the mirror still describes the salt
+        # this rotation just revoked, which is a working recipe for the old
+        # key sitting beside snapshots still encrypted under it.
+        #
+        # Measured before this line existed: the route answered
+        # {"unrevoked": []} while recover_with_db opened the vault again with
+        # the OLD passphrase. left_behind is the list the route already puts
+        # on the wire, so the failure goes there rather than into a log.
+        if self._read_mirror() != (salt, _cost(params)):
+            self.left_behind.append(self.mirror_path.name)
         ver_new.replace(self.verifier_path)
         # AFTER the salt, never before. Between these two lines the vault
         # would describe the new salt with the old parameters; the reverse
@@ -436,7 +632,7 @@ class KeyVault:
         # that key, so a rotation would revoke nothing for anyone who knew the
         # previous passphrase. The caller re-keys the snapshots; this removes
         # the recipe.
-        for p in (self.salt_path, self.verifier_path):
+        for p in (self.salt_path, self.verifier_path, self.mirror_path):
             # unlink left the recipe recoverable, which is most of the way to
             # not having removed it: scrypt params plus a 16-byte salt is a
             # small, distinctive pattern for an undelete tool to find beside a

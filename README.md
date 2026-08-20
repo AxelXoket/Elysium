@@ -6,11 +6,11 @@
   <p align="center">
     <img src="https://img.shields.io/badge/python-3.13-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
     <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License">
-    <img src="https://img.shields.io/badge/version-1.1.0-brightgreen?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/version-1.1.5-brightgreen?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/privacy-ZDR_enforced-brightgreen?style=flat-square" alt="Privacy">
     <img src="https://img.shields.io/badge/at--rest-SQLCipher_vault-brightgreen?style=flat-square" alt="Encryption">
     <img src="https://img.shields.io/badge/streaming-SSE-brightgreen?style=flat-square" alt="Streaming">
-    <img src="https://img.shields.io/badge/frontend_tests-1431_passed-success?style=flat-square" alt="Frontend Tests">
+    <img src="https://img.shields.io/badge/frontend_tests-1655_passed-success?style=flat-square" alt="Frontend Tests">
     <img src="https://img.shields.io/badge/frontend-React_19-61DAFB?style=flat-square&logo=react&logoColor=white" alt="React">
   </p>
   <p align="center">
@@ -22,32 +22,31 @@
 
 Elysium is a privacy-first AI character chat client that routes **all model traffic through a local FastAPI backend**. The frontend never contacts OpenRouter directly. Your entire chat database - messages, characters, personas, attached images, your notebook and limits, and your API key - is **passphrase-encrypted at rest (SQLCipher)**, strict ZDR privacy routing is enforced on every request, and raw upstream error bodies are never exposed to the client. It runs as a dev server pair or as a **packaged Windows desktop app** (`Elysium.exe`).
 
-## What's new in v1.1.0
+## What's new in v1.1.5
 
-- **Local voice** - Elysium can speak replies out loud with a text-to-speech model that runs on **your own GPU**. Nothing is sent anywhere: no cloud voice API, no audio upload. Drop a model folder in, and its own settings appear in Settings › Voice automatically
-- **The app installs the voice engine** - one button. Elysium builds the engine's isolated Python environment itself, shows the real download size before you commit, and can be cancelled or removed at any time. You never open a terminal or edit a config file
-- **Says plainly when it cannot speak** - a voice model is always inspectable, and every reason it will not run right now (engine not set up, no NVIDIA GPU, card busy, files missing) is listed at once, in the same words the rest of the app uses
-- **Delivery direction** - with voice on, replies carry invisible performance cues (`[whisper]`, `[laughing]`) that shape HOW a line is spoken. They never appear in the chat, and they are stripped from what you read
-- **Voice clones from your own clips** - add a short reference recording. Engines that need the words spoken in it ask you to type them; no shipped engine has speech recognition, so Elysium does not offer to listen and guess
-- **Reading rules** - teach Elysium how to say a name it gets wrong (`Aoife` → `EE-fa`). Applies to spoken replies only; the chat text never changes
-- **Delivery dials** - reading speed, tag density, a standing tone, how narration is voiced, and the pause between sentences. Each one means the same thing whether a reply is arriving live or being replayed by the speak button
-- **Hear any reply** - a speak button on assistant messages. Two messages can never talk over each other, and locking the vault stops playback and deletes the generated audio
+- **A notebook, one per chat** - a place for what the story has established, sent with every message so the model stops forgetting. You write notes yourself, or let a small model read the last turns and suggest them. A note that supersedes another retires it rather than deleting it
+- **Limits that outrank the story** - a separate list of things you never want written, kept apart from the notebook because it has a different life: limits never expire, never merge, and are never trimmed to make room. If they cannot fit the model's context, the app refuses to send rather than quietly dropping them
+- **A hard daily ceiling on what the notebook may spend** - sixty calls a day, counted in the database so a restart does not reset it, and enforced before the request rather than warned about after it
+- **The conversation is closed to the accessibility tree, and this switch defaults ON** - an unprivileged program running as the same user could read the chat title, the character name and the message bodies out of WebView2's accessibility tree, verbatim. Hiding the window from screen capture is no defence against it: capture exclusion hides pixels, and this is text. The cost is real and is stated rather than buried, since while it is on a screen reader cannot read Elysium either
+- **Hide the window from screen capture** - Settings > Security. Screenshots, screen recording and screen sharing see a blank window. Off by default, stored in the vault, and deliberately not applied while the vault is locked
+- **"Start over instead"** - there is no passphrase recovery, so the only honest answer to a lost passphrase is starting over. A quiet link on the lock screen explains exactly what goes before it asks for the phrase
+- **Check the key you already stored** - Settings > Security can ask OpenRouter whether the stored key is still accepted, without you retyping it. "Rejected" and "could not reach OpenRouter" stay two different answers, because they are opposite instructions
+- **A cut-off reply now says so** - a reply that ended because the provider hit its token ceiling, or because the connection closed without saying how it ended, reads as trimmed short instead of as one that simply stopped talking
 
-- **Message editing** - Edit any of your messages inline; the reply after it is regenerated and the following turns are rewound (attachments preserved, edits are conflict-guarded)
-- **Image drag-and-drop** - Drag PNG/JPEG/WebP files onto the chat for a full-panel drop overlay; rejected files and the 4-image cap now surface a toast instead of vanishing silently
-- **Persona name in the prompt** - The persona's name now reaches the model as a `[User Persona: {name}]` block (previously only the description was sent)
-- **Smooth streaming** - A pacing layer types replies at a natural, model-tracking speed (grapheme-safe, respects reduced-motion) instead of dumping bursts
-- **Jump-to-latest** - Scroll up while a reply streams and you are never yanked back; a pulsing down-arrow returns you to the bottom on click
-- **Message contrast presets** - Soft / Default / High readability presets (all AA-verified), independent of the chat wallpaper, persisted across restarts
-- **Composer typography** - The composer font follows the message-size setting without overflowing, and generation settings survive a vault re-lock
-- **Image metadata stripped** - Every attached image is re-encoded on upload so EXIF/GPS and other embedded metadata are dropped before it is stored or sent - your camera and location never ride along with the picture
-- **Hardened by a full-system audit** - An 8-dimension adversarial code audit swept the whole codebase before release (no critical/high/medium issues); the low-severity findings it surfaced are all fixed and regression-tested
+Security work in the same release. **[SECURITY.md](SECURITY.md)** describes
+each of these in full, including what it does not close:
 
-## Since v1.1.0
+- **Your own machine is no longer a permitted destination for your API key** - `127.0.0.1`, `localhost` and `::1` were on the egress allowlist unconditionally, for two reasons that were measured and turned out to be wrong. They now take the same deliberate opt-in as any other address
+- **The WebView2 environment variables are replaced rather than added to** - all nine, whether the accessibility switch is on or off. They can hand the browser engine drawing your conversation a debugging port, a redirected profile folder, or a different browser binary, and any program running as you can set them with one `setx`
+- **Deleting one sixteen-byte file no longer destroys the vault** - `salt.bin` had no second copy anywhere: delete it, or flip a single byte in it, and the correct passphrase opened nothing ever again. `vault.recovery` beside it now carries the salt and its cost settings, and the app repairs itself from it. Your data folder is otherwise untouched: no permissions are changed, and it copies, moves and deletes like any other folder
+- **The vault reset route does not exist outside the installed app** - previously a development checkout could be wiped by one local request carrying the confirmation phrase, with no passphrase and nothing else in the way
+- **The recorded voice interpreter is checked before it is run** - `runtimes.json` names a program the app launches, and any process running as you can write that file. The path is now confined to the folder Elysium installs into and the binary is fingerprinted at install time. What that does not close is written down rather than glossed: an attacker who can write inside that folder has other ways in
+
+## Since v1.1.5
 
 Everything added and fixed since the last release is in
 **[CHANGELOG.md](CHANGELOG.md)**. It becomes the v1.2.0 notes when the version
-moves; keeping it out of here is what stops this file growing a new section per
+moves - v1.2.0 is the release RAG lands in; keeping it out of here is what stops this file growing a new section per
 release and never losing one.
 
 ## Features
@@ -75,7 +74,7 @@ release and never losing one.
 - **Privacy by Design** - the provider policy is hardcoded backend-side and cannot be overridden from anywhere; see [Privacy Contract](#privacy-contract) for the exact fields and the full list of what is and is not sent
 - **Sealed Secrets** - API key and proxy URL live inside the encrypted vault (unreadable while locked); a one-time migration moves them out of the OS keyring and deletes the old entries - never sent to the frontend. Settings > Security can test the stored key against OpenRouter without you retyping it - "rejected" and "could not reach OpenRouter" are reported as two different answers, since only one of them means the key is bad
 - **Strict CORS + Host allowlist** - Backend accepts browser requests from `http://127.0.0.1:5173` only and rejects foreign `Host` headers (DNS-rebinding shield)
-- **Locks itself when idle** - after 5 minutes of doing nothing the vault closes: the key leaves memory, the voice model is unloaded and the GPU memory comes back. Change the delay or turn it off in Settings > Security. A reply that is still streaming counts as activity for as long as it runs - a background note extraction deliberately does NOT, and is cancelled when the lock fires
+- **Locks itself when idle** - after 5 minutes of doing nothing the vault closes: the key leaves memory, the voice model is unloaded and the GPU memory comes back. Change the delay or turn it off in Settings > Security. A reply that is still streaming counts as activity for as long as it runs - a background note extraction deliberately does NOT, and the lock cancels its planning loop. It does not cancel a reply that has already arrived: the lock waits up to five seconds for that one to be written
 - **Takes its own folder back** - at launch Elysium checks whether other accounts on this PC can reach its data folder and removes that access, naming what it removed in the log. Your database is encrypted, but `salt.bin` and `verifier.bin` beside it are what an offline passphrase attack needs. This is the one change that persists after the app closes; [SECURITY.md](SECURITY.md) says how to undo it
 - **Desktop App** - PyInstaller build (one-folder for development, a single ~33 MB exe for release) with a native window (pywebview + WebView2); the exe serves the built frontend same-origin on a random loopback port and locks the vault when the window closes
 
@@ -152,9 +151,9 @@ Additional guarantees:
 - A stored image is served only if its recorded type is one the app itself produced (PNG/JPEG/WebP); anything else is refused rather than handed to the browser
 - The key is derived with scrypt at OWASP's current floor (N=2^17, r=8, p=1). The parameters are recorded per vault, so an older vault keeps opening under the ones it was made with and is re-derived to the current ones the next time it is unlocked - the one moment the passphrase exists in memory and a re-key is possible at all
 - A passphrase must be at least 12 characters and must not be a repeated fragment, a keyboard walk, or one of the phrases any guessing attempt starts with. There is no rate limit behind this vault - somebody with the folder guesses offline - so length and variety are what matter, and composition rules (one capital, one digit, one symbol) are deliberately NOT imposed
-- Locking overwrites the key in memory rather than dropping the reference. Optionally the vault locks itself after a chosen idle period; a chat request still in flight counts as activity, so a streamed reply is never cut short, but a background note extraction does not count as activity and is cancelled outright when the lock fires
+- Locking overwrites the key in memory rather than dropping the reference. Optionally the vault locks itself after a chosen idle period; a chat request still in flight counts as activity, so a streamed reply is never cut short, but a background note extraction does not count as activity, and the lock cancels its planning loop. It does NOT cancel a reply that has already arrived: the lock waits up to five seconds for that one to be written, so a note can land in the seconds after you press Lock
 - The desktop window is given a secret at launch and every API request carries it. Loopback is not a permission boundary: without this, any program running as your user could read the whole conversation over HTTP while Elysium is open, which is exactly when the vault is unlocked. The secret travels in the URL fragment (never sent to a server, never logged), is read once and stripped from the address, and is kept in memory rather than in browser storage. It is also withheld from every subprocess Elysium starts, since the voice engine and the installer both run code this project did not write. Two routes a browser element must load directly - a stored picture and a spoken reply - accept a browser's own same-origin signal instead, which still refuses a program with `curl`
-- Every outbound request passes one check that refuses any host but the configured provider, before a connection is opened. With a proxy configured it reads the destination rather than the first hop, so the proxy cannot be used to reach elsewhere
+- Every outbound request passes one check that refuses any host but the shipped provider, and refuses plain `http` to it as well, before a connection is opened. The list is pinned to the shipped address rather than the configured one, and `127.0.0.1` is not on it: your own machine takes the same deliberate opt-in as any other address. With a proxy configured it reads the destination rather than the first hop, so the proxy cannot be used to reach elsewhere
 - The app window refuses to navigate off its own origin. It has no address bar, so a page loaded there would wear Elysium's frame with nothing visible to contradict it
 
 **At rest:** the database file is genuine SQLCipher ciphertext - without the
@@ -164,7 +163,10 @@ model generates, through the same validate-and-re-encode pipeline - and the API
 key + proxy URL are sealed in it too; served images carry `Cache-Control: no-store` so the
 browser keeps no plaintext copies. The scrypt salt and verifier (`salt.bin`,
 `verifier.bin`) sit beside the DB by design (they are not secrets, but never
-publish them). The one-time migration from an older plaintext
+publish them). `vault.recovery` is a second copy of the salt and its cost
+settings, and holds no verifier: deleting or corrupting `salt.bin` alone used
+to destroy the vault permanently even with the right passphrase, and this is
+what survives that. The one-time migration from an older plaintext
 database leaves a plaintext backup on purpose - Settings > Security lists it
 and deletes it (overwriting first) once you are satisfied the move worked.
 Three things are deliberately outside the vault: spoken replies, written as
@@ -209,7 +211,7 @@ Everything below is for running from source.
 ```powershell
 cd backend
 py -3.13 -m venv .venv
-.venv\Scripts\activate
+.venv\Scripts\Activate.ps1
 pip install --require-hashes -r requirements.lock.txt
 uvicorn main:app --host 127.0.0.1 --port 8787
 ```
@@ -247,7 +249,7 @@ cd frontend
 npm run build                      # builds the SPA into frontend/dist
 
 cd ..\backend
-.venv\Scripts\activate
+.venv\Scripts\Activate.ps1
 pyinstaller elysium.spec           # one FOLDER: backend + SPA + SQLCipher
 dist\Elysium\Elysium.exe           # run it
 ```
@@ -270,11 +272,34 @@ them from drifting apart.
   with the `ELYSIUM_DATA_DIR` environment variable); the dev servers keep
   using `backend/`
 - Closing the window ends the process and locks the vault
-- `ELYSIUM_SELFTEST=1 Elysium.exe` runs a headless boot check (exit 0 = OK)
+- `$env:ELYSIUM_SELFTEST = "1"; .\Elysium.exe` runs a headless boot check (exit 0 = OK)
 - Two environment variables tune the notebook's background reader, and one of
   them raises what it may spend: `ELYSIUM_NOTEBOOK_EVERY_TURNS` (how many new
   messages before it runs, default 20) and `ELYSIUM_NOTEBOOK_DAILY_CALLS` (the
   daily ceiling, default 60)
+- On launch the app **clears the `WEBVIEW2_*` environment variables** rather
+  than adding to them. Anything already there is discarded and logged by name,
+  never by value: those variables can hand the browser engine a debugging
+  port, a redirected profile folder, or a different browser binary, and any
+  program running as you can set them with one `setx`
+- `ELYSIUM_ALLOW_BASE_URL_OVERRIDE=1` is needed to point the app anywhere
+  other than the shipped provider, **including at your own machine**
+- `ELYSIUM_SCREEN_PRIVACY=1` arms screen-capture hiding at launch. The
+  ordinary way to turn it on is the Settings > Security checkbox, which is
+  stored in the vault; this variable is the way in for somebody who wants it
+  armed before the vault is unlocked
+- `ELYSIUM_PER_MONITOR_DPI=0` turns off per-monitor DPI awareness, which is
+  the way out if the window renders wrongly on a mixed-DPI setup
+- `ELYSIUM_SKIP_LEGACY_MIGRATION=1` skips the one-time migration of secrets
+  out of the Windows Credential Manager
+- **If you deploy WebView2 in fixed-version mode, Elysium will not see it.**
+  On launch the app clears every `WEBVIEW2_*` variable, including
+  `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER`, which is Microsoft's supported way to
+  point an app at a fixed-version runtime folder. That is deliberate, because
+  the same variable is how a program running as you would hand Elysium a
+  browser binary of its choosing, and the app cannot tell the two apart. The
+  cost is real and lands on locked-down or offline machines: install the
+  Evergreen runtime, or run Elysium from source where you control the launch
 - Startup problems are logged to `%LOCALAPPDATA%\Elysium\elysium.log`
 
 ## Stack
@@ -295,7 +320,9 @@ them from drifting apart.
 backend/          FastAPI app: routers/, tts/, vault + hardening modules, tests/
 frontend/         React SPA: src/components, src/lib, src/test
 SECURITY.md       what is protected, what is not, and what persists
-docs/             frontend_contract.md, design notes
+docs/             frontend_contract.md and AUDIT_2026_07_CLOSURE.md only;
+                  the rest of this folder is working notes and is gitignored,
+                  so a clone does not have them and nothing here links to them
 Elysium.exe       packaged desktop build (see Desktop build below)
 ```
 
@@ -328,6 +355,7 @@ which is the argument for one list rather than two.
 
 ```powershell
 cd backend
+.venv\Scripts\python -m pip install -r requirements-dev.txt
 .venv\Scripts\python -m pytest tests -q   # TestClient regression suite
 ```
 
@@ -340,15 +368,19 @@ network egress:
 
 ```powershell
 .venv\Scripts\python tests\mock_provider.py            # terminal 1 (port 9797)
-set OPENROUTER_BASE_URL=http://127.0.0.1:9797/api/v1   # terminal 2
+$env:ELYSIUM_ALLOW_BASE_URL_OVERRIDE = "1"             # terminal 2
+$env:OPENROUTER_BASE_URL = "http://127.0.0.1:9797/api/v1"
 uvicorn main:app --host 127.0.0.1 --port 8787
 ```
 
-The legacy `verify_*.py` scripts were deleted on 17 August 2026. Twelve of them
-had stopped being checks: two could not be imported at all, one had been
-declared dead in writing months earlier, and seven asserted things about the
-app that are no longer true. Everything they still covered is in the test suite,
-and `docs/VERIFY_SCRIPTS_RETIRED.md` says where each one went. Three tools stay,
+Twelve legacy `verify_*.py` scripts were deleted on 17 August 2026, because
+they had stopped being checks. Two could not be imported at all after the
+migration that moved secrets out of their reach, one had been declared dead in
+writing months earlier, and across the rest seven separate assertions had gone
+stale in the other direction: they claimed the app served eighteen routes, that
+a message carried five keys, that the character and chat routes were GET-only.
+Those would have reported failures on a correct app. Everything the twelve
+still covered is in the test suite. Three tools stay,
 because each does something no test can: `verify_hygiene.py` (the source gate
 the commit hook runs), `verify_image_output.py` (a live request with your own
 key) and `verify_tts_latency.py` (measures real hardware).
@@ -362,11 +394,11 @@ npm test -- src/test/static-safety.test.ts   # static privacy checks
 npm run typecheck                 # tsc strict - app + test configs
 ```
 
-## Known Limitations (v1.1.0)
+## Known Limitations (v1.1.5)
 
 - **Plaintext migration backup** - upgrading an older unencrypted database keeps a plaintext `app.db.plain.bak-<timestamp>` copy next to the vault, deliberately: if the move had verified wrong it is the only copy left. Settings > Security shows it on every visit and removes it on request
 - **A second copy after an interrupted move** - if the one-time migration is cut off midway it can leave a complete ENCRYPTED copy beside the vault. Settings > Security shows it, and offers to delete it only when it opens with your current passphrase; a copy it cannot open may belong to an older one, so the app refuses to remove it
-- **The vault locks itself after 5 minutes idle** - Settings > Security changes the delay or turns it off. Idle means nothing in flight and nothing finished recently, so a chat reply that is still streaming holds it open however long it takes; a background note extraction does not, and is cancelled when the lock fires. Locking also unloads the voice model and gives the GPU memory back
+- **The vault locks itself after 5 minutes idle** - Settings > Security changes the delay or turns it off. Idle means nothing in flight and nothing finished recently, so a chat reply that is still streaming holds it open however long it takes; a background note extraction does not, and the lock cancels its planning loop but waits up to five seconds for a reply that has already arrived. Locking also unloads the voice model and gives the GPU memory back
 - **UI preferences are not encrypted** - type size, bubble solidity, the wallpaper image and how it is framed, last-open ids and the sampling parameters persist in the desktop app's local WebView profile (no chat content). The model you last picked used to sit there and no longer does: a model id like `author/slug` is a name a person reads on screen, so it moved into the vault. An install that already has the old plaintext copy has it deleted from that profile on the next launch, rather than merely being stopped from writing a newer one
 - **No local/offline models** - OpenRouter only
 - **No PDF/file upload** - images are supported (vision models); documents are not
@@ -374,7 +406,7 @@ npm run typecheck                 # tsc strict - app + test configs
 - **A model that returns a link cannot be used for pictures** - the reply is kept, the picture is not, and a note says so. Fetching it would mean a second place your data goes
 - **Pictures in replies are shown, not remembered by the model** - the model does not see its own drawing again on the next turn. That is deliberate; making it possible is a separate feature with a real token cost
 - **An interrupted uploads migration can leave a stale snapshot of the whole vault** - `app.db.premigrate.bak` is a complete encrypted copy taken before the migration touches anything, kept whenever a pass does not finish cleanly. It opens with your current passphrase, so it is not exposed to anyone else - the problem is staleness: a message you delete afterward keeps living inside this frozen copy. Settings > Security now shows it and offers to delete it, the same as the plaintext migration backup, and a passphrase change re-keys it rather than leaving it under the old one. A copy that will not open with this vault's key is moved to `app.db.premigrate.bak.unreadable-<timestamp>` instead of deleted, because it may be the only copy of an older vault - that one still has no screen and no button, and only a vault reset or deleting the data folder removes it - a later clean migration pass discards just the readable snapshot, never this one
-- **Resetting the vault destroys everything it can and cannot be undone** - the lock screen's "Forgot your passphrase?" flow (`POST /vault/reset`) is the only answer to a lost passphrase, because there is still no way to recover one. Confirmed by typing an exact phrase, it deletes the database with its journal siblings (`-wal`, `-shm`, `-journal`) and every backup family beside it (plaintext copies, the encrypted copies an interrupted migration orphaned and their own journal siblings, rotation snapshots, and the premigrate family - the snapshot itself, the half-written `.partial` a crash can leave mid-write, and the moved-aside unreadable copy), the empty database stub left by a recovery, the uploads folder, saved voice references and cached speech, the desktop app's browser profile, any leftover OS-keyring entries, and the app's own trail beside the vault: `elysium.log`, its rotated `elysium.log.1` and the `port` file. Then it reopens on the first-run setup screen. The log is in that list because it carries chat and note ids, so leaving it would keep a plaintext record of which chats had notes after the vault holding them was destroyed. It does not touch the downloaded voice engine, its runtimes or its install caches, which are software rather than your data. One family is conditional and it is worth knowing which: the shelved identity files (`salt.bin`, `verifier.bin`, `kdf.json`, every `.bak-*` of each, and any leftover `.new`) go only once `app.db` is confirmed gone, and are held back untouched if it survives - destroying the recipe for a key while the file it opens is still on disk would leave a vault nobody could open again, not even with the right passphrase, so locked and intact and retryable is the better failure. Everything else still runs in that case, because none of it is the recipe for anything. It refuses outright while the vault is unlocked, on purpose: a confirmation phrase stops an accident, not someone reaching over your shoulder while a conversation is open, so this door exists only on the locked screen. Reaching it needs no proof of identity beyond what already guards the rest of the locked app - the packaged build's own launch token - so anyone who can present that token can wipe the vault without ever knowing the passphrase; that is the same "any code running as this user" boundary the rest of the vault already accepts, not a new one. It is also not a forensic eraser: every file goes through the same overwrite-then-delete this app uses everywhere else, which defeats an undelete tool, but it cannot reach a copy the OS page file made of something once decrypted, a filesystem shadow copy taken earlier, or the original blocks an SSD's wear-levelling kept readable to firmware-level recovery after the logical overwrite. Full-disk encryption is the actual answer to that class, and it is yours to turn on, not this app's to fake. A file held open elsewhere can survive: the route returns `{"ok": false, "left": [...]}` (still HTTP 200) rather than pretending the wipe finished, and the lock screen names exactly what is left when that happens
+- **Resetting the vault destroys everything it can and cannot be undone** - the lock screen's "Forgot your passphrase?" flow (`POST /vault/reset`) is the only answer to a lost passphrase, because there is still no way to recover one. Confirmed by typing an exact phrase, it deletes the database with its journal siblings (`-wal`, `-shm`, `-journal`) and every backup family beside it (plaintext copies, the encrypted copies an interrupted migration orphaned and their own journal siblings, rotation snapshots, and the premigrate family - the snapshot itself, the half-written `.partial` a crash can leave mid-write, and the moved-aside unreadable copy), the empty database stub left by a recovery, the uploads folder, saved voice references and cached speech, the desktop app's browser profile, any leftover OS-keyring entries, and the app's own trail beside the vault: `elysium.log`, its rotated `elysium.log.1` and the `port` file. Then it reopens on the first-run setup screen. The log is in that list because it carries chat and note ids, so leaving it would keep a plaintext record of which chats had notes after the vault holding them was destroyed. It does not touch the downloaded voice engine, its runtimes or its install caches, which are software rather than your data. One family is conditional and it is worth knowing which: the shelved identity files (`salt.bin`, `verifier.bin`, `kdf.json`, `vault.recovery`, every `.bak-*` of each, and any leftover `.new`) go only once `app.db` is confirmed gone, and are held back untouched if it survives - destroying the recipe for a key while the file it opens is still on disk would leave a vault nobody could open again, not even with the right passphrase, so locked and intact and retryable is the better failure. Everything else still runs in that case, because none of it is the recipe for anything. It refuses outright while the vault is unlocked, on purpose: a confirmation phrase stops an accident, not someone reaching over your shoulder while a conversation is open, so this door exists only on the locked screen. The route does not exist outside the installed app: it answers 404 unless this is the packaged build AND the launch token gate is armed, so a development checkout has no reset door at all. Inside the packaged app it needs no further proof of identity beyond that launch token, so anyone who can present it can wipe the vault without ever knowing the passphrase; that is the same "any code running as this user" boundary the rest of the vault already accepts, not a new one. It is also not a forensic eraser: every file goes through the same overwrite-then-delete this app uses everywhere else, which defeats an undelete tool, but it cannot reach a copy the OS page file made of something once decrypted, a filesystem shadow copy taken earlier, or the original blocks an SSD's wear-levelling kept readable to firmware-level recovery after the logical overwrite. Full-disk encryption is the actual answer to that class, and it is yours to turn on, not this app's to fake. A file held open elsewhere can survive: the route returns `{"ok": false, "left": [...]}` (still HTTP 200) rather than pretending the wipe finished, and the lock screen names exactly what is left when that happens
 - **The notebook's daily spend record is permanent** - the per-day ledger of calls, tokens and cost is what makes the sixty-a-day ceiling survive a restart, so nothing prunes it and deleting every chat you have does not touch it
 - **The vault does not shrink** - deleting an image-heavy chat frees the space inside the database file but does not give it back to the disk
 - **Privacy routing cannot be relaxed** - strict ZDR is always enforced; there is no compatibility mode and no toggle in the UI

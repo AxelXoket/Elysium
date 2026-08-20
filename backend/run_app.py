@@ -775,6 +775,24 @@ def main() -> None:
     # while at `shown` it may not be yet. An unanswerable question is logged as
     # unanswered, never as a failure.
     window.events.loaded += win_hardening.report_accessibility_privacy
+    # AND HERE, not in harden(), which is the whole story of this line.
+    #
+    # narrow_own_process takes PROCESS_VM_READ away from every program running
+    # as this user, so nothing can read the vault key out of our memory by
+    # pid. Called from harden() it breaks the app outright: the .NET CLR that
+    # pywebview's WinForms backend needs cannot initialise under any mask that
+    # is not itself a full bypass, measured on 20 August 2026. Called here,
+    # after a page has loaded and the browser process is up, it was measured
+    # working three times over with a real WebView2 window: renderer, second
+    # navigation, WebGL and all.
+    #
+    # Late is early ENOUGH, and that is the point rather than a consolation.
+    # The vault key does not exist until somebody types a passphrase, which is
+    # necessarily after a page has loaded, so the thing this protects is never
+    # exposed. The launch token IS issued earlier and is readable until this
+    # fires; it is also handed to the browser in a URL fragment, so the
+    # renderer holds it too and that process is not ours to narrow.
+    window.events.loaded += win_hardening.narrow_own_process
     # Persistent WebView2 profile: pywebview's default private mode wipes
     # localStorage/IndexedDB on every close, which would reset font size,
     # narration style, the wallpaper, and the last-open chat each launch.

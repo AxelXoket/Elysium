@@ -69,9 +69,13 @@ def _swept() -> list[tuple[str, str]]:
 
 
 #: Floors, not targets (same reasoning as test_tree_hygiene._SWEEP_FLOOR):
-#: measured at 175 files / 61688 lines on 2026-08-20. Well under that, so a
-#: path that resolved wrong or a sweep that quietly matched nothing fails
-#: loudly instead of passing clean.
+#: measured at 73 files / 34743 lines on 2026-08-20, AFTER _SKIP_PREFIXES
+#: started excluding voice/build/dist. The figure recorded here first was
+#: "175 files / 61688 lines", which was the pre-exclusion count - it was taken
+#: with the very bug the exclusion list was added to fix, so it described a
+#: sweep that was mostly a gitignored torch inductor cache. Well under the
+#: real number, so a path that resolved wrong or a sweep that quietly matched
+#: nothing fails loudly instead of passing clean.
 #: Measured against TRACKED source only, on a clean checkout, with headroom
 #: for the tree to shrink a little before somebody has to think about it.
 #: They exist so an empty read cannot pass for a clean tree - never raise
@@ -121,6 +125,20 @@ KNOWN_CONTENT_DEBT: dict[str, int] = {
 #: number cannot grow without somebody noticing. One was removed on the way
 #: past: tts/stream_speech.py's crash handler, because the code inside its try
 #: prepares reply text and an exception raised in there arrives holding it.
+#:
+#: run_app.py (2): found on 2026-08-20 when the scanner learned to see
+#: `logging.getLogger(__name__).warning(...)`. It had only ever recognised a
+#: bare `logger`/`log` receiver, so eight call sites in this file and one in
+#: config.py were invisible to it - and run_app.py sits in _MUST_STAY_CLEAN
+#: above, reporting clean for the reason that the gate could barely see it.
+#: The two that carry exc_info are :216 (the CreateMutexW single-instance
+#: guard, whose try holds ctypes calls and a mutex name derived from the data
+#: directory) and :579 (voice teardown, whose try imports tts.worker_client
+#: and calls hard_close). Neither can reach a message, a note, a card or
+#: anything a person typed, which is the criterion this ledger states, so they
+#: are recorded rather than traded away. What they CAN carry is an OSError's
+#: filesystem path, and therefore the Windows account name - the same class as
+#: the rest of this ledger, and the same open policy question.
 KNOWN_TRACEBACK_DEBT: dict[str, int] = {
     "auto_lock.py": 1,
     "database.py": 2,
@@ -133,6 +151,7 @@ KNOWN_TRACEBACK_DEBT: dict[str, int] = {
     "routers/tts_runtime.py": 2,
     "routers/uploads.py": 1,
     "routers/vault.py": 11,
+    "run_app.py": 2,
     "tts/host.py": 3,
     "tts/provision.py": 1,
     "tts/stream_hook.py": 5,
@@ -209,6 +228,65 @@ class TestTheScannerCanActuallyFire:
         hits = log_leak_scan.scan_source(source, path="<control>")
         assert len(hits) == 1
         assert hits[0].lineno == 7
+
+    def test_an_inline_getlogger_receiver_is_caught(self) -> None:
+        # The blind spot found on 2026-08-20. `_is_logger_call` required the
+        # receiver of `.warning(...)` to be an ast.Name, so this shape - the
+        # one run_app.py uses nine times - was skipped in silence. Note there
+        # is no module-level `logger` here at all: if the scanner still only
+        # looked for that name it would find nothing to look at.
+        source = (
+            "import logging\n"
+            "def f():\n"
+            "    try:\n"
+            "        risky()\n"
+            "    except ValueError as exc:\n"
+            "        logging.getLogger(__name__).warning('bad: %s', exc)\n"
+        )
+        hits = log_leak_scan.scan_source(source, path="<control>")
+        assert len(hits) == 1
+        assert hits[0].lineno == 6
+
+    def test_an_inline_getlogger_exc_info_is_caught(self) -> None:
+        # Same receiver, the traceback route rather than the content route.
+        # This is the shape of the two real sites now in the ledger.
+        source = (
+            "import logging\n"
+            "def f():\n"
+            "    try:\n"
+            "        risky()\n"
+            "    except Exception:\n"
+            "        logging.getLogger(__name__).warning('failed', exc_info=True)\n"
+        )
+        hits = log_leak_scan.scan_source(source, path="<control>")
+        assert [h.kind for h in hits] == [KIND_TRACEBACK]
+
+    def test_the_root_logging_shortcut_is_caught(self) -> None:
+        # `logging.warning(...)` reaches the root logger, which in a frozen
+        # build is the one with the elysium.log handler on it.
+        source = (
+            "import logging\n"
+            "def f():\n"
+            "    try:\n"
+            "        risky()\n"
+            "    except ValueError as exc:\n"
+            "        logging.warning('bad: %s', exc)\n"
+        )
+        hits = log_leak_scan.scan_source(source, path="<control>")
+        assert len(hits) == 1
+
+    def test_an_unrelated_call_chain_is_not_a_logger(self) -> None:
+        # The discriminating control for the three above. Widening the
+        # receiver to "any call" would have made every `x().warning(exc)` a
+        # hit; it is matched on the FACTORY NAME, so this stays silent.
+        source = (
+            "def f():\n"
+            "    try:\n"
+            "        risky()\n"
+            "    except ValueError as exc:\n"
+            "        get_report().warning('bad: %s', exc)\n"
+        )
+        assert log_leak_scan.scan_source(source, path="<control>") == []
 
     def test_a_raw_exception_behind_or_is_still_caught(self) -> None:
         # The exact shape tts/stream_speech.py used to use: `exc.__cause__ or

@@ -9,8 +9,14 @@ The runtime registry is deliberately APP-OWNED: runtimes.json is written by the
 app, never hand-edited by the user, so these tests treat it as an internal
 artefact with a state machine (missing -> installing -> ready | broken).
 """
+import hashlib
 import json
 import os
+import subprocess
+import sys
+from pathlib import Path
+
+import hashlib
 
 import pytest
 
@@ -22,6 +28,7 @@ from tts.errors import (
     TTS_INSUFFICIENT_VRAM,
     TTS_RUNTIME_BROKEN,
     TTS_RUNTIME_MISSING,
+    TTS_RUNTIME_UNTRUSTED,
 )
 from tts.preflight import check_fit
 
@@ -116,6 +123,11 @@ class TestRuntimeRegistry:
         p = tmp_path / "voice" / "runtimes.json"
         p.parent.mkdir(parents=True, exist_ok=True)
         monkeypatch.setattr(config, "TTS_RUNTIMES_PATH", str(p), raising=False)
+        # The confinement check reads config.TTS_ENVS_DIR at call time, so a
+        # test that plants an interpreter has to say where this run's install
+        # folder is, exactly as a real install does.
+        monkeypatch.setattr(config, "TTS_ENVS_DIR",
+                            str(tmp_path / "envs"), raising=False)
         return p
 
     def test_absent_registry_reports_missing_not_error(self, monkeypatch, tmp_path):
@@ -125,7 +137,7 @@ class TestRuntimeRegistry:
 
     def test_register_then_read_back(self, monkeypatch, tmp_path):
         self._point_at(monkeypatch, tmp_path)
-        exe = tmp_path / "env" / "python.exe"
+        exe = tmp_path / "envs" / "fish_s2" / "Scripts" / "python.exe"
         exe.parent.mkdir(parents=True)
         exe.write_bytes(b"")
         runtimes.register("fish_s2", str(exe))
@@ -137,7 +149,7 @@ class TestRuntimeRegistry:
     ):
         """The user cleaned their disk. Say so; do not try to spawn a ghost."""
         self._point_at(monkeypatch, tmp_path)
-        exe = tmp_path / "env" / "python.exe"
+        exe = tmp_path / "envs" / "fish_s2" / "Scripts" / "python.exe"
         exe.parent.mkdir(parents=True)
         exe.write_bytes(b"")
         runtimes.register("fish_s2", str(exe))
@@ -154,8 +166,15 @@ class TestRuntimeRegistry:
 
     def test_unregister_removes_only_that_engine(self, monkeypatch, tmp_path):
         self._point_at(monkeypatch, tmp_path)
-        a = tmp_path / "a.exe"; a.write_bytes(b"")
-        b = tmp_path / "b.exe"; b.write_bytes(b"")
+        # Named and placed the way a real install is. The registry now
+        # refuses an interpreter that is not under the folder this app
+        # installs into and not called what env_python composes, so a loose
+        # a.exe beside the registry is exactly what it is written to reject.
+        a = tmp_path / "envs" / "fish_s2" / "Scripts" / "python.exe"
+        b = tmp_path / "envs" / "xtts_v2" / "Scripts" / "python.exe"
+        for exe in (a, b):
+            exe.parent.mkdir(parents=True, exist_ok=True)
+            exe.write_bytes(b"")
         runtimes.register("fish_s2", str(a))
         runtimes.register("xtts_v2", str(b))
         runtimes.unregister("fish_s2")
@@ -228,3 +247,240 @@ class TestRuntimeRegistry:
         p.write_text(json.dumps({"engines": {}, "extra_roots": [str(tmp_path / "more")]}),
                      encoding="utf-8")
         assert runtimes.extra_roots() == [str(tmp_path / "more")]
+
+
+class TestTheRecordedInterpreterIsNotRunOnTrust:
+    """runtimes.json names a program and the app runs it.
+
+    Any process running as this user can write that file with one open() and
+    no elevation, so until 20 August 2026 the file was a plain code execution
+    primitive: the only check was is_file(). These tests are the check.
+
+    What is NOT claimed here, and the honest limit belongs beside the tests
+    that could be read as claiming it: an attacker who can write inside the
+    install folder can replace the interpreter AND rewrite the digest recorded
+    beside it, and wins. Closing that needs a key they cannot read, and the
+    only such key is the vault key, which is not available when this file is
+    written because an engine install is deliberately allowed to outlive the
+    vault lock. This removes the single-write attack, not the class.
+    """
+
+    def _registry(self, monkeypatch, tmp_path):
+        reg = tmp_path / "voice" / "runtimes.json"
+        reg.parent.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(config, "TTS_RUNTIMES_PATH", str(reg),
+                            raising=False)
+        monkeypatch.setattr(config, "TTS_ENVS_DIR", str(tmp_path / "envs"),
+                            raising=False)
+        return reg
+
+    def _installed(self, tmp_path, engine="fish_s2", body=b"an interpreter"):
+        exe = tmp_path / "envs" / engine / "Scripts" / "python.exe"
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        exe.write_bytes(body)
+        return exe
+
+    def test_ground_a_normally_installed_interpreter_is_ready(
+        self, monkeypatch, tmp_path
+    ):
+        # GROUND. Without this every refusal below would also pass for a check
+        # that refused everything, which would ship an app whose voice never
+        # starts.
+        self._registry(monkeypatch, tmp_path)
+        exe = self._installed(tmp_path)
+        runtimes.register("fish_s2", str(exe))
+        assert runtimes.status("fish_s2").state == "ready"
+
+    def test_an_interpreter_outside_the_install_folder_is_refused(
+        self, monkeypatch, tmp_path
+    ):
+        # The attack in one line: rewrite runtimes.json to name anything on
+        # disk. This is what used to work.
+        self._registry(monkeypatch, tmp_path)
+        planted = tmp_path / "elsewhere" / "Scripts" / "python.exe"
+        planted.parent.mkdir(parents=True)
+        planted.write_bytes(b"the attacker's program")
+        runtimes.register("fish_s2", str(planted))
+        st = runtimes.status("fish_s2")
+        # Its own state, not "broken". readiness.py maps a state to a
+        # sentence, and "gone" is a different sentence from "not the one we
+        # installed".
+        assert st.state == "untrusted"
+        assert st.error_code == TTS_RUNTIME_UNTRUSTED
+
+    def test_a_different_filename_under_the_folder_is_refused(
+        self, monkeypatch, tmp_path
+    ):
+        # Being under the anchor is not enough. The install folder is one a
+        # same-user attacker can also write to, so a second executable dropped
+        # beside the real interpreter must not become a candidate.
+        self._registry(monkeypatch, tmp_path)
+        beside = tmp_path / "envs" / "fish_s2" / "Scripts" / "payload.exe"
+        beside.parent.mkdir(parents=True, exist_ok=True)
+        beside.write_bytes(b"not an interpreter")
+        runtimes.register("fish_s2", str(beside))
+        assert runtimes.status("fish_s2").error_code == TTS_RUNTIME_UNTRUSTED
+
+    def test_a_relative_path_is_refused(self, monkeypatch, tmp_path):
+        # A relative path resolves against whatever the working directory
+        # happens to be at launch, which is not a decision this app gets to
+        # make and not one an allowlist can reason about.
+        self._registry(monkeypatch, tmp_path)
+        self._installed(tmp_path)
+        runtimes.register("fish_s2", "envs/fish_s2/Scripts/python.exe")
+        assert runtimes.status("fish_s2").error_code == TTS_RUNTIME_UNTRUSTED
+
+    def test_a_traversal_that_climbs_out_is_refused(
+        self, monkeypatch, tmp_path
+    ):
+        # The string starts under the anchor and does not stay there. The
+        # check compares realpaths for exactly this reason; comparing the
+        # written string would have admitted it.
+        self._registry(monkeypatch, tmp_path)
+        outside = tmp_path / "outside" / "Scripts"
+        outside.mkdir(parents=True)
+        (outside / "python.exe").write_bytes(b"the attacker's program")
+        climbed = (tmp_path / "envs" / "fish_s2" / ".." / ".."
+                   / "outside" / "Scripts" / "python.exe")
+        (tmp_path / "envs" / "fish_s2").mkdir(parents=True, exist_ok=True)
+        runtimes.register("fish_s2", str(climbed))
+        assert runtimes.status("fish_s2").error_code == TTS_RUNTIME_UNTRUSTED
+
+    @pytest.mark.skipif(os.name != "nt", reason="junctions are a Win32 thing")
+    def test_a_junction_pointing_out_of_the_install_folder_is_refused(
+        self, monkeypatch, tmp_path
+    ):
+        # The mutation this test exists for: swapping realpath for abspath.
+        # A ".." traversal does not catch it, because abspath normalises ".."
+        # too and both answers land outside the anchor. A junction does: the
+        # string is genuinely under the install folder and the file is
+        # genuinely somewhere else, so only a resolver that follows reparse
+        # points can tell. os.path.islink returns False for a junction, which
+        # is why the check does not use it.
+        self._registry(monkeypatch, tmp_path)
+        outside = tmp_path / "outside" / "Scripts"
+        outside.mkdir(parents=True)
+        (outside / "python.exe").write_bytes(b"the attacker's program")
+        envs = tmp_path / "envs" / "fish_s2"
+        envs.mkdir(parents=True)
+        made = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(envs / "Scripts"),
+             str(outside)],
+            capture_output=True, text=True)
+        if made.returncode != 0:
+            pytest.skip("this filesystem would not make a junction")
+        planted = envs / "Scripts" / "python.exe"
+        assert planted.is_file()            # ground: the junction works
+        assert str(planted).startswith(str(tmp_path / "envs"))   # and it lies
+        runtimes.register("fish_s2", str(planted))
+        assert runtimes.status("fish_s2").error_code == TTS_RUNTIME_UNTRUSTED
+
+    def test_the_running_interpreter_is_admitted_only_outside_a_frozen_build(
+        self, monkeypatch, tmp_path
+    ):
+        # The allowance exists so a development tree and this suite can
+        # register the interpreter they are running under, which is nowhere
+        # near the install folder. It must not survive into the shipped app:
+        # there sys.executable is Elysium.exe, and admitting it would mean the
+        # confinement check has an exception nobody asked for.
+        self._registry(monkeypatch, tmp_path)
+        runtimes.register("fish_s2", sys.executable)
+        assert runtimes.status("fish_s2").state == "ready"      # ground: dev
+
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        assert runtimes.status("fish_s2").error_code == TTS_RUNTIME_UNTRUSTED
+
+    def test_an_interpreter_swapped_after_install_is_refused(
+        self, monkeypatch, tmp_path
+    ):
+        # The digest is taken from the binary at install time. Overwriting it
+        # afterwards, in place, under the right name, in the right folder, is
+        # the attack the path check alone cannot see.
+        self._registry(monkeypatch, tmp_path)
+        exe = self._installed(tmp_path)
+        runtimes.register("fish_s2", str(exe))
+        assert runtimes.status("fish_s2").state == "ready"      # ground
+        exe.write_bytes(b"the attacker's program")
+        st = runtimes.status("fish_s2")
+        # Its own state, not "broken". readiness.py maps a state to a
+        # sentence, and "gone" is a different sentence from "not the one we
+        # installed".
+        assert st.state == "untrusted"
+        assert st.error_code == TTS_RUNTIME_UNTRUSTED
+
+    def test_the_digest_is_taken_at_install_not_at_first_use(
+        self, monkeypatch, tmp_path
+    ):
+        # Computing it lazily would fingerprint whatever is there by then,
+        # which is the thing being guarded against. Registering records it.
+        self._registry(monkeypatch, tmp_path)
+        exe = self._installed(tmp_path)
+        runtimes.register("fish_s2", str(exe))
+        recorded = json.loads(
+            Path(config.TTS_RUNTIMES_PATH).read_text(encoding="utf-8"))
+        digest = recorded["engines"]["fish_s2"].get("sha256")
+        assert digest == hashlib.sha256(b"an interpreter").hexdigest()
+
+    def test_a_registry_without_a_digest_is_refused(
+        self, monkeypatch, tmp_path
+    ):
+        # This assertion is the reverse of the one it replaces, and the
+        # reversal closes a hole the first version of this test had written
+        # down as intended behaviour. That version let an entry with no sha256
+        # through, on the reasoning that installs predating the check should
+        # keep working. Measured: omitting the key is part of the SAME single
+        # write that plants the path, so an attacker never writes one and the
+        # fingerprint never runs. A test that blesses the bypass is worse than
+        # no test, because it stops anybody looking.
+        self._registry(monkeypatch, tmp_path)
+        exe = self._installed(tmp_path)
+        reg = Path(config.TTS_RUNTIMES_PATH)
+        reg.write_text(json.dumps(
+            {"engines": {"fish_s2": {"python": str(exe)}}}), encoding="utf-8")
+        assert runtimes.status("fish_s2").error_code == TTS_RUNTIME_UNTRUSTED
+
+    def test_planting_an_entry_with_no_digest_does_not_win(
+        self, monkeypatch, tmp_path
+    ):
+        # The attack in the shape it is actually mounted: one write to the
+        # registry, naming an executable the attacker put inside the app's own
+        # install folder, with no digest recorded for it.
+        self._registry(monkeypatch, tmp_path)
+        planted = tmp_path / "envs" / "zz" / "Scripts" / "python.exe"
+        planted.parent.mkdir(parents=True)
+        planted.write_bytes(b"the attacker's program")
+        reg = Path(config.TTS_RUNTIMES_PATH)
+        reg.write_text(json.dumps(
+            {"engines": {"fish_s2": {"python": str(planted)}}}),
+            encoding="utf-8")
+        st = runtimes.status("fish_s2")
+        assert st.error_code == TTS_RUNTIME_UNTRUSTED
+        assert st.state != "ready"
+
+    def test_a_refusal_reads_differently_from_never_set_up(
+        self, monkeypatch, tmp_path
+    ):
+        # "Somebody changed this" and "you never set voice up" send the user
+        # to the same button and mean very different things. Collapsing them
+        # would hide the first behind a routine reinstall prompt.
+        self._registry(monkeypatch, tmp_path)
+        assert runtimes.status("fish_s2").error_code == TTS_RUNTIME_MISSING
+        planted = tmp_path / "elsewhere" / "python.exe"
+        planted.parent.mkdir(parents=True)
+        planted.write_bytes(b"")
+        runtimes.register("fish_s2", str(planted))
+        assert runtimes.status("fish_s2").error_code == TTS_RUNTIME_UNTRUSTED
+        assert TTS_RUNTIME_UNTRUSTED != TTS_RUNTIME_MISSING
+        assert TTS_RUNTIME_UNTRUSTED != TTS_RUNTIME_BROKEN
+
+    def test_a_gone_interpreter_still_reads_as_broken_not_untrusted(
+        self, monkeypatch, tmp_path
+    ):
+        # The discriminating half of the sentence above. A disk cleanup is not
+        # an attack, and reporting one as the other would train the user to
+        # ignore the message that matters.
+        self._registry(monkeypatch, tmp_path)
+        exe = self._installed(tmp_path)
+        runtimes.register("fish_s2", str(exe))
+        exe.unlink()
+        assert runtimes.status("fish_s2").error_code == TTS_RUNTIME_BROKEN

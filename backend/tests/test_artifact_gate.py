@@ -114,7 +114,8 @@ FRONTEND_INPUTS = [
 SPEC_INPUT = ["backend/elysium_onefile.spec"]
 
 #: Absent, or the build shipped somebody's data.
-FORBIDDEN_NAMES = ("app.db", ".env", "salt.bin", "verifier.bin")
+FORBIDDEN_NAMES = ("app.db", ".env", "salt.bin", "verifier.bin",
+                   "vault.recovery")
 FORBIDDEN_SUFFIX = (".log",)
 
 

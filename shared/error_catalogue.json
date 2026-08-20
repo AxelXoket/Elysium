@@ -1016,6 +1016,14 @@
       ]
     },
     {
+      "code": "tts_runtime_untrusted",
+      "statuses": [],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
       "code": "tts_sidecar_write_failed",
       "statuses": [
         500
@@ -1165,6 +1173,15 @@
       "code": "vault_not_initialized",
       "statuses": [
         409
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "vault_reset_unavailable",
+      "statuses": [
+        404
       ],
       "channels": [
         "http"

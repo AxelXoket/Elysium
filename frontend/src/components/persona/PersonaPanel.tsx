@@ -367,10 +367,27 @@ function PersonaListItem({
                 <Button
                   type="button"
                   size="xs"
-                  variant="destructive"
+                  variant="ghost"
                   onClick={onDelete}
                   disabled={busy}
-                  className="gap-1"
+                  // `persona-danger-action`, not variant="destructive" - the
+                  // house pattern for a danger button on this panel, and the
+                  // same class the TRIGGER two blocks down already uses.
+                  // shadcn's destructive variant paints from `--destructive`,
+                  // which `:root` sets to #C36A72 for the DARK shell and
+                  // which `.glass-right` never overrides. On this one light
+                  // surface that measured 3.29:1 at rest and 2.93:1 on hover
+                  // (WCAG, against the panel's own gradient with the confirm
+                  // box's white over it) - under the 4.5:1 floor for text and
+                  // under even the 3:1 floor for graphics. Darkening the
+                  // token could not fix it either: `bg-destructive/10` tints
+                  // the background with the SAME colour as the text, so the
+                  // two move together and the ratio stalls (#AF4650 measured
+                  // 4.07:1 on hover). persona-danger-action separates them -
+                  // a white-tinted background under #96424E text - and comes
+                  // out at 6.51:1. NotebookPanel and BoundaryPanel already
+                  // made this exact swap for this exact reason.
+                  className="persona-danger-action gap-1"
                 >
                   {busy && <Loader2 size={11} className="animate-spin" />}
                   Delete

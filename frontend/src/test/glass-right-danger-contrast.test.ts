@@ -31,46 +31,38 @@ import {
   surfaceToken,
 } from "@/test/helpers/glassSurfaceCss";
 
-type Rgb = [number, number, number];
+import {
+  AA_NORMAL,
+  contrastRatio,
+  luminance,
+  parseHex,
+} from "@/lib/appearance/contrast";
+import type { Rgb } from "@/lib/appearance/contrast";
 
-/** Parses "#RRGGBB" or "rgb(a)(r, g, b[, a])" - the two shapes this
- *  stylesheet actually writes colours in - into an [r, g, b] triple. */
+/**
+ * The maths is IMPORTED, not restated.
+ *
+ * This file used to carry its own `relativeLuminance`, its own
+ * `contrastRatio` and its own `const AA_TEXT_THRESHOLD = 4.5`, all copied
+ * from lib/appearance/contrast.ts. That made it a test of its private copy:
+ * ship a wrong coefficient or a lowered threshold in the module the APP
+ * actually paints and reads with, and this file would have gone on printing
+ * comfortable numbers. It proved the stylesheet, never the comparator.
+ * InkPicker.test.ts already imports these; so does this now.
+ *
+ * `parseColor` stays local because contrast.ts only parses hex, and the
+ * stylesheet writes some of these colours as `rgb(...)`. It delegates the
+ * hex half rather than reimplementing it.
+ */
 function parseColor(raw: string): Rgb {
-  const hex = /^#([0-9a-fA-F]{6})$/.exec(raw.trim());
-  if (hex) {
-    const v = hex[1];
-    return [
-      parseInt(v.slice(0, 2), 16),
-      parseInt(v.slice(2, 4), 16),
-      parseInt(v.slice(4, 6), 16),
-    ];
-  }
+  const hex = parseHex(raw.trim());
+  if (hex) return hex;
   const rgb = /rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/.exec(raw);
-  if (rgb) return [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])];
+  if (rgb) return { r: Number(rgb[1]), g: Number(rgb[2]), b: Number(rgb[3]) };
   throw new Error(`parseColor could not read "${raw}" - format changed?`);
 }
 
-/** WCAG 2.1 relative luminance (SC 1.4.3): sRGB channels are linearised,
- *  then weighted 0.2126 / 0.7152 / 0.0722 (R/G/B) toward how the eye
- *  actually perceives brightness. */
-function relativeLuminance([r, g, b]: Rgb): number {
-  const chan = (c: number) => {
-    const s = c / 255;
-    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
-  };
-  return 0.2126 * chan(r) + 0.7152 * chan(g) + 0.0722 * chan(b);
-}
-
-/** WCAG 2.1 contrast ratio (SC 1.4.3): (L1 + 0.05) / (L2 + 0.05), lighter
- *  luminance over darker, so the ratio is always >= 1. */
-function contrastRatio(a: Rgb, b: Rgb): number {
-  const la = relativeLuminance(a);
-  const lb = relativeLuminance(b);
-  const [hi, lo] = la > lb ? [la, lb] : [lb, la];
-  return (hi + 0.05) / (lo + 0.05);
-}
-
-const AA_TEXT_THRESHOLD = 4.5;
+const AA_TEXT_THRESHOLD = AA_NORMAL;
 
 describe("glass-right danger token - contrast", () => {
   let compiledCss: string;
@@ -172,7 +164,7 @@ describe("glass-right danger token - contrast", () => {
     expect(cTop, "top-stop contrast after the fix").toBeGreaterThanOrEqual(AA_TEXT_THRESHOLD);
     expect(cBottom, "bottom-stop contrast after the fix").toBeGreaterThanOrEqual(AA_TEXT_THRESHOLD);
     // Not overshot into near-black: still recognisably a mid-tone rose.
-    expect(relativeLuminance(darkened)).toBeGreaterThan(0.05);
+    expect(luminance(darkened)).toBeGreaterThan(0.05);
 
     glassRight.remove();
   });
@@ -211,10 +203,67 @@ describe("glass-right danger token - contrast", () => {
     expect(block).not.toMatch(/background:\s*var\(--color-es-danger\)/);
   });
 
+  it("the persona danger ACTION colour clears AA on this surface too", () => {
+    // The gap a watchdog found on 2026-08-20, after the PersonaPanel delete
+    // confirm button was moved off shadcn's `--destructive` and onto
+    // `.persona-danger-action`. That class hardcodes its own colour and reads
+    // NO token, so nothing in this file - which only ever measured
+    // `--color-es-danger` - was defending it. Measured: setting that colour
+    // back to #C36A72, the exact rose whose 3.29:1 caused the move, left all
+    // 1654 frontend tests green. The class is used at 12 call sites across
+    // six components, so the regression could have come back anywhere.
+    // The selector is declared TWICE: once for the shared border/background
+    // (whose `color` is a var) and once for its own literal ink. Scan every
+    // block of that selector for a hex rather than taking the first `color:`,
+    // which is the var and would make this measure the wrong thing.
+    const blocks = [
+      ...compiledCss.matchAll(
+        /\.persona-danger-action\s*\{([^}]*)\}/g),
+    ];
+    expect(blocks.length, "the .persona-danger-action rule moved or was renamed")
+      .toBeGreaterThan(0);
+    let hex: string | null = null;
+    for (const b of blocks) {
+      const found = /color:\s*(#[0-9a-fA-F]{6})/.exec(b[1]);
+      if (found) hex = found[1];
+    }
+    expect(hex, "persona-danger-action no longer paints a literal colour").not.toBeNull();
+
+    const ink = parseColor(hex!);
+    const [top, bottom] = glassRightBackgroundStops();
+    // The class paints a white wash over the panel, so the ink sits on that
+    // rather than on the panel directly. The ALPHA IS READ, not retyped: a
+    // hardcoded 0.12 would go on printing a comfortable ratio for a composite
+    // that no longer exists the moment somebody changes the stylesheet.
+    const washed = blocks.map((b) => b[1]).join(" ").match(/background:\s*rgba\(\s*255\s*,\s*255\s*,\s*255\s*,\s*([0-9.]+)\s*\)/);
+    expect(washed, "persona-danger-action no longer paints a white wash").not.toBeNull();
+    const alpha = Number(washed![1]);
+    expect(alpha).toBeGreaterThan(0);
+    expect(alpha).toBeLessThan(1);
+    const tint = (bg: Rgb): Rgb => ({
+      r: 255 * alpha + bg.r * (1 - alpha),
+      g: 255 * alpha + bg.g * (1 - alpha),
+      b: 255 * alpha + bg.b * (1 - alpha),
+    });
+    expect(contrastRatio(ink, tint(top)), "top-stop")
+      .toBeGreaterThanOrEqual(AA_TEXT_THRESHOLD);
+    expect(contrastRatio(ink, tint(bottom)), "bottom-stop")
+      .toBeGreaterThanOrEqual(AA_TEXT_THRESHOLD);
+    // GROUND, and the discriminating half: the rose this replaced must FAIL
+    // the same measurement, or the assertion above proves nothing about the
+    // value actually chosen.
+    expect(contrastRatio(parseColor("#C36A72"), tint(top)))
+      .toBeLessThan(AA_TEXT_THRESHOLD);
+  });
+
   // A test that asserted the WHY comment still sits above the override used
-  // to live here. It was deleted rather than kept: it read SOURCE TEXT to
-  // make its assertion, which is the one thing this project's tests may not
-  // do. Such a test passes when the comment is present and the value is
-  // dead, and it fails when somebody rewords a comment that was never the
-  // behaviour. The contrast tests above already fail if the override goes.
+  // to live here, and it was deleted rather than kept. The distinction, since
+  // the tests above plainly do read the stylesheet: these read the COMPILED
+  // CSS because the compiled CSS is the artefact under test and jsdom cannot
+  // resolve it, and they then compute a contrast ratio from it. The deleted
+  // one read source text to assert something about the source - it passed
+  // while a comment was present and the value beneath it was dead, and it
+  // failed when somebody reworded prose that was never the behaviour.
+  // Reading the artefact to measure it is not the same as grepping it to
+  // avoid measuring.
 });

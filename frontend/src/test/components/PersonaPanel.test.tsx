@@ -237,6 +237,45 @@ describe("PersonaPanel", () => {
     ).toBe(false);
   });
 
+  it("the confirm button is painted by the light-panel danger pattern, not the dark shell's token", async () => {
+    // This panel lives inside `.glass-right`, the app's one LIGHT surface.
+    // shadcn's `variant="destructive"` paints from `--destructive`, which
+    // `:root` sets for the DARK shell and `.glass-right` never overrides, so
+    // the confirm button measured 3.29:1 at rest and 2.93:1 on hover - below
+    // the 4.5:1 AA floor for text and below even the 3:1 floor for graphics,
+    // and WORSE than the trigger button two blocks away that opens it.
+    //
+    // Asserted on the rendered DOM rather than on the source file, and on
+    // the CLASS rather than the colour, because jsdom does not resolve
+    // Tailwind's generated utility rules - glass-right-danger-contrast.test.ts
+    // says so in its own module comment. The NUMBER for this class is proved
+    // separately, by glass-right-danger-contrast.test.ts's
+    // "persona danger ACTION colour" case - which had to be written after a
+    // watchdog measured that nothing defended it: setting the class back to
+    // the failing rose left all 1654 frontend tests green. This test holds
+    // the component to the pattern; that one holds the pattern to its ratio.
+    const user = userEvent.setup();
+    mockPersonaApi([inactivePersona]);
+    renderWithQueryClient(<PersonaPanel />, { wrapper });
+
+    const card = await screen.findByTestId("persona-card-2");
+    await user.click(within(card).getByRole("button", { name: /delete/i }));
+
+    // GROUND: the confirm step really is open, so the query below is looking
+    // at the confirm button and not at the trigger it replaced.
+    expect(screen.getByText("Delete this persona?")).toBeInTheDocument();
+    const confirm = screen
+      .getAllByRole("button", { name: /delete/i })
+      .find((el) => el.textContent?.trim() === "Delete");
+    expect(confirm, "the confirm button disappeared").toBeDefined();
+
+    expect(confirm!.className).toContain("persona-danger-action");
+    // The discriminating half: naming the house class is not enough if the
+    // destructive variant is still applied alongside it.
+    expect(confirm!.className).not.toMatch(/\bbg-destructive\b/);
+    expect(confirm!.className).not.toMatch(/\btext-destructive\b/);
+  });
+
   it("cancel delete hides confirmation without calling delete", async () => {
     const user = userEvent.setup();
     const mock = mockPersonaApi([inactivePersona]);

@@ -61,6 +61,40 @@ async def lifespan(app: FastAPI):
     # (routers/vault.py:_bootstrap_unlocked), not here.
     logger.info("Startup: vault locked - waiting for passphrase.")
 
+    # Clear a browser profile the LAST session left behind, before this one
+    # can add to it.
+    #
+    # The packaged launcher already covers itself: run_app.py calls
+    # clear_session_residue() at :787, BEFORE webview.start(), so a crash or a
+    # kill is cleaned up by the next launch. (A first draft of this comment
+    # said that call was on the way out and that nothing reached it after a
+    # crash. That was wrong - :787 is the startup path, :794 is the exit one -
+    # and a watchdog caught it. The fix below is still needed; its reason is
+    # narrower than first written.)
+    #
+    # The gap is the DEV path: start_backend.bat runs uvicorn directly and
+    # never imports run_app, so on that path nothing has ever cleared the
+    # profile. Measured on 2026-08-20: 21 MB left from 25 July, ten files
+    # carrying first_mes and ten carrying system_prompt as plain readable
+    # JSON, invisible to `git status` because the folder is gitignored.
+    #
+    # Here rather than in run_app because this lifespan is the one thing both
+    # entry points share, and it runs before any window exists - uvicorn
+    # binds in a thread first and pywebview opens afterwards, so there is no
+    # live profile to pull out from under.
+    try:
+        import browser_profile
+        from config import DATA_DIR
+
+        stale = browser_profile.purge(Path(DATA_DIR) / "webview")
+        if stale:
+            logger.info("Startup: shredded %d cached file(s) a previous "
+                        "session left in the browser profile.", stale)
+    except Exception:                            # noqa: BLE001
+        # Same rule as every other optional subsystem here: failing to start
+        # is worse than residue, and purge() is documented never to raise.
+        logger.warning("Startup: could not sweep the browser profile.")
+
     # The idle watchdog. Cheap (one wakeup every AUTO_LOCK_TICK_S) and inert
     # until the user turns auto-lock on, but started here rather than at
     # unlock so there is exactly one of it for the process lifetime.
@@ -116,7 +150,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Elysium API",
-    version="1.1.0",
+    version="1.1.5",
     lifespan=lifespan,
     # No Swagger/ReDoc pages: they load their JS/CSS from a CDN, and this app
     # must make zero non-OpenRouter network requests. /openapi.json remains

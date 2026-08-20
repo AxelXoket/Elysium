@@ -66,6 +66,7 @@ def _real_data_paths() -> list[Path]:
         Path(config.DATA_DIR) / "salt.bin",
         Path(config.DATA_DIR) / "verifier.bin",
         Path(config.DATA_DIR) / "kdf.json",
+        Path(config.DATA_DIR) / "vault.recovery",
         Path(config.UPLOADS_DIR),
         Path(config.TTS_DIR),
     ]

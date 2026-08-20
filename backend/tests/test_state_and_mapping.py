@@ -185,6 +185,27 @@ def test_the_alias_can_be_cleared(client):
     assert client.get("/api/v1/settings").json()["proxy_alias"] is None
 
 
+def test_a_misspelt_alias_field_is_refused_not_treated_as_a_clear(client):
+    """The twin of test_model_selection's misspelt-field case. These are the
+    only two bodies in settings.py with no required field, so they are the
+    only two where an unknown field name used to arrive as "clear it": the
+    value was dropped, the route wrote "", the stored label was deleted, and
+    the caller got `{"ok": true}` for a request nobody had read."""
+    client.post("/api/v1/settings/proxy", json={
+        "proxy_url": "http://127.0.0.1:8888",
+        "proxy_required": False,
+        "proxy_alias": "Home",
+    })
+    # GROUND: it really is stored, so the assertion below is about the
+    # misspelt request and not about an already-empty label.
+    assert client.get("/api/v1/settings").json()["proxy_alias"] == "Home"
+
+    r = client.post("/api/v1/settings/proxy/alias", json={"proxy_allias": "Work"})
+
+    assert r.status_code == 422
+    assert client.get("/api/v1/settings").json()["proxy_alias"] == "Home"
+
+
 def test_naming_a_proxy_that_does_not_exist_is_refused(client):
     """A label for a thing that is not there would render as a proxy that is
     not there."""

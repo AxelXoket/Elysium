@@ -44,8 +44,8 @@ import {
  *    edit, range ended AT the edited message      -> plan_invalidated
  *    edit, range ended AFTER it (the swept tail)  -> range_cleared
  *    delete a message (takes everything after)    -> range_cleared
- *    regenerate a reply                           -> range_cleared
  *    clear the chat                               -> range_cleared
+ *    an aborted send's cleanup                    -> range_cleared
  *    delete the chat                              -> neither: the foreign key
  *                                                    fires and it is counted
  *                                                    as an unexpected error
@@ -53,7 +53,24 @@ import {
  *  So "or deleted" named the wrong reason for every delete there is, and
  *  "the chat was cleared" named one of the four things that reach
  *  `range_cleared`. Both sentences are written from the real discriminator
- *  now: whether the messages are still there. */
+ *  now: whether the messages are still there.
+ *
+ *  CORRECTED 2026-08-20. This table listed "regenerate a reply ->
+ *  range_cleared" and it was wrong: regenerating does not delete anything.
+ *  `_append_variant` deactivates the old variant in place and inserts the new
+ *  one - its own docstring says "Nothing is deleted" - and the three callers
+ *  of `forget_proposals_from_messages` are a message delete, an edit, and an
+ *  aborted send's cleanup. None of them is the regenerate path. The fourth
+ *  real route, the aborted send, was missing from this list, so the count of
+ *  four happened to come out right while one entry was invented and one was
+ *  absent.
+ *
+ *  What follows from that is NOT cosmetic and is an open question for the
+ *  owner rather than something this comment settles: because nothing rolls
+ *  the notebook back on a regenerate, an extraction in flight over a reply
+ *  you then threw away still lands, still gets written, and - with automatic
+ *  acceptance on by default - still goes into the prompt. The panel used to
+ *  tell you that case was thrown away. It is not. */
 // This table must stay IN this file: a backend test (test_notebook_worker.py)
 // reads WorkerPanel.tsx to prove every declared skip reason has a sentence
 // here, and moving it to a sibling module would blind that gate.
@@ -72,13 +89,15 @@ export const SKIP_PROSE: Record<string, string> = {
     + "still paid for, and that stretch is read again later",
   // Not "the chat was cleared". Anything that removes the last message of
   // the range while the reply is out lands here: a deleted message, a
-  // regenerated reply, a cleared chat, or an edit whose swept tail happened
-  // to be where the range ended.
+  // cleared chat, an aborted send being tidied up, or an edit whose swept
+  // tail happened to be where the range ended. NOT a regenerated reply -
+  // that deletes nothing, so nothing is skipped and the note is written from
+  // the reply you discarded. See the correction note at the top of this file.
   range_cleared:
     "the last message it was reading was gone by the time the reply came "
-    + "back, removed by a delete, a regenerated reply or a cleared chat. It "
-    + "was thrown away and still paid for; whatever survives of that stretch "
-    + "is read again, the removed messages never are",
+    + "back, removed by a delete or a cleared chat. It was thrown away and "
+    + "still paid for; whatever survives of that stretch is read again, the "
+    + "removed messages never are",
 };
 
 /** What a reason with no sentence reads as. A snake_case token is the one

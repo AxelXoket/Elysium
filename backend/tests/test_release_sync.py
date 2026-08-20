@@ -130,7 +130,7 @@ def test_every_route_the_app_serves_appears_in_the_contract():
 # ---------------------------------------------------------------------------
 
 def test_the_windows_version_resource_matches_package_json():
-    """version_info.txt carries 1.1.0.0 by hand in four places while
+    """version_info.txt carries the version by hand in four places while
     vite.config.ts derives the version from package.json. Nothing checked they
     agreed, so the next bump would ship an exe claiming the previous release.
     """

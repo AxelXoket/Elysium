@@ -25,9 +25,31 @@ from pathlib import Path
 
 import pytest
 
+from routers import vault as vault_router
+
 import config
 import secure_delete
 
+
+
+@pytest.fixture(autouse=True)
+def _reset_door_armed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Open the reset door for the tests in this file.
+
+    The route is unreachable unless the process is frozen AND the launch-token
+    gate is armed, which is true of the shipped app and false of pytest. Every
+    test here exercises what the route DOES, so each one has to stand where the
+    lock screen stands.
+
+    The predicate itself is replaced rather than its two ingredients, and that
+    is deliberate. Monkeypatching sys.frozen reaches three subsystems that have
+    nothing to do with the vault and would make these tests measure a different
+    program. Replacing the seam keeps the blast radius at one function, and the
+    cost - that these tests no longer prove the door is consulted at all - is
+    paid off by TestTheDoorIsShutOnEveryOtherBuild, which asserts exactly that
+    and would go red if the guard were deleted.
+    """
+    monkeypatch.setattr(vault_router, "_reset_door_is_open", lambda: True)
 
 def _valid_wav(seconds: float = 8.0, rate: int = 44100) -> bytes:
     """A clip save_upload will accept.
@@ -123,11 +145,25 @@ class TestRotatingThePassphraseDestroysTheOldRecipe:
                                 rekey_fn=lambda key: None,
                                 verify_fn=lambda key: True)
 
-        assert len(shelved) == 2, "the rotation shelved nothing to destroy"
+        # By NAME rather than by count. A count says nothing about which
+        # files were shelved, and this test exists because each of these is a
+        # working recipe for the key that was just revoked: the salt with its
+        # parameters, the verifier that confirms them, and the mirror that
+        # carries both together. Leaving any one of the three behind means the
+        # rotation revoked nothing for somebody holding the old passphrase.
+        assert {p.name.split(".bak-")[0] for p in shelved} == {
+            "salt.bin", "verifier.bin", "vault.recovery"}, (
+            "the rotation shelved the wrong set of files to destroy")
         survivors = [p.read_bytes() for p in shelved if p.exists()]
-        assert len(survivors) == 2, "the unlink stub should have kept both"
+        assert len(survivors) == len(shelved), (
+            "the unlink stub should have kept every shelved file, so what "
+            "is asserted below is the OVERWRITE and not the removal")
         assert old_salt not in survivors
         assert old_verifier not in survivors
+        # The mirror is the one that would hand back both halves at once, so
+        # it gets its own assertion rather than riding on the two above.
+        assert not any(old_salt.hex().encode() in body for body in survivors), (
+            "the shelved mirror still carries the revoked salt in hex")
 
     def test_a_failed_rekey_destroys_the_half_written_new_identity(
         self, tmp_path, monkeypatch: pytest.MonkeyPatch

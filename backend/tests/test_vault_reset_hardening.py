@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from routers import vault as vault_router
+
 import config
 import crypto
 import database
@@ -52,6 +54,26 @@ PASSPHRASE = "correct horse battery staple hardening"
 # ---------------------------------------------------------------------------
 # Defect 1: a failed database wipe must not touch the identity files
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _reset_door_armed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Open the reset door for the tests in this file.
+
+    The route is unreachable unless the process is frozen AND the launch-token
+    gate is armed, which is true of the shipped app and false of pytest. Every
+    test here exercises what the route DOES, so each one has to stand where the
+    lock screen stands.
+
+    The predicate itself is replaced rather than its two ingredients, and that
+    is deliberate. Monkeypatching sys.frozen reaches three subsystems that have
+    nothing to do with the vault and would make these tests measure a different
+    program. Replacing the seam keeps the blast radius at one function, and the
+    cost - that these tests no longer prove the door is consulted at all - is
+    paid off by TestTheDoorIsShutOnEveryOtherBuild, which asserts exactly that
+    and would go red if the guard were deleted.
+    """
+    monkeypatch.setattr(vault_router, "_reset_door_is_open", lambda: True)
 
 class TestAFailedDatabaseWipeDoesNotBrickTheVault:
 
@@ -120,6 +142,8 @@ class TestAFailedDatabaseWipeDoesNotBrickTheVault:
             assert salt_path.exists(), "salt.bin was destroyed with app.db still on disk"
             assert verifier_path.exists(), "verifier.bin was destroyed with app.db still on disk"
             assert kdf_path.exists(), "kdf.json was destroyed with app.db still on disk"
+            assert (tmp_path / "vault.recovery").exists(), (
+                "the salt mirror was destroyed with app.db still on disk")
 
             # And the vault must still be OPENABLE with the original
             # passphrase - not just "files exist", but a working vault.
@@ -138,6 +162,12 @@ class TestAFailedDatabaseWipeDoesNotBrickTheVault:
         "salt.bin.new", "salt.bin.bak",
         "verifier.bin.new", "verifier.bin.bak",
         "kdf.json.new", "kdf.json.bak",
+        # The salt mirror is identity, so it is held back with the rest. It
+        # carries the salt AND the parameters, which makes it the single most
+        # complete recipe for the key of the database that just survived the
+        # wipe - destroying it here would leave that database in a worse state
+        # than the hold-back exists to prevent.
+        "vault.recovery.new", "vault.recovery.bak",
     })
 
     def test_other_families_are_still_swept_when_the_database_survives(

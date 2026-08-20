@@ -134,6 +134,15 @@ _LOG_METHODS = frozenset({
 #: out of the swept scope now, so the reason is gone and the coverage is not.
 _LOGGER_NAMES = frozenset({"logger", "log"})
 
+#: Module aliases for the `logging` module itself, for the shortcut form
+#: `logging.warning(...)` that logs through the root logger.
+_LOGGING_MODULE_NAMES = frozenset({"logging", "_logging"})
+
+#: The factory call that returns a logger inline: `logging.getLogger(__name__)`.
+#: Matched by the called NAME, so `_logging.getLogger(...)` (config.py imports
+#: it under that alias) is covered too.
+_LOGGER_FACTORY = "getLogger"
+
 #: Attribute names that, by convention in THIS codebase, hold a sanitized,
 #: fixed-vocabulary code rather than free text - AttachmentError.reason,
 #: OpenRouterError.reason, WorkerFailure.code/.reason. Deliberately NOT
@@ -254,12 +263,43 @@ def _is_blessed(node: ast.AST) -> bool:
             or _is_safe_getattr(node))
 
 
+def _is_logger_receiver(node: ast.AST) -> bool:
+    """Is `node` the thing a `.warning(...)` is being called ON, and is that
+    thing a logger?
+
+    Three shapes reach elysium.log and this had only ever recognised the first:
+
+      logger.warning(...)                     a module-level name  (ast.Name)
+      logging.getLogger(__name__).warning(..) a factory call       (ast.Call)
+      logging.warning(...)                    the root shortcut    (ast.Name)
+
+    The second shape was the hole. `_is_logger_call` required the receiver to
+    be an `ast.Name`, so every inline `logging.getLogger(__name__).warning(...)`
+    was skipped in silence - nine in the shipped tree, EIGHT in run_app.py and
+    one in config.py (counted with ast, after a first draft of this comment
+    said nine and one). Two of the eight pass `exc_info=True` inside an
+    `except` block, so they were live traceback sites that never reached
+    KNOWN_TRACEBACK_DEBT. Measured, not assumed: the scanner as it stood at
+    commit d01bffa returns [] for run_app.py, and the widened one returns
+    lines 216 and 579. Worse, run_app.py is named in _MUST_STAY_CLEAN, and it
+    reported clean for the reason that eight of its ten logging calls were
+    invisible to the thing certifying it.
+    """
+    if isinstance(node, ast.Name):
+        return node.id in _LOGGER_NAMES or node.id in _LOGGING_MODULE_NAMES
+    # `logging.getLogger(...)` / `_logging.getLogger(...)` / a bare
+    # `getLogger(...)` imported directly. Matched on the called name, not on
+    # the module it hangs off, so an alias cannot walk around this.
+    if isinstance(node, ast.Call):
+        return _called_name(node) == _LOGGER_FACTORY
+    return False
+
+
 def _is_logger_call(node: ast.AST) -> bool:
     return (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id in _LOGGER_NAMES
+        and _is_logger_receiver(node.func.value)
         and node.func.attr in _LOG_METHODS
     )
 

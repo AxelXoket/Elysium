@@ -278,6 +278,25 @@ CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # window is that the argument is in the environment BEFORE the window is
     # created - which is what "at startup" means here. That it can then never
     # be changed is WebView2's behaviour and is acknowledged separately.
+    ("Your own machine is not an exception either", (
+        "tests/test_egress_chokepoint.py::TestWhatIsAllowed"
+        "::test_loopback_is_not_on_the_list",
+        "tests/test_egress_chokepoint.py::TestWhatIsAllowed"
+        "::test_loopback_comes_back_behind_the_same_switch_as_a_foreign_host",
+        "tests/test_egress_chokepoint.py::TestWhatIsAllowed"
+        "::test_the_switch_admits_all_three_spellings_or_none",
+    )),
+    ("Elysium replaces the WebView2 environment variables rather than adding", (
+        "tests/test_accessibility_privacy.py::TestArmingTheSwitch"
+        "::test_it_scrubs_every_variable_the_webview2_loader_reads",
+        "tests/test_accessibility_privacy.py::TestArmingTheSwitch"
+        "::test_the_debugger_variables_go_even_when_the_switch_is_refused",
+        "tests/test_accessibility_privacy.py::TestArmingTheSwitch"
+        "::test_it_names_the_switch_it_discarded_but_never_its_value",
+        "tests/test_accessibility_privacy.py"
+        "::TestTheSecondDoorIsLookedAtButNotShut"
+        "::test_a_policy_value_under_hkcu_is_reported",
+    )),
     ("It takes effect at startup only", (
         "tests/test_accessibility_privacy.py::TestItIsArmedBeforeTheWindowExists"
         "::test_the_argument_is_in_place_when_the_window_is_created",
@@ -312,10 +331,25 @@ CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
 #: asymmetry as the README's PROSE_CLAIMS: a reworded or deleted sentence
 #: fails, a brand new one does not, and that is why DOCUMENT_DIGEST exists.
 PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    # Added 2026-08-20. The page used to say the lock "cancels whatever it was
+    # doing and empties its queue", which is true of the planning loop and
+    # false of a call that has already been paid for: quiesce() WAITS for that
+    # one, up to SETTLE_GRACE_S, so a note can land in the vault after the
+    # user presses Lock. Both halves are driven here - that the settle is
+    # awaited and its cost kept, and that the wait is bounded rather than
+    # open-ended.
+    ("for it to be parsed and written, and only then wipes the key", (
+        "tests/test_notebook_shutdown_defects.py"
+        "::TestDefect1APaidReplySurvivesQuiesce"
+        "::test_the_reply_settles_and_its_cost_is_not_lost",
+        "tests/test_notebook_shutdown_defects.py"
+        "::TestDefect1APaidReplySurvivesQuiesce"
+        "::test_quiesce_does_not_wait_past_its_own_grace_period",
+    )),
     # The traceback debt, stated in the document rather than buried. The
     # number IS the assertion: the ledger fails in both directions, so it
     # cannot grow quietly and a paid debt has to be recorded as paid.
-    ("there are forty-six places that do it, across sixteen", (
+    ("there are forty-eight places that do it, across seventeen", (
         "tests/test_log_identifier_privacy.py"
         "::test_no_new_traceback_leak_anywhere_in_the_tree",
     )),
@@ -734,10 +768,15 @@ ACKNOWLEDGED_UNTESTABLE: tuple[
      "fetch, not of anything in this tree.",
      None, None),
     ("A running unlocked app is unlocked", ReasonCategory.DEFINITIONAL,
-     "an unlocked vault's key being reachable by anything running as the "
-     "same user is what 'unlocked' means. There is no code path to "
-     "exercise and no failure mode to catch; the sentence is the "
-     "definition, not a promise about one.",
+     "an unlocked vault's key being reachable by an ADMINISTRATOR, or by "
+     "anything already holding a handle, is what 'unlocked' means, and "
+     "neither has a code path here to exercise. This entry used to say the "
+     "same about a same-user program with no elevation, and that half stopped "
+     "being true on 20 August 2026: narrow_own_process closes it and "
+     "test_win_hardening.py::TestTheProcessRefusesToBeRead measures it, with "
+     "a ground control that reads the secret back out of an ordinary process "
+     "first. The sentence stays because the two limits it now describes are "
+     "real; the justification narrowed rather than the claim.",
      None, None),
     ("nothing at the operating-system level stops it from opening a socket",
      ReasonCategory.DEFINITIONAL,
@@ -931,10 +970,13 @@ UNPROVEN: tuple[tuple[str, str], ...] = (
     ("nothing to the Windows registry",
      "no test enumerates registry writes across the app and asserts there "
      "are none; testable with a monkeypatched winreg, not written."),
-    ("The only registry access anywhere in the code is a read",
-     "same gap as above, the second place the document makes the claim: "
-     "nothing here proves the ONE read exists and is the only registry "
-     "call in the tree."),
+    ("Registry access anywhere in the code is READ ONLY",
+     "same gap as above, the second place the document makes the claim. "
+     "The sentence changed on 20 August 2026: there are now TWO reads "
+     "rather than one, because webview2_policy_overrides looks at the "
+     "WebView2 policy key. Nothing here proves those two are the only "
+     "registry calls in the tree, and nothing here proves neither of them "
+     "writes."),
     ("including the journal files",
      "SQLCipher's own guarantee that -wal/-shm journal files are "
      "encrypted is trusted, not independently checked the way "
@@ -1009,14 +1051,20 @@ UNPROVEN: tuple[tuple[str, str], ...] = (
      "- that the engine will speak from the token file with the clip gone - "
      "is visible in _resolve_reference/_load_tokens, which accept tokens "
      "with clip None, and is not driven by any test either."),
-    ("its equivalent is held in memory and never written to disk",
+    ("nothing in the shipped app ever asks for it to be saved",
      "the XTTS half of that bullet, and the reason it is stated separately: "
      "that engine keeps its latents in a capped in-process dict and only "
      "ever writes them when a prepare_ref request supplies an output path, "
      "which nothing in the shipped app sends. Read out of tts/worker/"
      "xtts_v2.py rather than tested. Testable as a standing invariant over "
      "the worker's write sites, the same shape as the narrow_data_dir gap "
-     "above, not written."),
+     "above, not written. The marker moved on 2026-08-20: the sentence used "
+     "to read 'its equivalent is held in memory and never written to disk', "
+     "which is an absolute about the CODE, and the code does write that file "
+     "when handed a path. What is actually true is an absolute about the "
+     "WIRING, and the marker now quotes that instead - a distinction worth "
+     "the edit, because the old wording would have stayed 'true' in this "
+     "ledger on the day somebody wired a caller up."),
     # ── The log ───────────────────────────────────────────────────────────
     ("The file is written only by the packaged exe",
      "half proven, and the wrong half. test_release_hardening.py::"
@@ -1233,7 +1281,7 @@ def _acknowledged_problems(
 #: sample - so this covers all of it. Updating this constant is the
 #: deliberate act that means a human decided what a change claims and
 #: registered a proof for it.
-DOCUMENT_DIGEST = "b166dc10e89ebea4611742a58b27f1f02a54c9d83b30056b2d4dba3cfac0e152"
+DOCUMENT_DIGEST = "8919856c1c9150278c4df4ddf3d28272e95a0acdd8826d922e50b681f53607f3"
 
 
 class TestEveryProvenClaimHasAProof:

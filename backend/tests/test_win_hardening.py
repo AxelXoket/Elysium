@@ -19,6 +19,10 @@ import subprocess
 from ctypes import wintypes
 from pathlib import Path
 
+import json
+
+import sys
+
 import pytest
 
 import win_hardening
@@ -601,3 +605,143 @@ class TestItRecognisesEveryWayToGrantAccess:
             win_hardening, "_dacl_sddl",
             lambda path: "D:PAI(A;;FA;;;BA)(AU;;FA;;;WD)")
         assert win_hardening.data_dir_shared_with("anywhere") == []
+
+
+@WINDOWS_ONLY
+class TestTheProcessRefusesToBeRead:
+    """narrow_own_process, measured the only way it can be.
+
+    It is IRREVERSIBLE for the life of a process, so it cannot run inside
+    pytest: every test after it would be measuring a different program, and
+    two files here read a child's command line, which needs rights this takes
+    away from anybody looking at US. So the subject is a helper child and the
+    probe is here.
+
+    The ground control is not optional and is written first. Without it,
+    "OpenProcess failed" is indistinguishable from "the child died", which is
+    the shape of a test that reports success for a protection that never
+    applied.
+    """
+
+    _PROCESS_VM_READ = 0x0010
+    _PROCESS_QUERY_INFORMATION = 0x0400
+    _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    _PROCESS_TERMINATE = 0x0001
+    _WRITE_DAC = 0x00040000
+
+    def _child(self, arm: str, secret: str):
+        child = subprocess.Popen(
+            [sys.executable, str(Path(__file__).with_name("dacl_child.py")),
+             arm, secret],
+            stdout=subprocess.PIPE, text=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        line = child.stdout.readline()
+        assert line, "the helper child printed nothing"
+        return child, json.loads(line)
+
+    def _open(self, pid: int, mask: int):
+        # use_last_error, because ctypes.windll does NOT preserve it: the
+        # first version of this read a stale zero and reported "refused for
+        # the wrong reason: error 0" for a refusal that was working.
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL,
+                                       wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        handle = kernel.OpenProcess(mask, False, pid)
+        err = ctypes.get_last_error() if not handle else 0
+        
+        if handle:
+            kernel.CloseHandle(handle)
+        return bool(handle), err
+
+    def _read(self, pid: int, address: int, length: int) -> bytes | None:
+        kernel = ctypes.windll.kernel32
+        handle = kernel.OpenProcess(
+            self._PROCESS_VM_READ | self._PROCESS_QUERY_INFORMATION,
+            False, pid)
+        if not handle:
+            return None
+        try:
+            buf = ctypes.create_string_buffer(length)
+            got = ctypes.c_size_t(0)
+            ok = kernel.ReadProcessMemory(handle, ctypes.c_void_p(address),
+                                          buf, length, ctypes.byref(got))
+            return buf.raw[:got.value] if ok else None
+        finally:
+            kernel.CloseHandle(handle)
+
+    def test_ground_an_ordinary_process_hands_its_memory_over(self) -> None:
+        # The exploit recorded in launch_token.py's docstring, reproduced.
+        # If this ever stops passing, every assertion below proves nothing.
+        secret = "ELYSIUM-TEST-GROUND-VALUE"
+        child, info = self._child("plain", secret)
+        try:
+            assert info["narrowed"] is None
+            opened, err = self._open(info["pid"], self._PROCESS_VM_READ)
+            assert opened, f"could not even open the child: error {err}"
+            got = self._read(info["pid"], info["address"], info["length"])
+            assert got == secret.encode("ascii"), got
+        finally:
+            child.kill()
+
+    def test_a_narrowed_process_refuses_the_read(self) -> None:
+        secret = "ELYSIUM-TEST-NARROW-VALUE"
+        child, info = self._child("narrow", secret)
+        try:
+            assert info["narrowed"] is True, "the child could not narrow itself"
+            opened, err = self._open(info["pid"], self._PROCESS_VM_READ)
+            assert not opened, "the memory is still open to any program"
+            # The error CODE, not merely "it failed": a dead child also fails.
+            assert err == 5, f"refused for the wrong reason: error {err}"
+            assert self._read(info["pid"], info["address"],
+                              info["length"]) is None
+        finally:
+            child.kill()
+
+    def test_the_owner_cannot_simply_write_the_permissions_back(self) -> None:
+        """The measurement that killed the first version of this.
+
+        Windows grants the object's OWNER an implicit WRITE_DAC, and a process
+        owns itself. The first mask left it in place, and three calls put
+        PROCESS_ALL_ACCESS back and read the secret verbatim. The OWNER RIGHTS
+        ACE is what closes it, and this is the assertion that would go red if
+        somebody removed that ACE while everything else still looked right.
+        """
+        child, info = self._child("narrow", "ELYSIUM-TEST-WRITEDAC")
+        try:
+            opened, err = self._open(info["pid"], self._WRITE_DAC)
+            assert not opened, "the DACL can be rewritten, so it is decoration"
+            assert err == 5
+        finally:
+            child.kill()
+
+    def test_what_was_deliberately_kept_still_works(self) -> None:
+        # A stricter mask would look like an improvement and would break the
+        # launch path and Task Manager. These two are load-bearing:
+        # run_app._own_image() reads the first, and the second is how anybody
+        # closes the app.
+        child, info = self._child("narrow", "ELYSIUM-TEST-KEEP")
+        try:
+            for mask, why in (
+                (self._PROCESS_QUERY_LIMITED_INFORMATION,
+                 "run_app._own_image and the single instance handover"),
+                (self._PROCESS_TERMINATE, "taskkill and Task Manager"),
+            ):
+                opened, err = self._open(info["pid"], mask)
+                assert opened, f"{why} broke: error {err}"
+        finally:
+            child.kill()
+
+    def test_the_keep_mask_names_no_right_that_would_undo_it(self) -> None:
+        # Read from the constant rather than retyped. Each of these was
+        # measured to be a full bypass on its own, so any future edit that
+        # widens the mask has to fail here first.
+        for name, bit in (("PROCESS_VM_READ", 0x0010),
+                          ("PROCESS_VM_WRITE", 0x0020),
+                          ("PROCESS_DUP_HANDLE", 0x0040),
+                          ("PROCESS_CREATE_THREAD", 0x0002),
+                          ("WRITE_DAC", 0x00040000),
+                          ("WRITE_OWNER", 0x00080000)):
+            assert not (win_hardening._PROCESS_KEEP_MASK & bit), (
+                f"the keep mask grants {name}, which undoes the whole thing")
+
