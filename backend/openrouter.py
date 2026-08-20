@@ -547,10 +547,29 @@ async def complete(
     # holding the lock stalls it for up to the busy_timeout, and every other
     # live SSE stream in the process freezes with it.
     #
-    # run_sync's default is abandon_on_cancel=False, so a client that
-    # disconnects during this read has its CancelledError delivered after the
-    # read returns rather than mid-query. completions.py:1489 already relies on
-    # that same property and says so.
+    # run_sync's default is abandon_on_cancel=False, but that shield is
+    # narrower than it sounds - measured, not assumed. It defers delivery of
+    # a cancellation raised through anyio's OWN bookkeeping (a CancelScope, or
+    # a TaskGroup cancelling one of its members): the wait for the thread is
+    # itself shielded, so the cancellation is held back until the read
+    # returns. A client disconnecting IS this case in this app: this Starlette
+    # build's StreamingResponse only takes the ASGI 2.4 "let send() raise"
+    # path when the server declares spec_version >= 2.4, and uvicorn's HTTP
+    # protocols (h11/httptools) declare "2.3" - so disconnect goes through the
+    # legacy anyio.create_task_group()/cancel_scope.cancel() branch, and this
+    # read is safe from it.
+    #
+    # It does NOT defer a BARE asyncio.Task.cancel() - one called directly on
+    # the underlying Task object, bypassing anyio's scope tree entirely, the
+    # way uvicorn's own Server.shutdown() cancels every outstanding connection
+    # task once timeout_graceful_shutdown is exceeded. Measured directly
+    # against this anyio version: such a cancel is delivered to the awaiting
+    # coroutine immediately, while the worker thread underneath keeps running
+    # to completion, unobserved. For this call that only strands a discarded
+    # API key read - nothing is persisted here - but the same shield is relied
+    # on for real writes elsewhere; see routers/completions.py's
+    # `_stream_exchange` (the `finalizing` flag and its comment) for where a
+    # bare cancel during a write used to race a duplicate one.
     api_key = await anyio.to_thread.run_sync(get_secret, SECRET_API_KEY)
     if not api_key:
         raise OpenRouterError("api_key_not_set")

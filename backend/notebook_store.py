@@ -972,6 +972,31 @@ def record_usage(con, usage: dict) -> None:
 # for the same range again and duplicates every note), retirement written
 # without its replacement (the old note vanishes and nothing takes its place).
 
+#: Every reason ANY writer can refuse a run, across the whole feature. This is
+#: the ONE declaration - notebook_worker.py imports this name rather than
+#: keeping a second frozenset, because a second declaration is exactly how
+#: `plan_invalidated` leaked before: that reason is written below, by
+#: `commit_extraction`'s `require_trace` branch, not by the worker, so a
+#: vocabulary declared only in notebook_worker.py never saw it. It is a
+#: USER-FACING vocabulary - the status route hands these to the panel, which
+#: turns each into a sentence (see WorkerPanel.tsx's SKIP_PROSE) - so every
+#: writer that can set a skip_reason asserts against THIS set before writing,
+#: the same way the error catalogue is checked against errorMessages.ts. A
+#: reason added without a sentence reaches a reader as a snake_case token.
+SKIP_REASONS: frozenset[str] = frozenset({
+    "notebook_daily_cap_reached",
+    "proxy_gate",
+    "plan_invalidated",
+    # Same trigger as plan_invalidated - `commit_extraction`'s require_trace
+    # branch, prior row gone - but a DIFFERENT cause. plan_invalidated's own
+    # wording says "this range genuinely still needs reading", which is true
+    # for an edit (the message still exists, only its wording changed) and
+    # false for a cleared chat (the message is GONE, so there is nothing left
+    # to read). Told apart by whether `to_message_id` still resolves to a row
+    # in `messages` - an edit leaves it there, `clear_chat` does not.
+    "range_cleared",
+})
+
 def auto_accept_for(con, chat_id: int) -> bool:
     """Whether a proposal from THIS chat may be accepted without review.
 
@@ -1002,12 +1027,23 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
                       status: str = "done",
                       skip_reason: str | None = None,
                       error_type: str | None = None,
-                      require_trace: bool = False) -> dict:
+                      require_trace: bool = False,
+                      attempt_token: str | None = None) -> dict:
     """Write the whole outcome of one extraction. Returns what was done.
 
     A duplicate work key is NOT an error: it means this exact range, under this
     exact prompt version and model and language, has already been answered.
     Nothing is written and the caller moves on.
+
+    `attempt_token` is the identity of ONE physical attempt - one claim, one
+    call - not of the range. `work_key` is deterministic in (chat, from, to,
+    model, language), so a re-plan of the IDENTICAL range reuses the SAME key:
+    a stale reply from an attempt that was abandoned and then re-planned would
+    otherwise find the retry's row by that key alone, believe it was settling
+    its own work, and overwrite the retry's outcome with its own stale one.
+    The token is how a settle proves the row is still its to write; see the
+    UPDATE branch below. Only the worker passes one - every other caller
+    (tests included) is unaffected.
 
     The caller opens the transaction. That is deliberate - the point of this
     function is that its writes share one, and a function that opened its own
@@ -1018,62 +1054,112 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
     usage = usage or {}
 
     # The money is recorded FIRST and unconditionally. A reply that turns out
-    # to duplicate an existing key was still sent, still generated and still
-    # billed; skipping this on that path made the spend counter under-report
-    # exactly the calls the user most needs to see.
+    # to duplicate an existing key - or to lose the ownership race below - was
+    # still sent, still generated and still billed; skipping this on that path
+    # made the spend counter under-report exactly the calls the user most
+    # needs to see.
     if usage:
         record_usage(con, usage)
+
+    # This chat has now been looked at by the extractor, and that fact must
+    # outlive the row that just proved it. `forget_proposals_from_messages`
+    # deletes extraction rows on an edit ON PURPOSE, so the cursor rolls back
+    # - but it leaves nothing behind to say "there used to be rows here",
+    # and `_plan_work`'s upgrading-user branch reads that silence as "never
+    # read at all" and jumps to the present, abandoning everything before it.
+    # A flag that a delete cannot touch is the only durable answer.
+    con.execute(
+        "UPDATE chats SET notebook_extracted_ever = 1 WHERE id = ? "
+        "AND notebook_extracted_ever = 0", (chat_id,))
 
     # Looked up rather than caught. `except IntegrityError` treated EVERY
     # constraint failure as "already done" - including the foreign key that
     # fires when the chat was deleted during the provider call, so a whole
     # billed extraction vanished reporting success.
     prior = con.execute(
-        "SELECT status FROM notebook_extractions WHERE work_key = ?",
-        (work_key,)).fetchone()
+        "SELECT status, attempt_token FROM notebook_extractions "
+        "WHERE work_key = ?", (work_key,)).fetchone()
     if prior is not None:
         if prior[0] == "done":
             # The idempotent-consumer answer: answered before, write nothing.
             return {"duplicate": True, "written": 0, "retired": 0}
+        # Ownership. `status != "running"` is what makes this a SETTLE rather
+        # than a CLAIM: a fresh `_record_running` is always allowed to
+        # reclaim a stale row for a new attempt - that is the retry mechanism
+        # working as intended - but the FINAL outcome of an attempt (done or
+        # failed) is refused if the row has since been reclaimed by someone
+        # else. Without this, the scenario above landed as `done` from the
+        # stale attempt's proposals, the retry's own genuine and freshly
+        # billed reply then arrived and was thrown away as a duplicate, and
+        # two calls were paid for while the wrong answer was the one kept.
+        if (status != "running" and attempt_token is not None
+                and prior[1] is not None and prior[1] != attempt_token):
+            return {"duplicate": True, "written": 0, "retired": 0,
+                   "stale_attempt": True}
         # A failed or skipped attempt is NOT an answer. Left as a duplicate,
         # the retry - which was planned, claimed against the daily cap, sent
         # and BILLED, because the cursor only advances past 'done' - had its
         # result thrown away and the range stayed unread forever.
+        #
+        # Same gate as the INSERT branch below: whatever the caller passed in
+        # `skip_reason` for this retry, it is checked against the ONE
+        # declared vocabulary before it is written, not just when this
+        # function invents the reason itself.
+        if skip_reason is not None:
+            assert skip_reason in SKIP_REASONS, skip_reason
+        # A caller with no token of its own (every non-worker caller) leaves
+        # whatever token is already on the row alone, rather than blanking it.
+        new_token = attempt_token if attempt_token is not None else prior[1]
         con.execute(
             "UPDATE notebook_extractions SET status = ?, request_id = ?, "
             "skip_reason = ?, finish_reason = ?, tokens_in = ?, tokens_out = ?,"
-            " cost = ?, error_type = ? WHERE work_key = ?",
+            " cost = ?, error_type = ?, attempt_token = ? WHERE work_key = ?",
             (status, usage.get("request_id"), skip_reason,
              usage.get("finish_reason"), usage.get("tokens_in"),
-             usage.get("tokens_out"), usage.get("cost"), error_type, work_key))
+             usage.get("tokens_out"), usage.get("cost"), error_type,
+             new_token, work_key))
     else:
         if require_trace:
             # A caller that wrote a `running` row before the call and finds it
             # GONE is not looking at a first write. Something deleted it, and
             # exactly one thing does: editing or deleting a message rolls the
-            # cursor back on purpose, so the rewritten stretch gets read again.
+            # cursor back on purpose, so the rewritten stretch gets read again
+            # - OR the chat was CLEARED, which also deletes the row, but for
+            # the opposite reason: there is no stretch left to read at all.
             #
-            # Writing `done` here undid that rollback using text that no
-            # longer exists. Measured: edit a message while an extraction is
-            # in flight and the reply, built from the OLD wording, recreates
-            # the cursor past it - the edited sentence is never read by any
-            # later run, and the notes describe words the user took back.
-            #
-            # So the outcome is recorded for the money and the range is left
-            # unread. `skipped` keeps the cursor behind it, which is the whole
-            # point: this range genuinely still needs reading.
+            # Told apart by whether `to_id` still names a row in `messages`.
+            # An edit leaves the message there, only its wording changed;
+            # `clear_chat` deletes every message in the chat before this
+            # reply can land. Writing `done` for the edit case would undo the
+            # rollback using text that no longer exists - measured: edit a
+            # message while an extraction is in flight and the reply, built
+            # from the OLD wording, recreates the cursor past it, so the
+            # edited sentence is never read by any later run. Writing
+            # `plan_invalidated` for the CLEARED case said "this range
+            # genuinely still needs reading" about messages that no longer
+            # exist to be read.
+            still_exists = con.execute(
+                "SELECT 1 FROM messages WHERE id = ?", (to_id,)).fetchone()
             status = "skipped"
-            skip_reason = "plan_invalidated"
+            skip_reason = "plan_invalidated" if still_exists else "range_cleared"
             proposals = []
+        # Declared or it does not ship, for THIS writer too - not only for
+        # the worker's own `_record_skip`. Whatever set skip_reason above,
+        # whether it was this branch or a caller's argument, an undeclared
+        # token stops here rather than reaching the status route as prose
+        # nobody wrote.
+        if skip_reason is not None:
+            assert skip_reason in SKIP_REASONS, skip_reason
         con.execute(
             "INSERT INTO notebook_extractions "
             "(work_key, chat_id, from_message_id, to_message_id, status, "
             " request_id, skip_reason, finish_reason, tokens_in, tokens_out, "
-            " cost, error_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            " cost, error_type, attempt_token) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (work_key, chat_id, from_id, to_id, status,
              usage.get("request_id"), skip_reason,
              usage.get("finish_reason"), usage.get("tokens_in"),
-             usage.get("tokens_out"), usage.get("cost"), error_type))
+             usage.get("tokens_out"), usage.get("cost"), error_type,
+             attempt_token))
 
     accept = auto_accept_for(con, chat_id) if proposals else False
     # The message the notes came from may have been deleted or edited away

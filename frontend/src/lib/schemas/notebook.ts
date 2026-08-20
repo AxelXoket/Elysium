@@ -164,6 +164,11 @@ export const WorkerStatusSchema = z.object({
     done: z.number(),
     failed: z.number(),
     skipped: z.number(),
+    /** Calls that were made and never settled - the app killed with its
+     *  window, or the vault locked mid-request. Counted inside `failed` as
+     *  well, so the two must not be added together. Defaulted so an older
+     *  server that does not send it renders as zero rather than crashing. */
+    abandoned: z.number().default(0),
     skip_reasons: z.record(z.string(), z.number()).default({}),
   }),
   spend: z.object({

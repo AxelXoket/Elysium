@@ -20,9 +20,10 @@
  *
  * Reduced motion: a plain veil fade; commit at 0.12s, total 0.55s.
  */
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { motion as m } from "motion/react";
 import { useReducedMotion } from "@/components/motion/ReducedMotion";
+import { useLockAudioWarningStore } from "@/lib/query/vault";
 
 /* The commit (real lock API -> gate flip) must land INSIDE the full-ink
  * window, or the app->lock-screen swap shows through the half-drawn veil:
@@ -34,6 +35,10 @@ const TOTAL_MS = 2000;
 const COMMIT_MS = 820;
 const REDUCED_TOTAL_MS = 550;
 const REDUCED_COMMIT_MS = 240;
+// How long the ink takes to solidify for the warning, and to fade back out
+// once it is acknowledged. Independent of TOTAL_MS: those govern the normal
+// silent choreography, this only ever runs for the rare partial lock.
+const WARNING_FADE_MS = 350;
 
 const EASE_SMOOTH: [number, number, number, number] = [0.4, 0, 0.2, 1];
 const STROKE = "#DEE9F5";
@@ -66,13 +71,19 @@ export function LockOverlay({
     onDoneRef.current = onDone;
   });
 
+  // A normal, clean lock stays exactly as silent as before: the "animation
+  // finished" timer alone decides onDone, same as it always did. The only
+  // addition is what happens once that timer fires - see the outcome effect
+  // below - and that addition does nothing at all unless the lock the
+  // backend just ran left audio behind.
+  const [animationDone, setAnimationDone] = useState(false);
   useEffect(() => {
     const commit = setTimeout(
       () => onCommitRef.current(),
       reduced ? REDUCED_COMMIT_MS : COMMIT_MS,
     );
     const done = setTimeout(
-      () => onDoneRef.current(),
+      () => setAnimationDone(true),
       reduced ? REDUCED_TOTAL_MS : TOTAL_MS,
     );
     return () => {
@@ -81,7 +92,42 @@ export function LockOverlay({
     };
   }, [reduced]);
 
+  // "warn" only ever follows a settled mutation that actually left files
+  // behind - never a guess taken before the backend answered. If the
+  // animation timer fires before /vault/lock has resolved, `pending` stays
+  // true and `outcome` below keeps waiting for it instead of deciding early;
+  // a lock that is simply slow must not be read as a clean one.
+  const audioPending = useLockAudioWarningStore((s) => s.pending);
+  const audioLeft = useLockAudioWarningStore((s) => s.audioLeft);
+  // `dismissing` is the only piece that is really this component's OWN
+  // state (set from the "Got it" click, an event handler); everything else
+  // is derived at render time so deciding it never needs a setState call
+  // inside an effect - the effect below only ever calls the onDone PROP,
+  // the same "synchronize with an external system" an effect is for.
+  const [dismissing, setDismissing] = useState(false);
+  const outcome: "waiting" | "clear" | "warn" | "dismissing" = dismissing
+    ? "dismissing"
+    : !animationDone || audioPending
+      ? "waiting"
+      : audioLeft.length > 0
+        ? "warn"
+        : "clear";
+
+  const clearFiredRef = useRef(false);
+  useEffect(() => {
+    if (outcome === "clear" && !clearFiredRef.current) {
+      clearFiredRef.current = true;
+      onDoneRef.current();
+    }
+  }, [outcome]);
+
+  const acknowledgeWarning = () => {
+    setDismissing(true);
+    setTimeout(() => onDoneRef.current(), WARNING_FADE_MS);
+  };
+
   const totalS = (reduced ? REDUCED_TOTAL_MS : TOTAL_MS) / 1000;
+  const holdingForWarning = outcome === "warn" || outcome === "dismissing";
 
   return (
     <div className="lock-overlay" role="status" aria-label="Locking Elysium">
@@ -93,22 +139,39 @@ export function LockOverlay({
         transition={{ duration: totalS, times: [0, 0.08, 0.8, 1], ease: "easeOut" }}
       />
       {/* phase 2 veil: full ink - sweeps in right after the snap and is
-          FULLY opaque before the commit fires (the gate flip hides under it) */}
+          FULLY opaque before the commit fires (the gate flip hides under it).
+          A clean lock's ink dissolves on the same fixed timeline it always
+          did. A partial one holds solid instead of dissolving at the end -
+          the gate flip is already hidden under it, so holding it is what
+          keeps the warning from ever appearing over the bare lock screen -
+          and only fades once the warning is acknowledged. */}
       <m.div
         className="lock-overlay-ink"
         initial={{ opacity: 0 }}
-        animate={{ opacity: reduced ? [0, 1, 1, 0] : [0, 0, 1, 1, 0] }}
+        animate={
+          outcome === "warn"
+            ? { opacity: 1 }
+            : outcome === "dismissing"
+              ? { opacity: 0 }
+              : { opacity: reduced ? [0, 1, 1, 0] : [0, 0, 1, 1, 0] }
+        }
         transition={
-          reduced
-            ? { duration: totalS, times: [0, 0.35, 0.7, 1], ease: "easeInOut" }
-            : {
-                duration: totalS,
-                times: [0, 0.27, 0.38, 0.8, 1],
-                ease: ["linear", EASE_SMOOTH, "linear", EASE_SMOOTH],
-              }
+          outcome === "warn" || outcome === "dismissing"
+            ? { duration: WARNING_FADE_MS / 1000, ease: EASE_SMOOTH }
+            : reduced
+              ? { duration: totalS, times: [0, 0.35, 0.7, 1], ease: "easeInOut" }
+              : {
+                  duration: totalS,
+                  times: [0, 0.27, 0.38, 0.8, 1],
+                  ease: ["linear", EASE_SMOOTH, "linear", EASE_SMOOTH],
+                }
         }
       />
-      {!reduced && (
+      {/* Unmounted once the warning takes over: the flex row centres its
+          children as a group, and this glyph's own box would otherwise still
+          claim width even at opacity 0, pushing the (visible) warning card
+          off centre beside it. */}
+      {!reduced && !holdingForWarning && (
         <m.div
           className="lock-overlay-glyph"
           initial={{ scale: 0.9, y: 10, opacity: 0 }}
@@ -233,6 +296,58 @@ export function LockOverlay({
               style={{ transformOrigin: "0px 0px", x: 89, y: 32 }}
             />
           </svg>
+        </m.div>
+      )}
+      {/* Only a partial lock reaches this. A clean one dissolves the ink on
+          the fixed timeline above and is never told anything happened at
+          all - the same silence the plain "Passphrase changed." success
+          message keeps for a clean rotation. This reuses the vault-card
+          recipe verbatim (same dark auth surface as CreatePassphrase's own
+          "One file is still readable" notice), not a new visual language. */}
+      {holdingForWarning && (
+        <m.div
+          className="vault-stage"
+          style={{ position: "relative", zIndex: 1 }}
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: outcome === "dismissing" ? 0 : 1, y: 0 }}
+          transition={{ duration: WARNING_FADE_MS / 1000, ease: EASE_SMOOTH }}
+        >
+          <div
+            className="vault-card"
+            role="alertdialog"
+            aria-label="Some spoken replies were not removed"
+            data-testid="lock-audio-left-notice"
+          >
+            <div className="vault-head">
+              <h1 className="vault-title">Locked, but some audio stayed readable</h1>
+              <p className="vault-note">
+                Elysium is locked and your data is encrypted again. Some
+                spoken replies could not be removed and are still on disk as
+                plain audio, not encrypted:
+              </p>
+            </div>
+            <ul className="space-y-1">
+              {audioLeft.map((name) => (
+                <li key={name}>
+                  <code data-testid={`lock-audio-left-name-${name}`} className="vault-note">
+                    {name}
+                  </code>
+                </li>
+              ))}
+            </ul>
+            <p className="vault-warning">
+              They will not be removed automatically. Delete them yourself
+              from the Elysium data folder if you do not want them there.
+            </p>
+            <button
+              type="button"
+              className="sidebar-dialog-action vault-submit"
+              data-testid="lock-audio-left-ack"
+              onClick={acknowledgeWarning}
+            >
+              Got it
+            </button>
+          </div>
         </m.div>
       )}
     </div>

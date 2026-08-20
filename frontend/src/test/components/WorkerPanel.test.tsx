@@ -64,7 +64,7 @@ describe("WorkerPanel", () => {
     });
     const box = await screen.findByTestId("worker-status");
     expect(box.textContent).toMatch(/0 of 60 calls today/);
-    expect(box.textContent).toMatch(/0 lifetime/);
+    expect(box.textContent).toMatch(/0 calls, 0\.00000 credits lifetime/);
   });
 
   it("shows the lifetime total beside today's, and the two can differ",
@@ -79,8 +79,25 @@ describe("WorkerPanel", () => {
     });
     const box = await screen.findByTestId("worker-status");
     expect(box.textContent).toMatch(/3 of 60 calls today/);
-    expect(box.textContent).toMatch(/47 lifetime/);
+    expect(box.textContent).toMatch(/47 calls, 0\.00910 credits lifetime/);
     expect(box.textContent).not.toMatch(/47 of 60 calls today/);
+  });
+
+  it("shows the lifetime MONEY, not only the lifetime call count", async () => {
+    // Defect 1: spend_lifetime.cost - the figure notebook_store.py's own
+    // docstring argues at length must not be hidden from "the one screen
+    // that is supposed to be honest about every credit spent" - was rendered
+    // NOWHERE. Only .calls reached the panel. Seeded so today's cost and the
+    // lifetime cost are different numbers, so this cannot pass by echoing
+    // today's figure twice, and both must be visible together.
+    mount({
+      spend: { calls: 3, tokens_in: 900, tokens_out: 40, cost: 0.0004 },
+      spend_lifetime: { calls: 47, tokens_in: 9000, tokens_out: 400,
+                        cost: 0.0091 },
+    });
+    const box = await screen.findByTestId("worker-status");
+    expect(box.textContent).toMatch(/0\.00040 credits/);          // today's
+    expect(box.textContent).toMatch(/0\.00910 credits lifetime/); // lifetime's
   });
 
   it("says WHY runs were skipped, in words", async () => {
@@ -173,5 +190,54 @@ describe("WorkerPanel", () => {
       expect(JSON.parse(String((call![1] as RequestInit).body)))
         .toEqual({ enabled: false });
     });
+  });
+});
+
+describe("runs that were paid for and lost", () => {
+  // The money case. `abandoned` rows carry status 'failed' too, so the panel
+  // used to report them all under one line saying "nothing was lost" - while
+  // the backend counted them separately precisely because something WAS
+  // lost: the call was billed and those messages are never read.
+  it("says the run was paid for rather than that nothing was lost", async () => {
+    mount({ stats: { done: 3, failed: 2, skipped: 0, abandoned: 2,
+                     skip_reasons: {} } });
+    const line = await screen.findByTestId("worker-abandoned");
+    expect(line.textContent).toMatch(/paid for/i);
+    // Ground: with every failure abandoned, the reassuring line must not
+    // appear at all - that is the sentence that was untrue.
+    expect(screen.getByTestId("worker-status").textContent)
+      .not.toMatch(/Nothing was lost/i);
+  });
+
+  it("still reassures about an ordinary failure", async () => {
+    // Positive control, and the half that must survive: a genuine failure
+    // really does leave its messages unread rather than skipped.
+    mount({ stats: { done: 3, failed: 2, skipped: 0, abandoned: 0,
+                     skip_reasons: {} } });
+    const box = await screen.findByTestId("worker-status");
+    expect(box.textContent).toMatch(/2 runs failed/);
+    expect(box.textContent).toMatch(/Nothing was lost/i);
+    expect(screen.queryByTestId("worker-abandoned")).not.toBeInTheDocument();
+  });
+
+  it("counts the two apart when both happened", async () => {
+    mount({ stats: { done: 1, failed: 5, skipped: 0, abandoned: 2,
+                     skip_reasons: {} } });
+    const box = await screen.findByTestId("worker-status");
+    // Five failed, two of them abandoned, so three ordinary ones. Added
+    // together instead of nested it would read seven.
+    expect(box.textContent).toMatch(/3 runs failed/);
+    expect(box.textContent).toMatch(/2 runs were cut off/);
+  });
+
+  it("says a withdrawn edit in words, not as a raw code", async () => {
+    // This skip reason is written by a different path from the worker's own,
+    // so the gate that keeps the prose table complete never covered it and
+    // the panel printed the token itself at the reader.
+    mount({ stats: { done: 0, failed: 0, skipped: 1, abandoned: 0,
+                     skip_reasons: { plan_invalidated: 1 } } });
+    const box = await screen.findByTestId("worker-status");
+    expect(box.textContent).not.toMatch(/plan_invalidated/);
+    expect(box.textContent).toMatch(/wording you took back/i);
   });
 });

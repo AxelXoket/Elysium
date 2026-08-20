@@ -268,8 +268,9 @@ def _migrate(con: sqlite3.Connection) -> None:
 
 #: What THIS build understands. The guard at the top of _migrate refuses a file
 #: stamped higher; the bump at the bottom of _migrate_notebook records success.
-#: History: 0/1 pre-v1.1 · 2 messages.updated_at · 3 notebook + boundaries.
-_SCHEMA_VERSION = 3
+#: History: 0/1 pre-v1.1 · 2 messages.updated_at · 3 notebook + boundaries ·
+#: 4 notebook_extractions.attempt_token + chats.notebook_extracted_ever.
+_SCHEMA_VERSION = 4
 
 
 def _migrate_notebook(con: sqlite3.Connection) -> None:
@@ -429,7 +430,39 @@ CREATE TABLE IF NOT EXISTS notebook_spend (
         con.execute(
             "ALTER TABLE notebook_entries ADD COLUMN evidence_role TEXT")
 
+    extraction_cols = {r[1] for r in
+                       con.execute(
+                           "PRAGMA table_info(notebook_extractions)").fetchall()}
+    if "attempt_token" not in extraction_cols:
+        # The identity of ONE physical attempt (one claim, one call) - not of
+        # the range. `work_key` is deterministic in (chat, from, to, model,
+        # language), so a re-plan of the identical range reuses the same key;
+        # without this a stale settle from an abandoned attempt cannot be told
+        # apart from the retry's own, and can overwrite it. See
+        # commit_extraction's ownership check.
+        con.execute(
+            "ALTER TABLE notebook_extractions ADD COLUMN attempt_token TEXT")
+
     chat_cols = {r[1] for r in con.execute("PRAGMA table_info(chats)").fetchall()}
+    if "notebook_extracted_ever" not in chat_cols:
+        # Outlives the rows that would otherwise be the only evidence of it.
+        # `forget_proposals_from_messages` deletes every extraction row above
+        # an edited message ON PURPOSE, so the cursor rolls back - but that
+        # can empty the table for a chat that has in fact been read many
+        # times, and `_plan_work`'s upgrading-user branch (last==0, a big
+        # backlog) cannot tell that apart from a chat that has genuinely
+        # never been looked at. Backfilled from whatever extraction history
+        # is still on disk right now, for every install that upgrades into
+        # this column already carrying rows; commit_extraction keeps it true
+        # for every chat from here on, and never clears it.
+        con.execute(
+            "ALTER TABLE chats ADD COLUMN "
+            "notebook_extracted_ever INTEGER NOT NULL DEFAULT 0"
+        )
+        con.execute(
+            "UPDATE chats SET notebook_extracted_ever = 1 WHERE id IN "
+            "(SELECT DISTINCT chat_id FROM notebook_extractions)"
+        )
     if "use_global_boundaries" not in chat_cols:
         # NOT NULL DEFAULT 1 is legal in ALTER because 1 is a constant, unlike
         # the datetime() default that forced messages.updated_at to be nullable.

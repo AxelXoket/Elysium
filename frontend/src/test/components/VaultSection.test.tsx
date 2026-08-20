@@ -181,6 +181,94 @@ describe("changing the vault passphrase", () => {
   });
 });
 
+/**
+ * The one thing a rotation is supposed to revoke. change-passphrase can
+ * answer `ok: true` and still name a sidecar copy it could not re-key - a
+ * complete vault still openable with the passphrase the user just tried to
+ * replace. That name arrives on THIS response only; it is nowhere in
+ * /vault/status, so nothing else in the app ever gets a second chance to
+ * show it.
+ */
+describe("VaultSection - what a rotation did not revoke", () => {
+  beforeEach(() => vi.unstubAllGlobals());
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("GROUND: a clean rotation says only 'Passphrase changed.'", async () => {
+    const user = userEvent.setup();
+    fetchStub(() => new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    renderWithQueryClient(<VaultSection />);
+
+    await fill(user, {
+      current: "old passphrase here",
+      next: LONG_ENOUGH,
+      repeat: LONG_ENOUGH,
+    });
+
+    expect(await screen.findByText("Passphrase changed.")).toBeInTheDocument();
+    expect(screen.queryByTestId("vault-unrevoked-notice")).toBeNull();
+  });
+
+  it("POSITIVE CONTROL: names the file still readable under the old passphrase", async () => {
+    const user = userEvent.setup();
+    fetchStub(() => new Response(
+      JSON.stringify({ ok: true, unrevoked: ["app.db.premigrate.bak"] }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ));
+    renderWithQueryClient(<VaultSection />);
+
+    await fill(user, {
+      current: "old passphrase here",
+      next: LONG_ENOUGH,
+      repeat: LONG_ENOUGH,
+    });
+
+    expect(await screen.findByText("Passphrase changed.")).toBeInTheDocument();
+    const notice = await screen.findByTestId("vault-unrevoked-notice");
+    expect(notice).toBeInTheDocument();
+    expect(
+      screen.getByTestId("vault-unrevoked-name-app.db.premigrate.bak"),
+    ).toHaveTextContent("app.db.premigrate.bak");
+  });
+
+  it("clears the notice the moment a new attempt is submitted, success or not", async () => {
+    const user = userEvent.setup();
+    let call = 0;
+    fetchStub(() => {
+      call += 1;
+      // First submit leaves a copy unrevoked; second is refused outright.
+      const body = call === 1
+        ? { ok: true, unrevoked: ["app.db.premigrate.bak"] }
+        : { detail: "wrong_passphrase" };
+      return new Response(JSON.stringify(body), {
+        status: call === 1 ? 200 : 403,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    renderWithQueryClient(<VaultSection />);
+
+    await fill(user, {
+      current: "old passphrase here",
+      next: LONG_ENOUGH,
+      repeat: LONG_ENOUGH,
+    });
+    expect(await screen.findByTestId("vault-unrevoked-notice")).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Current passphrase"), "wrong one");
+    await user.type(screen.getByLabelText("New passphrase"), LONG_ENOUGH);
+    await user.type(screen.getByLabelText("Repeat new passphrase"), LONG_ENOUGH);
+    await user.click(screen.getByRole("button", { name: "Change passphrase" }));
+
+    await screen.findByRole("alert");
+    expect(
+      screen.queryByTestId("vault-unrevoked-notice"),
+      "a stale warning from the PREVIOUS change survived a new attempt",
+    ).toBeNull();
+  });
+});
+
 describe("VaultSection - the leftovers it has to show", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.restoreAllMocks());

@@ -47,6 +47,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import secrets
 
 import anyio.to_thread
 
@@ -65,13 +66,17 @@ QUEUE_MAXSIZE = 32
 
 #: Every reason a run can be refused. It is a USER-FACING vocabulary - the
 #: status route hands these to the panel, which turns each into a sentence -
-#: so it is declared here and checked against the panel's map, exactly like
-#: the error catalogue is checked against errorMessages.ts. A reason added
-#: without a sentence reaches a reader as a snake_case token.
-SKIP_REASONS: frozenset[str] = frozenset({
-    "notebook_daily_cap_reached",
-    "proxy_gate",
-})
+#: so it is checked against the panel's map, exactly like the error catalogue
+#: is checked against errorMessages.ts. A reason added without a sentence
+#: reaches a reader as a snake_case token.
+#:
+#: Declared in notebook_store.py, not here, and reused under the same name
+#: rather than copied. `plan_invalidated` is written from THAT module -
+#: `commit_extraction`'s `require_trace` branch, not this worker - and a
+#: second frozenset here would leave that writer checking itself against a
+#: vocabulary that never heard of its own reason, which is exactly how it
+#: leaked before this alias replaced the copy.
+SKIP_REASONS: frozenset[str] = notebook.SKIP_REASONS
 
 #: Consecutive failures. Five is a cooldown, twenty is a stop.
 TRIP_AFTER = 5
@@ -82,6 +87,17 @@ STOP_AFTER = 20
 #: billed call into a provider that is still broken.
 COOLDOWN_BASE_S = 60.0
 COOLDOWN_MAX_S = 3600.0
+
+#: How long `quiesce()`/`stop()` will wait for an ALREADY-PAID extraction to
+#: finish settling before locking anyway. What it is waiting for is one
+#: SQLite transaction (see Worker._settle) - this is generous headroom for a
+#: slow disk, not a promise that every write completes. See Defect 1: a bare
+#: `asyncio.Task.cancel()` unwinds the awaiting coroutine at once even through
+#: `anyio.to_thread.run_sync(abandon_on_cancel=False)` - measured, it does NOT
+#: protect the await from an external cancel - so the only reliable way to
+#: let a paid write finish is to run it as its OWN task, shielded, and have
+#: the canceller wait for THAT task specifically.
+SETTLE_GRACE_S = 5.0
 
 
 class Breaker:
@@ -188,6 +204,13 @@ class Worker:
         self.last_error: str | None = None
         self.runs = 0
         self.task: asyncio.Task | None = None
+        # The tail of ONE extraction - parse a paid reply, write it or record
+        # its failure - running as its OWN task, shielded from the loop
+        # task's cancellation. Set the instant that task is created, cleared
+        # by the task itself when it finishes; `quiesce()`/`stop()` read this
+        # to wait for a paid call to actually settle before the vault key is
+        # cleared out from under it. See _handle, _settle, Defect 1.
+        self.settling: asyncio.Task | None = None
 
     @property
     def dropped_offers(self) -> int:
@@ -319,6 +342,13 @@ class Worker:
             config.NOTEBOOK_EXTRACT_EVERY_TURNS, self.batch_size)
         if plan is None:
             return
+        # The identity of THIS attempt, not of the range - work_key names the
+        # range and is deterministic, so a re-plan of the identical range
+        # reuses the same key. Carried through every write this attempt makes
+        # (_record_running, _record_failure, _write) so a stale settle from an
+        # abandoned attempt can be told apart from the retry that reclaimed
+        # the row. See commit_extraction's ownership check, Defect 2.
+        plan["attempt_token"] = secrets.token_hex(16)
 
         # Before the gate, before the claim, before the money. The key was
         # computed and then never consulted: `already_done` had no caller in
@@ -413,6 +443,41 @@ class Worker:
             await _record_failure(chat_id, plan, type(exc).__name__)
             return
 
+        # Defect 1. From here the call has been sent, generated and BILLED -
+        # `reply` is the proof. Everything left to do (parse it, write it or
+        # record its failure) must not be allowed to vanish if the vault
+        # locks in the next few lines, and a bare `asyncio.Task.cancel()`
+        # reaches here even through `anyio.to_thread.run_sync
+        # (abandon_on_cancel=False)`: measured, that flag does NOT protect
+        # the awaiting coroutine from an external cancel - the coroutine
+        # unwinds at once and the worker thread keeps running detached,
+        # racing `vault_state.clear_key()` for a connection to open.
+        #
+        # So the rest of this turn runs as its OWN task, SHIELDED from our
+        # own cancellation. `quiesce()`/`stop()` do not just cancel this loop
+        # and walk away - they wait for `self.settling` specifically, so a
+        # commit that has already been paid for is allowed to finish (or to
+        # record its own failure, with the cost attached) before the caller's
+        # next line clears the key out from under it.
+        settle_task = asyncio.create_task(
+            self._settle(chat_id, plan, reply), name="notebook-settle")
+        self.settling = settle_task
+
+        def _clear_settling(t: asyncio.Task, w: "Worker" = self) -> None:
+            if w.settling is t:
+                w.settling = None
+        settle_task.add_done_callback(_clear_settling)
+
+        await asyncio.shield(settle_task)
+
+    async def _settle(self, chat_id: int, plan: dict, reply: dict) -> None:
+        """Parse a PAID reply and land it. Runs as its own task - see the
+        shield in `_handle` above, which is the whole reason this is a
+        separate method rather than the tail of that one: everything in here
+        must keep running to completion even if `_handle`'s own await gets
+        cancelled out from under it.
+        """
+        loop = asyncio.get_running_loop()
         usage = notebook_extract.usage_of(reply)
         try:
             proposals, _dropped = notebook_extract.parse_reply(
@@ -425,15 +490,9 @@ class Worker:
             await _record_failure(chat_id, plan, str(exc), usage=usage)
             return
 
-        # AFTER the write, not before. Declared first, a vault that locked
-        # between the reply and the write - the module's own documented
-        # scenario - left a call that was billed, facts discarded, NO row of
-        # any status, a healthy breaker and an incremented run counter.
         try:
             await anyio.to_thread.run_sync(_write, chat_id, plan, proposals,
                                            usage)
-        except asyncio.CancelledError:
-            raise
         except Exception as exc:
             # COUNTED, not merely recorded. A row was written and nothing else
             # was: the breaker stayed closed, `unhandled` stayed at zero and
@@ -560,23 +619,68 @@ def _note_death(task: asyncio.Task) -> None:
         logger.warning("Notebook worker stopped: %s", worker.died)
 
 
+async def _await_settle() -> None:
+    """Wait for an already-PAID extraction to actually finish, bounded.
+
+    Shared by `quiesce()` and `stop()`. `asyncio.shield` here for the same
+    reason `_handle` shields the task in the first place: if the CALLER of
+    this function is itself cancelled (a lock request torn down mid-flight,
+    a shutdown that does not wait), that must not re-open the exact race this
+    exists to close by cancelling the shielded settle task out from under us
+    a second time.
+    """
+    settle = worker.settling
+    if settle is None or settle.done():
+        return
+    try:
+        await asyncio.wait_for(asyncio.shield(settle), timeout=SETTLE_GRACE_S)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Notebook: a paid extraction did not settle within %.0fs; "
+            "proceeding without it.", SETTLE_GRACE_S)
+    except BaseException:
+        logger.warning("Notebook: the in-flight extraction did not settle "
+                       "cleanly.")
+
+
 async def quiesce() -> None:
     """Stand down for a vault lock: cancel what is in flight, drop the queue.
 
     Called from `lock_vault_now`, which is the single funnel both the button
-    and the idle watchdog come through. The loop is restarted immediately, so
-    this is a pause rather than a shutdown - what it must NOT leave behind is
-    an in-flight request carrying decrypted text, or a backlog of offers that
-    will each wake into a locked vault and be counted as an error.
+    and the idle watchdog come through, IMMEDIATELY before the vault key is
+    cleared. The loop is restarted before returning, so this is a pause
+    rather than a shutdown - what it must NOT leave behind is an in-flight
+    request carrying decrypted text, a backlog of offers that will each wake
+    into a locked vault and be counted as an error, or (Defect 1) a reply
+    that was already paid for and received, discarded mid-write because the
+    key was cleared out from under the thread writing it.
     """
     task, worker.task = worker.task, None
-    queue, worker.queue = worker.queue, None
     if task is not None and not task.done():
         task.cancel()
         try:
             await task
         except BaseException:
             pass
+
+    # Defect 1. The loop task above is cancelled and gone, but `_handle` may
+    # have handed the tail of a PAID call to `self.settling` as its own
+    # shielded task before it went - see `_handle`. That task is still
+    # running, or about to be, entirely independent of the cancellation just
+    # awaited. Waiting for it HERE, before the queue is torn down and before
+    # this function returns to `lock_vault_now` (which clears the key on its
+    # very next line), is what lets that write actually land instead of
+    # racing a cleared key in a detached thread.
+    await _await_settle()
+
+    # The queue is nulled and drained only AFTER the cancellation above has
+    # fully unwound - not before. Nulling it first left `run()`'s own
+    # `finally: self.queue.task_done()` reading `self.queue` as None while
+    # the CancelledError it was supposed to let through was still in flight,
+    # replacing that CancelledError with an AttributeError and reporting the
+    # loop as died rather than cleanly cancelled. See `stop()`'s docstring,
+    # which already carries this fix; this function had not caught up to it.
+    queue, worker.queue = worker.queue, None
     if queue is not None:
         while True:
             try:
@@ -601,6 +705,12 @@ async def stop() -> None:
             await task
         except BaseException:
             pass
+    # Defect 1, same fix as `quiesce()`: give an already-paid call the chance
+    # to actually land before this function returns. Best-effort like the
+    # rest of this path - the packaged exe never reaches here at all - but a
+    # graceful dev-mode shutdown should not needlessly throw away a call that
+    # was already billed and had already come back.
+    await _await_settle()
     # Cleared AFTER the await, not before. Nulled first, the CancelledError
     # unwound into run()'s `finally: self.queue.task_done()` and raised
     # AttributeError from inside the finally - which REPLACES the
@@ -656,6 +766,20 @@ def _plan_work(chat_id: int, model_id: str, language: str,
             "WHERE chat_id = ? AND (status = 'done' "
             "     OR (status = 'failed' AND error_type = ?))",
             (chat_id, notebook.ABANDONED_IN_FLIGHT)).fetchone()[0]
+        # Whether this chat has EVER been read, which `last == 0` alone does
+        # not answer. `forget_proposals_from_messages` deletes extraction rows
+        # above an edited message ON PURPOSE, to roll the cursor back - and
+        # that can empty the table for a chat that has in fact been read many
+        # times over. Without this flag, Defect 3: a 61-message chat with
+        # three completed ranges, an edit to message 5, and `last` collapses
+        # to 0 exactly like a chat that has never been looked at - so the
+        # branch below reads it as the upgrading-user case and jumps to the
+        # PRESENT, abandoning messages 1..41 (the edited one included) for
+        # good. The flag survives the delete that emptied `last`.
+        ever_extracted = con.execute(
+            "SELECT notebook_extracted_ever FROM chats WHERE id = ?",
+            (chat_id,)).fetchone()
+        ever_extracted = bool(ever_extracted[0]) if ever_extracted else False
         # COUNT before SELECT. Nineteen offers in twenty return here, and the
         # version that fetched the rows first decrypted every pending message
         # body to do it - a hundred and ninety message bodies per cycle, to
@@ -674,10 +798,11 @@ def _plan_work(chat_id: int, model_id: str, language: str,
         # so the other four hundred and eighty were silently never extracted.
         # The one silent-loss shape this whole module exists to prevent,
         # rebuilt at the other end of the same function.
-        if last == 0 and pending > limit * 2:
-            # NOTHING has been read in this chat and there is a backlog. That
-            # is the upgrading user: an existing conversation meeting this
-            # feature for the first time.
+        if last == 0 and pending > limit * 2 and not ever_extracted:
+            # NOTHING has EVER been read in this chat (not merely "since the
+            # cursor last moved") and there is a backlog. That is the
+            # upgrading user: an existing conversation meeting this feature
+            # for the first time.
             #
             # Reading from the OLDEST end would have the notebook describing
             # the opening of a story that has since moved four hundred
@@ -754,7 +879,12 @@ def _write(chat_id: int, plan: dict, proposals: list[dict],
             # This path ALWAYS wrote a `running` row first. If it is gone,
             # an edit or a delete rolled the cursor back under us on purpose,
             # and these notes describe wording the user has since taken back.
-            usage=usage, status="done", require_trace=True)
+            usage=usage, status="done", require_trace=True,
+            # Whose attempt this is. If the row has since been reclaimed by a
+            # NEWER attempt at the identical range (same work_key), this call
+            # is stale and must not overwrite it - see commit_extraction's
+            # ownership check, Defect 2.
+            attempt_token=plan.get("attempt_token"))
 
 
 async def _record_running(chat_id: int, plan: dict) -> bool:
@@ -816,7 +946,8 @@ def _record(chat_id: int, plan: dict, status: str, *,
                 con, work_key=plan["work_key"], chat_id=chat_id,
                 from_id=plan["from_id"], to_id=plan["to_id"],
                 usage=usage, status=status, skip_reason=skip_reason,
-                error_type=error_type)
+                error_type=error_type,
+                attempt_token=plan.get("attempt_token"))
             if status == "running":
                 # In the same transaction as the row it stamps.
                 # `commit_extraction` does not set `started_at`, and it is the

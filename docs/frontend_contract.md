@@ -1,7 +1,7 @@
 # Elysium Frontend-Backend Contract
 
 > **Created:** Part A (scaffold)
-> **Last updated:** 2026-08-19, checked route by route against the source.
+> **Last updated:** 2026-08-20, checked route by route against the source.
 > **Status:** Living contract of record
 
 ---
@@ -36,7 +36,7 @@
 
 | Method | Path | Description | Added in |
 |--------|------|-------------|----------|
-| GET | /vault/status | Vault initialized/unlocked state | Part K (vault) |
+| GET | /vault/status | Vault initialized/unlocked state, plus every stray artefact the app already tracks by name so each can carry its own notice and button: `orphaned_copy`/`orphaned_copy_readable`, `plaintext_backups`, `empty_stub`, `rotation_backups`, and `premigrate_backup`/`premigrate_backup_readable` - a stale pre-migration snapshot of the whole vault that an uploads migration can leave behind indefinitely, encrypted under the same key as the live vault, and whether it opens under the key currently held. Every `_readable` field is `null` while locked, because the question needs the key to answer | Part K (vault) |
 | POST | /vault/init | Create the vault (first run; migrates plaintext DB) | Part K (vault) |
 | POST | /vault/unlock | Unlock with the passphrase | Part K (vault) |
 | POST | /vault/lock | Lock (drop the in-RAM key) | Part K (vault) |
@@ -44,8 +44,8 @@
 | POST | /vault/discard-plaintext-backup | Shred the pre-vault plaintext copies | Part K (vault) |
 | POST | /vault/discard-orphaned-copy | Shred an encrypted copy stranded mid-migration | Part K (vault) |
 | POST | /vault/discard-empty-stub | Remove the 0-byte stub crash recovery moved aside (refuses a non-empty file) | Part K (vault) |
-| POST | /vault/discard-premigrate-backup | Shred a stale pre-migration snapshot (requires unlocked) | Part K (vault) |
-| POST | /vault/reset | Wipe every artefact of the vault (locked-state only, exact typed confirmation) | Part K (vault) |
+| POST | /vault/discard-premigrate-backup | Shred the stale pre-migration snapshot named by `premigrate_backup`. Requires unlocked (`423 vault_locked` otherwise): the file is encrypted, so only the key can tell a redundant copy from one written under a different passphrase. Response `{removed: bool, reason: string}`; `reason` is `not_present`, `different_key` or `in_use` when `removed` is false, empty on success. Does not touch the separate `.unreadable-<timestamp>` copy an unopenable snapshot is moved aside to - nothing smaller than a full `/vault/reset` removes that one | Part K (vault) |
+| POST | /vault/reset | The "forgot your passphrase" answer: there is no recovery, so starting over is the only honest response to a lost one. Body `{confirm: string}`, checked against a phrase only the backend decides (`"DELETE EVERYTHING"`, trimmed, no case-folding or synonyms), so a frontend bug cannot fire this with an empty or near-miss string. Reachable only while LOCKED: `409 vault_unlocked` if the vault is open, checked before the phrase is even read, because a vault that can be unlocked does not need this door. A mismatched phrase answers `422 reset_confirmation_mismatch` and deletes nothing. Response `{ok: bool, left: [string]}` - `left` names any artefact still on disk afterward (something has it open); an empty list is a complete wipe. TTS engine runtimes and model downloads are deliberately NOT wiped - they are reprovisionable software, not user data | Part K (vault) |
 | GET | /notebook/{chat_id} | Notes for one chat, retired rows included | FAZ 1 (notebook) |
 | POST | /notebook/{chat_id} | Add a note | FAZ 1 (notebook) |
 | PATCH | /notebook/entries/{id} | Edit a note's text or flags; provenance is not editable | FAZ 1 (notebook) |
@@ -58,7 +58,7 @@
 | POST | /notebook/{chat_id}/use-global | Whether this chat follows the global limits | FAZ 1 (notebook) |
 | GET | /notebook/safeword | The phrase that stops a turn. Empty means off | Since 1.1.0 (notebook) |
 | POST | /notebook/safeword | Set or clear it. **The only limit in this app enforced in code**: matched before the provider is called, and when it matches nothing is sent and nothing is stored (`400 safeword_triggered` from every completion route) | Since 1.1.0 (notebook) |
-| GET | /notebook/worker | What the background extractor has done: counters, today's spend, lifetime spend (`spend_lifetime`, same shape as `spend`, summed over every day - never gates anything, `spend` alone governs the daily cap), and the circuit-breaker state. A refusal nobody can see is the same screen as a notebook that found nothing | FAZ 5 (notebook) |
+| GET | /notebook/worker | What the background extractor has done: counters (`stats.done`/`failed`/`skipped`/`abandoned`, plus `stats.skip_reasons` naming why each skip happened, keyed by reason string), today's spend, lifetime spend (`spend_lifetime`, same shape as `spend`, summed over every day - never gates anything, `spend` alone governs the daily cap), and the circuit-breaker state. `abandoned` counts calls whose row was still `error_type: abandoned_in_flight`: the process died or the vault locked with the call already on the wire, so the money is gone but the answer never arrived; the row is closed out as `failed` and counted here rather than left to re-send and re-bill the same range forever. `plan_invalidated` is a `skip_reasons` key of its own: a reply that was still in flight when the message it answered got edited or deleted, discarded on arrival rather than written as notes describing wording the user had already taken back - the cost is still recorded, only the proposals are not. A refusal nobody can see is the same screen as a notebook that found nothing | FAZ 5 (notebook) |
 | POST | /notebook/worker/reset | Lift a tripped or stopped circuit breaker by hand. Without it, recovering from a provider outage means restarting the whole application | FAZ 5 (notebook) |
 | GET | /notebook/auto-accept | Whether proposals are accepted without review. **Unset is ON** - the default, not "off" | FAZ 5 (notebook) |
 | POST | /notebook/auto-accept | Turn review on or off. A chat opened from an imported card overrides this to OFF for itself, whatever the global says | FAZ 5 (notebook) |
@@ -279,6 +279,8 @@ shield like every other data route.
 | 401/502/504 | *relayed provider reasons* | The two notebook routes that reach OpenRouter relay the provider's own reason rather than a literal: `api_key_invalid`, `api_key_not_set`, `openrouter_auth_failed`, `api_key_required_by_openrouter`, `proxy_auth_failed`, `openrouter_timeout`, `openrouter_unreachable`, and the fallback `notebook_extract_failed`. All eight are in `error_catalogue.json` and `errorMessages.ts` | Each has its own sentence; none is a bare 502 |
 | 400 | chat_not_found | The chat is gone. **`POST /notebook/{chat_id}` answers 400, `GET /notebook/{chat_id}/boundaries` answers 404** - the code is one, the statuses are two | That chat is no longer there. |
 | 400 | boundary_empty | label or phrasing blank | A limit needs both a name and the wording the model will see. |
+| 400 | boundary_too_long | `label` or `phrasing` over 160 characters. Checked here and not only in the request schema, because a ceiling in the schema is a ceiling the next caller of `create_boundary` does not have | Shorten it; that one field is over the limit. |
+| 400 | boundary_set_too_long | Adding this limit would push its WHOLE block (global limits, plus this chat's own if the limit is chat-scoped) over 1500 characters - the ceiling the limits system refuses to send rather than silently drop from. Measured against the heaviest chat's own set when the new limit is global, since a global limit lands in every chat's block | Say which limit was too big for the set; shorten or remove one before adding another. |
 | 400 | boundary_invalid | severity, polarity, on_violation or rating_ceiling outside its allowed set. `source: inferred` with `severity: hard` is refused by the DATABASE, not by this check | That limit could not be saved. |
 | 404 | boundary_not_found | No such boundary id | That limit is no longer there. |
 | 500 | tts_cache_outside_data_dir | The generated-audio folder resolves outside the app's data directory | Nothing was written; say the folder has to move back, or the whole data dir with ELYSIUM_DATA_DIR |

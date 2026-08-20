@@ -631,3 +631,40 @@ class TestTheSkipVocabularyHasSentences:
     def test_the_declaration_is_not_empty(self) -> None:
         """Ground: an empty set satisfies both assertions above."""
         assert len(notebook_worker.SKIP_REASONS) >= 2
+
+    def test_commit_extraction_refuses_an_undeclared_reason_too(
+            self, client) -> None:
+        """`plan_invalidated` is written by commit_extraction's require_trace
+        branch, not by `_record_skip` above - a DIFFERENT writer. Behaviour,
+        not a grep: that writer refuses an undeclared reason on its own,
+        exactly like `_record_skip` does, rather than trusting the caller."""
+        chat_id = seed(client, 2)
+        with get_db() as con:
+            con.execute("BEGIN IMMEDIATE")
+            with pytest.raises(AssertionError):
+                notebook.commit_extraction(
+                    con, work_key="undeclared-writer", chat_id=chat_id,
+                    from_id=1, to_id=2, status="skipped",
+                    skip_reason="invented_reason")
+
+    def test_a_declared_reason_reaches_commit_extraction_too(
+            self, client) -> None:
+        """The ground for the refusal above, on the same writer."""
+        chat_id = seed(client, 2)
+        with get_db() as con:
+            con.execute("BEGIN IMMEDIATE")
+            notebook.commit_extraction(
+                con, work_key="declared-writer", chat_id=chat_id,
+                from_id=1, to_id=2, status="skipped",
+                skip_reason="proxy_gate")
+        with get_db() as con:
+            stats = notebook.extraction_stats(con, chat_id)
+        assert stats["skip_reasons"] == {"proxy_gate": 1}
+
+    def test_the_two_writers_share_one_declaration(self) -> None:
+        """The gate itself: notebook_worker declares no frozenset of its own
+        any more, it reuses notebook_store's. Two copies is how
+        `plan_invalidated` leaked - one writer checked itself against a
+        vocabulary that had never heard of the other writer's reason."""
+        assert notebook_worker.SKIP_REASONS is notebook.SKIP_REASONS
+        assert "plan_invalidated" in notebook.SKIP_REASONS

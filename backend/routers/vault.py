@@ -759,9 +759,38 @@ def _upgrade_kdf_if_needed(vault: KeyVault, passphrase: str,
 
 @router.post("/unlock")
 async def vault_unlock(body: PassphraseBody) -> dict:
+    """See the module docstring's own K-30 note for WHY the two phases below
+    used to be two separate `async with _vault_lock:` blocks, and why that
+    was one too many.
+
+    The delay for a WRONG passphrase must not run with the lock held -
+    sleeping inside it would hold /vault/status, the one route the lock
+    screen polls and the one main.py deliberately keeps out of the idle
+    clock, hostage to somebody else's typo. Releasing the lock and taking it
+    again a few lines later looked like the obvious way to buy that, and it
+    is what this route did. The gap that opened between those two blocks had
+    nothing scheduled to fill it on the correct-passphrase path - no sleep,
+    no I/O of its own - but a gap does not need something scheduled in it to
+    be a gap: /vault/reset queued on the SAME lock during the scrypt
+    derivation above resumes exactly there, sees is_unlocked() still False
+    (set_key had not run yet) and wipes. Its own bootstrap then rebuilt
+    app.db and rewrote salt.bin/verifier.bin/kdf.json from the very
+    passphrase this request was about to accept, so the request answered
+    200, the data was gone, and the old passphrase kept working on a vault
+    that had been silently replaced under it. Confirmed at every artificial
+    delay tried between the two blocks, because the window did not depend on
+    the delay - it depended on the split existing at all.
+
+    The fix keeps ONE critical section for the whole successful path, ended
+    only in `finally`, and releases early in exactly the one place that still
+    needs it: right before the deliberate sleep on a refusal, which always
+    raises and never returns to reacquire anything.
+    """
     refused = False
     key: bytes | None = None
-    async with _vault_lock:
+    await _vault_lock.acquire()
+    held = True
+    try:
         vault = _vault()
         if vault_state.is_unlocked():
             # VERIFY ANYWAY, and this was a hole. The branch used to return
@@ -824,14 +853,23 @@ async def vault_unlock(body: PassphraseBody) -> dict:
                 raise HTTPException(409, "vault_identity_mismatch")
         if key is None:
             refused = True
-    if refused:
-        # OUTSIDE the lock, and that is the point of the flag. K-30's delay
-        # runs here; sleeping inside _vault_lock would hold /vault/status -
-        # the one route the lock screen polls and the one main.py keeps out
-        # of the idle clock so it can always answer - hostage to a typo.
-        await _refuse_passphrase("unlock")
+        if refused:
+            # The ONE early release in this whole handler, and it happens
+            # here rather than in `finally` because what follows is a sleep
+            # that must not hold the lock - not because the critical section
+            # is over. _refuse_passphrase always raises, so control never
+            # returns here to reacquire anything; `held = False` tells the
+            # `finally` below not to release a lock that is already released.
+            _vault_lock.release()
+            held = False
+            await _refuse_passphrase("unlock")
 
-    async with _vault_lock:
+        # STILL the same lock acquired at the top of this function - no
+        # release, no reacquire, no window for a concurrent /vault/reset to
+        # see is_unlocked() == False between "the passphrase was accepted"
+        # and "the key is installed". That gap is exactly what the docstring
+        # above describes and exactly what used to sit here as a second
+        # `async with _vault_lock:` block.
         vault_state.set_key(key)
         # A fresh session starts idle at zero, not at however long the app sat
         # locked on the passphrase screen.
@@ -865,6 +903,14 @@ async def vault_unlock(body: PassphraseBody) -> dict:
             # database, which is worth being able to see in a log or a test.
             "kdf_upgraded": upgraded,
         }
+    finally:
+        # Covers every exit that did NOT already release: the two
+        # HTTPException raises above (vault_not_initialized,
+        # vault_identity_mismatch), the vault_unlock_failed raise, and the
+        # ordinary return. The refusal branch already released and set
+        # `held = False`, so it is skipped here rather than double-released.
+        if held:
+            _vault_lock.release()
 
 
 async def lock_vault_now(reason: str = "request") -> list[str]:
@@ -1109,6 +1155,27 @@ async def vault_change_passphrase(body: ChangePassphraseBody) -> dict:
 #: ask the user anything at all.
 RESET_CONFIRMATION_PHRASE = "DELETE EVERYTHING"
 
+#: What "surrounding whitespace" actually means here, spelled out as an
+#: explicit set rather than left to str.strip()'s default. The default
+#: forgives anything str.isspace() calls whitespace, and that table is far
+#: wider than "surrounding whitespace" as a human reads it: NBSP (U+00A0),
+#: the ideographic space (U+3000), form feed, vertical tab. None of those
+#: comes out of an ordinary keystroke or a copy-paste of this exact phrase,
+#: so a bare .strip() was forgiving near-misses this comment claimed it did
+#: not. Tab, CR and LF stay in the set - a genuine copy-paste routinely
+#: carries a trailing newline or an indenting tab, and the whole point of
+#: forgiving anything is to let that through without forgiving a look-alike.
+_CONFIRM_STRIP_CHARS = " \t\r\n"
+
+#: Bounds the request body before the check above ever runs. Without this,
+#: nothing stood between an empty POST and a client sending a megabyte of
+#: leading spaces - str.strip() would have peeled all of it off just the
+#: same, but not before the body was parsed and held in memory for a route
+#: whose entire job is destructive. The slack past the phrase's own length
+#: is for exactly the whitespace this route already forgives, not for
+#: anything else.
+RESET_CONFIRM_MAX_LEN = len(RESET_CONFIRMATION_PHRASE) + 64
+
 
 def _reset_identity_files(vault_dir: Path) -> list[str]:
     """Every salt/verifier/kdf file this vault could have on disk, live or
@@ -1142,16 +1209,39 @@ def _reset_database(db_path: Path) -> list[str]:
     return left
 
 
+def _every_orphaned_enc_tmp_path(db_path: Path) -> list[Path]:
+    """Every name under the orphan glob, sidecars included.
+
+    database.orphaned_enc_tmp_paths() deliberately drops names ending in
+    -wal/-shm: every OTHER reader of that list insists each entry it is
+    handed opens under a key before acting on it, and a stray journal ATTACH
+    left behind never does - see that function's own comment for the bug a
+    single unopenable sidecar caused once that filter did not exist. That
+    safety property belongs to readers who hold a key and have to decide
+    whether a file is safe to trust. Reset holds no key and asks no such
+    question; it destroys NAMES, not content whose ownership it has to
+    judge. So the filter built to keep those other routes honest just left
+    app.db.enc-tmp-wal and app.db.enc-tmp-shm on disk here, silently, behind
+    a {"ok": true, "left": []} answer. Built from the same glob those readers
+    use, unfiltered.
+    """
+    try:
+        return sorted(db_path.parent.glob(db_path.name + database.ORPHAN_GLOB))
+    except OSError:
+        return []
+
+
 def _reset_backup_families(db_path: Path) -> list[str]:
     """Every sidecar and backup copy /vault/status already tracks by name:
     plaintext pre-vault copies, encrypted copies orphaned by an interrupted
-    migration, full snapshots a rotation left behind, and the 0-byte stub a
-    recovery moved aside. Reset destroys the live database; leaving any of
-    these standing would turn "gone" into "moved to a name with .bak in it".
+    migration (and their journal sidecars), full snapshots a rotation left
+    behind, and the 0-byte stub a recovery moved aside. Reset destroys the
+    live database; leaving any of these standing would turn "gone" into
+    "moved to a name with .bak in it".
     """
     left: list[str] = []
     for path in (database.plaintext_backups()
-                + database.orphaned_enc_tmp_paths()
+                + _every_orphaned_enc_tmp_path(db_path)
                 + database.rotation_backup_paths()):
         if not secure_delete.discard(path):
             left.append(path.name)
@@ -1224,6 +1314,35 @@ def _reset_legacy_keyring() -> list[str]:
     return left
 
 
+def _reset_runtime_files(vault_dir: Path) -> list[str]:
+    """elysium.log (plus the one rotated twin backupCount=1 allows) and the
+    remembered `port`.
+
+    Neither is part of the vault's cryptographic identity, but this route's
+    own docstring promises something wider: DATA_DIR left as if Elysium had
+    never been run at all. elysium.log only exists on a frozen build
+    (run_app.py: _setup_frozen_logging) and it records chat ids, model ids
+    and session timestamps - not passphrases, not message text, but exactly
+    the kind of trail someone telling this app "I forgot my passphrase,
+    start over" is asking it to erase. `port` is lower stakes - a localhost
+    TCP port number and nothing else - but it is still a file this run wrote
+    that a clean install would not have, and the docstring made no exception
+    for it.
+
+    Best effort, like every family above: this very process may be the one
+    with elysium.log open right now. That does not stop the shred - Python's
+    default file handles on Windows do not exclude other openers of the same
+    name, so a second handle can still overwrite and unlink it out from under
+    the live one - but if it ever does fail, the name is reported here like
+    any other held-open file rather than silently skipped.
+    """
+    left: list[str] = []
+    for name in ("elysium.log", "elysium.log.1", "port"):
+        if not secure_delete.discard(vault_dir / name):
+            left.append(name)
+    return left
+
+
 def _reset_vault_sync() -> dict:
     """The whole wipe, off the event loop and with no key at all - the route
     below already refuses an unlocked vault before this ever runs, so nothing
@@ -1248,13 +1367,62 @@ def _reset_vault_sync() -> dict:
     service stores every image - uploaded or model-generated - as a blob
     inside app.db itself (E6), so destroying the database already destroys
     them; there is no second copy on disk to find.
+
+    THE ONE ORDERING THAT IS NOT INDEPENDENT
+
+    Every family above is described as running on its own, and all of them
+    do except one pair. salt.bin/verifier.bin/kdf.json are not user data;
+    they are the RECIPE for the key that opens app.db. secure_delete.shred
+    fails CLOSED - a hardlink to app.db (is_shared), another process holding
+    a byte-range lock (antivirus, a sync client, an indexer, a second
+    instance), a read-only attribute - and on an ordinary Windows machine
+    every one of those is a plausible reason the database survives this
+    call. If the identity files were destroyed anyway, the surviving
+    database would be bricked WORSE than before this route ever ran: the
+    original passphrase cannot get back in because the verifier is gone, and
+    a fresh /vault/init cannot either, because it refuses to mint a new
+    identity over an encrypted database it did not create
+    (encrypted_db_without_identity). So the sweep below checks whether
+    app.db is actually gone before it goes anywhere near its identity, and
+    holds the identity files back entirely when it is not - locked, intact,
+    retryable, which is strictly better than a database nobody can ever
+    open again.
+
+    Every OTHER family still runs even when app.db survives, and that is a
+    second decision, not a consequence of the first. None of them is the
+    recipe for app.db's key, so none of them can strand a surviving
+    database the way the identity files can: the plaintext backups need no
+    key to read at all; the orphaned-copy, rotation-backup and premigrate
+    families are encrypted under that SAME identity, so if the identity was
+    held back the live vault stays exactly as recoverable with them gone as
+    with them present; and uploads, the voice cache, voice references, the
+    browser profile and the legacy keyring do not depend on app.db or its
+    identity in any way. Stopping the whole route at the first held-open
+    file would leave more readable on disk than getting as far as it safely
+    can and saying exactly what did not go - the same reasoning this
+    function's own docstring already gives for a single stuck file, applied
+    now to the one pair where the ORDER of "as far as it safely can" matters.
     """
     db_path = Path(config.DB_PATH)
     vault_dir = db_path.parent
 
-    left: list[str] = []
-    left += _reset_database(db_path)
-    left += _reset_identity_files(vault_dir)
+    db_left = _reset_database(db_path)
+    # db_path.exists(), not "db_left is non-empty": _reset_database's own
+    # list also carries -wal/-shm sidecar names, and a sidecar surviving
+    # alone - with the main file gone - opens nothing on its own. It is not
+    # the coupling this guard exists to break; only the main file is.
+    db_survives = db_path.exists()
+    left: list[str] = list(db_left)
+    if db_survives:
+        logger.error(
+            "Vault reset could not remove %s; the database is still on "
+            "disk. Identity files were NOT touched, so the vault is exactly "
+            "as it was before this call - locked, intact, and ready to "
+            "retry once whatever is holding %s open lets go.",
+            db_path.name, db_path.name)
+    else:
+        left += _reset_identity_files(vault_dir)
+
     left += _reset_backup_families(db_path)
     left += _reset_premigrate_family()
     left += _reset_directory_tree(Path(config.UPLOADS_DIR), "uploads")
@@ -1264,8 +1432,15 @@ def _reset_vault_sync() -> dict:
     left += _reset_directory_tree(Path(config.DATA_DIR) / "webview",
                                   "browser profile")
     left += _reset_legacy_keyring()
+    left += _reset_runtime_files(vault_dir)
 
-    if left:
+    if db_survives:
+        logger.warning(
+            "Vault reset stopped short of a clean slate: %d artefact(s) "
+            "could not be removed and the database survived, so the "
+            "identity files were deliberately held back: %s",
+            len(left), ", ".join(left))
+    elif left:
         logger.warning(
             "Vault reset ran but %d artefact(s) could not be removed: %s",
             len(left), ", ".join(left))
@@ -1276,7 +1451,10 @@ def _reset_vault_sync() -> dict:
 
 class VaultResetBody(BaseModel):
     model_config = {"extra": "forbid"}
-    confirm: str = Field(min_length=1)
+    # max_length is safe on THIS field where it is not on PassphraseBody's:
+    # `confirm` is a fixed public phrase, never a secret, so echoing a
+    # rejected one back in a 422 body leaks nothing.
+    confirm: str = Field(min_length=1, max_length=RESET_CONFIRM_MAX_LEN)
 
 
 @router.post("/reset")
@@ -1351,7 +1529,7 @@ async def vault_reset(body: VaultResetBody) -> dict:
         # cannot interleave with one of them starting or finishing mid-way.
         if vault_state.is_unlocked():
             raise HTTPException(409, "vault_unlocked")
-        if body.confirm.strip() != RESET_CONFIRMATION_PHRASE:
+        if body.confirm.strip(_CONFIRM_STRIP_CHARS) != RESET_CONFIRMATION_PHRASE:
             raise HTTPException(422, "reset_confirmation_mismatch")
         result = await anyio.to_thread.run_sync(_reset_vault_sync)
     return result

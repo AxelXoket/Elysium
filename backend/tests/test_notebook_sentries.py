@@ -419,14 +419,25 @@ class TestTheDropOrder:
 
     def test_importance_still_outranks_position(self, client) -> None:
         """Ground: the tiebreak must not overtake the primary key."""
+        # TWO THINGS ARE LOAD-BEARING HERE AND BOTH WERE WRONG ONCE.
+        #
+        # Order: written cheap-oldest and dear-newest, `(importance,
+        # position)` and `position` alone give the IDENTICAL drop order, so
+        # the fixture could not tell them apart and a sort that ignored
+        # importance entirely stayed green. Dear is therefore the OLDEST, the
+        # one position alone would sacrifice first.
+        #
+        # Size: the old fixture put thirty fillers under an 800 character
+        # ceiling, so thirty of thirty-two were dropped whatever the order
+        # was, and nothing could be read from the result. Three entries, one
+        # of which must go, is the smallest arrangement where the answer is
+        # a single name.
         chat_id = seed(client)
-        cheap = notebook.create_entry(chat_id, "cheap " + "x" * 200,
-                                      importance=1)
-        for i in range(30):
-            notebook.create_entry(chat_id, f"filler {i} " + "x" * 200,
-                                  importance=3)
         dear = notebook.create_entry(chat_id, "dear " + "x" * 200,
                                      importance=3)
+        notebook.create_entry(chat_id, "filler " + "x" * 200, importance=3)
+        cheap = notebook.create_entry(chat_id, "cheap " + "x" * 200,
+                                      importance=1)
         blocks = notebook.build_notebook_blocks(chat_id, 8000)
         dropped = {e[0] for e in blocks["excluded"]}
         assert cheap["id"] in dropped, "the cheap note survived"

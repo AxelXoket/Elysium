@@ -12,17 +12,21 @@ Written against version 1.1.0.
 ## The short version
 
 - Everything you write lives in **one encrypted file**. Without your passphrase
-  it cannot be opened, not even as a plain database. Two things are written
-  outside it: spoken replies, as plain audio wiped at every lock, and, only for
+  it cannot be opened, not even as a plain database. Three things are written
+  outside it: spoken replies, as plain audio wiped at every lock; only for
   a voice model that CLONES, the reference clip you record and a transcript of
-  the words in it, which nothing purges.
+  the words in it; and UI preferences such as the wallpaper, kept in the
+  window's local storage. There is also no way to recover a forgotten
+  passphrase from inside the vault - the lock screen's own "Forgot your
+  passphrase?" flow is a way out of one, and it is documented below under
+  Resetting the vault.
 - Your passphrase is **never stored**. Lose it and the data is gone. That is the
   design, not a bug.
 - The app talks to **one address on the internet** (OpenRouter), and refuses
   every other destination at the connection layer. The one exception is the
   optional voice engine installer, which you start by hand.
 - Elysium writes **nothing to the Windows registry**. Deleting one folder
-  removes everything it ever created, with four caveats listed at the end.
+  removes everything it ever created, with five caveats listed at the end.
 
 ---
 
@@ -38,15 +42,15 @@ Everything is under one folder:
 |---|---|
 | `app.db` - messages, characters, personas, images, your notebook and limits, what the note reader has read and spent, your API key, proxy URL | **Yes**, AES-256 (SQLCipher), including the journal files |
 | `salt.bin`, `verifier.bin`, `kdf.json` - passphrase machinery | No, and they are not secret. Knowing them does not reveal your key |
-| `app.db.plain.bak-*` - a pre-vault copy kept after a one-time upgrade | **No, plaintext.** Settings > Secrets lists it and deletes it on request |
-| `app.db.premigrate.bak` - a COMPLETE encrypted copy of the vault, taken before an uploads migration touches anything and kept whenever that migration does not finish cleanly | **Yes**, same cipher, and a passphrase change re-keys it so the old one stops opening it. But no screen reports it and no button removes it: only a later clean migration does |
-| `app.db.premigrate.bak.unreadable-<ts>` - that same snapshot, moved aside because it did not open with this vault's key | Encrypted, under a passphrase this vault does not hold. It is moved rather than deleted because it may be the only copy of an older vault, and nothing removes it for you |
+| `app.db.plain.bak-*` - a pre-vault copy kept after a one-time upgrade | **No, plaintext.** Settings > Security lists it and deletes it on request |
+| `app.db.premigrate.bak` - a COMPLETE encrypted copy of the vault, taken before an uploads migration touches anything and kept whenever that migration does not finish cleanly | **Yes**, same cipher, and a passphrase change re-keys it so the old one stops opening it. Settings > Security now lists it and a button removes it; a later clean migration still discards it on its own. Either way, removing it needs the vault unlocked, because only your key can tell a healthy copy from a stranger's |
+| `app.db.premigrate.bak.unreadable-<ts>` - that same snapshot, moved aside because it did not open with this vault's key | Encrypted, under a passphrase this vault does not hold. It is moved rather than deleted because it may be the only copy of an older vault, and nothing short of a vault reset removes it for you |
 | `voice/models` - voice model weights you downloaded | No. Files you chose and put there; they hold none of your conversation |
-| `voice/refs` - only for a voice model that CLONES: the reference clip you record and a transcript of the words in it | **No, plaintext.** Nothing purges these: not the lock, not shutdown, not the next launch. They go when you delete that voice, or the folder |
+| `voice/refs` - only for a voice model that CLONES: the reference clip you record and a transcript of the words in it | **No, plaintext.** Nothing purges these: not the lock, not shutdown, not the next launch. They go when you delete that voice, delete the folder, or reset the vault |
 | `voice/cache` - generated speech, your conversation as audio | No. Cleared at every lock, every launch and every shutdown; anything older than 30 minutes is cleared as the next reply is spoken |
 | `webview/` - the app window's browser profile | No. Cache, history and session files are wiped at every launch and exit; only cosmetic settings and your wallpaper are kept |
-| `elysium.log` - application log | No. It carries no message text, no note text, no keys and no passphrases - but it does record that things happened: chat and note ids, counts, and the TYPE name of an error. A plaintext record of which chats have notes, sitting beside an otherwise opaque vault |
-| `port` - the port the server last used | No. One number |
+| `elysium.log` - application log | No. It carries no message text, no note text, no keys and no passphrases - but it does record that things happened: chat and note ids, counts, and the TYPE name of an error. A plaintext record of which chats have notes, sitting beside an otherwise opaque vault - and it survives a vault reset, because reset destroys the vault's own artefacts, not the log beside it |
+| `port` - the port the server last used | No. One number, and a vault reset does not touch it either |
 
 In a development checkout this folder is the source tree instead, which is why
 you may see these files beside the code.
@@ -84,9 +88,24 @@ however long it takes. Change the delay or turn it off in Settings > Security.
 One thing deliberately does **not** hold it open: the notebook's background
 reader. It runs while you are reading something else, so counting it as
 activity would mean the vault never locked on a busy chat. Instead the lock
-cancels whatever it was doing - including a request already in flight - and
-empties its queue. Nothing is lost: the messages it had not finished reading
-stay unread, and a later run picks them up.
+cancels whatever it was doing and empties its queue. Work still queued and
+never sent costs nothing, so a later run reads it exactly as if the lock had
+not happened.
+
+A call already on the wire to the provider when the lock lands is a
+different case, and this document used to describe it too kindly. That call
+is billed the moment it leaves, whatever happens to the app afterward, and
+until this session the same range was simply re-planned and re-sent on the
+next cycle - a second copy of your conversation leaving the machine, and a
+second charge for it. It is now marked as a failed call and never retried,
+so the range is not sent twice; the price of that fix is that those
+particular messages are never read into a note at all. A related gap was
+closed the same way: editing or deleting a message rolls the notebook's
+cursor back on purpose, so the rewritten stretch gets read again later, and a
+reply that was already in flight before the edit used to land anyway and get
+written from wording you had just taken back. The reply is now checked
+against the trace its own call left before it was sent; if the edit got there
+first and erased that trace, the reply is discarded instead of written.
 
 ### The key in memory
 
@@ -136,6 +155,56 @@ Two routes are exempt because a browser cannot attach a header to an image or an
 audio element. They are narrowed rather than opened: the browser must send
 `Sec-Fetch-Site: same-origin`, which a command-line tool does not.
 
+### Resetting the vault
+
+The lock screen has a "Forgot your passphrase?" flow behind `POST
+/vault/reset`. There is no way to recover a forgotten passphrase - see above -
+so this is the honest answer to being locked out for good: it destroys the
+vault and lets you start over, rather than leaving you with a database
+nothing can open.
+
+It only runs from the LOCKED state. If the vault is unlocked it refuses
+outright with HTTP 409 before the confirmation phrase is even read, because
+whoever can already unlock the vault does not need this door, and answering
+it anyway would turn it into a way to destroy a conversation somebody is
+reading right now. From the locked state it still requires a typed
+confirmation phrase, checked against a value only the backend decides, so a
+frontend bug cannot fire it with an empty or a near-miss string - but that
+phrase only guards against an accident, never against someone reaching over
+your shoulder.
+
+What it destroys: the database and every backup family beside it (plaintext,
+orphaned, rotation, and both premigrate names, including the one moved aside
+as unreadable), the passphrase identity files and every shelved copy of them,
+the empty stub a recovery can leave, the uploads folder, saved voice
+references and cached speech, the desktop app's browser profile, and any
+leftover OS-keyring entry from the legacy migration. It does **not** touch
+`elysium.log` or `port` - both listed above, both still readable afterward -
+and it does not touch a downloaded voice engine, which is software you chose
+rather than data you wrote.
+
+A file held open elsewhere can survive the wipe. The route answers HTTP 200
+either way: a clean run reports `{"ok": true, "left": []}`, and a file that
+would not go is named rather than hidden, as `{"ok": false, "left": [...]}`
+under that same 200 instead of an error status. Everything that IS removed
+goes through the same overwrite-then-delete this app uses everywhere else -
+see "Deleting things," above, for what that defeats and what it does not.
+
+**The launch token described above is the only real gate on this route**, and
+that has a consequence worth stating plainly rather than leaving to
+inference: this document already says a developer running the backend by
+hand has no token and the gate is open. In a dev checkout, a bare local
+request carrying the exact confirmation phrase wipes the vault - no
+passphrase, nothing else standing in the way. In a packaged build, anyone
+able to present the current launch token can do the same; that is the same
+"any code running as this user" boundary the rest of the unlocked vault
+already accepts, extended to the locked one, not a new one - someone with
+that access could already delete every one of these files by hand. The
+cross-origin write shield that protects most other mutating routes from a
+hostile web page does not close this gap either: a bare local process sends
+no `Origin` and no `Sec-Fetch-Site` header, and the shield's own fallback
+treats an absent header as non-browser tooling and lets it through.
+
 ### Where it connects
 
 One provider host, enforced by refusing any other destination before the
@@ -143,15 +212,24 @@ connection opens. System proxy environment variables are ignored on purpose.
 Every request forces `zdr: true`, `data_collection: deny`, `allow_fallbacks:
 false`, and the app window **cannot** override those three.
 
-**Two things send your conversation there, not one.** The reply you asked for,
-and the notebook's note reader - a second model, which you choose, sent
+**Three things send your conversation there, not one.** The reply you asked
+for; the notebook's note reader - a second model, which you choose, sent
 excerpts of the same conversation automatically every twenty turns while you
-are not watching. It goes to the same single host under the same locked
-policy, and it is off entirely until you pick a model, but it is a second
-sender and it spends your credits. What it did and what it cost is in the
-Notes tab; the ceiling is sixty calls a day and it is a block, not a warning.
+are not watching; and the Notes tab's own "Try it on this chat" preview,
+which runs the same extractor against the same recent messages on demand and
+saves nothing, but still leaves the machine and still spends a call. All
+three go to the same single host under the same locked policy, and the second
+and third are off entirely until you pick a model, but each is its own
+sender and each spends your credits. What the note reader did and what it
+cost is in the Notes tab; the ceiling is sixty calls a day, shared by the
+note reader and the preview alike, and it is a block, not a warning -
+overridable only from the environment (`ELYSIUM_NOTEBOOK_DAILY_CALLS`), not
+from any screen in the app. An interruption used to turn the note reader into
+a fourth sender of the same words: a call already sent got re-sent whole on
+the next cycle instead of being counted as spent. That is fixed now - see
+Idle auto-lock, above, for what changed and what it costs instead.
 
-A third request reaches the same host and carries none of your conversation:
+A fourth request reaches the same host and carries none of your conversation:
 the Security tab's key check asks OpenRouter whether the key you already stored
 is still accepted. It happens only when you press it, and a provider it cannot
 reach is reported as exactly that rather than as a bad key.

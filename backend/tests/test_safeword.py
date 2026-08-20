@@ -106,8 +106,19 @@ class TestTheTurnDoesNotHAPPEN:
         import secrets_service
 
         secrets_service.delete_secret(config.SECRET_API_KEY)
-
         chat_id = self._chat(client)
+
+        # The precondition, asserted rather than assumed. Without this the
+        # test claims an ORDER while proving nothing: with a key still in
+        # place the safeword fires first no matter which check comes first,
+        # so the test stayed green against code that checked the key first.
+        # Measured - stubbing delete_secret to a no-op left it passing.
+        ordinary = client.post(f"/api/v1/chats/{chat_id}/complete",
+                               json={"message": "she wore a red coat",
+                                     "model_id": "m/1"})
+        assert ordinary.json()["detail"] == "api_key_missing", (
+            "the key was not actually gone, so this test proves no ordering")
+
         resp = client.post(f"/api/v1/chats/{chat_id}/complete",
                            json={"message": "kırmızı", "model_id": "m/1"})
         assert resp.json()["detail"] == "safeword_triggered"

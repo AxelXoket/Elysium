@@ -13,36 +13,32 @@
  * could see or act on.
  *
  * The wording problem is the opposite of PlaintextBackupNotice's. That file
- * is a genuine leak and has to say so. This one opens with the same
- * passphrase as the rest of the vault, so calling it exposed would be a lie
- * in the other direction. What makes it worth a banner anyway is staleness:
- * it is frozen at the moment it was taken, so a message deleted from the live
- * vault afterward keeps living inside it - "delete" stops being a complete
- * answer while this file is still on disk. Same reasoning OrphanedCopyNotice
- * already uses for its own encrypted leftover; this file borrows its shape
- * for the same reason.
+ * is a genuine leak and has to say so. This one opens with the current
+ * passphrase ONLY WHEN premigrate_backup_readable says so, so calling it
+ * exposed would be a lie in one direction and calling it always-safe-to-open
+ * would be a lie in the other: discard_premigrate_backup_now (legacy_
+ * migration.py) refuses to shred a copy that does not open with the current
+ * key, because it may be the only copy of something from an era this
+ * passphrase does not reach - the same reason recovery leaves an unreadable
+ * orphaned copy alone. What makes the readable case worth a banner anyway is
+ * staleness: it is frozen at the moment it was taken, so a message deleted
+ * from the live vault afterward keeps living inside it - "delete" stops being
+ * a complete answer while this file is still on disk. Same reasoning and the
+ * same three-way branch (readable / not readable / unknown while locked)
+ * OrphanedCopyNotice already uses for its own encrypted leftover; this file
+ * borrows its shape for both reasons.
  *
- * BACKEND CONTRACT - READ BEFORE WIRING A REAL ROUTE.
- * At the time this file was written, routers/vault.py had no field for this
- * snapshot on GET /vault/status and no discard route, though
- * legacy_migration.py already had the primitives (premigrate_backup_path,
- * ensure_premigrate_backup, discard_premigrate_backup). A backend agent was
- * adding both concurrently and had not landed yet, so the names below are
- * this file's OWN ASSUMPTION, chosen to match the convention the three
- * existing notices already set:
- *   - status field: `premigrate_backup: boolean` - a presence flag, the same
- *     shape as `empty_stub`, because (like that file) there is exactly one of
- *     these and its name never changes - unlike `plaintext_backups` or
- *     `rotation_backups`, which are lists because those can multiply.
- *   - discard route: `POST /vault/discard-premigrate-backup`, matching
- *     `discard_premigrate_backup()` the same way `discard_empty_stub()` maps
- *     to `/vault/discard-empty-stub`.
- *   - discard response: `{ removed: boolean, reason: string }`, the shape
- *     shared by the orphan and empty-stub routes for the same reason it fits
- *     here - one file, not a list of names.
- * If the backend settled on different names, this component and its test
- * need updating to match - the zod field below is `.optional()` so a mismatch
- * fails closed (the notice just never renders) rather than throwing.
+ * BACKEND CONTRACT, CONFIRMED. GET /vault/status carries `premigrate_backup`
+ * (boolean presence flag, same shape as `empty_stub` - there is exactly one
+ * of these) and `premigrate_backup_readable` (nullish: null while locked,
+ * else whether the current key opens the file - see lib/schemas/vault.ts,
+ * mirroring `orphaned_copy_readable`). POST /vault/discard-premigrate-backup
+ * answers `{ removed: boolean, reason: string }`, with `reason` one of
+ * "not_present" | "different_key" | "in_use" - discard_premigrate_backup_now
+ * says explicitly it shares that vocabulary with discard_orphaned_enc_tmp "so
+ * a caller only has to learn it once." Both fields are declared `.optional()`
+ * / `.nullish()` so an older backend still parses; the notice just renders
+ * less rather than throwing.
  */
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -115,6 +111,7 @@ export function PremigrateBackupNotice() {
   }, [confirming]);
 
   if (!status.data?.premigrate_backup) return null;
+  const readable = status.data.premigrate_backup_readable;
 
   return (
     <section
@@ -140,23 +137,56 @@ export function PremigrateBackupNotice() {
         encrypted copy of the whole database first, <code>app.db.premigrate.bak</code>,
         so the step that follows cannot cost you anything if it goes wrong.
         That migration has not finished cleanly, so the copy is still on disk.
-        It opens with your current passphrase, the same as the rest of the
-        vault - it is not readable by anyone who does not have it.
-      </p>
-      <p className="text-xs leading-relaxed text-muted-foreground">
-        It still matters, because it is frozen at the moment it was taken: a
-        message you delete from the vault afterward keeps living inside this
-        copy. While it exists, deleting something here is not the complete
-        answer it looks like.
       </p>
 
-      {discard.data?.removed === false && (
+      {readable === true && (
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          It opens with your current passphrase, the same as the rest of the
+          vault - it is not readable by anyone who does not have it. It still
+          matters, because it is frozen at the moment it was taken: a message
+          you delete from the vault afterward keeps living inside this copy.
+          While it exists, deleting something here is not the complete answer
+          it looks like.
+        </p>
+      )}
+      {readable === false && (
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          This copy does <strong>not</strong> open with your current
+          passphrase. It may belong to an older one - so it could be the only
+          copy of chats this vault cannot show you. Elysium will not delete it.
+        </p>
+      )}
+      {readable == null && (
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          Unlock the vault to find out whether this snapshot is safe to delete
+          or belongs to an older passphrase.
+        </p>
+      )}
+
+      {discard.data?.removed === false && discard.data.reason === "in_use" && (
         <p className="persona-local-error" role="alert">
           Still on disk: something else has the file open.
         </p>
       )}
+      {discard.data?.removed === false &&
+        discard.data.reason === "different_key" && (
+          <p className="persona-local-error" role="alert">
+            Not deleted: it no longer opens with your current passphrase, so
+            it may be the only copy of something an older passphrase reached.
+            Elysium left it alone.
+          </p>
+        )}
+      {discard.data?.removed === false &&
+        discard.data.reason === "not_present" && (
+          <p className="persona-local-error" role="alert">
+            Already gone - there was nothing left to delete.
+          </p>
+        )}
 
-      {!confirming && (
+      {/* Offered ONLY for a copy this vault can read, same fork as
+          OrphanedCopyNotice - there is no safe version of the delete button
+          for the other two states. */}
+      {readable === true && !confirming && (
         <Button
           ref={deleteTriggerRef}
           type="button"
@@ -170,7 +200,7 @@ export function PremigrateBackupNotice() {
           Delete the snapshot
         </Button>
       )}
-      {confirming && (
+      {readable === true && confirming && (
         <div className="flex items-center gap-2">
           <span
             className="text-xs"

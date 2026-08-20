@@ -52,6 +52,13 @@ export const VaultStatusSchema = z.object({
    *  and because the exact field name is this component's own assumption
    *  until the backend route lands - see that file's header comment. */
   premigrate_backup: z.boolean().optional(),
+  /** Same reasoning as orphaned_copy_readable, and the same reason it has to
+   *  be named here: whether the premigrate snapshot opens under the key we
+   *  currently hold decides whether deleting it is tidying a stale duplicate
+   *  or destroying the only copy of something an older passphrase reached.
+   *  null while locked, because the question needs the key to answer.
+   *  Optional/nullish so an older backend still parses. */
+  premigrate_backup_readable: z.boolean().nullish(),
 });
 export type VaultStatus = z.infer<typeof VaultStatusSchema>;
 

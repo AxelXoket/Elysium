@@ -7,7 +7,7 @@
  * form idiom (bordered card + small labeled inputs).
  */
 import { useState, type FormEvent } from "react";
-import { KeyRound, Loader2 } from "lucide-react";
+import { KeyRound, Loader2, AlertCircle } from "lucide-react";
 import { useChangeVaultPassphrase } from "@/lib/query/vault";
 import { PlaintextBackupNotice } from "./PlaintextBackupNotice";
 import { OrphanedCopyNotice } from "./OrphanedCopyNotice";
@@ -26,10 +26,18 @@ export function VaultSection() {
   const [confirm, setConfirm] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  // Sidecar copies the rotation could NOT re-key: still openable with the
+  // passphrase this form just promised to revoke. Comes back on the SAME
+  // response as `ok: true`, nowhere else - change-passphrase is the only
+  // place this value ever appears, so dropping it here loses it for good.
+  const [unrevoked, setUnrevoked] = useState<string[]>([]);
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
     setDone(false);
+    // Cleared on every new attempt, success or not - a stale warning from a
+    // PREVIOUS change must not sit under a form the user is filling in again.
+    setUnrevoked([]);
     if (newPass.length < MIN_PASSPHRASE_LEN) {
       setLocalError(`New passphrase needs at least ${MIN_PASSPHRASE_LEN} characters.`);
       return;
@@ -42,11 +50,12 @@ export function VaultSection() {
     change.mutate(
       { oldPassphrase: oldPass, newPassphrase: newPass },
       {
-        onSuccess: () => {
+        onSuccess: (data) => {
           setOldPass("");
           setNewPass("");
           setConfirm("");
           setDone(true);
+          setUnrevoked(data.unrevoked ?? []);
         },
       },
     );
@@ -215,6 +224,49 @@ export function VaultSection() {
           >
             Passphrase changed.
           </p>
+        )}
+        {/* A clean rotation says nothing beyond "Passphrase changed." - this
+            only appears when the backend named a file it could not re-key.
+            Same danger recipe as RotationBackupNotice above (this screen's
+            one danger colour, same border/background), because it is the
+            same size of problem: a complete copy of the vault, readable
+            under a passphrase the user just tried to revoke. */}
+        {done && !localError && unrevoked.length > 0 && (
+          <section
+            aria-label="A copy still opens with the old passphrase"
+            data-testid="vault-unrevoked-notice"
+            className="space-y-2 rounded-lg p-3"
+            style={{
+              border: "1px solid rgba(195, 106, 114, 0.24)",
+              backgroundColor: "rgba(195, 106, 114, 0.10)",
+            }}
+          >
+            <div className="flex items-center gap-2">
+              <AlertCircle size={13} style={{ color: "var(--color-es-danger)" }} />
+              <h4
+                className="text-xs font-semibold"
+                style={{ color: "var(--color-es-text-light)" }}
+              >
+                A copy still opens with the old passphrase
+              </h4>
+            </div>
+            <p data-testid="vault-unrevoked-hint-1" className="text-xs leading-relaxed text-muted-foreground">
+              Changing your passphrase should close every copy under the old
+              one. One full copy of your vault could not be re-encrypted, so
+              it is still readable with the passphrase you just replaced.
+            </p>
+            <p data-testid="vault-unrevoked-hint-2" className="text-xs leading-relaxed text-muted-foreground">
+              Elysium cannot rewrite it automatically. Delete it yourself, or
+              move it somewhere safe, from the Elysium data folder:
+            </p>
+            <ul className="space-y-1">
+              {unrevoked.map((name) => (
+                <li key={name}>
+                  <code data-testid={`vault-unrevoked-name-${name}`} className="text-xs leading-relaxed text-muted-foreground">{name}</code>
+                </li>
+              ))}
+            </ul>
+          </section>
         )}
         <button
           type="submit"
