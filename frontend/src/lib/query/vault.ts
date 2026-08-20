@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { create } from "zustand";
 import { keys } from "./keys";
 import {
   getVaultStatus,
@@ -49,16 +50,60 @@ export function useUnlockVault() {
   });
 }
 
+/**
+ * Whether the CURRENT lock attempt left generated speech readable on disk.
+ *
+ * /vault/lock answers this in its own response body, not in /vault/status,
+ * so nothing that only polls status ever sees it - it exists for exactly as
+ * long as this one mutation's result does. LockOverlay is not the component
+ * that calls the mutation (SidebarHeader owns that call and hands the
+ * animation only a bare `commit` callback - see lib/vaultLockUi.ts), so this
+ * store is the one place both sides can reach: useLockVault's onSuccess/
+ * onError settle it, LockOverlay reads it to decide whether the closing
+ * animation stays silent or has to speak.
+ *
+ * `pending` lets a reader tell "nothing survived" (settled, empty) apart
+ * from "the call has not answered yet" (still pending) - collapsing those
+ * would let a slow lock read as a clean one before the backend has actually
+ * said so.
+ */
+interface LockAudioWarningState {
+  pending: boolean;
+  audioLeft: string[];
+  begin: () => void;
+  settle: (audioLeft: string[]) => void;
+}
+
+export const useLockAudioWarningStore = create<LockAudioWarningState>((set) => ({
+  pending: false,
+  audioLeft: [],
+  begin: () => set({ pending: true, audioLeft: [] }),
+  settle: (audioLeft) => set({ pending: false, audioLeft }),
+}));
+
 /** Explicit "lock now": drops the backend's in-RAM key. On success only the
  * vault-status key is invalidated - the gate flips to the lock screen and its
  * lock-hygiene effect purges every cached data query (no invalidateAll here:
  * refetching data against a locked backend would just be a 423 storm). */
 export function useLockVault() {
   const qc = useQueryClient();
+  const beginAudioWarning = useLockAudioWarningStore((s) => s.begin);
+  const settleAudioWarning = useLockAudioWarningStore((s) => s.settle);
   return useMutation({
     mutationFn: lockVault,
-    onSuccess: () => {
+    onMutate: () => {
+      beginAudioWarning();
+    },
+    onSuccess: (data) => {
+      settleAudioWarning(data.audio_left ?? []);
       void qc.invalidateQueries({ queryKey: keys.vault() });
+    },
+    // A refused lock left nothing new on disk - settle empty so the overlay
+    // never sits waiting on a mutation that already failed. SidebarHeader's
+    // own onError still reports the failure itself; this only unblocks the
+    // animation.
+    onError: () => {
+      settleAudioWarning([]);
     },
   });
 }

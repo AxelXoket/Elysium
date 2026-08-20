@@ -99,11 +99,21 @@ CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "tests/test_privacy_at_rest.py::TestTheDatabaseFileIsCiphertext"
         "::test_stdlib_sqlite_cannot_read_it",
     )),
-    ("Settings > Secrets lists it and deletes it on request", (
+    # "Settings > Secrets" named a tab that does not exist even before this
+    # correction - the tab's label has always been Security (the persisted
+    # value stays "secrets" internally; see RightPanel.tsx). The two backend
+    # proofs below cover the ROUTE only, so the screen half - that the tab
+    # actually lists the copy and a button actually removes it - now has its
+    # own frontend proofs alongside them.
+    ("Settings > Security lists it and deletes it on request", (
         "tests/test_plaintext_backup_discard.py::TestTheCopyIsVisible"
         "::test_status_reports_a_plaintext_backup",
         "tests/test_plaintext_backup_discard.py::TestTheCopyCanBeRemoved"
         "::test_discarding_deletes_it",
+        "frontend/src/test/components/PlaintextBackupNotice.test.tsx"
+        "::says so whenever one is on disk",
+        "frontend/src/test/components/PlaintextBackupNotice.test.tsx"
+        "::asks the backend once confirmed",
     )),
     # The clone reference, and the reason the sentence is conditional. A
     # reference clip only exists for an engine that clones, so an unconditional
@@ -121,6 +131,24 @@ CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "tests/test_tts_refs.py::TestSavingAClip"
         "::test_a_clip_and_its_words_are_stored_together",
     )),
+    # The row above used to end "no screen reports it and no button removes
+    # it", and that sentence sat in UNPROVEN with its own exit written into
+    # it: the honest fix is a UI that reports the file, at which point the
+    # sentence changes rather than gaining a test. The UI was built, so the
+    # sentence changed and the debt is retired rather than carried. It named
+    # "Settings > Secrets", a tab that has never existed under that label -
+    # the tab is Security - and its two proofs covered the ROUTE only, not
+    # the screen the sentence actually claims; both are fixed here together.
+    ("Settings > Security now lists it and a button removes it", (
+        "tests/test_vault_premigrate_discard.py::TestStatusReportsPresence"
+        "::test_present_but_unreadable_while_locked",
+        "tests/test_vault_premigrate_discard.py::TestDiscardRoute"
+        "::test_removes_a_snapshot_that_opens_with_the_current_key",
+        "frontend/src/test/components/PremigrateBackupNotice.test.tsx"
+        "::says so when one is on disk",
+        "frontend/src/test/components/PremigrateBackupNotice.test.tsx"
+        "::asks the backend once confirmed",
+    )),
     # app.db.premigrate.bak. Named in no document until now, which is exactly
     # the shape of claim this registry exists to make impossible in reverse:
     # the FILE existed, the sentence did not. Three proofs for three halves of
@@ -137,6 +165,19 @@ CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("moved aside because it did not open with this vault's key", (
         "tests/test_legacy_migration.py::TestAHalfWrittenSnapshotIsNotASnapshot"
         "::test_a_snapshot_that_does_not_open_is_replaced_not_trusted",
+    )),
+    # These two rows used to say "nothing removes it for you" and "Nothing
+    # purges these" without qualification - both false once /vault/reset
+    # existed: _reset_premigrate_family globs and shreds the .unreadable-*
+    # name, and the same route shreds TTS_REFS_DIR whole. One test builds
+    # both real artefacts and checks both are gone after a reset.
+    ("nothing short of a vault reset removes it for you", (
+        "tests/test_vault_reset.py::TestTheFullWipe"
+        "::test_every_ground_truth_artefact_is_destroyed",
+    )),
+    ("delete that voice, delete the folder, or reset the vault", (
+        "tests/test_vault_reset.py::TestTheFullWipe"
+        "::test_every_ground_truth_artefact_is_destroyed",
     )),
     ("anything older than 30 minutes is cleared as the next reply is spoken", (
         "tests/test_bounded_resources.py"
@@ -189,6 +230,24 @@ CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
 #: asymmetry as the README's PROSE_CLAIMS: a reworded or deleted sentence
 #: fails, a brand new one does not, and that is why DOCUMENT_DIGEST exists.
 PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    # The two sentences this document gained when it stopped describing the
+    # interrupted-extraction case "too kindly". Both are claims about money
+    # and about a second copy of a conversation leaving the machine, so both
+    # get a named proof rather than resting on the digest alone.
+    ("It is now marked as a failed call and never retried", (
+        "tests/test_notebook_paid_once.py::TestACallMadeAndNeverSettled"
+        "::test_the_range_is_not_sent_a_second_time",
+        "tests/test_notebook_paid_once.py::TestACallMadeAndNeverSettled"
+        "::test_the_orphaned_row_is_closed_out",
+    )),
+    ("against the trace its own call left before it was sent", (
+        "tests/test_notebook_paid_once.py"
+        "::TestAReplyThatArrivesAfterItsQuestionWasWithdrawn"
+        "::test_the_notes_are_not_written",
+        "tests/test_notebook_paid_once.py"
+        "::TestAReplyThatArrivesAfterItsQuestionWasWithdrawn"
+        "::test_the_range_stays_unread",
+    )),
     ("128 MB per attempt", (
         "tests/test_kdf_upgrade.py::TestTheParametersAreRecorded"
         "::test_the_current_parameters_meet_the_owasp_floor",
@@ -418,6 +477,41 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "tests/test_privacy_promises.py::TestTheApiKeyIsNeverHandedBack"
         "::test_storing_and_reading_it_writes_nothing_to_the_log",
     )),
+    # The Notes tab's dry-run preview claims a call against the SAME daily
+    # ledger the background note reader spends from - proven by driving the
+    # cap to zero and watching the preview route refuse exactly like the
+    # reader would, rather than opening a side door around the block.
+    ("shared by the note reader and the preview alike", (
+        "tests/test_notebook_spend_cap.py::TestTheRouteIsWiredToTheLedger"
+        "::test_the_dry_run_refuses_once_the_day_is_spent",
+    )),
+    # /vault/reset, added when this document first named the route at all.
+    # Four claims from its new section, each tied to the test that would
+    # fail if the route stopped behaving the way the sentence says.
+    ("refuses outright with HTTP 409 before the confirmation phrase is "
+     "even read", (
+        "tests/test_vault_reset.py::TestRefusesWhileUnlocked"
+        "::test_refuses_and_destroys_nothing",
+        "tests/test_vault_reset.py::TestRefusesWhileUnlocked"
+        "::test_the_check_runs_before_the_confirmation_phrase_is_even_read",
+    )),
+    ("requires a typed confirmation phrase, checked against a value only "
+     "the backend decides", (
+        "tests/test_vault_reset.py::TestRefusesTheWrongConfirmationPhrase"
+        "::test_refuses_and_destroys_nothing",
+        "tests/test_vault_reset.py::TestRefusesTheWrongConfirmationPhrase"
+        "::test_surrounding_whitespace_is_forgiven",
+    )),
+    ("the database and every backup family beside it (plaintext, orphaned, "
+     "rotation, and both premigrate names, including the one moved aside "
+     "as unreadable)", (
+        "tests/test_vault_reset.py::TestTheFullWipe"
+        "::test_every_ground_truth_artefact_is_destroyed",
+    )),
+    ('a clean run reports `{"ok": true, "left": []}`', (
+        "tests/test_vault_reset.py::TestTheFullWipe"
+        "::test_every_ground_truth_artefact_is_destroyed",
+    )),
 )
 
 
@@ -572,14 +666,11 @@ UNPROVEN: tuple[tuple[str, str], ...] = (
      "clip and its transcript are still on disk after a lock and a relaunch. "
      "Testable the same way test_audio_cache_launch_wipe.py tests the cache, "
      "and it is the more valuable half, because here survival is the "
-     "behaviour being promised."),
-    ("no screen reports it and no button removes it",
-     "nothing asserts that /vault/status omits app.db.premigrate.bak, nor "
-     "that no route deletes it. Testable directly (the status payload names "
-     "three sidecar families and this is in none of them), and it is written "
-     "down here rather than proven because the honest fix is a UI that "
-     "reports the file, at which point the sentence changes rather than "
-     "gaining a test."),
+     "behaviour being promised FOR THOSE THREE PATHS specifically. The row's "
+     "other exits - deleting the voice, deleting the folder, or a vault "
+     "reset - are a separate claim and the reset half of it is already "
+     "proven (see 'delete that voice, delete the folder, or reset the "
+     "vault' above), not part of this debt."),
     ("Deleting every chat does not delete what the notebook spent",
      "test_notebook_spend_cap.py proves the ledger accumulates and blocks; "
      "nothing deletes every chat and then asserts the rows survive, and "
@@ -590,6 +681,21 @@ UNPROVEN: tuple[tuple[str, str], ...] = (
      "true by inspection (narrow_data_dir is only ever called with the "
      "app's own data directory), but no test asserts that as a standing "
      "invariant across every call site in the app."),
+    # /vault/reset again - the two halves of it nothing exercises yet.
+    ("It does **not** touch `elysium.log` or `port`",
+     "true by inspection - _reset_vault_sync's category list in vault.py "
+     "names every directory and file family it destroys, and neither the "
+     "log path nor the port file is among them - but no test writes either "
+     "one, resets, and asserts it is still there. Testable the same way "
+     "test_every_ground_truth_artefact_is_destroyed proves the opposite for "
+     "everything that IS destroyed, not written."),
+    ("a file that would not go is named rather than hidden, as "
+     '`{"ok": false, "left": [...]}`',
+     "the ok:true, left:[] shape is proven (test_every_ground_truth_"
+     "artefact_is_destroyed); nothing simulates a file the route cannot "
+     "remove - held open, permission-denied - and checks the response comes "
+     "back ok:false with that file named in left. Testable by holding a "
+     "handle open on one artefact before calling the route, not written."),
 )
 
 
@@ -764,7 +870,7 @@ def _acknowledged_problems(
 #: sample - so this covers all of it. Updating this constant is the
 #: deliberate act that means a human decided what a change claims and
 #: registered a proof for it.
-DOCUMENT_DIGEST = "12021284eca91b9ed60b438fccd871c37a240157999caa9658752c1b61301b09"
+DOCUMENT_DIGEST = "470a3b44e043a3cab13e4867db87337863c94f92954d96191a846d8466b18193"
 
 
 class TestEveryProvenClaimHasAProof:

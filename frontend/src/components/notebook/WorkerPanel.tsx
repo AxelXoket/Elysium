@@ -31,6 +31,20 @@ import {
 const SKIP_PROSE: Record<string, string> = {
   notebook_daily_cap_reached: "today's call limit was already used",
   proxy_gate: "your proxy was required and not healthy",
+  // Written by a different path from the others - commit_extraction's
+  // require_trace branch, not the worker's own SKIP_REASONS - so the gate
+  // that keeps this table complete never covered it, and the panel printed
+  // the raw token at the reader. Which is the one thing this table exists
+  // to stop.
+  plan_invalidated:
+    "you edited or deleted a message while it was being read, so the reply "
+    + "was thrown away rather than written from wording you took back",
+  // Same trigger as plan_invalidated - the messages it was reading were gone
+  // by the time the reply came back - but a cleared chat, not an edit: there
+  // is nothing left to re-read, so it is worded as done rather than pending.
+  range_cleared:
+    "the chat was cleared while it was being read, so the reply was thrown "
+    + "away - there is nothing left in that range to read",
 };
 
 /** The three states, said plainly. "closed" is engineering vocabulary for
@@ -117,19 +131,51 @@ export function WorkerPanel() {
                   ImageOutputSetting's hint text already use) and named
                   "lifetime" rather than positioned next to "today" with no
                   label of its own. Today's number is the one that governs
-                  the cap, so it keeps full weight; this one does not. */}
+                  the cap, so it keeps full weight; this one does not.
+
+                  The docstring on spend_lifetime (notebook_store.py) argues
+                  that filtering the lifetime SUM would hide "real spend that
+                  happened" from "the one screen that is supposed to be
+                  honest about every credit spent" - an argument about MONEY,
+                  not about calls. A parenthetical that named only
+                  `.calls` made that argument and then answered a different
+                  question: today's money sat beside a lifetime call count,
+                  so the one figure the docstring is about never reached the
+                  screen. Both numbers now use the same "N unit" words the
+                  line above already uses for today ("calls" / "credits"),
+                  not a bare number - the units are what mark this as a
+                  different KIND of figure, not just its dimmer position. */}
               <span className="opacity-70">
-                ({body.spend_lifetime.calls} lifetime)
+                ({body.spend_lifetime.calls} calls,{" "}
+                {body.spend_lifetime.cost.toFixed(5)} credits lifetime)
               </span>
             </p>
 
             {/* Failures and refusals are separate lines because they call for
                 different things: one is the provider's problem, the other is
                 a limit doing its job. */}
-            {body.stats.failed > 0 && (
+            {/* `abandoned` rows carry status 'failed' too, so they are a
+                SUBSET of this count. Reporting the whole of it under "nothing
+                was lost" was the lie: for an abandoned call the money was
+                spent and those messages are never read. Split, so each line
+                is true of the runs it describes. */}
+            {body.stats.failed - body.stats.abandoned > 0 && (
               <p className="text-xs leading-relaxed text-muted-foreground">
-                {body.stats.failed} runs failed. Nothing was lost - the
-                messages they could not read stay unread, not skipped.
+                {body.stats.failed - body.stats.abandoned} runs failed.
+                Nothing was lost - the messages they could not read stay
+                unread, not skipped.
+              </p>
+            )}
+
+            {body.stats.abandoned > 0 && (
+              <p
+                className="text-xs leading-relaxed text-muted-foreground"
+                data-testid="worker-abandoned"
+              >
+                {body.stats.abandoned} runs were cut off after the request had
+                already been sent, so they were paid for. Elysium does not
+                send those stretches again, which is why the notes for them
+                are missing rather than duplicated.
               </p>
             )}
 

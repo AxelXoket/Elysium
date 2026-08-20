@@ -57,7 +57,7 @@ CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "tests/test_privacy_promises.py::TestWhatIsNeverSent"
         "::test_the_context_budget_is_an_app_side_number_only",
     )),
-    ("`response_format` is sent by exactly one path", (
+    ("`response_format` is sent by exactly two paths", (
         "tests/test_privacy_promises.py::TestWhatIsNeverSent"
         "::test_response_format_is_sent_by_the_extractor_and_nowhere_else",
         "tests/test_privacy_promises.py::TestWhatIsNeverSent"
@@ -124,6 +124,11 @@ CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "::test_an_idle_vault_with_the_setting_on_locks",
         "tests/test_auto_lock.py::TestWhenItDecidesToLock"
         "::test_a_busy_vault_does_not_lock_however_long_it_has_been",
+        "tests/test_auto_lock.py::TestAStreamedReplyIsNotInterrupted"
+        "::test_the_vault_is_never_idle_while_the_body_is_streaming",
+        "tests/test_notebook_worker_hardening.py"
+        "::TestABilledCallLeavesATraceBeforeItIsMade"
+        "::test_a_cancellation_in_flight_leaves_the_trace_behind",
     )),
     ("The desktop window is given a secret at launch", (
         "tests/test_launch_token.py::TestWhenItIsArmed"
@@ -201,7 +206,7 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
 #: test would notice. This closes that by refusing ANY change to the section
 #: until somebody comes here, decides what the change claims, and registers a
 #: proof for it. Updating this constant is the deliberate act.
-SECTION_DIGEST = "fbd48b45de33c68c5c8d028976da1e61a0a254d79dae7ce788b7aac2bb820293"
+SECTION_DIGEST = "20480082d3a2baf9b1978e5844a3fac70ec9b794178df6476dc3ba229aaf0fcf"
 
 
 def _section() -> str:

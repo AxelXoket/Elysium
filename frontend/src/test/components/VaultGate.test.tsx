@@ -517,3 +517,76 @@ describe("VaultGate - the states nobody rendered", () => {
     expect(notice).toHaveTextContent(/not encrypted/i);
   });
 });
+
+/**
+ * The reset confirmation screen's destruction list, checked artefact by
+ * artefact against _reset_vault_sync (backend/routers/vault.py) - see the
+ * comment above the sentence in VaultGate.tsx for the full mapping. Two
+ * defects: the sentence never named DATA_DIR/webview (the wallpaper, its
+ * framing, text-size settings and the last-open ids), and it said nothing
+ * about elysium.log surviving with a record of which chats had notes -
+ * letting "all of it, at once" be read as covering a file that is not swept.
+ */
+describe("VaultGate - the reset confirmation screen", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function openResetPanel() {
+    const user = userEvent.setup();
+    stubVaultFetch({
+      initialized: true,
+      unlocked: false,
+      passphrase: "right-horse-42",
+    });
+    renderWithQueryClient(<VaultGate>{APP_MARKER}</VaultGate>);
+    await screen.findByText("Elysium is locked");
+    await user.click(
+      screen.getByRole("button", { name: /forgot your passphrase\?/i }),
+    );
+    await screen.findByText("Start over instead");
+  }
+
+  it("names the local browser profile among what it destroys", async () => {
+    // uiStore's partialize allowlist puts the wallpaper, its framing, the
+    // text size and the two last-open ids in localStorage inside
+    // DATA_DIR/webview, which _reset_vault_sync sweeps as "browser profile" -
+    // and none of that was in the sentence before this fix.
+    await openResetPanel();
+    const promise =
+      screen.getByText(/deletes everything the vault holds/i).textContent ?? "";
+    expect(promise).toMatch(/wallpaper/i);
+    expect(promise).toMatch(/framing/i);
+    expect(promise).toMatch(/text-size/i);
+    expect(promise).toMatch(/last open/i);
+  });
+
+  it("still names every database-backed category it always named", async () => {
+    // Ground: the fix widens the sentence, it must not also have narrowed it.
+    await openResetPanel();
+    const promise =
+      screen.getByText(/deletes everything the vault holds/i).textContent ?? "";
+    for (const word of [
+      "chats",
+      "characters",
+      "personas",
+      "notes",
+      "uploads",
+      "generated images",
+      "saved voice",
+      "saved API key",
+    ]) {
+      expect(promise, `missing "${word}"`).toMatch(new RegExp(word, "i"));
+    }
+  });
+
+  it("does not let the diagnostic log's survival go unsaid", async () => {
+    // elysium.log is untouched by _reset_vault_sync and still records which
+    // chats triggered a note-taking pass (notebook_worker.py logs chat_id on
+    // a failed extraction). The screen has to name the exception rather than
+    // let "all of it, at once" read as covering it too.
+    await openResetPanel();
+    expect(await screen.findByText(/elysium\.log/i)).toBeInTheDocument();
+    expect(screen.getByText(/survives this reset/i)).toBeInTheDocument();
+  });
+});

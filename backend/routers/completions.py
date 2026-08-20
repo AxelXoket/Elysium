@@ -34,6 +34,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import threading
 
 import anyio.to_thread
 
@@ -1275,13 +1276,25 @@ async def complete_chat(chat_id: int, body: CompleteRequest) -> dict:
     )
 
     # ── DB transaction: insert user + assistant, link attachments ─────────
+    # The notify rides INSIDE the worker thread, not after this await: a bare
+    # asyncio.Task.cancel() (application forced-shutdown, not a client
+    # disconnect - see openrouter.py's complete()) unwinds this coroutine
+    # immediately while the thread keeps writing, detached. Without this the
+    # write still lands but the notebook is never told - the silent-skip this
+    # function's own docstring already names, just from a different cause.
+    loop = asyncio.get_running_loop()
+
+    def _persist_and_notify():
+        result = _persist_exchange_sync(
+            chat_id, body.model_id, body.message.strip(), assistant_text,
+            body.attachments, generated, truncated,
+        )
+        _notify_notebook_from_thread(loop, chat_id)
+        return result
+
     try:
         user_msg, asst_msg, user_msg_id, asst_msg_id, refused = (
-            await anyio.to_thread.run_sync(
-                _persist_exchange_sync, chat_id, body.model_id,
-                body.message.strip(), assistant_text, body.attachments,
-                generated, truncated,
-            )
+            await anyio.to_thread.run_sync(_persist_and_notify)
         )
     except HTTPException:
         # A deleted chat is a race, not a malfunction. Logging it as a failed
@@ -1291,7 +1304,6 @@ async def complete_chat(chat_id: int, body: CompleteRequest) -> dict:
         logger.warning("DB write failed after successful completion: chat_id=%d", chat_id)
         raise
 
-    _offer_to_notebook(chat_id)
     notices = _with_refusals(notices, refused)
 
     logger.info(
@@ -1451,12 +1463,42 @@ def _offer_to_notebook(chat_id: int) -> None:
     one worked in the live UI and silently stopped extracting for any client
     that used the plain routes, with the status screen reporting a perfectly
     healthy idle worker.
+
+    EVENT-LOOP THREAD ONLY. notebook_worker.worker.offer() puts onto an
+    asyncio.Queue, which - like every asyncio object - is not safe to touch
+    from any other thread. Call from a worker thread through
+    `_notify_notebook_from_thread` instead, never directly.
     """
     try:
         import notebook_worker
         notebook_worker.worker.offer(chat_id)
     except Exception:                              # pragma: no cover - belt
         logger.info("Notebook worker could not be notified.")
+
+
+def _notify_notebook_from_thread(
+    loop: asyncio.AbstractEventLoop, chat_id: int,
+) -> None:
+    """The `_offer_to_notebook` a WORKER THREAD may call.
+
+    Every persist here runs off the event loop (audit KOK 8), and a bare
+    asyncio.Task.cancel() - unlike a client disconnect, see openrouter.py's
+    complete() - does not stop that worker thread: `anyio.to_thread.run_sync`
+    already returned CancelledError to the coroutine while the thread was
+    still running (measured). So the write can succeed with nobody left on
+    the event loop to call `_offer_to_notebook` afterwards.
+
+    Calling it directly FROM the thread would touch notebook_worker's
+    asyncio.Queue from a non-owning thread - not merely undocumented but
+    actively unsafe, since Queue wakes waiters through the loop's own Future
+    machinery. loop.call_soon_threadsafe is the documented crossing: it
+    schedules the call to run ON the loop, whether or not the coroutine that
+    started this write is still around to see it.
+    """
+    try:
+        loop.call_soon_threadsafe(_offer_to_notebook, chat_id)
+    except Exception:                              # pragma: no cover - belt
+        logger.info("Notebook worker could not be notified (loop gone).")
 
 
 def _append_variant(
@@ -1678,6 +1720,22 @@ async def _stream_exchange(
     persisted = False  # guards against a double-insert if the client
     # disconnects exactly at the `done` yield (GeneratorExit lands in the
     # abort handler after the assistant row is already written).
+    finalizing = False  # True from just before `await finalize(...)` until it
+    # either returns or raises. Guards the OTHER double-insert: a bare
+    # asyncio.Task.cancel() - not a client disconnect, see openrouter.py's
+    # complete() for why those are different - lands inside finalize()'s own
+    # `anyio.to_thread.run_sync` write and is delivered to THIS coroutine
+    # immediately, while the write's worker thread keeps running underneath,
+    # detached, and reliably goes on to commit (measured: tests/
+    # test_stream_finalize_cancel.py's finalize-cancel case). Without this flag the
+    # except(GeneratorExit, CancelledError) handler below raced that detached
+    # write with its own "urgent" rescue insert - both targeting the same
+    # tail-guarded row, so exactly one committed and it was a coin flip which:
+    # sometimes the correct, fully-labelled reply (with its generated images),
+    # sometimes rescue's copy, which is unconditionally truncated=True even
+    # when the reply was complete and never carries generated images at all
+    # (rescue() does not forward them). See the `finalizing` check inside
+    # `_run_rescue` just below.
     aborting = False   # the `finally` cannot await once we are being cancelled
     # Voice rides ALONGSIDE the reply and may never cost it: a silent hook
     # is returned for "off", "not configured" and "engine broke", so no
@@ -1694,12 +1752,22 @@ async def _stream_exchange(
     # identical work in a threadpool, and /tts/speak_stream wraps it in
     # run_sync with the reason written out. Only this path paid.
     #
-    # The cell below is not decoration. run_sync does not abandon its worker on
-    # cancellation, so a client that disconnects DURING the build has its
-    # CancelledError delivered after open_speaker has already returned - and the
-    # hook, holding a loaded engine and its VRAM, would be dropped before the
-    # try/finally further down exists to close it.
+    # A client disconnecting DURING the build is safe: this Starlette build
+    # only cancels through anyio's own CancelScope machinery for an HTTP
+    # disconnect (see openrouter.py's complete()), and abandon_on_cancel=False
+    # genuinely shields that - measured. What is NOT safe is a bare
+    # asyncio.Task.cancel(), the kind uvicorn's forced-shutdown path uses:
+    # measured, it is delivered to this await immediately, while the build
+    # keeps running in its thread. The `except BaseException` below only ever
+    # closed hooks that had ALREADY been appended to `_built` by the time it
+    # ran - a hook the thread finishes building AFTER that (the common case:
+    # the build takes "hundreds of milliseconds", the cancel usually lands
+    # first) was still dropped, held VRAM and everything, exactly as this
+    # comment used to worry about while believing the code below already
+    # prevented it. `_build_state` below is what actually closes that one.
     _built: list = []
+    _build_lock = threading.Lock()
+    _build_state = {"abandoned": False}
 
     def _open_speaker():
         hook = stream_hook.open_speaker(
@@ -1728,16 +1796,34 @@ async def _stream_exchange(
             # pay for one up front. The hook resolves it when it speaks.
             pronunciations=tts_runtime.stored_pronunciations,
         )
-        _built.append(hook)
+        # Whichever side loses the race closes the hook; whichever side wins
+        # is the only one that ever touches it again. Without the lock, the
+        # awaiting coroutine could read `_built` between this thread deciding
+        # to append and actually appending, and both sides would walk away
+        # thinking the other owns it - closed by neither.
+        with _build_lock:
+            if _build_state["abandoned"]:
+                try:
+                    hook.close()
+                except Exception:                        # noqa: BLE001
+                    logger.warning(
+                        "orphaned speaker would not close: chat_id=%d",
+                        chat_id, exc_info=True)
+                return None
+            _built.append(hook)
         return hook
 
     try:
         voice = await anyio.to_thread.run_sync(_open_speaker)
     except BaseException:
-        # A hook that was built and then orphaned by cancellation. close() is
-        # blocking, but it cancel()s first and this speaker has been fed
-        # nothing, so the join returns at once.
-        for hook in _built:
+        # Close whatever is ALREADY built, and tell a build still in flight
+        # (a bare-cancelled one) to close itself the moment it finishes -
+        # see `_build_state` above.
+        with _build_lock:
+            _build_state["abandoned"] = True
+            pending = list(_built)
+            _built.clear()
+        for hook in pending:
             try:
                 hook.close()
             except Exception:                            # noqa: BLE001
@@ -1749,6 +1835,20 @@ async def _stream_exchange(
     async def _run_rescue(*, urgent: bool) -> bool:
         """True when a partial was kept. Never raises."""
         if rescue is None:
+            return False
+        if finalizing:
+            # finalize()'s own write is in flight in a detached worker thread
+            # (measured: a bare Task.cancel() does not stop it, see the
+            # `finalizing` comment above) and it reliably goes on to commit.
+            # Racing it with a SECOND insert here does not protect anything -
+            # it only decides, by coin flip, whether that correct write or
+            # this worse one (unconditionally truncated=True, no generated
+            # images) is the one the tail guard keeps. Do nothing and let the
+            # original write be the only writer.
+            logger.info(
+                "Streaming %s cancelled during finalize; leaving its write to "
+                "finish on its own: chat_id=%d", label, chat_id,
+            )
             return False
         partial = _keepable_partial(parts)
         try:
@@ -1871,25 +1971,52 @@ async def _stream_exchange(
         if not _visible_view(full_text).strip() and not generated:
             raise OpenRouterError("openrouter_error")
 
+        finalizing = True
         try:
             done = await finalize(full_text, generated, finish_state[0])
         except tuple(_CONFLICT_CODES) as exc:
+            # A clean, fully-resolved outcome: finalize() itself returned
+            # control to us (raising a named conflict, not a cancellation),
+            # so its write is over and `finalizing` must drop before we do
+            # anything else - unlike the CancelledError/GeneratorExit case
+            # below, where it must stay True into the outer handler. See the
+            # `finalizing` comment above.
+            finalizing = False
             code = _CONFLICT_CODES[type(exc)]
             logger.warning(
                 "Streaming %s conflict: chat_id=%d code=%s", label, chat_id, code,
             )
             yield _sse_event({"type": "error", "status": 409, "code": code})
             return
+        except (GeneratorExit, asyncio.CancelledError):
+            # Do NOT reset `finalizing` here. run_sync only raises this
+            # because a bare Task.cancel() interrupted the AWAIT - not
+            # because the worker thread finished - so the write is very
+            # likely still running, detached. The outer
+            # except(GeneratorExit, CancelledError) handler below reads
+            # `finalizing` (via `_run_rescue`) to decide whether writing
+            # again is safe. See the `finalizing` comment above.
+            raise
+        except BaseException:
+            # Any OTHER failure: to_thread.run_sync does not return or raise
+            # until its worker thread is actually done, so nothing is still
+            # running here - safe to fall back to the normal rescue path
+            # exactly as before this fix.
+            finalizing = False
+            raise
+        finalizing = False
         persisted = True
         logger.info(
             "Streaming %s success: chat_id=%d asst_msg_id=%s",
             label, chat_id, done.get("assistant_message", {}).get("id"),
         )
-        # AFTER the rows are safely down and BEFORE `done` goes out, because
-        # this neither blocks nor can fail: `offer` is a put on a bounded
-        # queue that swallows everything, including a full queue. A background
-        # feature that can make a message fail to send is not a feature.
-        _offer_to_notebook(chat_id)
+        # The notify already happened INSIDE finalize()'s own worker thread,
+        # right after its write committed (see `_notify_notebook_from_thread`)
+        # - not here, because a bare Task.cancel() can keep that write running
+        # after this coroutine has already been abandoned, with nobody left to
+        # reach this line. Calling `_offer_to_notebook` again here on the
+        # normal path would double-queue the same chat id.
+        #
         # Before `done`, always. A reader that learns a sentence went missing
         # AFTER being told the reply is complete has been told two things in
         # the wrong order.
@@ -2028,17 +2155,29 @@ async def complete_chat_stream(chat_id: int, body: CompleteRequest) -> Streaming
         chat_id, model_id_stripped, user_msg_id,
     )
 
+    finalize_loop = asyncio.get_running_loop()
+
     async def finalize(
         full_text: str, generated: list[tuple[bytes, str, int, int]],
         truncated: bool,
     ) -> dict:
         # Worker thread: the commit between SSE events must not block the
         # loop (other live streams stall for its duration).
-        assistant_message = await anyio.to_thread.run_sync(
-            _insert_assistant_message,
-            chat_id, model_id_stripped, full_text, user_msg_id, 15000,
-            generated, truncated,
-        )
+        #
+        # Notify from INSIDE the thread, not from `_stream_exchange` after
+        # `persisted = True`: a bare Task.cancel() lands here and this
+        # coroutine never returns to set that flag, but the write below still
+        # goes on to commit (see `finalizing` in `_stream_exchange`). Without
+        # this the notebook would never learn the turn landed.
+        def _insert_and_notify():
+            row = _insert_assistant_message(
+                chat_id, model_id_stripped, full_text, user_msg_id, 15000,
+                generated, truncated,
+            )
+            _notify_notebook_from_thread(finalize_loop, chat_id)
+            return row
+
+        assistant_message = await anyio.to_thread.run_sync(_insert_and_notify)
         return {
             "user_message": user_message,
             "assistant_message": assistant_message,
@@ -2256,19 +2395,27 @@ async def regenerate_message(chat_id: int, message_id: int,
     # not block the event loop while other SSE streams are live. Nothing is
     # ever deleted - old variants stay navigable.
     model_id_stripped = body.model_id
-    try:
-        result = await anyio.to_thread.run_sync(
-            _append_variant,
+    loop = asyncio.get_running_loop()
+
+    def _append_and_notify():
+        result = _append_variant(
             chat_id, anchor, assistant_text, model_id_stripped, prev_active_id,
             generated, truncated,
         )
+        _notify_notebook_from_thread(loop, chat_id)
+        return result
+
+    try:
+        # Notify from inside the thread - see the comment on
+        # `_notify_notebook_from_thread` for why a bare cancel can otherwise
+        # leave the write committed with the notebook never told.
+        result = await anyio.to_thread.run_sync(_append_and_notify)
     except RegenerateConflictError:
         raise HTTPException(409, "regenerate_conflict")
     except Exception:
         logger.warning("DB write failed after successful regeneration: chat_id=%d", chat_id)
         raise
 
-    _offer_to_notebook(chat_id)
     asst_row = result["asst_row"]
     variant_count = result["variant_count"]
     logger.info(
@@ -2336,6 +2483,8 @@ async def regenerate_message_stream(chat_id: int, message_id: int,
         chat_id, model_id_stripped, message_id,
     )
 
+    finalize_loop = asyncio.get_running_loop()
+
     async def finalize(
         full_text: str, generated: list[tuple[bytes, str, int, int]],
         truncated: bool,
@@ -2344,11 +2493,20 @@ async def regenerate_message_stream(chat_id: int, message_id: int,
         # runs off the loop so other live SSE streams do not stall. The await
         # lands BETWEEN yields (holding no connection), preserving the "SSE
         # yields happen outside the connection context" invariant.
-        result = await anyio.to_thread.run_sync(
-            _append_variant,
-            chat_id, anchor, full_text, model_id_stripped, prev_active_id,
-            generated, truncated,
-        )
+        #
+        # Notify from inside the thread: see the comment in
+        # `_stream_exchange` on `finalizing` for why a bare Task.cancel() can
+        # leave this commit going on to succeed with nobody left to tell the
+        # notebook.
+        def _append_and_notify():
+            row = _append_variant(
+                chat_id, anchor, full_text, model_id_stripped, prev_active_id,
+                generated, truncated,
+            )
+            _notify_notebook_from_thread(finalize_loop, chat_id)
+            return row
+
+        result = await anyio.to_thread.run_sync(_append_and_notify)
         variant_count = result["variant_count"]
         return {
             "user_message": _msg_to_dict(existing_user_row, user_atts),
@@ -2580,17 +2738,25 @@ async def edit_message(chat_id: int, message_id: int, body: EditRequest) -> dict
         pending_attachments=user_atts,
     )
 
-    try:
-        result = await anyio.to_thread.run_sync(
-            _finalize_edit,
+    loop = asyncio.get_running_loop()
+
+    def _finalize_and_notify():
+        row = _finalize_edit(
             chat_id, message_id, new_content, assistant_text, body.model_id,
             user_row["updated_at"], user_row["content"], tail_id, generated,
             truncated,
         )
+        _notify_notebook_from_thread(loop, chat_id)
+        return row
+
+    try:
+        # Notify from inside the thread - see `_notify_notebook_from_thread`
+        # for why a bare cancel can otherwise leave the write committed with
+        # the notebook never told.
+        result = await anyio.to_thread.run_sync(_finalize_and_notify)
     except EditConflictError:
         raise HTTPException(409, "edit_conflict")
 
-    _offer_to_notebook(chat_id)
     logger.info(
         "Edit success: chat_id=%d user_msg_id=%d new_asst_id=%d swept=%d",
         chat_id, message_id, result["assistant_message"]["id"],
@@ -2645,16 +2811,25 @@ async def edit_message_stream(chat_id: int, message_id: int,
         chat_id, model_id_stripped, message_id,
     )
 
+    finalize_loop = asyncio.get_running_loop()
+
     async def finalize(
         full_text: str, generated: list[tuple[bytes, str, int, int]],
         truncated: bool,
     ) -> dict:
-        result = await anyio.to_thread.run_sync(
-            _finalize_edit,
-            chat_id, message_id, new_content, full_text, model_id_stripped,
-            user_row["updated_at"], user_row["content"], tail_id, generated,
-            truncated,
-        )
+        # Notify from inside the thread: see the `finalizing` comment in
+        # `_stream_exchange` for why a bare Task.cancel() can leave this
+        # commit going on to succeed with nobody left to tell the notebook.
+        def _finalize_and_notify():
+            row = _finalize_edit(
+                chat_id, message_id, new_content, full_text, model_id_stripped,
+                user_row["updated_at"], user_row["content"], tail_id, generated,
+                truncated,
+            )
+            _notify_notebook_from_thread(finalize_loop, chat_id)
+            return row
+
+        result = await anyio.to_thread.run_sync(_finalize_and_notify)
         logger.info(
             "Streaming edit swept %d row(s): chat_id=%d user_msg_id=%d",
             result["deleted_count"], chat_id, message_id,

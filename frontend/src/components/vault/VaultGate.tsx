@@ -37,24 +37,33 @@ const MIN_PASSPHRASE_LEN = 12;
 /**
  * The phrase a user must type to wipe the vault and start over.
  *
- * ASSUMPTION, recorded because there is nothing yet to confirm it against:
- * as of this writing backend/routers/vault.py defines no /vault/reset route
- * at all (checked directly, not inferred), so no server-side phrase exists to
- * read. The build brief names the backend as the authority on the exact
- * wording once that route lands. Until then this constant is a stand-in, and
- * it is exported so the test file imports it rather than duplicating it - if
- * the real route later expects different wording, only this one line and the
- * request body shape below need to change to match it.
+ * The BACKEND is the authority on this wording, not this file. It is checked
+ * there, against RESET_CONFIRMATION_PHRASE in backend/routers/vault.py, so a
+ * value drifting here cannot weaken the guard - it can only stop the button
+ * working, which is the safe direction for a control that deletes everything.
+ * This copy exists so the screen can disable the button before the request is
+ * made, and it is exported so the test imports it rather than retyping it.
  */
 export const RESET_CONFIRM_PHRASE = "DELETE EVERYTHING";
 
-/** POST /vault/reset - ASSUMED shape (see RESET_CONFIRM_PHRASE above). Kept
- * local to this file rather than added to lib/api/vault.ts and
- * lib/schemas/vault.ts: this component owns only VaultGate.tsx, and those
- * files are shared ground other work touches concurrently. */
-const VaultResetOkSchema = z.object({ ok: z.boolean() });
+/** POST /vault/reset. The route landed and the shape is confirmed against
+ * backend/routers/vault.py's vault_reset -> _reset_vault_sync: `{ ok, left }`
+ * (see RESET_CONFIRM_PHRASE above). Kept local to this file rather than added
+ * to lib/api/vault.ts and lib/schemas/vault.ts: this component owns only
+ * VaultGate.tsx, and those files are shared ground other work touches
+ * concurrently. */
+const VaultResetOkSchema = z.object({
+  ok: z.boolean(),
+  /** What the sweep could NOT remove. The route answers 200 even when this
+   *  is non-empty, because the request succeeded - it is the DELETION that
+   *  was partial. Named here or z.object strips it, and the screen then
+   *  tells somebody every trace is gone while files of theirs are still on
+   *  disk. On a route whose whole promise is "everything, at once", that is
+   *  the worst sentence this app could say. */
+  left: z.array(z.string()).default([]),
+});
 
-function resetVault(confirm: string): Promise<{ ok: boolean }> {
+function resetVault(confirm: string): Promise<{ ok: boolean; left: string[] }> {
   return request("/vault/reset", VaultResetOkSchema, {
     method: "POST",
     body: JSON.stringify({ confirm }),
@@ -69,8 +78,12 @@ function useResetVault() {
     // the gate has to see a fresh /vault/status (initialized: false) to swing
     // over to the setup screen on its own - see the stage switch in
     // VaultGate. Nothing here invents a fourth stage.
-    onSuccess: () => {
-      void qc.invalidateQueries();
+    onSuccess: (data) => {
+      // Only a COMPLETE wipe moves on by itself. A partial one keeps the
+      // panel up so the survivors can be read; the gate would otherwise
+      // swing to the setup screen - the database is gone either way - and
+      // carry that list off the screen before anybody saw it.
+      if (data.ok) void qc.invalidateQueries();
     },
   });
 }
@@ -620,11 +633,53 @@ function ResetVaultPanel({ onCancel }: { onCancel: () => void }) {
           <Wordmark size={27} tone="onDark" />
         </span>
         <h1 className="vault-title">Start over instead</h1>
+        {/* This list is read once, right before an irreversible click, so it
+            has to be exact rather than approximate. Checked artefact by
+            artefact against _reset_vault_sync in backend/routers/vault.py:
+
+              _reset_database + _reset_backup_families + _reset_premigrate_family
+                -> chats, characters, personas, notes and the saved API key
+                   (all rows/blobs in app.db, plus every backup family
+                   /vault/status already tracks by name - none of that is a
+                   new category, so none gets its own bullet)
+              _reset_directory_tree(UPLOADS_DIR)   -> uploads
+              _reset_directory_tree(TTS_REFS_DIR)  -> saved voice (the
+                   cloning reference clip + transcript; TTS_CACHE_DIR, the
+                   transient spoken-reply cache, is already normally empty by
+                   the time the vault is locked)
+              _reset_directory_tree(DATA_DIR/webview) -> the local browser
+                   profile: the chat wallpaper (IndexedDB), its framing and
+                   text-size settings and which chat/character were last open
+                   (all persisted there per uiStore's partialize allowlist).
+                   Missing from this sentence before now - the one artefact
+                   named explicitly in the fix that added this comment.
+              (generated images have no separate bullet: attachments_service
+               stores every image, uploaded or generated, as a blob inside
+               app.db itself - the database bullet already covers them, per
+               that function's own docstring)
+
+            NOT covered, and deliberately not implied by "everything" above:
+            elysium.log and the port file are untouched by _reset_vault_sync,
+            neither route removes them. The port file is just a listening
+            port number - nothing to disclose. elysium.log is different: it
+            is audited to carry no chat content, keys or passphrases, but
+            notebook_worker.py logs `chat_id` on an extraction failure, which
+            is a record of which chats had note-taking activity, and that
+            record is not part of "all of it" below - see the second
+            paragraph. */}
         <p className="vault-note">
           This does not recover your passphrase - nothing does. It deletes
           everything the vault holds: chats, characters, personas, notes,
-          uploads, generated images, saved voice, and the saved API key. All
-          of it, at once, and it cannot be undone.
+          uploads, generated images, saved voice, and the saved API key. It
+          also deletes the local browser profile: the chat wallpaper, its
+          framing, text-size settings, and which chat and character were last
+          open. All of it, at once, and it cannot be undone.
+        </p>
+        <p className="vault-note">
+          One file is left alone on purpose: <code>elysium.log</code>, the
+          app's own diagnostic log. It never carries chat content, keys or
+          passphrases, but it does record which chats triggered a note-taking
+          pass, and that record survives this reset.
         </p>
         <p className="vault-note">
           Afterwards Elysium opens on the same setup screen first run used.
@@ -643,6 +698,27 @@ function ResetVaultPanel({ onCancel }: { onCancel: () => void }) {
           disabled={reset.isPending}
         />
       </label>
+      {/* The request succeeded and the deletion did not. Not an error state,
+          and it must not be silent either: these are the user's own files,
+          still readable, after a screen promised all of it was gone. */}
+      {reset.data && !reset.data.ok && (
+        <div className="vault-error" role="alert" data-testid="reset-left">
+          <p>
+            Some of it could not be deleted, so this is not finished. Elysium
+            removed what it could and left the rest exactly as it was:
+          </p>
+          <ul>
+            {reset.data.left.map((what) => (
+              <li key={what}>{what}</li>
+            ))}
+          </ul>
+          <p>
+            Close anything that might be holding them open and try again, or
+            delete them yourself. Until they are gone, what was in them can
+            still be read by anyone who has your passphrase.
+          </p>
+        </div>
+      )}
       {reset.isError && (
         <p className="vault-error" role="alert">
           {/* No vault_reset_failed entry exists yet in errorMessages.ts (out

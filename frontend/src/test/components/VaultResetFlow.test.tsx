@@ -24,6 +24,10 @@ interface VaultSim {
   unlocked: boolean;
   passphrase: string | null;
   resetOk: boolean;
+  /** What the sweep could not remove. The real route answers 200 with this
+   *  non-empty when the DELETION was partial, which is a different thing
+   *  from the request failing - and the difference is the whole point. */
+  resetLeft?: string[];
 }
 
 /** Same stateful backend stand-in shape as VaultGate.test.tsx, extended with
@@ -52,10 +56,16 @@ function stubVaultFetch(sim: VaultSim) {
         if (!sim.resetOk) {
           return json({ detail: "vault_reset_failed" }, 500);
         }
+        const left = sim.resetLeft ?? [];
+        // The real route sweeps the DATABASE first and only then the other
+        // artefact families, so a partial failure still leaves the vault
+        // uninitialised. Simulating it as "nothing changed" would make the
+        // screen's guard look load-bearing when it was not: the panel would
+        // stay up on its own and the test would pass for the wrong reason.
         sim.initialized = false;
         sim.unlocked = false;
         sim.passphrase = null;
-        return json({ ok: true });
+        return json({ ok: left.length === 0, left });
       }
       return json({}, 404);
     }),
@@ -310,5 +320,58 @@ describe("VaultGate lock screen - forgot passphrase / reset", () => {
 
     expect(await screen.findByTestId("app-root")).toBeInTheDocument();
     expect(resetCallCount()).toBe(0);
+  });
+});
+
+describe("a reset that only partly worked", () => {
+  // The route answers 200 even when the sweep left files behind, because the
+  // REQUEST succeeded and the DELETION did not. The screen used to strip
+  // that list in its own zod schema and move straight on, so somebody was
+  // told every trace of their vault was gone while their own files were
+  // still readable on disk. On this route that is the worst possible lie.
+  async function wipe(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(await screen.findByRole("button",
+      { name: /forgot your passphrase/i }));
+    await user.type(screen.getByLabelText(/type/i), RESET_CONFIRM_PHRASE);
+    await user.click(screen.getByRole("button",
+      { name: /delete everything/i }));
+  }
+
+  function partial(left: string[]): VaultSim {
+    return { initialized: true, unlocked: false, passphrase: "right-horse-42",
+             resetOk: true, resetLeft: left };
+  }
+
+  it("names what survived instead of claiming it all went", async () => {
+    const user = userEvent.setup();
+    await openLockScreen(partial(["voice cache", "uploads"]));
+    await wipe(user);
+
+    const left = await screen.findByTestId("reset-left");
+    expect(left.textContent).toMatch(/voice cache/);
+    expect(left.textContent).toMatch(/uploads/);
+  });
+
+  it("does not send the user on to setup while files remain", async () => {
+    const user = userEvent.setup();
+    await openLockScreen(partial(["uploads"]));
+    await wipe(user);
+
+    await screen.findByTestId("reset-left");
+    // Ground: still the reset panel, not the first-run screen, and the app
+    // behind the gate is still not showing.
+    expect(screen.queryByTestId("app-root")).not.toBeInTheDocument();
+  });
+
+  it("says nothing extra when the wipe really was complete", async () => {
+    // Positive control. A warning that shows on a clean reset would train
+    // somebody to ignore it on the one that matters.
+    const user = userEvent.setup();
+    await openLockScreen({ initialized: true, unlocked: false,
+                           passphrase: "right-horse-42", resetOk: true });
+    await wipe(user);
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("reset-left")).not.toBeInTheDocument());
   });
 });
