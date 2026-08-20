@@ -42,7 +42,7 @@ class TestSavingAClip:
                                  label="Ayse", transcript="Merhaba, ben burdayim.")
         assert voice.has_transcript
         assert voice.transcript_source == "user"
-        assert (refs_root / "ayse" / "transcript.txt").is_file()
+        assert (Path(voice.path) / "transcript.txt").is_file()
 
     def test_the_clip_length_is_read_back(self, refs_root):
         voice = refs.save_upload("ayse", "ref.wav", _wav_bytes(seconds=9.0))
@@ -50,8 +50,8 @@ class TestSavingAClip:
 
     def test_replacing_a_clip_leaves_only_one(self, refs_root):
         refs.save_upload("ayse", "ref.wav", _wav_bytes())
-        refs.save_upload("ayse", "ref.mp3", b"fake mp3 bytes" * 100)
-        audio = [p.name for p in (refs_root / "ayse").iterdir()
+        voice = refs.save_upload("ayse", "ref.mp3", b"fake mp3 bytes" * 100)
+        audio = [p.name for p in Path(voice.path).iterdir()
                  if p.suffix in refs.AUDIO_SUFFIXES]
         assert len(audio) == 1, "the old clip was left behind: %r" % audio
 
@@ -107,9 +107,10 @@ class TestAClipThatWillNotDie:
     def test_a_clip_that_cannot_be_destroyed_stops_the_upload(
         self, refs_root, monkeypatch
     ):
-        refs.save_upload("ayse", "ref.mp3", b"take one" * 200,
-                         transcript="the words of take one")
-        before = (refs_root / "ayse" / "ref.mp3").read_bytes()
+        saved = refs.save_upload("ayse", "ref.mp3", b"take one" * 200,
+                                 transcript="the words of take one")
+        folder = Path(saved.path)
+        before = (folder / "ref.mp3").read_bytes()
 
         _hold(monkeypatch, "ref.mp3")
         with pytest.raises(refs.RefError) as exc:
@@ -118,9 +119,9 @@ class TestAClipThatWillNotDie:
         assert exc.value.code == "tts_reference_clip_stuck"
 
         # Nothing was destroyed...
-        assert (refs_root / "ayse" / "ref.mp3").read_bytes() == before
+        assert (folder / "ref.mp3").read_bytes() == before
         # ...nothing was installed beside it, where it would have lost anyway...
-        assert not (refs_root / "ayse" / "ref.wav").exists()
+        assert not (folder / "ref.wav").exists()
         # ...and above all the clip and the words still belong to each other.
         voice = refs.describe("ayse")
         assert voice.audio_name == "ref.mp3"
@@ -212,9 +213,11 @@ class TestTheTranscript:
 
 class TestDeleting:
     def test_deleting_removes_the_folder(self, refs_root):
-        refs.save_upload("ayse", "ref.wav", _wav_bytes())
+        voice = refs.save_upload("ayse", "ref.wav", _wav_bytes())
+        folder = Path(voice.path)
+        assert folder.is_dir()               # ground: it really was there
         refs.delete("ayse")
-        assert not (refs_root / "ayse").exists()
+        assert not folder.exists()
         assert refs.list_voices() == []
 
     def test_deleting_something_that_is_not_there_is_harmless(self, refs_root):

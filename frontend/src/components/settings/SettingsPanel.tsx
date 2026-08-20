@@ -29,14 +29,24 @@ export function SettingsPanel() {
 
             1. The browser DOES store things. lib/store/uiStore.ts persists to
                localStorage under "elysium-ui-state", and its `partialize`
-               includes selectedCharacterId, selectedChatId and
-               selectedModelId. Which character and which chat were last open
-               therefore sit in plaintext outside the vault and survive a
-               lock. That is a deliberate trade the owner made - reopening
-               where you left off is worth more than the change - so the note
-               names what is kept instead of pretending nothing is. The claim
-               that survives is the narrow one that is actually true: no key
-               and no message TEXT is in browser storage.
+               includes selectedCharacterId and selectedChatId. Which
+               character and which chat were last open therefore sit in
+               plaintext outside the vault and survive a lock. That is a
+               deliberate trade the owner made - reopening where you left off
+               is worth more than the change - so the note names what is kept
+               instead of pretending nothing is. The claim that survives is
+               the narrow one that is actually true: no key and no message
+               TEXT is in browser storage.
+
+               selectedModelId is NOT in that list, on purpose (v1.2 privacy
+               fix): an OpenRouter model id such as
+               "anthropic/claude-3.5-sonnet" is a NAME a person reads on
+               screen, not a bare id like the two above, and the owner's own
+               rule bans that shape from ever sitting outside the vault. It
+               moved into the encrypted settings table - see uiStore.ts's
+               version-3 `migrate`, which also cleans the old plaintext copy
+               out of any install that already has one. So the note below
+               names character and chat, and stops at "model".
 
             2. Things DO leave this machine. Sending the conversation to the
                provider is the entire function of the app, and the API key
@@ -66,10 +76,11 @@ export function SettingsPanel() {
           <span>
             Your API key and your messages stay in the encrypted vault, locked
             with your passphrase. The browser holds only display preferences
-            and which character, chat and model were last open, so the app can
+            and which character and chat were last open, so the app can
             reopen where you left off; no key and no message text is kept
-            there. What you send goes to the one provider you chose, through
-            your proxy if you set one, and nowhere else.
+            there, and which model you had chosen lives in the vault too.
+            What you send goes to the one provider you chose, through your
+            proxy if you set one, and nowhere else.
           </span>
         </div>
 

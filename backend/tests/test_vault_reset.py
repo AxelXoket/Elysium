@@ -378,3 +378,68 @@ class TestCanBeSetUpAgainAfterward:
         assert unlock.status_code == 200
         names = [c["name"] for c in client.get("/api/v1/characters").json()]
         assert names == ["AfterReset"]
+
+
+class TestTheSurvivorsAreExactlyWhatTheScreenPromises:
+    """The tripwire for a drift nobody could see.
+
+    `VaultGate.tsx`'s reset panel names what survives - the downloaded voice
+    runtime and models - and that sentence is a promise made immediately
+    before an irreversible click. The route and the sentence live in two
+    files with nothing between them, and they have already drifted once: the
+    commit that started shredding `elysium.log` also shipped a screen saying
+    the log was left alone on purpose, and a test pinned that sentence in
+    place so correcting it would have looked like a regression.
+
+    Nothing can honestly assert "the screen names every category the route
+    destroys" - the route speaks in paths and the screen in human categories,
+    and a mapping table between them would be a third place to drift. What IS
+    assertable is the half that matters: the exact set that SURVIVES. That
+    set is the sentence. So this test fails the moment the sweep grows or
+    shrinks, in the file the person editing the sweep is already in.
+    """
+
+    def _voice_tree(self, tmp_path: Path, monkeypatch) -> dict:
+        """One marker file in each directory the sweep must NOT touch."""
+        made = {}
+        for setting in ("TTS_MODELS_DIR", "TTS_BIN_DIR", "TTS_ENVS_DIR",
+                        "TTS_PY_DIR", "TTS_UV_CACHE_DIR"):
+            d = tmp_path / "voice" / setting.lower()
+            d.mkdir(parents=True, exist_ok=True)
+            monkeypatch.setattr(config, setting, str(d))
+            marker = d / "marker.bin"
+            marker.write_bytes(b"engine software, not the user's content")
+            made[setting] = marker
+        return made
+
+    def test_the_engine_survives_and_nothing_else_does(
+        self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        legacy_keyring,
+    ) -> None:
+        db_path, _key = _real_locked_vault(tmp_path, monkeypatch)
+        doomed = _populate_every_artefact(tmp_path, db_path, legacy_keyring)
+        survivors = self._voice_tree(tmp_path, monkeypatch)
+
+        # GROUND, both directions: everything exists first, so neither half
+        # of the assertion below can pass against an empty tree.
+        for label, path in doomed.items():
+            assert path.exists(), f"setup failed to create {label}"
+        for label, path in survivors.items():
+            assert path.exists(), f"setup failed to create {label}"
+
+        resp = client.post("/api/v1/vault/reset",
+                           json={"confirm": RESET_CONFIRMATION_PHRASE})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["ok"] is True, resp.text
+
+        for label, path in survivors.items():
+            assert path.exists(), (
+                f"{label} was destroyed. The reset panel tells the user the "
+                f"downloaded voice engine survives, and that sentence is now "
+                f"false. Change the copy in VaultGate.tsx and its tests in "
+                f"the same commit, or put this family back.")
+        for label, path in doomed.items():
+            assert not path.exists(), (
+                f"{label} survived. If that is deliberate, the reset panel "
+                f"must say so - it currently promises the engine is the only "
+                f"thing left standing.")

@@ -23,8 +23,8 @@ from pathlib import Path
 BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
 
-import config                                   # noqa: E402
 from tts import host as tts_host                # noqa: E402
+from tts import refs as tts_refs                # noqa: E402
 from tts.registry import scan_roots             # noqa: E402
 
 #: Four sizes, because one point cannot separate a fixed cost from a
@@ -60,16 +60,21 @@ def _find_model():
 
 
 def _reference():
-    """The velvet reference the app itself uses, as the worker wants it."""
-    ref_dir = Path(config.TTS_REFS_DIR) / "velvet"
-    wav = ref_dir / "ref.wav"
+    """The velvet reference the app itself uses, as the worker wants it.
+
+    Goes through tts.refs rather than building the path by hand: the folder
+    a voice id resolves to is opaque now (an install's own choice of names
+    must not sit readable on disk as folder names), so "velvet" is no longer
+    a path component - only refs.describe still knows how to find it.
+    """
+    try:
+        voice = tts_refs.describe("velvet")
+    except tts_refs.RefError:
+        return {}, {}
+    wav = Path(voice.path) / voice.audio_name
     if not wav.is_file():
         return {}, {}
-    transcript = ""
-    txt = ref_dir / "transcript.txt"
-    if txt.is_file():
-        transcript = txt.read_text(encoding="utf-8", errors="replace").strip()
-    extra = {"reference_transcript": transcript} if transcript else {}
+    extra = {"reference_transcript": voice.transcript} if voice.transcript else {}
     return {"reference_voice": str(wav)}, extra
 
 

@@ -601,6 +601,63 @@ class VoiceHost:
         self.wipe_cache()
         return list(self._last_wipe_left)
 
+    def _retry_stuck_wipe(self) -> None:
+        """A file the last wipe could not remove - Windows still holding it
+        open, most likely a browser tab mid-stream, or Defender mid-scan -
+        does not get another try until something calls wipe_cache() again.
+        While the vault is LOCKED nothing does: on_vault_locked already ran,
+        the next unlock+speak is the earliest thing that would, and until
+        then the reply that file carries stays readable and playable next to
+        a database the user was just told is closed.
+
+        K-46. The message id in its name is not the problem - the rule
+        permits a numeric id outside the vault, and that half of the earlier
+        finding stands as compliant, not a defect. The audio itself is the
+        problem, and this is the fix this file can make: poll_health already
+        beats every TTS_HEALTH_POLL_S regardless of lock state (it is what
+        notices a dead worker even with nobody looking at the UI), so
+        piggybacking the retry here closes the gap to one health tick instead
+        of leaving it open for however long the vault stays locked. Nothing
+        here waits on the vault, the DB, or a loaded model - a stuck file is
+        a leftover from a wipe that ALREADY decided it should be gone.
+        """
+        with self._lock:
+            left = list(self._last_wipe_left)
+        if not left:
+            return
+        cache = Path(config.TTS_CACHE_DIR)
+        if not cache.is_dir() or secure_delete.is_redirected(cache):
+            # Same trap every other cache sweep refuses. Leave the list as it
+            # was - there is nothing safe to attempt right now, and reporting
+            # these as cleared would be a lie the next /vault/lock repeats.
+            return
+        still_left: list[str] = []
+        cleared = 0
+        for name in left:
+            path = cache / name
+            if not path.exists():
+                # Gone by some other route (a later trim, a manual delete) -
+                # still a clear, just not one this pass gets credit for.
+                cleared += 1
+                continue
+            if secure_delete.is_redirected(path) or secure_delete.is_shared(path):
+                still_left.append(name)
+                continue
+            if secure_delete.shred(path):
+                cleared += 1
+            else:
+                still_left.append(name)
+        with self._lock:
+            # Only overwrite if nothing else changed it meanwhile (a fresh
+            # on_vault_locked() mid-retry, say) - it already has the truer
+            # answer, and this pass's stale `left` must not clobber it.
+            if self._last_wipe_left == left:
+                self._last_wipe_left = still_left
+        if cleared:
+            logger.info(
+                "tts: %d previously stuck audio file(s) cleared on retry.",
+                cleared)
+
     def _teardown(self, grace: float = 1.0) -> None:
         """Called from atexit, the window-closed handler and the vault path.
         Must never block the UI, so the grace period is short and it is the
@@ -618,8 +675,10 @@ class VoiceHost:
 
     # -- health -------------------------------------------------------------
     def poll_health(self) -> dict:
-        """Called on a timer and on every status read. Two jobs: notice a
-        worker that died on its own, and give back memory nobody is using."""
+        """Called on a timer and on every status read. Three jobs: notice a
+        worker that died on its own, give back memory nobody is using, and
+        retry whatever the last cache wipe could not remove."""
+        self._retry_stuck_wipe()
         with self._lock:
             client = self._client
             state = self._state
@@ -741,6 +800,34 @@ def wipe_audio_cache() -> tuple[int, list[str]]:
 
     Module level, not a method, because at launch there is no host yet and
     building one to delete files would start a health thread for nothing.
+
+    ONLY "*.wav" - a decision, not an oversight. `TTS_CACHE_DIR` also holds
+    `inductor/`, torch's compiled-kernel cache (see fish_s2.py's
+    `_inductor_cache_dir`, which points it at exactly this folder). Several
+    hundred subdirectories accumulate there, and their mtimes are a genuine,
+    if narrow, timestamp channel: whoever can already browse this folder can
+    read roughly when a compile last happened, which correlates with roughly
+    when voice was last used. Weighed against wiping it:
+
+      * it is NUMERIC/temporal metadata, not a name or content - the two
+        things the owner's rule names explicitly. It says nothing about
+        WHICH voice, WHO, or what was said; the wav sweep two lines below is
+        what removes the thing that actually matters.
+      * it is not the sharpest clock on this disk. app.db's own mtime (and
+        its -wal file, touched by ordinary chat activity) already places
+        "the app was used" to a similar or better resolution, with no voice
+        feature involved at all - inductor only narrows WHICH feature, at
+        the same rough grain.
+      * the cost of wiping it is not narrow: fish_s2.py's own header measures
+        first compile at ~346 s against ~59 s warm. A wipe on every lock -
+        and the vault locks on idle, not just on request - would pay that
+        difference repeatedly through an ordinary day, to close a channel
+        that is already redundant with data the app cannot help but leave
+        behind anyway.
+
+    So: left in place, on purpose. This paragraph is the reason recorded -
+    before it, the gap was silent, which is indistinguishable from nobody
+    having noticed.
     """
     removed = 0
     left: list[str] = []

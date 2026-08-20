@@ -18,6 +18,9 @@ export const settingsFixture: Settings = {
   image_output_enabled: false,
   auto_lock_minutes: 5,
   screen_privacy_enabled: false,
+  // v1.2: which model is chosen, now vault-side (it used to be a localStorage
+  // key - see uiStore.ts's version-3 migrate). Unselected by default.
+  selected_model_id: null,
 };
 
 export const proxyHealthFixture: ProxyHealth = {

@@ -91,6 +91,12 @@ def test_get_settings_shape_unchanged(client):
         # browser storage - a protection setting readable without the
         # passphrase is not one.
         "screen_privacy_enabled",
+        # v1.2: which model is chosen. A model id ("anthropic/claude-3.5-
+        # sonnet") is a NAME a person reads on screen, not a number, so it
+        # moved here out of localStorage's elysium-ui-state blob - the other
+        # two selections in that blob (chat, character) are bare ids and the
+        # owner's rule permits those to stay.
+        "selected_model_id",
     }
     # conftest seeds an api key in the vault.
     assert body["api_key_set"] is True

@@ -169,8 +169,17 @@ def _values_for(model) -> dict:
 
 def _fail(exc: WorkerFailure):
     """Worker failures already carry a code the frontend knows; the status just
-    has to be the one the contract documents."""
-    logger.warning("tts: %s (%s)", exc.code, exc.detail[:200])
+    has to be the one the contract documents.
+
+    Reads `.reason` rather than `.detail`. They are the same string - see
+    WorkerFailure - but only one of them says at the log line what it is. This
+    used to log `exc.detail[:200]`, which for any failure the WORKER reported
+    was the worker's own error text, and an engine builds the sentence it was
+    asked to speak into its exception. That put model replies into
+    elysium.log, plaintext and outside the vault. The truncation to 200 was
+    never the guard it looked like; 200 characters of a reply is a reply.
+    """
+    logger.warning("tts: %s (%s)", exc.code, exc.reason)
     raise HTTPException(_STATUS.get(exc.code, 409), exc.code)
 
 
@@ -1355,10 +1364,17 @@ def delete_voice(voice_id: str) -> dict:
     except refs.RefError as exc:
         _ref_error(exc)
     if not removed:
+        # WITHOUT the id. A voice_id is opaque for anything created since the
+        # voice folders were hashed (the frontend mints a uuid), but every
+        # voice created before that carries a slug of the label the user
+        # typed, and this log line cannot tell the two apart. A label is a
+        # name on screen, and tts/refs.py went to the trouble of keeping
+        # those off the disk; writing one into elysium.log next to the vault
+        # would hand back exactly what that bought. Which voice it was is on
+        # screen in front of whoever pressed delete.
         logger.warning(
-            "tts: reference voice %s could not be removed; files remain on "
-            "disk and it will reappear in the list.", voice_id,
-        )
+            "tts: a reference voice could not be removed; files remain on "
+            "disk and it will reappear in the list.")
     # Carries the real answer now. Still a 200: the request was understood and
     # a best-effort delete is the correct behaviour for a file another process
     # may hold - what was wrong was claiming it worked.

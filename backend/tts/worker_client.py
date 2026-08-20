@@ -37,6 +37,7 @@ import ctypes
 import logging
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -131,13 +132,128 @@ def _log_worker_event(log, engine_id: str, frame: dict) -> None:
         log.info("%s %s", prefix, stage)
 
 
+#: What an unreadable worker fault becomes. One fixed string, so a reader who
+#: sees it knows the worker said something and this process refused to repeat
+#: it, rather than wondering whether the field was simply empty.
+WORKER_FAULT_UNCLASSIFIED = "worker fault: unclassified"
+
+#: A Python exception class name, and nothing else that looks like language.
+#: One identifier, no spaces, ending in one of the suffixes an exception class
+#: actually uses. Anchored at both ends: a sentence cannot match this, and a
+#: single word out of a reply that happened to match would still be one
+#: CamelCase token carrying no name and no clause.
+_CLASS_TOKEN = re.compile(
+    r"^[A-Z][A-Za-z0-9_]{2,46}"
+    r"(?:Error|Exception|Failure|Interrupt|Timeout|Abort|Exit)$")
+
+#: How many leading tokens of a worker's detail are looked at. Both worker
+#: formats put the class name at the FRONT (`_wire.serve` sends
+#: `f"{type(exc).__name__}: {exc}"`, fish_s2 sends
+#: `f"{what}: {type(exc).__name__}: {exc}"`), so a short prefix is all that is
+#: needed - and it means a class-shaped word buried in a long reply, far past
+#: where a class name could legitimately be, is never picked up.
+_DETAIL_TOKEN_SCAN = 8
+
+#: A contract code as this codebase spells one: snake_case, no punctuation.
+_CODE_SHAPE = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
+
+
+def sanitize_worker_detail(detail: object) -> str:
+    """Reduce a worker's own error text to a fixed-vocabulary fault line.
+
+    THE TEXT IS INSPECTED AND DROPPED. What comes out is either
+    `WORKER_FAULT_UNCLASSIFIED` or "worker fault: " plus one token that has
+    the shape of a Python exception class - which is the fact this codebase
+    has already decided is safe to log (`type(exc).__name__` is the approved
+    escape hatch in tests/log_leak_scan.py, and _death_reason below has kept
+    its own detail coarse for the same reason since it was written: "raw
+    stderr can contain the text being spoken").
+
+    Sanitizing HERE rather than at the log line is the whole point. `detail`
+    has three consumers already - the log in routers/tts_runtime._fail,
+    TtsHost._error_detail, and the /tts/state body built from it - and two of
+    them are in files this change does not own. A guard at one log line
+    protects one log line; a guard at the boundary where untrusted text
+    enters the process protects every consumer there will ever be, including
+    the ones nobody has written yet.
+
+    Residual, stated rather than hidden: a reply consisting of exactly one
+    CamelCase word ending in "Error", inside the first few tokens of an
+    engine's error text, would be echoed. It is not a name, not a sentence,
+    and not distinguishable from the class name it is imitating.
+    """
+    if not isinstance(detail, str) or not detail:
+        return WORKER_FAULT_UNCLASSIFIED
+    tokens = re.split(r"[^A-Za-z0-9_]+", detail)
+    for token in tokens[:_DETAIL_TOKEN_SCAN]:
+        if _CLASS_TOKEN.match(token):
+            return f"worker fault: {token}"
+    return WORKER_FAULT_UNCLASSIFIED
+
+
+def describe_unknown_code(code: object) -> str:
+    """A worker's unrecognised code, if it even looks like one.
+
+    The code crossed the same process boundary as the detail and is data in
+    exactly the same way, so it is not logged raw either - but a snake_case
+    identifier is a contract code, not language, and dropping it would leave
+    "the worker sent something wrong" with no way to find out what.
+    """
+    if isinstance(code, str) and _CODE_SHAPE.match(code):
+        return code
+    return "non-conforming"
+
+
 class WorkerFailure(Exception):
-    """A worker-side failure carrying a code the frontend already knows."""
+    """A worker-side failure carrying a code the frontend already knows.
+
+    THE INVARIANT ON `detail`: it is always a string THIS process composed. No
+    text a worker sent is ever placed in it verbatim. `detail` reaches
+    `TtsHost._error_detail` (and from there the /tts/state body the UI polls)
+    and `routers/tts_runtime._fail`'s log line, which means elysium.log -
+    plaintext, beside the vault, surviving every lock. A worker's own error
+    text cannot go there: an engine formats the sentence it was asked to speak
+    into its exception, and that sentence is a model reply. Frames arriving
+    from the worker go through `_failure_from`, which is the only place that
+    reads a frame's `detail` and the only place that has to hold this line.
+
+    `reason` is the same string under the name this codebase uses everywhere
+    for "sanitized, fixed vocabulary" (AttachmentError.reason,
+    OpenRouterError.reason). Log sites should read `.reason`, so that what a
+    reader sees at the log line is the promise itself rather than a field
+    called `detail` that they have to go and verify.
+    """
 
     def __init__(self, code: str, detail: str = ""):
         self.code = code
         self.detail = detail
         super().__init__(code)
+
+    @property
+    def reason(self) -> str:
+        """The sanitized detail. A property, not a copy: a second field would
+        go stale the first time somebody assigned to `detail`."""
+        return self.detail
+
+
+def _failure_from(frame: dict) -> WorkerFailure:
+    """The ONE way an error frame becomes a WorkerFailure.
+
+    Both fields of the frame are treated the same way, because they arrived
+    the same way: `code` was already checked against the contract vocabulary
+    before this existed ("it is data, not gospel"), and `detail` now gets the
+    matching treatment it was missing. Building the exception here rather than
+    at the raise site is what makes the invariant on WorkerFailure.detail
+    checkable by reading one function.
+    """
+    code = frame.get("code")
+    if code not in ALL_CODES:
+        # An unknown string would reach the frontend and fall through to the
+        # generic toast.
+        logger.warning("tts: worker sent unknown code (%s)",
+                       describe_unknown_code(code))
+        code = TTS_WORKER_FAILED
+    return WorkerFailure(code, sanitize_worker_detail(frame.get("detail")))
 
 
 # ── the job object ───────────────────────────────────────────────────────────
@@ -341,7 +457,17 @@ class WorkerClient:
                 bufsize=1, creationflags=flags, cwd=self._cwd, env=env,
             )
         except OSError as exc:
-            raise WorkerFailure(TTS_WORKER_FAILED, str(exc)[:200])
+            # The class, not the message. This detail travels to the same two
+            # places every other one does (the /tts/state body and
+            # elysium.log), and WorkerFailure's invariant is only worth
+            # anything if it holds on every path. Almost nothing is lost:
+            # for an OSError the class IS the errno - FileNotFoundError,
+            # PermissionError, OSError - and what the OS wrote around it
+            # ("The system cannot find the file specified") adds a sentence
+            # and a filesystem path to a fact already stated.
+            raise WorkerFailure(
+                TTS_WORKER_FAILED,
+                f"could not spawn the worker: {type(exc).__name__}")
 
         # Assign immediately. There is a small window between spawn and
         # assignment; we accept it here rather than hand-rolling CreateProcessW
@@ -549,24 +675,21 @@ class WorkerClient:
                 if not self.alive:
                     break
 
-            reply = pending.frame                # snapshot once
-            if reply is None:                    # died while we waited
+            # `frame`, not `reply`: this is the worker's answer frame, and
+            # `reply` is the name this codebase uses for a MODEL reply - the
+            # one thing that must never be logged (tests/log_leak_scan.py
+            # denylists it by name and flagged this line for it).
+            frame = pending.frame                # snapshot once
+            if frame is None:                    # died while we waited
                 if self.closing:
                     # WE ended it (unload, vault lock, shutdown) - the request
                     # was preempted, nothing crashed.
                     raise WorkerFailure(TTS_WORKER_UNAVAILABLE,
                                         "voice was shut down")
                 raise WorkerFailure(*self._death_reason())
-            if not reply.get("ok"):
-                code = reply.get("code")
-                if code not in ALL_CODES:
-                    # The code crossed a process boundary; it is data, not
-                    # gospel. An unknown string would reach the frontend and
-                    # fall through to the generic toast.
-                    logger.warning("tts: worker sent unknown code %r", code)
-                    code = TTS_WORKER_FAILED
-                raise WorkerFailure(code, str(reply.get("detail") or "")[:400])
-            return reply.get("result") or {}
+            if not frame.get("ok"):
+                raise _failure_from(frame)
+            return frame.get("result") or {}
         finally:
             with self._pending_lock:
                 self._pending.pop(req_id, None)

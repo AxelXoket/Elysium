@@ -27,6 +27,14 @@ export const SettingsSchema = z.object({
    *  the owner takes screenshots of this app, and a protection that silently
    *  blanks them is a bug report rather than a feature. */
   screen_privacy_enabled: z.boolean().default(false),
+  /** Which model is currently chosen. An OpenRouter model id
+   *  ("anthropic/claude-3.5-sonnet") is a NAME a person reads on screen, not
+   *  a number - the exact shape the owner's rule bans from ever sitting
+   *  outside the vault - so it lives here rather than in uiStore's
+   *  localStorage blob. See uiStore.ts's version-3 migrate, which cleans the
+   *  plaintext copy out of any existing install. Defaulted so a newer client
+   *  against an older server still parses. */
+  selected_model_id: z.string().nullable().default(null),
 });
 
 // Exact match of proxy_health.py check_proxy_health() return dict
@@ -70,6 +78,12 @@ export const AutoLockResponseSchema = z.object({
   auto_lock_minutes: z.number(),
 });
 export type AutoLockResponse = z.infer<typeof AutoLockResponseSchema>;
+
+export const ModelSelectionResponseSchema = z.object({
+  ok: z.boolean(),
+  selected_model_id: z.string().nullable(),
+});
+export type ModelSelectionResponse = z.infer<typeof ModelSelectionResponseSchema>;
 
 export type Settings = z.infer<typeof SettingsSchema>;
 export type StopSequencesResponse = z.infer<typeof StopSequencesResponseSchema>;

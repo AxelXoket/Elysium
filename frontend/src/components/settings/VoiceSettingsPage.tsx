@@ -817,6 +817,26 @@ function useTtsVoicesForPicker(enabled: boolean): TtsVoice[] {
 
 // ── 4. reference voices ─────────────────────────────────────────────────────
 
+/**
+ * An id that reveals nothing about what the user typed - stable for the
+ * life of the voice, never derived from its label.
+ *
+ * The backend's own voice-id pattern (lowercase alphanumeric plus hyphen and
+ * underscore, first character alphanumeric - see backend/tts/refs.py
+ * VOICE_ID) accepts a UUID exactly as randomUUID produces it, so there is no
+ * separate alphabet to invent here.
+ */
+function mintVoiceId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  // Same alphabet, same shape, drawn from the same CSPRNG - for a runtime
+  // old enough to lack randomUUID itself.
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 function ReferenceVoicesSection() {
   const voices = useTtsVoices();
   // Whether the selected engine can HEAR a clip and draft its words. No
@@ -833,9 +853,10 @@ function ReferenceVoicesSection() {
   const pushError = useErrorStore((s) => s.pushError);
   const [pendingName, setPendingName] = useState("");
   // A collision is only ever confirmed explicitly: POST /tts/voices/{id} is an
-  // upsert that unlinks the previous clip, and the id is DERIVED from a typed
-  // name or the filename - so "Anna" twice silently destroyed the first
-  // recording (and its hand-corrected transcript) with no warning at all.
+  // upsert that unlinks the previous clip, and the id is opaque now - so the
+  // check is by LABEL ("do I already have a voice called this") - "Anna"
+  // twice used to silently destroy the first recording (and its
+  // hand-corrected transcript) with no warning at all.
   const [collision, setCollision] = useState<
     { voiceId: string; file: File; label: string } | null
   >(null);
@@ -849,29 +870,28 @@ function ReferenceVoicesSection() {
   };
 
   const startUpload = (file: File) => {
-    const fallback = file.name.replace(/\.[^.]+$/, "");
-    const voiceId = (pendingName || fallback)
-      .toLowerCase()
-      .replace(/[^a-z0-9_-]+/g, "-")
-      // Anchored like the backend VOICE_ID regex: the first character must
-      // be alphanumeric, or our own sanitizer produces an id the backend is
-      // guaranteed to reject (audit-2).
-      .replace(/^[^a-z0-9]+/, "")
-      .replace(/-+$/g, "")
-      .slice(0, 60);
-    if (!voiceId) {
-      pushError({ status: 400, detail: "tts_reference_invalid", message: "" });
-      return;
-    }
-    const label = pendingName || fallback;
-    const existing = (voices.data?.voices ?? []).some(
-      (v) => v.voice_id === voiceId,
+    const fallbackLabel = file.name.replace(/\.[^.]+$/, "").trim();
+    // What the user typed, or a name drawn from their own file - that file
+    // is already on their machine, so reusing its name here is not a new
+    // leak, unlike writing it into a URL or a folder name would be - or a
+    // fixed placeholder for the rare case neither exists. Never the thing
+    // the id is minted from: see mintVoiceId above.
+    const label = pendingName.trim() || fallbackLabel || "Untitled voice";
+    // The user's question a collision answers is "do I already have a voice
+    // called this" - so it is answered against LABELS. Ids are opaque now
+    // and share nothing with a typed name, so comparing ids here would never
+    // catch a real collision.
+    const match = (voices.data?.voices ?? []).find(
+      (v) => v.label.trim().toLowerCase() === label.toLowerCase(),
     );
-    if (existing) {
-      setCollision({ voiceId, file, label });
+    if (match) {
+      // Reuse the EXISTING voice's id so this lands as a replace - minting a
+      // fresh id here would leave the old voice behind under its own id
+      // instead of replacing it.
+      setCollision({ voiceId: match.voice_id, file, label });
       return;
     }
-    send({ voiceId, file, label });
+    send({ voiceId: mintVoiceId(), file, label });
   };
 
   return (
@@ -891,7 +911,7 @@ function ReferenceVoicesSection() {
       {collision != null && (
         <div className="settings-voice-warning" role="alert">
           <p>
-            A voice called “{collision.voiceId}” already exists. Replacing it
+            A voice called “{collision.label}” already exists. Replacing it
             deletes its clip and its transcript.
           </p>
           <div className="settings-voice-row">

@@ -20,9 +20,25 @@ Where the secret is NOT put, and why:
     of any resource the page loads, and in the browser's own history store;
   * not in localStorage - readable by anything that can reach the profile
     directory on disk, which outlives the session the token belongs to;
+  * NOT IN THIS PROCESS'S ENVIRONMENT, which is the one that got away for a
+    while. issue() used to do `os.environ[ENV_VAR] = _token`, and a process
+    environment is not private: an unprivileged program running as the same
+    user opens this process with QUERY_INFORMATION|VM_READ, walks the PEB to
+    ProcessParameters.Environment and reads the block back verbatim. That was
+    demonstrated against this module with a working exploit, handle opened
+    with error 0. Every word above about logs and profile directories was
+    reasoning about the browser while the secret sat in the one place the
+    stated adversary - "any program running as this user" - reads for free.
+    The environment block is also inherited by every child, so each one was a
+    second copy we then had to remember to scrub.
   * in the URL FRAGMENT, which is never sent to a server and never written to
     a request log, read once by the page at boot and kept in memory only.
     This is what Jupyter does, for the same reason.
+
+The token therefore lives in exactly one place: the module global below, in
+the memory of the process that issued it. Nothing has to carry it anywhere,
+because uvicorn runs on a THREAD of that same process (run_app.serve), so the
+gate reads the same global the launcher wrote.
 
 The part of that which is NOT a guarantee, said rather than implied: the page
 strips the fragment on its first line, but the browser engine has its own
@@ -33,14 +49,18 @@ graceful exit - so a hard kill can leave one on disk until the next launch.
 The token is per-launch and useless once the process is gone, which is what
 makes this an acceptable gap rather than a hole, but it is a gap.
 
-The token is also stripped from every subprocess this app spawns. The voice
-worker and the installer both run code this project did not write, and
-`dict(os.environ)` would otherwise hand them exactly the credential the gate
-exists to withhold from other processes.
+The voice worker and the installer additionally strip ENV_VAR by name from
+the environment they build for their children (tts/worker_client.py,
+tts/provision.py). Those strips are now belt and braces, not the defence:
+nothing in this app puts the token in an environment for them to inherit, and
+they would keep a stray value out only if some future change put one back.
+The defence is that the secret never leaves this process's memory.
 
 Absent by default. A developer running uvicorn by hand has no token, and
 requiring one would break that with an error nobody could interpret - so the
 gate is armed only when run_app.py generates one, which is the packaged app.
+That developer can still arm it deliberately by setting ENV_VAR in their own
+shell; unset, as it is by default, the gate stays open exactly as before.
 """
 from __future__ import annotations
 
@@ -48,7 +68,9 @@ import hmac
 import os
 import secrets
 
-#: How run_app hands the token to the server it starts in-process.
+#: Never written by this app. Two things still need the name: a developer who
+#: wants to arm the gate against a hand-run uvicorn (see configured), and the
+#: subprocess strip lists that keep a stray ambient value out of a child.
 ENV_VAR = "ELYSIUM_LAUNCH_TOKEN"
 
 #: The header the frontend sends it back in. A custom header cannot be set by
@@ -59,15 +81,30 @@ _token: str | None = None
 
 
 def issue() -> str:
-    """Make this launch's token and publish it to the process environment."""
+    """Make this launch's token. In memory only, deliberately.
+
+    It is NOT written to os.environ. That is the whole point of this function
+    being three lines: the server that checks the token runs on a thread of
+    this same process (run_app.serve), so a module global reaches it, while an
+    environment variable would also reach every other program running as this
+    user - see the module docstring for the exploit that proved it.
+    """
     global _token
     _token = secrets.token_urlsafe(32)
-    os.environ[ENV_VAR] = _token
     return _token
 
 
 def configured() -> str | None:
-    """The token this process expects, or None when the gate is not armed."""
+    """The token this process expects, or None when the gate is not armed.
+
+    The env fallback is a DEVELOPER seam and nothing else. The app never
+    writes ENV_VAR, so in the packaged product this branch is only ever
+    reached when issue() has not run - a hand-started `uvicorn main:app`,
+    where it lets someone arm the gate on purpose to exercise it. Reading it
+    is safe in a way writing it is not: another process cannot put a value
+    into this process's environment, and if one somehow could, _token takes
+    precedence whenever a real launch has issued one.
+    """
     if _token is not None:
         return _token
     value = os.environ.get(ENV_VAR) or ""
@@ -75,7 +112,12 @@ def configured() -> str | None:
 
 
 def reset() -> None:
-    """Test seam. Never called by the app."""
+    """Test seam. Never called by the app.
+
+    Still pops ENV_VAR even though issue() no longer sets it: a test that
+    exercises the developer seam above sets the variable itself, and reset has
+    to undo that too or the next test inherits an armed gate.
+    """
     global _token
     _token = None
     os.environ.pop(ENV_VAR, None)

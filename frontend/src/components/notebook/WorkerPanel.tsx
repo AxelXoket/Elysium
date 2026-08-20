@@ -27,8 +27,38 @@ import {
 } from "@/lib/query/notebook";
 
 /** Why a run was refused, in words. These are machine tokens on the wire and
- *  must not reach a reader as such. */
-const SKIP_PROSE: Record<string, string> = {
+ *  must not reach a reader as such.
+ *
+ *  Exported so the tests can walk this table by its own keys rather than
+ *  retyping the vocabulary beside it. A second hand-kept list of reasons is
+ *  exactly how `plan_invalidated` reached a reader as a token in the first
+ *  place.
+ *
+ *  The two rollback reasons below were described here, and in the contract
+ *  document, as "you edited or deleted" versus "the chat was cleared". That
+ *  is not the split the backend makes. `commit_extraction` asks ONE question
+ *  when a reply lands and finds its running row gone: does the LAST message
+ *  of the range it was reading still exist? Probed against the real routes,
+ *  every action lands like this:
+ *
+ *    edit, range ended AT the edited message      -> plan_invalidated
+ *    edit, range ended AFTER it (the swept tail)  -> range_cleared
+ *    delete a message (takes everything after)    -> range_cleared
+ *    regenerate a reply                           -> range_cleared
+ *    clear the chat                               -> range_cleared
+ *    delete the chat                              -> neither: the foreign key
+ *                                                    fires and it is counted
+ *                                                    as an unexpected error
+ *
+ *  So "or deleted" named the wrong reason for every delete there is, and
+ *  "the chat was cleared" named one of the four things that reach
+ *  `range_cleared`. Both sentences are written from the real discriminator
+ *  now: whether the messages are still there. */
+// This table must stay IN this file: a backend test (test_notebook_worker.py)
+// reads WorkerPanel.tsx to prove every declared skip reason has a sentence
+// here, and moving it to a sibling module would blind that gate.
+// eslint-disable-next-line react-refresh/only-export-components -- co-located with the component on purpose (see above); fast-refresh boundary accepted, in the idiom button.tsx and badge.tsx already use
+export const SKIP_PROSE: Record<string, string> = {
   notebook_daily_cap_reached: "today's call limit was already used",
   proxy_gate: "your proxy was required and not healthy",
   // Written by a different path from the others - commit_extraction's
@@ -37,15 +67,32 @@ const SKIP_PROSE: Record<string, string> = {
   // the raw token at the reader. Which is the one thing this table exists
   // to stop.
   plan_invalidated:
-    "you edited or deleted a message while it was being read, so the reply "
-    + "was thrown away rather than written from wording you took back",
-  // Same trigger as plan_invalidated - the messages it was reading were gone
-  // by the time the reply came back - but a cleared chat, not an edit: there
-  // is nothing left to re-read, so it is worded as done rather than pending.
+    "you rewrote the last message it was reading, so the reply came back "
+    + "describing wording you had already replaced. It was thrown away and "
+    + "still paid for, and that stretch is read again later",
+  // Not "the chat was cleared". Anything that removes the last message of
+  // the range while the reply is out lands here: a deleted message, a
+  // regenerated reply, a cleared chat, or an edit whose swept tail happened
+  // to be where the range ended.
   range_cleared:
-    "the chat was cleared while it was being read, so the reply was thrown "
-    + "away - there is nothing left in that range to read",
+    "the last message it was reading was gone by the time the reply came "
+    + "back, removed by a delete, a regenerated reply or a cleared chat. It "
+    + "was thrown away and still paid for; whatever survives of that stretch "
+    + "is read again, the removed messages never are",
 };
+
+/** What a reason with no sentence reads as. A snake_case token is the one
+ *  thing this whole table exists to keep off the screen, and the fallback
+ *  was printing exactly that for anything the backend adds ahead of this
+ *  file. The code rides along in brackets so a bug report can still carry
+ *  it; the sentence is what a reader gets. */
+// eslint-disable-next-line react-refresh/only-export-components -- reads the table above; same reason, same boundary
+export function skipProse(reason: string): string {
+  return (
+    SKIP_PROSE[reason]
+    ?? `it was refused for a reason this version has no words for (${reason})`
+  );
+}
 
 /** The three states, said plainly. "closed" is engineering vocabulary for
  *  "working", and a panel that prints it is asking the reader to learn the
@@ -184,7 +231,7 @@ export function WorkerPanel() {
                 key={why}
                 className="text-xs leading-relaxed text-muted-foreground"
               >
-                {n} skipped: {SKIP_PROSE[why] ?? why}.
+                {n} skipped: {skipProse(why)}.
               </p>
             ))}
 

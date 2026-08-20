@@ -155,6 +155,12 @@ ALLOWLIST: dict[str, str] = {
     "test_privacy_promises" + _PY:
         "AST-walks every backend module for outbound-call sites to enumerate "
         "who can reach the network - a whole-tree census.",
+    "test_log_identifier_privacy" + _PY:
+        "AST-walks every shipped backend module for a logging call that can "
+        "carry vault content or an on-screen name - the same whole-tree "
+        "census as test_privacy_promises, for the other plaintext exit "
+        "(elysium.log). Its own docstring argues the exception; its scanner "
+        "lives in log_leak_scan.py and parses rather than string-matches.",
     "test_release_tree" + _PY:
         "builds a real git archive and inspects what it contains - a claim "
         "about what git publishes, not about any module's behaviour.",

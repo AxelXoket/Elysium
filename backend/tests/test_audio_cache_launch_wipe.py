@@ -74,6 +74,59 @@ class TestLaunchClearsWhatTheLastSessionLeft:
         assert conditioning.exists()
 
 
+class TestTheInductorCacheIsLeftAlone:
+    """A decision, recorded where wipe_audio_cache's own docstring now also
+    records it - not the silent gap an earlier audit found. `TTS_CACHE_DIR`
+    also holds `inductor/`, torch's compiled-kernel cache
+    (`fish_s2._inductor_cache_dir` points it at exactly this folder), and its
+    subdirectories' mtimes are a real, if narrow, timestamp channel: roughly
+    when voice was last used. Wiping it on every lock would repeatedly pay
+    the ~346s cold vs ~59s warm compile difference fish_s2.py measures, to
+    close a channel that app.db's own mtime already leaves open at a similar
+    grain. Positive control first - the wav sweep still has to actually
+    sweep - then the ground: the inductor subtree, untouched, mtime and all.
+    """
+
+    def _seed(self, cache: pathlib.Path) -> tuple[pathlib.Path, float]:
+        kernel_dir = cache / "inductor" / "abc123def456"
+        kernel_dir.mkdir(parents=True)
+        kernel = kernel_dir / "compiled_kernel.so"
+        kernel.write_bytes(b"not a real kernel, but occupies the same path")
+        old = 1700000000.0  # a fixed, recognisable "last compiled at" mtime
+        os.utime(kernel, (old, old))
+        os.utime(kernel_dir, (old, old))
+        _speak(cache, "speak-1-1.wav")
+        return kernel, old
+
+    def test_wipe_audio_cache_removes_the_wav_and_leaves_the_kernel_cache(
+        self, cache: pathlib.Path
+    ) -> None:
+        kernel, old_mtime = self._seed(cache)
+
+        removed, left = wipe_audio_cache()
+
+        assert removed == 1 and left == []            # positive control
+        assert kernel.exists()                          # the decision
+        assert kernel.stat().st_mtime == old_mtime, (
+            "the timestamp channel this decision is ABOUT must not move "
+            "just because a wav got swept nearby")
+
+    def test_locking_the_vault_leaves_it_too(self, cache: pathlib.Path) -> None:
+        # End to end through the host, not just the module function - the
+        # lock path is the one users actually take. A fresh VoiceHost with
+        # nothing ever loaded takes unload()'s early-return branch, so this
+        # needs no worker, no runtime registry - just the wipe.
+        from tts.host import VoiceHost
+
+        kernel, old_mtime = self._seed(cache)
+
+        VoiceHost().on_vault_locked()
+
+        assert kernel.exists()
+        assert kernel.stat().st_mtime == old_mtime
+        assert not list(cache.glob("*.wav")), "the audio itself must still go"
+
+
 class TestTheHostAndTheLaunchPathShareOneDeletion:
     def test_the_method_still_deletes(self, cache: pathlib.Path) -> None:
         # wipe_cache moved its body out; the guarantee its callers rely on -

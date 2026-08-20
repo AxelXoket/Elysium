@@ -458,3 +458,86 @@ class TestRuntimeFilesLeaveNoTrace:
         assert not log.exists()
         assert not log_rotated.exists()
         assert not port.exists()
+
+
+class TestTheLogIsShreddableWhileThisProcessHoldsItOpen:
+    """The condition the shipped build is always in, and no test was in.
+
+    `elysium.log` exists only on a frozen build (`run_app._setup_frozen_logging`
+    returns early otherwise), so the ONLY configuration a user ever runs is the
+    one where this process has a RotatingFileHandler open on the file the reset
+    is about to shred. Every test wrote the file with `write_text` and closed
+    it, which is the one configuration where the problem cannot happen.
+
+    Measured before the fix: `secure_delete.discard` overwrote the contents and
+    then failed to unlink, because CPython opens without FILE_SHARE_DELETE. So
+    every reset in the shipped app answered `left: ["elysium.log"]` while the
+    screen, the README and SECURITY.md all said the log was destroyed.
+    """
+
+    def _attach(self, path: Path):
+        import logging
+        from logging.handlers import RotatingFileHandler
+
+        handler = RotatingFileHandler(str(path), maxBytes=512_000,
+                                      backupCount=1, encoding="utf-8")
+        logger = logging.getLogger("elysium.test.reset")
+        logger.addHandler(handler)
+        logger.warning("chat_id=%d", 7)
+        handler.flush()
+        return logger, handler
+
+    def test_a_held_open_log_is_still_removed(
+        self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path, _key = _real_locked_vault(tmp_path, monkeypatch)
+        log = tmp_path / "elysium.log"
+        logger, handler = self._attach(log)
+        try:
+            # GROUND: the handle is real and the shred genuinely cannot
+            # unlink through it. Without this the test could pass against a
+            # platform where the whole problem does not exist.
+            assert log.exists()
+            assert secure_delete.discard(log) is False, (
+                "an open handler no longer blocks unlink, so this test is "
+                "measuring nothing - check the platform before deleting it")
+            logger.warning("chat_id=%d", 7)
+            handler.flush()
+
+            resp = client.post("/api/v1/vault/reset",
+                               json={"confirm": RESET_CONFIRMATION_PHRASE})
+
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert "elysium.log" not in body["left"], (
+                "the reset reported the log as left behind; the screen, the "
+                "README and SECURITY.md all promise it is destroyed")
+            assert not log.exists(), "the log survived a reset"
+        finally:
+            logger.removeHandler(handler)
+            try:
+                handler.close()
+            except Exception:
+                pass
+
+    def test_logging_still_works_afterwards(
+        self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Positive control. Detaching handlers to win the unlink must not
+        leave the app unable to log, or a reset trades one silent failure for
+        another."""
+        import logging
+
+        db_path, _key = _real_locked_vault(tmp_path, monkeypatch)
+        log = tmp_path / "elysium.log"
+        logger, handler = self._attach(log)
+        try:
+            client.post("/api/v1/vault/reset",
+                        json={"confirm": RESET_CONFIRMATION_PHRASE})
+            logging.getLogger("elysium.test.reset").warning("still alive")
+        finally:
+            logger.removeHandler(handler)
+            try:
+                handler.close()
+            except Exception:
+                pass

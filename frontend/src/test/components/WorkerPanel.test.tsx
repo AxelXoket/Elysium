@@ -7,11 +7,11 @@
  * refused run and a quiet week look identical.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
-import { WorkerPanel } from "@/components/notebook/WorkerPanel";
+import { SKIP_PROSE, WorkerPanel } from "@/components/notebook/WorkerPanel";
 import { mockFetch } from "../mocks/api";
 
 function statusBody(over: Record<string, unknown> = {}) {
@@ -238,6 +238,95 @@ describe("runs that were paid for and lost", () => {
                      skip_reasons: { plan_invalidated: 1 } } });
     const box = await screen.findByTestId("worker-status");
     expect(box.textContent).not.toMatch(/plan_invalidated/);
-    expect(box.textContent).toMatch(/wording you took back/i);
+    expect(box.textContent).toMatch(/wording you had already replaced/i);
+  });
+
+  // -------------------------------------------------------------------
+  // The two rollback reasons, and the split they actually make.
+  //
+  // Both descriptions named the wrong discriminator. The backend asks one
+  // question when a late reply finds its running row gone: does the LAST
+  // message of the range still exist? Probed against the real routes, an
+  // edit that lands on the range end gives `plan_invalidated`; a deleted
+  // message, a regenerated reply, a cleared chat and an edit whose swept
+  // tail was the range end all give `range_cleared`. So "you edited OR
+  // DELETED a message" was wrong about every delete, and "the chat was
+  // cleared" was one of four ways into its sibling.
+  // -------------------------------------------------------------------
+
+  it("the edit reason says the message was rewritten, not deleted",
+     async () => {
+    mount({ stats: { done: 0, failed: 0, skipped: 1, abandoned: 0,
+                     skip_reasons: { plan_invalidated: 1 } } });
+    const box = await screen.findByTestId("worker-status");
+    // Rewriting is the only action that reaches this reason: the message
+    // survives, so the stretch is genuinely read again.
+    expect(box.textContent).toMatch(/rewrote/i);
+    expect(box.textContent).toMatch(/read again/i);
+    // The claim that put this reason on a delete. A delete removes the
+    // message, which is the other reason entirely.
+    expect(box.textContent).not.toMatch(/deleted/i);
+  });
+
+  it("the removed-messages reason is not described as a cleared chat only",
+     async () => {
+    mount({ stats: { done: 0, failed: 0, skipped: 1, abandoned: 0,
+                     skip_reasons: { range_cleared: 1 } } });
+    const box = await screen.findByTestId("worker-status");
+    expect(box.textContent).not.toMatch(/range_cleared/);
+    // All three of the common ways in are named, not just the clear.
+    expect(box.textContent).toMatch(/delete/i);
+    expect(box.textContent).toMatch(/regenerated/i);
+    expect(box.textContent).toMatch(/cleared/i);
+    // And the old claim that this range has nothing left in it at all. Only
+    // the removed messages are gone; the rest of the stretch is re-read.
+    expect(box.textContent).toMatch(/whatever survives/i);
+  });
+
+  it("tells the two rollback reasons apart on screen", async () => {
+    // Two reasons that render the same sentence are one reason with two
+    // names, and the reader cannot tell which happened.
+    mount({ stats: { done: 0, failed: 0, skipped: 2, abandoned: 0,
+                     skip_reasons: { plan_invalidated: 1, range_cleared: 1 } } });
+    const box = await screen.findByTestId("worker-status");
+    const lines = Array.from(box.querySelectorAll("p"))
+      .map((p) => p.textContent ?? "")
+      .filter((t) => t.includes("skipped:"));
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).not.toEqual(lines[1]);
+  });
+
+  it("every declared reason reaches the screen as words, not its token",
+     async () => {
+    // Walks the vocabulary itself rather than a list retyped here: a reason
+    // added to the table without a sentence is exactly the failure the
+    // table exists to stop, and a hand-kept copy would not notice.
+    for (const reason of Object.keys(SKIP_PROSE)) {
+      mount({ stats: { done: 0, failed: 0, skipped: 1, abandoned: 0,
+                       skip_reasons: { [reason]: 1 } } });
+      const box = await screen.findByTestId("worker-status");
+      expect(box.textContent).not.toMatch(new RegExp(reason));
+      cleanup();
+    }
+  });
+
+  it("GROUND: a reason with no sentence still reads as English", async () => {
+    // The backend can grow a reason ahead of this file. The fallback used to
+    // print the token straight at the reader, which is the one thing this
+    // table exists to prevent. The code rides along in brackets for a bug
+    // report; the sentence is what a reader gets.
+    const unknown = "some_future_reason";
+    expect(SKIP_PROSE[unknown]).toBeUndefined();
+    mount({ stats: { done: 0, failed: 0, skipped: 1, abandoned: 0,
+                     skip_reasons: { [unknown]: 1 } } });
+    const box = await screen.findByTestId("worker-status");
+    const line = Array.from(box.querySelectorAll("p"))
+      .map((p) => p.textContent ?? "")
+      .find((t) => t.includes("skipped:")) ?? "";
+    expect(line).toMatch(/no words for/i);
+    // Not merely "the token appeared somewhere": the line must not BE the
+    // token, which is what the old fallback rendered.
+    expect(line.replace(/\s+/g, " ").trim())
+      .not.toEqual(`1 skipped: ${unknown}.`);
   });
 });

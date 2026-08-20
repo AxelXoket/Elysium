@@ -26,7 +26,12 @@ from pydantic import BaseModel, Field, field_validator
 
 import auto_lock
 import keyring_service
-from config import SECRET_API_KEY, SECRET_PROXY_URL
+from config import (
+    SECRET_API_KEY,
+    SECRET_PROXY_URL,
+    SELECTED_MODEL_ID_MAX_CHARS,
+    SETTING_SELECTED_MODEL_ID,
+)
 from database import get_db, set_setting
 from generated_images import set_image_output_enabled
 from secrets_service import get_secret, set_secret, delete_secret
@@ -172,13 +177,14 @@ def _get_settings_sync() -> dict:
                 "WHERE key IN ('proxy_required', 'proxy_alias', "
                 "'selected_persona_id', 'stop_sequences', "
                 "'image_output_enabled', 'auto_lock_minutes', "
-                "'screen_privacy_enabled')"
+                "'screen_privacy_enabled', 'selected_model_id')"
             ).fetchall()
         }
         api_key_set = get_secret(SECRET_API_KEY, conn=con) is not None
         proxy_configured = get_secret(SECRET_PROXY_URL, conn=con) is not None
 
     proxy_alias_raw = rows.get("proxy_alias", "").strip()
+    selected_model_id_raw = (rows.get("selected_model_id") or "").strip()
     persona_id_raw = rows.get("selected_persona_id")
     try:
         selected_persona_id = int(persona_id_raw) if persona_id_raw else None
@@ -205,6 +211,10 @@ def _get_settings_sync() -> dict:
         # Two places parse the same row, so both fail closed the same way.
         "screen_privacy_enabled":
             rows.get("screen_privacy_enabled") in ("1", "true"),
+        # v1.2: the currently-selected model id. A NAME a person reads on
+        # screen, not a number, so it lives here rather than in localStorage -
+        # see config.SETTING_SELECTED_MODEL_ID.
+        "selected_model_id": selected_model_id_raw if selected_model_id_raw else None,
     }
 
 
@@ -502,6 +512,49 @@ async def save_stop_sequences(body: StopSequencesBody) -> dict:
     )
     logger.info("Stop sequences saved (%d).", len(cleaned))
     return {"ok": True, "stop_sequences": cleaned}
+
+
+# ---------------------------------------------------------------------------
+# POST /settings/model-selection
+# ---------------------------------------------------------------------------
+
+class ModelSelectionBody(BaseModel):
+    selected_model_id: str | None = None
+
+
+def _clean_model_id(raw: str | None) -> str | None:
+    """Clamp defensively rather than reject. This is UI state, not a security
+    boundary - a stale or oversized value from an old client must not 422 a
+    routine selection write, the same choice save_stop_sequences makes for
+    its own list."""
+    if raw is None:
+        return None
+    value = raw.strip()
+    if not value:
+        return None
+    return value[:SELECTED_MODEL_ID_MAX_CHARS]
+
+
+@router.post("/model-selection")
+async def set_model_selection(body: ModelSelectionBody) -> dict:
+    """Persist which model is selected, IN THE VAULT rather than the browser.
+
+    An OpenRouter model id ("anthropic/claude-3.5-sonnet") is a NAME a person
+    reads on screen - exactly the shape the S-09b privacy rule, and the
+    owner's own rule, ban from ever sitting outside the vault. It used to
+    live in uiStore's `elysium-ui-state` blob in localStorage, in the clear;
+    it lives here now, next to the API key and the stop sequences.
+
+    uiStore.ts's version-3 `migrate` strips the old plaintext copy out of
+    every install that already has one - this endpoint alone would only stop
+    the leak from growing, not clean up what is already on disk.
+    """
+    value = _clean_model_id(body.selected_model_id)
+    await anyio.to_thread.run_sync(
+        set_setting, SETTING_SELECTED_MODEL_ID, value or ""
+    )
+    logger.info("Selected model %s.", "set" if value else "cleared")
+    return {"ok": True, "selected_model_id": value}
 
 
 # ---------------------------------------------------------------------------

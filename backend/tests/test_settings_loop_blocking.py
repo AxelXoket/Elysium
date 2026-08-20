@@ -143,6 +143,16 @@ async def test_saving_stop_sequences_does_not_freeze_the_loop(
 
 
 @pytest.mark.anyio
+async def test_saving_the_selected_model_does_not_freeze_the_loop(
+    anyio_backend, client, slow_set_setting
+):
+    body = settings.ModelSelectionBody(selected_model_id="anthropic/claude-3.5-sonnet")
+    ticks, out = await _ticks_during(settings.set_model_selection(body))
+    assert out["selected_model_id"] == "anthropic/claude-3.5-sonnet"
+    assert ticks >= MIN_TICKS, "the loop was frozen while the model selection was saved"
+
+
+@pytest.mark.anyio
 async def test_saving_image_output_does_not_freeze_the_loop(
     anyio_backend, client, slow_image_output
 ):

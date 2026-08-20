@@ -15,7 +15,8 @@ Written against version 1.1.0.
   it cannot be opened, not even as a plain database. Three things are written
   outside it: spoken replies, as plain audio wiped at every lock; only for
   a voice model that CLONES, the reference clip you record and a transcript of
-  the words in it; and UI preferences such as the wallpaper, kept in the
+  the words in it, alongside a voiceprint the app derives from your clip by
+  itself; and UI preferences such as the wallpaper, kept in the
   window's local storage. There is also no way to recover a forgotten
   passphrase from inside the vault - the lock screen's own "Forgot your
   passphrase?" flow is a way out of one, and it is documented below under
@@ -46,11 +47,11 @@ Everything is under one folder:
 | `app.db.premigrate.bak` - a COMPLETE encrypted copy of the vault, taken before an uploads migration touches anything and kept whenever that migration does not finish cleanly | **Yes**, same cipher, and a passphrase change re-keys it so the old one stops opening it. Settings > Security now lists it and a button removes it; a later clean migration still discards it on its own. Either way, removing it needs the vault unlocked, because only your key can tell a healthy copy from a stranger's |
 | `app.db.premigrate.bak.unreadable-<ts>` - that same snapshot, moved aside because it did not open with this vault's key | Encrypted, under a passphrase this vault does not hold. It is moved rather than deleted because it may be the only copy of an older vault, and nothing short of a vault reset removes it for you |
 | `voice/models` - voice model weights you downloaded | No. Files you chose and put there; they hold none of your conversation |
-| `voice/refs` - only for a voice model that CLONES: the reference clip you record and a transcript of the words in it | **No, plaintext.** Nothing purges these: not the lock, not shutdown, not the next launch. They go when you delete that voice, delete the folder, or reset the vault |
+| `voice/refs` - only for a voice model that CLONES: the reference clip you record and a transcript of the words in it, the label you gave that voice, and, for one engine, a voiceprint the app derives from your clip by itself | **No, plaintext.** Nothing purges these: not the lock, not shutdown, not the next launch. They go when you delete that voice, delete the folder, or reset the vault. The FOLDER is named with a one-way hash, so a directory listing is no longer a roster of the voices you have cloned; the file inside it still names the voice |
 | `voice/cache` - generated speech, your conversation as audio | No. Cleared at every lock, every launch and every shutdown; anything older than 30 minutes is cleared as the next reply is spoken |
 | `webview/` - the app window's browser profile | No. Cache, history and session files are wiped at every launch and exit; only cosmetic settings and your wallpaper are kept |
-| `elysium.log` - application log | No. It carries no message text, no note text, no keys and no passphrases - but it does record that things happened: chat and note ids, counts, and the TYPE name of an error. A plaintext record of which chats have notes, sitting beside an otherwise opaque vault - and it survives a vault reset, because reset destroys the vault's own artefacts, not the log beside it |
-| `port` - the port the server last used | No. One number, and a vault reset does not touch it either |
+| `elysium.log` - application log | No. It carries no message text, no note text, no keys and no passphrases - but it does record that things happened: chat and note ids, counts, and the TYPE name of an error. A plaintext record of which chats have notes, sitting beside an otherwise opaque vault. A vault reset now shreds it, along with its rotated `elysium.log.1`, because the route promises the folder is left as if Elysium had never run and a log naming your chats is not that |
+| `port` - the port the server last used | No, and one number with nothing in it to protect. A vault reset shreds it anyway, alongside the log |
 
 In a development checkout this folder is the source tree instead, which is why
 you may see these files beside the code.
@@ -178,10 +179,12 @@ orphaned, rotation, and both premigrate names, including the one moved aside
 as unreadable), the passphrase identity files and every shelved copy of them,
 the empty stub a recovery can leave, the uploads folder, saved voice
 references and cached speech, the desktop app's browser profile, and any
-leftover OS-keyring entry from the legacy migration. It does **not** touch
-`elysium.log` or `port` - both listed above, both still readable afterward -
-and it does not touch a downloaded voice engine, which is software you chose
-rather than data you wrote.
+leftover OS-keyring entry from the legacy migration. It also shreds
+`elysium.log`, its rotated `elysium.log.1` and `port` - all listed above.
+That was not always true: they survived, and the log names chat and note
+ids, so a wiped vault left behind a plaintext record of which chats had
+held notes. It does not touch a downloaded voice engine, which is software
+you chose rather than data you wrote.
 
 A file held open elsewhere can survive the wipe. The route answers HTTP 200
 either way: a clean run reports `{"ok": true, "left": []}`, and a file that
@@ -259,6 +262,109 @@ whole conversations to disk as plain readable JSON, surviving every lock. Those
 caches are now wiped at launch and exit, API responses are marked no-store, and
 the browser's crash reporter is prevented from starting at all so a crash cannot
 write a memory dump and send it to Microsoft.
+
+### The accessibility tree
+
+The window's browser builds a second representation of the page for assistive
+technology, and that representation is your conversation as TEXT, offered to
+any program running as you through UI Automation and MSAA. An audit built an
+unprivileged probe - no token, no elevation, the same user account - and read
+the whole transcript out of it: chat title, character name, message bodies,
+verbatim.
+
+**Hiding the window from screen capture does not close this**, and if you
+assumed it did, that is the assumption worth correcting first. That flag
+excludes PIXELS. This is not pixels, and the probe recovered the same strings
+with the flag confirmed set. MSAA and UI Automation are not two doors either:
+the browser builds one tree and serves both from it, so shutting one API
+surface would have shut neither.
+
+**A switch closes it, and it is ON unless you turn it off.** It is the only
+protection in this app that is on when nobody asked for it. The reason is the
+shape of the trade: what it costs falls on software most people do not run,
+and what it prevents is any program on this machine reading your conversation
+as text, with nothing to unlock and nobody to ask.
+
+Three things about that switch are limits rather than features, so they are
+stated here rather than left to be discovered:
+
+- **It takes effect at startup only.** It is a command-line argument to the
+  browser process, read once when the browser environment is created. Changing
+  it while Elysium is running does nothing at all - not on the next unlock, not
+  on the next chat.
+- **Its setting cannot live in the vault**, and that is not an oversight. The
+  decision has to be made before a passphrase exists, and the way out of it has
+  to work for somebody who cannot read the screen.
+- **While it is on, a screen reader cannot read Elysium either.** That is the
+  whole cost and it is a real one. This is not a setting with a free side.
+
+To turn it off, from a command prompt, and then start Elysium again:
+
+```
+setx ELYSIUM_ACCESSIBILITY_PRIVACY 0
+```
+
+An environment variable rather than a checkbox in the app, and that is the
+requirement rather than the lazy option: somebody who needs a screen reader
+cannot navigate to a setting inside an app their screen reader cannot read.
+Exactly `0` turns it off. `false`, `no`, `off` and an empty value all leave it
+on, because a privacy control a typo can disable is a control that reports its
+own state wrongly.
+
+Setting an argument is not the same as the browser having taken it. So the app
+asks the browser process afterwards what it actually received, and writes a
+warning naming the missing argument if the answer is no. It has three answers
+rather than two: a question it could not answer is reported as unknown, never
+as protected and never as broken.
+
+The proof that the tree is really shut is not in the ordinary test run. It is a
+harness that opens a real window and attacks it from a second process, run by
+hand, and it must find the conversation with the switch OFF before it is
+allowed to report anything about the switch being on.
+
+### The log
+
+`elysium.log` sits outside the vault in plain text and survives every lock, so
+what may go into it is a rule rather than a habit. The rule, in the owner's
+words: **a numeric id outside the vault is acceptable; a name you read on
+screen, or anything from inside the vault, never.** A chat id records that
+something happened. A chat's title records what it was about, and so does a
+character's name, or a persona's.
+
+The file is written only by the packaged exe. A developer running the backend
+by hand gets the same lines on a console and no file at all.
+
+Leaks of both kinds were found in this round, and the ones still open are
+named at the end of this section rather than left out of it. What keeps the
+rest closed is a gate that reads every logging call in the shipped tree - 175
+files at the last count - and fails the build on a value that can carry
+content or a name: an exception's own message, which nothing stops from being
+built out of your text; anything derived from one; a value handed to a helper
+that logs it; and a list of the variable names this codebase actually binds
+displayable text to.
+
+Tracebacks are the exception, and it is a large one, so it is stated rather
+than buried. Writing a live exception's message into the log is the same leak
+by another route, and there are forty-six places that do it, across sixteen
+modules. The gate SEES every one of them and fails on none: they are recorded
+in a ledger it checks, so a new one cannot appear quietly and a paid-off one
+has to be removed from the ledger, but the existing forty-six ship as they
+are. Removing them costs the ability to diagnose a crash from a user's log,
+and that trade has not been made.
+
+**What that gate cannot see, because it reads shapes and not values**: a helper
+in a DIFFERENT module, a call reached through a dict or a callback, an
+ATTRIBUTE carrying what a named variable would have carried, content that
+leaves a string and comes back through a list, a name the list does not know
+yet, and anything leaving by a route other than the logger - a `print`, a file
+written by hand, a message put on the wire. It is a floor under code review,
+not a replacement for it.
+
+One leak of the second kind is still open, and it is counted rather than
+described as closed. A voice's id used to be made from the label you typed for
+it, and on any install created before the voice folders were hashed that id is
+still that label, still recorded in that voice's own file. Four log lines print
+it. Voices created since carry an opaque id and are not affected.
 
 ---
 
@@ -379,23 +485,65 @@ you can find the one you care about.
 - **A running unlocked app is unlocked.** Anything with your user account, or
   administrator rights, can reach a running process's memory. The vault protects
   the file at rest and the window once it locks.
+- **The renderer's memory is readable, and this is the ceiling on everything
+  else on this page.** Stated as a measurement rather than a caveat, because a
+  reader deserves to know where the ceiling is: `ReadProcessMemory` against the
+  window's renderer process, from an unprivileged process running as you,
+  returns the conversation. It still does with every switch described here
+  turned on. While the vault is unlocked the plaintext has to exist in that
+  process, and Windows hands one of your processes a read handle to another of
+  your processes by default. Closing the accessibility tree raises the cost of
+  reading your chat from "call an interface Windows documents for screen
+  readers" to "walk another process's heap"; it does not remove the floor
+  underneath, and no switch inside the app can. This is an accepted risk, not
+  an open defect - the fix is not ours to write.
+- **Screenshots are not blocked out of the box.** Hiding the window from screen
+  capture is off by default, so as shipped a program running as you can
+  photograph the transcript with an ordinary screen capture. Turned on, the
+  exclusion is real rather than nominal: `PrintWindow` and `BitBlt` against the
+  window come back a fully black buffer, measured. It still ships off, because
+  the cost lands immediately on your own screenshots of your own app, with
+  nothing on screen to explain why they came out black.
 
 ### What is written outside the vault
 
 - **UI preferences are not encrypted.** Text size, bubble solidity, the
-  wallpaper, sampling numbers and the model you last picked live in the window's
-  local storage. No chat content is there.
+  wallpaper, sampling numbers and which chat and character were last open live
+  in the window's local storage. No chat content is there. The model you last
+  picked used to be there and is not any more: a model id like `author/slug` is
+  a name you read on screen, so it moved into the vault, and an install that
+  already holds the old plaintext copy has it deleted on the next launch rather
+  than merely stopped from writing a newer one.
 - **Voice is not encrypted.** Generated speech is written as ordinary `.wav`
   files while the vault is open. They are wiped on lock, on exit and on the next
   launch, but a hard kill can leave one until then.
+- **A reference clip is a recording of you, and it stays.** If you cloned a
+  voice, the clip you recorded, the words in it and the label you gave it sit on
+  disk as ordinary files that no lock touches. This is the one thing this
+  section used to leave out entirely. They leave when you delete that voice,
+  delete the folder, or reset the vault, and not before.
+- **The app derives a voiceprint from that clip without being asked.** The first
+  time a cloned voice on the Fish S2 engine speaks, Elysium encodes your clip
+  into a prompt-token file and writes it beside the clip, so the next reply does
+  not pay for the encoding twice. There is no screen that mentions it and you
+  have no copy of your own. It is not merely a cache: the engine will speak in
+  that voice from the token file with the clip itself deleted, which makes it a
+  working voiceprint rather than a derived scrap. It is plaintext, outside the
+  vault, and it survives every lock. Be precise about the other cloning engine
+  rather than reassured by it: its equivalent is held in memory and never
+  written to disk, so the difference is between two engines and not a general
+  promise.
 - **The search index remembers.** Marking the folder not-indexed is a promise
   about the future. Anything Windows already extracted stays in its index.
 - **Anything you copy leaves the vault, and Elysium cannot follow it.** The
   Copy button and Ctrl+C both put plain text on the Windows clipboard, which
-  every program running as you can read. If you have turned on Clipboard
-  History it is kept for Win+V; if you have also turned on syncing across
-  devices, Windows uploads it to your Microsoft account. Both are off unless
-  you switched them on. Elysium cannot exclude itself from either: Chromium
+  every program running as you can read. **Locking the vault does not take it
+  back**: the lock clears the key, the clipboard is not Elysium's to clear, and
+  a message you copied stays readable by any process afterwards. If Clipboard
+  History is on it is also kept for Win+V, and do not assume it is off - it was
+  already on, switched on by nobody for this app, on the machine this was
+  measured on. If syncing across devices is on too, Windows uploads it to your
+  Microsoft account. Elysium cannot exclude itself from either: Chromium
   only sets the opt-out flags for windows running in private mode, and this
   window deliberately does not, so that your appearance settings survive a
   restart.

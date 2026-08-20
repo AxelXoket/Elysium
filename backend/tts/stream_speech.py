@@ -300,15 +300,47 @@ class StreamSpeaker:
                 finally:
                     self._synthesising = False
             except QueueFailed as exc:
-                logger.warning("tts stream speech failed: %s", exc.__cause__ or exc)
-                self.error = exc.__cause__ or exc
+                # THE MESSAGE NEVER REACHES THE LOG, only the class.
+                #
+                # QueueFailed's `__cause__` is whatever the engine call raised,
+                # and an engine builds the text it was asked to speak into its
+                # own exception: tts/worker/fish_s2.py formats
+                # `f"{what}: {type(exc).__name__}: {exc}"`, and the innermost
+                # `{exc}` is the tokeniser complaining about the sentence it
+                # was handed. That sentence is a model reply. elysium.log is
+                # plaintext, sits beside the vault, and survives every lock,
+                # so `%s` of that exception published a reply outside the
+                # vault every time synthesis failed.
+                #
+                # The class is the diagnosis that is safe to keep, and it is
+                # the form the rest of this codebase already settled on. The
+                # failure ALSO travels intact on `self.error`, in memory,
+                # where stream_hook maps it to a contract code for the client
+                # - so nothing about the user-visible behaviour changes here.
+                cause = exc.__cause__ or exc
+                logger.warning("tts stream speech failed: fault=%s",
+                               type(cause).__name__)
+                self.error = cause
                 self._stop = True
                 break
             except Exception as exc:                    # noqa: BLE001
                 # The worker thread must not die silently: a speaker that
                 # simply stopped would look identical to a reply with nothing
                 # left to say.
-                logger.exception("tts stream speech crashed")
+                #
+                # Was logger.exception, and the traceback is a real loss -
+                # this branch catches the UNEXPECTED, where the line number is
+                # most of the answer. It goes because logging.exception writes
+                # the live exception's message too, and the code inside this
+                # try handles reply text directly: speech_prep runs on the
+                # reply OUTSIDE the queue's own try (see SpeechQueue.pump), so
+                # a failure in preparation arrives here with the text it
+                # choked on inside it. The class plus this fixed message still
+                # names the subsystem (the stream speaker's worker thread) and
+                # the kind of fault; where it broke has to be recovered by
+                # reproducing it.
+                logger.warning("tts stream speech crashed: fault=%s",
+                               type(exc).__name__)
                 self.error = exc
                 self._stop = True
                 break

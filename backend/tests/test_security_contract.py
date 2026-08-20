@@ -81,7 +81,14 @@ class ReasonCategory(str, enum.Enum):
 #: (marker, proofs). Markers taken from a bulleted line or a table row - the
 #: two shapes _promise_lines() extracts, so leaving one of these lines
 #: unregistered anywhere (here, in ACKNOWLEDGED_UNTESTABLE or in UNPROVEN) is
-#: what TestTheKnownGapsStayNamed exists to catch.
+#: what TestTheKnownGapsStayNamed exists to catch. A table row is extracted
+#: twice, whole and again as its answer cell, so a row's ANSWER needs its own
+#: marker and cannot ride on one taken from the filename that labels it.
+#:
+#: Anything that is neither a bullet nor a row belongs in PROSE_CLAIMS. The
+#: boundary is not decoration: a marker registered here is implicitly a
+#: claim about a line the parser can see, and one that is really prose sits
+#: in this table pointing at nothing the orphan check will ever reach.
 CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("not even as a plain database", (
         "tests/test_privacy_at_rest.py::TestTheDatabaseFileIsCiphertext"
@@ -166,6 +173,25 @@ CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "tests/test_legacy_migration.py::TestAHalfWrittenSnapshotIsNotASnapshot"
         "::test_a_snapshot_that_does_not_open_is_replaced_not_trusted",
     )),
+    # The two runtime-file rows, each keyed on its ANSWER cell rather than on
+    # the filename that labels it. Both say a reset destroys the file, and
+    # _reset_runtime_files shreds elysium.log, elysium.log.1 and port in one
+    # loop, so one test covers both halves.
+    #
+    # The `port` row is why _promise_lines() now emits a row's answer cell
+    # separately. It read "a vault reset does not touch it either" long after
+    # the reset started shredding it, and nothing here objected: the only
+    # registration pointing at that row was an ACKNOWLEDGED_UNTESTABLE entry
+    # keyed on "the port the server last used", the label. A row that names a
+    # file is not a claim about what happens to it.
+    ("A vault reset now shreds it, along with its rotated", (
+        "tests/test_vault_reset_hardening.py::TestRuntimeFilesLeaveNoTrace"
+        "::test_log_and_port_files_are_removed",
+    )),
+    ("A vault reset shreds it anyway, alongside the log", (
+        "tests/test_vault_reset_hardening.py::TestRuntimeFilesLeaveNoTrace"
+        "::test_log_and_port_files_are_removed",
+    )),
     # These two rows used to say "nothing removes it for you" and "Nothing
     # purges these" without qualification - both false once /vault/reset
     # existed: _reset_premigrate_family globs and shreds the .unreadable-*
@@ -222,6 +248,62 @@ CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "::TestLaunchClearsWhatTheLastSessionLeft"
         "::test_audio_from_a_previous_session_does_not_survive",
     )),
+    # The voice/refs row grew three disclosures this round, and each one is
+    # keyed on its own words rather than riding on the clip-and-transcript
+    # marker that was already there. That marker covers the two files the row
+    # has always named; it says nothing about a label, a derived voiceprint,
+    # or how the folder is spelled, and letting it stand in for those would be
+    # the exact half-a-row failure the `port` row taught this file.
+    ("the label you gave that voice", (
+        "tests/test_voice_ref_dir_naming.py::TestNewVoicesGetAnOpaqueFolder"
+        "::test_the_id_still_resolves_and_still_round_trips_over_the_api_shape",
+    )),
+    ("The FOLDER is named with a one-way hash", (
+        "tests/test_voice_ref_dir_naming.py::TestNewVoicesGetAnOpaqueFolder"
+        "::test_the_folder_name_is_not_the_id_or_the_label",
+        "tests/test_voice_ref_dir_naming.py::TestNewVoicesGetAnOpaqueFolder"
+        "::test_listing_the_refs_root_shows_no_slug_at_all",
+        "tests/test_voice_ref_dir_naming.py::TestNewVoicesGetAnOpaqueFolder"
+        "::test_two_different_labels_never_collide_on_disk",
+    )),
+    # Same proof as "the label you gave that voice" and deliberately so: the
+    # test saves a voice and reads its label back through describe(), which
+    # can only come from the file inside the hashed folder. One behaviour,
+    # two sentences that disclose it - the row's label cell and its answer.
+    ("the file inside it still names the voice", (
+        "tests/test_voice_ref_dir_naming.py::TestNewVoicesGetAnOpaqueFolder"
+        "::test_the_id_still_resolves_and_still_round_trips_over_the_api_shape",
+    )),
+    # The accessibility switch's first limit. What is testable without a
+    # window is that the argument is in the environment BEFORE the window is
+    # created - which is what "at startup" means here. That it can then never
+    # be changed is WebView2's behaviour and is acknowledged separately.
+    ("It takes effect at startup only", (
+        "tests/test_accessibility_privacy.py::TestItIsArmedBeforeTheWindowExists"
+        "::test_the_argument_is_in_place_when_the_window_is_created",
+        "tests/test_accessibility_privacy.py::TestTheLaunchPathArmsIt"
+        "::test_harden_reports_it",
+    )),
+    # Two halves of the screenshot bullet, registered apart on purpose. This
+    # one is the DEFAULT, which is code and is tested. The black-buffer half
+    # beside it is a measurement and is acknowledged, not proven.
+    ("Screenshots are not blocked out of the box", (
+        "tests/test_win_hardening.py::TestScreenCaptureExclusion"
+        "::test_it_stays_off_unless_the_user_asks",
+        "tests/test_screen_privacy.py::TestTheSettingFailsClosed"
+        "::test_absent_means_off",
+    )),
+    # The bullet this section was missing entirely. Registered on its own
+    # words because the sentence beside it - "delete that voice, delete the
+    # folder, or reset the vault" - is an OLD marker from the table row, and
+    # a bullet that borrows one is a bullet nobody actually checked.
+    ("A reference clip is a recording of you, and it stays", (
+        "tests/test_tts_refs.py::TestSavingAClip"
+        "::test_a_clip_and_its_words_are_stored_together",
+        "tests/test_tts_refs.py::TestDeleting::test_deleting_removes_the_folder",
+        "tests/test_vault_reset.py::TestTheFullWipe"
+        "::test_every_ground_truth_artefact_is_destroyed",
+    )),
 )
 
 
@@ -230,6 +312,22 @@ CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
 #: asymmetry as the README's PROSE_CLAIMS: a reworded or deleted sentence
 #: fails, a brand new one does not, and that is why DOCUMENT_DIGEST exists.
 PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    # The traceback debt, stated in the document rather than buried. The
+    # number IS the assertion: the ledger fails in both directions, so it
+    # cannot grow quietly and a paid debt has to be recorded as paid.
+    ("there are forty-six places that do it, across sixteen", (
+        "tests/test_log_identifier_privacy.py"
+        "::test_no_new_traceback_leak_anywhere_in_the_tree",
+    )),
+    # The model id left the browser profile this round. It is a name a
+    # person reads on screen, which is the one thing the owner's rule keeps
+    # out of anywhere a locked vault cannot protect.
+    ("The model you last picked used to be there and is not any more", (
+        "tests/test_model_selection.py::TestTheRouteRoundTrips"
+        "::test_setting_it_is_read_back",
+        "tests/test_model_selection.py::TestTheRouteRoundTrips"
+        "::test_nothing_chosen_yet_reads_as_null",
+    )),
     # The two sentences this document gained when it stopped describing the
     # interrupted-extraction case "too kindly". Both are claims about money
     # and about a second copy of a conversation leaving the machine, so both
@@ -512,6 +610,94 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "tests/test_vault_reset.py::TestTheFullWipe"
         "::test_every_ground_truth_artefact_is_destroyed",
     )),
+    # This sat in CLAIMS, whose markers are supposed to come from a bulleted
+    # line or a table row. The sentence is neither; it is prose, and this is
+    # the table prose belongs in. The marker was also the bare words "It also
+    # shreds" - fifteen generic characters, matched by substring - so it
+    # would have vouched for any future line that happened to contain them.
+    # It named exactly one sentence today and would have kept saying yes to
+    # sentences nobody wrote yet.
+    #
+    # Replaces an UNPROVEN entry that read "It does not touch elysium.log or
+    # port". True when written, false now: the log names chat and note ids,
+    # so a wiped vault was leaving a plaintext record of which chats had held
+    # notes beside the vault that no longer existed. The sweep is the promise
+    # now, and it has a test.
+    ("It also shreds `elysium.log`, its rotated `elysium.log.1` and "
+     "`port`", (
+        "tests/test_vault_reset_hardening.py::TestRuntimeFilesLeaveNoTrace"
+        "::test_log_and_port_files_are_removed",
+    )),
+    # ── The accessibility tree ────────────────────────────────────────────
+    # The only default-ON protection in the app, so the default itself is the
+    # claim that most needs a test rather than a sentence. Three proofs: it is
+    # on when the variable is absent, the launch path really arms it, and the
+    # argument really lands in the variable WebView2 reads.
+    ("A switch closes it, and it is ON unless you turn it off", (
+        "tests/test_accessibility_privacy.py::TestTheDefaultIsOn"
+        "::test_nobody_asked_and_it_is_on",
+        "tests/test_accessibility_privacy.py::TestTheLaunchPathArmsIt"
+        "::test_harden_reports_it",
+        "tests/test_accessibility_privacy.py::TestArmingTheSwitch"
+        "::test_it_puts_the_argument_where_webview2_will_find_it",
+    )),
+    # The typo clause. Worth its own proof precisely because it is the kind of
+    # sentence a document asserts and nobody checks: the positive control is
+    # that "0" turns it off, and the negative one is that nothing else does.
+    ("Exactly `0` turns it off", (
+        "tests/test_accessibility_privacy.py::TestTheDefaultIsOn"
+        "::test_exactly_zero_turns_it_off",
+        "tests/test_accessibility_privacy.py::TestTheDefaultIsOn"
+        "::test_anything_else_leaves_it_on",
+        "tests/test_accessibility_privacy.py::TestTheLaunchPathArmsIt"
+        "::test_harden_respects_the_refusal",
+    )),
+    ("the app asks the browser process afterwards what it actually received", (
+        "tests/test_accessibility_privacy.py::TestTheVerdictHasThreeAnswers"
+        "::test_the_flag_on_every_browser_process_is_a_yes",
+        "tests/test_accessibility_privacy.py::TestTheVerdictHasThreeAnswers"
+        "::test_one_browser_process_without_it_is_a_no",
+        "tests/test_accessibility_privacy.py::TestTheVerdictHasThreeAnswers"
+        "::test_the_report_says_so_out_loud",
+    )),
+    ("It has three answers rather than two", (
+        "tests/test_accessibility_privacy.py::TestTheVerdictHasThreeAnswers"
+        "::test_no_browser_process_yet_is_unknown",
+        "tests/test_accessibility_privacy.py::TestTheVerdictHasThreeAnswers"
+        "::test_an_unreadable_process_is_unknown",
+        "tests/test_accessibility_privacy.py::TestTheVerdictHasThreeAnswers"
+        "::test_a_broken_reader_never_raises_on_the_launch_path",
+    )),
+    # ── The log ───────────────────────────────────────────────────────────
+    # The owner's rule itself. Two proofs for its two halves: the tree-wide
+    # AST gate is what keeps a NAME out, and the at-rest test is what keeps
+    # message CONTENT out of a log written by a real completed turn.
+    ("a numeric id outside the vault is acceptable; a name you read on "
+     "screen, or anything from inside the vault, never", (
+        "tests/test_log_identifier_privacy.py"
+        "::test_no_new_content_leak_anywhere_in_the_tree",
+        "tests/test_privacy_at_rest.py::TestTheLogNeverCarriesWhatWasSaid"
+        "::test_a_completed_turn_logs_no_message_text",
+    )),
+    # "fails the build" is a claim about the gate, so one of its proofs has to
+    # be that the gate can fire at all - a scanner that matched nothing would
+    # pass the two tree-wide sweeps every single time.
+    ("fails the build on a value that can carry content or a name", (
+        "tests/test_log_identifier_privacy.py"
+        "::test_no_new_content_leak_anywhere_in_the_tree",
+        "tests/test_log_identifier_privacy.py"
+        "::test_no_new_traceback_leak_anywhere_in_the_tree",
+        "tests/test_log_identifier_privacy.py::TestTheScannerCanActuallyFire"
+        "::test_a_raw_exception_is_caught",
+    )),
+    # The residual, and the number in it is not decoration. The gate's ledger
+    # pins tts/refs.py at exactly four content hits and fails in BOTH
+    # directions - a fifth is a new leak, a third is a fix nobody wrote down -
+    # so the sentence "four log lines" is the assertion, not a summary of it.
+    ("Four log lines print it", (
+        "tests/test_log_identifier_privacy.py"
+        "::test_no_new_content_leak_anywhere_in_the_tree",
+    )),
 )
 
 
@@ -566,12 +752,16 @@ ACKNOWLEDGED_UNTESTABLE: tuple[
      "construction, not something a unit test demonstrates by running "
      "code.",
      None, None),
-    ("voice model weights you downloaded", ReasonCategory.DEFINITIONAL,
+    ("Files you chose and put there", ReasonCategory.DEFINITIONAL,
      "a bare table-row disclosure ('No', unencrypted) rather than a "
-     "protection claim. Registered so the row is not silently upgraded to "
-     "a promise later without anyone noticing. The reference clips used to "
-     "share this row and no longer do: they ARE testable, they are now their "
-     "own row, and they are registered as proven in CLAIMS above.",
+     "protection claim: the weights arrived because the user fetched them. "
+     "Registered so the row is not silently upgraded to a promise later "
+     "without anyone noticing. The reference clips used to share this row "
+     "and no longer do: they ARE testable, they are now their own row, and "
+     "they are registered as proven in CLAIMS above. This entry used to be "
+     "keyed on 'voice model weights you downloaded' - the row's LABEL - "
+     "which let it vouch for the answer cell beside it; the rest of that "
+     "cell is real and untested, and is counted in UNPROVEN instead.",
      None, None),
     ("any premigrate snapshot beside it", ReasonCategory.DEFINITIONAL,
      "that deleting a folder removes the files inside it is a property of "
@@ -581,9 +771,14 @@ ACKNOWLEDGED_UNTESTABLE: tuple[
      "Elysium is only that the file lives under that folder, which the "
      "premigrate_backup_path proofs in CLAIMS already establish.",
      None, None),
-    ("the port the server last used", ReasonCategory.DEFINITIONAL,
-     "same as the row above: one unencrypted number, nothing to protect, "
-     "registered only so the row cannot change unnoticed.",
+    ("one number with nothing in it to protect", ReasonCategory.DEFINITIONAL,
+     "same as the row above: a localhost TCP port is one unencrypted "
+     "number, registered only so the disclosure cannot change unnoticed. "
+     "This entry used to be keyed on 'the port the server last used', the "
+     "row's LABEL, and so it went on certifying the row while the answer "
+     "beside it said a vault reset does not touch the file and "
+     "_reset_runtime_files was shredding it. What the reset does to this "
+     "file is a separate claim with a separate proof, in CLAIMS above.",
      None, None),
     ("Anything Windows already extracted stays in its index",
      ReasonCategory.OS_GUARANTEE,
@@ -624,6 +819,104 @@ ACKNOWLEDGED_UNTESTABLE: tuple[
      "a synced copy that is not on this machine at all, are outside every "
      "path this suite can reach.",
      None, None),
+    ("Locking the vault does not take it back", ReasonCategory.OS_GUARANTEE,
+     "the third face of the clipboard entries above, and the one a reader is "
+     "most likely to get wrong. What the lock DOES is tested (the key buffer "
+     "is overwritten); that the Windows clipboard is untouched by it is a "
+     "statement about a store this app never writes to and this suite cannot "
+     "read. Nothing here can observe a clipboard entry surviving, because "
+     "nothing here can observe a clipboard entry.",
+     None, None),
+    # A reading taken off this machine, recorded HERE because the agent that
+    # took it owns this file and SECURITY.md and nothing else, so there is no
+    # module docstring of its own to point at. The reading, in full, on
+    # 2026-08-20: HKCU\Software\Microsoft\Clipboard, value
+    # EnableClipboardHistory = 1, with CloudClipboardAutomaticUpload unset.
+    # Nobody set it for Elysium; it was simply already on, which is the whole
+    # content of the sentence in the document. What it does NOT establish is
+    # what a fresh Windows install does - one machine is one machine, and the
+    # document says "the machine this was measured on" for that reason.
+    ("it was already on, switched on by nobody for this app, on the machine "
+     "this was measured on", ReasonCategory.ONE_TIME_MEASUREMENT,
+     "a registry read on the development machine, recorded in the comment "
+     "directly above this entry with the key, the value and the date. "
+     "Nothing runnable re-checks it: a test that read the owner's real "
+     "clipboard setting would be a test whose result depends on the machine "
+     "it runs on, which is the opposite of a gate.",
+     "2026-08-20", "backend/tests/test_security_contract.py:814-822"),
+    # ── The accessibility tree, and the ceiling under it ──────────────────
+    ("read the whole transcript out of it: chat title, character name, "
+     "message bodies, verbatim", ReasonCategory.ONE_TIME_MEASUREMENT,
+     "the probe an audit built and ran against a real window on the dev "
+     "machine. It is recorded in the docstring the pointer names, and it is "
+     "re-runnable by hand as tests/accessibility_tree_harness.py, but it "
+     "cannot be a collected test: it needs a real window on a real desktop "
+     "and takes about a minute, and a test like that is a test people learn "
+     "to skip.",
+     "2026-08-20", "backend/tests/test_accessibility_privacy.py:1-8"),
+    ("the probe recovered the same strings with the flag confirmed set",
+     ReasonCategory.ONE_TIME_MEASUREMENT,
+     "the second run of that same probe, with SetWindowDisplayAffinity "
+     "verified at 0x11. This is the sentence that stops a reader treating "
+     "the screen-capture switch as cover for the accessibility tree, so it "
+     "is registered rather than left to the digest.",
+     "2026-08-20", "backend/win_hardening.py:114-121"),
+    ("come back a fully black buffer, measured",
+     ReasonCategory.ONE_TIME_MEASUREMENT,
+     "PrintWindow and BitBlt against an excluded window, measured on the dev "
+     "machine. The suite proves the affinity FLAG is set on a real window "
+     "(test_a_real_window_is_actually_excluded); what the compositor then "
+     "hands a capture call is the OS's answer, taken once and written down.",
+     "2026-08-20", "backend/win_hardening.py:114-121"),
+    ("a harness that opens a real window and attacks it from a second "
+     "process", ReasonCategory.ONE_TIME_MEASUREMENT,
+     "the document is describing the recorded measurement procedure itself, "
+     "so the pointer is that procedure. Registered so the sentence cannot "
+     "outlive the harness: if the file is deleted or renamed, the pointer "
+     "check fails here rather than the document quietly promising a proof "
+     "that no longer exists.",
+     "2026-08-20", "backend/tests/accessibility_tree_harness.py:1-30"),
+    ("the browser builds one tree and serves both from it",
+     ReasonCategory.THIRD_PARTY,
+     "Chromium's own architecture: one accessibility tree per frame, cached "
+     "in the browser process, served to IAccessible, IAccessible2 and UI "
+     "Automation alike. Nothing in this tree implements it and nothing here "
+     "can assert it - what this app can do is switch the tree off, which is "
+     "proven above.",
+     None, None),
+    ("Changing it while Elysium is running does nothing at all",
+     ReasonCategory.THIRD_PARTY,
+     "WebView2 reads browser arguments once, when the browser environment is "
+     "created, and exposes no way to change them afterwards. The half that "
+     "IS ours - that the argument is in place before the window exists - is "
+     "proven in CLAIMS under 'It takes effect at startup only'. This "
+     "sentence is about the third party's side of that line.",
+     None, None),
+    ("Its setting cannot live in the vault", ReasonCategory.DEFINITIONAL,
+     "a value that can only be read after the vault is unlocked cannot "
+     "govern a decision that has to be made before a passphrase exists. "
+     "There is no code path to exercise; the sentence states why one cannot "
+     "be written.",
+     None, None),
+    ("While it is on, a screen reader cannot read Elysium either",
+     ReasonCategory.THIRD_PARTY,
+     "the switch tells Chromium not to build the accessibility tree, and "
+     "that tree is the only thing a screen reader has to read. Whether a "
+     "given assistive product then reports nothing, or something degraded, "
+     "is that product's behaviour against a browser this project did not "
+     "write. Stated as a cost rather than measured across screen readers "
+     "nobody here owns.",
+     None, None),
+    ("The renderer's memory is readable", ReasonCategory.OS_GUARANTEE,
+     "the true ceiling on this whole document, and it is Windows' access "
+     "model rather than a defect in this app: a process running as a user is "
+     "granted a read handle to another process of the same user by default, "
+     "and while the vault is unlocked the plaintext must exist in the "
+     "renderer. Nothing in this tree can revoke that and no test can "
+     "demonstrate its absence, because there is no absence to demonstrate. "
+     "Registered as accepted risk, not as debt: UNPROVEN would imply a test "
+     "is owed, and none is.",
+     None, None),
 )
 
 
@@ -660,6 +953,13 @@ UNPROVEN: tuple[tuple[str, str], ...] = (
      "the document's own hedge about the legacy Credential Manager entry, "
      "registered here so the debt it already names is tracked by code and "
      "not just by a sentence."),
+    ("they hold none of your conversation",
+     "surfaced by keying the voice/models row on its answer cell instead of "
+     "its label. True by inspection - tts/registry.py only ever READS "
+     "TTS_MODELS_DIR and no chat, note or audio path writes into it - but "
+     "inspection is what this registry refuses to accept as a proof. "
+     "Testable as a standing invariant over every write site the way the "
+     "narrow_data_dir gap below is, not written."),
     ("Nothing purges these",
      "the lock, shutdown and launch paths are each tested for the AUDIO "
      "cache; no test asserts the opposite for voice/refs - that a reference "
@@ -682,13 +982,6 @@ UNPROVEN: tuple[tuple[str, str], ...] = (
      "app's own data directory), but no test asserts that as a standing "
      "invariant across every call site in the app."),
     # /vault/reset again - the two halves of it nothing exercises yet.
-    ("It does **not** touch `elysium.log` or `port`",
-     "true by inspection - _reset_vault_sync's category list in vault.py "
-     "names every directory and file family it destroys, and neither the "
-     "log path nor the port file is among them - but no test writes either "
-     "one, resets, and asserts it is still there. Testable the same way "
-     "test_every_ground_truth_artefact_is_destroyed proves the opposite for "
-     "everything that IS destroyed, not written."),
     ("a file that would not go is named rather than hidden, as "
      '`{"ok": false, "left": [...]}`',
      "the ok:true, left:[] shape is proven (test_every_ground_truth_"
@@ -696,6 +989,51 @@ UNPROVEN: tuple[tuple[str, str], ...] = (
      "remove - held open, permission-denied - and checks the response comes "
      "back ok:false with that file named in left. Testable by holding a "
      "handle open on one artefact before calling the route, not written."),
+    # ── The derived voiceprint ────────────────────────────────────────────
+    # Two markers, one gap: the short version and the voice/refs row use the
+    # same words, and the bullet in "What is written outside the vault" says
+    # it at length. Both are counted rather than one riding on the other,
+    # because the row's other markers already cover the clip and transcript
+    # and would happily have covered this too.
+    ("a voiceprint the app derives from your clip by itself",
+     "tts/worker/fish_s2.py's ordinary synthesis path encodes the reference "
+     "clip and calls _save_tokens, writing <clip>.prompt_tokens.npy beside "
+     "the clip, the first time a voice speaks. Verified by reading that "
+     "path; no test drives it, because the encode needs the real codec "
+     "(~4.9 GB) and no fake stands in for it yet. Testable by faking the "
+     "codec and asserting the .npy lands in voice/refs/<folder>, not "
+     "written."),
+    ("The app derives a voiceprint from that clip without being asked",
+     "the same unwritten test as the entry above; this is the long form of "
+     "the sentence, in 'What is written outside the vault'. Its extra claim "
+     "- that the engine will speak from the token file with the clip gone - "
+     "is visible in _resolve_reference/_load_tokens, which accept tokens "
+     "with clip None, and is not driven by any test either."),
+    ("its equivalent is held in memory and never written to disk",
+     "the XTTS half of that bullet, and the reason it is stated separately: "
+     "that engine keeps its latents in a capped in-process dict and only "
+     "ever writes them when a prepare_ref request supplies an output path, "
+     "which nothing in the shipped app sends. Read out of tts/worker/"
+     "xtts_v2.py rather than tested. Testable as a standing invariant over "
+     "the worker's write sites, the same shape as the narrow_data_dir gap "
+     "above, not written."),
+    # ── The log ───────────────────────────────────────────────────────────
+    ("The file is written only by the packaged exe",
+     "half proven, and the wrong half. test_release_hardening.py::"
+     "TestAuditRegressions2026_07_25::test_uvicorn_logs_reach_the_file_the_"
+     "error_dialog_points_at forces sys.frozen true, runs "
+     "_setup_frozen_logging and reads the file back, so the PACKAGED half is "
+     "exercised. Nothing asserts the negative - that a run which is not "
+     "frozen creates no file at all - and the negative is what this sentence "
+     "actually promises. Testable by calling the same function without "
+     "sys.frozen and asserting nothing appears, not written."),
+    ("What that gate cannot see, because it reads shapes and not values",
+     "every blind spot listed after that phrase is testable the same way the "
+     "scanner's positive controls are - feed it a source with a cross-module "
+     "helper, an attribute access, a value round-tripped through a list, and "
+     "assert it reports nothing - and none of them is. The scanner's own "
+     "docstring names them honestly, which is where the sentence comes from; "
+     "an honest note is not a test."),
 )
 
 
@@ -729,6 +1067,28 @@ def _promise_lines() -> list[str]:
     lines (indented, not themselves a new bullet, heading or table row) are
     joined onto it before matching. A table row here never wraps, so those
     are taken exactly as the README took them.
+
+    THE ROW'S ANSWER CELL IS ITS OWN PROMISE
+
+    A "Where your data lives" row is two cells with different jobs: the first
+    NAMES a file, the second says what is true of it. Emitting only the whole
+    row made those one promise, so a marker matching the NAME half marked the
+    whole row covered and the answer half never had to be registered at all.
+    That is not hypothetical. The `port` row said "a vault reset does not
+    touch it either" while /vault/reset shredded it (_reset_runtime_files),
+    and the row passed every check here because an ACKNOWLEDGED_UNTESTABLE
+    entry keyed on "the port the server last used" - the label - vouched for
+    it. The registry positively certified a false sentence, which is the one
+    outcome it exists to prevent.
+
+    So the final cell is emitted as a promise in its own right, in addition
+    to the whole row. The whole row still appears, so a marker legitimately
+    taken from a label (what a premigrate snapshot IS, say) keeps working;
+    what stops working is a label registration silently standing in for an
+    answer nobody checked. It is a cell, not a sentence, so a cell packing
+    several claims can still have one registration cover its neighbours -
+    coarse, but strictly finer than the row, and it closes the case that
+    actually went wrong.
     """
     lines: list[str] = []
     raw = _document().splitlines()
@@ -737,6 +1097,9 @@ def _promise_lines() -> list[str]:
         line = raw[i].strip()
         if line.startswith("| `"):
             lines.append(re.sub(r"\s+", " ", line))
+            cells = [cell.strip() for cell in line.strip("|").split("|")]
+            if len(cells) > 1:
+                lines.append(re.sub(r"\s+", " ", cells[-1]))
             i += 1
             continue
         if line.startswith("- "):
@@ -870,7 +1233,7 @@ def _acknowledged_problems(
 #: sample - so this covers all of it. Updating this constant is the
 #: deliberate act that means a human decided what a change claims and
 #: registered a proof for it.
-DOCUMENT_DIGEST = "470a3b44e043a3cab13e4867db87337863c94f92954d96191a846d8466b18193"
+DOCUMENT_DIGEST = "b166dc10e89ebea4611742a58b27f1f02a54c9d83b30056b2d4dba3cfac0e152"
 
 
 class TestEveryProvenClaimHasAProof:
@@ -1021,6 +1384,23 @@ class TestTheRegistryCanActuallyFail:
         # unregistered forever.
         lines = _promise_lines()
         assert any("not even as a plain database" in line for line in lines)
+
+    def test_a_table_rows_answer_is_its_own_promise(self) -> None:
+        # The defect this split exists for. "the port the server last used"
+        # is the row's label; the answer beside it is a different claim, and
+        # while the two were one promise a registration on the label
+        # certified an answer that contradicted _reset_runtime_files. The
+        # answer must be reachable on its own, and the label must not reach
+        # it.
+        answers = [
+            line for line in _promise_lines()
+            if line.startswith("No, and one number")
+        ]
+        assert answers, "the port row's answer cell is not extracted"
+        assert not any(
+            "the port the server last used" in line for line in answers), (
+            "the row's label still reaches its answer"
+        )
 
     def test_the_digest_would_notice_a_reworded_sentence(self) -> None:
         altered = _document().replace("SECURITY.md", "SECURITY.md ")

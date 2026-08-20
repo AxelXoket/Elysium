@@ -231,7 +231,9 @@ class TestTheRecordedVoiceIsDestroyed:
         from tts import refs
 
         monkeypatch.setattr(refs, "refs_dir", lambda: tmp_path)
-        folder = tmp_path / "voice1"
+        # The real, opaque folder "voice1" resolves to now - not a folder
+        # literally named "voice1", which the id no longer spells onto disk.
+        folder = refs._voice_dir("voice1")
         folder.mkdir()
         # A different suffix on purpose: the new take lands as ref.wav, so a
         # same-named old clip would be replaced by it and the read-back below
@@ -255,7 +257,7 @@ class TestTheRecordedVoiceIsDestroyed:
         from tts import refs
 
         monkeypatch.setattr(refs, "refs_dir", lambda: tmp_path)
-        folder = tmp_path / "voice2"
+        folder = refs._voice_dir("voice2")
         folder.mkdir()
         clip = folder / "ref.wav"
         original = b"RIFF" + b"recorded speech" * 25
@@ -361,10 +363,13 @@ class TestNothingWalksThroughAJunction:
 
         outside, victim, content = self._victim(tmp_path)
         refs_root = tmp_path / "refs"
-        folder = refs_root / "voice3"
+        monkeypatch.setattr(refs, "refs_dir", lambda: refs_root)
+        # The folder a voice actually lives in is opaque now (K-?? / owner's
+        # rule on names), not "voice3" - ask the module for it rather than
+        # assuming the old identity-named path still means anything.
+        folder = refs._voice_dir("voice3")
         folder.mkdir(parents=True)
         (folder / "ref.wav").write_bytes(b"RIFF" + b"recorded" * 20)
-        monkeypatch.setattr(refs, "refs_dir", lambda: refs_root)
         if not _junction(folder / "trap", outside):
             pytest.skip("this machine cannot create a junction")
 
@@ -513,7 +518,9 @@ class TestTheFourWalksThatFollowedOne:
         refs_root = tmp_path / "refs"
         refs_root.mkdir()
         monkeypatch.setattr(refs, "refs_dir", lambda: refs_root)
-        if not _junction(refs_root / "voice9", outside):
+        # Same as above: "voice9" is the id, not the folder name any more.
+        target = refs._voice_dir("voice9")
+        if not _junction(target, outside):
             pytest.skip("this machine cannot create a junction")
 
         try:

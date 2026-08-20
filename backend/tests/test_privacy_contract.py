@@ -142,6 +142,12 @@ CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "::test_the_voice_engine_is_not_given_it",
         "tests/test_launch_token.py::TestTheTokenDoesNotReachOurOwnSubprocesses"
         "::test_the_installer_subprocess_is_not_given_it",
+        # A secret the window holds is not a secret the window holds if it is
+        # also in this process's environment block, which any program running
+        # as the same user reads out of our PEB. It was, until it was not.
+        "tests/test_launch_token.py"
+        "::TestTheTokenIsNeverPublishedToTheProcessEnvironment"
+        "::test_issuing_a_token_does_not_put_it_in_the_win32_environment_block",
     )),
     ("Every outbound request passes one check", (
         "tests/test_egress_chokepoint.py::TestWhatIsRefused"

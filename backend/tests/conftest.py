@@ -78,7 +78,13 @@ def _isolated_voice_caches(tmp_path_factory, monkeypatch):
     """
     import config
 
+    # TTS_REFS_DIR joined this list the hard way. `GET /tts/voices` calls
+    # refs.list_voices(), which calls _ensure_migrated(), which RENAMES
+    # folders - so a route the suite treats as read-only reached this
+    # machine's own reference clips and tried to migrate them. The fs_guard
+    # caught it, which is the only reason anybody found out.
     for setting, name in (("TTS_CACHE_DIR", "voice-cache"),
+                          ("TTS_REFS_DIR", "voice-refs"),
                           ("TTS_UV_CACHE_DIR", "uv-cache")):
         monkeypatch.setattr(config, setting,
                             str(tmp_path_factory.mktemp(name)))

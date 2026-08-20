@@ -271,11 +271,17 @@ describe("Settings Panel Tests", () => {
  *
  * This block exists because the note previously made two absolute claims that
  * the code contradicted: "Nothing is stored in the browser" (uiStore persists
- * selectedCharacterId / selectedChatId / selectedModelId to localStorage) and
- * "nothing leaves this machine" (the whole app sends the conversation, and the
- * API key, to the provider). The ids stay in localStorage by decision, so the
+ * selectedCharacterId / selectedChatId to localStorage) and "nothing leaves
+ * this machine" (the whole app sends the conversation, and the API key, to
+ * the provider). The two ids stay in localStorage by decision, so the
  * SENTENCE is what has to stay honest, and a sentence with nothing guarding it
  * drifts back to the tidier lie on the next edit.
+ *
+ * selectedModelId used to be a third id in that same list. v1.2 moved it into
+ * the encrypted settings table instead - it is a model NAME, not a bare id,
+ * which the owner's own rule bans from ever sitting outside the vault - so
+ * the note now says the opposite about it from what it says about the other
+ * two, and the tests below check that split rather than a blanket "model" mention.
  *
  * Every negative assertion here is paired with a positive control on the
  * RETIRED wording, so a matcher that has quietly stopped matching anything
@@ -322,17 +328,27 @@ describe("Settings Panel privacy note", () => {
     expect(await noteText()).not.toMatch(NO_BROWSER_STORAGE_CLAIM);
   });
 
-  it("names what the browser does keep: the last open character, chat and model", async () => {
+  it("names what the browser does keep: the last open character and chat", async () => {
     renderWithQueryClient(<SettingsPanel />, { wrapper });
     const text = await noteText();
 
-    // Not a wording check - these three are exactly the identifiers uiStore's
+    // Not a wording check - these two are exactly the identifiers uiStore's
     // `partialize` writes to localStorage, so if the note stops naming one of
     // them it has stopped describing what is actually on disk.
     expect(text).toMatch(/browser/i);
     expect(text).toMatch(/character/i);
     expect(text).toMatch(/chat/i);
+  });
+
+  it("says the model choice lives in the vault, not the browser (v1.2)", async () => {
+    renderWithQueryClient(<SettingsPanel />, { wrapper });
+    const text = await noteText();
+
     expect(text).toMatch(/model/i);
+    expect(text).toMatch(/vault/i);
+    // Not merely "mentions vault somewhere" - the model clause specifically
+    // must not read as part of what the browser holds.
+    expect(text).not.toMatch(/character\s*,?\s*chat\s+and\s+model/i);
   });
 
   it("keeps naming exactly what uiStore persists", () => {
@@ -351,7 +367,9 @@ describe("Settings Panel privacy note", () => {
     const state = (persisted.state ?? {}) as Record<string, unknown>;
     expect(state).toHaveProperty("selectedCharacterId", 3);
     expect(state).toHaveProperty("selectedChatId", 9);
-    expect(state).toHaveProperty("selectedModelId", "some/model");
+    // v1.2: selectedModelId is a model NAME, not a bare id, and no longer
+    // persists to localStorage at all - see uiStore.ts's version-3 migrate.
+    expect(state).not.toHaveProperty("selectedModelId");
     // The claim the note is allowed to keep making.
     expect(Object.keys(state)).not.toContain("apiKey");
   });

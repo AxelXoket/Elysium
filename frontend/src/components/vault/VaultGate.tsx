@@ -644,9 +644,18 @@ function ResetVaultPanel({ onCancel }: { onCancel: () => void }) {
                    new category, so none gets its own bullet)
               _reset_directory_tree(UPLOADS_DIR)   -> uploads
               _reset_directory_tree(TTS_REFS_DIR)  -> saved voice (the
-                   cloning reference clip + transcript; TTS_CACHE_DIR, the
-                   transient spoken-reply cache, is already normally empty by
-                   the time the vault is locked)
+                   cloning reference clip + transcript)
+              _reset_directory_tree(TTS_CACHE_DIR) -> cached spoken replies.
+                   Usually empty by the time the vault is locked, which is
+                   why it had no bullet before - but "usually" is not "never"
+                   and that cache is decoded speech of real replies, so it
+                   gets named rather than assumed away.
+              _reset_legacy_keyring -> the saved API key and proxy address.
+                   Both also live in app.db's secrets table (settings.py
+                   set_secret), so the database bullet already destroys the
+                   live copies; this family destroys the pre-vault OS-keyring
+                   copies migrate_legacy_secrets would otherwise hand to the
+                   NEXT vault's first unlock.
               _reset_directory_tree(DATA_DIR/webview) -> the local browser
                    profile: the chat wallpaper (IndexedDB), its framing and
                    text-size settings and which chat/character were last open
@@ -658,28 +667,61 @@ function ResetVaultPanel({ onCancel }: { onCancel: () => void }) {
                app.db itself - the database bullet already covers them, per
                that function's own docstring)
 
-            NOT covered, and deliberately not implied by "everything" above:
-            elysium.log and the port file are untouched by _reset_vault_sync,
-            neither route removes them. The port file is just a listening
-            port number - nothing to disclose. elysium.log is different: it
-            is audited to carry no chat content, keys or passphrases, but
-            notebook_worker.py logs `chat_id` on an extraction failure, which
-            is a record of which chats had note-taking activity, and that
-            record is not part of "all of it" below - see the second
-            paragraph. */}
+              _reset_runtime_files -> elysium.log, its one rotated twin
+                   (elysium.log.1, all backupCount=1 allows) and the `port`
+                   file. These get their own paragraph rather than a place in
+                   the list above, because they are not "what the vault
+                   holds": they are the app's own trail, and somebody reading
+                   this screen is asking for that to go as well.
+
+            THE SENTENCE THIS COMMENT USED TO JUSTIFY WAS FALSE. It said
+            elysium.log was "untouched by _reset_vault_sync" and survived the
+            reset. _reset_runtime_files shreds it, and the sweep and the
+            denial landed in the SAME commit (075506f) - the screen was
+            never right about this, not even for a day. The log is audited to
+            carry no chat content, keys or passphrases, but notebook_worker
+            .py logs `chat_id` on an extraction failure, which is a record of
+            which chats had note-taking activity; that is why the log is
+            worth naming at all, and now it is named as destroyed.
+
+            WHAT ACTUALLY SURVIVES, per _reset_vault_sync's own docstring:
+            TTS_MODELS_DIR (the model drop folder), TTS_BIN_DIR/TTS_ENVS_DIR/
+            TTS_PY_DIR (the engine runtimes) and TTS_UV_CACHE_DIR (the
+            uv/python install caches). Downloaded ENGINE software, multi-
+            gigabyte, hours to reprovision, and carrying no conversation.
+            Note what is NOT in that set: TTS_REFS_DIR, the user's own
+            recorded voice, and TTS_CACHE_DIR, decoded speech of real
+            replies. Both are swept, and both are named above.
+
+            One survivor is deliberately left out of the copy: when app.db
+            cannot be shredded, _reset_vault_sync holds salt.bin/verifier
+            .bin/kdf.json back on purpose rather than bricking a surviving
+            database. That is a FAILURE path, not a promise, and the screen
+            already reports it after the fact through `left` (reset-left
+            below) instead of hedging the sentence somebody reads before
+            they click. */}
         <p className="vault-note">
           This does not recover your passphrase - nothing does. It deletes
           everything the vault holds: chats, characters, personas, notes,
-          uploads, generated images, saved voice, and the saved API key. It
-          also deletes the local browser profile: the chat wallpaper, its
-          framing, text-size settings, and which chat and character were last
-          open. All of it, at once, and it cannot be undone.
+          uploads, generated images, saved voice, cached spoken replies, and
+          the saved API key and proxy address. It also deletes the local
+          browser profile: the chat wallpaper, its framing, text-size
+          settings, and which chat and character were last open. All of it,
+          at once, and it cannot be undone.
         </p>
         <p className="vault-note">
-          One file is left alone on purpose: <code>elysium.log</code>, the
-          app's own diagnostic log. It never carries chat content, keys or
-          passphrases, but it does record which chats triggered a note-taking
-          pass, and that record survives this reset.
+          The app's own trail goes with it: <code>elysium.log</code>, its
+          rotated copy, and the file that remembers which port Elysium
+          listened on. That log never carried chat content, keys or
+          passphrases, but it did record which chats triggered a note-taking
+          pass, and that record is destroyed here too.
+        </p>
+        <p className="vault-note">
+          One thing survives, and it is engine software rather than anything
+          of yours: the downloaded voice runtime, its install caches, and any
+          voice models you added. Those are gigabytes and hours to fetch
+          again, and they hold nothing about you or your conversations. Your
+          own recorded voice is not among them; it is deleted with the rest.
         </p>
         <p className="vault-note">
           Afterwards Elysium opens on the same setup screen first run used.
