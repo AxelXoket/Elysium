@@ -7,7 +7,7 @@ attacks it from the other side, because a guard that refused everything would
 stop the suite rather than protect it.
 
 One property is load-bearing and easy to lose: READS ARE FINE. The suite reads
-its own source constantly, hashes the 33 MB exe, and opens the packaged tree.
+its own source constantly, hashes the 29 MB exe, and opens the packaged tree.
 A guard that refused those would be turned off within a day.
 """
 from __future__ import annotations

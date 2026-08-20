@@ -699,7 +699,7 @@ class TestBinaryContentIsSkipped:
         assert hygiene._is_binary(b"anything", name) is True
 
     def test_a_null_byte_decides_when_the_suffix_does_not(self):
-        # The suffix list is a shortcut, not the contract. Elysium.exe is 33MB
+        # The suffix list is a shortcut, not the contract. Elysium.exe is 29MB
         # and decoding it as UTF-8 to run four regexes over would be both an
         # exception and a waste.
         assert hygiene._is_binary(b"text\x00more", "mystery.dat") is True
@@ -868,7 +868,7 @@ class TestAFileTheGateCannotReadIsNeverSilent:
     def test_a_real_binary_is_skipped_without_a_complaint(self, repo):
         """The other half of the same decision.
 
-        Elysium.exe is 33 MB and tracked. A gate that complained about it on
+        Elysium.exe is 29 MB and tracked. A gate that complained about it on
         every run would train everyone to scroll past the complaints, and then
         the UTF-16 one above would go past too.
         """

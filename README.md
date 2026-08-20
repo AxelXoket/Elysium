@@ -76,7 +76,7 @@ release and never losing one.
 - **Strict CORS + Host allowlist** - Backend accepts browser requests from `http://127.0.0.1:5173` only and rejects foreign `Host` headers (DNS-rebinding shield)
 - **Locks itself when idle** - after 5 minutes of doing nothing the vault closes: the key leaves memory, the voice model is unloaded and the GPU memory comes back. Change the delay or turn it off in Settings > Security. A reply that is still streaming counts as activity for as long as it runs - a background note extraction deliberately does NOT, and the lock cancels its planning loop. It does not cancel a reply that has already arrived: the lock waits up to five seconds for that one to be written
 - **Takes its own folder back** - at launch Elysium checks whether other accounts on this PC can reach its data folder and removes that access, naming what it removed in the log. Your database is encrypted, but `salt.bin` and `verifier.bin` beside it are what an offline passphrase attack needs. This is the one change that persists after the app closes; [SECURITY.md](SECURITY.md) says how to undo it
-- **Desktop App** - PyInstaller build (one-folder for development, a single ~33 MB exe for release) with a native window (pywebview + WebView2); the exe serves the built frontend same-origin on a random loopback port and locks the vault when the window closes
+- **Desktop App** - PyInstaller build (one-folder for development, a single ~29 MB exe for release) with a native window (pywebview + WebView2); the exe serves the built frontend same-origin on a random loopback port and locks the vault when the window closes
 
 ## Architecture
 
@@ -258,7 +258,7 @@ For the single-file build, which is what the `Elysium.exe` in this repo
 actually is:
 
 ```powershell
-pyinstaller elysium_onefile.spec   # one FILE, ~33 MB
+pyinstaller elysium_onefile.spec   # one FILE, ~29 MB
 dist\Elysium.exe
 ```
 

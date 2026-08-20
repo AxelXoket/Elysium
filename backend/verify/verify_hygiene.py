@@ -92,7 +92,7 @@ reached a user through that route would have to be caught by a test of the
 rendered copy, which is where it belongs.
 
 *The binary check trusts the file name.* A plain text document named `.png` is
-skipped without being read. Closing it means reading every byte of a 33 MB exe
+skipped without being read. Closing it means reading every byte of a 29 MB exe
 on every run to learn what is already known from its name. The attack requires
 deliberately misnaming a text file, which is not an accident anybody has.
 
@@ -135,7 +135,7 @@ PASS = "\033[92mPASS\033[0m"
 FAIL = "\033[91mFAIL\033[0m"
 WARN = "\033[93mWARN\033[0m"
 
-# Extensions whose bytes are not text. Elysium.exe is 33MB and tracked, and
+# Extensions whose bytes are not text. Elysium.exe is 29MB and tracked, and
 # decoding it as UTF-8 to run a regex over would be both an exception and a
 # waste. The null byte check in _is_binary catches anything this list misses.
 BINARY_SUFFIXES = (".exe", ".png", ".ico", ".jpg", ".jpeg", ".gif", ".webp",
