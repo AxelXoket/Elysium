@@ -114,46 +114,6 @@ export const ExtractSettingsSchema = z.object({
   prompt_language: z.string().default("en"),
 });
 
-/** What one dry run produced, beside the text it read.
- *
- *  `source` and `raw` travel together because a dry run whose output cannot be
- *  compared against its input is a number, not evidence - and the whole point
- *  of this screen is looking at the six ways a small model mishandles a
- *  non-English transcript. */
-export const DryRunSchema = z.object({
-  model_id: z.string(),
-  prompt_language: z.string(),
-  source: z.string(),
-  raw: z.string().nullish(),
-  proposals: z.array(z.object({
-    text: z.string(),
-    evidence: z.string(),
-    kind: z.string(),
-    durability: z.string(),
-    importance: z.number(),
-    supersedes: z.number().nullish(),
-  })),
-  /** Returned by the model MINUS what survived the code filter. The gap is the
-   *  interesting number: it is where ungrounded quotes and off-enum answers
-   *  land, and it is invisible in the proposals alone. */
-  dropped: z.number().default(0),
-  /** The same total, broken out by REASON. One integer cannot tell "a quote
-   *  was invented" - the defence working - from "a Turkish quote failed a byte
-   *  comparison" - the defence eating a true fact, which is what an unfolded
-   *  NFD diacritic or a curly apostrophe used to do silently. */
-  dropped_by_reason: z.record(z.string(), z.number()).default({}),
-  failure: z.string().nullish(),
-  usage: z.object({
-    tokens_in: z.number().nullish(),
-    tokens_out: z.number().nullish(),
-    cost: z.number().nullish(),
-    request_id: z.string().nullish(),
-    finish_reason: z.string().nullish(),
-  }),
-});
-
-export type DryRunResult = z.infer<typeof DryRunSchema>;
-
 /** What the background extractor has done, and whether it may keep going.
  *
  *  A47: a refused extraction is not silent. Without these counters, "the

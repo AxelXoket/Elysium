@@ -140,7 +140,7 @@ Elysium enforces strict privacy routing on every OpenRouter request:
 Additional guarantees:
 
 - `context_budget_tokens` is **never** forwarded to OpenRouter - app-level history trimming only
-- `raw_json`, `avatar_path`, `tools`, `tool_choice` - **never** sent. `response_format` is sent by exactly two paths, the notebook's background reader and its "Try it on this chat" preview, and only ever as the same fixed schema defined in this repository: no request that carries your conversation to a chat model carries it, and nothing the frontend sends can add it. Until v1.2 nothing sent it at all, and this line said so. `image_url` parts are built server-side **only** for images the user explicitly attached (vision models); the frontend never constructs them
+- `raw_json`, `avatar_path`, `tools`, `tool_choice` - **never** sent. `response_format` is sent by exactly one path, the notebook's background reader, and only ever as the same fixed schema defined in this repository: no request that carries your conversation to a chat model carries it, and nothing the frontend sends can add it. Until v1.2 nothing sent it at all, and this line said so. `image_url` parts are built server-side **only** for images the user explicitly attached (vision models); the frontend never constructs them
 - Raw upstream OpenRouter error bodies are never forwarded to the client - safe mapped codes only, on the streaming path as well as the plain one. Streaming otherwise uses the same hardcoded provider policy, relaying deltas untouched
 - API key is sealed inside the encrypted vault (unreachable while locked); never returned by any endpoint, never logged
 - Browser storage holds only UI preferences - never messages, personas, characters, API keys, or proxy URLs

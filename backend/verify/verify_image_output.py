@@ -54,9 +54,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # owner's database on its way to the network. Pointing the whole data dir at a
 # fresh temp directory is the only version of isolation that is actually true.
 _ISOLATED = bool(os.environ.get("ELYSIUM_IMAGE_API_KEY", "").strip())
-if _ISOLATED:
+if _ISOLATED and not os.environ.get("ELYSIUM_DATA_DIR", "").strip():
     import tempfile
 
+    # A caller that already pointed ELYSIUM_DATA_DIR somewhere is honoured
+    # rather than overwritten. That is not a convenience: a test importing
+    # this module had no way to say where the isolation should land, so the
+    # only choice was the system temp root - which is exactly the place the
+    # filesystem guard now refuses, because it is where user content leaves
+    # the vault unnoticed. Reading the variable first keeps the isolation
+    # true for a real run and lets a test give it a directory it owns.
     os.environ["ELYSIUM_DATA_DIR"] = tempfile.mkdtemp(prefix="elysium_imgverify_")
 
 GREEN, RED, YELLOW, OFF = "\033[92m", "\033[91m", "\033[93m", "\033[0m"

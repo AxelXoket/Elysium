@@ -471,24 +471,6 @@
       ]
     },
     {
-      "code": "notebook_model_not_chosen",
-      "statuses": [
-        400
-      ],
-      "channels": [
-        "http"
-      ]
-    },
-    {
-      "code": "notebook_nothing_to_read",
-      "statuses": [
-        400
-      ],
-      "channels": [
-        "http"
-      ]
-    },
-    {
       "code": "notebook_reorder_incomplete",
       "statuses": [],
       "channels": [

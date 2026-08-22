@@ -183,30 +183,3 @@ class TestTheRouteIsWiredToTheLedger:
         assert body["spend_lifetime"]["calls"] != body["spend"]["calls"], (
             "today's count and the lifetime total must diverge for this "
             "test to prove anything")
-
-    def test_the_dry_run_refuses_once_the_day_is_spent(
-            self, client, monkeypatch) -> None:
-        """The block, on the path that actually spends. Without it the route
-        could be called ten thousand times and would make ten thousand billed
-        requests."""
-        import database
-        import openrouter
-
-        from tests.conftest import make_character, make_chat
-
-        chat_id = make_chat(client, make_character(client))
-        database.set_setting(config.SETTING_NOTEBOOK_MODEL, "vendor/cheap")
-        sent = []
-
-        async def spy(*a, **kw):
-            sent.append(1)
-            return {"choices": [{"finish_reason": "stop",
-                                 "message": {"content": '{"facts": []}'}}]}
-
-        monkeypatch.setattr(openrouter, "complete", spy)
-        monkeypatch.setattr(config, "NOTEBOOK_DAILY_CALL_CAP", 0)
-
-        resp = client.post(f"/api/v1/notebook/{chat_id}/extract/dry-run")
-        assert resp.status_code == 429
-        assert resp.json()["detail"] == "notebook_daily_cap_reached"
-        assert sent == [], "a refused call must not reach the provider"

@@ -15,6 +15,7 @@ from __future__ import annotations
 import io
 import os
 import shutil
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -185,3 +186,73 @@ class TestTheGuardKnowsWhatItIsGuarding:
             assert os.write(handle, b"fine") == 4
         finally:
             os.close(handle)
+
+
+class TestTheTwoHolesMeasuredOn22August:
+    """Both were the same shape: a wrapper that ran and refused nothing.
+
+    The first: `mkstemp` was wrapped at argument 0, which is the SUFFIX.
+    Every call went through a guarded_call that checked ".tmp" against the
+    vault paths, found no match, and let the write through. A wrapper that
+    cannot fail is not a guard, and this one had been green since it was
+    written.
+
+    The second: the system temp directory was outside the deny-list
+    altogether, which is where the upload path spools a body once it outgrows
+    its buffer. `E-0593` says the voice route's clip goes with it, in the
+    clear, and no test could see that because nothing here looked at temp.
+    """
+
+    def test_mkstemp_is_guarded_by_its_directory_not_its_suffix(self) -> None:
+        """The discriminating case: a suffix that would match nothing, and a
+        `dir` that must be refused. Before the fix this call succeeded."""
+        with pytest.raises(fs_guard.ForbiddenWrite):
+            tempfile.mkstemp(suffix=".json", dir=str(config.TTS_DIR))
+
+    def test_mkstemp_is_guarded_when_the_directory_is_positional(self) -> None:
+        with pytest.raises(fs_guard.ForbiddenWrite):
+            tempfile.mkstemp(".json", "pre", str(config.TTS_DIR))
+
+    def test_mkdtemp_is_guarded_too(self) -> None:
+        """It has the same signature and was not wrapped at all."""
+        with pytest.raises(fs_guard.ForbiddenWrite):
+            tempfile.mkdtemp(dir=str(config.TTS_DIR))
+
+    def test_a_temp_directory_a_test_asks_for_is_still_allowed(
+            self, tmp_path: Path) -> None:
+        """Ground control for the three above, and the reason the temp rule
+        asks WHO is writing. A guard that refused this would fail the suite
+        for doing the right thing."""
+        with tempfile.TemporaryDirectory(dir=str(tmp_path)) as scratch:
+            assert Path(scratch).is_dir()
+
+    def test_the_suites_own_scratch_in_the_temp_root_is_allowed(self) -> None:
+        """`test_image_verify_unlock.py` does exactly this, on purpose."""
+        with tempfile.TemporaryDirectory(prefix="elysium-fsguard-") as made:
+            assert Path(made).parent == Path(tempfile.gettempdir()).resolve()
+
+    def test_application_code_writing_into_the_temp_root_is_refused(
+            self) -> None:
+        """The half that matters, driven through a frame that is NOT a test.
+
+        The stack walk decides on the first frame somebody in this repository
+        wrote. Calling from here would be judged a test and allowed, which is
+        correct and proves nothing, so the call is made from a module outside
+        the tests directory.
+        """
+        import config as not_a_test_module
+
+        marker = Path(tempfile.gettempdir()) / "elysium-fsguard-probe.tmp"
+        # Cleared first, deliberately. Proving the guard by mutation LEAVES
+        # this file behind - that is what the mutation demonstrates - and a
+        # later run would then read the leftover as a live failure. The
+        # assertion below is about this call, not about the folder's history.
+        marker.unlink(missing_ok=True)
+        caller = compile(
+            "open(str(target), 'wb').close()",
+            not_a_test_module.__file__,
+            "exec",
+        )
+        with pytest.raises(fs_guard.ForbiddenWrite):
+            exec(caller, {"open": open, "target": marker})
+        assert not marker.exists()

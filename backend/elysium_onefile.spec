@@ -15,6 +15,7 @@ Prereq: frontend built first (npm run build in ../frontend); WebView2 runtime
 on the target machine (checked at startup with a friendly dialog).
 """
 import os
+import sys
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
@@ -139,6 +140,60 @@ a = Analysis(
     ],
     noarchive=False,
 )
+
+# WHERE A SHIPPED BINARY IS ALLOWED TO COME FROM, and this is not a style rule.
+#
+# Measured on 22 August 2026 in this build's own Analysis-00.toc: FORTY DLLs
+# were being collected from a MiKTeX installation under the building user's
+# profile - a LaTeX distribution that happened to put its bin directory on
+# PATH. They are `api-ms-win-crt-*` forwarders, the C runtime, so the app was
+# shipping its runtime from whatever unrelated program sorted first on the
+# machine that built it.
+#
+# Three things are wrong with that and only the third is theoretical. The
+# build is not reproducible: another machine, or the same machine after an
+# uninstall, produces a different exe from the same source. The versions are
+# unknown: nobody chose them and nothing records what they were. And the
+# redistribution terms for the C runtime describe a supported path that does
+# not include scraping a third party's install directory.
+#
+# So the source of every binary is checked rather than trusted. The allowed
+# roots are the ones somebody actually chose: this project, the virtualenv it
+# builds in, and the Python installation underneath. A binary from anywhere
+# else stops the build by name instead of riding into the exe unnoticed.
+#
+# It is a hard failure, not a filter. Dropping the file silently would leave
+# the same question unanswered - what is my runtime - one layer further down.
+_ALLOWED_BINARY_ROOTS = tuple(
+    os.path.normcase(os.path.abspath(root))
+    for root in (BACKEND, os.path.dirname(BACKEND), sys.prefix, sys.base_prefix,
+                 os.path.dirname(os.__file__))
+)
+_WINDOWS_OWN = os.path.normcase(os.environ.get("SystemRoot", r"C:\Windows"))
+
+_strangers = []
+for _dest, _src, _kind in a.binaries:
+    if not _src:
+        continue
+    _norm = os.path.normcase(os.path.abspath(_src))
+    if _norm.startswith(_ALLOWED_BINARY_ROOTS) or _norm.startswith(_WINDOWS_OWN):
+        continue
+    _strangers.append((_dest, _src))
+
+if _strangers:
+    _lines = "\n".join(f"    {d}  <-  {s}" for d, s in sorted(_strangers))
+    raise SystemExit(
+        "elysium_onefile.spec refused the build.\n\n"
+        f"{len(_strangers)} binaries would be shipped from outside this "
+        "project, its virtualenv, its Python installation and Windows "
+        "itself:\n\n"
+        f"{_lines}\n\n"
+        "That is PATH deciding what goes in the exe. Build from a shell whose "
+        "PATH does not contain the directory above, or add the root to "
+        "_ALLOWED_BINARY_ROOTS in this file with a line saying why it belongs "
+        "there."
+    )
+
 pyz = PYZ(a.pure)
 
 exe = EXE(

@@ -1,11 +1,9 @@
 import {
   useMutation,
-  useMutationState,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
 
-import type { DryRunResult } from "@/lib/schemas/notebook";
 import { keys } from "./keys";
 import {
   listNotebook,
@@ -28,7 +26,6 @@ import {
   listExtractionModels,
   getExtractSettings,
   saveExtractSettings,
-  dryRun,
 } from "../api/notebook";
 
 /** Notes for one chat, plus what they cost.
@@ -145,60 +142,6 @@ export function useSaveExtractSettings() {
       saveExtractSettings(...args),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["extraction", "settings"] });
-    },
-  });
-}
-
-/** The dry run writes NOTHING, so it deliberately does not invalidate the
- *  notebook - a refetch here would suggest something had been stored. */
-export const DRY_RUN_KEY = ["extraction", "dry-run"] as const;
-
-/** The dry run's state, read from the CLIENT rather than from the component.
- *
- *  `useMutation` state is observer-local: it dies with the component. The
- *  right panel remounts its panels on every tab switch - deliberately - so a
- *  user who starts a run, switches tabs and comes back finds an enabled
- *  button and an empty panel while the first call, which is not cancellable
- *  and runs to completion server-side, is still being billed. It looks like
- *  nothing happened. Clicking again pays twice, on their own key.
- *
- *  So the in-flight flag comes from the mutation cache and the result from the
- *  query cache: both outlive the mount. */
-export function useDryRunState(chatId: number | null) {
-  const pending = useMutationState({
-    filters: { mutationKey: DRY_RUN_KEY, status: "pending" },
-    select: (m) => m.state.status,
-  }).length > 0;
-  const result = useQuery<DryRunResult | null>({
-    queryKey: [...DRY_RUN_KEY, chatId] as const,
-    // Never fetched - this cache entry only ever holds what the mutation put
-    // in it. A dry run is an action, not a resource: re-requesting it on a
-    // remount would spend money to redraw a panel.
-    queryFn: () => null,
-    enabled: false,
-    gcTime: 10 * 60_000,
-  });
-  return { pending, result: result.data ?? null };
-}
-
-export function useDryRun() {
-  const qc = useQueryClient();
-  return useMutation({
-    // A mutationKey, so the in-flight state is SHARED rather than living in
-    // whichever component observed it. Without one, switching tabs unmounts
-    // the panel - which RightPanel does on purpose - and the button comes
-    // back enabled with no result on screen while the first call, which is
-    // not cancellable and runs to completion server-side, is still being
-    // billed. It looks like nothing happened. Clicking again pays twice.
-    mutationKey: DRY_RUN_KEY,
-    mutationFn: (args: [number]) => dryRun(...args),
-    onSuccess: (data, args) => {
-      qc.setQueryData([...DRY_RUN_KEY, args[0]], data);
-      // It writes no NOTES, which is what the panel says - but it does claim
-      // a call against the daily cap and record what it cost. Leaving the
-      // status card stale meant the "N of 60 calls today" line was wrong for
-      // twenty seconds after every press of the button that changed it.
-      void qc.invalidateQueries({ queryKey: ["extraction", "worker"] });
     },
   });
 }

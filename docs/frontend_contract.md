@@ -66,7 +66,6 @@
 | GET | /notebook/extract/models | Models a background extraction may use. Filtered to endpoints that keep no data AND honour a strict JSON schema - a model that cannot do the job has no business being pickable and then failing at request time | FAZ 4 (notebook) |
 | GET | /notebook/extract/settings | The chosen extraction model and instruction language. `model_id: null` means extraction never runs | FAZ 4 (notebook) |
 | POST | /notebook/extract/settings | Choose the model and the instruction language (`en` or `tr`) | FAZ 4 (notebook) |
-| POST | /notebook/{chat_id}/extract/dry-run | Run the extractor once against this chat and return what it produced, beside the text it read. **Writes nothing.** Exists so the one thing that could not be measured - whether a small model reads the user's Turkish well enough - can be looked at rather than argued about | FAZ 4 (notebook) |
 | GET | /settings | Current config state (no secrets) | Existing |
 | POST | /settings/api-key | Store API key (validates first) | Modified Part B |
 | DELETE | /settings/api-key | Remove API key | Existing |
@@ -272,8 +271,6 @@ shield like every other data route.
 | 400 | notebook_field_not_editable | An edit tried to change provenance, chat or source; refused loudly rather than dropped silently | That part of a note cannot be changed after it is written. |
 | 400/404 | notebook_entry_not_found | No such entry id, or one that has already been retired. **DELETE answers 404; PATCH and accept answer 400** for the same code - the two handlers relay it through different helpers | That note is no longer there. |
 | 400 | notebook_reorder_incomplete | The id list did not cover exactly this chat's notes; refused rather than partially applied | Nothing was moved. |
-| 400 | notebook_model_not_chosen | No extraction model has been picked, so there is nothing to run | Choose a model first; nothing runs until you do. |
-| 400 | notebook_nothing_to_read | The chat has no new messages for the extractor to read | Send a few messages first. |
 | 400 | notebook_language_unknown | Instruction language outside `en`/`tr` | Not one of the two available. |
 | 400 | notebook_model_id_invalid | Not shaped like an OpenRouter model id (`author/slug`) | Pick one from the list. |
 | 400 | notebook_model_id_too_long | Over 128 characters | Pick one from the list. |
@@ -751,7 +748,6 @@ chose is not a convenience. A `model_id` is shape-checked (`author/slug`, at
 most 128 characters) - `notebook_model_id_invalid` / `_too_long`.
 
 ```
-POST /notebook/{chat_id}/extract/dry-run       // writes NOTHING
 -> { "model_id": ..., "prompt_language": ...,
      "source": "the exact text it read",
      "raw": "the model's reply, verbatim" | null,

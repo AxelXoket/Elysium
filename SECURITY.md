@@ -271,24 +271,20 @@ connection opens. System proxy environment variables are ignored on purpose.
 Every request forces `zdr: true`, `data_collection: deny`, `allow_fallbacks:
 false`, and the app window **cannot** override those three.
 
-**Three things send your conversation there, not one.** The reply you asked
-for; the notebook's note reader - a second model, which you choose, sent
+**Two things send your conversation there, not one.** The reply you asked
+for; and the notebook's note reader - a second model, which you choose, sent
 excerpts of the same conversation automatically every twenty turns while you
-are not watching; and the Notes tab's own "Try it on this chat" preview,
-which runs the same extractor against the same recent messages on demand and
-saves nothing, but still leaves the machine and still spends a call. All
-three go to the same single host under the same locked policy, and the second
-and third are off entirely until you pick a model, but each is its own
-sender and each spends your credits. What the note reader did and what it
-cost is in the Notes tab; the ceiling is sixty calls a day, shared by the
-note reader and the preview alike, and it is a block, not a warning -
-overridable only from the environment (`ELYSIUM_NOTEBOOK_DAILY_CALLS`), not
+are not watching. Both go to the same single host under the same locked
+policy, and the second is off entirely until you pick a model, but each is
+its own sender and each spends your credits. What the note reader did and
+what it cost is in the Notes tab; the ceiling is sixty calls a day and it is
+a block, not a warning, overridable only from the environment (`ELYSIUM_NOTEBOOK_DAILY_CALLS`), not
 from any screen in the app. An interruption used to turn the note reader into
-a fourth sender of the same words: a call already sent got re-sent whole on
+a third sender of the same words: a call already sent got re-sent whole on
 the next cycle instead of being counted as spent. That is fixed now - see
 Idle auto-lock, above, for what changed and what it costs instead.
 
-A fourth request reaches the same host and carries none of your conversation:
+A third request reaches the same host and carries none of your conversation:
 the Security tab's key check asks OpenRouter whether the key you already stored
 is still accepted. It happens only when you press it, and a provider it cannot
 reach is reported as exactly that rather than as a bad key.

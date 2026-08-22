@@ -363,3 +363,84 @@ class TestWhatTheFirstAuditFound:
             f"MEMORY reads back as 2"
         )
         assert Path(backup).exists(), "the migration did not finish"
+
+
+class TestTheDryRunRouteIsGone:
+    """The owner removed the "Try it on this chat" preview on 22 August 2026.
+
+    A removal proves nothing by being invisible. Deleting the handler and
+    leaving it at that would pass whether the route were gone, renamed, or
+    still mounted under a decorator nobody read. So the proof is a request:
+    ask the server for the route and require it to have no answer.
+
+    The ground control matters as much as the assertion. A 404 can mean "the
+    route is gone" or "the test client is misconfigured and everything 404s",
+    and those look identical from one line. So a route that MUST still exist
+    is asked first, in the same client, in the same test.
+
+    Mutation check performed when this was written: re-adding the handler
+    turns the second assertion red while the first stays green.
+
+    On the status code. The removed route is NOT a 404. Nothing under
+    `/api/v1` matches any more, so the request falls through to the SPA's
+    static mount at the root, and StaticFiles answers a POST with 405. That
+    is the shape of "gone" in this app, so asserting 404 would fail for the
+    wrong reason. What must never come back is a code the live handler could
+    produce: 200, 400 or 429.
+    """
+
+    _DEAD_ROUTE_CODES = frozenset({200, 400, 429})
+
+    def test_asking_for_it_gets_nothing_while_its_neighbours_answer(
+            self, client, chat) -> None:
+        alive = client.get(f"{API}/{chat}")
+        assert alive.status_code == 200, (
+            "ground control failed: the notebook routes are not reachable at "
+            "all, so the refusal below would prove nothing about the dry run"
+        )
+
+        gone = client.post(f"{API}/{chat}/extract/dry-run")
+        assert gone.status_code not in self._DEAD_ROUTE_CODES, (
+            f"the dry-run route still answers with {gone.status_code}, which "
+            f"is one of the codes its handler used to return"
+        )
+        assert gone.status_code in (404, 405), (
+            f"expected the request to reach nothing, got {gone.status_code}"
+        )
+
+    def test_nothing_is_mounted_under_that_path_any_more(self) -> None:
+        """The request above proves one method is refused. This proves the
+        path itself carries no handler, so a GET or a rename cannot revive
+        it quietly."""
+        import main
+
+        mounted = [
+            getattr(route, "path", "")
+            for route in main.app.routes
+        ]
+        assert any("/notebook/{chat_id}" in path for path in mounted), (
+            "ground control failed: the notebook routes are not mounted, so "
+            "the absence below proves nothing"
+        )
+        assert not [path for path in mounted if "dry" in path.lower()]
+
+    def test_the_two_codes_it_owned_left_with_it(self) -> None:
+        """Its error codes were reachable from nowhere else.
+
+        Left in the catalogue they would be vocabulary for a route that
+        cannot be called - which is exactly the state the three-way error
+        gate exists to prevent.
+        """
+        import json
+
+        catalogue = json.loads(
+            (Path(__file__).resolve().parents[2] / "shared"
+             / "error_catalogue.json").read_text(encoding="utf-8"))
+        codes = {entry["code"] for entry in catalogue["codes"]}
+
+        assert "notebook_daily_cap_reached" in codes, (
+            "ground control failed: the catalogue did not load, so the "
+            "absences below prove nothing"
+        )
+        assert "notebook_model_not_chosen" not in codes
+        assert "notebook_nothing_to_read" not in codes

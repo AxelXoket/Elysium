@@ -871,9 +871,11 @@ def record_exclusions(chat_id: int, excluded) -> None:
 # whose comment says "enforced as a BLOCK before the call" and which no code
 # imports is worse than no cap at all: it reads, in review, as a control.
 #
-# The block is here rather than in the worker so that BOTH callers inherit it -
-# the unattended worker and the dry run the user can press as fast as they can
-# click.
+# The block is here rather than in the worker so that any caller inherits it.
+# It had two callers once: the unattended worker and a dry-run button the user
+# could press as fast as they could click. The button was removed on the
+# owner's instruction on 22 August 2026; the block stays where it is, because
+# a cap enforced at one call site is not a cap.
 
 def spend_today(con) -> dict:
     """Calls and cost recorded for the current local day."""
@@ -931,8 +933,10 @@ def claim_call(con, cap: int) -> int:
     # ONE statement. Read-then-write across two of them is a check-then-act:
     # SQLite's legacy isolation begins a transaction only before DML, so the
     # SELECT and the INSERT sat in different transactions and every concurrent
-    # claimer read the same pre-increment total. With the dry-run button
-    # ungated, that let a cap of sixty pass ninety-nine billed calls.
+    # claimer read the same pre-increment total. Measured with the dry-run
+    # button that used to sit beside this path: a cap of sixty passed
+    # ninety-nine billed calls. That button is gone, but the race is not - the
+    # worker still claims concurrently, so the one statement stays.
     changed = con.execute(
         "INSERT INTO notebook_spend (day, calls) "
         "VALUES (date('now', 'localtime'), 1) "

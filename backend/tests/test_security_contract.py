@@ -609,14 +609,6 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "tests/test_privacy_promises.py::TestTheApiKeyIsNeverHandedBack"
         "::test_storing_and_reading_it_writes_nothing_to_the_log",
     )),
-    # The Notes tab's dry-run preview claims a call against the SAME daily
-    # ledger the background note reader spends from - proven by driving the
-    # cap to zero and watching the preview route refuse exactly like the
-    # reader would, rather than opening a side door around the block.
-    ("shared by the note reader and the preview alike", (
-        "tests/test_notebook_spend_cap.py::TestTheRouteIsWiredToTheLedger"
-        "::test_the_dry_run_refuses_once_the_day_is_spent",
-    )),
     # /vault/reset, added when this document first named the route at all.
     # Four claims from its new section, each tied to the test that would
     # fail if the route stopped behaving the way the sentence says.
@@ -1281,7 +1273,7 @@ def _acknowledged_problems(
 #: sample - so this covers all of it. Updating this constant is the
 #: deliberate act that means a human decided what a change claims and
 #: registered a proof for it.
-DOCUMENT_DIGEST = "8919856c1c9150278c4df4ddf3d28272e95a0acdd8826d922e50b681f53607f3"
+DOCUMENT_DIGEST = "23e0507b59615ed4afc3ff62b7d7c2e271b43ac4fa9c08dd5a3567ed4b8b7bda"
 
 
 class TestEveryProvenClaimHasAProof:

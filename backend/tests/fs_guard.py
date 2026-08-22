@@ -43,6 +43,7 @@ import builtins
 import io
 import os
 import shutil
+import sysconfig
 import tempfile
 from pathlib import Path
 
@@ -76,6 +77,25 @@ def _real_data_paths() -> list[Path]:
     return [p for p in guarded]
 
 
+def _temp_root() -> Path | None:
+    """The system temp directory, which this guard treats as a THIRD place.
+
+    Not user data, and not covered by the deny-list above - which is exactly
+    why it was a blind spot. The upload path spools a body here once it
+    outgrows its buffer, and the voice route's clip goes with it, in the
+    clear. A test could not see that, because nothing here looked at temp.
+
+    It is not a plain deny-list entry, because pytest's own `tmp_path` lives
+    under temp and every fixture in this suite would refuse itself. What is
+    refused is a write into the temp ROOT; a write inside pytest's basetemp,
+    or inside any directory a test made for itself, is allowed.
+    """
+    try:
+        return Path(tempfile.gettempdir()).resolve()
+    except (OSError, ValueError):  # pragma: no cover - defensive
+        return None
+
+
 def _resolve(target: object) -> Path | None:
     try:
         return Path(os.fspath(target)).resolve()
@@ -92,9 +112,47 @@ def _refuse(where: Path, guarded: Path, how: str) -> ForbiddenWrite:
     )
 
 
+_TESTS_DIR = Path(__file__).resolve().parent
+#: Where the standard library lives, so its frames can be stepped over. Read
+#: from sysconfig rather than guessed from sys.prefix: a virtualenv reports a
+#: prefix of its own and the stdlib is not under it.
+_STDLIB = sysconfig.get_paths()["stdlib"]
+
+
+def _called_from_tests() -> bool:
+    """Is the caller a test, rather than the application under test?
+
+    Walked lazily and only on a temp-root hit, because this is not cheap and
+    the filesystem wrappers run on every call in the suite. `sys._getframe`
+    rather than `inspect.stack`: the latter reads source lines for every
+    frame, which turns a rare check into a visible cost.
+    """
+    import sys
+
+    depth = 2
+    while True:
+        try:
+            frame = sys._getframe(depth)
+        except ValueError:
+            return False
+        name = frame.f_code.co_filename
+        # This module's own wrappers are plumbing, and so is the standard
+        # library: `TemporaryDirectory` calls `mkdtemp` calls `os.mkdir`, so
+        # the first frame outside here is `tempfile.py` and judging it would
+        # answer "not a test" for every caller alive. Skip both and let the
+        # first frame somebody in this repository wrote decide.
+        if name != __file__ and not name.startswith(_STDLIB):
+            try:
+                return _TESTS_DIR in Path(name).resolve().parents
+            except (OSError, ValueError):  # pragma: no cover - defensive
+                return False
+        depth += 1
+
+
 def install(monkeypatch) -> None:
     """Refuse writes to the machine's own data for the duration of one test."""
     guarded = [p for p in (_resolve(q) for q in _real_data_paths()) if p]
+    temp_root = _temp_root()
 
     def check(target: object, how: str) -> None:
         where = _resolve(target)
@@ -103,6 +161,22 @@ def install(monkeypatch) -> None:
         for root in guarded:
             if where == root or root in where.parents:
                 raise _refuse(where, root, how)
+        # The temp root, and only its immediate children, and only when the
+        # write comes from the APPLICATION.
+        #
+        # Two narrowings, both learned by measuring. A path deeper than the
+        # root belongs to a directory somebody made on purpose - pytest's
+        # basetemp, a fixture's scratch dir - so only the root's own children
+        # count. And a test building itself a scratch directory is not the
+        # thing this catches: `test_image_verify_unlock.py` opens
+        # `TemporaryDirectory(prefix="elysium-imgverify-")` on purpose, and
+        # refusing it would be the guard failing the suite for doing the
+        # right thing. What is left is the case that matters: application
+        # code dropping a file straight into %TEMP%, which is how user
+        # content leaves the vault without any line saying the word "temp".
+        if temp_root is not None and where.parent == temp_root:
+            if not _called_from_tests():
+                raise _refuse(where, temp_root, how)
 
     def wrap_one(module, name: str, index: int, how: str) -> None:
         original = getattr(module, name, None)
@@ -154,7 +228,36 @@ def install(monkeypatch) -> None:
     # runtimes.json is written through a raw fd, so it reaches the filesystem
     # past both open() and every Path method. The directory is what is
     # checkable here; the fd afterwards is not.
-    wrap_one(tempfile, "mkstemp", 0, "write to")
+    #
+    # It was wrapped at argument 0 until 22 August 2026, and that checked
+    # NOTHING: mkstemp's signature is (suffix, prefix, dir, text), so index 0
+    # is the suffix - a string like ".tmp" that resolves to a relative path
+    # and never matches a guarded root. The wrapper ran on every call and
+    # refused nothing. The directory is argument 2, and callers usually pass
+    # it by keyword, which positional indexing cannot see at all.
+    #
+    # mkdtemp has the same signature and was not wrapped at all.
+    # `dir_index` is None where the positional slot is not the directory:
+    # NamedTemporaryFile and TemporaryFile take (mode, buffering, encoding,
+    # newline, suffix, prefix, dir, ...), so counting positions there would
+    # check the encoding. Those two are guarded on the keyword only, which is
+    # the only way this tree calls them.
+    def wrap_temp_factory(name: str, dir_index: int | None) -> None:
+        original = getattr(tempfile, name)
+
+        def guarded_temp(*args, **kwargs):
+            if "dir" in kwargs:
+                check(kwargs["dir"], "write to")
+            elif dir_index is not None and len(args) > dir_index:
+                check(args[dir_index], "write to")
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(tempfile, name, guarded_temp)
+
+    for name, dir_index in (("mkstemp", 2), ("mkdtemp", 2),
+                            ("NamedTemporaryFile", None),
+                            ("TemporaryFile", None)):
+        wrap_temp_factory(name, dir_index)
 
     # The vault is not stdlib sqlite3 - that import exists in one module for a
     # type annotation only. connect() creates the file, so it is a write.

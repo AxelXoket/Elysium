@@ -1,14 +1,14 @@
 /**
- * FAZ 4 - choosing an extractor, and the dry run.
+ * FAZ 4 - choosing an extractor.
  *
- * The dry run is the answer to the one question that could not be settled by
- * reasoning: whether a small model reads the user's Turkish well enough. So
- * the tests here are mostly about whether the screen shows enough to JUDGE
- * that - the output beside the source, the count of what was silently
- * discarded, and what it cost.
+ * The panel makes two choices and spends nothing doing it: which model reads
+ * the last few turns, and which language its instructions are written in. So
+ * the tests here are about the two things a settings screen can get wrong -
+ * saying something false about the saved state, and failing to save a change.
  *
- * A dry run that shows only its successes would be worse than no dry run: it
- * would look like a clean result on a model that dropped half of what it read.
+ * "Not chosen - suggestions are off" is the string under the most pressure: it
+ * tells the user a background job is not running, and it used to be rendered
+ * from an unanswered query on every tab switch.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
@@ -27,21 +27,6 @@ const MODELS = {
       context_length: 400000, endpoints: 1 },
   ],
 };
-
-function dryRunBody(over: Record<string, unknown> = {}) {
-  return {
-    model_id: "cheap/one",
-    prompt_language: "en",
-    source: "user: kardesi degirmenin sahibi",
-    raw: '{"facts": []}',
-    proposals: [],
-    dropped: 0,
-    failure: null,
-    usage: { tokens_in: 900, tokens_out: 40, cost: 0.00007,
-             request_id: "gen-1", finish_reason: "stop" },
-    ...over,
-  };
-}
 
 describe("ExtractionSettings", () => {
   beforeEach(() => {
@@ -74,94 +59,37 @@ describe("ExtractionSettings", () => {
       .toBeInTheDocument();
   });
 
-  it("cannot be tried until a model is chosen", async () => {
+  it("spends nothing on its own, even with a model chosen", async () => {
+    // The panel used to carry a "try it" button that billed the user's key on
+    // click. It is gone, and this is the guard that keeps it gone: opening the
+    // screen reads the catalogue and the saved choice, and asks for nothing
+    // that costs money.
+    //
+    // Two controls, because an absence assertion on a screen that failed to
+    // render passes for the wrong reason. Ground: the panel is really there,
+    // with a model selected. Positive: the same fetch spy that reports zero
+    // extraction calls does report the reads, so it is not simply blind.
     mockFetch({
-      "/notebook/extract/models": { body: MODELS },
-      "/notebook/extract/settings": { body: { model_id: null,
-                                              prompt_language: "en" } },
-    });
-    renderWithQueryClient(<ExtractionSettings />);
-    expect(await screen.findByRole("button", { name: /try it/i }))
-      .toBeDisabled();
-  });
-
-  it("shows the output NEXT TO what it read", async () => {
-    // The whole point. A result with no source to compare it against is a
-    // number, not evidence - and the six failure shapes are only visible in
-    // the comparison.
-    const user = userEvent.setup();
-    mockFetch({
-      "POST /notebook/7/extract/dry-run": {
-        body: dryRunBody({
-          proposals: [{ text: "Her brother owns the mill.",
-                        evidence: "kardesi degirmenin sahibi",
-                        kind: "fact", durability: "permanent",
-                        importance: 2, supersedes: null }],
-        }),
-      },
       "/notebook/extract/models": { body: MODELS },
       "/notebook/extract/settings": { body: { model_id: "cheap/one",
                                               prompt_language: "en" } },
     });
     renderWithQueryClient(<ExtractionSettings />);
 
-    await user.click(await screen.findByRole("button", { name: /try it/i }));
+    await waitFor(() =>
+      expect(screen.getByLabelText(/extraction model/i))
+        .toHaveValue("cheap/one"));
 
-    const panel = await screen.findByTestId("dry-run-result");
-    expect(panel.textContent).toContain("Her brother owns the mill.");
-    // The quote stayed in the transcript's own language, which is what makes
-    // the grounding check possible at all.
-    expect(panel.textContent).toContain("kardesi degirmenin sahibi");
-    expect(panel.textContent).toMatch(/nothing was saved/i);
-  });
-
-  it("says how many were discarded before the user saw them", async () => {
-    // A dry run showing only its successes would read as a clean result on a
-    // model that invented half its quotes.
-    const user = userEvent.setup();
-    mockFetch({
-      "POST /notebook/7/extract/dry-run": { body: dryRunBody({ dropped: 3 }) },
-      "/notebook/extract/models": { body: MODELS },
-      "/notebook/extract/settings": { body: { model_id: "cheap/one",
-                                              prompt_language: "en" } },
-    });
-    renderWithQueryClient(<ExtractionSettings />);
-    await user.click(await screen.findByRole("button", { name: /try it/i }));
-    expect((await screen.findByTestId("dry-run-result")).textContent)
-      .toMatch(/3 more were discarded/i);
-  });
-
-  it("reports a failure as a failure, not as an empty result", async () => {
-    const user = userEvent.setup();
-    mockFetch({
-      "POST /notebook/7/extract/dry-run": {
-        body: dryRunBody({ failure: "truncated", proposals: [] }),
-      },
-      "/notebook/extract/models": { body: MODELS },
-      "/notebook/extract/settings": { body: { model_id: "cheap/one",
-                                              prompt_language: "en" } },
-    });
-    renderWithQueryClient(<ExtractionSettings />);
-    await user.click(await screen.findByRole("button", { name: /try it/i }));
-    const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toMatch(/could not be used/i);
-    expect(alert.textContent).toMatch(/never as "nothing found"/i);
-  });
-
-  it("shows what the run cost", async () => {
-    // It is the user's key. A background feature that spends without saying
-    // how much is the one thing this design refuses.
-    const user = userEvent.setup();
-    mockFetch({
-      "POST /notebook/7/extract/dry-run": { body: dryRunBody() },
-      "/notebook/extract/models": { body: MODELS },
-      "/notebook/extract/settings": { body: { model_id: "cheap/one",
-                                              prompt_language: "en" } },
-    });
-    renderWithQueryClient(<ExtractionSettings />);
-    await user.click(await screen.findByRole("button", { name: /try it/i }));
-    expect((await screen.findByTestId("dry-run-result")).textContent)
-      .toMatch(/0\.00007 credits/);
+    const urls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+      .map((c: unknown[]) => String(c[0]));
+    expect(urls.some((u) => u.includes("/extract/models"))).toBe(true);
+    expect(urls.filter((u) => u.includes("/extract/dry-run"))).toEqual([]);
+    // Nothing on this screen fires a POST by itself either; the only writes it
+    // makes are the two selects, and both need a user.
+    const writes = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+      .filter((c: unknown[]) =>
+        (c[1] as RequestInit | undefined)?.method === "POST");
+    expect(writes).toEqual([]);
   });
 
   it("lets the instruction language be switched", async () => {
@@ -191,6 +119,7 @@ describe("ExtractionSettings", () => {
         .toEqual({ prompt_language: "tr" });
     });
   });
+
   it("never says suggestions are off before it knows", async () => {
     // "Not chosen - suggestions are off" is the one string in this panel that
     // must not be shown falsely: it tells the user a background job is not
@@ -239,92 +168,5 @@ describe("ExtractionSettings", () => {
     renderWithQueryClient(<ExtractionSettings />);
     expect((await screen.findByRole("alert")).textContent)
       .toMatch(/could not be fetched/i);
-  });
-
-  it("explains a failure in words, not in snake_case", async () => {
-    const user = userEvent.setup();
-    mockFetch({
-      "POST /notebook/7/extract/dry-run": {
-        body: dryRunBody({ failure: "no_facts_key" }),
-      },
-      "/notebook/extract/models": { body: MODELS },
-      "/notebook/extract/settings": { body: { model_id: "cheap/one",
-                                              prompt_language: "en" } },
-    });
-    renderWithQueryClient(<ExtractionSettings />);
-    await user.click(await screen.findByRole("button", { name: /try it/i }));
-    const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toMatch(/left out the one key/i);
-    expect(alert.textContent).not.toMatch(/no_facts_key/);
-  });
-
-  it("says WHY each discarded proposal was discarded", async () => {
-    // "3 discarded" cannot distinguish the defence working from the defence
-    // eating a true Turkish fact over an apostrophe.
-    const user = userEvent.setup();
-    mockFetch({
-      "POST /notebook/7/extract/dry-run": {
-        body: dryRunBody({ dropped: 3,
-                           dropped_by_reason: { ungrounded: 2, too_long: 1 } }),
-      },
-      "/notebook/extract/models": { body: MODELS },
-      "/notebook/extract/settings": { body: { model_id: "cheap/one",
-                                              prompt_language: "en" } },
-    });
-    renderWithQueryClient(<ExtractionSettings />);
-    await user.click(await screen.findByRole("button", { name: /try it/i }));
-    const panel = await screen.findByTestId("dry-run-result");
-    expect(panel.textContent).toMatch(/2 quoted something that is not in the text/i);
-    expect(panel.textContent).toMatch(/1 was longer than a note may be/i);
-  });
-  it("does not offer a second run while the first is still being billed",
-     async () => {
-    // The right panel remounts its panels on every tab switch, on purpose.
-    // With the in-flight flag living in the component, a user who started a
-    // run and switched tabs came back to an enabled button and an empty panel
-    // while the first call - which is not cancellable and runs to completion
-    // server-side - was still being billed. It looks like nothing happened.
-    // Clicking again pays twice, on their own key.
-    const user = userEvent.setup();
-    let release: (v: unknown) => void = () => {};
-    const held = new Promise((r) => { release = r; });
-    const json = (body: unknown) =>
-      new Response(JSON.stringify(body),
-                   { status: 200,
-                     headers: { "Content-Type": "application/json" } });
-    let calls = 0;
-
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes("/vault/status"))
-        return json({ initialized: true, unlocked: true });
-      if (url.includes("/extract/models")) return json(MODELS);
-      if (url.includes("/extract/settings"))
-        return json({ model_id: "cheap/one", prompt_language: "en" });
-      if (url.includes("/extract/dry-run")) {
-        calls += 1;
-        await held;
-        return json(dryRunBody());
-      }
-      return json({});
-    }));
-
-    // ONE QueryClient across both mounts - the client the app keeps across a
-    // tab switch. A fresh one per mount would test nothing at all.
-    const first = renderWithQueryClient(<ExtractionSettings />);
-    await user.click(await screen.findByRole("button", { name: /try it/i }));
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: /try it/i })).toBeDisabled());
-
-    first.unmount();
-    renderWithQueryClient(<ExtractionSettings />,
-                          { client: first.queryClient });
-
-    const button = await screen.findByRole("button", { name: /try it/i });
-    expect(button).toBeDisabled();
-    expect(calls).toBe(1);
-
-    release(null);
-    await waitFor(() => expect(calls).toBe(1));
   });
 });

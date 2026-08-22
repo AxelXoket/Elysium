@@ -57,7 +57,7 @@ CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "tests/test_privacy_promises.py::TestWhatIsNeverSent"
         "::test_the_context_budget_is_an_app_side_number_only",
     )),
-    ("`response_format` is sent by exactly two paths", (
+    ("`response_format` is sent by exactly one path", (
         "tests/test_privacy_promises.py::TestWhatIsNeverSent"
         "::test_response_format_is_sent_by_the_extractor_and_nowhere_else",
         "tests/test_privacy_promises.py::TestWhatIsNeverSent"
@@ -212,7 +212,7 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
 #: test would notice. This closes that by refusing ANY change to the section
 #: until somebody comes here, decides what the change claims, and registers a
 #: proof for it. Updating this constant is the deliberate act.
-SECTION_DIGEST = "f10b0209cb7e22f9933b8e460072ea8c17e8184ded9e80188e492b395fd9e10a"
+SECTION_DIGEST = "24996101b2ac10d46ed026d23fce88d009537447eae4a2c292da3edb4b716357"
 
 
 def _section() -> str:

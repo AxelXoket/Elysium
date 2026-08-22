@@ -443,10 +443,6 @@ const ERROR_MESSAGES: Record<string, string> = {
   // gap. Generating is refused instead.
   boundaries_do_not_fit:
     "Your limits do not fit in this model's context, so nothing was sent. Shorten them, or choose a model with more room.",
-  notebook_model_not_chosen:
-    "Choose a model for the notebook first. Nothing is extracted until you pick one - it is your API key, and picking one for you would spend it on a model you never chose.",
-  notebook_nothing_to_read:
-    "There is nothing new in this chat to read yet. Send a few messages and try again.",
   // "One of the two available" named a count and not the two. The router
   // accepts "en" and "tr"; the select in ExtractionSettings offers exactly
   // English and Turkce, so the sentence can simply say which.

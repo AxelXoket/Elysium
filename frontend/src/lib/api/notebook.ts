@@ -11,7 +11,6 @@ import {
   UseGlobalSchema,
   ExtractionModelListSchema,
   ExtractSettingsSchema,
-  DryRunSchema,
 } from "../schemas/notebook";
 import type {
   NotebookEntry,
@@ -133,12 +132,6 @@ export function saveExtractSettings(payload: {
   return request("/notebook/extract/settings", NotebookOkSchema, {
     method: "POST",
     body: JSON.stringify(payload),
-  });
-}
-
-export function dryRun(chatId: number) {
-  return request(`/notebook/${chatId}/extract/dry-run`, DryRunSchema, {
-    method: "POST",
   });
 }
 

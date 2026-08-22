@@ -266,32 +266,6 @@ class TestTheSameGateAsEveryOtherOutboundPath:
         assert resp.status_code == 200
         assert resp.json()["models"][0]["id"] == "vendor/cheap"
 
-    def test_the_dry_run_refuses_behind_an_armed_gate(self, client, monkeypatch):
-        """And refuses BEFORE reading the transcript: a route that loads the
-        messages and then declines has already done the work."""
-        import config
-        import database
-        import notebook_extract
-        import openrouter
-
-        database.set_setting(config.SETTING_NOTEBOOK_MODEL, "vendor/cheap")
-        sent = []
-
-        async def spy(*a, **kw):
-            sent.append(1)
-            return {}
-
-        monkeypatch.setattr(openrouter, "complete", spy)
-        self._arm(monkeypatch)
-        try:
-            resp = client.post("/api/v1/notebook/1/extract/dry-run")
-            assert resp.status_code == 503
-            assert sent == []
-        finally:
-            self._disarm()
-            database.set_setting(config.SETTING_NOTEBOOK_MODEL, "")
-            assert notebook_extract.extract_model() is None
-
 
 class TestTheRequestCarriesTheSameIdentity:
     @pytest.mark.anyio
