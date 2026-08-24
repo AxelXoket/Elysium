@@ -28,6 +28,12 @@ export default defineConfig({
     globals: true,
     environment: "jsdom",
     setupFiles: "./src/test/setup.ts",
+    // Pinned, not inherited. setup.ts's global afterEach clears the draft
+    // store, and "stack" is what makes it run AFTER Testing Library's own
+    // cleanup rather than before it. That is vitest's default today, so this
+    // line changes nothing - it just stops a future default from silently
+    // reordering the two and leaving drafts alive across tests.
+    sequence: { hooks: "stack" },
     include: ["src/**/*.test.{ts,tsx}"],
   },
 });

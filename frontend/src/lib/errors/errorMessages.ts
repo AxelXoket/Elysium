@@ -536,6 +536,16 @@ const ERROR_MESSAGES: Record<string, string> = {
   // record - the second sentence source is a defect in its own right.
   tts_notice:
     "The voice engine reported something about this reply.",
+
+  // The two refusals the draft cache can raise. Both are WARNINGS, not
+  // errors: nothing was lost, the previous draft is still there, and the only
+  // thing that did not happen is the write that would have gone over a
+  // ceiling. Wording says which ceiling, because "too large" and "no room
+  // left" have different answers - shorten this one, or send some others.
+  draft_too_large:
+    "This draft is too long to hold. Please shorten it, or send it in parts.",
+  draft_budget_exhausted:
+    "There are too many unsent drafts to hold this one. Please send or clear some of them.",
 };
 
 /**

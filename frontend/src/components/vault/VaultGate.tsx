@@ -25,6 +25,7 @@ import { setVaultLockedHandler, isApiError, request } from "@/lib/api/client";
 import { getErrorMessage } from "@/lib/errors/errorMessages";
 import { stopVoicePlayback } from "@/lib/voice/playerStore";
 import { setVaultLockAnimationHandler } from "@/lib/vaultLockUi";
+import { useDraftStore } from "@/lib/store/draftStore";
 import { keys } from "@/lib/query/keys";
 import {
   useVaultStatus,
@@ -79,6 +80,22 @@ function useResetVault() {
     // over to the setup screen on its own - see the stage switch in
     // VaultGate. Nothing here invents a fourth stage.
     onSuccess: (data) => {
+      // Unsent drafts go with the vault, and this is the ONE place they must.
+      //
+      // Drafts deliberately outlive a lock and every remount, because that is
+      // the bug the store was written to fix. A reset is not a lock: the
+      // database is destroyed and a NEW vault is created in the same running
+      // renderer. Chat ids are AUTOINCREMENT and the wipe takes the sequence
+      // with the file, so the new vault's first chat is id 1 again - and the
+      // store is keyed on that bare integer. Without this, the composer of
+      // the first chat in the new vault opens holding text from the vault the
+      // user just destroyed. Cleared BEFORE the gate swings, and only on a
+      // complete wipe, for the same reason the invalidate is.
+      //
+      // Deliberately unconditional on the draft side even so: `clearAll` on
+      // an empty store is free, and a draft outliving a wipe is the failure
+      // worth being blunt about.
+      useDraftStore.getState().clearAll();
       // Only a COMPLETE wipe moves on by itself. A partial one keeps the
       // panel up so the survivors can be read; the gate would otherwise
       // swing to the setup screen - the database is gone either way - and
@@ -196,7 +213,25 @@ export function VaultGate({ children }: { children: ReactNode }) {
   // Lock hygiene: unlocking unmounts nothing, but LOCKING unmounts the app
   // while TanStack keeps every cached chat/message/character in RAM - and
   // would serve them again on re-unlock. Purge all user-data queries on the
-  // unlocked -> locked transition; only the gate's own vault key survives.
+  // unlocked -> locked transition; only the gate's own vault key survives in
+  // the CACHES.
+  //
+  // Three module-scope stores also outlive the unmount, and one of them is a
+  // deliberate change to what "locked" means, so it is recorded rather than
+  // left to be discovered: the draft store (lib/store/draftStore.ts) keeps
+  // unsent composer and edit text across a lock ON PURPOSE. Locking used to
+  // destroy every half-written sentence in the app, which is a data loss the
+  // lock screen was never meant to cause.
+  //
+  // Why that is not a leak, stated so the next reader does not have to redo
+  // the reasoning: the app subtree is UNMOUNTED, not hidden, so after a lock
+  // the text is a heap value with no DOM node, no accessible node and no
+  // pixel - it cannot be read off the lock screen, which is the boundary
+  // SECURITY.md actually draws. Process memory is already an accepted limit
+  // there. This is unlike the mutation cache below, which held a CREDENTIAL,
+  // and unlike the query cache, which would have been re-served on unlock.
+  // The one case where drafts must NOT survive is a vault RESET, handled in
+  // useResetVault above.
   const wasUnlockedRef = useRef(false);
   useEffect(() => {
     const unlocked = status?.unlocked === true;

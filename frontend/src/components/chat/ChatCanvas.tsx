@@ -8,6 +8,7 @@ import {
 } from "react";
 import { useMutationState } from "@tanstack/react-query";
 import { useUiStore } from "@/lib/store/uiStore";
+import { useDraftStore } from "@/lib/store/draftStore";
 import {
   useAreaAspect,
   useChatBackground,
@@ -145,63 +146,42 @@ export function ChatCanvas() {
     regeneratingThisChat ||
     (selectedChatId != null && sendingChatIds.includes(selectedChatId));
 
-  // Draft restoration: failed sends are keyed by chat id so a failure in one
-  // chat never clobbers the composer of another. In-memory only - the
-  // contract forbids persisting drafts.
-  const [failedDrafts, setFailedDrafts] = useState<ReadonlyMap<number, string>>(
-    () => new Map(),
-  );
-
+  // Composer drafts live in the process-lifetime draft store, NOT in this
+  // component. They used to be two `useState` maps here, which meant they
+  // lasted exactly as long as this component did - and VaultGate unmounts the
+  // whole app subtree when the vault locks, so locking destroyed every unsent
+  // sentence. The store is module-scoped and survives that remount. It is
+  // still memory-only: nothing about a draft is written to browser storage.
+  //
+  // Failed sends write back through the SAME per-chat buffer rather than a
+  // second "restore me" map. One buffer per chat means a failure in one chat
+  // can never clobber the composer of another, and the restored text simply
+  // reappears in the composer the next time that chat is open.
   const storeFailedDraft = useCallback((chatId: number, draft: string) => {
-    setFailedDrafts((prev) => {
-      const next = new Map(prev);
-      next.set(chatId, draft);
-      return next;
-    });
+    // Every other refusal in the app is safe because it leaves the previous
+    // draft in place. This one is different: the Composer already emptied the
+    // buffer when the send was dispatched, so if the restore is refused the
+    // text exists nowhere. The store still raises its own toast, which is why
+    // this cannot fail silently, but the loss is real and worth naming here.
+    useDraftStore.getState().setComposerDraft(chatId, draft);
   }, []);
-
-  const clearFailedDraft = useCallback((chatId: number) => {
-    setFailedDrafts((prev) => {
-      if (!prev.has(chatId)) return prev;
-      const next = new Map(prev);
-      next.delete(chatId);
-      return next;
-    });
-  }, []);
-
-  const restoredDraft =
-    selectedChatId != null ? failedDrafts.get(selectedChatId) ?? null : null;
-
-  const handleDraftConsumed = useCallback(() => {
-    if (selectedChatId != null) clearFailedDraft(selectedChatId);
-  }, [selectedChatId, clearFailedDraft]);
-
-  // Live composer draft: kept PER-CHAT (like failedDrafts) so typing in one
-  // chat and switching to another never shows - or sends - the first chat's
-  // unsent text. Switching back restores it. In-memory only (privacy rule:
-  // no browser storage for drafts).
-  const [liveDrafts, setLiveDrafts] = useState<ReadonlyMap<number, string>>(
-    () => new Map(),
-  );
 
   const handleDraftChange = useCallback(
     (text: string) => {
       if (selectedChatId == null) return;
-      const chatId = selectedChatId;
-      setLiveDrafts((prev) => {
-        if ((prev.get(chatId) ?? "") === text) return prev;
-        const next = new Map(prev);
-        // Empty drafts drop their entry - keeps the map to genuinely-unsent text.
-        if (text === "") next.delete(chatId);
-        else next.set(chatId, text);
-        return next;
-      });
+      // A refused write (over a memory ceiling) keeps the previous draft and
+      // raises its own toast; there is nothing to do here but let it stand.
+      useDraftStore.getState().setComposerDraft(selectedChatId, text);
     },
     [selectedChatId],
   );
 
-  const liveDraft =
-    selectedChatId != null ? liveDrafts.get(selectedChatId) ?? "" : "";
+  // Subscribed as a primitive, not as the entry object: the composer must
+  // re-render on a keystroke, and selecting the object would also re-render
+  // it whenever any OTHER chat's draft changed.
+  const liveDraft = useDraftStore((s) =>
+    selectedChatId != null ? s.composer[selectedChatId]?.text ?? "" : "",
+  );
 
   // Send errors are keyed by chat id too: the Composer banner shows only the
   // selected chat's error (single surface for send errors).
@@ -741,7 +721,9 @@ export function ChatCanvas() {
         ...a,
         previewUrl: "",
       }));
-      clearFailedDraft(chatId);
+      // The composer's own `clearOnSend` already emptied this chat's buffer,
+      // and failed/live drafts are now ONE buffer - so clearing it again here
+      // would delete live composer text the moment clearOnSend went false.
       clearSendError(chatId);
       void startSend(
         {
@@ -799,7 +781,6 @@ export function ChatCanvas() {
       generationSettings,
       stagedAttachments,
       startSend,
-      clearFailedDraft,
       clearSendError,
       storeFailedDraft,
       storeSendError,
@@ -845,7 +826,16 @@ export function ChatCanvas() {
 
   const handleEditMessage = useCallback(
     (messageId: number, newText: string) => {
-      if (selectedChatId == null || selectedModelId == null) return;
+      if (selectedChatId == null || selectedModelId == null) {
+        // The bubble has already closed its box and parked the retyped text
+        // in the `committing` phase, so bailing in silence here would strand
+        // it: invisible, unreachable, and holding memory for the life of the
+        // process. Answer the only way this path can - it did not go.
+        if (selectedChatId != null) {
+          useDraftStore.getState().reopenEditDraft(selectedChatId, messageId);
+        }
+        return;
+      }
       // Assemble EXACTLY the same sources as handleSend (v1.1 C3) - an edit
       // is a resend of the turn with new text, so persona, generation
       // settings and context budget must ride along identically.
@@ -853,15 +843,46 @@ export function ChatCanvas() {
       const selectedModel = findModelById(models?.models, selectedModelId);
       const { generationParams, contextBudgetTokens } =
         generationSettings.getRequestSettings();
-      void startEdit({
-        chatId: selectedChatId,
-        messageId,
-        message: newText,
-        modelId: selectedModelId,
-        generationParams,
-        personaId,
-        contextBudgetTokens,
-        model: selectedModel,
+      const chatId = selectedChatId;
+      // Snapshot BEFORE the edit: a committed edit deletes every row after
+      // the edited one server-side, so those messages stop existing and any
+      // edit buffer held against them is now pointing at nothing. Taken here
+      // because by the time the callback fires the cache has already been
+      // rewritten and the ids are gone.
+      const doomedTail = (messages ?? [])
+        .filter((m) => m.id > messageId)
+        .map((m) => m.id);
+      void startEdit(
+        {
+          chatId,
+          messageId,
+          message: newText,
+          modelId: selectedModelId,
+          generationParams,
+          personaId,
+          contextBudgetTokens,
+          model: selectedModel,
+        },
+        {
+          onSuccess: () => {
+            const drafts = useDraftStore.getState();
+            // The edit landed, so the retyped text is now the message.
+            drafts.clearEditDraft(chatId, messageId);
+            drafts.forgetMessages(chatId, doomedTail);
+          },
+          onFailure: () => {
+            // Nothing was written server-side. Put the box back with the
+            // user's own words in it rather than making them retype.
+            useDraftStore.getState().reopenEditDraft(chatId, messageId);
+          },
+        },
+      ).catch(() => {
+        // startEdit's own setup runs before its try block, so a throw there
+        // reaches nobody: no callback, no toast, and the buffer left in
+        // `committing` forever. `void` used to discard exactly that. This is
+        // the outer net, and it is idempotent with onFailure - reopening an
+        // entry already in `editing` is a no-op.
+        useDraftStore.getState().reopenEditDraft(chatId, messageId);
       });
     },
     [
@@ -869,6 +890,7 @@ export function ChatCanvas() {
       selectedModelId,
       personas,
       models?.models,
+      messages,
       generationSettings,
       startEdit,
     ],
@@ -990,8 +1012,6 @@ export function ChatCanvas() {
         sendError={sendErrorForThisChat}
         onDismissError={handleDismissError}
         clearOnSend={true}
-        restoredDraft={restoredDraft}
-        onDraftConsumed={handleDraftConsumed}
         draft={liveDraft}
         onDraftChange={handleDraftChange}
         attachments={stagedForThisChat}

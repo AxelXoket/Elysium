@@ -23,6 +23,7 @@ import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { ChatCanvas } from "@/components/chat/ChatCanvas";
 import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
 import { useUiStore } from "@/lib/store/uiStore";
+import { useDraftStore } from "@/lib/store/draftStore";
 import { useErrorStore } from "@/lib/errors";
 import {
   ACCEPTED_IMAGE_TYPES,
@@ -156,6 +157,11 @@ describe("Attachments", () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
+    // Drafts are module scope on purpose, so they outlive a TEST as well as a
+    // remount. test/setup.ts clears them globally, but a suite that reuses
+    // chat ids and asserts on an empty composer has to state that precondition
+    // itself rather than inherit it.
+    useDraftStore.getState().clearAll();
     useUiStore.setState({
       selectedChatId: null,
       selectedModelId: null,

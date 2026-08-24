@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import { keys } from "./keys";
 import { useErrorStore } from "../errors";
 import {
@@ -13,6 +14,7 @@ import {
 } from "../api/chats";
 import { removeMessageAndFollowingFromCache, messageAnchor } from "@/lib/chat";
 import { stopChat } from "@/lib/chat/streamRegistry";
+import { useDraftStore } from "@/lib/store/draftStore";
 import { isApiError } from "../api/client";
 import type { Chat, Message } from "../schemas/chats";
 
@@ -93,6 +95,11 @@ export function useDeleteChat() {
       stopChat(chatId);
     },
     onSuccess: (_data, chatId) => {
+      // The chat is really gone, so its unsent composer text and every edit
+      // buffer held against its messages point at nothing. Cleared HERE and
+      // never on the failure path: a delete that did not happen has to leave
+      // the drafts exactly where they were.
+      useDraftStore.getState().forgetChat(chatId);
       qc.invalidateQueries({ queryKey: keys.chats() });
       // The chat is gone - drop its message cache entirely instead of leaving
       // a stale entry behind.
@@ -102,7 +109,17 @@ export function useDeleteChat() {
       qc.removeQueries({ queryKey: keys.notebookEntries(chatId) });
       qc.removeQueries({ queryKey: keys.notebookBoundaries(chatId) });
     },
-    onError: (err) => {
+    onError: (err, chatId) => {
+      // 404 IS the deletion the user asked for - the chat is already gone -
+      // so its drafts go with it. The sibling message-delete states this same
+      // rule; leaving the two disagreeing was the inconsistency.
+      if (isApiError(err) && err.status === 404) {
+        useDraftStore.getState().forgetChat(chatId);
+        qc.removeQueries({ queryKey: keys.messages(chatId) });
+        qc.removeQueries({ queryKey: keys.notebookEntries(chatId) });
+        qc.removeQueries({ queryKey: keys.notebookBoundaries(chatId) });
+        qc.invalidateQueries({ queryKey: keys.chats() });
+      }
       pushError(err);
     },
   });
@@ -123,6 +140,11 @@ export function useClearChat() {
       // Messages are known to be empty - set directly; only the chat list
       // (message_count/updated_at) needs a refetch.
       qc.setQueryData(keys.messages(chatId), []);
+      // Every message went, so every edit buffer in this chat is orphaned.
+      // The COMPOSER draft deliberately survives: clearing a chat empties its
+      // history, it does not throw away the sentence the user is still in the
+      // middle of writing.
+      useDraftStore.getState().forgetChatMessages(chatId);
       // Clearing a chat clears its notebook AND its chat-scoped limits, so
       // the cache must not keep showing what the server just discarded. The
       // limits half was missing while both sibling sweeps - delete chat and
@@ -137,6 +159,36 @@ export function useClearChat() {
   });
 }
 
+/**
+ * Drop the edit buffers of the rows a delete is about to destroy.
+ *
+ * Read from the cache BEFORE the rows are removed from it, because that is
+ * the only place the doomed id set exists: the server answers with a count,
+ * never with the ids, and by the time the cache has been rewritten they are
+ * gone. The anchor rule is the same one the cache surgery and the backend
+ * both use, so the three cannot disagree about what "and following" means.
+ */
+function forgetDoomedEditDrafts(
+  qc: QueryClient,
+  chatId: number,
+  messageId: number,
+): void {
+  const before = qc.getQueryData<Message[]>(keys.messages(chatId));
+  if (!before) {
+    // No cache to read the doomed set from. Forgetting the pressed row's own
+    // buffer is strictly better than forgetting nothing: it is the one the
+    // user is most likely holding, and it is certainly gone.
+    useDraftStore.getState().forgetMessages(chatId, [messageId]);
+    return;
+  }
+  const target = before.find((m) => m.id === messageId);
+  const start = target ? messageAnchor(target) : messageId;
+  useDraftStore.getState().forgetMessages(
+    chatId,
+    before.filter((m) => m.id >= start).map((m) => m.id),
+  );
+}
+
 export function useDeleteMessageAndFollowing() {
   const qc = useQueryClient();
   const pushError = useErrorStore((s) => s.pushError);
@@ -144,6 +196,7 @@ export function useDeleteMessageAndFollowing() {
     mutationFn: (vars: { chatId: number; messageId: number }) =>
       deleteMessageAndFollowing(vars.chatId, vars.messageId),
     onSuccess: (_data, vars) => {
+      forgetDoomedEditDrafts(qc, vars.chatId, vars.messageId);
       // Deleting a turn also deletes the unreviewed suggestions that came
       // from it, and rolls back how far the extractor has read. Without this
       // the panel keeps offering proposals the server destroyed, and pressing
@@ -162,6 +215,18 @@ export function useDeleteMessageAndFollowing() {
       // user asked for: drop it locally and resync, so the ghost cannot
       // survive the toast.
       if (isApiError(err) && err.status === 404) {
+        // A 404 IS the deletion the user asked for - the rows do not exist -
+        // so the buffers go with them. Every OTHER error leaves them alone:
+        // the messages are still there and so is the text.
+        // `chat_not_found` reaches this branch too, and it means something
+        // larger died than the rows after one message: the whole chat is
+        // gone, so the composer buffer and EVERY edit buffer in it are
+        // orphaned, including ones before the pressed row.
+        if (err.detail === "chat_not_found") {
+          useDraftStore.getState().forgetChat(vars.chatId);
+        } else {
+          forgetDoomedEditDrafts(qc, vars.chatId, vars.messageId);
+        }
         qc.setQueryData<Message[]>(keys.messages(vars.chatId), (prev) =>
           prev
             ? removeMessageAndFollowingFromCache(prev, vars.messageId)

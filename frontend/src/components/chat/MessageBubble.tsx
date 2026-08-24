@@ -14,6 +14,7 @@ import {
   serverDateTimeAttr,
 } from "@/lib/chat";
 import { useUiStore } from "@/lib/store/uiStore";
+import { useDraftStore, editDraftKey } from "@/lib/store/draftStore";
 import { bubbleSurface } from "@/lib/appearance/bubbleSurface";
 import { imageUrl } from "@/lib/api/uploads";
 import { ImageLightbox } from "./ImageLightbox";
@@ -89,8 +90,21 @@ export const MessageBubble = memo(function MessageBubble({
 }: MessageBubbleProps) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmEdit, setConfirmEdit] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const [editDraft, setEditDraft] = useState("");
+  // The edit buffer lives in the process-lifetime draft store, not here. As
+  // component state it died with the component, and VaultGate unmounts the
+  // whole app subtree when the vault locks - so a half-retyped question was
+  // destroyed by locking the app, silently, with no way to get it back.
+  //
+  // The ENTRY'S EXISTENCE is what holds the box open, which is why there is
+  // no separate `editing` flag: a box that was open before a remount is a
+  // buffer that still exists after it, and the two can never disagree.
+  const draftKey = editDraftKey(chatId, message.id);
+  // Selected as primitives so this memo(MessageBubble) re-renders on its own
+  // keystrokes and on nothing else - an object selector would re-render every
+  // bubble in the chat whenever any other bubble's buffer changed.
+  const editDraft = useDraftStore((s) => s.edits[draftKey]?.text) ?? "";
+  const editPhase = useDraftStore((s) => s.edits[draftKey]?.phase);
+  const editing = editPhase === "editing";
   const [lightboxAttachment, setLightboxAttachment] = useState<Attachment | null>(
     null,
   );
@@ -265,24 +279,64 @@ export const MessageBubble = memo(function MessageBubble({
    */
   const followingRowCount = messages.filter((m) => m.id > message.id).length;
 
+  // True only for the box THIS mounted bubble opened by pencil press. A box
+  // that is on screen because a buffer survived a remount is a restore, and
+  // the two must not be treated alike (see the effect below).
+  const openedByPencilRef = useRef(false);
+
   const startEditing = () => {
     setConfirmDelete(false);
     setConfirmEdit(false);
-    setEditDraft(message.content);
-    setEditing(true);
+    openedByPencilRef.current = true;
+    // Opening the box IS creating the buffer. A refusal here (the text is
+    // past a memory ceiling) raises its own toast and leaves the box shut
+    // rather than opening an edit that could not be typed into.
+    useDraftStore
+      .getState()
+      .openEditDraft(chatId, message.id, message.content);
   };
 
-  // Focus + select on entry; auto-grow to fit the existing text.
+  /**
+   * Size the box on entry, and select its text ONLY when the user just asked
+   * for it.
+   *
+   * The select-all is right for a pencil press: the box opens holding the
+   * message's current words and the usual next act is to replace them. It is
+   * catastrophic for a RESTORE. When a buffer survives a vault lock or a
+   * failed save, this effect runs on mount with the box already open, and a
+   * bare `ta.select()` would highlight the whole recovered draft - so the
+   * user's first keystroke replaces the very text this store exists to save,
+   * and the textarea is controlled so the browser's own undo cannot bring it
+   * back. Restoring also must not steal focus: the box may be halfway down a
+   * long list, and yanking the caret into it fights the scroll restore and
+   * moves the user somewhere they did not ask to be.
+   */
   useEffect(() => {
     if (!editing) return;
     const ta = editTextareaRef.current;
-    if (ta) {
-      ta.focus();
-      ta.select();
-      ta.style.height = "auto";
-      ta.style.height = `${ta.scrollHeight}px`;
-    }
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = `${ta.scrollHeight}px`;
+    if (!openedByPencilRef.current) return;
+    openedByPencilRef.current = false;
+    ta.focus();
+    ta.select();
   }, [editing]);
+
+  /**
+   * Re-measure when the text changes from outside a keystroke.
+   *
+   * `handleEditInput` sizes the box from the DOM before the store has
+   * accepted the write, so a refused write (over a memory ceiling) leaves the
+   * textarea at the height of text it is no longer showing. The Composer has
+   * carried the same effect for the same reason since it became controlled.
+   */
+  useEffect(() => {
+    const ta = editTextareaRef.current;
+    if (!editing || !ta) return;
+    ta.style.height = "auto";
+    ta.style.height = `${ta.scrollHeight}px`;
+  }, [editing, editDraft]);
 
   /**
    * Whether a save can actually land right now.
@@ -303,10 +357,26 @@ export const MessageBubble = memo(function MessageBubble({
 
   /** Send the edit. Only reached once there is nothing left to ask about. */
   const commitEdit = () => {
+    // The SAME precondition saveEdit opens with. The confirmation dialog's
+    // "Save and delete" calls this function directly, so checking only in
+    // saveEdit left the one path that skips it: the box would close, the
+    // buffer would go to `committing`, and handleEditMessage would bail on a
+    // missing model without ever answering - stranding the retyped text in a
+    // phase that renders nothing.
+    if (editBlockedReason != null) return;
     const trimmed = editDraft.trim();
     setConfirmEdit(false);
-    setEditing(false);
-    if (trimmed.length === 0 || trimmed === message.content) return;
+    const drafts = useDraftStore.getState();
+    if (trimmed.length === 0 || trimmed === message.content) {
+      // Nothing to send, so nothing can fail: the buffer has no further job.
+      drafts.clearEditDraft(chatId, message.id);
+      return;
+    }
+    // Close the box but KEEP the text: the save can still fail, be aborted,
+    // or be refused by a stream that already owns the chat, and each of
+    // those has to give the user their sentence back. ChatCanvas clears the
+    // buffer on success and reopens it on anything else.
+    drafts.commitEditDraft(chatId, message.id);
     onEditMessage?.(message.id, trimmed);
   };
 
@@ -319,7 +389,7 @@ export const MessageBubble = memo(function MessageBubble({
     // Checked BEFORE the confirmation: a save that changes nothing destroys
     // nothing, so asking about it would be a dialog for a no-op.
     if (trimmed.length === 0 || trimmed === message.content) {
-      setEditing(false);
+      useDraftStore.getState().clearEditDraft(chatId, message.id);
       return;
     }
     // K-27. Saving an edit deletes every row after this one, permanently -
@@ -330,9 +400,10 @@ export const MessageBubble = memo(function MessageBubble({
     // question really does rewrite one reply and a dialog for that would be
     // the habit-forming kind that gets clicked through.
     //
-    // `setEditing(false)` is deliberately NOT called on this path: cancelling
-    // has to leave the box and the retyped text exactly where they were, which
-    // is the same lesson the blocked-save branch above is written around.
+    // The buffer is deliberately left in its `editing` phase on this path:
+    // cancelling the confirmation has to leave the box and the retyped text
+    // exactly where they were, which is the same lesson the blocked-save
+    // branch above is written around.
     if (followingRowCount > 1) {
       setConfirmEdit(true);
       return;
@@ -347,11 +418,13 @@ export const MessageBubble = memo(function MessageBubble({
 
   const cancelEdit = () => {
     setConfirmEdit(false);
-    setEditing(false);
+    // Cancel is the user saying "throw this away", which is the ONE thing
+    // that discards a draft outright. Everything else keeps it.
+    useDraftStore.getState().clearEditDraft(chatId, message.id);
   };
 
   const handleEditInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setEditDraft(e.target.value);
+    useDraftStore.getState().setEditDraft(chatId, message.id, e.target.value);
     const ta = editTextareaRef.current;
     if (ta) {
       ta.style.height = "auto";

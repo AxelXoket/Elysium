@@ -1713,4 +1713,116 @@ describe("Static safety tests", () => {
       expect(reported, `S-27b misjudged: ${source}`).toBe(expected);
     }
   });
+
+  // S-28: the draft cache may not reach the device, and the folder it lives
+  // in is the one folder that cannot catch it doing so.
+  //
+  // S-09 exempts everything under lib/store from its `localStorage.setItem`
+  // scan, because that is where the persisted UI store legitimately lives.
+  // draftStore.ts was asked to live there too - it is a store - which means
+  // the single rule that would normally notice a persistence mistake is
+  // blind to this exact file. S-09b does not cover it either: its brace
+  // walker reads uiStore.ts by hard-coded path and nothing else.
+  //
+  // So the gap is named and closed here, pinned to the file rather than the
+  // directory. Drafts are the most sensitive text in the app - unsent
+  // sentences the user has not decided to keep - and browser storage is
+  // plaintext on disk, outside the vault, and outlives the process.
+  it("S-28: the draft store persists nothing", () => {
+    const draftStorePath = path.resolve(
+      SRC_DIR,
+      "src",
+      "lib",
+      "store",
+      "draftStore.ts",
+    );
+    // FLOOR. A rule whose target file was renamed away would otherwise read
+    // an empty string and pass by finding nothing in nothing.
+    expect(
+      existsSync(draftStorePath),
+      "S-28's target file is gone - the rule is guarding nothing",
+    ).toBe(true);
+    const content = readFile(draftStorePath);
+    // The floor measures CODE, not prose. Measured raw, the leading docblock
+    // alone clears any sane threshold, so the file could be gutted down to a
+    // docblock plus a single re-export and this rule would stay green while
+    // every consumer silently got a different store. `stripComments` is only
+    // safe to use for a length floor: blinding it can only make this number
+    // smaller, which fails closed.
+    const code = stripComments(content);
+    expect(
+      code.length,
+      "S-28 read a draftStore.ts with almost no code in it",
+    ).toBeGreaterThan(1500);
+
+    // The matcher, reused verbatim by the positive control below so the two
+    // can never drift apart.
+    const FORBIDDEN = [
+      "localStorage",
+      "sessionStorage",
+      "indexedDB",
+      "document.cookie",
+      "caches",
+      // The persist path writes to localStorage without ever naming it,
+      // which is exactly how S-09 was escaped once before.
+      "persist",
+      "createJSONStorage",
+    ];
+    // RAW text, deliberately un-stripped.
+    //
+    // This started out stripping comments, so the file's docblock could
+    // describe the prohibition without tripping it. The control below proved
+    // that unsafe: `stripComments` is a regex, not a lexer, so an unbalanced
+    // comment opener inside an ordinary string literal opens a comment that
+    // never existed and deletes the real lines after it - including a storage
+    // write. Everywhere else in this suite that is survivable because another
+    // rule is behind it. Here it is not: S-09 exempts every path under
+    // lib/store from its device-storage scan, so for THIS file S-28 is the
+    // only text gate there is.
+    //
+    // So the scanner lost the stripper and draftStore.ts's docblock lost the
+    // API names instead. Blunter prose, exact gate.
+    const offenders = (source: string) =>
+      FORBIDDEN.filter((needle) => source.includes(needle));
+
+    expect(
+      offenders(content),
+      "draftStore.ts reaches for device storage",
+    ).toEqual([]);
+
+    // Re-export laundering: the forbidden token can sit in a NEIGHBOUR file
+    // that this rule never opens. Scanning one file cannot see that, so the
+    // rule at least refuses to let this file hand its identity to another.
+    expect(
+      /export\s+\*\s+from/.test(code),
+      "draftStore.ts re-exports another module wholesale, so what it IS is " +
+        "no longer what this rule read",
+    ).toBe(false);
+
+    // POSITIVE CONTROL on the SAME matcher: a scan that went blind would
+    // report nothing here too, and would look identical from the outside.
+    expect(
+      offenders('const x = localStorage.getItem("drafts")'),
+    ).toContain("localStorage");
+    expect(
+      offenders("export const s = create()(persist((set) => ({})))"),
+    ).toContain("persist");
+    // And it must not fire on the ordinary contents of the file, or the rule
+    // would be unsatisfiable and would get deleted rather than obeyed.
+    expect(offenders("const encoder = new TextEncoder();")).toEqual([]);
+
+    // The control that made this rule drop its comment stripper. A write
+    // hidden behind an unbalanced comment opener inside a string is invisible
+    // to `stripComments` and must NOT be invisible to the scan.
+    const smuggled = [
+      'const OPEN = "/*";',
+      'window.localStorage.setItem("elysium-drafts", text);',
+      'const CLOSE = "*/";',
+    ].join("\n");
+    expect(
+      offenders(smuggled),
+      "a storage write hidden behind a fake comment opener escaped S-28",
+    ).toContain("localStorage");
+    expect(offenders(stripComments(smuggled))).toEqual([]);
+  });
 });

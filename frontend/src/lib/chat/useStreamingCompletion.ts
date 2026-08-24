@@ -188,6 +188,25 @@ export interface StreamSendCallbacks {
   onPersisted?: () => void;
 }
 
+/**
+ * The two outcomes an edit can have, from a caller's point of view.
+ *
+ * `startEdit` used to report nothing at all: it resolved identically whether
+ * the edit committed, failed mid-stream or was aborted. That was survivable
+ * while the retyped text lived in the bubble's own state and died with it,
+ * but a caller that KEEPS the text has to know which happened - success
+ * discards the buffer, and anything else has to give it back. Deliberately
+ * two callbacks and not a resolved value: the outcome is decided inside the
+ * event loop, well before the promise settles.
+ */
+export interface StreamEditCallbacks {
+  /** The atomic swap landed: the edit is committed server-side. */
+  onSuccess?: () => void;
+  /** The edit did NOT land - error, malformed stream, abort, or a stream
+   * that already owned the chat. The pre-edit list has been restored. */
+  onFailure?: (err?: unknown) => void;
+}
+
 function makeApiError(status: number, detail: string): ApiError {
   return { status, detail, message: getErrorMessage(detail) };
 }
@@ -906,9 +925,16 @@ export function useStreamingCompletion() {
   );
 
   const startEdit = useCallback(
-    async (vars: StreamEditVars) => {
+    async (vars: StreamEditVars, callbacks?: StreamEditCallbacks) => {
       const { chatId, messageId } = vars;
-      if (!claimChat(chatId)) return;
+      if (!claimChat(chatId)) {
+        // A live stream already owns this chat, so the edit never starts.
+        // This used to return in silence, which was survivable when nothing
+        // downstream was waiting on an answer; a caller holding the retyped
+        // text needs to hear that it was not sent.
+        callbacks?.onFailure?.();
+        return;
+      }
 
       const controller = new AbortController();
       controllersRef.current.set(chatId, controller);
@@ -989,6 +1015,7 @@ export function useStreamingCompletion() {
             recordContextNotes(chatId, event);
             flusher.flushNow();
             void qc.cancelQueries({ queryKey: keys.messages(chatId) });
+            callbacks?.onSuccess?.();
             qc.setQueryData<Message[]>(keys.messages(chatId), (prev) => {
               const kept = (prev ?? []).filter(
                 (m) => m.id < messageId,
@@ -1056,11 +1083,13 @@ export function useStreamingCompletion() {
             chatId,
             partialSaved: evt.partialSaved,
           });
+          callbacks?.onFailure?.(makeApiError(evt.status, evt.code));
         } else if (!sawDone) {
           restoreSnapshot();
           pushError(makeApiError(0, "invalid_response_shape"), "error", {
             chatId,
           });
+          callbacks?.onFailure?.(makeApiError(0, "invalid_response_shape"));
         }
       } catch (err) {
         flusher.flushNow();
@@ -1069,8 +1098,13 @@ export function useStreamingCompletion() {
         if (!sawDone) restoreSnapshot();
         if (sawDone || isAbortError(err) || controller.signal.aborted) {
           // User-initiated stop: old content + tail intact - silent.
+          // Silent to the READER, not to the caller: an abort before `done`
+          // means the edit did not land, and whoever is holding the retyped
+          // text has to get it back even though no toast is shown.
+          if (!sawDone) callbacks?.onFailure?.(err);
         } else {
           pushError(err);
+          callbacks?.onFailure?.(err);
         }
       } finally {
         // Aborted, failed or finished: playback must not outlive

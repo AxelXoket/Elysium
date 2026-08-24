@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
 import { stopChat } from "../chat/streamRegistry";
+import { useDraftStore } from "@/lib/store/draftStore";
 import { keys } from "./keys";
 import {
   listCharacters,
@@ -80,6 +81,12 @@ export function useDeleteCharacter() {
       // them behind is what lets a deleted conversation reappear on a revisit.
       for (const chatId of context?.doomed ?? []) {
         qc.removeQueries({ queryKey: keys.messages(chatId) });
+        // The chats are really gone, so their unsent composer text and every
+        // edit buffer held against their messages are pointing at nothing.
+        // This is the widest destruction path in the app and it was the one
+        // leaving drafts behind: they are un-evictable by design, so they sat
+        // against the global budget until the process ended.
+        useDraftStore.getState().forgetChat(chatId);
         // Inside the same loop: deleting a character takes every chat it ever
         // had, which is the path that leaves the most behind.
         qc.removeQueries({ queryKey: keys.notebookEntries(chatId) });

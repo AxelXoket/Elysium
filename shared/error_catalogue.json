@@ -202,6 +202,18 @@
       ]
     },
     {
+      "code": "draft_budget_exhausted",
+      "statuses": [],
+      "channels": [],
+      "no_backend_producer": "Synthesised by the frontend. lib/store/draftStore.ts raises it when a write would push the total of every held draft past the 64 MiB budget. Drafts are memory-only and never sent, so the backend has no view of them at all."
+    },
+    {
+      "code": "draft_too_large",
+      "statuses": [],
+      "channels": [],
+      "no_backend_producer": "Synthesised by the frontend. lib/store/draftStore.ts raises it when a single composer or edit buffer would exceed its 2 MiB ceiling. The text never leaves the browser - it is unsent by definition - so no server call is involved and none could report this."
+    },
+    {
       "code": "edit_conflict",
       "statuses": [
         409
