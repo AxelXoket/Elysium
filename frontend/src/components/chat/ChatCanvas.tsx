@@ -6,7 +6,7 @@ import {
   useMemo,
   type CSSProperties,
 } from "react";
-import { useMutationState } from "@tanstack/react-query";
+import { useMutationState, useQueryClient } from "@tanstack/react-query";
 import { useUiStore } from "@/lib/store/uiStore";
 import { useDraftStore } from "@/lib/store/draftStore";
 import {
@@ -15,12 +15,14 @@ import {
 } from "@/lib/appearance/useChatBackground";
 import { useChats, useMessages, useActivateVariant } from "@/lib/query/chats";
 import { messageAnchor } from "@/lib/chat";
+import { keys } from "@/lib/query/keys";
 import {
   SEND_MESSAGE_MUTATION_KEY,
   REGENERATE_MESSAGE_MUTATION_KEY,
 } from "@/lib/query/completions";
 import { useStreamingCompletion } from "@/lib/chat/useStreamingCompletion";
 import { useSmoothStreamText } from "@/lib/chat/useSmoothStreamText";
+import { adoptTail } from "@/lib/chat/streamTail";
 import { usePersonas } from "@/lib/query/personas";
 import { useModels } from "@/lib/query/models";
 import { getSelectedPersonaId, safePersonaId } from "@/lib/personas";
@@ -43,6 +45,7 @@ import {
   revokePreviewUrl,
 } from "./attachments";
 import type { StagedAttachment } from "./attachments";
+import type { Message } from "@/lib/schemas/chats";
 import { ErrorToastStack } from "@/components/errors/ErrorToastStack";
 import { CanvasMist } from "@/components/backdrop/MistCanvas";
 
@@ -65,6 +68,19 @@ function usePendingChatIds(mutationKey: readonly string[]): (number | undefined)
 /** How long a failed upload thumbnail stays visible before auto-removal. */
 const ATTACHMENT_ERROR_HIDE_MS = 1500;
 
+/**
+ * Hard ceiling on the post-`done` typewriter hand-over.
+ *
+ * The settle normally ends because the paced text caught up, which is frame
+ * exact. This timer exists for the case where frames stop arriving at all:
+ * `requestAnimationFrame` does not fire in a hidden tab, so a reader who
+ * switches away mid-settle would otherwise come back to a SAVED reply rendered
+ * truncated, with nothing left running to finish it. Deliberately not derived
+ * from the pacing hook's own trailing bound - a cap that trusts the thing it
+ * is capping is not a cap.
+ */
+const SETTLE_MAX_MS = 4000;
+
 /** Distance (px) from the bottom within which the auto-follow stays locked
  * and the jump indicator hides (v1.1 A3 - one shared constant). */
 const BOTTOM_LOCK_PX = 120;
@@ -82,6 +98,7 @@ function nextStagedKey(): string {
 }
 
 export function ChatCanvas() {
+  const qc = useQueryClient();
   const selectedChatId = useUiStore((s) => s.selectedChatId);
   const selectedModelId = useUiStore((s) => s.selectedModelId);
   // Reader preferences: message-body font/leading, applied as CSS variables
@@ -467,9 +484,71 @@ export function ChatCanvas() {
   // StreamingEntry; only the DISPLAYED prefix is paced. MessageList receives
   // displayEntry, so bubbles and the transient stream bubble type smoothly
   // while persistence/abort semantics read the full text.
-  const displayedStreamText = useSmoothStreamText(streamingEntry?.text ?? "", {
+  /**
+   * What the typewriter is currently typing into.
+   *
+   * `live` is the transient streaming bubble. `settling` is the persisted row
+   * that a finished stream handed over to: at `done` the entry clears and the
+   * real row appears holding a SUPERSET of the buffer, so pointing the pacing
+   * hook at the row's content is a plain prefix extension and the typing
+   * carries on across the boundary instead of being cut off. Without it the
+   * unshown remainder lands in one frame - measured at 274 characters, 34
+   * percent of an 800 character reply.
+   *
+   * One value with an exclusive phase, rather than two pieces of state: it
+   * makes "the transient bubble and the row are both on screen" structurally
+   * impossible instead of a timing question.
+   */
+  type StreamTail =
+    | { phase: "live"; text: string }
+    | { phase: "settling"; id: number; text: string };
+
+  const [tail, setTail] = useState<StreamTail | null>(null);
+  const [tailChatId, setTailChatId] = useState<number | null>(selectedChatId);
+  const [prevEntryText, setPrevEntryText] = useState<string | null>(null);
+
+  const entryText = streamingEntry?.text ?? null;
+  // Render-phase adjustment, the same derive-from-prop-change pattern the
+  // pacing hook and MessageList already use.
+  if (selectedChatId !== tailChatId) {
+    // A chat switch drops any settle outright: it belongs to a conversation
+    // the reader has left, and there is no driver for it here any more.
+    setTailChatId(selectedChatId);
+    setPrevEntryText(entryText);
+    setTail(entryText != null ? { phase: "live", text: entryText } : null);
+  } else if (entryText !== prevEntryText) {
+    setPrevEntryText(entryText);
+    if (entryText != null) {
+      setTail({ phase: "live", text: entryText });
+    } else if (prevEntryText != null && selectedChatId != null) {
+      // The entry just cleared. Read the row from the QUERY CLIENT rather than
+      // from the subscribed `messages` snapshot: `done` writes the cache
+      // synchronously and clears the entry in the same batch, so the store
+      // provably holds the row at this instant, while an observer only holds
+      // it if its notification landed in this same React commit. Getting that
+      // wrong disables the whole hand-over silently.
+      const rows = qc.getQueryData<Message[]>(keys.messages(selectedChatId));
+      const adopted = adoptTail(prevEntryText, rows);
+      setTail(
+        adopted == null
+          ? null
+          : { phase: "settling", id: adopted.id, text: adopted.text },
+      );
+    } else {
+      setTail(null);
+    }
+  }
+
+  // `lineage` is what tells a CHAT SWITCH apart from a fast model. Both look
+  // identical from the text alone - "" turning into a lot of characters - and
+  // the hook used to guess by size, which meant any first delta over 200
+  // characters was painted instantly with no typing. The selected chat id is
+  // the real signal, so it is handed over rather than inferred.
+  const displayedStreamText = useSmoothStreamText(tail?.text ?? "", {
     disabled: reduced,
+    lineage: selectedChatId,
   });
+
   const displayEntry = useMemo(
     () =>
       streamingEntry == null
@@ -477,6 +556,37 @@ export function ChatCanvas() {
         : { ...streamingEntry, text: displayedStreamText },
     [streamingEntry, displayedStreamText],
   );
+
+  // The settling row, or null once the typewriter has caught up. Returning
+  // null is what performs the swap: the row stops being handed a paced prefix
+  // and renders its own full content, in the same frame, with identical text.
+  const pacedRow =
+    tail?.phase === "settling" && displayedStreamText.length < tail.text.length
+      ? { id: tail.id, text: displayedStreamText }
+      : null;
+
+  // Read by the group-change scroll effect, which must not start a smooth
+  // animation while the paced row is still growing under it.
+  const isSettling = pacedRow != null;
+
+  // Armed once per settle, on the tail's identity. Not on the displayed
+  // length: a timer that restarts whenever the text grows is not a ceiling.
+  useEffect(() => {
+    if (tail?.phase !== "settling") return;
+    const timer = setTimeout(() => setTail(null), SETTLE_MAX_MS);
+    return () => clearTimeout(timer);
+  }, [tail]);
+
+  // Ordinary end of a settle: the paced text reached the row. Done in the
+  // render phase, not an effect - `pacedRow` above has already gone null in
+  // THIS pass, so the row is rendering its own content either way; this only
+  // retires the bookkeeping, and an effect would cost an extra commit to do it.
+  if (
+    tail?.phase === "settling" &&
+    displayedStreamText.length >= tail.text.length
+  ) {
+    setTail(null);
+  }
 
   const lastMessage =
     messages && messages.length > 0 ? messages[messages.length - 1] : null;
@@ -608,7 +718,13 @@ export function ChatCanvas() {
         beginProgrammaticScroll();
         el.scrollTo({
           top: el.scrollHeight,
-          behavior: reduced ? "instant" : "smooth",
+          // A settle in progress means the row below is still growing every
+          // frame, and the per-frame instant follow already holds the bottom.
+          // Starting a SMOOTH scroll here as well leaves two animations
+          // fighting for the same scrollTop for the length of the settle,
+          // which is exactly the rubber-band the follow effect below was
+          // written to avoid.
+          behavior: reduced || isSettling ? "instant" : "smooth",
         });
       } else {
         bumpUnseen();
@@ -620,6 +736,7 @@ export function ChatCanvas() {
     lastMessageId,
     lastMessage?.role,
     reduced,
+    isSettling,
     beginProgrammaticScroll,
     bumpUnseen,
   ]);
@@ -989,6 +1106,7 @@ export function ChatCanvas() {
               onAbortGeneration={handleStop}
               onEditMessage={handleEditMessage}
               streaming={displayEntry}
+              pacedRow={pacedRow}
             />
           ) : (
             <EmptyState />

@@ -12,6 +12,8 @@ import {
   useSmoothStreamText,
   snapToGraphemeBoundary,
   advanceToBoundary,
+  MAX_LAG_MS,
+  SMOOTH_CPS,
 } from "@/lib/chat/useSmoothStreamText";
 
 let rafCallbacks: FrameRequestCallback[] = [];
@@ -40,7 +42,7 @@ afterEach(() => {
 describe("useSmoothStreamText", () => {
   it("disabled: passes the target through verbatim", () => {
     const { result, rerender } = renderHook(
-      ({ target }) => useSmoothStreamText(target, { disabled: true }),
+      ({ target }) => useSmoothStreamText(target, { lineage: 1, disabled: true }),
       { initialProps: { target: "" } },
     );
     rerender({ target: "full text at once" });
@@ -49,7 +51,7 @@ describe("useSmoothStreamText", () => {
 
   it("paces monotonically and eventually catches up", () => {
     const { result, rerender } = renderHook(
-      ({ target }) => useSmoothStreamText(target),
+      ({ target }) => useSmoothStreamText(target, { lineage: 1 }),
       { initialProps: { target: "" } },
     );
     rerender({ target: "Hello smooth streaming world." });
@@ -70,7 +72,7 @@ describe("useSmoothStreamText", () => {
 
   it("never trails the buffer once frames advance past MAX_LAG", () => {
     const { result, rerender } = renderHook(
-      ({ target }) => useSmoothStreamText(target),
+      ({ target }) => useSmoothStreamText(target, { lineage: 1 }),
       { initialProps: { target: "" } },
     );
     const text = "x".repeat(150);
@@ -86,7 +88,7 @@ describe("useSmoothStreamText", () => {
 
   it("resets instantly when the target is not an extension (regenerate)", () => {
     const { result, rerender } = renderHook(
-      ({ target }) => useSmoothStreamText(target),
+      ({ target }) => useSmoothStreamText(target, { lineage: 1 }),
       { initialProps: { target: "old reply text" } },
     );
     expect(result.current).toBe("old reply text"); // initial state = target
@@ -99,15 +101,126 @@ describe("useSmoothStreamText", () => {
     expect("ne".startsWith(result.current)).toBe(true); // paces the new text
   });
 
-  it("H13: a huge single jump snaps instead of retyping (chat switch)", () => {
+  it("H13: switching INTO a streaming chat snaps instead of retyping", () => {
+    // The lineage key is what makes this a switch. Chat A is idle, chat B is
+    // already mid-stream: the text on B's wire was produced while the user was
+    // somewhere else, so retyping it would replay something they never saw.
     const { result, rerender } = renderHook(
-      ({ target }) => useSmoothStreamText(target),
-      { initialProps: { target: "" } },
+      ({ target, lineage }) => useSmoothStreamText(target, { lineage }),
+      { initialProps: { target: "", lineage: 1 } },
     );
     const bigStreamedText = "chat B already streamed this much text. ".repeat(10);
-    rerender({ target: bigStreamedText });
+    rerender({ target: bigStreamedText, lineage: 2 });
     // No retype-from-zero: the full text is shown without pumping frames.
     expect(result.current).toBe(bigStreamedText);
+  });
+
+  it("a fast model's first delta is TYPED, however big it is", () => {
+    // The bug this replaced: the snap above used to be inferred from SIZE
+    // alone (a jump over 200 characters). At the start of a stream shownLen
+    // and prevTarget.length are both 0, so that test always read as "caught
+    // up" - and a fast model whose first delta carried more than 200
+    // characters had its entire reply painted in one frame. Measured: the
+    // cliff sat exactly at 201. Same chat, so nothing may appear at once.
+    const { result, rerender } = renderHook(
+      ({ target }) => useSmoothStreamText(target, { lineage: 7 }),
+      { initialProps: { target: "" } },
+    );
+    const wholeReply = "x".repeat(800);
+    rerender({ target: wholeReply });
+
+    expect(
+      result.current.length,
+      "the whole reply was painted before a single frame ran",
+    ).toBeLessThan(wholeReply.length);
+
+    // And it does arrive, by typing, within the trailing bound.
+    let t = 0;
+    let frames = 0;
+    while (result.current.length < wholeReply.length && frames < 400) {
+      t += 16;
+      pump(t);
+      frames += 1;
+    }
+    expect(result.current).toBe(wholeReply);
+    expect(frames, "typing it took no frames at all").toBeGreaterThan(1);
+  });
+
+  it("a lineage change to SMALL text still shows exactly that text", () => {
+    // Switching to an idle chat: nothing to retype, nothing to withhold.
+    const { result, rerender } = renderHook(
+      ({ target, lineage }) => useSmoothStreamText(target, { lineage }),
+      { initialProps: { target: "streaming in chat A", lineage: 1 } },
+    );
+    rerender({ target: "", lineage: 2 });
+    expect(result.current).toBe("");
+  });
+
+  /**
+   * Drive one backlog to completion at 60 fps and report what it cost.
+   * Frames are pumped one callback at a time, the way the browser does it.
+   */
+  function drainProfile(total: number) {
+    const { result, rerender } = renderHook(
+      ({ target }) => useSmoothStreamText(target, { lineage: 1 }),
+      { initialProps: { target: "" } },
+    );
+    rerender({ target: "a".repeat(total) });
+    let t = 0;
+    let frames = 0;
+    let prev = result.current.length;
+    let biggestFrame = 0;
+    while (result.current.length < total && frames < 5000) {
+      t += 16;
+      pump(t);
+      frames += 1;
+      biggestFrame = Math.max(biggestFrame, result.current.length - prev);
+      prev = result.current.length;
+    }
+    return { ms: frames * 16, biggestFrame, done: result.current.length === total };
+  }
+
+  it("honours MAX_LAG_MS even on an absurd backlog", () => {
+    // The bound used to be dead code: `rate += lag / CATCHUP_TAU_MS` already
+    // exceeded `lag / MAX_LAG_MS`, so the Math.max could never win. Worse, the
+    // expression itself is not a deadline - used as a rate against a shrinking
+    // lag it decays exponentially and never arrives. Measured with that form:
+    // 12000 characters took 1712 ms and 24000 took 1920 ms against a promise
+    // of 1500. 24000 is chosen deliberately: the old law is ~28% over there,
+    // far outside the one-frame tolerance below.
+    const p = drainProfile(24000);
+    expect(p.done, "the backlog never finished draining").toBe(true);
+    expect(
+      p.ms,
+      "the display trailed the buffer for longer than MAX_LAG_MS promises",
+    ).toBeLessThanOrEqual(MAX_LAG_MS + 32);
+  });
+
+  it("keeps ordinary replies under the smoothness ceiling", () => {
+    // SMOOTH_CPS is what stops a burst being painted as a block. Measured
+    // before it existed: 2000 characters revealed 109 in a single frame and
+    // 5000 revealed 269, which reads as a paragraph appearing, not as typing.
+    const perFrame = Math.round(SMOOTH_CPS / 60);
+    const p = drainProfile(2000);
+    expect(p.done).toBe(true);
+    expect(
+      p.biggestFrame,
+      `a single frame revealed ${p.biggestFrame} characters, over the ${perFrame} ceiling`,
+    ).toBeLessThanOrEqual(perFrame + 1);
+  });
+
+  it("lets the deadline override the ceiling when it has to", () => {
+    // The positive control for the test above, and the deliberate trade-off
+    // written down: the two constraints genuinely conflict once the backlog is
+    // large enough, and the bounded delay is the one that wins. Without this,
+    // "never exceeds the ceiling" would also be satisfied by a hook that was
+    // simply too slow to keep its own promise.
+    const perFrame = Math.round(SMOOTH_CPS / 60);
+    const p = drainProfile(24000);
+    expect(
+      p.biggestFrame,
+      "the ceiling was never exceeded, so MAX_LAG_MS cannot have been met",
+    ).toBeGreaterThan(perFrame);
   });
 
   it("I10: never splits grapheme clusters (ZWJ family, skin tone, flag, accent)", () => {

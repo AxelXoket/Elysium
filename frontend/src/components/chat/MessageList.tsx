@@ -90,6 +90,15 @@ interface MessageListProps {
   onEditMessage?: (messageId: number, newText: string) => void;
   /** Active streaming state for THIS chat (accumulating text), if any. */
   streaming?: StreamingEntry | null;
+  /**
+   * A PERSISTED row that is still being typed out.
+   *
+   * Set for the window after `done`, while the typewriter finishes the text
+   * the stream handed over. Reuses the bubble's existing `streamingText` slot
+   * rather than adding a second renderer, so the paced prefix and the row's
+   * own content can never be on screen at the same time.
+   */
+  pacedRow?: { id: number; text: string } | null;
 }
 
 /* memo: ChatCanvas re-renders per composer keystroke (live drafts) and per
@@ -105,6 +114,7 @@ export const MessageList = memo(function MessageList({
   onAbortGeneration,
   onEditMessage,
   streaming,
+  pacedRow,
 }: MessageListProps) {
   const { data: messages, isLoading, error } = useMessages(chatId);
 
@@ -270,7 +280,9 @@ export const MessageList = memo(function MessageList({
               streamingText={
                 regenTargetAnchor === anchor && streaming!.text.length > 0
                   ? streaming!.text
-                  : null
+                  : pacedRow != null && pacedRow.id === display.id
+                    ? pacedRow.text
+                    : null
               }
             />
           </AnimatedListItem>

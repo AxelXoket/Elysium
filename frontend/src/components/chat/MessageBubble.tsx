@@ -637,7 +637,18 @@ export const MessageBubble = memo(function MessageBubble({
                   // Handing that over would copy a reply the reader is not
                   // looking at - the exact shape of KÖK 15, which the Speak
                   // button next to it already had to be rescued from.
-                  text={showDots ? "" : paneText}
+                  // A PERSISTED row copies its whole content, not the paced
+                  // prefix. "Copy what is on screen" was written for the
+                  // transient bubble, where no row exists to copy; once the
+                  // reply is saved and only the typewriter is still catching
+                  // up, handing over a half-typed string would copy less than
+                  // the reader can already see finishing in front of them.
+                  // `showDots` stays FIRST: during a regenerate's
+                  // pre-first-delta window the row is persisted too, and
+                  // paneText is the PREVIOUS variant in full (KOK 15).
+                  text={
+                    showDots ? "" : isPersisted ? shownMessage.content : paneText
+                  }
                   isUser={isUser}
                 />
               )}
