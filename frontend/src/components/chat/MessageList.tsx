@@ -258,14 +258,19 @@ export const MessageList = memo(function MessageList({
   return (
     <div className="chat-gutter py-8">
       <AnimatedList className="space-y-4">
-        {displayEntries.map(({ anchor, rows, display }, index) => (
-          <AnimatedListItem
-            key={keyFor(display, anchor)}
-            // FF5: only the newest window animates in - older history renders
-            // statically so a long chat's bottom bubble is never stagger-gated.
-            animated={index >= displayEntries.length - ANIMATED_TAIL_GROUPS}
-          >
+        {displayEntries.map(({ anchor, rows, display }, index) => {
+          // FF5: only the newest window animates in - older history renders
+          // statically so a long chat's bottom bubble is never stagger-gated.
+          // Hoisted out of the prop so the BUBBLE gets it too: each one wraps
+          // itself in its own FadeIn, and ungated that meant opening a
+          // three-hundred-message chat started three hundred tweens at once,
+          // whatever this flag said about the list around them.
+          const animated =
+            index >= displayEntries.length - ANIMATED_TAIL_GROUPS;
+          return (
+          <AnimatedListItem key={keyFor(display, anchor)} animated={animated}>
             <MessageBubble
+              animated={animated}
               chatId={chatId}
               message={display}
               messages={messages}
@@ -286,7 +291,8 @@ export const MessageList = memo(function MessageList({
               }
             />
           </AnimatedListItem>
-        ))}
+          );
+        })}
       </AnimatedList>
 
       {/* Streaming assistant bubble - transient, not in cache */}

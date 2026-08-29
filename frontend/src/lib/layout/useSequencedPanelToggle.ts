@@ -13,13 +13,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
  * holds its width, then the column moves on its own:
  *
  *   collapsing (space appears):  panel closes  ->  then column widens
- *   expanding  (space needed):   column narrows ->  then panel opens
+ *   expanding  (space needed):   both go at once, column faster
  *
- * The order flips because the column may never be wider than the canvas holding
- * it. On collapse the canvas grows first, so a held-back column always fits. On
- * expand the canvas is about to shrink, so the column has to give up its width
- * BEFORE the panel takes it, or it would overflow for the length of the
- * animation.
+ * The two directions differ because the column may never be wider than the
+ * canvas holding it. On collapse the canvas grows first, so a column held at
+ * its old width always fits and can wait its turn. On expand the canvas is
+ * about to shrink, so the column has to be giving up width at least as fast as
+ * the panel takes it - which a shorter duration on the same easing guarantees
+ * at every instant. Making expand wait its turn instead was tried and felt like
+ * lag: nothing moved for a third of a second after the press.
  *
  * WHY A PINNED PIXEL WIDTH AND NOT A DELAY. A `transition-delay` on the column
  * cannot help: the column has no width of its own to delay, it inherits the
@@ -85,21 +87,30 @@ export function useSequencedPanelToggle(
 
       setAnimating(true);
       if (opening) {
-        // Narrow first, so the column has already made room by the time the
-        // panel arrives. `Math.max` guards a window narrow enough that the
-        // panel would leave nothing: the column stops at 1px rather than
-        // going negative and disappearing.
+        // BOTH START NOW. An earlier version waited COLUMN_MS before letting
+        // the panel go, so that the column had already made room; pressing the
+        // handle then did nothing visible for a third of a second and read as
+        // lag, which is worse than anything it was buying.
+        //
+        // Starting together is safe because the column is the FASTER of the
+        // two. The panel takes its width on an eased curve over PANEL_MS while
+        // the column gives it up on the same curve over the shorter
+        // COLUMN_MS, and an easing function is monotonic - so at every instant
+        // the column has already surrendered at least as much as the panel has
+        // claimed, and it never overflows the canvas. (`max-width: 100%` on
+        // the column is the belt to that braces.)
+        //
+        // `Math.max` guards a window narrow enough that the panel would leave
+        // nothing: the column stops at 1px rather than going negative.
         const target = Math.max(1, available - incomingPanelWidth());
         setColumnWidth(available);
+        toggle();
         // One frame at the current width before the target lands, or the
         // browser has no start value to interpolate from and it snaps.
         after(0, () => setColumnWidth(target));
-        after(COLUMN_MS, () => {
-          toggle();
-          after(PANEL_MS, () => {
-            setColumnWidth(null);
-            setAnimating(false);
-          });
+        after(PANEL_MS, () => {
+          setColumnWidth(null);
+          setAnimating(false);
         });
         return;
       }

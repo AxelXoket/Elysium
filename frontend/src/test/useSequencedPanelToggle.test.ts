@@ -67,26 +67,34 @@ describe("panel and column take turns", () => {
     expect(view.result.current.animating).toBe(false);
   });
 
-  it("narrows the column first when a panel is opening", () => {
-    // The order flips, and it has to: the canvas is about to shrink, so a
-    // column still holding the old width would overflow for the whole
-    // animation.
+  it("opens the panel on the press, with no wait", () => {
+    // The press must do something immediately. An earlier version held the
+    // panel back until the column had made room, and a third of a second of
+    // nothing reads as a broken button.
     const available = { value: GROWN_CANVAS };
     const { toggle, view } = setup(available);
 
     act(() => view.result.current.run(toggle, true));
-    expect(toggle, "the panel opened before the column made room").not.toHaveBeenCalled();
+    expect(
+      toggle,
+      "the panel is waiting on the column again; the press feels dead",
+    ).toHaveBeenCalledTimes(1);
 
     act(() => void vi.advanceTimersByTime(0));
     expect(view.result.current.columnWidth).toBe(GROWN_CANVAS - PANEL_W);
-    expect(toggle).not.toHaveBeenCalled();
-
-    act(() => void vi.advanceTimersByTime(COLUMN_MS));
-    expect(toggle).toHaveBeenCalledTimes(1);
 
     act(() => void vi.advanceTimersByTime(PANEL_MS));
     expect(view.result.current.columnWidth).toBeNull();
     expect(view.result.current.animating).toBe(false);
+  });
+
+  it("gives the column less time than the panel when opening", () => {
+    // The safety property behind starting them together: the column has to be
+    // surrendering width at least as fast as the panel takes it, or it
+    // overflows the shrinking canvas. Equal durations would put them exactly
+    // level and leave nothing for rounding; the column must be strictly
+    // quicker.
+    expect(COLUMN_MS).toBeLessThan(PANEL_MS);
   });
 
   it("starts from the current width so the browser has something to animate", () => {

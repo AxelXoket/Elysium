@@ -8,7 +8,12 @@ import {
 } from "react";
 import { useMutationState, useQueryClient } from "@tanstack/react-query";
 import { useUiStore } from "@/lib/store/uiStore";
-import { useSequencedPanelToggle } from "@/lib/layout/useSequencedPanelToggle";
+import {
+  useSequencedPanelToggle,
+  PANEL_MS,
+  COLUMN_MS,
+} from "@/lib/layout/useSequencedPanelToggle";
+import { holdReaderPlace } from "@/lib/layout/holdReaderPlace";
 
 /** The scroll box the message column lives in. Named so the collapse
  *  sequencer can measure it without holding a ref to it. */
@@ -149,6 +154,41 @@ export function ChatCanvas() {
   // One pin, two sources: only one panel can be mid-sequence at a time
   // because a second press clears the first, so whichever is pinned wins.
   const columnWidth = leftSequence.columnWidth ?? rightSequence.columnWidth;
+
+  /**
+   * Every panel press goes through here so the reader keeps their place.
+   *
+   * The column re-wraps once, during its own phase of the sequence, and the
+   * bubbles ABOVE the viewport re-wrap with it - which moves the document
+   * under a `scrollTop` nobody changed. Native scroll anchoring cannot cover
+   * it (see holdReaderPlace for why), so the hold runs for the whole sequence:
+   * both phases, both directions, since expand animates the column first and
+   * collapse animates it last.
+   *
+   * The settle callback re-measures `nearBottom` directly. That number is
+   * otherwise only ever recomputed from a `scroll` event, and a layout-driven
+   * height change fires none - leaving a stale "the reader is at the bottom"
+   * that would make the NEXT reply scroll them a second time from wherever
+   * they actually ended up. Calling the measurement rather than dispatching a
+   * synthetic scroll matters: portalled menus close on scroll to stay attached
+   * to their anchor, so the fake event shut whatever the reader had open.
+   */
+  const holdRef = useRef<(() => void) | null>(null);
+  const recomputeNearBottomRef = useRef<(() => void) | null>(null);
+  const pressPanel = useCallback((start: () => void) => {
+    holdRef.current?.();
+    // By id, not through `scrollRef`: that ref is written from a callback ref,
+    // and passing it into a hook makes every later write to it a lint error.
+    const el = document.getElementById(CHAT_SCROLLER_ID);
+    if (el) {
+      holdRef.current = holdReaderPlace(el, PANEL_MS + COLUMN_MS, () => {
+        holdRef.current = null;
+        recomputeNearBottomRef.current?.();
+      });
+    }
+    start();
+  }, []);
+  useEffect(() => () => holdRef.current?.(), []);
   // Reader preferences: message-body font/leading, applied as CSS variables
   // on <main> so the message area AND the composer inherit them (v1.1 E3).
   const msgFontPx = useUiStore((s) => s.msgFontPx);
@@ -714,10 +754,16 @@ export function ChatCanvas() {
         }
       }
     };
+    // Published so a layout-driven height change can ask for a re-measure
+    // without faking a scroll event. Portalled popups close on scroll to stay
+    // attached to their anchor, so dispatching one to fix a number would shut
+    // whatever menu the reader had open.
+    recomputeNearBottomRef.current = update;
     const initialMeasure = requestAnimationFrame(update);
     el.addEventListener("scroll", update, { passive: true });
     return () => {
       cancelAnimationFrame(initialMeasure);
+      recomputeNearBottomRef.current = null;
       el.removeEventListener("scroll", update);
     };
   }, [selectedChatId]);
@@ -1133,13 +1179,17 @@ export function ChatCanvas() {
         <PanelToggleButton
           side="left"
           collapsed={sidebarCollapsed}
-          onToggle={() => leftSequence.run(toggleSidebar, sidebarCollapsed)}
+          onToggle={() =>
+            pressPanel(() => leftSequence.run(toggleSidebar, sidebarCollapsed))
+          }
         />
         <PanelToggleButton
           side="right"
           collapsed={rightPanelCollapsed}
           onToggle={() =>
-            rightSequence.run(toggleRightPanel, rightPanelCollapsed)
+            pressPanel(() =>
+              rightSequence.run(toggleRightPanel, rightPanelCollapsed),
+            )
           }
         />
         <div

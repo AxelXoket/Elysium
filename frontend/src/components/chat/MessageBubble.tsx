@@ -56,6 +56,13 @@ interface MessageBubbleProps {
   /** Called with (messageId, newText) when a user-message edit is saved -
    * the tail is discarded and the assistant rewrites (v1.1 C3). */
   onEditMessage?: (messageId: number, newText: string) => void;
+  /**
+   * Whether this row plays its entrance. False for history far from the
+   * bottom: the list already skips the stagger for those, but each bubble
+   * also carries its own fade, and ungated a long chat opened with one tween
+   * per message.
+   */
+  animated?: boolean;
   /** True when a regenerate for this chat is in flight (spinner). */
   regenerating?: boolean;
   /** True when a send or regenerate for this chat is in flight - mutual
@@ -83,6 +90,7 @@ export const MessageBubble = memo(function MessageBubble({
   onActivateVariant,
   onAbortGeneration,
   onEditMessage,
+  animated = true,
   regenerating,
   pendingForChat,
   streamingText,
@@ -539,7 +547,7 @@ export const MessageBubble = memo(function MessageBubble({
   const showDots = isStreamingTarget && streamingText == null;
 
   return (
-    <FadeIn duration={0.15}>
+    <FadeIn duration={0.15} enabled={animated}>
       <div
         className={`flex items-center gap-1.5 ${
           isUser ? "justify-end" : "justify-start"
