@@ -50,6 +50,7 @@ const PERSISTED = [
   "selectedChatId",
   "activeRightPanelTab",
   "sidebarCollapsed",
+  "rightPanelCollapsed",
   "msgFontPx",
   "msgLineHeight",
   "msgContrast",

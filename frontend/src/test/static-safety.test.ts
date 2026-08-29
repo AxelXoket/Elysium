@@ -199,6 +199,11 @@ const PERSISTED_KEY_SHAPES: Record<string, PersistedShape> = {
     accepts: isBool,
     sample: true,
   },
+  rightPanelCollapsed: {
+    why: "The other half of the same window furniture - focus mode closes the two side panels independently, so each carries its own boolean.",
+    accepts: isBool,
+    sample: true,
+  },
   msgFontPx: {
     why: "Reader type size, bounded by the store's own constants.",
     accepts: inRange(MSG_FONT_MIN, MSG_FONT_MAX),

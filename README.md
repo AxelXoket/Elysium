@@ -201,7 +201,10 @@ Everything below is for running from source.
 ### Prerequisites
 
 - **Python 3.13** (3.12+ compatible)
-- **Node.js 20+** with npm
+- **Node.js `^20.19.0 || ^22.13.0 || >=24`** with npm. Not plain "20+":
+  vite needs 20.19, eslint and jsdom need 22.13, and 21.x and 23.x satisfy
+  neither. The same range is declared in `frontend/package.json` `engines`,
+  and a test binds these two together
 - **OS keyring** - not needed for a new install. Secrets live in the encrypted
   vault; the keyring is read once, and only to migrate an older setup out of it
 

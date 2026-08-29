@@ -24,18 +24,36 @@ import { PersonaPanel } from "@/components/persona/PersonaPanel";
 export function RightPanel() {
   const activeTab = useUiStore((s) => s.activeRightPanelTab);
   const setActiveTab = useUiStore((s) => s.setActiveRightPanelTab);
+  const collapsed = useUiStore((s) => s.rightPanelCollapsed);
 
   return (
     <aside
-      className="glass-right relative flex h-full flex-col border-l"
+      className={`glass-right es-side-panel relative flex h-full flex-col${
+        collapsed ? "" : " border-l"
+      }`}
+      id="es-right-panel"
+      aria-label="Models, security and notes"
+      data-collapsed={collapsed}
+      inert={collapsed || undefined}
+      aria-hidden={collapsed || undefined}
       style={{
-        width: "var(--right-panel-width)",
-        minWidth: "var(--right-panel-width)",
+        width: collapsed ? "0px" : "var(--right-panel-width)",
+        minWidth: collapsed ? "0px" : "var(--right-panel-width)",
+        // Same pixel as the sidebar's: a transparent border is still a
+        // border. The border-l class itself is dropped while collapsed.
         borderColor: "var(--color-es-glass-border-warm)",
-        boxShadow: "var(--shadow-panel)",
+        boxShadow: collapsed ? "none" : "var(--shadow-panel)",
       }}
     >
+      {/* Same rule as the sidebar: clipped is not gone, so the whole body goes
+          inert while collapsed rather than staying tabbable behind a zero
+          width. The Tabs body below is deliberately left at its original
+          indentation - re-indenting it would bury this change in noise. */}
+      {/* Outside the wrapper for the same reason as the sidebar's: a direct
+          child of the glass surface owns the stacking context the mist's
+          negative z-index depends on. */}
       <PanelMist side="right" />
+      <div className="es-side-panel-inner flex h-full min-w-[var(--right-panel-width)] flex-col">
       <Tabs
         value={activeTab}
         onValueChange={(v) =>
@@ -112,6 +130,7 @@ export function RightPanel() {
           <WorkerPanel />
         </TabsContent>
       </Tabs>
+      </div>
     </aside>
   );
 }

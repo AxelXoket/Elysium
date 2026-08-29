@@ -190,6 +190,27 @@ function ChatListItem({
   const [confirmAction, setConfirmAction] = useState<"clear" | "delete" | null>(
     null,
   );
+
+  // Collapsing the sidebar cannot hide what the sidebar opened OUTSIDE itself.
+  // This menu renders through a portal into document.body, so it is not a DOM
+  // descendant of the panel and `inert` never reaches it: it would sit at
+  // stale coordinates, visible and fully focusable, beside a panel that is now
+  // zero pixels wide. Its own dismissal is pointer-driven, so a keyboard user
+  // who tabs to the handle and presses Enter fires no pointer event and
+  // nothing closes it - the same shape as the failure Collapse.tsx is named
+  // for, with a longer rope. Closed, not hidden.
+  //
+  // Render-phase reset, not an effect: the popup has to be gone in the SAME
+  // commit the panel shuts, not one commit later.
+  const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
+  const [prevCollapsed, setPrevCollapsed] = useState(sidebarCollapsed);
+  if (sidebarCollapsed !== prevCollapsed) {
+    setPrevCollapsed(sidebarCollapsed);
+    if (sidebarCollapsed) {
+      setMenuOpen(false);
+      setConfirmAction(null);
+    }
+  }
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState("");
   const selectedChatId = useUiStore((s) => s.selectedChatId);

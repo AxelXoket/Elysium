@@ -11,6 +11,16 @@ pydantic>=2.7.0
 starlette>=1.0.1
 pillow>=10.0
 python-multipart>=0.0.9
+# Declared here because thirteen shipped runtime modules import anyio.to_thread
+# directly (openrouter, proxy_health, notebook_worker, tts/stream_hook and nine
+# routers). It arrived in the lock as an httpx/starlette transitive, and it was
+# named only in requirements-dev.txt, whose comment scopes it to the test
+# plugin - so if either upstream ever drops it, the lock regenerates without it
+# and the exe fails at import while the dev-file comment makes the absence look
+# deliberate. Declaring it is what stops a transitive from silently becoming
+# load-bearing. The resolved version does not move: 4.13.0 is already pinned
+# and hashed in requirements.lock.txt.
+anyio>=4.0
 # Capped below 0.6: this wheel bundles the SQLCipher native lib, and a major
 # cipher-default bump could stop opening existing raw-key vaults on pip -U.
 sqlcipher3-wheels>=0.5.7,<0.6

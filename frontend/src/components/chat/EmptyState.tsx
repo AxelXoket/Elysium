@@ -3,7 +3,7 @@ import { Wordmark } from "@/components/brand/Wordmark";
 
 export function EmptyState() {
   return (
-    <div className="flex h-full items-center justify-center p-8">
+    <div className="chat-gutter flex h-full items-center justify-center py-8">
       <div
         className="flex flex-col items-center rounded-xl px-10 py-12 text-center"
         style={{

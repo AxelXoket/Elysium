@@ -51,6 +51,7 @@ anyio==4.13.0 \
     --hash=sha256:334b70e641fd2221c1505b3890c69882fe4a2df910cba14d97019b90b24439dc
     # via
     #   -c current.txt
+    #   -r requirements.txt
     #   httpx
     #   starlette
     #   watchfiles

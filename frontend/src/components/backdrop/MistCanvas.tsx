@@ -31,6 +31,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { bufferSizeFor } from "@/components/backdrop/mistBuffer";
 import { useUiStore } from "@/lib/store/uiStore";
 import { useReducedMotion } from "@/components/motion/ReducedMotion";
 
@@ -361,15 +362,20 @@ function FogGL({
     };
 
     const resize = () => {
-      const w = canvas.clientWidth || window.innerWidth;
-      const h = canvas.clientHeight || window.innerHeight;
-      const long = Math.max(w, h);
-      const k = long > maxEdge ? maxEdge / long : 1;
-      const nextW = Math.max(1, Math.round(w * k));
-      const nextH = Math.max(1, Math.round(h * k));
-      // Assigning width/height CLEARS the buffer to spec-black even when the
-      // value is unchanged - skip no-ops, and repaint immediately after a
-      // real change so window-drag never flashes dark canvases.
+      // Null at zero size, never a window-sized guess - see bufferSizeFor.
+      // Keeping the last good buffer means re-opening a panel does not have
+      // to rebuild one.
+      const next = bufferSizeFor(canvas.clientWidth, canvas.clientHeight, maxEdge);
+      if (!next) return;
+      const { width: nextW, height: nextH } = next;
+      // Skip no-ops, and repaint immediately after a real change so a
+      // window drag never flashes dark canvases. (The guard is right; the
+      // reason it used to give was a 2D-canvas rule. For WebGL the drawing
+      // buffer is cleared when the SIZE CHANGES, not on every assignment -
+      // Khronos WebGL 1.0 2.2 - so an unchanged value would be harmless
+      // here. It is skipped anyway: a size change also drops the GPU's
+      // buffer-recycle cache, and this now runs on every frame of a 420ms
+      // panel sweep rather than only on window resizes.)
       if (nextW === canvas.width && nextH === canvas.height) return;
       canvas.width = nextW;
       canvas.height = nextH;
@@ -421,7 +427,27 @@ function FogGL({
     canvas.addEventListener("webglcontextlost", onLost);
     canvas.addEventListener("webglcontextrestored", onRestored);
     document.addEventListener("visibilitychange", onVisibility);
-    window.addEventListener("resize", resize);
+    // The ELEMENT, not the window. Every one of these canvases changes size
+    // without the window doing anything: both side panels animate their width
+    // over `--duration-layout`, and the chat canvas is their flex sibling, so
+    // collapsing a panel widens it by ~320px. A window listener sees none of
+    // that, so the drawing buffer kept a stale aspect and the compositor
+    // stretched the bitmap to cover the new box. Observing the canvas also
+    // subsumes the window case: the page instance fills a 100vw box, so a real
+    // window resize reaches it here too.
+    //
+    // ResizeObserver fires at most once per frame per element, so a 300ms
+    // width transition costs about 18 callbacks - each one a redraw at the
+    // panel's own small size. Debouncing to the end of the transition would
+    // be worse and visibly so: the panel would show the stale, stretched
+    // buffer for the whole animation and then snap.
+    //
+    // `contain: layout paint` on .es-side-panel is not SIZE containment, so
+    // the canvas box is still reported normally.
+    const ro =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(resize);
+    if (ro) ro.observe(canvas);
+    else window.addEventListener("resize", resize);
 
     if (gl.isContextLost()) {
       // Rare: context already lost at mount (e.g. a GPU reset mid-load).
@@ -448,7 +474,8 @@ function FogGL({
       canvas.removeEventListener("webglcontextlost", onLost);
       canvas.removeEventListener("webglcontextrestored", onRestored);
       document.removeEventListener("visibilitychange", onVisibility);
-      window.removeEventListener("resize", resize);
+      if (ro) ro.disconnect();
+      else window.removeEventListener("resize", resize);
     };
   }, [onPermanentFailure, rampLo, rampHi, maxEdge, phase]);
 

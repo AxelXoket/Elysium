@@ -30,6 +30,21 @@ export function PersonaStrip() {
   const pushError = useErrorStore((s) => s.pushError);
 
   const [open, setOpen] = useState(false);
+  const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
+  const [prevCollapsed, setPrevCollapsed] = useState(sidebarCollapsed);
+  // Collapsing the sidebar cannot hide what the sidebar opened OUTSIDE itself.
+  // This menu renders through a portal into document.body, so it is not a DOM
+  // descendant of the panel and `inert` never reaches it: it would stay
+  // visible at stale coordinates and fully focusable beside a panel that is
+  // now zero pixels wide. Its own dismissal is pointer-driven, so a keyboard
+  // user who tabs to the handle and presses Enter fires no pointer event and
+  // nothing closes it. Same shape as the failure Collapse.tsx is named for.
+  // Render-phase reset rather than an effect: the popup has to be gone in the
+  // SAME commit the panel shuts, not one commit later.
+  if (sidebarCollapsed !== prevCollapsed) {
+    setPrevCollapsed(sidebarCollapsed);
+    if (sidebarCollapsed) setOpen(false);
+  }
   const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(
     null,
   );

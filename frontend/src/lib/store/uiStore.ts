@@ -121,6 +121,10 @@ interface UiState {
   selectedModelId: string | null;
   activeRightPanelTab: RightPanelTab;
   sidebarCollapsed: boolean;
+  /** Focus mode's other half - the right panel's own collapse flag. Kept
+   *  separate from sidebarCollapsed so either side can close without the
+   *  other, per the panels' own request. */
+  rightPanelCollapsed: boolean;
 
   // Appearance preferences (Settings panel). Message BODIES only - labels,
   // timestamps, and controls never scale with these.
@@ -235,6 +239,7 @@ interface UiState {
   selectModel: (id: string | null) => void;
   setActiveRightPanelTab: (tab: RightPanelTab) => void;
   toggleSidebar: () => void;
+  toggleRightPanel: () => void;
   setMsgFontPx: (px: number) => void;
   setMsgLineHeight: (lh: number) => void;
   setMsgContrast: (level: MsgContrast) => void;
@@ -287,6 +292,7 @@ export const useUiStore = create<UiState>()(
       selectedModelId: null,
       activeRightPanelTab: "models",  // default changed from "settings"
       sidebarCollapsed: false,
+      rightPanelCollapsed: false,
       msgFontPx: MSG_FONT_DEFAULT,
       msgLineHeight: MSG_LINE_DEFAULT,
       msgContrast: "default",
@@ -318,6 +324,8 @@ export const useUiStore = create<UiState>()(
       setActiveRightPanelTab: (tab) => set({ activeRightPanelTab: tab }),
       toggleSidebar: () =>
         set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
+      toggleRightPanel: () =>
+        set((s) => ({ rightPanelCollapsed: !s.rightPanelCollapsed })),
       setMsgFontPx: (px) =>
         set({
           msgFontPx: Math.min(MSG_FONT_MAX, Math.max(MSG_FONT_MIN, px)),
@@ -448,6 +456,7 @@ export const useUiStore = create<UiState>()(
         // UiState's doc comment on the field and the migrate branch above.
         activeRightPanelTab: state.activeRightPanelTab,
         sidebarCollapsed: state.sidebarCollapsed,
+        rightPanelCollapsed: state.rightPanelCollapsed,
         msgFontPx: state.msgFontPx,
         msgLineHeight: state.msgLineHeight,
         msgContrast: state.msgContrast,

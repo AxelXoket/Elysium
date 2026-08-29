@@ -170,3 +170,59 @@ describe("message-ink preview", () => {
     expect(COMPONENTS).toContain("--msg-ink-custom");
   });
 });
+
+/**
+ * The handle's conditional yield to a delete confirmation.
+ *
+ * Same shape as the rest of this file: three numbers in three separate rules
+ * have to stay ordered, and nothing about that ordering is observable in jsdom
+ * (index.css is never loaded into the test DOM, and the outcome is a paint
+ * order, not a value any node carries). So the numbers are read back out of
+ * the stylesheet and compared. Every one is READ, never retyped - hardcoding
+ * "5" here would let the rule and its test drift apart in lockstep.
+ */
+describe("panel handle yields to a delete confirmation", () => {
+  function zIndexOf(selector: string): number {
+    const at = CSS.indexOf(selector + " {");
+    expect(at, `no rule for "${selector}"`).toBeGreaterThan(-1);
+    const block = CSS.slice(at, CSS.indexOf("}", at));
+    const m = block.match(/z-index:\s*(-?\d+)\s*;/);
+    expect(m, `"${selector}" declares no z-index`).not.toBeNull();
+    return Number(m![1]);
+  }
+
+  const YIELD = ".warm-canvas:has(.message-action-confirm) .panel-toggle";
+
+  it("clears the confirm panel while it is open", () => {
+    expect(
+      zIndexOf(YIELD),
+      "the handle still paints over an irreversible choice",
+    ).toBeLessThan(zIndexOf(".message-action-confirm"));
+  });
+
+  it("yields no further than it has to", () => {
+    // The minimal-yield half. Dropping under the hover action row as well
+    // would be a second, unasked-for concession: that row is not irreversible
+    // and the handle is the only way back into a collapsed panel.
+    expect(
+      zIndexOf(YIELD),
+      "the handle gave up more ground than the confirm needed",
+    ).toBeGreaterThan(zIndexOf(".message-actions"));
+  });
+
+  it("stays on top when no confirm is open", () => {
+    // GROUND CONTROL: the yield is conditional. If the base rule had simply
+    // been lowered, both assertions above would still pass while the handle
+    // sat under every bubble all the time.
+    expect(zIndexOf(".panel-toggle")).toBeGreaterThan(
+      zIndexOf(".message-action-confirm"),
+    );
+  });
+
+  it("depends only on selectors components actually render", () => {
+    const src = allComponentSource();
+    for (const cls of ["warm-canvas", "message-action-confirm", "panel-toggle"]) {
+      expect(src.includes(cls), `nothing renders .${cls}`).toBe(true);
+    }
+  });
+});

@@ -172,7 +172,7 @@ export const MessageList = memo(function MessageList({
 
   if (isLoading) {
     return (
-      <div className="space-y-4 px-6 py-8">
+      <div className="chat-gutter space-y-4 py-8">
         {Array.from({ length: 3 }).map((_, i) => (
           <div
             key={i}
@@ -193,7 +193,7 @@ export const MessageList = memo(function MessageList({
 
   if (error) {
     return (
-      <div className="flex items-center justify-center p-8">
+      <div className="chat-gutter flex items-center justify-center py-8">
         <div
           className="flex items-center gap-2 rounded-xl px-4 py-3 text-xs"
           style={{
@@ -256,7 +256,7 @@ export const MessageList = memo(function MessageList({
     streaming?.kind === "regenerate" ? streaming.targetAnchor ?? null : null;
 
   return (
-    <div className="px-6 py-8">
+    <div className="chat-gutter py-8">
       <AnimatedList className="space-y-4">
         {displayEntries.map(({ anchor, rows, display }, index) => (
           <AnimatedListItem

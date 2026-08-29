@@ -46,6 +46,11 @@ export interface ChatBackground {
  * a ratio computed from a height of 0 is Infinity, and callers are expected
  * to fall back rather than to divide by it.
  */
+/** Quiet period after the LAST size change, not a window over the animation:
+ *  the timer restarts on every observation, so a 300ms panel transition
+ *  collapses into exactly one measurement taken 180ms after it stops. */
+const SETTLE_MS = 180;
+
 export function useAreaAspect<T extends HTMLElement>(): {
   ref: (node: T | null) => void;
   aspect: number | null;
@@ -53,9 +58,14 @@ export function useAreaAspect<T extends HTMLElement>(): {
   const [aspect, setAspect] = useState<number | null>(null);
   const observerRef = useRef<ResizeObserver | null>(null);
 
+  const settleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ref = useCallback((node: T | null) => {
     observerRef.current?.disconnect();
     observerRef.current = null;
+    if (settleRef.current != null) {
+      clearTimeout(settleRef.current);
+      settleRef.current = null;
+    }
     if (!node) {
       setAspect(null);
       return;
@@ -74,12 +84,41 @@ export function useAreaAspect<T extends HTMLElement>(): {
     // test environment has no such promise, and a missing observer should
     // cost the zoom, not the wallpaper.
     if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
+    // TRAILING-EDGE ONLY, and the delay is chosen against a real animation:
+    // this observer watches the chat scroller, whose width is swept ~320px by
+    // the side-panel collapse transition. Undebounced it fired on every one of
+    // the ~18 frames in that 300ms, and each firing re-rendered ChatCanvas,
+    // wrote to the ui store, and - because that store is zustand/persist,
+    // which serialises on every set with no diffing - ran a synchronous
+    // serialise-and-write of the whole preference blob to browser storage.
+    // Eighteen synchronous writes on the main thread, while that same thread
+    // is re-wrapping every message bubble, is what turned an ordinary reflow
+    // into the stuttering redraw the owner described. (Phrased without the
+    // literal storage API name on purpose: static-safety S-09 greps for it to
+    // keep persistence inside lib/store, and a comment must not trip a gate.)
+    //
+    // Nothing needs the intermediate values: `aspect` feeds only the wallpaper
+    // crop, which is unobservable until the animation settles. The immediate
+    // `measure()` above still runs on attach, so the first paint is never
+    // delayed - only the storm during an animation is.
+    const observer = new ResizeObserver(() => {
+      if (settleRef.current != null) clearTimeout(settleRef.current);
+      settleRef.current = setTimeout(() => {
+        settleRef.current = null;
+        measure();
+      }, SETTLE_MS);
+    });
     observer.observe(node);
     observerRef.current = observer;
   }, []);
 
-  useEffect(() => () => observerRef.current?.disconnect(), []);
+  useEffect(
+    () => () => {
+      observerRef.current?.disconnect();
+      if (settleRef.current != null) clearTimeout(settleRef.current);
+    },
+    [],
+  );
 
   return { ref, aspect };
 }

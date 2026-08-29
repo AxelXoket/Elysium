@@ -8,6 +8,11 @@ import {
 } from "react";
 import { useMutationState, useQueryClient } from "@tanstack/react-query";
 import { useUiStore } from "@/lib/store/uiStore";
+import { useSequencedPanelToggle } from "@/lib/layout/useSequencedPanelToggle";
+
+/** The scroll box the message column lives in. Named so the collapse
+ *  sequencer can measure it without holding a ref to it. */
+const CHAT_SCROLLER_ID = "es-chat-scroller";
 import { useDraftStore } from "@/lib/store/draftStore";
 import {
   useAreaAspect,
@@ -35,6 +40,7 @@ import { MessageList } from "./MessageList";
 import { EmptyState } from "./EmptyState";
 import { Composer } from "./Composer";
 import { JumpToLatest } from "./JumpToLatest";
+import { PanelToggleButton } from "@/components/layout/PanelToggleButton";
 import { DropZoneOverlay } from "./DropZoneOverlay";
 import { useFileDrop } from "./useFileDrop";
 import {
@@ -101,6 +107,48 @@ export function ChatCanvas() {
   const qc = useQueryClient();
   const selectedChatId = useUiStore((s) => s.selectedChatId);
   const selectedModelId = useUiStore((s) => s.selectedModelId);
+  const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
+  const toggleSidebar = useUiStore((s) => s.toggleSidebar);
+  const rightPanelCollapsed = useUiStore((s) => s.rightPanelCollapsed);
+  const toggleRightPanel = useUiStore((s) => s.toggleRightPanel);
+
+  /**
+   * The panel and the message column take turns; see
+   * useSequencedPanelToggle for why they must not move together.
+   *
+   * Both callbacks read the DOM at press time rather than from state: the
+   * panel widths are `clamp()` expressions against the viewport, so the only
+   * honest source for "how much room is about to change hands" is the panel
+   * that is about to move.
+   */
+  // Queried by id rather than through `scrollRef`: that ref is written from a
+  // callback ref, and passing it into a hook here would make every later write
+  // to it a lint error (react-hooks/immutability). The id is also how the two
+  // panels are measured below, so all three reads use one mechanism.
+  const measureColumn = useCallback(() => {
+    const el = document.getElementById(CHAT_SCROLLER_ID);
+    return el ? el.clientWidth : null;
+  }, []);
+  const measurePanel = useCallback((id: string) => {
+    const el = document.getElementById(id);
+    if (!el) return 0;
+    // offsetWidth while OPEN is the width being given up; while closed it is
+    // 0, so the open width has to come from the declared token instead.
+    const declared = getComputedStyle(el).getPropertyValue("min-width").trim();
+    const px = Number.parseFloat(declared);
+    return Number.isFinite(px) && px > 0 ? px : el.offsetWidth;
+  }, []);
+  const leftSequence = useSequencedPanelToggle(
+    measureColumn,
+    useCallback(() => measurePanel("es-sidebar"), [measurePanel]),
+  );
+  const rightSequence = useSequencedPanelToggle(
+    measureColumn,
+    useCallback(() => measurePanel("es-right-panel"), [measurePanel]),
+  );
+  // One pin, two sources: only one panel can be mid-sequence at a time
+  // because a second press clears the first, so whichever is pinned wins.
+  const columnWidth = leftSequence.columnWidth ?? rightSequence.columnWidth;
   // Reader preferences: message-body font/leading, applied as CSS variables
   // on <main> so the message area AND the composer inherit them (v1.1 E3).
   const msgFontPx = useUiStore((s) => s.msgFontPx);
@@ -1051,19 +1099,23 @@ export function ChatCanvas() {
 
   return (
     <main
-      className="warm-canvas flex flex-1 flex-col overflow-hidden"
+      className="warm-canvas relative flex flex-1 flex-col overflow-hidden"
       // Reader vars live on <main> so the message area AND the composer inherit
       // them together (v1.1 E3 hoist).
       style={
         {
           "--msg-fs": `${msgFontPx}px`,
           "--msg-lh": String(msgLineHeight),
+          // Absent while the column is fluid, so `.chat-gutter` falls back to
+          // 100% and an ordinary window resize behaves exactly as before.
+          ...(columnWidth != null ? { "--chat-col-w": `${columnWidth}px` } : {}),
         } as CSSProperties
       }
       {...dropTargetProps}
     >
       {!chatBgCovers && <CanvasMist />}
       <ErrorToastStack />
+
       {dragActive && <DropZoneOverlay />}
 
       {/* Message area. The relative wrapper hosts the jump indicator OUTSIDE
@@ -1071,7 +1123,27 @@ export function ChatCanvas() {
           with the content) while the scroll div keeps its flex-1/overflow
           classes. */}
       <div className="relative flex min-h-0 flex-1 flex-col">
+        {/* Focus-mode handles. Inside the MESSAGE wrapper, not <main>: <main>
+            also holds the composer, so centring against it put both handles
+            about sixty pixels below the middle of the conversation they are
+            meant to sit beside. This is the same wrapper JumpToLatest uses,
+            and for the same reason - it is the box whose centre a reader
+            would call the centre. They stay outside each panel deliberately,
+            so a handle is still reachable once its panel is zero pixels wide. */}
+        <PanelToggleButton
+          side="left"
+          collapsed={sidebarCollapsed}
+          onToggle={() => leftSequence.run(toggleSidebar, sidebarCollapsed)}
+        />
+        <PanelToggleButton
+          side="right"
+          collapsed={rightPanelCollapsed}
+          onToggle={() =>
+            rightSequence.run(toggleRightPanel, rightPanelCollapsed)
+          }
+        />
         <div
+          id={CHAT_SCROLLER_ID}
           ref={setScrollNode}
           // v1.1 E2: msg-contrast-{level} retunes bubble-surface vars only;
           // it is orthogonal to chat-bg-dark (bare-canvas chrome) and applied

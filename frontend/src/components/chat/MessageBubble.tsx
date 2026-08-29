@@ -116,6 +116,12 @@ export const MessageBubble = memo(function MessageBubble({
   const [hasNavigated, setHasNavigated] = useState(false);
   const selectedModelId = useUiStore((s) => s.selectedModelId);
   const msgOpacity = useUiStore((s) => s.msgOpacity);
+  // The edit box takes its metrics from the reader's own settings (--msg-fs/
+  // --msg-lh, hoisted onto <main> by ChatCanvas), so a change to either one
+  // invalidates the height this bubble measured. Subscribed here purely to
+  // re-run the sizing effect below; the values themselves are never read.
+  const msgFontPx = useUiStore((s) => s.msgFontPx);
+  const msgLineHeight = useUiStore((s) => s.msgLineHeight);
   const deleteMessage = useDeleteMessageAndFollowing();
   const isUser = message.role === "user";
   const isPersisted = message.id > 0;
@@ -336,7 +342,16 @@ export const MessageBubble = memo(function MessageBubble({
     if (!editing || !ta) return;
     ta.style.height = "auto";
     ta.style.height = `${ta.scrollHeight}px`;
-  }, [editing, editDraft]);
+    // msgFontPx/msgLineHeight are in the deps and nowhere in the body on
+    // purpose. The box used to inherit a fixed `text-sm leading-relaxed` from
+    // the shell, so the reader's settings could not change its metrics and a
+    // pinned height stayed correct forever. It now follows --msg-fs/--msg-lh,
+    // so moving either slider while the box is OPEN reflows the text under a
+    // stale height - and with `resize: none` + `overflow: hidden` on the
+    // textarea the overflow is clipped with no scrollbar and no handle to
+    // recover it. The Composer has carried the same dependency since v1.1 E3
+    // (Composer.tsx:129-139) for the same reason.
+  }, [editing, editDraft, msgFontPx, msgLineHeight]);
 
   /**
    * Whether a save can actually land right now.

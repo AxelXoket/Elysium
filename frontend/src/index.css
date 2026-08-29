@@ -2781,14 +2781,28 @@
   animation: inline-action-enter 180ms var(--ease-smooth) both;
 }
 
-/* Role-aware anchoring (v1.1 H5): user bubbles sit on the RIGHT edge, so a
-   right-anchored panel overhangs safely leftwards into the canvas. Assistant
-   bubbles sit on the LEFT edge - the same right anchor would push a 17rem
-   panel past the scroller's left boundary in a narrow bubble and clip it.
-   Anchor those left so the overhang points right, into open canvas. */
-.message-bubble-shell.is-assistant .message-action-confirm {
-  left: 0.5rem;
-  right: auto;
+/* The confirm opens UNDER THE BUTTON THAT OPENED IT, on both roles.
+   `.message-actions` is anchored top-right of every bubble regardless of role
+   (see its rule above), so the delete control the reader just pressed is
+   always at the top-right corner - and a right-anchored panel lands directly
+   beneath it.
+
+   This used to carry a role-aware override that flipped assistant bubbles to
+   `left: 0.5rem`. It was solving a real problem the wrong way: a 17rem panel
+   right-anchored to a NARROW assistant bubble overhangs leftwards past the
+   scroller's edge and clips. But moving the panel to the opposite corner from
+   the button means that on assistant rows - the ones most often deleted - the
+   question about an irreversible action appeared as far from the pointer as
+   the bubble allowed. Proximity beats overhang direction; nothing about a
+   confirmation should require hunting for it.
+
+   The clipping is fixed at its actual cause instead: while a confirm is open
+   the shell takes a floor wide enough to hold the panel, exactly as
+   `.is-editing` does below for exactly the same 17rem-panel-in-a-short-bubble
+   problem. The bubble is already changing shape at that moment - a dialog
+   opened inside it - so a width change reads as part of that, not as drift. */
+.message-bubble-shell:has(.message-action-confirm:not(.is-inline)) {
+  min-width: min(18rem, 80%);
 }
 
 /* Inline user-message edit (v1.1 C3 + H22): a short bubble ("hey") would
@@ -2803,16 +2817,32 @@
   resize: none;
   overflow: hidden;
   border-radius: var(--radius-input);
-  border: 1px solid rgba(200, 216, 236, 0.28);
-  background: rgba(10, 16, 24, 0.22);
+  /* Rest state: NO visible box. The textarea sits directly on the bubble's
+     own surface (bubbleSurface() background, whatever contrast/ink/opacity/
+     finish preset is active) - matching .message-text, which also paints
+     nothing of its own. A border/background here at rest is exactly the
+     "separate window" look this replaces. */
+  border: 1px solid transparent;
+  background: transparent;
   color: inherit;
-  font: inherit;
-  line-height: inherit;
+  /* Was font: inherit / line-height: inherit, which chained up to
+     .message-bubble-shell's FIXED Tailwind text-sm/leading-relaxed classes,
+     not the reader's font-size preference. .message-text uses these two
+     vars explicitly (index.css:2111-2114) - the edit box now matches it
+     exactly, so toggling edit mode no longer changes the text's size.
+     font-family/weight still inherit: Tailwind preflight sets `font: inherit`
+     on textarea (preflight.css:242-244), so dropping the shorthand here does
+     not fall back to the UA's control font. */
+  font-size: var(--msg-fs, 0.875rem);
+  line-height: var(--msg-lh, 1.625);
   padding: 0.4rem 0.55rem;
   outline: none;
+  transition: border-color var(--duration-fast) var(--ease-smooth);
 }
 
 .message-edit-textarea:focus-visible {
+  /* The one visible affordance, and only while actually focused - matches
+     the app's existing focus-visible convention rather than a permanent box. */
   border-color: rgba(200, 216, 236, 0.48);
 }
 
@@ -2867,6 +2897,7 @@
   .message-actions,
   .message-action-button,
   .message-action-confirm,
+  .message-edit-textarea,
   .inline-confirm-button,
   .variant-nav-button,
   .jump-to-latest,
@@ -2909,6 +2940,372 @@
   .es-collapse {
     transition: none;
   }
+}
+
+/* ── Side panel collapse (focus mode) ─────────────────────────────────────
+   Width-axis sibling of .es-collapse above: Sidebar and RightPanel animate to
+   zero width via inline style (the value comes from JS so the same var drives
+   both the open width and the layout math elsewhere), and this class only
+   supplies the transition.
+
+   ONLY the two width properties are transitioned, deliberately. The first
+   version also animated border-color and box-shadow, and a box-shadow is a
+   large blurred region repainted every frame - together they turned a layout
+   animation into a layout-plus-repaint one and the collapse visibly stuttered.
+   Border and shadow now switch instantly at the start of the gesture, which
+   nobody can see behind a panel that is already sliding shut.
+
+   `contain` is the other half of the fix: without it every frame of the width
+   animation re-lays-out the panel's whole subtree - persona strip, character
+   list, chat list - even though that content is clipped and never changes.
+   Containing layout and paint tells the browser the inside cannot affect the
+   outside, so the per-frame cost stops scaling with how much is in the panel. */
+/* The panel sweep gets its own timing, and it is the only thing that uses it.
+   `--duration-layout` (300ms) with `--ease-smooth` is the house curve for a
+   thing appearing; it front-loads, which is right when the eye is being led to
+   something new. It is wrong here. This transition does not move a panel so
+   much as re-lay-out the conversation beside it: 320px over 300ms on a
+   front-loaded curve moves ~30px in the opening frames, and at that rate the
+   wrap points in every bubble jump several words at a time. Successive line
+   breaks arriving in big steps is exactly what reads as the text being
+   retyped.
+
+   A browser window resize looks smooth for a duller reason than easing: a hand
+   drag is slow and roughly constant, so no single frame ever moves the wrap
+   point far. This borrows that - longer, and symmetric rather than
+   front-loaded, so the fastest frame is about 12px instead of 30. Same
+   distance, a third of the per-frame jump.
+
+   Deliberately NOT solved with View Transitions, which was the obvious
+   candidate: per spec the whole document goes inert for the duration, a second
+   toggle snaps the running animation to its end instead of reversing, the
+   behaviour of a captured scroll container is undefined (the chat IS one), and
+   a captured element over the texture-size cap makes the transition skip
+   silently (there are three WebGL canvases here). Chrome's own guidance also
+   notes the group animation still runs layout per frame, so it would not even
+   buy the thing it was being considered for. */
+:root {
+  --duration-panel: 420ms;
+  /* The column's own half of the sequence, shorter than the panel's: it moves
+     less distance and it moves alone, so it does not need the same runway. */
+  --duration-column: 320ms;
+  /* Symmetric ease-in-out. The house `--ease-smooth` is cubic-bezier(.4,0,.2,1),
+     which spends its speed early; this spends it in the middle. */
+  --ease-resize: cubic-bezier(0.4, 0, 0.6, 1);
+}
+
+.es-side-panel {
+  overflow: hidden;
+  contain: layout paint;
+  transition:
+    width var(--duration-panel) var(--ease-resize),
+    min-width var(--duration-panel) var(--ease-resize);
+}
+
+/* The inner wrapper keeps a min-width equal to the panel's own open width so
+   its content does not reflow or squash mid-transition - it is clipped by the
+   outer overflow, not shrunk. No opacity transition here: the clip already
+   removes it, and fading a full panel every frame was a second paint pass
+   buying nothing. */
+.es-side-panel-inner {
+  will-change: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .es-side-panel,
+  .chat-gutter {
+    transition: none;
+  }
+}
+
+/* Same clipping lesson as .settings-voice-params above, one level out. The
+   right panel's tab bodies are FOCUSABLE (Base UI gives an open TabsPanel
+   tabIndex 0, and tabs.tsx adds a ring for exactly that reason), and an
+   element's own ring is never clipped by its OWN overflow - it was painting
+   outward over the canvas. `contain: paint` on the aside gave it a clipping
+   ancestor for the first time and cut the ring on both edges. Four pixels of
+   room INSIDE the clipping box, same as the fix above. */
+.es-side-panel [data-slot="tabs-content"] {
+  /* MARGIN, not padding. The first attempt padded this element and did
+     nothing: TabsContent is `flex-1` under `align-items: stretch`, so its
+     border box still spanned the full width, and a focus ring is drawn
+     OUTSIDE the border box - at unchanged coordinates, still clipped. Only
+     shrinking the box moves the ring. (The precedent this borrowed from,
+     .settings-voice-params, works because the focusable things there are its
+     CHILDREN; here the padded element is itself the focusable one.) */
+  margin-inline: 4px;
+}
+
+/* ── Panel toggle handles (focus mode) ────────────────────────────────────
+   Vertically centred at the chat canvas' own edge - the one strip nothing
+   else claims (jump indicator bottom-centre, toasts top-centre, bubbles cap
+   at 75% width).
+
+   PALETTE. This sits on `.warm-canvas`, which is LIGHT. The first version
+   used the dark-glass rgba the side panels use and measured 1.19:1 against
+   the canvas - technically painted, practically invisible. These values are
+   the ones `.message-action-button` already uses on the same light surface
+   (see its assistant-bubble rule), so the handle reads as a member of the
+   canvas' own control family rather than as a chip borrowed from the panels.
+
+   INSET, not flush. 12px of clearance does two jobs: it keeps the handle off
+   the scroller's own scrollbar track, and it leaves room for the focus ring,
+   which `overflow: hidden` on the canvas would otherwise clip on the anchored
+   edge - the same lesson as .settings-voice-params.
+
+   TWO SHAPES. Open: a soft rounded chevron, quiet enough not to compete with
+   the conversation. Closed: a hard-edged square carrying the panel's subject,
+   because at that point it is the only way back and an arrow would say
+   "something opens here" without saying what. */
+/* One place the handle geometry and the message gutter both read, so the two
+   cannot drift apart. The gutter is inset + closed width + a small gap: with
+   these numbers a bubble stops 6px clear of the handle instead of running
+   under it, which is what it did at the old flat px-6 (24px against a handle
+   that reaches 50px). */
+:root {
+  --panel-toggle-inset: 12px;
+  --panel-toggle-size-closed: 38px;
+  --chat-gutter: calc(
+    var(--panel-toggle-inset) + var(--panel-toggle-size-closed) + 6px
+  );
+}
+
+/* The message column keeps clear of both handles. Deliberately symmetric even
+   though only one side may be collapsed at a time - a gutter that changed with
+   the panels would re-wrap every bubble mid-animation. */
+/* Scroll anchoring OFF on the message column, and only here.
+   Chromium's default anchoring holds a chosen node still by adjusting
+   `scrollTop` whenever content above it changes height. That is the right
+   behaviour for content arriving; it is the wrong one during a panel collapse,
+   where every bubble re-wraps on every frame and the anchor node is itself
+   changing height - so the column slides up and down under text that is
+   already re-flowing. Two motions at once is what made a plain reflow read as
+   the text being retyped.
+   Safe to disable because this app never leans on it: every scroll correction
+   in ChatCanvas is explicit, and content growth is handled by its own `load`
+   listener rather than by the browser. */
+.chat-gutter {
+  overflow-anchor: none;
+  /* Fluid by default: `--chat-col-w` is absent unless a panel is mid-move, so
+     a window resize still flows exactly as it always did. While it IS present
+     the column holds an explicit width and stops following the canvas, which
+     is the entire point - the panel can take or give 320px without a single
+     line break moving. The transition is what carries the column's own half of
+     the sequence afterwards; `max-width` clamps it so a pin can never outgrow
+     the canvas holding it. */
+  width: var(--chat-col-w, 100%);
+  max-width: 100%;
+  margin-inline: auto;
+  transition: width var(--duration-column) var(--ease-resize);
+  padding-left: var(--chat-gutter);
+  /* The scroller reserves a stable gutter for its own scrollbar, so the right
+     handle already sits ~10px further in than the left one. Padding both
+     sides identically left the column optically off-centre against the two
+     handles by that much. Symmetry here means EQUAL CLEARANCE, not equal
+     padding. */
+  padding-right: calc(var(--chat-gutter) - 0.55rem);
+}
+
+.panel-toggle {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 52px;
+  padding: 0;
+  cursor: pointer;
+  /* NO BOX. The 26x52 is a hit area and nothing else - the only thing that
+     paints is the glyph. Measured before removing it: the old white fill read
+     1.02-1.16:1 against every state of the canvas behind it, so it was never
+     carrying visibility, only shape. A control that draws its own container at
+     the edge of the conversation is furniture; the arrow alone is not.
+
+     ALWAYS VISIBLE, and quiet. Rest ink is the lowest alpha that still clears
+     WCAG 1.4.11's 3:1 for a non-text control against the DARKEST state of the
+     living fog (#D4DBE2): 0.54 is the crossing, 0.55 measures 3.08:1 there and
+     3.38:1 on the lightest. It reads faint rather than assertive because the
+     glyph is a 2px lucide stroke with no fill - a thin stroke at 3:1 sits far
+     quieter than a filled shape at the same ratio, which is how "low contrast"
+     and "compliant" end up being the same number here instead of a trade. */
+  color: rgba(36, 44, 54, 0.55);
+  background: none;
+  border: 0;
+  /* Kept although nothing is painted: this is the shape of the global
+     :focus-visible outline, which is now the only box this control ever
+     draws. */
+  border-radius: var(--radius-icon-btn);
+  transition: color var(--duration-fast) var(--ease-smooth);
+}
+
+/* The handle yields to a delete confirmation, and to nothing else.
+   `.message-bubble-shell` is position:relative with no z-index, so it is not a
+   stacking context and its children compete with the handle directly inside
+   `.warm-canvas`'s isolate. The confirm panel (z 6) deliberately overhangs the
+   bubble onto the canvas - leftwards from a user bubble, rightwards from an
+   assistant one - so EITHER handle can end up painted over an irreversible
+   choice. A permanently lower handle would be the wrong trade: while a panel is
+   collapsed that square is the only way back, and it would then sit under the
+   hover action row too. So the yield is conditional and minimal: 5 clears the
+   confirm (6) and still beats `.message-actions` (4), and it applies only while
+   a confirm is actually open. The confirm is dismissible, so the handle is
+   never unreachable for longer than one Escape. */
+.warm-canvas:has(.message-action-confirm) .panel-toggle {
+  z-index: 5;
+}
+
+/* An invisible press target, larger than the thing it is under.
+   The visible chevron is 26 x 52, which is a small thing to hit at the very
+   edge of the window; a miss lands on the message column behind it. This pad
+   is tall and narrow on purpose - it follows the axis the handle actually
+   lives on, so widening it never eats into the conversation, and the height
+   gives the pointer somewhere forgiving to land. Transparent, so it changes
+   nothing visually and everything about the aim. */
+.panel-toggle[data-collapsed="false"]::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 46px;
+  height: 168px;
+}
+
+/* CLOSED gets a much smaller pad, and that is the point rather than an
+   oversight. The square is 38 x 38 - already a comfortable target - and it is
+   the ONLY way back into a hidden panel, so its press area has to agree with
+   what the eye sees. Carrying the open state's 168px pad over would light the
+   square up from 65px away, which reads as the wrong control responding. Just
+   enough overhang to forgive a near miss. */
+.panel-toggle[data-collapsed="true"]::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 48px;
+  height: 52px;
+}
+
+/* The hover reveal is gone. It held the open handle at `opacity: 0` and lit it
+   up from a `:has()` chain on either panel. A control nobody can see is a
+   control nobody knows exists, and tying its very presence to a cross-subtree
+   hover made it appear and vanish rather than simply be there. It is always
+   drawn now, faintly - which is a weaker claim on the eye than a
+   full-strength chevron flashing in and out of existence, and a stronger one
+   than nothing at all. */
+
+.panel-toggle-left {
+  left: var(--panel-toggle-inset);
+}
+
+.panel-toggle-right {
+  right: var(--panel-toggle-inset);
+}
+
+/* The right pad is anchored inward instead of centred, and only the right
+   one. Centred, its 46px reached past the handle to within 2px of the window
+   edge and sat on top of 6.8px of the scroller's own 8.8px scrollbar track -
+   an invisible box is still hit-testable, so dragging the thumb landed on the
+   toggle instead. The two rules mirror because the two handles do; the
+   surfaces behind them do not, and only this side has a scrollbar. */
+.panel-toggle-right::before {
+  left: auto;
+  right: 0;
+  transform: translateY(-50%);
+}
+
+/* Closed is the ONE state that is not quiet, and that is deliberate rather
+   than an inconsistency: with the panel at zero width this glyph is the only
+   route back to it, and a faint 18px icon guarding a hidden panel is the worst
+   place in the app to spend the contrast budget. 0.92 measures 9.66:1 on the
+   darkest fog and 12.40:1 on the lightest. The box still grows to 38px, but
+   that is hit area now - what the eye reads as "this is the way back in" is
+   the weight of the ink plus the subject icon the component swaps in
+   (PanelToggleButton.tsx), not a square. */
+.panel-toggle[data-collapsed="true"] {
+  width: var(--panel-toggle-size-closed);
+  height: var(--panel-toggle-size-closed);
+  border-radius: 0;
+  color: rgba(24, 32, 42, 0.92);
+}
+
+.panel-toggle:hover,
+.panel-toggle:focus-visible {
+  color: rgba(20, 27, 36, 0.96);
+}
+
+/* Press feedback used to be a background swap, which has nothing left to
+   swap. The 1px nudge below is real but nearly invisible on a 2px stroke, so
+   the ink carries the press too - a step DOWN in weight, the direction a
+   surface being pushed would go. */
+.panel-toggle:active {
+  color: rgba(36, 44, 54, 0.62);
+}
+
+/* The chevron gives along its own axis of travel. A vertically centred edge
+   handle nudged DOWN, the way the shared Button does it, would say nothing. */
+.panel-toggle-left:active > svg {
+  transform: translateX(-1px);
+}
+
+.panel-toggle-right:active > svg {
+  transform: translateX(1px);
+}
+
+.panel-toggle > svg {
+  transition: transform var(--duration-fast) var(--ease-smooth);
+}
+
+/* No `outline: none` here, deliberately. The first version suppressed the
+   house focus outline and hand-rolled a 3px shadow at rgba(140,180,230,0.35),
+   which measures 1.27:1 against this canvas against the base outline's
+   4.82:1 - a WCAG 1.4.11 failure, on the one control that brings a hidden
+   panel back. The global :focus-visible rule is already compliant; the only
+   thing needed here is enough room for it not to be clipped, which the 12px
+   inset above provides. */
+
+@media (prefers-reduced-motion: reduce) {
+  .panel-toggle,
+  .panel-toggle > svg {
+    transition: none;
+  }
+}
+
+/* The coarse-pointer rule that used to live here is deleted, not moved. It
+   existed to give touch a handle hover could never reveal; the handle is
+   always drawn now, so its premise is gone - and left in place it would have
+   multiplied the new rest ink by its own 0.55 opacity, landing near 1.8:1 on
+   exactly the devices that cannot hover to fix it. */
+
+/* Over a user-set dark wallpaper the ink has to FLIP, and deepening the dark
+   ink is not an option: on a near-black backdrop a dark glyph tops out around
+   1.4:1 at full opacity, so no alpha rescues it. The old white box was what
+   made that case legible; removing the box removed the rescue, and this
+   replaces it. `.chat-bg-dark` sits on the scroller, which is the handle's
+   SIBLING, so the relationship has to be read from their shared ancestor -
+   the same `:has()` shape already used for the confirm-panel yield above.
+   Alphas mirror the light-canvas ladder so both themes step in the same
+   places, and the light ink is the one `.variant-nav-button` already uses
+   over this wallpaper rather than a new colour. */
+.warm-canvas:has(.chat-bg-dark) .panel-toggle {
+  color: rgba(230, 234, 239, 0.62);
+}
+
+.warm-canvas:has(.chat-bg-dark) .panel-toggle[data-collapsed="true"] {
+  color: rgba(240, 244, 248, 0.95);
+}
+
+.warm-canvas:has(.chat-bg-dark) .panel-toggle:hover,
+.warm-canvas:has(.chat-bg-dark) .panel-toggle:focus-visible {
+  color: rgba(246, 249, 252, 0.98);
+}
+
+.warm-canvas:has(.chat-bg-dark) .panel-toggle:active {
+  color: rgba(230, 234, 239, 0.7);
 }
 
 /* ── Error boundary fallback ─────────────────────────────────────────────
