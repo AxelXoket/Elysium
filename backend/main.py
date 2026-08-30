@@ -150,7 +150,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Elysium API",
-    version="1.1.5",
+    version="1.1.6",
     lifespan=lifespan,
     # No Swagger/ReDoc pages: they load their JS/CSS from a CDN, and this app
     # must make zero non-OpenRouter network requests. /openapi.json remains

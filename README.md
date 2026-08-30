@@ -5,11 +5,11 @@
   </p>
   <p align="center">
     <img src="https://img.shields.io/badge/python-3.13-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
-    <img src="https://img.shields.io/badge/version-1.1.5-brightgreen?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/version-1.1.6-brightgreen?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/privacy-ZDR_enforced-brightgreen?style=flat-square" alt="Privacy">
     <img src="https://img.shields.io/badge/at--rest-SQLCipher_vault-brightgreen?style=flat-square" alt="Encryption">
     <img src="https://img.shields.io/badge/streaming-SSE-brightgreen?style=flat-square" alt="Streaming">
-    <img src="https://img.shields.io/badge/frontend_tests-1675_passed-success?style=flat-square" alt="Frontend Tests">
+    <img src="https://img.shields.io/badge/frontend_tests-1802_passed-success?style=flat-square" alt="Frontend Tests">
     <img src="https://img.shields.io/badge/frontend-React_19-61DAFB?style=flat-square&logo=react&logoColor=white" alt="React">
   </p>
   <p align="center">
@@ -41,12 +41,18 @@ each of these in full, including what it does not close:
 - **The vault reset route does not exist outside the installed app** - previously a development checkout could be wiped by one local request carrying the confirmation phrase, with no passphrase and nothing else in the way
 - **The recorded voice interpreter is checked before it is run** - `runtimes.json` names a program the app launches, and any process running as you can write that file. The path is now confined to the folder Elysium installs into and the binary is fingerprinted at install time. What that does not close is written down rather than glossed: an attacker who can write inside that folder has other ways in
 
-## Since v1.1.5
+## Since v1.1.6
 
-Everything added and fixed since the last release is in
-**[CHANGELOG.md](CHANGELOG.md)**. It becomes the v1.2.0 notes when the version
-moves - v1.2.0 is the release RAG lands in; keeping it out of here is what stops this file growing a new section per
-release and never losing one.
+The section above is v1.1.5's, and stays: those are the features that release
+was about. **v1.1.6 is mostly repair** - but not only, so it is worth naming
+what moved. The side panels can be collapsed now, the notebook's "Try it on
+this chat" is gone, and the voice settings are reorganised. Nothing changes on
+disk, so upgrading is replacing the exe.
+
+All of it, in full, is in **[CHANGELOG.md](CHANGELOG.md)**, and that is also
+where unreleased work sits: the newest "Since" block there becomes the next
+release's notes when the version moves. Keeping it out of here is what stops
+this file growing a new section per release and never losing one.
 
 ## Features
 
@@ -75,7 +81,7 @@ release and never losing one.
 - **Strict CORS + Host allowlist** - Backend accepts browser requests from `http://127.0.0.1:5173` only and rejects foreign `Host` headers (DNS-rebinding shield)
 - **Locks itself when idle** - after 5 minutes of doing nothing the vault closes: the key leaves memory, the voice model is unloaded and the GPU memory comes back. Change the delay or turn it off in Settings > Security. A reply that is still streaming counts as activity for as long as it runs - a background note extraction deliberately does NOT, and the lock cancels its planning loop. It does not cancel a reply that has already arrived: the lock waits up to five seconds for that one to be written
 - **Takes its own folder back** - at launch Elysium checks whether other accounts on this PC can reach its data folder and removes that access, naming what it removed in the log. Your database is encrypted, but `salt.bin` and `verifier.bin` beside it are what an offline passphrase attack needs. This is the one change that persists after the app closes; [SECURITY.md](SECURITY.md) says how to undo it
-- **Desktop App** - PyInstaller build (one-folder for development, a single ~29 MB exe for release) with a native window (pywebview + WebView2); the exe serves the built frontend same-origin on a random loopback port and locks the vault when the window closes
+- **Desktop App** - PyInstaller build (one-folder for development, a single ~28 MB exe for release) with a native window (pywebview + WebView2); the exe serves the built frontend same-origin on a random loopback port and locks the vault when the window closes
 
 ## Architecture
 
@@ -201,10 +207,13 @@ Everything below is for running from source.
 ### Prerequisites
 
 - **Python 3.13** (3.12+ compatible)
-- **Node.js `^20.19.0 || ^22.13.0 || >=24`** with npm. Not plain "20+":
-  vite needs 20.19, eslint and jsdom need 22.13, and 21.x and 23.x satisfy
-  neither. The same range is declared in `frontend/package.json` `engines`,
-  and a test binds these two together
+- **Node.js `^20.19.0 || ^22.13.0 || >=24`** with npm. Not plain "20+": the
+  range is the intersection of what the tools declare. vite asks for
+  `^20.19.0 || >=22.12.0`; eslint and jsdom both ask for
+  `^20.19.0 || ^22.13.0 || >=24`, which is the stricter of the two. So 21.x is
+  refused by everything, and 23.x is accepted by vite but refused by the
+  linter and the test DOM. The same range is declared in
+  `frontend/package.json` `engines`, and a test binds these two together
 - **OS keyring** - not needed for a new install. Secrets live in the encrypted
   vault; the keyring is read once, and only to migrate an older setup out of it
 
@@ -260,7 +269,7 @@ For the single-file build, which is what the `Elysium.exe` in this repo
 actually is:
 
 ```powershell
-pyinstaller elysium_onefile.spec   # one FILE, ~29 MB
+pyinstaller elysium_onefile.spec   # one FILE, ~28 MB
 dist\Elysium.exe
 ```
 
@@ -396,7 +405,7 @@ npm test -- src/test/static-safety.test.ts   # static privacy checks
 npm run typecheck                 # tsc strict - app + test configs
 ```
 
-## Known Limitations (v1.1.5)
+## Known Limitations (v1.1.6)
 
 - **Plaintext migration backup** - upgrading an older unencrypted database keeps a plaintext `app.db.plain.bak-<timestamp>` copy next to the vault, deliberately: if the move had verified wrong it is the only copy left. Settings > Security shows it on every visit and removes it on request
 - **A second copy after an interrupted move** - if the one-time migration is cut off midway it can leave a complete ENCRYPTED copy beside the vault. Settings > Security shows it, and offers to delete it only when it opens with your current passphrase; a copy it cannot open may belong to an older one, so the app refuses to remove it

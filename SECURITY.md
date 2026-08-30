@@ -5,7 +5,7 @@ protection below says what it does, whether it is on by default, and what it
 does **not** cover. The limits are here on purpose: a security page that only
 lists wins is a marketing page.
 
-Written against version 1.1.5.
+Written against version 1.1.6.
 
 ---
 

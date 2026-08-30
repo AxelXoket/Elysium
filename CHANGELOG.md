@@ -4,9 +4,54 @@ Unreleased work sits under the newest "Since" heading. When the version moves,
 that heading becomes the release heading and a fresh "Since" block opens above
 it. README links here rather than carrying its own copy.
 
-## Since 1.1.5
+## Since 1.1.6
 
-The next release is **v1.2.0**, which is where RAG lands.
+Nothing yet. The next release is **v1.2.0**, which is where RAG lands.
+
+## v1.1.6
+
+Mostly repair, but not only: the side panels can be collapsed for the first
+time, the notebook's "Try it on this chat" is gone, and the voice settings are
+reorganised. Nothing you already have is migrated or rewritten - the database
+schema and the stored settings format are unchanged - so upgrading is replacing
+the exe and nothing else.
+
+### Added
+
+- **The side panels collapse.** A handle at each edge of the conversation hides
+  the chat list or the settings panel and brings it back, and each side is
+  remembered separately across a restart. The handle is an arrow with no box
+  around it, drawn quietly at all times rather than appearing on hover, and it
+  takes the weight it needs once its panel is shut - at that point it is the
+  only way back in. The conversation does not re-flow while a panel is moving:
+  the panel travels first and the message column follows, so the text is never
+  re-wrapped mid-animation and the place you were reading is held
+- **Voice parameters are sorted by what the engine can actually do** - three
+  tiers driven by the engine's own reported status, with nothing hidden that
+  you had already set. An engine that reports itself untrusted now says so
+
+### Removed
+
+- **"Try it on this chat" is gone.** The notebook's dry-run - the button that
+  ran the extractor once and showed the result without storing anything - is
+  removed in full: the route, the panel, the schema, the query keys, two error
+  codes, the contract rows and two documentation claims. It is listed under
+  v1.1.5 below because it did ship there; this is where it leaves. A test now
+  holds the route closed rather than trusting that nobody re-adds it
+- **The licence badge.** It advertised a licence this repository does not have
+  - there has never been a LICENSE file, and GitHub reports none. The badge
+  stays off until that decision is made
+
+### Security
+
+- **The voice parameter field is closed to autofill.** A text field with a DOM
+  id is a valid autofill key to Chromium, so what you typed there could land in
+  the browser engine's own Web Data file, outside the vault
+- **The packaged build now checks where each bundled binary came from.** Forty
+  Windows C-runtime DLLs were being collected from a folder that happened to be
+  on `PATH` rather than from Windows itself. Anything sourced from outside the
+  project, its virtual environment, the Python installation or Windows now
+  stops the build by name
 
 ### Fixed
 
@@ -23,9 +68,51 @@ The next release is **v1.2.0**, which is where RAG lands.
 - **Three more dependencies that no runtime path can reach left with it.**
   `pygments` (336 modules, reached only from httpx's command line half, which
   cannot load here because `rich` is not installed), `setuptools` (133) and
-  `pefile`. The exe went from 33,642,105 to 29,130,534 bytes, a drop of 13.4
-  per cent, with the headless boot check still green on the frontend, the
-  SQLCipher native library and the voice payload
+  `pefile`. That change alone took the exe from 33,642,105 to 29,130,534 bytes,
+  a drop of 13.4 per cent, with the headless boot check still green on the
+  frontend, the SQLCipher native library and the voice payload
+- **Locking the vault no longer destroys what you were typing.** Locking
+  unmounts the app's subtree, and drafts lived inside components that went with
+  it - so a lock threw away every unsent sentence and every open edit, while
+  merely switching chats kept them. Drafts now live outside the tree that gets
+  unmounted. Nothing is written to disk; the buffers are capped at 2 MiB each
+  and 64 MiB in total, and a write over the ceiling is refused with the reason
+  rather than quietly dropping an older draft
+- **A fast model's reply is typed out instead of appearing all at once.** The
+  smoothing layer guessed that a jump of more than two hundred characters meant
+  a chat switch - but at the START of a stream nothing has been shown yet, so
+  that condition was always true, and any model whose first chunk exceeded two
+  hundred characters had its whole reply painted in one frame. The cliff was
+  measured at exactly 201 characters. It is told which conversation it is
+  smoothing now instead of guessing from size, and the promise that the text
+  never falls more than 1500ms behind is enforced rather than declared
+- **Editing a message no longer opens what looked like a separate window.** The
+  box was always inside the bubble; only its styling made it read as its own
+  panel. It painted a fixed dark surface over whatever contrast preset, custom
+  ink, bubble opacity or surface finish you had chosen, and it took its size
+  from a fixed 14px rather than from your own font setting. It now wears the
+  bubble, matches the text it replaced exactly, and shows a border only while
+  focused. Its height follows the font and line-height sliders too, which it
+  could not do before
+- **The delete confirmation opens under the button that opened it.** The
+  controls sit at the top right of every message, but on the model's messages
+  the panel was anchored to the opposite corner - so the question about
+  something irreversible appeared as far from the pointer as the row allowed
+- **The right panel is readable.** An invisible heading, an unreadable selected
+  chip, two undefined tokens, a meter warning nobody could see and a delete
+  button for the API key that could not be read. The panel's main ink moved
+  from 14.15:1 to 8.39:1, twelve press states were added, and five transitions
+  that jumped instantly now do not
+- **`anyio` is declared as a dependency instead of arriving by accident.**
+  Thirteen shipped runtime modules import `anyio.to_thread` directly, while the
+  lock file only carried it as something httpx and starlette happened to pull
+  in. The resolved version does not move
+- **The README's Node requirement says what it actually is.** It read "20+";
+  the truth is `^20.19.0 || ^22.13.0 || >=24` - the intersection of what the
+  tools declare. 21.x is refused by all of them, and 23.x is accepted by the
+  bundler but refused by the linter and the test DOM. The same range is
+  declared in `package.json` and a test now binds the two together
+- **vite moved to 8.2.2**, closing two Windows advisories
 
 ## v1.1.5
 

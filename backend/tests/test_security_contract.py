@@ -1273,7 +1273,7 @@ def _acknowledged_problems(
 #: sample - so this covers all of it. Updating this constant is the
 #: deliberate act that means a human decided what a change claims and
 #: registered a proof for it.
-DOCUMENT_DIGEST = "23e0507b59615ed4afc3ff62b7d7c2e271b43ac4fa9c08dd5a3567ed4b8b7bda"
+DOCUMENT_DIGEST = "ec2dd766edfaa3b65979ca40b9ab92387b86e95441f45fc8553a4d39cb7900e7"
 
 
 class TestEveryProvenClaimHasAProof:
