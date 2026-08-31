@@ -18,6 +18,7 @@
  * silently stop matching. Controls exist on S-09b, S-11b, S-20b and S-23.
  */
 import { describe, it, expect } from "vitest";
+import { PERSISTED } from "@/lib/store/uiStore";
 import { readFileSync, existsSync } from "fs";
 import { globSync } from "glob";
 import path from "path";
@@ -97,22 +98,25 @@ function stripComments(source: string): string {
  * at the FIRST `})`, so a value containing one truncates the scanned region
  * and every later key escapes unread.
  */
-function readPartializeBody(): string {
-  const uiStorePath = path.resolve(SRC_DIR, "src", "lib", "store", "uiStore.ts");
-  const content = readFileSync(uiStorePath, "utf-8");
-  const head = /partialize:\s*\([^)]*\)\s*=>\s*\(\s*\{/.exec(content);
-  if (!head) throw new Error("Could not locate partialize(...) in uiStore.ts");
-  const openBrace = head.index + head[0].length - 1; // index of the '{'
-  let depth = 0;
-  for (let i = openBrace; i < content.length; i++) {
-    const ch = content[i];
-    if (ch === "{") depth++;
-    else if (ch === "}") {
-      depth--;
-      if (depth === 0) return content.slice(openBrace + 1, i);
-    }
-  }
-  throw new Error("Unbalanced partialize object braces in uiStore.ts");
+/**
+ * The persisted keys, from the store's own export.
+ *
+ * This used to parse `partialize`'s body out of `uiStore.ts` by balancing
+ * braces, and then run two line regexes over the text. That was the best
+ * available answer while the list existed only as thirty-two hand-written
+ * `key: state.key` lines - and it could only ever check the NAMES, so
+ * `msgFontPx: state.vaultKey` went straight through it.
+ *
+ * The list is one exported constant now, so the region does not need finding
+ * and the names do not need parsing. What the two rules below still do -
+ * check that every persisted key is described, and that no key is described
+ * as holding something a person reads on screen - they now do against the
+ * real list. What a source scan never could do, and still cannot, is say
+ * what those keys HOLD at runtime; `whatIsWrittenToDisk.test.ts` reads the
+ * written blob for that, and the two are complementary.
+ */
+function persistedKeys(): readonly string[] {
+  return PERSISTED;
 }
 
 /* ────────────────────────────────────────────────────────────────────────
@@ -635,7 +639,7 @@ describe("Static safety tests", () => {
     // walk. The reason it is a walk and not a regex is unchanged: a non-greedy
     // pattern stops at the FIRST `})`, so a value containing one truncates the
     // scanned region and every later key escapes.
-    const body = readPartializeBody();
+    const keys = persistedKeys();
 
     // The allowlist is now the key set of PERSISTED_KEY_SHAPES (module scope),
     // where each key also declares WHAT it may hold. Deriving it here rather
@@ -650,51 +654,37 @@ describe("Static safety tests", () => {
       "the persisted-key allowlist emptied itself",
     ).toBeGreaterThan(25);
 
-    // v1.1 audit L8 (value provenance): every persisted entry must be exactly
-    // `key: state.<sameKey>,` - a direct mirror of the store field, with the
-    // SAME name on both sides. This closes the gap where the old name-only
-    // check let `genSeed: state.vaultKey` through (an allowlisted key aliasing
-    // a secret). Anything derived, renamed, or content-bearing fails here.
-    const entryRe = /([A-Za-z_$][\w$]*)\s*:\s*state\.([A-Za-z_$][\w$]*)\s*,/g;
-    const entries = [...body.matchAll(entryRe)];
+    // PROVENANCE IS NOW STRUCTURAL, and that is a stronger statement than
+    // this rule could ever make by reading text.
+    //
+    // The old version parsed `key: state.key` pairs out of partialize and
+    // insisted the two names matched, because the gap it closed was
+    // `genSeed: state.vaultKey` - an allowlisted key aliasing a secret.
+    // partialize is now `PERSISTED.map((key) => [key, state[key]])`: the
+    // value reads the field of its own name by construction, and there is no
+    // second name to disagree with the first. Reintroducing the old failure
+    // would mean rewriting that one line, which the behavioural test reading
+    // the written blob would catch.
+    //
+    // What is left for a source-level rule is the part that IS about names:
+    // every persisted key must be described in the table, and nothing may be
+    // described that is not persisted.
     expect(
-      entries.length,
-      "no `key: state.key` entries parsed from partialize (broken scan guard)",
-    ).toBeGreaterThan(0);
+      keys.length,
+      "the persisted list emptied itself (broken scan guard)",
+    ).toBeGreaterThan(25);
 
-    // No line in the body may be anything OTHER than a `key: state.key` entry
-    // (or a comment/blank). A value like `x: someFn(state.y)` would not match
-    // and would leave a residue - catch it.
-    const lineRe = /^[A-Za-z_$][\w$]*\s*:\s*state\.[A-Za-z_$][\w$]*\s*,?$/;
-    const residue = body
-      .split("\n")
-      // The `\r` strip is not cosmetic: `.` does not match a carriage return
-      // and `$` (no /m) only matches end-of-string, so on a CRLF checkout the
-      // comment strip below silently fails and every comment inside partialize
-      // is reported as a violation. A privacy guard must not go red for a
-      // reason that has nothing to do with privacy.
-      .map((l) => l.replace(/\r$/, "").replace(/\/\/.*$/, "").trim())
-      .filter((l) => l.length > 0)
-      .filter((l) => !lineRe.test(l));
-    expect(
-      residue,
-      `partialize contains non-\`key: state.key\` lines: ${JSON.stringify(residue)}`,
-    ).toEqual([]);
-
-    for (const [, key, source] of entries) {
+    for (const key of keys) {
       expect(
         ALLOWED_PERSISTED_KEYS.has(key),
-        `Non-allowlisted key "${key}" persisted by uiStore partialize`,
+        `Non-allowlisted key "${key}" persisted by uiStore`,
       ).toBe(true);
-      // Provenance: the value must read the field of the SAME name.
-      expect(
-        source,
-        `partialize key "${key}" reads state.${source} (must mirror its own name)`,
-      ).toBe(key);
     }
 
-    // Belt-and-suspenders: no draft/message/persona/attachment/secret field may
-    // appear anywhere in the persisted region, whatever the key is spelled.
+    // No persisted key may be NAMED for drafts, message content, personas,
+    // attachments or secrets. A name sweep cannot see what a key holds - the
+    // blob test does that - but it can see somebody adding `composerDraft`
+    // to the list.
     const forbiddenSubstrings = [
       "draft",
       "message",
@@ -706,50 +696,34 @@ describe("Static safety tests", () => {
       "token",
       "password",
     ];
-    const lowerBody = body.toLowerCase();
-    for (const needle of forbiddenSubstrings) {
-      expect(
-        lowerBody.includes(needle),
-        `Forbidden field "${needle}" found in uiStore partialize`,
-      ).toBe(false);
+    for (const key of keys) {
+      const lower = key.toLowerCase();
+      for (const needle of forbiddenSubstrings) {
+        expect(
+          lower.includes(needle),
+          `Forbidden field "${needle}" persisted as "${key}"`,
+        ).toBe(false);
+      }
     }
 
-    // POSITIVE CONTROL. The three checks above all pass by finding nothing
-    // wrong with today's partialize. That is also what they would do if the
-    // allowlist, the provenance rule or the substring sweep had quietly
-    // stopped discriminating. Each is handed a body it MUST reject, using the
-    // same regexes and the same constants the real scan just used.
-    const rejects = (synthetic: string) => {
-      const found = [...synthetic.matchAll(entryRe)];
-      const lower = synthetic.toLowerCase();
+    // POSITIVE CONTROL. Both checks above pass by finding nothing wrong with
+    // today's list. That is also what they would do if the allowlist or the
+    // name sweep had quietly stopped discriminating, so each is handed a key
+    // it MUST reject - using the same constants the real scan just used.
+    const rejects = (key: string) => {
+      const lower = key.toLowerCase();
       return (
-        found.length === 0 ||
-        found.some(([, key]) => !ALLOWED_PERSISTED_KEYS.has(key)) ||
-        found.some(([, key, source]) => source !== key) ||
-        forbiddenSubstrings.some((needle) => lower.includes(needle)) ||
-        synthetic
-          .split("\n")
-          .map((l) => l.replace(/\r$/, "").replace(/\/\/.*$/, "").trim())
-          .filter((l) => l.length > 0)
-          .some((l) => !lineRe.test(l))
+        !ALLOWED_PERSISTED_KEYS.has(key) ||
+        forbiddenSubstrings.some((needle) => lower.includes(needle))
       );
     };
-    // A key nobody allowlisted.
-    expect(rejects("newThing: state.newThing,"), "allowlist stopped biting").toBe(true);
-    // The exact aliasing bug the provenance rule was written for: an
-    // allowlisted name reading a field that is not its own.
-    expect(rejects("msgFontPx: state.vaultKey,"), "provenance stopped biting").toBe(true);
-    // A forbidden word smuggled in under a harmless key.
-    expect(rejects("msgFontPx: state.msgFontPx, // password"),
-      "substring sweep stopped biting").toBe(true);
-    // Anything that is not a plain mirror at all. Named for what actually
-    // fires: `derive(state.x)` never matches the entry pattern, so it is the
-    // parse that rejects this, not the residue sweep further down.
-    expect(rejects("msgFontPx: derive(state.msgFontPx),"),
-      "entry parsing stopped discriminating").toBe(true);
-    // ...and the shape it is supposed to accept still gets through, so the
-    // control is discriminating and not just always-true.
-    expect(rejects("msgFontPx: state.msgFontPx,")).toBe(false);
+    expect(rejects("composerDraft"), "a draft key was not rejected").toBe(true);
+    expect(rejects("apiKey"), "a secret key was not rejected").toBe(true);
+    expect(rejects("somethingNobodyDescribed"),
+      "an undescribed key was not rejected").toBe(true);
+    // And the other direction: a real key is NOT rejected, so the guard is
+    // discriminating rather than refusing everything.
+    expect(rejects(keys[0]), "a legitimate key was rejected").toBe(false);
   });
 
   // S-10 was deleted in KADEME 19a. It banned "openrouter.ai" from
@@ -760,10 +734,12 @@ describe("Static safety tests", () => {
 
   // S-11: No Authorization header in any source file
   // KEPT in KADEME 20b, against section 4's list. The listed condition was
-  // explicit: delete only after the PC-02 prefix collision is fixed. It is
-  // not fixed - the privacy-contract registry still resolves a rule by raw
-  // substring, and `"S-11` is a prefix of `"S-11b`, so deleting this rule
-  // would leave the registry still reporting it as present.
+  // explicit: delete only after the PC-02 prefix collision is fixed. That
+  // collision IS fixed now: the privacy-contract registry anchors a frontend
+  // name on both sides, `("S-11` followed by a quote or a colon, so `"S-11`
+  // no longer resolves through `"S-11b` and deleting this rule would show up
+  // as a missing proof. The condition is met; the rule stays anyway, for the
+  // second reason below.
   //
   // The premise is wrong too. S-11b is broader in PATTERN but narrower in
   // SCOPE: it scans app source only, while this scans every source file
@@ -1265,13 +1241,10 @@ describe("Static safety tests", () => {
    * one honest limit this rule does not cover.
    */
   it("S-09c: no persisted key may hold a name a person reads on screen", () => {
-    const body = readPartializeBody();
-    const persisted = [
-      ...body.matchAll(/([A-Za-z_$][\w$]*)\s*:\s*state\.[A-Za-z_$][\w$]*\s*,/g),
-    ].map((m) => m[1]);
+    const persisted = [...persistedKeys()];
     expect(
       persisted.length,
-      "S-09c parsed no keys out of partialize (broken scan guard)",
+      "the persisted list emptied itself (broken scan guard)",
     ).toBeGreaterThan(25);
 
     // Both directions. A key persisted but undescribed is a key nobody argued

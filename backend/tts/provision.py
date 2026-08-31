@@ -47,6 +47,7 @@ from pathlib import Path
 
 import config
 import launch_token
+import secure_delete
 
 from . import runtimes
 from ._which import which_trusted
@@ -59,6 +60,39 @@ from .errors import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _rmtree(path) -> None:
+    """`shutil.rmtree`, refusing a redirected name OUT LOUD.
+
+    Every tree this module deletes lives under the app's own data folder -
+    `TTS_ENVS_DIR/<engine>`, its `.staging` and `.old` siblings, and
+    `TTS_UV_CACHE_DIR`. Ordinary directories, created by the app, writable by
+    the user it runs as, and deleted recursively. So all nine are names a
+    `mklink /J` can point somewhere else, with no privileges needed.
+
+    WHAT THIS DOES NOT FIX, measured rather than assumed. `shutil.rmtree`
+    already refuses: on a junction it raises `OSError("Cannot call rmtree on
+    a symbolic link")` and deletes nothing. The nine call sites were never
+    deleting through a junction, and any claim that they were is wrong.
+
+    What they WERE doing is passing `ignore_errors=True`, which swallows that
+    refusal whole. Nothing is deleted, nothing is logged, and the caller
+    proceeds as if the tree were gone - to unpack a fresh environment onto a
+    name that still points at somebody else's folder. The failure is one line
+    later than it looks, and it is silent, which is why it needs a voice
+    rather than another guard.
+
+    `is_dir()` first: `is_redirected` fails CLOSED on any OSError, ENOENT
+    included, so a path that simply does not exist answers True and an
+    unguarded check would refuse every fresh install.
+    """
+    p = Path(path)
+    if p.is_dir() and secure_delete.is_redirected(p):
+        logger.warning(
+            "tts: refusing to delete through a redirected name")
+        return
+    shutil.rmtree(p, ignore_errors=True)
 
 IS_WINDOWS = sys.platform == "win32"
 CREATE_NO_WINDOW = 0x08000000
@@ -717,7 +751,7 @@ def _install_worker(job: _Job, p: InstallPlan, uv: str | None) -> None:
     try:
         if staging.exists():
             log("clearing a leftover staging directory")
-            shutil.rmtree(staging, ignore_errors=True)
+            _rmtree(staging)
         staging.parent.mkdir(parents=True, exist_ok=True)
 
         job.state = "installing"
@@ -766,7 +800,7 @@ def _install_worker(job: _Job, p: InstallPlan, uv: str | None) -> None:
         # cleanly HERE with both environments intact and the job reports a
         # coded error instead of destroying anything.
         old = target.with_name(target.name + ".old")
-        shutil.rmtree(old, ignore_errors=True)   # leftover from a crash
+        _rmtree(old)   # leftover from a crash
         if target.exists():
             log("setting the previous environment aside")
             try:
@@ -790,7 +824,7 @@ def _install_worker(job: _Job, p: InstallPlan, uv: str | None) -> None:
                 TTS_RUNTIME_INSTALL_FAILED,
                 "could not move the new environment into place",
             ) from exc
-        shutil.rmtree(old, ignore_errors=True)
+        _rmtree(old)
         runtimes.register(p.engine_id, str(env_python(p.engine_id)),
                           installed_at=time.time(), python_version=p.python_version)
         job.state = "done"
@@ -803,7 +837,7 @@ def _install_worker(job: _Job, p: InstallPlan, uv: str | None) -> None:
         log("setup cancelled")
         # Only the staging is removed: a cancel must never cost the user an
         # environment that was working before they clicked install.
-        shutil.rmtree(staging, ignore_errors=True)
+        _rmtree(staging)
     except Exception as exc:                    # noqa: BLE001
         logger.exception("tts: install failed")
         _fail(job, TTS_RUNTIME_INSTALL_FAILED, f"{type(exc).__name__}: {exc}"[:300],
@@ -839,7 +873,7 @@ def _fail(job: _Job, code: str, detail: str, staging: Path | None,
     # None when the job failed BEFORE a staging directory existed (the uv
     # download, which now runs in the worker rather than blocking the request).
     if staging is not None:
-        shutil.rmtree(staging, ignore_errors=True)
+        _rmtree(staging)
 
 
 def job(engine_id: str) -> dict:
@@ -903,9 +937,9 @@ def uninstall(engine_id: str) -> dict:
     try:
         target = env_dir(engine_id)
         existed = target.exists()
-        shutil.rmtree(target, ignore_errors=True)
-        shutil.rmtree(target.with_name(target.name + ".staging"), ignore_errors=True)
-        shutil.rmtree(target.with_name(target.name + ".old"), ignore_errors=True)
+        _rmtree(target)
+        _rmtree(target.with_name(target.name + ".staging"))
+        _rmtree(target.with_name(target.name + ".old"))
         # ONLY when the files are actually gone. Unregistering regardless made
         # a failed uninstall unrecoverable through the UI: the engine dropped
         # out of the runtimes list, so the panel stopped drawing it, so the
@@ -932,7 +966,7 @@ def uninstall(engine_id: str) -> dict:
     try:
         envs = Path(config.TTS_ENVS_DIR)
         if not envs.exists() or not any(envs.iterdir()):
-            shutil.rmtree(config.TTS_UV_CACHE_DIR, ignore_errors=True)
+            _rmtree(config.TTS_UV_CACHE_DIR)
     except OSError:
         pass
     removed = existed and not target.exists()

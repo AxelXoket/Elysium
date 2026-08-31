@@ -17,6 +17,8 @@ Privacy invariants:
 import json
 import logging
 
+import audio_sweep
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
@@ -392,6 +394,12 @@ def _delete_character_sync(character_id: int) -> int:
             "SELECT id FROM chats WHERE character_id = ?", (character_id,)
         ).fetchall()]
 
+        # Collected across every chunk and swept AFTER the transaction, not
+        # inside it. Deleting a character takes every chat it ever had, and
+        # every spoken reply in them: this path had no audio sweep at all, so
+        # the recordings outlived the rows they belonged to.
+        spoken: list[int] = []
+
         for chunk in iter_chunks(chat_ids):
             placeholders = ",".join("?" * len(chunk))
             msg_ids = [r["id"] for r in con.execute(
@@ -400,6 +408,7 @@ def _delete_character_sync(character_id: int) -> int:
             ).fetchall()]
             # Rows + orphaned blobs in this same transaction (E6).
             delete_for_messages(con, msg_ids)
+            spoken.extend(msg_ids)
             # Inside the chunk loop, not after it: `chunk` is what this pass
             # is about to delete, and this is the path that orphans at scale -
             # deleting a character takes every chat it ever had.
@@ -412,6 +421,11 @@ def _delete_character_sync(character_id: int) -> int:
             )
 
         con.execute("DELETE FROM characters WHERE id = ?", (character_id,))
+
+    # Outside the `with`, so the rows have committed. The same rule the chat
+    # delete follows: the database is the source of truth and lands whether or
+    # not a file on disk lets go.
+    audio_sweep.forget_spoken_audio(spoken)
     return len(chat_ids)
 
 

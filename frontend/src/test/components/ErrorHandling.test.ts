@@ -650,3 +650,76 @@ describe("errorStore", () => {
     expect(e1.id).not.toBe(e2.id);
   });
 });
+
+describe("two buttons that fail the same way", () => {
+  /**
+   * The four vault discards push the same codes with no chat id, so their
+   * dedupe identity was the CODE alone. The vault auto-locks with Settings
+   * open, two notices are on screen, and pressing Remove on both inside one
+   * toast's window produced ONE toast: the second button spun, stopped, and
+   * reported nothing. The `role="alert"` paragraphs in those notices read
+   * fields of a SUCCESSFUL response, so they say nothing on a failure
+   * either. Silence, in the panel the `onError` hooks were added to stop
+   * being silent.
+   */
+  beforeEach(() => {
+    useErrorStore.setState({ errors: [], queuedErrors: [] });
+  });
+
+  const failure = (status: number, detail: string): ApiError => ({
+    status,
+    detail,
+    message: `Request failed: ${status}`,
+  });
+
+  it("answers both of them", () => {
+    const push = useErrorStore.getState().pushError;
+    push(failure(423, "vault_locked"), "error", {
+      source: "vault:discard-orphaned#1",
+    });
+    push(failure(423, "vault_locked"), "error", {
+      source: "vault:discard-premigrate#1",
+    });
+    expect(useErrorStore.getState().errors).toHaveLength(2);
+  });
+
+  it("still answers a retry of the SAME button", () => {
+    // Every one of these is one deliberate press. A retry after a "please
+    // try again" toast is a new event, and dropping it makes the retry
+    // indistinguishable from a success.
+    const push = useErrorStore.getState().pushError;
+    push(failure(500, "unknown_error"), "error", {
+      source: "vault:discard-plaintext#1",
+    });
+    push(failure(500, "unknown_error"), "error", {
+      source: "vault:discard-plaintext#2",
+    });
+    expect(useErrorStore.getState().errors).toHaveLength(2);
+  });
+
+  it("still collapses one failure reported twice", () => {
+    // GROUND CONTROL, and it is the whole reason the dedupe exists. If
+    // `source` simply defeated it, K-23's incident would be back: a
+    // duplicate raised while five toasts are up going into the queue and
+    // being shown again as the queue drains.
+    const push = useErrorStore.getState().pushError;
+    push(failure(500, "unknown_error"), "error", {
+      source: "vault:discard-plaintext#1",
+    });
+    push(failure(500, "unknown_error"), "error", {
+      source: "vault:discard-plaintext#1",
+    });
+    expect(useErrorStore.getState().errors).toHaveLength(1);
+  });
+
+  it("still collapses two pushes with no source at all", () => {
+    // POSITIVE CONTROL for every existing caller. `source` is absent at
+    // ~every push site in the app, and undefined must keep behaving exactly
+    // as it did - otherwise this change quietly turns the dedupe off
+    // everywhere it was already working.
+    const push = useErrorStore.getState().pushError;
+    push(failure(500, "unknown_error"));
+    push(failure(500, "unknown_error"));
+    expect(useErrorStore.getState().errors).toHaveLength(1);
+  });
+});

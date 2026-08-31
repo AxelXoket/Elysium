@@ -1303,3 +1303,146 @@ describe("useStreamingCompletion - ghost-message chain (v1.1)", () => {
     await act(() => sendPromise);
   });
 });
+
+/**
+ * The server changes the notebook without being asked, and the panel had no
+ * way to hear about it.
+ *
+ * Three of the four holes live in this file. A turn is what the extractor
+ * reads, so ending one can add proposals; an aborted turn deletes the
+ * proposals that came from the row it removes; an edit deletes every note
+ * that came from the messages it replaces. None of the thirteen
+ * invalidateQueries calls in this hook ever named a notebook key, so the
+ * panel went on showing suggestions the server had thrown away - and
+ * pressing Keep on one answered 404.
+ *
+ * These assert on the KEY, imported from lib/query/keys, never retyped: a
+ * test that spells the key out by hand passes against a hook that
+ * invalidates a key nothing reads.
+ */
+function invalidatedKeys(spy: ReturnType<typeof vi.spyOn>): unknown[] {
+  return (spy.mock.calls as unknown[][]).map(
+    (call) => (call[0] as { queryKey?: unknown })?.queryKey);
+}
+
+function sawNotebookInvalidate(spy: ReturnType<typeof vi.spyOn>): boolean {
+  const wanted = JSON.stringify(keys.notebookEntries(1));
+  return invalidatedKeys(spy).some((k) => JSON.stringify(k) === wanted);
+}
+
+describe("useStreamingCompletion - the notebook hears about it", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useErrorStore.getState().clearAll();
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("a finished turn invalidates the notebook", async () => {
+    const qc = createTestQueryClient();
+    qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]);
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    const stream = controlledSseResponse();
+    mockFetchWithStreams({
+      "/chats/1/complete/stream": { response: () => stream.response },
+    });
+
+    const { result } = renderHookWithQueryClient(
+      () => useStreamingCompletion(), { client: qc });
+
+    let sendPromise!: Promise<void>;
+    await act(async () => {
+      sendPromise = result.current.startSend(sendVars);
+    });
+
+    // GROUND CONTROL: nothing has finished yet, so nothing has been
+    // invalidated. Without this the assertion below would also pass against
+    // a hook that invalidates the notebook on every render.
+    expect(sawNotebookInvalidate(spy)).toBe(false);
+
+    stream.emit({ type: "user_message", message: msg(5, "user", "stream me") });
+    stream.emit({
+      type: "done",
+      chat_id: 1,
+      model_id: "m",
+      user_message: msg(5, "user", "stream me"),
+      assistant_message: msg(6, "assistant", "Hello"),
+    });
+    stream.close();
+    await act(() => sendPromise);
+
+    expect(sawNotebookInvalidate(spy)).toBe(true);
+  });
+
+  it("an aborted turn with nothing streamed invalidates the notebook", async () => {
+    // The server deletes the proposals that came from the row this path
+    // removes. The raw DELETE here skipped the mutation wrapper that says so.
+    const qc = createTestQueryClient();
+    qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]);
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    const stream = controlledSseResponse();
+    mockFetchWithStreams({
+      "/chats/1/complete/stream": { response: () => stream.response },
+    });
+
+    const { result } = renderHookWithQueryClient(
+      () => useStreamingCompletion(), { client: qc });
+
+    let sendPromise!: Promise<void>;
+    await act(async () => {
+      sendPromise = result.current.startSend(sendVars);
+    });
+    stream.emit({ type: "user_message", message: msg(5, "user", "stream me") });
+    await waitFor(() => {
+      expect(messagesInCache(qc).some((m) => m.id === 5)).toBe(true);
+    });
+
+    act(() => {
+      result.current.stop(1);
+    });
+    await act(() => sendPromise);
+
+    await waitFor(() => {
+      expect(sawNotebookInvalidate(spy)).toBe(true);
+    });
+  });
+
+  it("an edit invalidates the notebook", async () => {
+    // This is the path where the SERVER deletes notes outright - every
+    // proposal that came from the messages the edit replaces - and answers
+    // nothing about it.
+    const qc = createTestQueryClient();
+    qc.setQueryData<Message[]>(keys.messages(1), [
+      seedGreeting, msg(5, "user", "before"), msg(6, "assistant", "old"),
+    ]);
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    const stream = controlledSseResponse();
+    mockFetchWithStreams({
+      "/chats/1/messages/5/edit/stream": { response: () => stream.response },
+    });
+
+    const { result } = renderHookWithQueryClient(
+      () => useStreamingCompletion(), { client: qc });
+
+    let editPromise!: Promise<void>;
+    await act(async () => {
+      editPromise = result.current.startEdit({
+        chatId: 1, messageId: 5, message: "after", modelId: "m",
+      });
+    });
+
+    expect(sawNotebookInvalidate(spy)).toBe(false);
+
+    stream.emit({
+      type: "done",
+      chat_id: 1,
+      model_id: "m",
+      user_message: msg(7, "user", "after"),
+      assistant_message: msg(8, "assistant", "new"),
+    });
+    stream.close();
+    await act(() => editPromise);
+
+    expect(sawNotebookInvalidate(spy)).toBe(true);
+  });
+});
+

@@ -145,6 +145,17 @@ def db(tmp_path, monkeypatch, request):
     request.addfinalizer(vault_state.clear_key)
     vault_state.set_key(TEST_VAULT_KEY)
     database.init_db()
+    # The API key, HERE and not only in `client`.
+    #
+    # `client` has always seeded it; `db` never did, and nothing noticed
+    # because no code path asked. The notebook worker now checks for a key
+    # BEFORE claiming a slot of the daily budget - a call that cannot leave
+    # the machine must not spend the day's quota - so a db-only worker test
+    # that means "the provider replies" needs the same premise the HTTP
+    # tests have always had. Without it those tests do not fail; they wait
+    # forever for a request that is correctly never sent.
+    import secrets_service
+    secrets_service.set_secret(config.SECRET_API_KEY, "sk-test-key")
     return db_path
 
 

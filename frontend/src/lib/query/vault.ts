@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { create } from "zustand";
+import { useErrorStore } from "@/lib/errors";
 import { keys } from "./keys";
 import {
   getVaultStatus,
@@ -118,12 +119,51 @@ export function useChangeVaultPassphrase() {
 /** Removing the plaintext copy changes what /vault/status reports, so the
  *  status query has to be refetched or the warning stays on screen after the
  *  file is gone. */
+//: How many times each discard button has FAILED, one counter per button.
+//
+// Module-level rather than a ref: the counter's job is to make each press a
+// distinct toast identity, and it has to survive the notice unmounting and
+// remounting (which is exactly what happens when /vault/status refetches
+// after a failure). Monotonic, never read for anything else, and it means
+// nothing to anyone but the dedupe.
+let plaintextPresses = 0;
+let orphanPresses = 0;
+let emptyStubPresses = 0;
+
 export function useDiscardPlaintextBackup() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: discardPlaintextBackup,
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: keys.vault() });
+    },
+    // K-22's idiom, four irreversible deletions later. There was no
+    // `onError` anywhere on these, no MutationCache to catch them, and the
+    // `role="alert"` paragraphs in the notices report fields of a SUCCESSFUL
+    // response - so a 500 or a 423 said nothing at all, and "the file is
+    // gone" looked exactly like "nothing was even attempted" to the one
+    // person who cannot check.
+    //
+    // Per hook rather than a MutationCache default: `useUnlockVault` and
+    // `useChangeVaultPassphrase` show their failures INSIDE the screen on
+    // purpose, and a global handler would double every one of those.
+    // A SOURCE, because the dedupe could not tell these apart.
+    //
+    // All four discards push the same codes with no chat id, so
+    // their identity was the code alone: lock the vault with
+    // Settings open, press Remove on the first notice, press it on
+    // the second inside the toast's window, and the second failure
+    // was dropped entirely - silence, in the panel these hooks were
+    // added to stop being silent. A per-press counter rides along
+    // too: every one of these is one deliberate button press, so a
+    // retry after a 'please try again' toast is a new event and
+    // must be answered, while one failure reported twice is still
+    // one toast.
+    onError: (err: unknown) => {
+      plaintextPresses += 1;
+      useErrorStore.getState().pushError(err, "error", {
+        source: `vault:discard-plaintext#${plaintextPresses}`,
+      });
     },
   });
 }
@@ -137,6 +177,34 @@ export function useDiscardOrphanedCopy() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: keys.vault() });
     },
+    // K-22's idiom, four irreversible deletions later. There was no
+    // `onError` anywhere on these, no MutationCache to catch them, and the
+    // `role="alert"` paragraphs in the notices report fields of a SUCCESSFUL
+    // response - so a 500 or a 423 said nothing at all, and "the file is
+    // gone" looked exactly like "nothing was even attempted" to the one
+    // person who cannot check.
+    //
+    // Per hook rather than a MutationCache default: `useUnlockVault` and
+    // `useChangeVaultPassphrase` show their failures INSIDE the screen on
+    // purpose, and a global handler would double every one of those.
+    // A SOURCE, because the dedupe could not tell these apart.
+    //
+    // All four discards push the same codes with no chat id, so
+    // their identity was the code alone: lock the vault with
+    // Settings open, press Remove on the first notice, press it on
+    // the second inside the toast's window, and the second failure
+    // was dropped entirely - silence, in the panel these hooks were
+    // added to stop being silent. A per-press counter rides along
+    // too: every one of these is one deliberate button press, so a
+    // retry after a 'please try again' toast is a new event and
+    // must be answered, while one failure reported twice is still
+    // one toast.
+    onError: (err: unknown) => {
+      orphanPresses += 1;
+      useErrorStore.getState().pushError(err, "error", {
+        source: `vault:discard-orphaned#${orphanPresses}`,
+      });
+    },
   });
 }
 
@@ -147,6 +215,34 @@ export function useDiscardEmptyStub() {
     mutationFn: discardEmptyStub,
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: keys.vault() });
+    },
+    // K-22's idiom, four irreversible deletions later. There was no
+    // `onError` anywhere on these, no MutationCache to catch them, and the
+    // `role="alert"` paragraphs in the notices report fields of a SUCCESSFUL
+    // response - so a 500 or a 423 said nothing at all, and "the file is
+    // gone" looked exactly like "nothing was even attempted" to the one
+    // person who cannot check.
+    //
+    // Per hook rather than a MutationCache default: `useUnlockVault` and
+    // `useChangeVaultPassphrase` show their failures INSIDE the screen on
+    // purpose, and a global handler would double every one of those.
+    // A SOURCE, because the dedupe could not tell these apart.
+    //
+    // All four discards push the same codes with no chat id, so
+    // their identity was the code alone: lock the vault with
+    // Settings open, press Remove on the first notice, press it on
+    // the second inside the toast's window, and the second failure
+    // was dropped entirely - silence, in the panel these hooks were
+    // added to stop being silent. A per-press counter rides along
+    // too: every one of these is one deliberate button press, so a
+    // retry after a 'please try again' toast is a new event and
+    // must be answered, while one failure reported twice is still
+    // one toast.
+    onError: (err: unknown) => {
+      emptyStubPresses += 1;
+      useErrorStore.getState().pushError(err, "error", {
+        source: `vault:discard-empty-stub#${emptyStubPresses}`,
+      });
     },
   });
 }

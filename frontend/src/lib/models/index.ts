@@ -5,6 +5,7 @@ export {
   getModelMaxCompletionTokens,
   getModelSupportedParameters,
   getModelModalities,
+  acceptsImages,
   hasInputModality,
   hasOutputModality,
   shouldShowTextOnlyNote,

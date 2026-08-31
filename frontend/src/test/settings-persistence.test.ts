@@ -29,6 +29,7 @@
  * the real store, reads the real localStorage, and reloads the real module.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { PERSISTED as UI_PERSISTED } from "@/lib/store/uiStore";
 
 import { useUiStore } from "@/lib/store/uiStore";
 import { readDeviceNarration } from "@/lib/voice/narrationMigration";
@@ -41,44 +42,18 @@ import { readDeviceNarration } from "@/lib/voice/narrationMigration";
 import { seedDeviceNarration, seedRawUiState } from "./mocks/legacyStorage";
 
 /**
- * What the store writes to device storage. Exact, not a subset: localStorage
- * is not encrypted, so every ADDITION to this list is a privacy decision and
- * has to be made on purpose. A subset check would wave new keys through.
+ * What the store writes to device storage - IMPORTED, not retyped.
+ *
+ * This was a hand-written copy of the same thirty-two names that lived in
+ * `uiStore.ts` and again in `static-safety.test.ts`. Three copies of one
+ * list is two copies that go stale with nothing to say so, and the whole
+ * point of the list is that every addition to it is a privacy decision
+ * somebody made on purpose. There is one now, exported from the store.
+ *
+ * Exact, not a subset: localStorage is not encrypted. A subset check would
+ * wave new keys through.
  */
-const PERSISTED = [
-  "selectedCharacterId",
-  "selectedChatId",
-  "activeRightPanelTab",
-  "sidebarCollapsed",
-  "rightPanelCollapsed",
-  "msgFontPx",
-  "msgLineHeight",
-  "msgContrast",
-  "narrationEnabled",
-  "quoteTintEnabled",
-  "continuousVoice",
-  "voiceHintDismissed",
-  "narrationMigrated",
-  "msgInk",
-  "surfaceFinish",
-  "msgOpacity",
-  "chatBgOn",
-  "chatBgLum",
-  "chatBgContrast",
-  "chatBgTint",
-  "chatBgFocusX",
-  "chatBgFocusY",
-  "chatBgZoom",
-  "chatBgAspect",
-  "ambientFogOn",
-  "genTemperature",
-  "genTopP",
-  "genTopK",
-  "genRepetitionPenalty",
-  "genMaxOutput",
-  "genSeed",
-  "genContextBudget",
-] as const;
+const PERSISTED: readonly string[] = UI_PERSISTED;
 
 /** Names that have each been in the wrong home at some point. */
 const NEVER = [

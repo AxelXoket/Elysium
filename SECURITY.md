@@ -65,7 +65,7 @@ Everything is under one folder:
 | `voice/refs` - only for a voice model that CLONES: the reference clip you record and a transcript of the words in it, the label you gave that voice, and, for one engine, a voiceprint the app derives from your clip by itself | **No, plaintext.** Nothing purges these: not the lock, not shutdown, not the next launch. They go when you delete that voice, delete the folder, or reset the vault. The FOLDER is named with a one-way hash, so a directory listing is no longer a roster of the voices you have cloned; the file inside it still names the voice |
 | `voice/cache` - generated speech, your conversation as audio | No. Cleared at every lock, every launch and every shutdown; anything older than 30 minutes is cleared as the next reply is spoken |
 | `webview/` - the app window's browser profile | No. Cache, history and session files are wiped at every launch and exit; only cosmetic settings and your wallpaper are kept |
-| `elysium.log` - application log | No. It carries no message text, no note text, no keys and no passphrases - but it does record that things happened: chat and note ids, counts, and the TYPE name of an error. A plaintext record of which chats have notes, sitting beside an otherwise opaque vault. A vault reset now shreds it, along with its rotated `elysium.log.1`, because the route promises the folder is left as if Elysium had never run and a log naming your chats is not that |
+| `elysium.log` - application log | No. It carries no message text, no note text, no keys and no passphrases - but it does record that things happened: chat and note ids, counts, and errors. For most of those an error is its TYPE name only; in the fifty traceback places counted further down this document it is the exception's own message, which nothing stops from being built out of your text. That is the gap, it is measured, and it is described at length under "What the log holds". A plaintext record of which chats have notes, sitting beside an otherwise opaque vault. A vault reset now shreds it, along with its rotated `elysium.log.1`, because the route promises the folder is left as if Elysium had never run and a log naming your chats is not that |
 | `port` - the port the server last used | No, and one number with nothing in it to protect. A vault reset shreds it anyway, alongside the log |
 
 In a development checkout this folder is the source tree instead, which is why
@@ -199,8 +199,11 @@ hand has no token and the gate is open. One route does not follow that rule:
 left open. See "Resetting the vault," below.
 
 Two routes are exempt because a browser cannot attach a header to an image or an
-audio element. They are narrowed rather than opened: the browser must send
-`Sec-Fetch-Site: same-origin`, which a command-line tool does not.
+audio element. They are narrowed rather than opened: the request must carry
+`Sec-Fetch-Site: same-origin`. A page cannot forge that header - the browser
+sets it - so a hostile page is still refused. A local program CAN set it by
+hand, and then it passes; this paragraph claimed otherwise until 2026-08-30.
+The exemption is narrower than the rest of the gate rather than closed.
 
 ### Resetting the vault
 
@@ -400,8 +403,9 @@ by hand gets the same lines on a console and no file at all.
 
 Leaks of both kinds were found in this round, and the ones still open are
 named at the end of this section rather than left out of it. What keeps the
-rest closed is a gate that reads every logging call in the shipped tree - 73
-files at the last count - and fails the build on a value that can carry
+rest closed is a gate that reads every logging call in the shipped tree - 75
+files, and that number is checked rather than remembered - and fails the build
+on a value that can carry
 content or a name: an exception's own message, which nothing stops from being
 built out of your text; anything derived from one; a value handed to a helper
 that logs it; and a list of the variable names this codebase actually binds
@@ -409,10 +413,10 @@ displayable text to.
 
 Tracebacks are the exception, and it is a large one, so it is stated rather
 than buried. Writing a live exception's message into the log is the same leak
-by another route, and there are forty-eight places that do it, across seventeen
+by another route, and there are fifty places that do it, across seventeen
 modules. The gate SEES every one of them and fails on none: they are recorded
 in a ledger it checks, so a new one cannot appear quietly and a paid-off one
-has to be removed from the ledger, but the existing forty-eight ship as they
+has to be removed from the ledger, but the existing fifty ship as they
 are. Removing them costs the ability to diagnose a crash from a user's log,
 and that trade has not been made.
 
@@ -424,11 +428,23 @@ yet, and anything leaving by a route other than the logger - a `print`, a file
 written by hand, a message put on the wire. It is a floor under code review,
 not a replacement for it.
 
-One leak of the second kind is still open, and it is counted rather than
-described as closed. A voice's id used to be made from the label you typed for
-it, and on any install created before the voice folders were hashed that id is
-still that label, still recorded in that voice's own file. Four log lines print
-it. Voices created since carry an opaque id and are not affected.
+One leak of the second kind used to be open here and is now CLOSED. A
+voice's id used to be made from the label you typed for it, and on any install
+created before the voice folders were hashed that id is still that label,
+still recorded in that voice's own file - so the lines that deleted or listed
+a voice wrote a name off your screen into the log. Those lines now write
+twelve characters of a keyed hash instead, and the gate's content ledger is
+empty: not "a small number we accept", zero, and it cannot grow without the
+build going red.
+
+That the sentence above had to be rewritten at all is the honest part of this
+section. It said "four log lines print it" for a while after they had stopped
+printing it, and the registered proof went on passing - because the proof
+asserts the scan equals the ledger, and an empty ledger matching an empty scan
+is exactly what a closed leak looks like. The proof measured the mechanism;
+the sentence quoted a count. Numbers written into locked prose are now bound
+to the ledger they quote by a test of their own, so this particular way of
+going quietly out of date is closed too.
 
 ---
 
@@ -562,9 +578,15 @@ you can find the one you care about.
   control.
 - **A limit is told to the model, not enforced in code.** The limits list is
   the strongest-worded block in the payload and it is still a block in a
-  payload. `on_violation` is stored and deliberately not acted on. If you need
-  something to be impossible rather than discouraged, this is not the feature
-  for it.
+  payload. `on_violation` and `rating_ceiling` are told to the model in the
+  same block, as words: "if it happens, stop the scene and say so", "keep
+  this at a PG-13 rating". Nothing in this application inspects a reply
+  against them, stops a scene, or refuses a rating - they are instructions a
+  model can follow, ignore or be talked out of, exactly like the limit they
+  are attached to. Until 31 August 2026 `on_violation` was stored and not
+  sent at all, which was worse: the panel showed a setting that reached
+  nothing. If you need something to be impossible rather than discouraged,
+  this is not the feature for it.
 - **A running unlocked app is unlocked, and that is still the honest sentence.**
   Administrator rights reach any process's memory, and so does anything holding
   a handle it opened before the app started. The vault protects the file at

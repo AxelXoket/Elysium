@@ -195,7 +195,15 @@ class TestOneExtractionIsOneTransaction:
         """G-15. Written separately, the old note outlives the thing that
         replaced it and both go into the next payload."""
         chat_id = seed(client)
-        old = notebook.create_entry(chat_id, "The mill belonged to her uncle.")
+        # provenance=model, on purpose. A model's suggestion may only retire
+        # a note the model itself wrote; the fixture used to build a USER
+        # note and assert that a model suggestion retired it, which is the
+        # defect this file now guards against rather than the behaviour it
+        # measures. What is being tested here is that retirement happens in
+        # the SAME transaction, so the note has to be a retirable one.
+        old = notebook.create_entry(
+            chat_id, "The mill belonged to her uncle.",
+            provenance=notebook.PROV_MODEL)
         with get_db() as con:
             con.execute("BEGIN IMMEDIATE")
             notebook.commit_extraction(
@@ -207,7 +215,15 @@ class TestOneExtractionIsOneTransaction:
 
     def test_a_retired_note_is_not_in_the_next_payload(self, client) -> None:
         chat_id = seed(client)
-        old = notebook.create_entry(chat_id, "The mill belonged to her uncle.")
+        # provenance=model, on purpose. A model's suggestion may only retire
+        # a note the model itself wrote; the fixture used to build a USER
+        # note and assert that a model suggestion retired it, which is the
+        # defect this file now guards against rather than the behaviour it
+        # measures. What is being tested here is that retirement happens in
+        # the SAME transaction, so the note has to be a retirable one.
+        old = notebook.create_entry(
+            chat_id, "The mill belonged to her uncle.",
+            provenance=notebook.PROV_MODEL)
         with get_db() as con:
             con.execute("BEGIN IMMEDIATE")
             notebook.commit_extraction(
@@ -297,7 +313,8 @@ class TestAutoAccept:
                 proposals=[fact()])
         entry = notebook.list_entries(chat_id)[0]
 
-        resp = client.post(f"/api/v1/notebook/entries/{entry['id']}/accept")
+        resp = client.post(f"/api/v1/notebook/entries/{entry['id']}/accept"
+                           f"?chat_id={chat_id}")
         assert resp.status_code == 200
         assert resp.json()["status"] == "accepted"
         assert resp.json()["provenance"] == "model"
@@ -599,8 +616,15 @@ class TestTheSkipVocabularyHasSentences:
     @pytest.mark.anyio
     async def test_an_undeclared_reason_cannot_be_written(self) -> None:
         """Behaviour, not a grep: the writer itself refuses a reason that has
-        no sentence behind it."""
-        with pytest.raises(AssertionError):
+        no sentence behind it.
+
+        `ValueError`, not `AssertionError`. The refusal used to be an
+        `assert`, and `python -O` deletes those - a gate with a command-line
+        switch on it. Nothing ships with assertions stripped today, so this
+        was a latent hole; it is closed by construction now instead of by
+        the absence of a flag.
+        """
+        with pytest.raises(ValueError):
             await notebook_worker._record_skip(
                 1, "invented_reason", {"work_key": "k", "from_id": 1,
                                        "to_id": 2})
@@ -637,11 +661,14 @@ class TestTheSkipVocabularyHasSentences:
         """`plan_invalidated` is written by commit_extraction's require_trace
         branch, not by `_record_skip` above - a DIFFERENT writer. Behaviour,
         not a grep: that writer refuses an undeclared reason on its own,
-        exactly like `_record_skip` does, rather than trusting the caller."""
+        exactly like `_record_skip` does, rather than trusting the caller.
+
+        `ValueError` for the same reason as its sibling above: the refusal
+        must not be removable by a command-line flag."""
         chat_id = seed(client, 2)
         with get_db() as con:
             con.execute("BEGIN IMMEDIATE")
-            with pytest.raises(AssertionError):
+            with pytest.raises(ValueError):
                 notebook.commit_extraction(
                     con, work_key="undeclared-writer", chat_id=chat_id,
                     from_id=1, to_id=2, status="skipped",

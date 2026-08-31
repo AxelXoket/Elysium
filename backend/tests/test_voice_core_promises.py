@@ -80,13 +80,13 @@ def test_a_measured_pacing_does_answer():
 # ---------------------------------------------------------------------------
 
 def test_the_same_model_gets_the_same_pacing():
-    assert pacing_module.for_model("velvet") is pacing_module.for_model("velvet")
+    assert pacing_module.for_model("aurora") is pacing_module.for_model("aurora")
 
 
 def test_different_models_do_not_share_timings():
     """Swapping models must not carry the old model's speed over - that would
     be a worse estimate than having none."""
-    assert pacing_module.for_model("velvet") is not pacing_module.for_model("ember")
+    assert pacing_module.for_model("aurora") is not pacing_module.for_model("ember")
 
 
 def test_an_unidentified_engine_still_gets_one_stable_bucket():
@@ -95,12 +95,12 @@ def test_an_unidentified_engine_still_gets_one_stable_bucket():
 
 def test_learning_survives_across_replies():
     """The whole point, stated as the thing that used to be false."""
-    first = pacing_module.for_model("velvet")
+    first = pacing_module.for_model("aurora")
     for _ in range(12):
         first.observe(chars=40, audio_seconds=2.5, gen_seconds=0.35)
 
     # A second reply, later. It used to start from zero here.
-    second = pacing_module.for_model("velvet")
+    second = pacing_module.for_model("aurora")
     assert second.measured
     assert second.first_chunk_window(FIRST_CHUNK_BUDGET_SECONDS) is not None
 
@@ -122,8 +122,8 @@ def _synth_factory(uid: str | None):
 def test_stream_speaker_takes_the_shared_pacing_for_its_model():
     from tts.stream_speech import StreamSpeaker
 
-    shared = pacing_module.for_model("velvet")
-    speaker = StreamSpeaker(_synth_factory("velvet"))
+    shared = pacing_module.for_model("aurora")
+    speaker = StreamSpeaker(_synth_factory("aurora"))
     try:
         assert speaker._queue._pacing is shared
     finally:
@@ -136,8 +136,8 @@ def test_two_replies_on_one_model_share_one_estimator():
     what reply one measured."""
     from tts.stream_speech import StreamSpeaker
 
-    first = StreamSpeaker(_synth_factory("velvet"))
-    second = StreamSpeaker(_synth_factory("velvet"))
+    first = StreamSpeaker(_synth_factory("aurora"))
+    second = StreamSpeaker(_synth_factory("aurora"))
     try:
         assert first._queue._pacing is second._queue._pacing
     finally:
@@ -151,7 +151,7 @@ def test_an_explicit_pacing_still_wins():
     from tts.stream_speech import StreamSpeaker
 
     mine = Pacing()
-    speaker = StreamSpeaker(_synth_factory("velvet"), pacing=mine)
+    speaker = StreamSpeaker(_synth_factory("aurora"), pacing=mine)
     try:
         assert speaker._queue._pacing is mine
     finally:
@@ -166,7 +166,7 @@ def test_the_first_chunk_path_is_reachable_once_the_model_is_known(monkeypatch):
     import speech_prep
     from tts.stream_speech import StreamSpeaker
 
-    trained = pacing_module.for_model("velvet")
+    trained = pacing_module.for_model("aurora")
     for _ in range(12):
         trained.observe(chars=40, audio_seconds=2.5, gen_seconds=0.35)
 
@@ -179,7 +179,7 @@ def test_the_first_chunk_path_is_reachable_once_the_model_is_known(monkeypatch):
 
     monkeypatch.setattr(speech_prep, "first_chunk", _spy)
 
-    speaker = StreamSpeaker(_synth_factory("velvet"))
+    speaker = StreamSpeaker(_synth_factory("aurora"))
     try:
         speaker.feed(
             "The harbour lights had already come on by the time she reached "

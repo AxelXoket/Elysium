@@ -613,3 +613,86 @@ class TestCrashHousekeeping:
             time.sleep(0.1)              # NOTE: no poll_health() calls here
         assert host.snapshot()["state"] == "error"
         assert not client.alive
+
+
+class TestStreamedAudioBecomesFindable:
+    """The most common way audio is made was the one way it could not be deleted.
+
+    A live reply has no message id while it streams: the assistant row is
+    written after the last delta, deliberately. So every streamed wav was
+    tagged 0, and `forget_message_audio` globs `speak-<mid>-*` and never
+    matched one. Deleting the message removed the row and left the recording
+    of it on disk in the clear.
+    """
+
+    def _cache(self, monkeypatch, tmp_path) -> Path:
+        cache = tmp_path / "audio"
+        cache.mkdir()
+        monkeypatch.setattr(config, "TTS_CACHE_DIR", str(cache), raising=False)
+        return cache
+
+    def test_a_streamed_wav_is_named_after_its_stream_not_zero(
+        self, monkeypatch, tmp_path,
+    ) -> None:
+        self._cache(monkeypatch, tmp_path)
+        host = tts_host.VoiceHost()
+        name = Path(host._next_out_path(None, stream_token="abc123")).name
+        assert name.startswith("speak-tabc123-"), name
+        assert not name.startswith("speak-0-")
+
+    def test_a_path_with_neither_still_falls_back_to_zero(
+        self, monkeypatch, tmp_path,
+    ) -> None:
+        # GROUND CONTROL. A preview or a probe has no message and no stream,
+        # and those are still swept by age, by the lock and at launch.
+        self._cache(monkeypatch, tmp_path)
+        host = tts_host.VoiceHost()
+        assert Path(host._next_out_path(None)).name.startswith("speak-0-")
+
+    def test_adoption_makes_the_stream_deletable_by_message_id(
+        self, monkeypatch, tmp_path,
+    ) -> None:
+        cache = self._cache(monkeypatch, tmp_path)
+        host = tts_host.VoiceHost()
+
+        streamed = Path(host._next_out_path(None, stream_token="tok1"))
+        streamed.write_bytes(b"RIFF" + bytes(32))
+        # GROUND: before adoption, the deletion machinery cannot see it. This
+        # is the bug, asserted rather than described.
+        host.forget_message_audio(77)
+        assert streamed.exists()
+
+        assert host.adopt_stream_audio("tok1", 77) == []
+        assert not streamed.exists(), "the stream's wav kept its old name"
+        adopted = list(cache.glob("speak-77-*.wav"))
+        assert len(adopted) == 1
+
+        assert host.forget_message_audio(77) == []
+        assert list(cache.glob("speak-77-*.wav")) == []
+
+    def test_adoption_takes_only_its_own_stream(
+        self, monkeypatch, tmp_path,
+    ) -> None:
+        # POSITIVE CONTROL, and the reason a per-stream token exists at all:
+        # two concurrent streams used to share one `speak-0-` pattern, so a
+        # bulk rename onto one message would have taken the other's audio.
+        cache = self._cache(monkeypatch, tmp_path)
+        host = tts_host.VoiceHost()
+
+        mine = Path(host._next_out_path(None, stream_token="mine"))
+        mine.write_bytes(b"RIFF" + bytes(32))
+        theirs = Path(host._next_out_path(None, stream_token="theirs"))
+        theirs.write_bytes(b"RIFF" + bytes(32))
+
+        host.adopt_stream_audio("mine", 5)
+
+        assert theirs.exists(), "adoption took another stream's audio"
+        assert len(list(cache.glob("speak-5-*.wav"))) == 1
+
+    def test_adoption_refuses_a_meaningless_pair(
+        self, monkeypatch, tmp_path,
+    ) -> None:
+        self._cache(monkeypatch, tmp_path)
+        host = tts_host.VoiceHost()
+        assert host.adopt_stream_audio("", 5) == []
+        assert host.adopt_stream_audio("tok", 0) == []

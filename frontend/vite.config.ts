@@ -27,7 +27,13 @@ export default defineConfig({
   test: {
     globals: true,
     environment: "jsdom",
-    setupFiles: "./src/test/setup.ts",
+    // sentinels.ts FIRST, and the order is the fragile part of the whole
+    // arrangement. It installs the runtime traps - egress, storage, console,
+    // header, payload - and a module that writes at import time slips past
+    // every one of them if anything is imported before they are in place.
+    // setup.ts comes second because it imports the draft store, which is a
+    // module under test.
+    setupFiles: ["./src/test/sentinels.ts", "./src/test/setup.ts"],
     // Pinned, not inherited. setup.ts's global afterEach clears the draft
     // store, and "stack" is what makes it run AFTER Testing Library's own
     // cleanup rather than before it. That is vitest's default today, so this

@@ -6,13 +6,14 @@ from outside the cache, removing an engine while its worker is still holding
 it, or answering "loaded" when nothing is.
 """
 import sys
+import time
 from pathlib import Path
 
 import pytest
 
 import config
 from tts import host as tts_host
-from tts import provision, runtimes
+from tts import provision, runtimes, stream_hook
 from tests.test_tts_core import make_fish
 
 FAKE = str(Path(__file__).resolve().parent / "fake_worker.py")
@@ -241,6 +242,104 @@ class TestReferenceVoicesOverTheWire:
         assert client.delete("/api/v1/tts/voices/ayse").json()["removed"] is True
         assert client.get("/api/v1/tts/voices").json()["voices"] == []
 
+    def test_an_oversized_body_is_cut_by_the_route_not_by_refs(
+        self, client, voice, monkeypatch,
+    ) -> None:
+        """The route used to call `await file.read()` with no argument.
+
+        The cap lived in refs.save_upload, which runs after the whole body is
+        already in memory, so the check could only ever describe a body that
+        had been buffered in full. What is measured here is WHERE the refusal
+        happens: refs must never be handed an oversized clip, because it can
+        only see one by holding it.
+        """
+        import routers.tts_runtime as route
+
+        seen: list[int] = []
+        real_save = route.refs.save_upload
+
+        def watched(voice_id, filename, data, **kw):
+            seen.append(len(data))
+            return real_save(voice_id, filename, data, **kw)
+
+        monkeypatch.setattr(route.refs, "save_upload", watched)
+        monkeypatch.setattr(config, "TTS_REF_MAX_BYTES", 4096)
+
+        r = client.post(
+            "/api/v1/tts/voices/buyuk",
+            files={"file": ("ref.wav", bytes(40 * 1024), "audio/wav")},
+        )
+        assert r.status_code == 400
+        assert r.json()["detail"] == "tts_reference_invalid"
+        assert seen == [], (
+            "refs.save_upload was handed the body, so the cut still happens "
+            "after the whole file is in memory"
+        )
+
+    def test_a_clip_under_the_cap_still_reaches_refs(
+        self, client, voice, monkeypatch,
+    ) -> None:
+        # GROUND CONTROL. Without it, a route that refused every upload would
+        # satisfy the case above, and so would one that never called refs.
+        import routers.tts_runtime as route
+
+        seen: list[int] = []
+        real_save = route.refs.save_upload
+
+        def watched(voice_id, filename, data, **kw):
+            seen.append(len(data))
+            return real_save(voice_id, filename, data, **kw)
+
+        monkeypatch.setattr(route.refs, "save_upload", watched)
+
+        r = client.post(
+            "/api/v1/tts/voices/normal",
+            files={"file": ("ref.wav", _wav_bytes(), "audio/wav")},
+        )
+        assert r.status_code == 200
+        assert seen and seen[0] <= int(config.TTS_REF_MAX_BYTES)
+
+    def test_the_body_shield_covers_the_voice_route(
+        self, client, voice, monkeypatch,
+    ) -> None:
+        """The shield only ever guarded /api/v1/uploads/.
+
+        Content-Length is what a browser and curl both send, so refusing there
+        means the body is never read at all. The ceiling is lowered here
+        rather than sending thirty megabytes at a test.
+        """
+        import main
+
+        # Derived from the real table, with only the NUMBER lowered. Written
+        # out as a literal instead, removing the voice entry from main.py
+        # would leave this test happily patching in its own.
+        lowered = tuple(
+            (prefix, 512 if prefix == "/api/v1/tts/voices/" else limit)
+            for prefix, limit in main._BODY_LIMITS
+        )
+        assert any(p == "/api/v1/tts/voices/" for p, _ in lowered), (
+            "the shield has no entry for the voice route at all"
+        )
+        monkeypatch.setattr(main, "_BODY_LIMITS", lowered)
+        r = client.post(
+            "/api/v1/tts/voices/buyuk",
+            files={"file": ("ref.wav", bytes(4096), "audio/wav")},
+        )
+        assert r.status_code == 400
+        assert r.json()["detail"] == "attachment_too_large"
+
+    def test_the_shield_leaves_the_voice_route_alone_under_its_ceiling(
+        self, client, voice,
+    ) -> None:
+        # GROUND: the voice route carries its OWN ceiling, three times the
+        # image one. Reusing the image number would refuse a real clip.
+        assert config.TTS_REF_BODY_LIMIT > config.UPLOAD_BODY_LIMIT
+        r = client.post(
+            "/api/v1/tts/voices/normal",
+            files={"file": ("ref.wav", _wav_bytes(), "audio/wav")},
+        )
+        assert r.status_code == 200
+
     def test_a_too_short_clip_gets_its_own_code_over_the_wire(self, client, voice):
         r = client.post(
             "/api/v1/tts/voices/kisa",
@@ -391,30 +490,146 @@ class TestSpeakStream:
         res = client.post("/api/v1/tts/speak_stream", json={"text": "   "})
         assert res.status_code == 400
 
-    def test_the_worker_thread_is_not_joined_on_the_event_loop(self):
-        """`close()` JOINS the synthesis thread, and a join that lands while the
-        engine is mid-sentence blocks for as long as that sentence takes. The
-        generator's cleanup runs ON the event loop, so doing it inline would
-        freeze every other request in the app - the same trap the vault-lock
-        path documents and avoids."""
-        from pathlib import Path
-        source = (Path(__file__).resolve().parents[1] / "routers"
-                  / "tts_runtime.py").read_text(encoding="utf-8")
-        body = source[source.index("def voice_speak_stream"):]
-        body = body[: body.index("def _tts_sse")]
-        assert "await anyio.to_thread.run_sync(speaker.close)" in body
-        # cancel() is a flag and returns at once; it must come first so the
-        # worker is already winding down before anything waits on it.
-        assert body.index("speaker.cancel()") < body.index("speaker.close")
+    def test_the_worker_thread_is_not_joined_on_the_event_loop(
+            self, client, voice, monkeypatch) -> None:
+        """`close()` JOINS the synthesis thread, and a join that lands while
+        the engine is mid-sentence blocks for as long as that sentence takes.
+        The generator's cleanup runs ON the event loop, so doing it inline
+        would freeze every other request in the app - the same trap the
+        vault-lock path documents and avoids.
 
-    def test_a_client_that_leaves_does_not_strand_the_worker(self):
-        """Cleanup is in a finally, not on the happy path: a browser that
-        navigates away mid-utterance would otherwise leave a thread
-        synthesising into a queue nobody will ever drain."""
-        from pathlib import Path
-        source = (Path(__file__).resolve().parents[1] / "routers"
-                  / "tts_runtime.py").read_text(encoding="utf-8")
-        body = source[source.index("def voice_speak_stream"):]
-        body = body[: body.index("def _tts_sse")]
-        assert "finally:" in body
-        assert body.index("finally:") < body.index("speaker.cancel()")
+        DRIVEN, not read. This used to slice `tts_runtime.py`'s own text
+        between two `def` lines and compare substring positions: it asserted
+        that `speaker.cancel()` appears before `speaker.close` in the FILE.
+        That is true of a `finally` block that never runs, of a `close` inside
+        a branch nothing reaches, and of a comment. What it claimed to
+        protect - the join not happening on the event loop - was never
+        measured at all.
+
+        The stub records the thread each call arrives on. The assertion is
+        that `close` did NOT arrive on the loop's own thread, which is the
+        whole property.
+        """
+        import threading
+
+        calls: list[tuple[str, int]] = []
+
+        class RecordingSpeaker:
+            """Every call, with the thread it came in on."""
+
+            finished = True
+            dropped = 0
+            dropped_samples: list[str] = []
+
+            def feed(self, text: str) -> None:
+                calls.append(("feed", threading.get_ident()))
+
+            def finish(self) -> None:
+                calls.append(("finish", threading.get_ident()))
+
+            def drain(self):
+                return []
+
+            def take_error(self):
+                return None
+
+            def cancel(self) -> None:
+                calls.append(("cancel", threading.get_ident()))
+
+            def close(self) -> None:
+                # Long enough that an inline join would be visible, short
+                # enough not to slow the suite. The point is the THREAD, not
+                # the duration.
+                calls.append(("close", threading.get_ident()))
+                time.sleep(0.05)
+
+        monkeypatch.setattr(stream_hook, "StreamSpeaker",
+                            lambda *a, **kw: RecordingSpeaker())
+        _fake_gpu(monkeypatch)
+        runtimes.register("fish_s2", sys.executable)
+        uid = client.get("/api/v1/tts/models").json()["models"][0]["uid"]
+
+        with client.stream("POST", "/api/v1/tts/speak_stream",
+                           json={"text": "hello there", "uid": uid}) as r:
+            assert r.status_code == 200
+            for _ in r.iter_lines():
+                pass
+
+        names = [name for name, _ in calls]
+        assert "cancel" in names, "the teardown never ran"
+        assert "close" in names
+        assert names.index("cancel") < names.index("close"), (
+            "close was awaited before the worker was told to stop")
+        # The loop's thread is learned from INSIDE the request, not from the
+        # test: TestClient runs the app in a worker thread of its own, so the
+        # test's own thread id is nobody's event loop. `feed` runs in the
+        # generator body, which is on the loop.
+        feed_thread = next(tid for name, tid in calls if name == "feed")
+        close_thread = next(tid for name, tid in calls if name == "close")
+        assert close_thread != feed_thread, (
+            "the join happened on the event loop's own thread")
+
+    def test_a_client_that_leaves_does_not_strand_the_worker(
+            self, client, voice, monkeypatch) -> None:
+        """A browser that navigates away mid-utterance must not leave a
+        thread synthesising into a queue nobody will ever drain.
+
+        DRIVEN, not read. The old version asserted that the substring
+        `finally:` appears somewhere in a slice of the source file and that
+        it appears before `speaker.cancel()`. A `finally` wrapping an empty
+        block satisfies both.
+        """
+        import threading
+
+        closed = threading.Event()
+        calls: list[str] = []
+
+        class RecordingSpeaker:
+            finished = False
+            dropped = 0
+            dropped_samples: list[str] = []
+
+            def feed(self, text: str) -> None:
+                calls.append("feed")
+
+            def finish(self) -> None:
+                calls.append("finish")
+
+            def drain(self):
+                # Something to send, so the client has a chance to walk away
+                # in the middle rather than after the end.
+                return [{"audio_id": "a1", "seconds": 1.0,
+                         "sample_rate": 44100, "text": "hello"}]
+
+            def take_error(self):
+                return None
+
+            def cancel(self) -> None:
+                calls.append("cancel")
+
+            def close(self) -> None:
+                calls.append("close")
+                closed.set()
+
+        monkeypatch.setattr(stream_hook, "StreamSpeaker",
+                            lambda *a, **kw: RecordingSpeaker())
+        # The wall-clock backstop, shortened. This speaker never reports
+        # `finished`, which is the point - a worker that is still going is
+        # what the client walks away from - so the endpoint's own deadline is
+        # what ends the generator. Three minutes of it in a unit test is not
+        # a measurement, it is a hang.
+        monkeypatch.setattr(stream_hook, "DRAIN_TIMEOUT_S", 0.5)
+        _fake_gpu(monkeypatch)
+        runtimes.register("fish_s2", sys.executable)
+        uid = client.get("/api/v1/tts/models").json()["models"][0]["uid"]
+
+        # Read ONE line and abandon the stream - the navigate-away shape.
+        with client.stream("POST", "/api/v1/tts/speak_stream",
+                           json={"text": "hello there", "uid": uid}) as r:
+            assert r.status_code == 200
+            for _ in r.iter_lines():
+                break
+
+        assert closed.wait(5.0), "the worker was never closed"
+        assert "cancel" in calls, "the worker was never told to stop"
+        assert calls.index("cancel") < calls.index("close")

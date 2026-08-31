@@ -98,6 +98,61 @@ class TestStatusReportsPresence:
         assert body["premigrate_backup"] is True
         assert body["premigrate_backup_readable"] is True
 
+    def test_status_reports_a_premigrate_copy_moved_aside_as_unreadable(
+        self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The copies nobody was counting.
+
+        A pass that cannot open the snapshot renames it to
+        `<name>.unreadable-<ts>` rather than deleting it, so every failed
+        pass leaves another complete copy of the vault on disk. The reset
+        route already swept the whole family; status asked `exists()` about
+        the canonical name and answered False with three of them sitting
+        beside it.
+        """
+        vault, key = _real_vault(tmp_path, monkeypatch)
+        base = legacy_migration.premigrate_backup_path()
+        aside = base.with_name(base.name + ".unreadable-1755000000")
+        _write_encrypted_file(aside, key)
+        vault_state.clear_key()
+
+        body = client.get("/api/v1/vault/status").json()
+
+        assert body["premigrate_backup"] is True
+        assert aside.name in body["premigrate_backups"]
+        # The canonical name is NOT there, which is the whole point: the
+        # boolean used to be computed from it alone.
+        assert base.name not in body["premigrate_backups"]
+
+    def test_the_names_field_is_empty_when_nothing_is_on_disk(
+        self, client,
+    ) -> None:
+        """Ground control. Without it a field hardcoded to a non-empty list
+        would satisfy the test above and say nothing."""
+        body = client.get("/api/v1/vault/status").json()
+        assert body["premigrate_backups"] == []
+        assert body["premigrate_backup"] is False
+
+    def test_the_names_field_empties_again_when_the_copy_is_removed(
+        self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Positive control. The field measures the disk, not a constant:
+        the same install reports the copy, then stops reporting it."""
+        vault, key = _real_vault(tmp_path, monkeypatch)
+        base = legacy_migration.premigrate_backup_path()
+        aside = base.with_name(base.name + ".unreadable-1755000001")
+        _write_encrypted_file(aside, key)
+        vault_state.clear_key()
+
+        assert client.get("/api/v1/vault/status").json()[
+            "premigrate_backups"] == [aside.name]
+
+        aside.unlink()
+
+        body = client.get("/api/v1/vault/status").json()
+        assert body["premigrate_backups"] == []
+        assert body["premigrate_backup"] is False
+
     def test_unreadable_under_a_different_key_even_while_unlocked(
         self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:

@@ -74,13 +74,43 @@ function originalOf(entry: NotebookEntry): string | null {
   return quote;
 }
 
-/** Turkish-aware, and it has to be: `İstanbul` lowercases to `i̇stanbul` under
- *  the invariant rules and to `istanbul` under Turkish ones, so a user typing
- *  `istanbul` finds nothing with the default. The locale is passed explicitly
- *  rather than left to the machine's - the notes are the owner's, and their
- *  machine is not necessarily the one this runs on. */
+//: The four characters the dotted/dotless I problem is made of.
+//:
+//: `İ` U+0130, `I` U+0049, `ı` U+0131, `i` U+0069.
+const I_FAMILY = /[İIıi]/g;
+
+/** Case-folded for SEARCH, with the I family collapsed to one letter.
+ *
+ *  Turkish lowercasing and invariant lowercasing disagree about this family
+ *  in OPPOSITE directions, and picking a locale picks which half to break:
+ *
+ *    * `toLocaleLowerCase("tr")` wins `İstanbul` -> `istanbul` and LOSES
+ *      `India` -> `ındia`, so typing `india` finds nothing;
+ *    * the invariant rules win `India` and lose `İstanbul`, which folds to
+ *      `i̇stanbul` with a combining dot.
+ *
+ *  The panel's own text says suggested notes are written in ENGLISH, so an
+ *  English capital I is not an edge case here - and the notes are a Turkish
+ *  speaker's, so `İ` is not either. Neither half is the one to sacrifice.
+ *
+ *  So the family is normalised BEFORE lowercasing and the locale question
+ *  disappears with it. The cost is stated rather than hidden: a search for
+ *  `ı` also matches `i` and vice versa. That is a wider net, not a wrong
+ *  one - it can only ever return MORE notes, and this is a filter over notes
+ *  the reader already owns, not an identity check.
+ *
+ *  AND NFC FIRST, which the paragraph above needs and did not have. The
+ *  character class matches a base `I`; fed the DECOMPOSED form of `İ` -
+ *  `I` followed by U+0307, which is what macOS and a good many IMEs and web
+ *  pages produce - it replaced the `I` and left the combining dot stranded,
+ *  giving exactly the `i̇stanbul` this comment names as the failure it is
+ *  avoiding. The old `toLocaleLowerCase("tr")` handled that case, so it was
+ *  a regression rather than an inherited hole. Composing first also closes
+ *  the pre-existing half nobody had noticed: `ğ ş ü ö ç` each differ NFC
+ *  vs NFD, so a decomposed `baş` did not match a typed `baş` either.
+ */
 function fold(text: string): string {
-  return text.toLocaleLowerCase("tr").trim();
+  return text.normalize("NFC").replace(I_FAMILY, "i").toLowerCase().trim();
 }
 
 /** Matches the note AND the verbatim quote under it.
@@ -98,19 +128,26 @@ function matches(entry: NotebookEntry, needle: string): boolean {
 
 function noteState(
   entry: NotebookEntry,
-): "live" | "proposed" | "retired" | "over" {
+): "live" | "proposed" | "retired" | "over" | "pinned_over" {
   if (entry.retired_at) return "retired";
   // Before `excluded_reason`: a proposal is not being sent for a much more
   // important reason than not fitting, and reading as "live" would tell the
   // user a note is in force while it is still waiting for them.
   if (entry.status === "proposed") return "proposed";
+  // TWO reasons, not one. The server writes `over_ceiling` when a note was
+  // evicted to make room, and `pinned_over_ceiling` when the pinned notes
+  // ALONE are over the limit and even a pinned one had to go. Folding them
+  // together printed "Pin it to protect it." on a note that was already
+  // pinned - the one action that cannot help, told to the one person who
+  // had already taken it.
+  if (entry.excluded_reason === "pinned_over_ceiling") return "pinned_over";
   if (entry.excluded_reason) return "over";
   return "live";
 }
 
 export function NotebookPanel() {
   const chatId = useUiStore((s) => s.selectedChatId);
-  const { data, isLoading } = useNotebook(chatId);
+  const { data, isLoading, isError } = useNotebook(chatId);
   const create = useCreateNote();
   const patch = usePatchNote();
   const remove = useDeleteNote();
@@ -120,6 +157,12 @@ export function NotebookPanel() {
   const [draft, setDraft] = useState("");
   const [query, setQuery] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  // Undo on this strip deletes every note in it at once, permanently, and it
+  // had no confirmation at all - one press of a ghost button. The same
+  // screen already asks before deleting ONE note (see `confirmDeleteId` and
+  // the Confirm delete / Keep note pair on each row); this is that pattern,
+  // not a new one.
+  const [confirmUndo, setConfirmUndo] = useState(false);
 
   // The filter belongs to the chat it was typed in, and this panel does not
   // unmount when the chat changes - so without this the search follows the
@@ -137,10 +180,17 @@ export function NotebookPanel() {
   // `confirmDeleteId` is deliberately NOT reset with it: notebook entry ids
   // are AUTOINCREMENT over the whole table, so an id carried in from another
   // chat matches no row here and the open question has nothing to attach to.
+  //
+  // `confirmUndo` has no such excuse and IS reset. It is a bare boolean, so
+  // it carries into the next chat and arms a strip nobody armed: the reader
+  // opens chat B and its Undo row is already asking "Confirm deleting N
+  // notes" about a set they have never seen. That is the same unconfirmed
+  // bulk delete this pair exists to prevent, one chat over.
   const [filterChatId, setFilterChatId] = useState(chatId);
   if (chatId !== filterChatId) {
     setFilterChatId(chatId);
     setQuery("");
+    setConfirmUndo(false);
   }
 
   const busy = create.isPending || patch.isPending || remove.isPending
@@ -188,12 +238,28 @@ export function NotebookPanel() {
     // written. A retired row would go on sitting in the panel forever as a
     // fact they explicitly rejected.
     const doomed = justSaved.map((e) => e.id);
-    acknowledge();
+    if (chatId == null) return;
+    setConfirmUndo(false);
+    // ACKNOWLEDGE ONLY WHAT ACTUALLY WENT, AND ONLY AFTERWARDS.
+    //
+    // `acknowledge()` used to run BEFORE the loop and marked every id as
+    // seen. The first failed DELETE then broke out to the catch with the
+    // rest of the ids already silenced - so notes that are still in the
+    // notebook stopped being announced by the one strip that announces
+    // them, and the model's writing became invisible by way of an error
+    // nobody could act on.
+    const removed: number[] = [];
     try {
-      for (const id of doomed) await remove.mutateAsync([id]);
+      // The chat is named on every one of these: the routes refuse a note
+      // that is not in the chat the caller says it is acting from.
+      for (const id of doomed) {
+        await remove.mutateAsync([id, chatId]);
+        removed.push(id);
+      }
     } catch (err) {
       pushError(err, "error", { chatId: chatId ?? undefined });
     }
+    if (removed.length) markSeen(chatId, removed);
   }
 
   async function handleAdd() {
@@ -209,7 +275,8 @@ export function NotebookPanel() {
 
   async function handlePin(entry: NotebookEntry) {
     try {
-      await patch.mutateAsync([entry.id, { pinned: !entry.pinned }]);
+      if (chatId == null) return;
+      await patch.mutateAsync([entry.id, chatId, { pinned: !entry.pinned }]);
     } catch (err) {
       pushError(err, "error", { chatId: chatId ?? undefined });
     }
@@ -217,7 +284,8 @@ export function NotebookPanel() {
 
   async function handleAccept(id: number) {
     try {
-      await accept.mutateAsync([id]);
+      if (chatId == null) return;
+      await accept.mutateAsync([id, chatId]);
     } catch (err) {
       pushError(err, "error", { chatId: chatId ?? undefined });
     }
@@ -226,7 +294,8 @@ export function NotebookPanel() {
   async function handleDelete(id: number) {
     setConfirmDeleteId(null);
     try {
-      await remove.mutateAsync([id]);
+      if (chatId == null) return;
+      await remove.mutateAsync([id, chatId]);
     } catch (err) {
       pushError(err, "error", { chatId: chatId ?? undefined });
     }
@@ -296,26 +365,59 @@ export function NotebookPanel() {
                 : "."}
             </p>
             <div className="flex items-center gap-2">
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                disabled={busy}
-                onClick={() => void handleUndo()}
-                className="persona-danger-action h-7 gap-1.5 px-2 text-xs"
-              >
-                <Undo2 size={12} className="size-3" />
-                Undo
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                onClick={acknowledge}
-                className="persona-ghost-action h-7 px-2 text-xs"
-              >
-                Keep {justSaved.length === 1 ? "it" : "them"}
-              </Button>
+              {confirmUndo ? (
+                <>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    disabled={busy}
+                    onClick={() => void handleUndo()}
+                    aria-label={justSaved.length === 1
+                      ? "Confirm delete"
+                      : `Confirm deleting ${justSaved.length} notes`}
+                    className="persona-danger-action h-7 gap-1.5 px-2 text-xs"
+                  >
+                    <Check size={12} className="size-3" />
+                    Delete {justSaved.length === 1
+                      ? "it" : `all ${justSaved.length}`}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    disabled={busy}
+                    onClick={() => setConfirmUndo(false)}
+                    aria-label="Keep note"
+                    className="persona-ghost-action h-7 px-2 text-xs"
+                  >
+                    Cancel
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    disabled={busy}
+                    onClick={() => setConfirmUndo(true)}
+                    className="persona-danger-action h-7 gap-1.5 px-2 text-xs"
+                  >
+                    <Undo2 size={12} className="size-3" />
+                    Undo
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={acknowledge}
+                    className="persona-ghost-action h-7 px-2 text-xs"
+                  >
+                    Keep {justSaved.length === 1 ? "it" : "them"}
+                  </Button>
+                </>
+              )}
             </div>
           </div>
         )}
@@ -394,6 +496,27 @@ export function NotebookPanel() {
 
         {isLoading && <p className="text-xs leading-relaxed text-muted-foreground">Loading...</p>}
 
+        {/* A failed load is not an empty notebook, and it used to read as
+            one. `isError` was never taken off the query, so a 500 left
+            `isLoading` false and `data` undefined - which is exactly the
+            shape of a notebook with nothing in it - and the panel told the
+            reader "Nothing yet." about notes that were sitting in the
+            database. The worst possible lie for this feature: the whole
+            point of the notebook is that the character stops forgetting, and
+            the panel said the forgetting had already happened.
+
+            First in the chain, so the two branches below can stay the pair
+            they are rather than being taught about a third case each. */}
+        {!isLoading && isError && (
+          <p
+            className="text-xs leading-relaxed text-muted-foreground"
+            role="status"
+          >
+            Notes could not be loaded. They are still saved - this panel just
+            could not read them. Try again in a moment.
+          </p>
+        )}
+
         {/* One or the other, never both. `entries` is the FILTERED list, so
             an empty notebook and a filter that matched nothing produce the
             same empty list and used to print both sentences at once: "Nothing
@@ -401,7 +524,7 @@ export function NotebookPanel() {
             here." The two contradict each other, and one of them is telling
             the reader their notes are gone. The filter decides which is
             true. */}
-        {!isLoading && entries.length === 0 && query === "" && (
+        {!isLoading && !isError && entries.length === 0 && query === "" && (
           <p className="text-xs leading-relaxed text-muted-foreground">
             Nothing yet. Notes are sent with every message, so the character
             stops forgetting what you write here.
@@ -411,7 +534,7 @@ export function NotebookPanel() {
         {/* `role="status"`: the list empties out under the reader's own
             typing, and for anyone not watching the rows the count is the only
             evidence that the notes are still there and only hidden. */}
-        {!isLoading && entries.length === 0 && query !== "" && (
+        {!isLoading && !isError && entries.length === 0 && query !== "" && (
           <p
             className="text-xs leading-relaxed text-muted-foreground"
             role="status"
@@ -538,6 +661,12 @@ function NoteRow({
             Did not fit this turn - kept, not sent. Pin it to protect it.
           </p>
         )}
+        {state === "pinned_over" && (
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            Did not fit this turn - kept, not sent. The pinned notes alone
+            are over the limit, so unpin one to make room.
+          </p>
+        )}
         {state === "proposed" && (
           <p className="text-xs leading-relaxed text-muted-foreground">
             Waiting for you - not sent until you keep it.
@@ -564,7 +693,7 @@ function NoteRow({
             said in. Without it an English paraphrase of a Turkish sentence
             cannot be checked against anything. */}
         {original && (
-          <p className="text-xs leading-relaxed text-muted-foreground">
+          <p className="break-words text-xs leading-relaxed text-muted-foreground">
             {TURKISH_LETTERS.test(original) ? "Türkçe aslı: " : "From: "}
             <span style={{ color: "var(--color-es-text-light)" }}>
               {"“"}{original}{"”"}

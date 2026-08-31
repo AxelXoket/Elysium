@@ -1,0 +1,43 @@
+#!/bin/sh
+#
+# Elysium pre-push hook. THIS is the versioned copy; the one git runs lives
+# at .git/hooks/pre-push and is a copy of this file.
+#
+# Same split, same reason as the pre-commit hook beside it: .git/hooks is not
+# tracked, is not cloned, and is not restored from a backup, so a hook that
+# lived only there would be absent on every fresh clone and its absence would
+# look exactly like its presence. verify_hygiene.py compares what is installed
+# against this file and reports a failure when they differ or when nothing is
+# installed at all.
+#
+# To install or repair:
+#     cp backend/verify/hooks/pre-push .git/hooks/pre-push
+#
+# This is the slow lane. It runs the whole backend suite, the frontend
+# typecheck, the linter, the whole vitest run, and then a real build of
+# Elysium.exe followed by its selftest. That takes minutes, and it is the last
+# moment before the work leaves this machine.
+#
+# Not the default: this hook reads nothing from stdin and checks the working
+# tree, because what is about to be published is what is committed, and the
+# build has to be made from files on disk.
+
+set -e
+
+for candidate in \
+    backend/.venv/Scripts/python.exe \
+    backend/.venv/bin/python \
+    python3 \
+    python
+do
+    if command -v "$candidate" >/dev/null 2>&1; then
+        exec "$candidate" backend/verify/run_gates.py --hook pre-push
+    fi
+done
+
+# Reached only when no interpreter was found. Refuse rather than wave the push
+# through: a guard that fails open is a guard that reports nothing on exactly
+# the machine where something is already misconfigured.
+echo "pre-push: no python interpreter found, cannot run the gates" >&2
+echo "pre-push: looked for backend/.venv, python3, python" >&2
+exit 1

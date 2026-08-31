@@ -54,7 +54,7 @@ const SEVERITY_LABEL: Record<string, string> = {
 
 export function BoundaryPanel() {
   const chatId = useUiStore((s) => s.selectedChatId);
-  const { data } = useChatBoundaries(chatId);
+  const { data, isError: chatFailed } = useChatBoundaries(chatId);
   // Called unconditionally, per the rules of hooks - the hook takes no
   // `enabled` of its own to gate on chatId. With a chat open its answer goes
   // unused below: `data` above is already the MERGED view, global rows
@@ -75,6 +75,12 @@ export function BoundaryPanel() {
 
   const [label, setLabel] = useState("");
   const [severity, setSeverity] = useState("hard");
+  // What should happen when the limit is crossed, and how far the scene may
+  // go at all. Both columns have been collected, validated and stored since
+  // the table was written, and neither had a control here or a line in the
+  // prompt - so the app could store "stop the scene" and tell nobody.
+  const [onViolation, setOnViolation] = useState("pause");
+  const [rating, setRating] = useState("");
   // Global by default: a limit is usually about the person, not the scene.
   const [scope, setScope] = useState<"global" | "chat">("global");
 
@@ -91,6 +97,22 @@ export function BoundaryPanel() {
       await saveWord.mutateAsync([safeword]);
     } catch (err) {
       pushError(err, "error");
+    } finally {
+      // THE LOCAL VALUE STOPS OVERRIDING THE SERVER'S, both ways.
+      //
+      // `shown` is `safeword ?? server`, and nothing ever cleared `safeword`
+      // - so after a POST that returned 500 the box went on displaying the
+      // word somebody typed, indistinguishable from a word that had been
+      // saved. For this control that is the worst available failure: a
+      // safeword is a thing you believe is protecting you, and believing it
+      // is set when it is not is the whole feature inverted.
+      //
+      // In `finally`, not in the success branch: the failure case is the one
+      // that needs it. The mutation invalidates the query on success, so the
+      // box then reads the value the server actually holds; on failure it
+      // falls back to the value the server still holds, which is the old
+      // one, and the difference is visible.
+      setSafeword(null);
     }
   }
   const [confirmId, setConfirmId] = useState<number | null>(null);
@@ -99,12 +121,24 @@ export function BoundaryPanel() {
   const [pendingGlobal, setPendingGlobal] = useState<boolean | null>(null);
   const useGlobal = pendingGlobal ?? data?.use_global ?? true;
 
-  const busy = create.isPending || remove.isPending || setUseGlobal.isPending;
+  // `saveWord.isPending` belongs here as much as the other three. Without
+  // it the field stayed writable while its own POST was in flight, so a
+  // second edit could be typed over a value that was still being saved and
+  // the two answers raced - and whichever landed last won, silently.
+  const busy = create.isPending || remove.isPending || setUseGlobal.isPending
+    || saveWord.isPending;
   // With no chat open there is nothing to merge global limits INTO, so the
   // global set is shown as-is rather than as an always-empty per-chat list.
   const rows: Boundary[] = chatId == null
     ? (globalBoundaries.data?.boundaries ?? [])
     : (data?.boundaries ?? []);
+
+  // A failed load is not an absence of limits. Neither query's `isError` was
+  // ever read, so a 500 produced `data === undefined`, an empty `rows`, and
+  // the sentence "No limits set." - about limits the reader had written down
+  // precisely so a model would not cross them. Whichever query the panel is
+  // actually reading from is the one that has to be believed.
+  const failed = chatId == null ? globalBoundaries.isError : chatFailed;
 
   async function handleAdd() {
     const text = label.trim();
@@ -115,6 +149,10 @@ export function BoundaryPanel() {
       // later without the screen changing under them.
       await create.mutateAsync([{
         label: text, phrasing: text, severity,
+        on_violation: onViolation,
+        // Omitted rather than sent empty: the column is nullable and its
+        // CHECK does not allow "".
+        ...(rating ? { rating_ceiling: rating } : {}),
         // The scope the owner asked for. `chat_id` was never passed, so every
         // limit the app could create was GLOBAL - the row below rendered
         // "- this chat" for something it had no way to produce, and turning
@@ -244,6 +282,33 @@ export function BoundaryPanel() {
           <option value="veiled">off the page</option>
           <option value="soft">prefer not</option>
         </select>
+        <select
+          value={onViolation}
+          disabled={busy}
+          onChange={(e) => setOnViolation(e.target.value)}
+          aria-label="What to do if it happens"
+          data-testid="boundary-on-violation"
+          className="persona-field h-8 min-w-0 rounded-md px-2 text-xs"
+        >
+          <option value="pause">pause there</option>
+          <option value="rewind">go back and take it another way</option>
+          <option value="fast_forward">skip past it</option>
+          <option value="hard_stop">stop the scene</option>
+        </select>
+        <select
+          value={rating}
+          disabled={busy}
+          onChange={(e) => setRating(e.target.value)}
+          aria-label="Rating ceiling"
+          data-testid="boundary-rating"
+          className="persona-field h-8 min-w-0 rounded-md px-2 text-xs"
+        >
+          <option value="">no rating limit</option>
+          <option value="G">G</option>
+          <option value="PG">PG</option>
+          <option value="PG-13">PG-13</option>
+          <option value="R">R</option>
+        </select>
         <Button
           type="button"
           size="sm"
@@ -261,7 +326,17 @@ export function BoundaryPanel() {
         </Button>
       </div>
 
-      {rows.length === 0 && <p className="text-xs leading-relaxed text-muted-foreground">No limits set.</p>}
+      {failed && (
+        <p
+          className="text-xs leading-relaxed text-muted-foreground"
+          role="status"
+        >
+          Limits could not be loaded. They are still saved - this panel just
+          could not read them. Try again in a moment.
+        </p>
+      )}
+
+      {!failed && rows.length === 0 && <p className="text-xs leading-relaxed text-muted-foreground">No limits set.</p>}
 
       <div className="space-y-1">
         {rows.map((row) => (
@@ -274,7 +349,12 @@ export function BoundaryPanel() {
             onCancelDelete={() => setConfirmId(null)}
             onDelete={() => {
               setConfirmId(null);
-              void remove.mutateAsync([row.id]).catch((err) =>
+              // A global limit belongs to no chat, so it carries no
+              // scope; a chat-scoped one may only be removed from
+              // the chat it was written in.
+              void remove.mutateAsync([
+                row.id, row.scope === "global" ? null : chatId,
+              ]).catch((err) =>
                 pushError(err, "error", { chatId: chatId ?? undefined }),
               );
             }}

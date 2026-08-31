@@ -11,6 +11,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { EmptyStubNotice } from "@/components/settings/EmptyStubNotice";
+import { useErrorStore } from "@/lib/errors";
 import { mockFetch } from "../mocks/api";
 import {
   loadGlassRightCss,
@@ -152,5 +153,66 @@ describe("EmptyStubNotice - light surface contrast", () => {
     // AutoLockControl's contrast tests for the same note. Font-size is the
     // real, measured difference between the two hand-written rules.
     expect(getComputedStyle(alert).fontSize).toBe("12px");
+  });
+
+
+  describe("when the deletion fails", () => {
+    // Four irreversible deletions, and none of them had an `onError`. No
+    // MutationCache either, and the `role="alert"` paragraphs in these
+    // notices report fields of a SUCCESSFUL response - so a 500 or a 423
+    // said nothing at all. "The file is gone" and "nothing was even
+    // attempted" looked identical to the one person who cannot check.
+    //
+    // COUNTED across both lists, and after a reset. The store dedups by
+    // identity, so a leftover event from an earlier test would satisfy
+    // "there is an error" without this change doing anything.
+    function errorCount(): number {
+      const s = useErrorStore.getState();
+      return s.errors.length + s.queuedErrors.length;
+    }
+
+    beforeEach(() => useErrorStore.getState().clearAll());
+
+    it("tells the user when the request is refused", async () => {
+      mockFetch({
+        "/vault/status": { body: { ...BASE, empty_stub: true } },
+        "/vault/discard-empty-stub": { status: 500, body: { detail: "boom" } },
+      });
+      renderWithQueryClient(<EmptyStubNotice />);
+      await userEvent.click(
+        await screen.findByRole("button", { name: /remove it/i }));
+      await waitFor(() => expect(errorCount()).toBe(1));
+    });
+
+    it("tells the user when the vault is locked", async () => {
+      // POSITIVE CONTROL. 423 is the likeliest of these in practice - the
+      // vault locks on idle while the notice is still on screen - and it
+      // travels a different path through the client than a 500.
+      mockFetch({
+        "/vault/status": { body: { ...BASE, empty_stub: true } },
+        "/vault/discard-empty-stub": { status: 423, body: { detail: "vault_locked" } },
+      });
+      renderWithQueryClient(<EmptyStubNotice />);
+      await userEvent.click(
+        await screen.findByRole("button", { name: /remove it/i }));
+      await waitFor(() => expect(errorCount()).toBe(1));
+    });
+
+    it("says nothing when the deletion succeeds", async () => {
+      // GROUND CONTROL. Without it a handler that reports on every outcome
+      // passes both tests above and puts an error on screen for work that
+      // went fine.
+      mockFetch({
+        "/vault/status": { body: { ...BASE, empty_stub: true } },
+        "/vault/discard-empty-stub": { body: { removed: true, reason: "", left: [] } },
+      });
+      renderWithQueryClient(<EmptyStubNotice />);
+      await userEvent.click(
+        await screen.findByRole("button", { name: /remove it/i }));
+      await waitFor(() => expect(
+        vi.mocked(globalThis.fetch).mock.calls.some(([url]) =>
+          String(url).includes("/vault/discard-empty-stub"))).toBe(true));
+      expect(errorCount()).toBe(0);
+    });
   });
 });

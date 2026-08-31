@@ -1,19 +1,36 @@
 """routers/settings.py -- Settings endpoints (Phase 2).
 
-Routes:
-    GET    /settings              - current config state (no secrets)
-    POST   /settings/api-key      - store API key in keyring
-    DELETE /settings/api-key      - remove API key from keyring
-    POST   /settings/api-key/check - is the STORED key still accepted
-    POST   /settings/proxy        - store proxy config
-    DELETE /settings/proxy        - remove proxy config
-    GET    /settings/proxy/health - proxy health probe result
+Routes: fourteen of them, listed by the decorators rather than here. The
+list that used to sit in this docstring named seven and was written when
+there were seven; a partial list of routes reads as a complete one.
 
 Privacy invariants:
-    - API key is NEVER logged, returned, or stored in SQLite.
-    - Proxy URL is NEVER logged, returned, or stored in SQLite.
+    - The API key and the proxy URL are NEVER logged and NEVER returned.
+      As regards the key, `GET /settings` answers with the boolean
+      `api_key_set` and never the value; the proxy is the same shape
+      (`proxy_configured`, and an alias the user chose). The response
+      carries ten keys in all - none of them a secret - and none of this
+      module's logging calls takes either value.
+    - Both are STORED, in `vault_secrets`, inside the SQLCipher database.
+      That is encryption at the page level, not plaintext - but it is
+      storage, and it is SQLite.
     - This module does NOT import or instantiate httpx.AsyncClient.
-    - This module does NOT call OpenRouter or fetch models.
+    - This module DOES call OpenRouter: `validate_api_key` is a live
+      outbound request carrying the key itself, and `invalidate_model_cache`
+      is imported here too.
+
+TWO OF THESE SAID THE OPPOSITE until 31 August 2026, and they had said it
+since the OS-keyring era - the E5 move to the vault changed the storage and
+left the list behind. The block claimed the key was never stored in SQLite
+(it is, encrypted) and that this module never calls OpenRouter (it does, and
+a comment two hundred lines down already said so, so the file contradicted
+itself).
+
+That is worse than having no list. This is the first text somebody opening
+this file for a security review reads, and it pointed them away from the two
+things worth checking. The behaviour is unchanged and correct - storing the
+key in the vault is what E5 was for, and validating it requires sending it.
+Only the description was wrong.
 """
 
 import json

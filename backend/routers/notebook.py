@@ -105,8 +105,22 @@ class UseGlobalBody(BaseModel):
     use_global: bool
 
 
+#: Codes that are a MISSING THING rather than a bad request.
+#:
+#: `chat_not_found` already reached the wire as 404 from `list_chat_boundaries`
+#: and as 400 from here, for the same code, and the shared catalogue declares
+#: it as 404. One code, two statuses, is a contract the client cannot write
+#: against - and the catalogue gate is what says which of the two was right.
+#: `boundary_not_found` joined them when the chat-scope guard started
+#: raising it: `:160` has always answered 404 for that code directly,
+#: so leaving it out here would have given ONE code two statuses again -
+#: the exact contract this set exists to close.
+_NOT_FOUND_CODES = frozenset({"chat_not_found", "notebook_entry_not_found",
+                              "boundary_not_found"})
+
+
 def _refuse(exc: notebook.NotebookError):
-    raise HTTPException(400, exc.code)
+    raise HTTPException(404 if exc.code in _NOT_FOUND_CODES else 400, exc.code)
 
 
 # LITERAL PATHS FIRST. FastAPI matches in registration order, so with
@@ -134,9 +148,24 @@ async def create_boundary(body: BoundaryBody) -> dict:
 
 
 @router.delete("/boundaries/{boundary_id}")
-async def delete_boundary(boundary_id: int) -> dict:
-    removed = await anyio.to_thread.run_sync(
-        notebook.delete_boundary, boundary_id)
+async def delete_boundary(boundary_id: int, chat_id: int | None = None) -> dict:
+    """Remove a limit. Permanent, by design.
+
+    `chat_id` is OPTIONAL here and required on the note routes, and the
+    difference is the data: a GLOBAL limit belongs to no chat, so demanding
+    one would mean inventing a scope for a row that has none.
+
+    Optional is not unscoped. Omitting it means "this is a global limit",
+    and a chat-scoped one is refused; it does not mean "delete whatever this
+    id is". The store enforces that, not this route - a check written here
+    would be one caller's promise about a column that needs the next writer
+    to remember it.
+    """
+    try:
+        removed = await anyio.to_thread.run_sync(
+            notebook.delete_boundary, boundary_id, chat_id)
+    except notebook.NotebookError as exc:
+        _refuse(exc)
     if not removed:
         raise HTTPException(404, "boundary_not_found")
     logger.info("Boundary removed: id=%d", boundary_id)
@@ -191,7 +220,23 @@ async def worker_reset() -> dict:
 
 
 class SafewordBody(BaseModel):
-    word: str = Field(default="", max_length=64)
+    # No max_length here, and the reason is the same one BoundaryBody gives
+    # itself a hundred lines above: declaring the ceiling twice only changes
+    # WHICH refusal arrives first, and pydantic's arrives worse.
+    #
+    # Worse in a way that matters for this field in particular. There is no
+    # RequestValidationError handler in this app, so FastAPI's default runs,
+    # and pydantic v2's errors() puts the REJECTED VALUE in an `input` field
+    # that goes back over the wire. For a safeword - a phrase somebody chose
+    # for the worst moment they expect to have - that is the one string in
+    # this application that must never come back out.
+    #
+    # The ceiling lives in notebook_store.set_safeword, which raises
+    # safeword_too_long, which _refuse turns into a 400 carrying a code and
+    # nothing else. That path also measures the word AFTER collapsing runs of
+    # whitespace, so a long-looking phrase that is short once typed out is
+    # accepted rather than refused on a technicality.
+    word: str = Field(default="")
 
 
 @router.get("/safeword")
@@ -219,14 +264,42 @@ async def set_safeword(body: SafewordBody) -> dict:
 
 
 @router.get("/auto-accept")
-async def get_auto_accept() -> dict:
+async def get_auto_accept(chat_id: int | None = None) -> dict:
+    """What the switch should show. With a chat, what will actually happen.
+
+    The panel asked this route and the extractor asked
+    `notebook.auto_accept_for`, and the two answered differently for exactly
+    the chats the difference matters in: one opened from an imported card
+    carries a per-chat override that forces review, and the switch went on
+    showing the global setting as though it applied.
+
+    `chat_id` is optional because the same route answers the global question
+    when no chat is open. `effective` is the chat's real answer; `enabled`
+    stays the global setting, unchanged, because that is what the POST
+    beneath this writes and the switch has to reflect what it will write.
+    """
     def _read() -> dict:
         from database import get_setting
         raw = get_setting(config.SETTING_NOTEBOOK_AUTO_ACCEPT)
+        if chat_id is not None:
+            from database import get_db
+            with get_db() as con:
+                effective = notebook.auto_accept_for(con, chat_id)
+                forced = con.execute(
+                    "SELECT notebook_auto_accept_override FROM chats "
+                    "WHERE id = ?", (chat_id,)).fetchone()
+            return {
+                "enabled": raw != "0",
+                "effective": effective,
+                # Why they differ, when they do. Without this the panel can
+                # say "off" and not say that the chat is what turned it off.
+                "overridden": forced is not None and forced[0] is not None,
+            }
         # Unset IS the default, and the default is on. Reading an unset key as
         # "off" would make a fresh install silently do nothing and look like a
         # broken worker rather than a setting.
-        return {"enabled": raw != "0"}
+        return {"enabled": raw != "0", "effective": raw != "0",
+                "overridden": False}
     return await anyio.to_thread.run_sync(_read)
 
 
@@ -242,31 +315,61 @@ async def set_auto_accept(body: AutoAcceptBody) -> dict:
 
 
 @router.post("/entries/{entry_id}/accept")
-async def accept_entry(entry_id: int) -> dict:
+async def accept_entry(entry_id: int, chat_id: int) -> dict:
     """Promote a proposal. The ONLY thing this changes is `status`.
 
     `provenance` stays `model` forever - promotion is the classic bypass, and
     a route that could rewrite it would leave `provenance='model'` with no
     live rows, so its guard would pass by describing an empty set.
+
+    `chat_id` is REQUIRED, and required rather than optional on purpose: an
+    optional scope is a scope every existing caller silently opts out of.
+    A query parameter rather than a path segment because the shape of these
+    three routes is already load-bearing for four frontend hooks, and moving
+    them buys nothing this does not - what matters is that the caller must
+    name the chat it is acting from and be refused if the note is not in it.
     """
     def _accept() -> dict:
-        # Read first, and read WHAT it is. Without this the route promoted any
-        # id in the database and RETURNED THE ROW - so it answered "what does
-        # note 412 say" for a note in a chat the caller never opened. The same
-        # gap exists on patch and delete, but only this one hands back text.
+        # Read first, and read WHAT it is. Without this the route promoted
+        # any id in the database and RETURNED THE ROW - so it answered "what
+        # does note 412 say" for a note in a chat the caller never opened.
+        #
+        # The old version of this comment said the same gap existed on patch
+        # and delete "but only this one hands back text". That was wrong:
+        # `update_entry` ends with `SELECT *` and `patch_entry` returns what
+        # it gets, so patch handed back text too. All three take a scope now.
         from database import get_db
         with get_db() as con:
             row = con.execute(
-                "SELECT status, retired_at FROM notebook_entries WHERE id = ?",
-                (entry_id,)).fetchone()
+                "SELECT status, retired_at, chat_id, supersedes_id "
+                "FROM notebook_entries WHERE id = ? AND chat_id = ?",
+                (entry_id, chat_id)).fetchone()
         if row is None:
+            # Not found, or not THIS chat's - answered the same way on
+            # purpose. Telling a caller "that note exists, just not here"
+            # is itself the answer they should not be getting.
             raise notebook.NotebookError("notebook_entry_not_found")
         if row["retired_at"] is not None:
             # Accepting a replaced note would show it as kept in the panel
             # while the payload still, correctly, leaves it out.
             raise notebook.NotebookError("notebook_entry_not_found")
-        return notebook.update_entry(entry_id,
-                                     status=notebook.STATUS_ACCEPTED)
+        entry = notebook.update_entry(entry_id,
+                                      status=notebook.STATUS_ACCEPTED)
+        # The intent the proposal was carrying, applied at the moment it
+        # becomes true. In automatic mode commit_extraction retires the
+        # replaced note inside the same transaction; in REVIEW mode it
+        # deliberately does not - retiring on behalf of a suggestion nobody
+        # has read removes a note the reader approved. So the intent waited
+        # on the row, and this is the moment somebody read it and said yes.
+        #
+        # Same guard as the automatic path, from the same predicate: a
+        # model's word may only retire the model's own accepted, unpinned
+        # notes. Refusal is silent and normal.
+        if row["supersedes_id"] is not None:
+            with get_db() as con:
+                notebook.retire_superseded(
+                    con, row["chat_id"], row["supersedes_id"], entry_id)
+        return entry
 
     try:
         entry = await anyio.to_thread.run_sync(_accept)
@@ -274,6 +377,32 @@ async def accept_entry(entry_id: int) -> dict:
         _refuse(exc)
     logger.info("Notebook proposal accepted: id=%d", entry_id)
     return entry
+
+
+# ABOVE `/{chat_id}`, and it has to stay there. FastAPI matches in
+# declaration order, so a single-segment literal declared BELOW a
+# single-segment parameter never matches: the parameter wins and answers 422
+# for a path that is not a number. Every literal route in this file sits
+# above that line for the same reason.
+@router.post("/sweep/{chat_id}")
+async def sweep_chat(chat_id: int) -> dict:
+    """Read the part of this chat nobody has read.
+
+    The ordinary worker only ever moves forward. A chat that met this feature
+    with a long history behind it deliberately starts at the PRESENT - a
+    notebook describing a conversation four hundred messages ago is worse
+    than an empty one - and until now that decision was permanent, because
+    the cursor is a maximum and could never look under itself again.
+
+    This is the way back. One work unit per press, through the worker's own
+    door, claimed against the same daily cap and recorded in the same table.
+    """
+    import notebook_worker
+
+    result = await notebook_worker.worker.sweep(chat_id)
+    logger.info("Notebook sweep for a chat: %s",
+                "started" if result.get("started") else result.get("reason"))
+    return result
 
 
 @router.get("/{chat_id}")
@@ -300,7 +429,18 @@ async def list_entries(chat_id: int) -> dict:
                                + len(blocks["model_block"])
                                + len(blocks["boundary_block"])),
         }
-    return await anyio.to_thread.run_sync(_read)
+    try:
+        return await anyio.to_thread.run_sync(_read)
+    except notebook.NotebookError as exc:
+        # `list_entries` answers `[]` for a chat that is not there;
+        # `build_notebook_blocks` reaches `list_boundaries`, which raises
+        # `chat_not_found`. Uncaught, that left the route as the one place
+        # in this file that answered 500 with Starlette's plain-text body -
+        # no JSON, no code, and the generic toast at the other end. Reached
+        # by an ordinary race: a chat deleted in one window while the panel
+        # refreshes in another. Its sibling `/{chat_id}/boundaries` has
+        # caught the identical exception all along.
+        _refuse(exc)
 
 
 @router.post("/{chat_id}")
@@ -318,31 +458,80 @@ async def create_entry(chat_id: int, body: EntryBody) -> dict:
 
 
 @router.patch("/entries/{entry_id}")
-async def patch_entry(entry_id: int, body: EntryPatch) -> dict:
+async def patch_entry(entry_id: int, chat_id: int, body: EntryPatch) -> dict:
+    """Edit a note. Scoped, and it returns the row - which is why.
+
+    This route hands the note's text back, so an unscoped edit was also an
+    unscoped read: any id in the vault, from any chat.
+    """
     fields = body.model_dump(exclude_none=True)
     if not fields:
         raise HTTPException(400, "notebook_entry_invalid")
     try:
         entry = await anyio.to_thread.run_sync(
-            lambda: notebook.update_entry(entry_id, **fields))
+            lambda: notebook.update_entry(entry_id, chat_id, **fields))
     except notebook.NotebookError as exc:
         _refuse(exc)
     return entry
 
 
 @router.delete("/entries/{entry_id}")
-async def delete_entry(entry_id: int) -> dict:
-    removed = await anyio.to_thread.run_sync(notebook.delete_entry, entry_id)
+async def delete_entry(entry_id: int, chat_id: int) -> dict:
+    try:
+        removed = await anyio.to_thread.run_sync(
+            notebook.delete_entry, entry_id, chat_id)
+    except notebook.NotebookError as exc:
+        _refuse(exc)
     if not removed:
         raise HTTPException(404, "notebook_entry_not_found")
     logger.info("Notebook entry removed: id=%d", entry_id)
     return {"ok": True}
 
 
+class ChatAutoAcceptBody(BaseModel):
+    """`None` clears the override and returns this chat to the global switch,
+    which is what a NULL in the column has always meant."""
+
+    enabled: bool | None = None
+
+
+@router.post("/{chat_id}/auto-accept")
+async def set_chat_auto_accept(chat_id: int, body: ChatAutoAcceptBody) -> dict:
+    """Decide for THIS chat, or hand the decision back to the global switch.
+
+    The column this writes has been read on every extraction since it was
+    added and written by exactly one statement - the chat INSERT. There was
+    no way to change it afterwards, so a chat that was wrongly trusted stayed
+    trusted, and the escape hatch the design assumed did not exist.
+
+    It matters most for the case the import signal cannot see: somebody who
+    pastes a downloaded card's fields into the form by hand leaves no record
+    that the text came from outside. The app cannot know that. The reader
+    can, and this is where they say so.
+    """
+    try:
+        await anyio.to_thread.run_sync(
+            lambda: notebook.set_auto_accept_override(chat_id, body.enabled))
+    except notebook.NotebookError as exc:
+        _refuse(exc)
+    logger.info("Notebook auto-accept override set for a chat: %s",
+                "cleared" if body.enabled is None else body.enabled)
+    return {"ok": True, "enabled": body.enabled}
+
+
 @router.post("/{chat_id}/reorder")
 async def reorder(chat_id: int, body: ReorderBody) -> dict:
-    await anyio.to_thread.run_sync(
-        lambda: notebook.reorder(chat_id, body.ordered_ids))
+    """Put the notes in a new order.
+
+    `notebook.reorder` refuses a partial list - reordering half a notebook
+    would silently drop the other half - and that refusal reached the wire as
+    an uncaught 500. A user action must not produce one.
+    """
+    try:
+        await anyio.to_thread.run_sync(
+            lambda: notebook.reorder(chat_id, body.ordered_ids))
+    except notebook.NotebookError as exc:
+        _refuse(exc)
     return {"ok": True}
 
 
@@ -366,8 +555,18 @@ async def list_chat_boundaries(chat_id: int) -> dict:
 
 @router.post("/{chat_id}/use-global")
 async def set_use_global(chat_id: int, body: UseGlobalBody) -> dict:
-    await anyio.to_thread.run_sync(
-        lambda: notebook.set_use_global_boundaries(chat_id, body.use_global))
+    """Turn the global limits on or off for this chat.
+
+    The UPDATE behind this matched nothing for a chat that does not exist and
+    said `ok: true` anyway - so a caller could be told a safety setting had
+    been applied to a conversation that was not there.
+    """
+    try:
+        await anyio.to_thread.run_sync(
+            lambda: notebook.set_use_global_boundaries(chat_id,
+                                                       body.use_global))
+    except notebook.NotebookError as exc:
+        _refuse(exc)
     return {"ok": True, "use_global": body.use_global}
 
 

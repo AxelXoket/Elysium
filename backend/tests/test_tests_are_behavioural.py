@@ -207,9 +207,12 @@ KNOWN_PENDING_S03: dict[str, tuple[str, ...]] = {
     "test_tts_lock_lifecycle" + _PY: (
         'return SOURCES[name].read_text(encoding="utf-8")',
     ),
-    "test_tts_runtime_api" + _PY: (
-        '/ "tts_runtime' + _PY + '").read_text(encoding="utf-8")',
-    ),
+    # PAID, 31 August 2026. Two tests here sliced `tts_runtime.py`'s own text
+    # between two `def` lines and compared substring positions - so they
+    # asserted that `speaker.cancel()` appears before `speaker.close` in the
+    # FILE, which is equally true of a `finally` that never runs. Both drive
+    # the endpoint now: one records the THREAD each teardown call arrives on,
+    # the other abandons the stream mid-utterance and waits for the close.
     "test_tts_vram_cost" + _PY: (
         '/ "fish_s2' + _PY + '").read_text(encoding="utf-8")',
     ),
@@ -228,6 +231,19 @@ KNOWN_PENDING_S03: dict[str, tuple[str, ...]] = {
 # ingredient in something that executes, never the subject of an assertion.
 # Excluded here rather than pinned as a violation, because it is not one; see
 # the module docstring for the same note in prose.
+#: Files whose source reads are an INGREDIENT, never the subject.
+#:
+#: `test_worker_dsp.py` reads `_dsp.py` and appends `_TAIL_BUG` to it, then
+#: RUNS the broken copy in a real interpreter to prove the check it is about
+#: actually fires. The text is fed to something that executes; no assertion
+#: is made about the text itself.
+#:
+#: THE REASON WAS WIDER THAN THE TRUTH until 31 August 2026. The same file
+#: also asserted `f"MIN_RATE = {speed.MIN_RATE}" in src` - a pure text claim,
+#: and a weak one: `0.80` formats as `0.8`, so `MIN_RATE = 0.85` in the
+#: worker file contains the needle and the one divergence that test exists to
+#: catch went straight through it. That test parses and compares the VALUE
+#: now. The exemption stays for the two reads it was actually written for.
 _NOT_A_VIOLATION = frozenset({"test_worker_dsp" + _PY})
 
 

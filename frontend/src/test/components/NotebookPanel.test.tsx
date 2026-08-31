@@ -8,7 +8,7 @@
  * mark is the only thing separating "working" from "silently not sent".
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
@@ -21,6 +21,13 @@ import { useContextNotesStore } from "@/lib/chat/contextNotes";
 /** The text of every live region on screen, in document order. */
 function announced(): string[] {
   return screen.getAllByRole("status").map((node) => node.textContent ?? "");
+}
+
+/** Every DELETE the component has sent, in order. */
+function deleteCalls(): unknown[][] {
+  return (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+    .filter((c: unknown[]) =>
+      (c[1] as RequestInit | undefined)?.method === "DELETE");
 }
 
 function entry(over: Partial<Record<string, unknown>> = {}) {
@@ -59,9 +66,14 @@ describe("NotebookPanel", () => {
       .toMatch(/1 of 1 sent/);
   });
 
-  it("says WHY a note is not being sent, and the two reasons differ", async () => {
-    // Both look like an ordinary row otherwise, and they call for different
-    // actions: one is history, the other is fixable by pinning it.
+  it("says WHY a note is not being sent, and the reasons differ", async () => {
+    // Three rows that look identical otherwise, calling for three different
+    // actions: one is history, one is fixable by pinning it, and one is
+    // ALREADY pinned - where "pin it" is the single action that cannot help.
+    //
+    // The server has always written the two ceiling reasons separately
+    // (`over_ceiling` and `pinned_over_ceiling`, notebook_store.py); the
+    // panel folded them into one state and printed one sentence.
     mockFetch({
       "/notebook/7": {
         body: {
@@ -69,6 +81,8 @@ describe("NotebookPanel", () => {
             entry({ id: 1, text: "old wound", retired_at: "2026-08-19" }),
             entry({ id: 2, text: "crowded out",
                     excluded_reason: "over_ceiling" }),
+            entry({ id: 3, text: "pinned and still cut", pinned: 1,
+                    excluded_reason: "pinned_over_ceiling" }),
           ],
           notebook_chars: 0,
         },
@@ -78,13 +92,36 @@ describe("NotebookPanel", () => {
 
     await screen.findByText("old wound");
     expect(screen.getByText(/replaced by a newer note/i)).toBeInTheDocument();
-    expect(screen.getByText(/did not fit this turn/i)).toBeInTheDocument();
-    // One, not two. Both rows are on screen and neither is being sent, but
-    // the retired one is not in the notebook any more - the server drops
+
+    // SCOPED PER ROW. A bare getByText cannot tell the two ceiling rows
+    // apart, and the whole defect is that they read the same.
+    const crowded = within(screen.getByTestId("note-2"));
+    const pinned = within(screen.getByTestId("note-3"));
+
+    // GROUND: the ordinary ceiling row still says what it always said.
+    // Without this the test is green for a change that deletes both
+    // sentences.
+    expect(crowded.getByText(/pin it to protect it/i)).toBeInTheDocument();
+
+    // The defect: this row is pinned, and was being told to pin it.
+    expect(pinned.queryByText(/pin it to protect it/i)).toBeNull();
+    expect(pinned.getByText(/unpin one to make room/i)).toBeInTheDocument();
+
+    // POSITIVE CONTROL for the absence above: the matcher does find that
+    // sentence somewhere on this screen, so `toBeNull` is a real refusal
+    // and not a typo in the regex.
+    expect(screen.getByText(/pin it to protect it/i)).toBeInTheDocument();
+
+    // And the two rows are marked differently for anything reading state.
+    expect(screen.getByTestId("note-2")).toHaveAttribute("data-state", "over");
+    expect(screen.getByTestId("note-3"))
+      .toHaveAttribute("data-state", "pinned_over");
+    // Two, not three. All three rows are on screen and none is being sent,
+    // but the retired one is not in the notebook any more - the server drops
     // retired rows before it counts, so counting it here would report a
     // notebook one note larger than the one that exists.
     expect(screen.getByTestId("notebook-sent-count").textContent)
-      .toMatch(/0 of 1 sent/);
+      .toMatch(/0 of 2 sent/);
   });
 
   it("marks a note the model wrote", async () => {
@@ -250,7 +287,10 @@ describe("what the model wrote, and taking it back", () => {
     expect(screen.queryByTestId("just-saved")).not.toBeInTheDocument();
   });
 
-  it("Undo actually deletes it", async () => {
+  it("Undo actually deletes it, once it has been confirmed", async () => {
+    // The confirmation step is new. Undo deletes every note on the strip at
+    // once and permanently, and it used to be one press of a ghost button -
+    // while the same screen already asked before deleting a SINGLE note.
     const user = userEvent.setup();
     mockFetch({
       "DELETE /notebook/entries/5": { body: { ok: true } },
@@ -259,14 +299,84 @@ describe("what the model wrote, and taking it back", () => {
     renderWithQueryClient(<NotebookPanel />);
     await user.click(await screen.findByRole("button", { name: /^undo$/i }));
 
+    // GROUND: still nothing deleted at this point.
+    expect(deleteCalls()).toHaveLength(0);
+
+    await user.click(screen.getByLabelText("Confirm delete"));
+
     await waitFor(() => {
-      const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
-        .find((c: unknown[]) =>
-          String(c[0]).includes("/notebook/entries/5")
-          && (c[1] as RequestInit | undefined)?.method === "DELETE");
-      expect(call).toBeTruthy();
+      expect(deleteCalls().some((c) =>
+        String(c[0]).includes("/notebook/entries/5"))).toBe(true);
     });
   });
+
+  it("asks before deleting several, and deletes nothing until told", async () => {
+    const user = userEvent.setup();
+    mockFetch({
+      "DELETE /notebook/entries/5": { body: { ok: true } },
+      "DELETE /notebook/entries/6": { body: { ok: true } },
+      "/notebook/7": {
+        body: {
+          entries: [modelNote(), modelNote({ id: 6, text: "A second one." })],
+          notebook_chars: 20,
+        },
+      },
+    });
+    renderWithQueryClient(<NotebookPanel />);
+
+    await user.click(await screen.findByRole("button", { name: /^undo$/i }));
+    expect(deleteCalls()).toHaveLength(0);
+
+    await user.click(screen.getByLabelText(/confirm deleting 2 notes/i));
+
+    await waitFor(() => expect(deleteCalls()).toHaveLength(2));
+  });
+
+  it("cancelling deletes nothing and keeps announcing", async () => {
+    // POSITIVE CONTROL for the confirmation: backing out must leave the
+    // notes AND the strip exactly as they were.
+    const user = userEvent.setup();
+    mockFetch({
+      "DELETE /notebook/entries/5": { body: { ok: true } },
+      "/notebook/7": { body: { entries: [modelNote()], notebook_chars: 10 } },
+    });
+    renderWithQueryClient(<NotebookPanel />);
+
+    await user.click(await screen.findByRole("button", { name: /^undo$/i }));
+    await user.click(screen.getByLabelText("Keep note"));
+
+    expect(deleteCalls()).toHaveLength(0);
+    expect(await screen.findByRole("button", { name: /^undo$/i }))
+      .toBeInTheDocument();
+  });
+
+  it("a refused delete does not silence the notes that are still there",
+    async () => {
+      // THE ordering defect. `acknowledge()` ran BEFORE the loop and marked
+      // every id as seen; the first failed DELETE then broke out with the
+      // rest already silenced, so notes that are still in the notebook
+      // stopped being announced by the one strip that announces them.
+      const user = userEvent.setup();
+      mockFetch({
+        "DELETE /notebook/entries/5": { status: 500, body: { detail: "no" } },
+        "DELETE /notebook/entries/6": { body: { ok: true } },
+        "/notebook/7": {
+          body: {
+            entries: [modelNote(), modelNote({ id: 6, text: "A second one." })],
+            notebook_chars: 20,
+          },
+        },
+      });
+      renderWithQueryClient(<NotebookPanel />);
+
+      await user.click(await screen.findByRole("button", { name: /^undo$/i }));
+      await user.click(screen.getByLabelText(/confirm deleting 2 notes/i));
+
+      // The strip is still there, because nothing was actually removed.
+      expect(await screen.findByRole("button", { name: /^undo$/i }))
+        .toBeInTheDocument();
+      expect(useSeenNotesStore.getState().byChat[7] ?? []).toEqual([]);
+    });
 
   it("stops announcing once it has been acknowledged", async () => {
     const user = userEvent.setup();
@@ -377,6 +487,87 @@ describe("finding a note again", () => {
     renderWithQueryClient(<NotebookPanel />);
     await user.type(await screen.findByLabelText(/search notes/i), "istanbul");
     expect(await screen.findByTestId("note-202")).toBeInTheDocument();
+  });
+
+  // WAS AN ANTI-TEST (`it.fails`) until the fold direction was decided on
+  // 31 August 2026. It is an ordinary test now, and the line below is the
+  // signal that the fix landed.
+  //
+  // The fold is `toLocaleLowerCase("tr")`, one locale, one direction. Turkish
+  // rules win `İ` -> `i` and LOSE `I` -> `ı`: an English capital I folds to a
+  // dotless one, so `fold("India")` is `"ındia"`, the typed `"india"` is not a
+  // substring of it, and the note cannot be found. The panel's own text says
+  // suggested notes are written in English, so English capital I is not an
+  // edge case here - it is the common case.
+  //
+  // Switching to the invariant locale would not have fixed anything; it
+  // turns the same defect around and breaks the İstanbul test above, which
+  // is pinned and correct. The fold normalises the I family to one letter
+  // before lowercasing instead, so the locale question does not arise.
+  //
+  // THE ACCEPTANCE CRITERION: this test and "lowercases the Turkish way"
+  // have to be green AT THE SAME TIME. Either one alone is satisfied by
+  // simply choosing the other locale.
+  it("finds a note with an English capital I", async () => {
+    const user = userEvent.setup();
+    mockFetch({ "/notebook/7": { body: many([
+      entry({ id: 203, text: "India is where the tea came from." })]) } });
+    renderWithQueryClient(<NotebookPanel />);
+    await user.type(await screen.findByLabelText(/search notes/i), "india");
+    expect(await screen.findByTestId("note-203")).toBeInTheDocument();
+  });
+
+  it("finds a note whose text arrived DECOMPOSED", async () => {
+    // The regression the I-family fold introduced, and the wider hole it
+    // then had a chance to close.
+    //
+    // A note pasted from macOS, from a web page, or typed on many IMEs
+    // arrives in NFD: `İ` is `I` + U+0307 rather than one codepoint. The
+    // character class matches the base `I` only, so the replacement left the
+    // combining dot stranded and produced `i̇stanbul` - which is exactly
+    // the string the fold's own comment names as the failure it exists to
+    // avoid. The `toLocaleLowerCase("tr")` it replaced got this right, so it
+    // was a regression, not an inherited hole.
+    //
+    // Written with explicit escapes rather than pasted characters: an
+    // editor, a linter or a git filter that normalises this file would
+    // silently turn the test into a duplicate of the one above it.
+    const user = userEvent.setup();
+    const decomposed = "İstanbul is where they met.";
+    expect(decomposed.normalize("NFC")).not.toBe(decomposed);   // ground
+    mockFetch({ "/notebook/7": { body: many([
+      entry({ id: 205, text: decomposed })]) } });
+    renderWithQueryClient(<NotebookPanel />);
+    await user.type(await screen.findByLabelText(/search notes/i), "istanbul");
+    expect(await screen.findByTestId("note-205")).toBeInTheDocument();
+  });
+
+  it("finds a decomposed note with no I in it at all", async () => {
+    // POSITIVE CONTROL for the test above, and a hole that predates the
+    // I-family change: every Turkish letter with a diacritic differs NFC vs
+    // NFD, so a decomposed `baş` never matched a typed `baş`. A fix
+    // aimed only at the I family would leave this red.
+    const user = userEvent.setup();
+    const decomposed = "The başlangıç was quiet.";
+    expect(decomposed.normalize("NFC")).not.toBe(decomposed);
+    mockFetch({ "/notebook/7": { body: many([
+      entry({ id: 206, text: decomposed })]) } });
+    renderWithQueryClient(<NotebookPanel />);
+    await user.type(await screen.findByLabelText(/search notes/i),
+                    "başlangıç");
+    expect(await screen.findByTestId("note-206")).toBeInTheDocument();
+  });
+
+  it("finds a note with no capital I either way", async () => {
+    // GROUND CONTROL for the pair above. A query with nothing in the I family
+    // must work under any fold anyone chooses, so a fix that breaks this is
+    // not a fix.
+    const user = userEvent.setup();
+    mockFetch({ "/notebook/7": { body: many([
+      entry({ id: 204, text: "The degirmen stood by the water." })]) } });
+    renderWithQueryClient(<NotebookPanel />);
+    await user.type(await screen.findByLabelText(/search notes/i), "degirmen");
+    expect(await screen.findByTestId("note-204")).toBeInTheDocument();
   });
 
   it("says nothing matched, and how many are still there", async () => {
@@ -715,3 +906,90 @@ describe("what a screen reader is told", () => {
     expect(box).toHaveAccessibleName("Search notes");
   });
 });
+
+/**
+ * A failed load is not an empty notebook.
+ *
+ * `isError` was never taken off the query, so a 500 produced exactly the
+ * shape of a notebook with nothing in it - `isLoading` false, `data`
+ * undefined - and the panel answered "Nothing yet." about notes that were in
+ * the database the whole time. For this feature that is the worst available
+ * lie: the notebook exists so the character stops forgetting, and the panel
+ * said the forgetting had already happened.
+ */
+describe("when the notes cannot be loaded", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({ selectedChatId: 7 });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("says so, and does not claim the notebook is empty", async () => {
+    mockFetch({ "/notebook/7": { status: 500, body: { detail: "boom" } } });
+    renderWithQueryClient(<NotebookPanel />);
+
+    expect(await screen.findByText(/could not be loaded/i)).toBeInTheDocument();
+    expect(screen.queryByText(/nothing yet/i)).not.toBeInTheDocument();
+  });
+
+  it("still says Nothing yet when the notebook really is empty", async () => {
+    // GROUND CONTROL. Without this, deleting the empty-state branch outright
+    // would satisfy the assertion above and lose a sentence the panel needs.
+    mockFetch({ "/notebook/7": { body: { entries: [] } } });
+    renderWithQueryClient(<NotebookPanel />);
+
+    expect(await screen.findByText(/nothing yet/i)).toBeInTheDocument();
+    expect(screen.queryByText(/could not be loaded/i)).not.toBeInTheDocument();
+  });
+
+  it("says neither when there are notes to show", async () => {
+    mockFetch({ "/notebook/7": { body: { entries: [entry()] } } });
+    renderWithQueryClient(<NotebookPanel />);
+
+    expect(await screen.findByText(/mira is her sister/i)).toBeInTheDocument();
+    expect(screen.queryByText(/nothing yet/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/could not be loaded/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("the confirm question does not follow the reader", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({ selectedChatId: 7 });
+    useSeenNotesStore.setState({ byChat: {} });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  const modelNote = (over = {}) => entry({
+    id: 5, text: "Her brother owns the mill.", provenance: "model",
+    evidence: "kardesi degirmenin sahibi", ...over,
+  });
+
+  it("a chat switch disarms a confirm armed in the chat before it", async () => {
+    // The panel does NOT unmount when the chat changes, so a bare boolean
+    // carries across. Armed in chat 7 and left armed, chat 8 opens with its
+    // Undo strip already asking to confirm a bulk delete of notes the reader
+    // has never seen - the exact unconfirmed deletion the pair prevents.
+    const user = userEvent.setup();
+    mockFetch({
+      "/notebook/7": { body: { entries: [modelNote(),
+                                        modelNote({ id: 6, text: "A second." })],
+                               notebook_chars: 20 } },
+      "/notebook/8": { body: { entries: [modelNote({ id: 9 }),
+                                        modelNote({ id: 10, text: "Other." })],
+                               notebook_chars: 20 } },
+    });
+    renderWithQueryClient(<NotebookPanel />);
+
+    await user.click(await screen.findByRole("button", { name: /^undo$/i }));
+    // GROUND: it really is armed in this chat.
+    expect(screen.getByLabelText(/confirm deleting/i)).toBeInTheDocument();
+
+    act(() => useUiStore.setState({ selectedChatId: 8 }));
+
+    expect(await screen.findByRole("button", { name: /^undo$/i }))
+      .toBeInTheDocument();
+    expect(screen.queryByLabelText(/confirm deleting/i)).toBeNull();
+  });
+});
+

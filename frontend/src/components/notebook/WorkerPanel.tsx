@@ -1,3 +1,4 @@
+import { useState } from "react";
 /**
  * WorkerPanel - what the background extractor has been doing with your money.
  *
@@ -13,9 +14,10 @@
  * Surface: `.glass-right`, the app's one LIGHT island. Heading and controls
  * follow the vocabulary its siblings use, not the dark settings dialog's.
  */
-import { RotateCcw } from "lucide-react";
+import { BookOpen, RotateCcw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { useUiStore } from "@/lib/store/uiStore";
 import { Switch } from "@/components/ui/switch";
 import { SlideIn } from "@/components/motion/SlideIn";
 import { useErrorStore } from "@/lib/errors/errorStore";
@@ -24,6 +26,8 @@ import {
   useResetWorker,
   useAutoAccept,
   useSetAutoAccept,
+  useSweepChat,
+  useSetChatAutoAccept,
 } from "@/lib/query/notebook";
 
 /** Why a run was refused, in words. These are machine tokens on the wire and
@@ -77,6 +81,13 @@ import {
 // eslint-disable-next-line react-refresh/only-export-components -- co-located with the component on purpose (see above); fast-refresh boundary accepted, in the idiom button.tsx and badge.tsx already use
 export const SKIP_PROSE: Record<string, string> = {
   notebook_daily_cap_reached: "today's call limit was already used",
+  // Named rather than counted as a failure, because nothing was sent. The
+  // old order claimed the day's quota first and only then discovered there
+  // was no key, so twenty of sixty calls burned without a byte leaving the
+  // machine and the panel said "stopped" with nothing attached.
+  api_key_not_set:
+    "no API key is set, so nothing could be sent. This costs you nothing "
+    + "and no call was made - add a key in Settings and it picks up again",
   proxy_gate: "your proxy was required and not healthy",
   // Written by a different path from the others - commit_extraction's
   // require_trace branch, not the worker's own SKIP_REASONS - so the gate
@@ -119,14 +130,25 @@ export function skipProse(reason: string): string {
 const STATE_PROSE: Record<string, string> = {
   closed: "Running.",
   open: "Paused after repeated failures. It will try again by itself.",
+  // The state that was missing, and the omission was on the screen rather
+  // than in the breaker. Once the cooldown elapses exactly one call is let
+  // through as a trial - a real, billed request - while `opened_at` stays
+  // set, so the panel went on saying "Paused" over a call that was going
+  // out. The distinction matters because one of these two costs money.
+  half_open: "Paused, but the cooldown is over: the next turn sends one trial"
+    + " call, and that call is billed like any other.",
   stopped: "Stopped after too many failures. It will not try again until you say so.",
 };
 
 export function WorkerPanel() {
+  const chatId = useUiStore((s) => s.selectedChatId);
   const status = useWorkerStatus();
   const reset = useResetWorker();
-  const auto = useAutoAccept();
+  const sweep = useSweepChat();
+  const [swept, setSwept] = useState<string | null>(null);
+  const auto = useAutoAccept(chatId);
   const setAuto = useSetAutoAccept();
+  const setChatAuto = useSetChatAutoAccept();
   const pushError = useErrorStore((s) => s.pushError);
 
   const body = status.data;
@@ -138,6 +160,35 @@ export function WorkerPanel() {
       await setAuto.mutateAsync([next]);
     } catch (err) {
       pushError(err, "error");
+    }
+  }
+
+  async function readTheRest() {
+    if (chatId == null) return;
+    setSwept(null);
+    try {
+      const out = await sweep.mutateAsync([chatId]);
+      // The two ordinary refusals are not errors and must not read as one.
+      // "There is nothing unread" is the answer somebody pressing this
+      // button most often gets, and a toast would make it look like a fault.
+      setSwept(
+        out.started
+          ? "Reading the earlier part of this chat now."
+          : out.reason === "nothing_unread"
+            ? "Nothing here is unread - it has all been looked at."
+            : "It is already reading. Give it a moment.",
+      );
+    } catch (err) {
+      pushError(err, "error");
+    }
+  }
+
+  async function overrideForThisChat(next: boolean | null) {
+    if (chatId == null) return;
+    try {
+      await setChatAuto.mutateAsync([chatId, next]);
+    } catch (err) {
+      pushError(err, "error", { chatId });
     }
   }
 
@@ -183,6 +234,49 @@ export function WorkerPanel() {
           always waits, whatever this says.
         </p>
 
+        {/* WHAT THIS CHAT WILL ACTUALLY DO.
+            The switch above is the GLOBAL setting; a chat can carry its own
+            answer, and one opened from an imported card does. The panel used
+            to render the global value alone, so that chat showed "on" while
+            the extractor was correctly forcing review - the indicator and the
+            decision disagreeing about the one case the override exists for.
+
+            And the reason it is a control rather than a label: the import
+            signal cannot see somebody pasting a downloaded card's fields
+            into the form by hand. Nothing in the application can. The reader
+            can, so this is where they say so. */}
+        {chatId != null && auto.isSuccess && (
+          <div className="space-y-1" data-testid="chat-auto-accept">
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              In this chat, suggestions are{" "}
+              {auto.data.effective ?? auto.data.enabled
+                ? "kept without asking"
+                : "held for review"}
+              {auto.data.overridden
+                ? " - this chat decides, not the switch above."
+                : "."}
+            </p>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={setChatAuto.isPending}
+              data-testid="chat-auto-accept-toggle"
+              onClick={() => void overrideForThisChat(
+                auto.data.overridden
+                  ? null
+                  : !(auto.data.effective ?? auto.data.enabled))}
+              className="persona-ghost-action h-7 px-2 text-xs"
+            >
+              {auto.data.overridden
+                ? "Follow the setting above"
+                : ((auto.data.effective ?? auto.data.enabled)
+                    ? "Hold this chat's suggestions for review"
+                    : "Keep this chat's suggestions without asking")}
+            </Button>
+          </div>
+        )}
+
         {body && (
           <div className="persona-card space-y-1" data-testid="worker-status">
             <p className="text-xs leading-relaxed text-muted-foreground">
@@ -217,17 +311,45 @@ export function WorkerPanel() {
               </span>
             </p>
 
+            {/* "We do not know" is not "it was free".
+
+                The credit figure above is a sum over a NOT NULL column, so a
+                call the provider declined to price landed in it as zero - and
+                the line then reads as a call that cost nothing. It is the
+                one number on this card the reader might act on, so the card
+                has to say when part of it is missing rather than quietly
+                rounding an unknown down to the cheapest possible answer.
+
+                Only when there is something to say: a provider that prices
+                everything never sees this line. */}
+            {body.spend.cost_unknown > 0 && (
+              <p
+                className="text-xs leading-relaxed text-muted-foreground"
+                data-testid="worker-cost-unknown"
+              >
+                {body.spend.cost_unknown} of the calls made today came back with
+                no price - the credit figure above leaves them out rather than
+                counting them as free.
+              </p>
+            )}
+
             {/* Failures and refusals are separate lines because they call for
                 different things: one is the provider's problem, the other is
                 a limit doing its job. */}
-            {/* `abandoned` rows carry status 'failed' too, so they are a
-                SUBSET of this count. Reporting the whole of it under "nothing
-                was lost" was the lie: for an abandoned call the money was
-                spent and those messages are never read. Split, so each line
-                is true of the runs it describes. */}
-            {body.stats.failed - body.stats.abandoned > 0 && (
+            {/* Rows that cost money carry status 'failed' too, so they are
+                a SUBSET of this count. Reporting the whole of it under
+                "nothing was lost" was the lie: for those the money was spent
+                and those messages are never read. Split, so each line is
+                true of the runs it describes.
+
+                The subset is `paid_and_lost`, not `abandoned`. `abandoned`
+                is only the calls the app was killed in the middle of; a
+                `write_*` failure happens AFTER the reply has been sent,
+                generated and billed, and it was landing on the "nothing was
+                lost" side of this subtraction. */}
+            {body.stats.failed - body.stats.paid_and_lost > 0 && (
               <p className="text-xs leading-relaxed text-muted-foreground">
-                {body.stats.failed - body.stats.abandoned} runs failed.
+                {body.stats.failed - body.stats.paid_and_lost} runs failed.
                 Nothing was lost - the messages they could not read stay
                 unread, not skipped.
               </p>
@@ -286,6 +408,54 @@ export function WorkerPanel() {
                 {body.worker.dropped_offers} turns went unqueued while it was
                 behind. Their messages are still unread, so a later run picks
                 them up.
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* THE WAY BACK.
+            The worker only ever moves forward: its cursor is a maximum, and
+            the first read of a chat that already had a long history starts
+            at the PRESENT on purpose - a notebook describing a conversation
+            four hundred messages ago is worse than an empty one. That was a
+            decision with no undo, and this is the undo. One call per press,
+            against the same daily limit as an ordinary turn.
+
+            Only with a chat open, because there is nothing to read
+            otherwise. */}
+        {chatId != null && (
+          <div className="space-y-1">
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={sweep.isPending || (body?.worker.sweeping ?? false)}
+              onClick={() => void readTheRest()}
+              data-testid="worker-sweep"
+              className="persona-ghost-action h-7 gap-1.5 px-2 text-xs"
+            >
+              <BookOpen size={12} className="size-3" />
+              Read the earlier messages here
+            </Button>
+            {(body?.worker.backlog.messages ?? 0) > 0 && (
+              <p
+                className="text-xs leading-relaxed text-muted-foreground"
+                data-testid="worker-backlog"
+              >
+                {body!.worker.backlog.chats} chat
+                {body!.worker.backlog.chats === 1 ? "" : "s"} have{" "}
+                {body!.worker.backlog.messages} unread messages. Nothing is
+                read without you asking - reading them costs calls.
+              </p>
+            )}
+
+            {swept && (
+              <p
+                className="text-xs leading-relaxed text-muted-foreground"
+                role="status"
+                data-testid="worker-sweep-said"
+              >
+                {swept}
               </p>
             )}
           </div>

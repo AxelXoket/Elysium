@@ -17,6 +17,8 @@ Privacy invariants:
 """
 
 import logging
+
+import audio_sweep
 from datetime import datetime, timezone
 
 import anyio.to_thread
@@ -172,6 +174,18 @@ def _create_chat_sync(character_id: int, title_in: str | None,
         # written by NOTHING - so every model-written fact distilled from
         # somebody else's card went straight into the prompt unreviewed, and
         # the named defence against exactly that was a comment.
+        # WHAT THIS SIGNAL CANNOT SEE, said plainly, because it is the whole
+        # of the remaining gap: somebody who downloads a card and PASTES its
+        # fields into the form by hand leaves `raw_json` at '{}'. The text is
+        # just as much a stranger's, and this cannot tell. Nothing can - the
+        # app has no way to know where the words in a form came from, and a
+        # guess that tried would be wrong in both directions.
+        #
+        # So the answer is not a better guess. It is that the state is now
+        # VISIBLE (the panel shows what this chat will actually do, and
+        # whether the chat is what decided it) and REVERSIBLE (a per-chat
+        # switch that writes this same column). A reader who knows where the
+        # text came from can say so; the app stops pretending it knows.
         raw = (char_row["raw_json"] or "").strip()
         imported = 1 if raw and raw not in ("{}", "null") else 0
         try:
@@ -374,18 +388,11 @@ def _forget_spoken_audio(message_ids: list[int]) -> None:
     must commit whether or not a file lets go. A wav that will not shred is
     reported in the log by the sweeper, not by raising here.
     """
-    if not message_ids:
-        return
-    try:
-        from tts.host import get_host
-        host = get_host()
-        for message_id in message_ids:
-            host.forget_message_audio(message_id)
-    except Exception:                                     # noqa: BLE001
-        # Voice is optional and may not be installed at all. A missing engine
-        # is not a reason to fail a delete the database already committed.
-        logger.warning("chats: could not sweep audio for a deleted message",
-                       exc_info=True)
+    # The body moved to audio_sweep so the three OTHER paths that delete
+    # messages - a character taking its chats with it, an edit sweeping what
+    # came after, an aborted turn removing its own row - can reach it too.
+    # They could not before, and none of them swept anything.
+    audio_sweep.forget_spoken_audio(message_ids)
 
 
 def _delete_chat_sync(chat_id: int) -> None:
@@ -508,11 +515,14 @@ def _delete_message_sync(chat_id: int, message_id: int) -> int:
             (chat_id, start_id),
         ).fetchall()]
         delete_for_messages(con, msg_ids)  # rows + orphan blobs, same txn (E6)
-        # Accepted notes STAY. Deleting a turn is removing a message, not
-        # retracting a fact that was approved - and an approved fact was
-        # usually established in more than one place. Unaccepted suggestions
-        # from these messages go: their only evidence is leaving, so reviewing
-        # one later would mean judging a quote nobody can check.
+        # EVERY note from these messages goes, accepted ones included.
+        #
+        # The earlier rule kept the accepted ones, on the argument that a
+        # fact somebody approved is not retracted by removing one turn. True
+        # of the fact; not true of the QUOTE. `evidence` is a verbatim span
+        # of the message, so an accepted note went on holding a sentence from
+        # a deleted turn word for word - visible in the panel, matched by its
+        # search, and on the wire every time that chat was read.
         notebook.forget_proposals_from_messages(con, msg_ids)
         deleted = con.execute(
             "DELETE FROM messages WHERE chat_id = ? AND id >= ?",

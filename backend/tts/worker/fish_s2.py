@@ -664,7 +664,7 @@ def _build_model(ckpt: Path, kv_len: int, send) -> None:
         STATE["quantized"] = False
         _progress(send, "quantize_skipped", 0.4,
                   detail=f"{type(exc).__name__}: {exc}"[:200],
-                  note="staying bf16; generation will be slower")
+                  note=_wire.NOTE_STAYING_BF16)
 
     # The cap only holds because of the flag: see the module docstring.
     hard = int(model.config.max_seq_len)
@@ -696,13 +696,13 @@ def _warmup(send) -> float:
     eng = _engine()
     t0 = time.perf_counter()
     _progress(send, "compiling", 0.7,
-              note="first compile is slow; a warm TORCHINDUCTOR_CACHE_DIR makes it ~59s")
+              note=_wire.NOTE_FIRST_COMPILE_SLOW)
     try:
         # ~346 s of total silence without this, against a 180 s host budget:
         # the single reason a clean install could never complete its first
         # model load. See _heartbeat.
         with _heartbeat(send, "compiling", 0.7,
-                        note="compiling the model for this GPU"):
+                        note=_wire.NOTE_COMPILING):
             _run_generation(_WARMUP_TEXT, None, None, _WARMUP_TOKENS,
                             temperature=0.7, top_p=0.9, top_k=30,
                             repetition_penalty=1.1)
@@ -711,7 +711,7 @@ def _warmup(send) -> float:
             raise                       # not a toolchain problem; do not retry
         _progress(send, "compile_failed", 0.7,
                   detail=f"{type(exc).__name__}: {exc}"[:200],
-                  note="falling back to eager decoding (triton-windows + MSVC?)")
+                  note=_wire.NOTE_EAGER_FALLBACK)
         STATE["compiled"] = False
         STATE["decode"] = eng["decode_eager"]
         # Sticky for the life of the worker: a missing MSVC/triton toolchain is
@@ -721,7 +721,7 @@ def _warmup(send) -> float:
         # The eager retry is far quicker but not instant, and it runs on the
         # machine that has just proved it is the slow kind.
         with _heartbeat(send, "compiling", 0.7,
-                        note="compiling failed; retrying without it"):
+                        note=_wire.NOTE_COMPILE_RETRY):
             _run_generation(_WARMUP_TEXT, None, None, _WARMUP_TOKENS,
                             temperature=0.7, top_p=0.9, top_k=30,
                             repetition_penalty=1.1)
@@ -759,7 +759,7 @@ def _op_load(req: dict, send) -> dict:
             os.environ["TORCHINDUCTOR_CACHE_DIR"] = cache_dir
         except OSError as exc:
             _progress(send, "cache_dir_unusable", detail=str(exc)[:200],
-                      note="compiling into a temporary cache; every load will be slow")
+                      note=_wire.NOTE_TEMP_COMPILE_CACHE)
 
     _unload_everything()
     eng = _engine()
@@ -858,7 +858,7 @@ def _park_model(send) -> bool:
     except Exception as exc:  # noqa: BLE001 - reported, then the old path runs
         STATE["model_parked"] = None
         _progress(send, "park_failed", error=f"{type(exc).__name__}: {exc}"[:200],
-                  note="the model will be rebuilt from disk instead")
+                  note=_wire.NOTE_REBUILD_FROM_DISK)
         return False
 
 
@@ -874,7 +874,7 @@ def _ensure_model(send) -> None:
     if parked is not None:
         model, decode = parked
         _progress(send, "reloading", 0.02,
-                  note="restoring text2semantic from system memory")
+                  note=_wire.NOTE_RESTORING_FROM_RAM)
         try:
             STATE["model"] = model.to(_DEVICE)
             STATE["decode"] = decode
@@ -885,9 +885,9 @@ def _ensure_model(send) -> None:
             STATE["model_parked"] = None
             _progress(send, "restore_failed",
                       error=f"{type(exc).__name__}: {exc}"[:200],
-                      note="rebuilding the model from disk instead")
+                      note=_wire.NOTE_REBUILDING_FROM_DISK)
     _progress(send, "reloading", 0.02,
-              note="the model was freed to let the last decode finish")
+              note=_wire.NOTE_FREED_FOR_DECODE)
     _build_model(Path(STATE["model_path"]), STATE["kv_len"] or _DEFAULTS["kv_cache_len"], send)
     # No warm-up here on purpose: the generation that follows compiles the same
     # graph, and the inductor cache on disk already makes that the cheap path.
@@ -949,7 +949,7 @@ def _prewarm_codec(send) -> None:
     except BaseException as exc:                # noqa: BLE001
         _progress(send, "codec_prewarm_skipped", 0.95,
                   detail=f"{type(exc).__name__}: {exc}"[:200],
-                  note="the first spoken sentence will load it instead")
+                  note=_wire.NOTE_LAZY_FIRST_SENTENCE)
 
 
 def _drop_codec() -> bool:
@@ -1024,7 +1024,7 @@ def _free_for_codec(send, why: str, *, force: bool = False, frames: int = 0) -> 
     if not force and _fits(frames):
         return False
     _progress(send, "freeing", 0.7, free_gb=round(_free_gb(), 1), detail=why,
-              note="freeing text2semantic so the codec fits")
+              note=_wire.NOTE_FREEING_FOR_CODEC)
     # Cheapest rung first. Parking frees exactly the same VRAM as destroying;
     # the only difference is what the NEXT sentence pays to get it back - a
     # PCIe copy rather than a rebuild from disk. If the park will not take, the
@@ -1227,7 +1227,7 @@ def _save_tokens(tokens, target: Path, send) -> Path | None:
         return target
     except Exception as exc:  # noqa: BLE001 - a cache we cannot write is not fatal
         _progress(send, "cache_write_failed", detail=str(exc)[:200],
-                  note="the reference will be re-encoded next time")
+                  note=_wire.NOTE_REFERENCE_REENCODE)
         return None
 
 
@@ -1284,7 +1284,7 @@ def _ensure_capacity(need: int, send) -> None:
     hard = int(model.config.max_seq_len)
     grow = min(int(need), hard)
     _progress(send, "kv_grow", from_len=current, to_len=grow,
-              note="this request needs a longer context; recompiling once")
+              note=_wire.NOTE_RECOMPILE_LONGER_CONTEXT)
     try:
         with torch.device(_DEVICE):
             model.setup_caches(max_batch_size=1, max_seq_len=grow,
@@ -1324,12 +1324,11 @@ def _fit_tokens(ref_frames: int, prompt_cost: int, want: int, budget: int, send)
                 f"({prompt_cost} tokens of {hard}); say it in smaller pieces")
         _progress(send, "context_raised", limit=hard, ref_frames=ref_frames,
                   prompt_tokens=prompt_cost,
-                  note="the request does not fit the chosen context window")
+                  note=_wire.NOTE_DOES_NOT_FIT_CONTEXT)
     if want > room:
         _progress(send, "clamped", max_new_tokens=room, ref_frames=ref_frames,
                   prompt_tokens=prompt_cost,
-                  note="the text and reference leave less context than the length "
-                       "limit asks for")
+                  note=_wire.NOTE_LESS_CONTEXT_THAN_LIMIT)
         return room
     return want
 
@@ -1546,8 +1545,7 @@ def _op_synthesize(req: dict, send) -> dict:
     if capped:
         _progress(send, "length_capped", 0.78,
                   produced_tokens=produced, limit=int(max_new),
-                  note="this text hit the length limit and was cut short - "
-                       "raise Max length, or say it in smaller pieces")
+                  note=_wire.NOTE_LENGTH_CAPPED)
 
     evicted = _free_for_codec(send, "decoding to audio", force=capped,
                               frames=produced)

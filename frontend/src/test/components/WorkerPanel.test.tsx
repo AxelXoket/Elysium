@@ -13,6 +13,7 @@ import userEvent from "@testing-library/user-event";
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { SKIP_PROSE, WorkerPanel } from "@/components/notebook/WorkerPanel";
 import { mockFetch } from "../mocks/api";
+import { useUiStore } from "@/lib/store/uiStore";
 
 function statusBody(over: Record<string, unknown> = {}) {
   const worker = {
@@ -35,11 +36,18 @@ function statusBody(over: Record<string, unknown> = {}) {
   };
 }
 
-function mount(over: Record<string, unknown> = {}, enabled = true) {
+function mount(
+  over: Record<string, unknown> = {},
+  enabled = true,
+  extra: Record<string, { status?: number; body: unknown }> = {},
+) {
   mockFetch({
+    ...extra,
     "/notebook/worker/reset": { body: { ok: true } },
     "/notebook/worker": { body: statusBody(over) },
-    "/notebook/auto-accept": { body: { enabled } },
+    "/notebook/auto-accept": {
+      body: { enabled, effective: enabled, overridden: false },
+    },
   });
   return renderWithQueryClient(<WorkerPanel />);
 }
@@ -98,6 +106,30 @@ describe("WorkerPanel", () => {
     const box = await screen.findByTestId("worker-status");
     expect(box.textContent).toMatch(/0\.00040 credits/);          // today's
     expect(box.textContent).toMatch(/0\.00910 credits lifetime/); // lifetime's
+  });
+
+  it("says when part of today's credit figure is missing", async () => {
+    // "We do not know" is not "it was free". `cost` is NOT NULL in the
+    // database, so a call the provider declined to price landed in the sum
+    // as zero and the line read as a call that cost nothing. The card has to
+    // say how much of its own total is missing.
+    mount({
+      spend: { calls: 3, tokens_in: 900, tokens_out: 40, cost: 0.0004,
+               cost_unknown: 2 },
+    });
+    const note = await screen.findByTestId("worker-cost-unknown");
+    expect(note.textContent).toMatch(/2 of the calls made today came back with no price/);
+  });
+
+  it("says nothing about missing prices when none are missing", async () => {
+    // GROUND CONTROL. A line that is always on would satisfy the test above
+    // and put a warning on every healthy install.
+    mount({
+      spend: { calls: 3, tokens_in: 900, tokens_out: 40, cost: 0.0004,
+               cost_unknown: 0 },
+    });
+    await screen.findByTestId("worker-status");
+    expect(screen.queryByTestId("worker-cost-unknown")).toBeNull();
   });
 
   it("says WHY runs were skipped, in words", async () => {
@@ -194,13 +226,18 @@ describe("WorkerPanel", () => {
 });
 
 describe("runs that were paid for and lost", () => {
-  // The money case. `abandoned` rows carry status 'failed' too, so the panel
-  // used to report them all under one line saying "nothing was lost" - while
-  // the backend counted them separately precisely because something WAS
-  // lost: the call was billed and those messages are never read.
+  // The money case. Rows that cost money carry status 'failed' too, so the
+  // panel used to report them all under one line saying "nothing was lost" -
+  // while the backend counted them separately precisely because something
+  // WAS lost: the call was billed and those messages are never read.
+  //
+  // The subtraction now uses `paid_and_lost`, not `abandoned`. `abandoned`
+  // is only the calls the app was killed in the middle of; a `write_*`
+  // failure happens after the reply has been sent, generated and billed and
+  // was landing on the reassuring side of the sum.
   it("says the run was paid for rather than that nothing was lost", async () => {
     mount({ stats: { done: 3, failed: 2, skipped: 0, abandoned: 2,
-                     skip_reasons: {} } });
+                     paid_and_lost: 2, skip_reasons: {} } });
     const line = await screen.findByTestId("worker-abandoned");
     expect(line.textContent).toMatch(/paid for/i);
     // Ground: with every failure abandoned, the reassuring line must not
@@ -212,8 +249,13 @@ describe("runs that were paid for and lost", () => {
   it("still reassures about an ordinary failure", async () => {
     // Positive control, and the half that must survive: a genuine failure
     // really does leave its messages unread rather than skipped.
+    //
+    // RE-CUT. `abandoned: 0` alone no longer describes "nothing was spent" -
+    // a write that failed after the reply arrived is also paid for and is
+    // counted by `paid_and_lost`. Both have to be zero for this to be the
+    // case it claims to be.
     mount({ stats: { done: 3, failed: 2, skipped: 0, abandoned: 0,
-                     skip_reasons: {} } });
+                     paid_and_lost: 0, skip_reasons: {} } });
     const box = await screen.findByTestId("worker-status");
     expect(box.textContent).toMatch(/2 runs failed/);
     expect(box.textContent).toMatch(/Nothing was lost/i);
@@ -222,12 +264,53 @@ describe("runs that were paid for and lost", () => {
 
   it("counts the two apart when both happened", async () => {
     mount({ stats: { done: 1, failed: 5, skipped: 0, abandoned: 2,
-                     skip_reasons: {} } });
+                     paid_and_lost: 2, skip_reasons: {} } });
     const box = await screen.findByTestId("worker-status");
-    // Five failed, two of them abandoned, so three ordinary ones. Added
+    // Five failed, two of them paid for, so three ordinary ones. Added
     // together instead of nested it would read seven.
     expect(box.textContent).toMatch(/3 runs failed/);
     expect(box.textContent).toMatch(/2 runs were cut off/);
+  });
+
+  it("a write that failed after the reply arrived is not reassured about",
+    async () => {
+      // The case the old arithmetic got wrong, and the reason the field
+      // changed. Nothing was abandoned - the app was not killed - but the
+      // call was sent, generated and billed, and the notes it carried were
+      // lost on the way to disk.
+      mount({ stats: { done: 1, failed: 2, skipped: 0, abandoned: 0,
+                       paid_and_lost: 2, skip_reasons: {} } });
+      const box = await screen.findByTestId("worker-status");
+      expect(box.textContent).not.toMatch(/Nothing was lost/i);
+    });
+
+  it("the two counts can differ, and the sum uses the wider one", async () => {
+    // POSITIVE CONTROL for the change itself: `paid_and_lost` is a superset,
+    // so a fixture where they differ is the only one that can tell which
+    // field the sentence is reading.
+    mount({ stats: { done: 1, failed: 4, skipped: 0, abandoned: 1,
+                     paid_and_lost: 3, skip_reasons: {} } });
+    const box = await screen.findByTestId("worker-status");
+    // 4 - 3, not 4 - 1.
+    expect(box.textContent).toMatch(/1 runs failed/);
+  });
+
+  it("does not say Paused while a billed trial call is going out", async () => {
+    // The cooldown is over, so the next turn sends exactly one real request.
+    // The panel used to read "Paused after repeated failures. It will try
+    // again by itself." over a call that was already going out.
+    mount({ worker: { state: "half_open" } });
+    const box = await screen.findByTestId("worker-status");
+    expect(box.textContent).not.toMatch(/^Paused after repeated failures/);
+    expect(box.textContent).toMatch(/one trial call/i);
+    expect(box.textContent).toMatch(/billed/i);
+  });
+
+  it("still says Paused while it really is paused", async () => {
+    // GROUND CONTROL: the ordinary open state keeps its sentence.
+    mount({ worker: { state: "open" } });
+    const box = await screen.findByTestId("worker-status");
+    expect(box.textContent).toMatch(/Paused after repeated failures/);
   });
 
   it("says a withdrawn edit in words, not as a raw code", async () => {
@@ -338,3 +421,171 @@ describe("runs that were paid for and lost", () => {
       .not.toEqual(`1 skipped: ${unknown}.`);
   });
 });
+
+/**
+ * The way back to a chat's own history.
+ *
+ * The worker's cursor is a maximum, and the first read of a chat that
+ * already had a long history starts at the PRESENT on purpose - a notebook
+ * describing a conversation four hundred messages ago is worse than an empty
+ * one. That was a decision with no undo. This button is the undo, and the
+ * two ways it can decline are ordinary answers rather than errors: there may
+ * be nothing unread, or a sweep may already be running.
+ */
+describe("reading a chat's earlier messages", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({ selectedChatId: 7 });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({ selectedChatId: null });
+  });
+
+  it("is not offered with no chat open", async () => {
+    // GROUND CONTROL: there is nothing to read, so there is nothing to
+    // press. A button that is always there invites pressing it at random.
+    useUiStore.setState({ selectedChatId: null });
+    mount();
+    await screen.findByTestId("worker-status");
+    expect(screen.queryByTestId("worker-sweep")).toBeNull();
+  });
+
+  it("says it started when there was something unread", async () => {
+    mount({}, true, {
+      "POST /notebook/sweep/7": { body: { started: true, after_id: 0 } },
+    });
+    await userEvent.click(await screen.findByTestId("worker-sweep"));
+    expect((await screen.findByTestId("worker-sweep-said")).textContent)
+      .toMatch(/reading the earlier part/i);
+  });
+
+  it("says nothing is unread, and does not read as a failure", async () => {
+    mount({}, true, {
+      "POST /notebook/sweep/7": {
+        body: { started: false, reason: "nothing_unread" },
+      },
+    });
+    await userEvent.click(await screen.findByTestId("worker-sweep"));
+    expect((await screen.findByTestId("worker-sweep-said")).textContent)
+      .toMatch(/nothing here is unread/i);
+  });
+
+  it("offers the backlog rather than reading it", async () => {
+    mount({ worker: { backlog: { chats: 3, messages: 512 } } });
+    const note = await screen.findByTestId("worker-backlog");
+    expect(note.textContent).toMatch(/3 chats have 512 unread messages/);
+    // The sentence that makes it an offer rather than a warning.
+    expect(note.textContent).toMatch(/nothing is read without you asking/i);
+  });
+
+  it("says nothing when there is no backlog", async () => {
+    // GROUND CONTROL: a line that is always there is not an offer.
+    mount({ worker: { backlog: { chats: 0, messages: 0 } } });
+    await screen.findByTestId("worker-status");
+    expect(screen.queryByTestId("worker-backlog")).toBeNull();
+  });
+
+  it("is disabled while a sweep is already running", async () => {
+    mount({ worker: { sweeping: true } });
+    // The button renders before the status query resolves, so waiting for
+    // the button is not waiting for the answer that disables it.
+    await screen.findByTestId("worker-status");
+    await waitFor(() => {
+      expect(screen.getByTestId("worker-sweep")).toBeDisabled();
+    });
+  });
+
+  it("is pressable when one is not", async () => {
+    // POSITIVE CONTROL for the line above: a button disabled unconditionally
+    // would satisfy it and remove the feature.
+    mount({ worker: { sweeping: false } });
+    expect(await screen.findByTestId("worker-sweep")).not.toBeDisabled();
+  });
+});
+
+/**
+ * What THIS chat will do, which is not always what the switch says.
+ *
+ * The switch is the global setting. A chat can carry its own answer and one
+ * opened from an imported card does - and the panel rendered the global
+ * value alone, so that chat showed "on" while the extractor was correctly
+ * holding every suggestion for review. The indicator and the decision
+ * disagreeing about the one case the override exists for.
+ */
+describe("what this chat does with suggestions", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({ selectedChatId: 7 });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({ selectedChatId: null });
+  });
+
+  function mountWithAuto(auto: Record<string, unknown>) {
+    mockFetch({
+      "/notebook/worker/reset": { body: { ok: true } },
+      "/notebook/worker": { body: statusBody() },
+      "/notebook/auto-accept": { body: auto },
+      "/notebook/7/auto-accept": { body: { ok: true } },
+    });
+    return renderWithQueryClient(<WorkerPanel />);
+  }
+
+  it("says the chat holds them when the chat is what decided", async () => {
+    mountWithAuto({ enabled: true, effective: false, overridden: true });
+    const box = await screen.findByTestId("chat-auto-accept");
+    expect(box.textContent).toMatch(/held for review/i);
+    expect(box.textContent).toMatch(/this chat decides/i);
+  });
+
+  it("says the switch decided when it did", async () => {
+    // GROUND CONTROL: an ordinary chat must not be reported as overridden,
+    // or the sentence stops meaning anything.
+    mountWithAuto({ enabled: true, effective: true, overridden: false });
+    const box = await screen.findByTestId("chat-auto-accept");
+    expect(box.textContent).toMatch(/kept without asking/i);
+    expect(box.textContent).not.toMatch(/this chat decides/i);
+  });
+
+  it("offers the escape hatch and sends what it says", async () => {
+    const user = userEvent.setup();
+    mountWithAuto({ enabled: true, effective: true, overridden: false });
+    await user.click(await screen.findByTestId("chat-auto-accept-toggle"));
+
+    await waitFor(() => {
+      const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+        .find((c: unknown[]) => String(c[0]).includes("/notebook/7/auto-accept")
+          && (c[1] as RequestInit | undefined)?.method === "POST");
+      expect(call).toBeTruthy();
+      expect(JSON.parse(String((call![1] as RequestInit).body)))
+        .toEqual({ enabled: false });
+    });
+  });
+
+  it("hands the chat back to the switch when it is already overridden",
+    async () => {
+      const user = userEvent.setup();
+      mountWithAuto({ enabled: true, effective: false, overridden: true });
+      await user.click(await screen.findByTestId("chat-auto-accept-toggle"));
+
+      await waitFor(() => {
+        const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+          .find((c: unknown[]) =>
+            String(c[0]).includes("/notebook/7/auto-accept")
+            && (c[1] as RequestInit | undefined)?.method === "POST");
+        expect(call).toBeTruthy();
+        expect(JSON.parse(String((call![1] as RequestInit).body)))
+          .toEqual({ enabled: null });
+      });
+    });
+
+  it("is not offered with no chat open", async () => {
+    useUiStore.setState({ selectedChatId: null });
+    mountWithAuto({ enabled: true, effective: true, overridden: false });
+    await screen.findByTestId("worker-status");
+    expect(screen.queryByTestId("chat-auto-accept")).toBeNull();
+  });
+});
+

@@ -96,7 +96,8 @@ class TestProvenanceIsWrittenOnce:
                 "UPDATE notebook_entries SET provenance = 'model' WHERE id = ?",
                 (entry["id"],))
 
-        client.patch(f"{API}/entries/{entry['id']}", json={"text": "edited"})
+        client.patch(f"{API}/entries/{entry['id']}?chat_id={chat}",
+                     json={"text": "edited"})
 
         with database.get_db() as con:
             after = con.execute(

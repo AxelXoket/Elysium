@@ -37,7 +37,8 @@ import auto_lock
 import launch_token
 import vault_state
 import config as config_module
-from config import FRONTEND_ORIGINS, MAX_UPLOAD_BYTES, UPLOAD_BODY_LIMIT
+from config import (FRONTEND_ORIGINS, MAX_UPLOAD_BYTES,
+                    TTS_REF_BODY_LIMIT, UPLOAD_BODY_LIMIT)
 from network_client import close_client
 from vault_state import VaultLockedError
 
@@ -74,9 +75,12 @@ async def lifespan(app: FastAPI):
     #
     # The gap is the DEV path: start_backend.bat runs uvicorn directly and
     # never imports run_app, so on that path nothing has ever cleared the
-    # profile. Measured on 2026-08-20: 21 MB left from 25 July, ten files
-    # carrying first_mes and ten carrying system_prompt as plain readable
-    # JSON, invisible to `git status` because the folder is gitignored.
+    # profile. Measured again on 2026-08-30 and it has not moved:
+    # 13,180,982 bytes across 175 files in 56 folders, every one of them
+    # still dated 25 July, with ten carrying first_mes and ten carrying
+    # system_prompt as plain readable JSON, invisible to `git status`
+    # because the folder is gitignored. The earlier note rounded this
+    # to a larger figure and was never re-measured after it was written.
     #
     # Here rather than in run_app because this lifespan is the one thing both
     # entry points share, and it runs before any window exists - uvicorn
@@ -306,10 +310,34 @@ async def vault_gate(request: Request, call_next):
 # The exact per-file cap stays where it belongs, in the handler.
 _UPLOAD_BODY_LIMIT = UPLOAD_BODY_LIMIT
 
+#: Every multipart route, and the body each one may declare.
+#:
+#: The voice-clip route was missing. It reads an audio file the user recorded
+#: of their own voice, its cap is three times the image one, and it had no
+#: shield at all: the body was read in full and measured afterwards.
+#:
+#: Longest prefix wins, so a more specific route can carry its own number.
+_BODY_LIMITS: tuple[tuple[str, int], ...] = (
+    ("/api/v1/uploads/", UPLOAD_BODY_LIMIT),
+    ("/api/v1/tts/voices/", TTS_REF_BODY_LIMIT),
+)
+
+
+def _declared_limit(path: str) -> int | None:
+    """The body ceiling for this path, or None if it is not a upload route."""
+    best: int | None = None
+    longest = -1
+    for prefix, limit in _BODY_LIMITS:
+        if path.startswith(prefix) and len(prefix) > longest:
+            best, longest = limit, len(prefix)
+    return best
+
 
 @app.middleware("http")
 async def reject_oversized_upload(request: Request, call_next):
-    if request.method == "POST" and request.url.path.startswith("/api/v1/uploads/"):
+    limit = (_declared_limit(request.url.path)
+             if request.method == "POST" else None)
+    if limit is not None:
         raw = request.headers.get("content-length")
         if raw is None:
             # A chunked POST declares no length, so this shield simply did not
@@ -324,7 +352,7 @@ async def reject_oversized_upload(request: Request, call_next):
             declared = int(raw)
         except ValueError:
             return JSONResponse({"detail": "attachment_invalid"}, status_code=400)
-        if declared > _UPLOAD_BODY_LIMIT:
+        if declared > limit:
             return JSONResponse(
                 {"detail": "attachment_too_large"}, status_code=400,
             )
@@ -391,12 +419,13 @@ async def launch_token_gate(request: Request, call_next):
     # cannot carry a custom header. Rewriting both to fetch-into-a-blob is the
     # complete answer and is not this change.
     #
-    # They are not simply exempted. Sec-Fetch-Site is set by the browser and
-    # cannot be forged from the page, so requiring same-origin still refuses
-    # the attacker this gate is for: a program running as this user with curl
-    # sends no such header and is turned away. What it does NOT stop is that
-    # program driving a browser. Narrower than the rest of the gate, and said
-    # rather than glossed.
+    # They are not simply exempted, and the narrowing is smaller than this
+    # comment used to claim. Sec-Fetch-Site is set by the browser and cannot
+    # be forged from the page, so a hostile PAGE is still refused. A local
+    # program is not: curl sends the header the moment somebody types -H,
+    # and the earlier wording said it was turned away. What this buys is
+    # that the two element-loaded routes are unreachable from another
+    # origin, not that they are unreachable from another process.
     if (request.method == "GET"
             and _ELEMENT_LOADED.match(path)
             and request.headers.get("sec-fetch-site") == "same-origin"):

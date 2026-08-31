@@ -4,6 +4,17 @@ Each class here is a defect that was found by reading, reproduced, and then
 fixed. None of them could have been caught by the tests that already existed:
 the file's "Turkish" fixtures were pure ASCII, without one diacritic, and the
 work-key parametrisation omitted the language in exactly the way the key did.
+
+Every chunk here carries its `role: ` prefix, because that is what a chunk
+is: `notebook_worker` builds one `f"{role}: {content}"` per turn and the
+grounding check now reads the speaker off it. A bare sentence would be
+refused for having no speaker. MEASURED, because the first version of this
+note guessed and guessed wrong: replaying every fixture in its pre-prefix
+shape turns SIX POSITIVE tests red (the ones asserting a true quote
+survives) and leaves the negative ones exactly where they were - they take
+the boundary branch with or without a prefix, because their evidence really
+is absent from the text. The prefix keeps the ground controls alive; it was
+never the negatives that were at risk.
 """
 from __future__ import annotations
 
@@ -24,13 +35,13 @@ class TestTheThingsThatLookIdenticalAndAreNot:
     """
 
     def test_a_real_turkish_quote_survives(self) -> None:
-        chunk = "Nisha'nin babasi degirmeni isletiyordu, dedi kiz."
+        chunk = "user: Nisha'nin babasi degirmeni isletiyordu, dedi kiz."
         kept, _ = ex.parse_reply(
             reply([fact(evidence="babasi degirmeni isletiyordu")]), chunk, [])
         assert len(kept) == 1
 
     def test_diacritics_survive(self) -> None:
-        chunk = "Kızın babası değirmeni işletiyordu."
+        chunk = "user: Kızın babası değirmeni işletiyordu."
         kept, _ = ex.parse_reply(
             reply([fact(evidence="babası değirmeni "
                                  "işletiyordu")]), chunk, [])
@@ -39,20 +50,20 @@ class TestTheThingsThatLookIdenticalAndAreNot:
     def test_a_decomposed_quote_matches_a_composed_source(self) -> None:
         """Windows types NFC; a model may emit the NFD pair. Byte-compared
         they differ; on screen they are the same word."""
-        chunk = "Kizin babasi değirmeni isletiyordu."
+        chunk = "user: Kizin babasi değirmeni isletiyordu."
         quote = unicodedata.normalize("NFD", "babasi değirmeni")
         assert quote not in chunk, "the fixture must be the hard case"
         kept, _ = ex.parse_reply(reply([fact(evidence=quote)]), chunk, [])
         assert len(kept) == 1
 
     def test_a_curly_apostrophe_matches_a_straight_one(self) -> None:
-        chunk = "Nisha’nin babasi degirmeni isletiyordu."
+        chunk = "user: Nisha’nin babasi degirmeni isletiyordu."
         kept, _ = ex.parse_reply(
             reply([fact(evidence="Nisha'nin babasi")]), chunk, [])
         assert len(kept) == 1
 
     def test_a_non_breaking_space_matches_a_space(self) -> None:
-        chunk = "Kizin babasi degirmeni isletiyordu."
+        chunk = "user: Kizin babasi degirmeni isletiyordu."
         kept, _ = ex.parse_reply(
             reply([fact(evidence="Kizin babasi")]), chunk, [])
         assert len(kept) == 1
@@ -60,7 +71,7 @@ class TestTheThingsThatLookIdenticalAndAreNot:
     def test_an_invented_quote_is_STILL_dropped(self) -> None:
         """The control for all five above: normalisation must not turn the
         grounding check into a check that passes everything."""
-        chunk = "Kizin babasi değirmeni isletiyordu."
+        chunk = "user: Kizin babasi değirmeni isletiyordu."
         kept, _ = ex.parse_reply(
             reply([fact(evidence="babasi firini isletiyordu")]), chunk, [])
         assert kept == []
@@ -70,7 +81,7 @@ class TestTheThingsThatLookIdenticalAndAreNot:
         dependent, and a check that occasionally misses beats one that
         silently equates two different Turkish words."""
         kept, _ = ex.parse_reply(reply([fact(evidence="KIZIN BABASI")]),
-                                 "kizin babasi", [])
+                                 "user: kizin babasi", [])
         assert kept == []
 
 
@@ -142,8 +153,9 @@ class TestWhyEachOneWasDropped:
     def test_ignoring_the_item_cap_is_counted_as_a_schema_violation(self):
         """maxItems is 6. More than that is the model ignoring the schema, and
         it must not hide inside the same number as a caught hallucination."""
+        over = 9 - ex.MAX_FACTS
         _, dropped = ex.parse_reply(reply([fact()] * 9), CHUNK, [])
-        assert dropped["over_cap"] == 3
+        assert dropped["over_cap"] == over
 
     def test_a_clean_reply_drops_nothing(self) -> None:
         _, dropped = ex.parse_reply(reply([fact()]), CHUNK, [])
@@ -165,7 +177,8 @@ class TestATextThatHonouredTheSchemaIsNotDroppedForLength:
         assert "\n" not in kept[0]["text"]
 
     def test_a_genuinely_over_length_text_is_still_refused(self) -> None:
-        kept, dropped = ex.parse_reply(reply([fact(text="x" * 400)]),
+        too_long = "x" * (ex.notebook_store.ENTRY_MAX_CHARS + 1)
+        kept, dropped = ex.parse_reply(reply([fact(text=too_long)]),
                                        CHUNK, [])
         assert kept == [] and dropped["too_long"] == 1
 

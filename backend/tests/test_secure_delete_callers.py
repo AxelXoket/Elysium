@@ -887,3 +887,163 @@ class TestVaultResetDestroysRatherThanUnlinks:
 
         assert response.status_code == 200, response.text
         _assert_destroyed(clip, original)
+
+
+class TestTheOtherThreeDeletePathsSweepAudioToo:
+    """K-45 held on three of the six routes that delete a message.
+
+    `_forget_spoken_audio` lived inside routers/chats.py and only that file's
+    three callers used it. A character being removed takes every chat it ever
+    had, an edit sweeps everything after the message it replaces, and an
+    aborted turn deletes the row it had already written - none of those three
+    touched the audio cache, so the recording outlived the row every time.
+    """
+
+    def _cache(self, tmp_path, monkeypatch) -> Path:
+        cache = tmp_path / "audio"
+        cache.mkdir()
+        monkeypatch.setattr(config, "TTS_CACHE_DIR", str(cache))
+        return cache
+
+    def _spoken(self, cache: Path, message_id: int) -> tuple[Path, bytes]:
+        wav = cache / f"speak-{message_id}-1700000000000-1.wav"
+        original = b"RIFF" + b"a reply, read aloud" * 30
+        wav.write_bytes(original)
+        return wav, original
+
+    def test_deleting_a_character_destroys_the_audio_of_its_messages(
+        self, client, tmp_path, monkeypatch: pytest.MonkeyPatch, no_unlink
+    ) -> None:
+        from tests.conftest import make_chat, make_character, get_messages
+
+        cache = self._cache(tmp_path, monkeypatch)
+        character_id = make_character(client)
+        chat_id = make_chat(client, character_id)
+        message_id = get_messages(client, chat_id)[0]["id"]
+        spoken, original = self._spoken(cache, message_id)
+
+        # A neighbour belonging to a message this delete does not own, so the
+        # case cannot pass by wiping the folder.
+        bystander = cache / f"speak-{message_id + 500}-1700000000000-1.wav"
+        bystander.write_bytes(b"RIFF" + b"somebody else's reply" * 20)
+
+        assert client.delete(
+            f"/api/v1/characters/{character_id}").status_code == 200
+
+        _assert_destroyed(spoken, original)
+        assert bystander.exists(), "it swept a message it was not asked about"
+
+    def test_editing_a_message_destroys_the_audio_of_what_it_swept(
+        self, client, tmp_path, monkeypatch: pytest.MonkeyPatch, no_unlink,
+        provider,
+    ) -> None:
+        from tests.conftest import make_chat, make_character, get_messages
+
+        cache = self._cache(tmp_path, monkeypatch)
+        chat_id = make_chat(client, make_character(client))
+        sent = client.post(f"/api/v1/chats/{chat_id}/complete",
+                           json={"message": "first", "model_id": "test/model-1"})
+        assert sent.status_code == 200, sent.text
+        messages = get_messages(client, chat_id)
+        user_msg = [m for m in messages if m["role"] == "user"][-1]
+        reply = [m for m in messages if m["role"] == "assistant"][-1]
+
+        spoken, original = self._spoken(cache, reply["id"])
+        kept = cache / f"speak-{user_msg['id']}-1700000000000-1.wav"
+        kept.write_bytes(b"RIFF" + b"the edited message itself" * 20)
+
+        edited = client.post(
+            f"/api/v1/chats/{chat_id}/messages/{user_msg['id']}/edit",
+            json={"message": "second", "model_id": "test/model-1",
+                  "expected_content": user_msg["content"],
+                  "expected_updated_at": user_msg.get("updated_at")
+                  or user_msg["created_at"],
+                  "expected_tail_id": reply["id"]},
+        )
+        assert edited.status_code == 200, edited.text
+
+        _assert_destroyed(spoken, original)
+        # POSITIVE CONTROL: the edited row itself is UPDATED, not swept, so
+        # its audio has to survive.
+        assert kept.exists(), "it destroyed the audio of the message it kept"
+
+    def test_an_aborted_turn_destroys_the_audio_of_the_row_it_removes(
+        self, client, tmp_path, monkeypatch: pytest.MonkeyPatch, no_unlink
+    ) -> None:
+        from tests.conftest import make_chat, make_character, get_messages
+        import routers.completions as completions
+
+        cache = self._cache(tmp_path, monkeypatch)
+        chat_id = make_chat(client, make_character(client))
+        message_id = get_messages(client, chat_id)[0]["id"]
+        spoken, original = self._spoken(cache, message_id)
+        bystander = cache / f"speak-{message_id + 500}-1700000000000-1.wav"
+        bystander.write_bytes(b"RIFF" + b"somebody else's reply" * 20)
+
+        completions._delete_message_row(chat_id, message_id)
+
+        _assert_destroyed(spoken, original)
+        assert bystander.exists(), "it swept a message it was not asked about"
+
+
+class TestOnePassForManyMessages:
+    def test_a_chat_delete_walks_the_cache_once(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """It used to glob the whole folder once per message.
+
+        A hundred deleted rows meant a hundred scans of the same directory,
+        on the thread that had just committed the delete. The id is in the
+        name, so one walk answers for all of them.
+        """
+        import tts.host as tts_host
+
+        cache = self._cache(tmp_path, monkeypatch) if False else tmp_path / "a"
+        cache.mkdir()
+        monkeypatch.setattr(config, "TTS_CACHE_DIR", str(cache))
+        for mid in (1, 2, 3):
+            (cache / f"speak-{mid}-1700000000000-1.wav").write_bytes(b"RIFF")
+        keep = cache / "speak-9-1700000000000-1.wav"
+        keep.write_bytes(b"RIFF")
+
+        host = tts_host.VoiceHost()
+        walks = {"n": 0}
+        real_iterdir = Path.iterdir
+
+        def counted(self):
+            if str(self) == str(cache):
+                walks["n"] += 1
+            return real_iterdir(self)
+
+        monkeypatch.setattr(Path, "iterdir", counted)
+        host.forget_messages_audio([1, 2, 3])
+
+        assert walks["n"] == 1, f"the cache was walked {walks['n']} times"
+        assert not list(cache.glob("speak-1-*.wav"))
+        assert keep.exists(), "it took a message it was not asked about"
+
+    def test_a_file_with_no_message_in_its_name_is_never_taken(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # GROUND: a preview, a probe and an unadopted stream all live here
+        # too, and none of them belongs to a message. They are swept by age,
+        # by the lock and at launch, never by a message delete.
+        #
+        # Honest note: making _message_tag_of return 0 instead of None for a
+        # non-numeric tag leaves this green, because forget_messages_audio
+        # drops every id that is not positive before it starts. That is an
+        # equivalent mutant, not a gap - the two guards say the same thing
+        # from opposite ends, and this test pins the OUTCOME either way.
+        import tts.host as tts_host
+
+        cache = tmp_path / "a"
+        cache.mkdir()
+        monkeypatch.setattr(config, "TTS_CACHE_DIR", str(cache))
+        preview = cache / "speak-0-1700000000000-1.wav"
+        streamed = cache / "speak-tabc-1700000000000-1.wav"
+        for f in (preview, streamed):
+            f.write_bytes(b"RIFF")
+
+        tts_host.VoiceHost().forget_messages_audio([0, 1, 2, 3])
+
+        assert preview.exists() and streamed.exists()

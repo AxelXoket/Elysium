@@ -161,6 +161,11 @@ def test_full_passphrase_lifecycle_on_fresh_vault(client, tmp_path, monkeypatch)
         # an uploads-migration pass could not finish cleanly. Same reasoning
         # as the fields above: a state the UI can show, not a log line.
         "premigrate_backup": False,
+        # The NAMES behind that boolean. A failed migration pass renames the
+        # snapshot to `<name>.unreadable-<ts>` instead of deleting it, so one
+        # install can hold several, and `exists()` on the canonical name saw
+        # none of them.
+        "premigrate_backups": [],
         "premigrate_backup_readable": None,
     }
     r = client.post("/api/v1/vault/init", json={"passphrase": "seaside-orchid-9"})

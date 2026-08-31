@@ -50,13 +50,18 @@ from __future__ import annotations
 
 import enum
 import hashlib
-import importlib
 import re
 from pathlib import Path
 
 import pytest
 
+from tests import _contract_gate
+
 _REPO = Path(__file__).resolve().parents[2]
+#: pytest's rootdir for this suite, and the directory a node id like
+#: "tests/test_x.py::test_y" is relative to. Held apart from _REPO so a test
+#: can point the gate at a synthetic tree without writing into this one.
+_BACKEND = _REPO / "backend"
 _SECURITY = _REPO / "SECURITY.md"
 
 
@@ -349,9 +354,18 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # The traceback debt, stated in the document rather than buried. The
     # number IS the assertion: the ledger fails in both directions, so it
     # cannot grow quietly and a paid debt has to be recorded as paid.
-    ("there are forty-eight places that do it, across seventeen", (
+    ("there are fifty places that do it, across seventeen", (
         "tests/test_log_identifier_privacy.py"
         "::test_no_new_traceback_leak_anywhere_in_the_tree",
+        # AND the number itself. The proof above measures the mechanism -
+        # the scan equals the ledger - and stayed green through three
+        # separate occasions when the sentence quoting it went stale, this
+        # one included. The count is now read out of the document and
+        # compared to the ledger it claims to be quoting.
+        "tests/test_locked_numbers.py::TestTheTracebackCount"
+        "::test_security_md_says_what_the_ledger_says",
+        "tests/test_locked_numbers.py::TestTheTracebackCount"
+        "::test_the_module_count_is_the_ledger_s_own",
     )),
     # The model id left the browser profile this round. It is a name a
     # person reads on screen, which is the one thing the owner's rule keeps
@@ -417,7 +431,16 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "tests/test_notebook_sentries.py::TestModelTextIsNeverMergedWithTheUsers"
         "::test_the_headers_say_whose_notes_they_are",
     )),
-    ("`on_violation` is stored and deliberately not acted on", (
+    # The claim CHANGED on 31 August 2026, and the change is the point: the
+    # setting used to be stored and not sent, which the document described
+    # accurately and which was a worse state than what replaced it. It is now
+    # sent, as words, and the sentence says what "told to the model" buys and
+    # what it does not.
+    ("`on_violation` and `rating_ceiling` are told to the model in the", (
+        "tests/test_notebook_schema.py::TestALimitCannotGrowBigEnoughToStopTheApp"
+        "::test_a_line_carries_what_to_do_about_the_limit",
+        "tests/test_notebook_schema.py::TestALimitCannotGrowBigEnoughToStopTheApp"
+        "::test_a_line_carries_the_rating_ceiling",
         "tests/test_notebook_context.py::TestLimitsRefuseRatherThanShrink"
         "::test_limits_survive_a_full_notebook",
     )),
@@ -716,13 +739,30 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "tests/test_log_identifier_privacy.py::TestTheScannerCanActuallyFire"
         "::test_a_raw_exception_is_caught",
     )),
-    # The residual, and the number in it is not decoration. The gate's ledger
-    # pins tts/refs.py at exactly four content hits and fails in BOTH
-    # directions - a fifth is a new leak, a third is a fix nobody wrote down -
-    # so the sentence "four log lines" is the assertion, not a summary of it.
-    ("Four log lines print it", (
+    # THE SENTENCE THIS REGISTRY GOT WRONG, and the correction is the
+    # interesting part. It used to say "four log lines print it" and claim
+    # the number was the assertion. The leak was then closed and the content
+    # ledger emptied - and the registered proof, which asserts scan ==
+    # ledger, passed BECAUSE of the fix. An empty scan matching an empty
+    # ledger is what a closed leak looks like, so the document went on
+    # describing an open one with a green gate behind it.
+    #
+    # The sentence now says CLOSED, and what holds it to that is a test that
+    # reads the document against the ledger in both directions.
+    ("is now CLOSED", (
         "tests/test_log_identifier_privacy.py"
         "::test_no_new_content_leak_anywhere_in_the_tree",
+        "tests/test_locked_numbers.py::TestTheContentLedger"
+        "::test_an_empty_ledger_is_not_described_as_an_open_leak",
+        "tests/test_locked_numbers.py::TestTheContentLedger"
+        "::test_a_non_empty_ledger_is_not_described_as_closed",
+    )),
+    # And the file count in the same paragraph, for the same reason.
+    ("shipped tree - 75 files", (
+        "tests/test_locked_numbers.py::TestTheSweptTree"
+        "::test_the_file_count_in_the_prose_is_the_one_the_gate_reads",
+        "tests/test_locked_numbers.py::TestTheSweptTree"
+        "::test_the_gate_s_own_recorded_figure_is_current",
     )),
 )
 
@@ -1158,34 +1198,40 @@ def _promise_lines() -> list[str]:
     return lines
 
 
-def _resolve_backend(node_id: str) -> bool:
-    """True if this pytest node id names something that exists.
+def _backend_proof_nodes() -> tuple[str, ...]:
+    """Every backend node id this registry claims, for one batched run."""
+    return tuple(sorted({
+        node for _, proofs in _all_proven_claims() for node in proofs
+        if not node.startswith("frontend/")
+    }))
 
-    Copied unchanged from test_privacy_contract.py, attribute walk and all,
-    including the callable check: a registered name that resolves to a
-    string or any other non-callable attribute is not something pytest can
-    collect, so it is not a proof.
+
+def _resolve_backend(node_id: str) -> bool:
+    """True if pytest can collect this node id AND it passes today.
+
+    Was: import the module, walk the attributes, return `callable(target)`.
+    That accepted a test that exists and fails, and accepted any callable
+    attribute whether or not pytest would ever collect it. The measurement
+    now happens by running pytest; _contract_gate.py holds the mechanism and
+    the argument for it.
     """
-    file_part, _, rest = node_id.partition("::")
-    module_name = file_part.removesuffix(".py").replace("/", ".")
-    try:
-        module = importlib.import_module(module_name)
-    except ImportError:
-        return False
-    target = module
-    for part in rest.split("::"):
-        target = getattr(target, part, None)
-        if target is None:
-            return False
-    return callable(target)
+    return _contract_gate.resolve_backend(
+        node_id, _BACKEND, prime=_backend_proof_nodes)
 
 
 def _resolve_frontend(node_id: str) -> bool:
-    path_part, _, name = node_id.partition("::")
-    path = _REPO / path_part
-    if not path.is_file():
-        return False
-    return f'"{name}' in path.read_text(encoding="utf-8")
+    return _contract_gate.resolve_frontend(node_id, _REPO)
+
+
+#: The gate runs pytest as a child process. Any test that asks it a question
+#: would, inside that child, ask for another child. These are the tests that
+#: reach it; they are skipped one level down rather than allowed to recurse.
+#: Everything else in this file still runs there, which is what lets a proof
+#: registered against a test in this very file be measured honestly.
+_needs_the_gate = pytest.mark.skipif(
+    _contract_gate.GATE_CHILD_AT_IMPORT,
+    reason="the contract gate is measuring this file from a child pytest",
+)
 
 
 def _resolve(node_id: str) -> bool:
@@ -1273,10 +1319,11 @@ def _acknowledged_problems(
 #: sample - so this covers all of it. Updating this constant is the
 #: deliberate act that means a human decided what a change claims and
 #: registered a proof for it.
-DOCUMENT_DIGEST = "ec2dd766edfaa3b65979ca40b9ab92387b86e95441f45fc8553a4d39cb7900e7"
+DOCUMENT_DIGEST = "3e7a8e2253c6f30a07433e938888d21b177513eb2314cfed1abb9d75596be42a"
 
 
 class TestEveryProvenClaimHasAProof:
+    @_needs_the_gate
     def test_the_proof_exists(self) -> None:
         broken = []
         for marker, proofs in _all_proven_claims():
@@ -1453,18 +1500,52 @@ class TestTheRegistryCanActuallyFail:
         markers = _all_registered_markers()
         assert not any(marker in invented for marker in markers)
 
+    def test_no_environment_variable_can_quietly_skip_these(self) -> None:
+        """The skip guard is a recursion stop, not a way out of the gate.
+
+        Every proof-resolution test in this file carries `_needs_the_gate`,
+        which skips it inside a child pytest. Exporting that variable in an
+        ordinary shell therefore skips them all and the suite still exits
+        zero - the exact shape of failure the gate exists to refuse, one
+        level up. This test carries no marker, so it is the one thing that
+        cannot be skipped that way.
+        """
+        # The SAME value the skip marker read, not a fresh reading. A plugin
+        # that set the variable before import and cleared it during
+        # collection satisfied a fresh reading while every proof test above
+        # had already been skipped: measured, and it took ten lines.
+        assert not _contract_gate.GATE_CHILD_AT_IMPORT, (
+            f"{_contract_gate.DEPTH_ENV} was set when this module was "
+            "imported. Every proof resolution test in this file skips when "
+            "it is, and the run still reports success. Unset it and run "
+            "again."
+        )
+
     def test_a_proof_that_does_not_exist_is_reported_missing(self) -> None:
         assert _resolve("tests/test_privacy_promises.py::NoSuchClass"
                         "::test_nothing") is False
         assert _resolve("tests/test_no_such_module.py::test_nothing") is False
         assert _resolve("frontend/src/test/nope.test.ts::S-99") is False
 
+    @_needs_the_gate
     def test_a_registered_name_that_cannot_run_is_not_a_proof(self) -> None:
         assert _resolve(
             "tests/test_security_contract.py::DOCUMENT_DIGEST") is False, (
             "a string attribute resolved as if it were a test"
         )
-        assert _resolve("tests/test_security_contract.py::_resolve") is True
+        # _resolve is a callable in this module and the old gate said True for
+        # it. pytest collects test_* functions inside test_* files, never a
+        # private helper, so True was the wrong answer and this assertion
+        # pinned it in place. The red test was right; the defect was in the
+        # gate.
+        assert _resolve("tests/test_security_contract.py::_resolve") is False, (
+            "a helper pytest cannot collect resolved as if it were a test"
+        )
+        # And the gate still accepts the real thing, so this did not simply
+        # break resolution for everyone.
+        assert _resolve(
+            "tests/test_security_contract.py::TestTheRegistryCanActuallyFail"
+            "::test_the_document_was_actually_found") is True
 
     def test_a_proof_that_does_exist_resolves(self) -> None:
         assert _resolve(
@@ -1472,6 +1553,93 @@ class TestTheRegistryCanActuallyFail:
             "::test_stdlib_sqlite_cannot_read_it") is True
         assert _resolve(
             "frontend/src/test/static-safety.test.ts::S-09") is True
+
+    @staticmethod
+    def _neighbour_only(tmp_path: Path,
+                        monkeypatch: pytest.MonkeyPatch) -> None:
+        """A synthetic tree holding S-09b and nothing else."""
+        probe = tmp_path / "frontend" / "probe.test.ts"
+        probe.parent.mkdir(parents=True)
+        probe.write_text(
+            'it("S-09b: only the neighbour exists", () => {});\n',
+            encoding="utf-8")
+        monkeypatch.setitem(globals(), "_REPO", tmp_path)
+
+    @_needs_the_gate
+    def test_a_prefix_of_a_registered_name_is_not_that_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The collision static-safety.test.ts documents against itself."""
+        self._neighbour_only(tmp_path, monkeypatch)
+        assert _resolve("frontend/probe.test.ts::S-09") is False
+
+    @_needs_the_gate
+    def test_the_neighbour_that_is_really_there_still_resolves(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """POSITIVE CONTROL for the test above, on the same probe file.
+
+        Held apart from it so the two answers can be observed one at a time:
+        a resolver that says False to everything passes the test above and
+        fails this one.
+        """
+        self._neighbour_only(tmp_path, monkeypatch)
+        assert _resolve("frontend/probe.test.ts::S-09b") is True
+
+    @_needs_the_gate
+    def test_the_delimiter_does_not_drop_a_prefix_style_rule_id(self) -> None:
+        """Ground control for the delimiter, and the naive fix's headstone.
+
+        S-11 and S-11b are both registered, and both are spelled in the file
+        as `it("S-11: ...")` - the name is deliberately a prefix and a closing
+        quote never follows it. Requiring one drops four registered rules at
+        once, so this stays green while the test above goes green too.
+        """
+        assert _resolve(
+            "frontend/src/test/static-safety.test.ts::S-11") is True
+        assert _resolve(
+            "frontend/src/test/static-safety.test.ts::S-11b") is True
+
+    @staticmethod
+    def _two_probes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """One red probe and one green one, in a synthetic tests package.
+
+        syspath_prepend matters even though the gate resolves by path. It is
+        what lets an IMPORT-based resolver reach these files too, so putting
+        the old attribute walk back makes the red probe answer True and the
+        test below go red for the right reason. Without it neither probe is
+        importable, the old walk answers False by accident, and the
+        measurement stops telling the two gates apart.
+
+        Nothing is written into this repository: the probes live under
+        tmp_path, and `tests` is a namespace package, so prepending a second
+        root adds to it instead of shadowing it.
+        """
+        probes = tmp_path / "tests"
+        probes.mkdir()
+        (probes / "test_probe_red.py").write_text(
+            "def test_always_fails():\n    assert False\n", encoding="utf-8")
+        (probes / "test_probe_green.py").write_text(
+            "def test_always_passes():\n    assert True\n", encoding="utf-8")
+        monkeypatch.setitem(globals(), "_BACKEND", tmp_path)
+        monkeypatch.syspath_prepend(tmp_path)
+
+    @_needs_the_gate
+    def test_a_registered_name_that_runs_red_is_not_a_proof(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Collectable is not the whole of it: the test has to be green."""
+        self._two_probes(tmp_path, monkeypatch)
+        assert _resolve("tests/test_probe_red.py::test_always_fails") is False
+
+    @_needs_the_gate
+    def test_a_registered_name_that_runs_green_still_is(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """POSITIVE CONTROL, beside the red probe in the same package."""
+        self._two_probes(tmp_path, monkeypatch)
+        assert _resolve(
+            "tests/test_probe_green.py::test_always_passes") is True
 
     def test_the_category_enum_actually_rejects_an_unknown_value(self) -> None:
         bad = (

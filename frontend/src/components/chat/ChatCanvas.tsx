@@ -36,7 +36,7 @@ import { adoptTail } from "@/lib/chat/streamTail";
 import { usePersonas } from "@/lib/query/personas";
 import { useModels } from "@/lib/query/models";
 import { getSelectedPersonaId, safePersonaId } from "@/lib/personas";
-import { findModelById, hasInputModality } from "@/lib/models";
+import { acceptsImages, findModelById } from "@/lib/models";
 import { uploadImage, unstageImage } from "@/lib/api/uploads";
 import { useErrorStore, getErrorMessage } from "@/lib/errors";
 import { useGenerationSettings } from "@/components/generation/GenerationSettingsContext";
@@ -917,7 +917,10 @@ export function ChatCanvas() {
       // a text-only model contributes NO attachment ids even if some are staged
       // (the Composer already disables send in that case) - never POST images to
       // a model that would 400 on them.
-      const supportsImages = hasInputModality(selectedModel, "image");
+      // Same rule as the composer gate and as the backend. See
+      // `acceptsImages`: empty metadata means yes, because the
+      // provider is the final arbiter.
+      const supportsImages = acceptsImages(selectedModel);
       const readyStaged = supportsImages
         ? (stagedAttachments.get(chatId) ?? []).filter(
             (a) => a.status === "ready" && a.id != null,
@@ -1131,7 +1134,7 @@ export function ChatCanvas() {
   // streaming. Even when closed, the window net in useFileDrop still swallows
   // the drop so it can never navigate to file:/// (B0).
   const canvasModel = findModelById(models?.models, selectedModelId);
-  const canvasSupportsImages = hasInputModality(canvasModel, "image");
+  const canvasSupportsImages = acceptsImages(canvasModel);
   const dropGateOpen =
     selectedChatId != null && canvasSupportsImages && !pendingForThisChat;
   const { dragActive, dropTargetProps } = useFileDrop({

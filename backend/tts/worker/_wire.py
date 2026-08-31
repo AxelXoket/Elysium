@@ -61,6 +61,88 @@ CODE_REFERENCE_INVALID = "tts_reference_invalid"
 CODE_TRANSCRIPT_REQUIRED = "tts_transcript_required"
 CODE_WORKER_FAILED = "tts_worker_failed"
 
+# -- what a worker is allowed to say in its own words ------------------------
+#
+# A `note` is the one field in the progress channel that is a SENTENCE rather
+# than an identifier, and the host writes it into elysium.log - plaintext,
+# beside the vault, surviving every lock. Free text from a worker cannot go
+# there: an engine formats the sentence it was asked to speak, the path of
+# the file it could not open, and the name of the reference clip into its own
+# exception messages, and all three of those were measured arriving in the
+# log.
+#
+# So the sentences live HERE, in the one module both halves import, and the
+# host echoes a note only when it is one of them. Everything else is data and
+# is sanitized like data. Adding a note means adding it to this list, which
+# is the point: it makes "is this safe to write down" a decision somebody
+# takes on purpose, once, instead of a property of whatever string happened
+# to be in scope.
+#
+# NOT a formatting vocabulary. None of these takes a parameter, deliberately
+# - the moment one interpolates, the thing it interpolates is untrusted again
+# and the whole set is worth nothing.
+NOTE_STAYING_BF16 = "staying bf16; generation will be slower"
+NOTE_FIRST_COMPILE_SLOW = (
+    "first compile is slow; a warm TORCHINDUCTOR_CACHE_DIR makes it "
+    "~59s"
+)
+NOTE_COMPILING = "compiling the model for this GPU"
+NOTE_EAGER_FALLBACK = (
+    "falling back to eager decoding (triton-windows + MSVC?)"
+)
+NOTE_COMPILE_RETRY = "compiling failed; retrying without it"
+NOTE_TEMP_COMPILE_CACHE = (
+    "compiling into a temporary cache; every load will be slow"
+)
+NOTE_REBUILD_FROM_DISK = "the model will be rebuilt from disk instead"
+NOTE_RESTORING_FROM_RAM = "restoring text2semantic from system memory"
+NOTE_REBUILDING_FROM_DISK = "rebuilding the model from disk instead"
+NOTE_FREED_FOR_DECODE = "the model was freed to let the last decode finish"
+NOTE_LAZY_FIRST_SENTENCE = "the first spoken sentence will load it instead"
+NOTE_FREEING_FOR_CODEC = "freeing text2semantic so the codec fits"
+NOTE_REFERENCE_REENCODE = "the reference will be re-encoded next time"
+NOTE_RECOMPILE_LONGER_CONTEXT = (
+    "this request needs a longer context; recompiling once"
+)
+NOTE_DOES_NOT_FIT_CONTEXT = (
+    "the request does not fit the chosen context window"
+)
+NOTE_LESS_CONTEXT_THAN_LIMIT = (
+    "the text and reference leave less context than the length limit "
+    "asks for"
+)
+NOTE_LENGTH_CAPPED = (
+    "this text hit the length limit and was cut short - raise Max "
+    "length, or say it in smaller pieces"
+)
+NOTE_RETIME_FAILED = (
+    "the speaking-rate change failed; the sentence is spoken at its "
+    "natural pace"
+)
+
+#: Every sentence above, for the host's membership test. Built from the
+#: constants rather than retyped, so the two cannot disagree.
+ALL_NOTES: frozenset = frozenset({
+    NOTE_STAYING_BF16,
+    NOTE_FIRST_COMPILE_SLOW,
+    NOTE_COMPILING,
+    NOTE_EAGER_FALLBACK,
+    NOTE_COMPILE_RETRY,
+    NOTE_TEMP_COMPILE_CACHE,
+    NOTE_REBUILD_FROM_DISK,
+    NOTE_RESTORING_FROM_RAM,
+    NOTE_REBUILDING_FROM_DISK,
+    NOTE_FREED_FOR_DECODE,
+    NOTE_LAZY_FIRST_SENTENCE,
+    NOTE_FREEING_FOR_CODEC,
+    NOTE_REFERENCE_REENCODE,
+    NOTE_RECOMPILE_LONGER_CONTEXT,
+    NOTE_DOES_NOT_FIT_CONTEXT,
+    NOTE_LESS_CONTEXT_THAN_LIMIT,
+    NOTE_LENGTH_CAPPED,
+    NOTE_RETIME_FAILED,
+})
+
 MAX_LINE_BYTES = 4 * 1024 * 1024   # a frame is small; anything larger is a bug
 
 

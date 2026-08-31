@@ -72,8 +72,38 @@ const ERROR_MESSAGES: Record<string, string> = {
     "Could not load models. Please try again.",
 
   // Generation params
+  // Both suggestions in the old sentence pointed the wrong way, and the
+  // second one made things worse.
+  //
+  // The refusal compares `min_required` against `available`. `min_required`
+  // is the system block, the persona, the post-history instruction, the
+  // voice block, the notebook and limits, plus THIS message - it does not
+  // include the history at all, so clearing messages cannot move it by a
+  // single character. And `available` is derived FROM the context budget, so
+  // reducing the budget shrinks the right-hand side and makes the same
+  // refusal arrive sooner.
+  //
+  // What this names is exactly what `min_required` is made of, plus the one
+  // knob that actually helps.
+  //
+  // ALL of it, which the first version of this sentence did not manage: the
+  // comment above listed six things and the sentence listed four, dropping
+  // the post-history instruction and the message being sent. Those are the
+  // two a reader can do least about by guessing, and a long paste in the
+  // composer is one of the commonest ways to arrive here at all - so the
+  // remedy list has to name them or it sends the reader to shorten things
+  // that were never the problem.
   context_too_large:
-    "The context is too large for this model. Try reducing the context budget or clearing some messages.",
+    "This model's context is too small for what has to be sent before the "
+    + "conversation even starts: the character, the persona, the "
+    + "post-history instruction, the voice block, your notes and limits, "
+    + "and the message you are sending now - an attached image counts as "
+    + "roughly a thousand words of it. Clearing older messages will not "
+    + "help, because they are not counted here, and lowering the context "
+    + "budget makes it worse. Raise the context budget, shorten what you "
+    + "are sending, shorten the persona or the character or the "
+    + "post-history instruction, remove some notes or limits, or pick a "
+    + "model with a larger window.",
   // These two were byte-identical, and both are still emitted - by different
   // producers, which is what the sentences now say. `invalid_generation_params`
   // is synthesised in the FRONTEND (client.ts, stream.ts, parseApiError.ts)
@@ -484,6 +514,14 @@ const ERROR_MESSAGES: Record<string, string> = {
     "There is no API key saved yet. Open Security and add one before the notebook can read anything.",
   notebook_entry_not_found:
     "That note is no longer there. It may have been removed in another window.",
+  // Says WHY, not just no. A refusal the reader cannot explain to themselves
+  // reads as a bug, and this one is a deliberate promise: the chat came from
+  // somebody else's card, so its notes are reviewed whatever the general
+  // switch says. The sentence names the reason and the way out.
+  imported_chat_always_reviews:
+    "This chat came from an imported character card, so notes the model "
+    + "writes here are always reviewed before they are used. Start a chat "
+    + "from a character you wrote yourself to change that.",
   // "A name AND the wording" described a two-field form. BoundaryPanel has one
   // text field and sends its text as both label and phrasing, so the reader was
   // told to fill in a second box that is not there. The backend refuses when

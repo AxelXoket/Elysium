@@ -43,8 +43,12 @@ def fake_voice(monkeypatch):
             # that is missing a method the caller uses is not a double.
             return {}
 
+        #: Every stream_token the route handed over, in order.
+        tokens: list = []
+
         @staticmethod
-        def make_stream_synth(rate=None):
+        def make_stream_synth(rate=None, stream_token=None):
+            Runtime.tokens.append(stream_token)
             if Runtime.broken:
                 raise RuntimeError("no voice model configured")
 
@@ -60,6 +64,7 @@ def fake_voice(monkeypatch):
 
     monkeypatch.setattr(completions_router, "tts_runtime", Runtime)
     Runtime.made = made
+    Runtime.tokens = []
     return Runtime
 
 
@@ -150,9 +155,9 @@ def test_speak_rate_reaches_the_engine_setup(client, stream_provider, fake_voice
     captured = {}
     original = fake_voice.make_stream_synth
 
-    def spy(rate=None):
+    def spy(rate=None, stream_token=None):
         captured["rate"] = rate
-        return original(rate=rate)
+        return original(rate=rate, stream_token=stream_token)
 
     fake_voice.make_stream_synth = spy
     chat_id = make_chat(client, make_character(client))
@@ -209,3 +214,62 @@ def test_a_provider_failure_still_tears_the_speaker_down(client, stream_provider
     import threading
     assert not [t for t in threading.enumerate()
                 if t.name == "tts-stream-speaker" and t.is_alive()]
+
+
+class TestTheStreamAudioCarriesItsMessageId:
+    """The wiring, not the mechanism.
+
+    host.py knows how to name a streamed wav after its stream and how to
+    rename it onto a message id. Neither is worth anything if the route does
+    not mint a token and hand it over, and that connection is exactly what a
+    unit test of host.py cannot see: removing `stream_token=stream_token`
+    from the call site left every host test green.
+    """
+
+    def test_the_route_mints_a_token_and_gives_it_to_the_synth(
+        self, client, stream_provider, fake_voice,
+    ) -> None:
+        chat_id = make_chat(client, make_character(client))
+        stream(client, chat_id, speak=True)
+
+        assert fake_voice.tokens, "the speaker was never built"
+        assert all(t for t in fake_voice.tokens), (
+            "the route built a speaker without a stream token, so its audio "
+            "is named speak-0-* and nothing can delete it by message id"
+        )
+
+    def test_every_stream_gets_a_token_of_its_own(
+        self, client, stream_provider, fake_voice,
+    ) -> None:
+        # The reason a token exists rather than a shared marker: two
+        # concurrent streams must not share a rename pattern.
+        chat_id = make_chat(client, make_character(client))
+        stream(client, chat_id, speak=True)
+        stream(client, chat_id, speak=True)
+
+        assert len(fake_voice.tokens) >= 2
+        assert len(set(fake_voice.tokens)) == len(fake_voice.tokens)
+
+    def test_the_finished_stream_adopts_its_audio_onto_the_new_row(
+        self, client, stream_provider, fake_voice, monkeypatch,
+    ) -> None:
+        import tts.host as tts_host
+
+        adopted: list = []
+        monkeypatch.setattr(
+            tts_host, "get_host",
+            lambda: type("H", (), {
+                "adopt_stream_audio": staticmethod(
+                    lambda token, mid: adopted.append((token, mid)) or []),
+            })(),
+        )
+
+        chat_id = make_chat(client, make_character(client))
+        events = stream(client, chat_id, speak=True)
+        done = [e for e in events if e["type"] == "done"][-1]
+        mid = done["assistant_message"]["id"]
+
+        assert adopted == [(fake_voice.tokens[-1], mid)], (
+            "the streamed audio was never renamed onto the row that was just "
+            "written, so forget_message_audio still cannot find it"
+        )

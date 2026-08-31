@@ -232,8 +232,34 @@ class TtsAdapter(ABC):
 
         Currently UNUSED by the registry - identity became path-based after the
         v1 audit (same-named copies, engine overrides and completed downloads
-        all broke content-based uids). Kept on the interface because a future
-        integrity check ("did the download finish?") needs exactly this list.
+        all broke content-based uids). Kept on the interface for a future
+        integrity check ("did the download finish?").
+
+        THAT DEFERRAL HAS HALF EXPIRED, and the half that arrived did not use
+        this. Measured 31 August 2026:
+
+          * "which files are absent" is answered, by `readiness.py`'s
+            `model.missing` -> `TTS_MODEL_INCOMPLETE`. It does not call this
+            method, and its file sets do not even agree with the three
+            overrides of it - `fish_s2` globs three patterns for `missing`
+            while naming one fixed file here, and `chatterbox` covers three
+            groups here and two there.
+
+          * "is a file that EXISTS actually complete" is answered by nothing,
+            at any layer. `missing` checks `is_file()`, so a zero-byte or
+            half-downloaded `model.pth` reads as present and no issue is
+            raised. That hole is real and is recorded separately; it is not
+            this method's fault and closing this method would not close it.
+
+        And this method as written cannot close it either: it returns the
+        size the file HAS, never the size it SHOULD have. Using it for an
+        integrity check needs an expected-size or hash source that does not
+        exist yet - a downloader-side manifest, or the HF metadata - and that
+        is a decision, not an implementation detail.
+
+        So it stays, with the deferral stated accurately rather than
+        optimistically. What it must not do is read as though the check it is
+        waiting for has not arrived: half of it has, and it went elsewhere.
         """
 
     @classmethod

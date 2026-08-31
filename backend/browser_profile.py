@@ -133,6 +133,23 @@ def block_crash_reporting(storage_path: Path | str) -> bool:
     root = Path(storage_path)
     blocker = root / "EBWebView" / "Crashpad"
     try:
+        # The PARENT, and BEFORE the mkdir.
+        #
+        # The check below catches a junction on `Crashpad` itself, and that
+        # was the whole defence. `mkdir(exist_ok=True)` on an EBWebView that
+        # is already a junction succeeds quietly, so everything after it -
+        # the shred, the rmtree, the touch - was operating inside somebody
+        # else's directory, reached through a name this app created.
+        #
+        # `is_dir()` first, and it is load-bearing: `_is_redirected` fails
+        # CLOSED on any OSError, ENOENT included, so a profile that does not
+        # exist yet answers True. Written without this gate the guard would
+        # refuse every first launch. Same pattern as `_profile_dirs` above
+        # and `host.py`'s cache trim.
+        if blocker.parent.is_dir() and _is_redirected(blocker.parent):
+            log.warning("browser_profile: the profile parent is a redirected "
+                        "name - crash reporting was not blocked")
+            return False
         blocker.parent.mkdir(parents=True, exist_ok=True)
         if blocker.is_file():
             return True

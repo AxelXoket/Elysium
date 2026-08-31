@@ -69,7 +69,11 @@ def _swept() -> list[tuple[str, str]]:
 
 
 #: Floors, not targets (same reasoning as test_tree_hygiene._SWEEP_FLOOR):
-#: measured at 73 files / 34743 lines on 2026-08-20, AFTER _SKIP_PREFIXES
+#: measured at 75 files on 2026-08-31 (the file count is bound to this
+#: comment by test_locked_numbers.py; the LINE count deliberately is
+#: not - it moves on every ordinary edit, so pinning it would be a
+#: chore rather than a guard, and _LINE_FLOOR already catches a sweep
+#: that quietly matched nothing), AFTER _SKIP_PREFIXES
 #: started excluding voice/build/dist. The figure recorded here first was
 #: "175 files / 61688 lines", which was the pre-exclusion count - it was taken
 #: with the very bug the exclusion list was added to fix, so it described a
@@ -99,20 +103,18 @@ _MUST_STAY_CLEAN = (
 #: CONTENT DEBT. A raw value that can carry content or an on-screen name
 #: reaching a logging call.
 #:
+#: EMPTY, and it has to stay that way. The one entry it ever held was
 #: tts/refs.py (4): `logger.warning("voice %s ...", voice_id)` in delete() and
-#: list_voices(). That file belongs to another agent, who has just finished
-#: making the voice FOLDER opaque (sha256 of a per-install key + the id) and
-#: has changed the frontend to mint `crypto.randomUUID()` for new voices. For
-#: anything created from now on the id is opaque and these lines are fine. For
-#: every voice created BEFORE that change the id is still the slug of the
-#: label the user typed - refs.py's own docstring says so - and it lives on in
-#: that voice's voice.json forever, so the log line still writes an on-screen
-#: name outside the vault on any install that is not brand new. Left for the
-#: owner of that file, with the legacy-id question escalated rather than
-#: decided here.
-KNOWN_CONTENT_DEBT: dict[str, int] = {
-    "tts/refs.py": 4,
-}
+#: list_voices(). Those four lines now write `_handle(voice_id)` - twelve hex
+#: characters of the folder hash - so the name the user typed no longer
+#: leaves the vault by that route.
+#:
+#: The legacy-id question the earlier note escalated is NOT what closed this
+#: and is still open: a voice created before the frontend started minting
+#: UUIDs still carries the slug of its label as its id inside its own
+#: voice.json. That is a stored value, not a logged one. Whether those ids get
+#: migrated is the owner's call; this gate only ever measured the log.
+KNOWN_CONTENT_DEBT: dict[str, int] = {}
 
 #: TRACEBACK DEBT. `logger.exception(...)` or `exc_info=True` inside an except
 #: handler: both write the live exception's own message into elysium.log along
@@ -145,12 +147,22 @@ KNOWN_TRACEBACK_DEBT: dict[str, int] = {
     "generated_images.py": 1,
     "legacy_migration.py": 1,
     "main.py": 2,
-    "routers/chats.py": 1,
-    "routers/completions.py": 4,
+    # Was routers/chats.py's. The body moved to audio_sweep.py so the three
+    # other delete paths could reach it; the swallow moved with it and is the
+    # same one - a missing voice engine is not a reason to fail a delete the
+    # database already committed.
+    "audio_sweep.py": 1,
+    "routers/completions.py": 5,
     "routers/tts.py": 3,
     "routers/tts_runtime.py": 2,
     "routers/uploads.py": 1,
-    "routers/vault.py": 11,
+    # Twelve since the unlock bootstrap started counting the unread notebook
+    # backlog. Its `try` holds one SELECT over `messages` and
+    # `notebook_extractions` and touches no message BODY - the query counts
+    # rows and groups by chat id. What it can carry is the same thing every
+    # other entry here can: an OSError's filesystem path, and with it the
+    # Windows account name.
+    "routers/vault.py": 12,
     "run_app.py": 2,
     "tts/host.py": 3,
     "tts/provision.py": 1,

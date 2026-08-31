@@ -20,10 +20,18 @@ import { render, screen } from "@testing-library/react";
 
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 
+/** The classes that actually draw the ring.
+ *
+ * `focus-visible:outline-1` used to be in this list, and requiring it locked
+ * the defect in place: the class draws NOTHING on this element, so the fix
+ * for it would have turned this suite red. See the outline-utilities test
+ * next door for why it is dead - `outline-none` on the same element declares
+ * `--tw-outline-style: none`, and `focus-visible:outline-1` only READS that
+ * variable.
+ */
 const RING_CLASSES = [
   "focus-visible:ring-[3px]",
   "focus-visible:ring-ring/50",
-  "focus-visible:outline-1",
 ];
 
 function Basic({ contentClassName }: { contentClassName?: string }) {
@@ -45,14 +53,43 @@ describe("the open tabpanel's focus ring", () => {
     const panel = screen.getByRole("tabpanel");
 
     expect(panel.className).toContain("outline-none");
+    // A `for` over an empty array asserts nothing and passes. This is the
+    // guard against the loop below going vacuous - measured, because the
+    // obvious alternative does not work: naming one class outside the loop
+    // stays green when the array is emptied, since that assertion never
+    // reads the array.
+    expect(RING_CLASSES.length).toBeGreaterThan(0);
     for (const cls of RING_CLASSES) {
       expect(panel.className).toContain(cls);
     }
+    // And one of them again by name, so replacing the array's contents with
+    // something that is merely non-empty is caught too.
+    expect(panel.className).toContain("focus-visible:ring-[3px]");
     // Negative control: the tab strip sits right beside the panel and is not
     // the thing this defect is about. If the assertion above were vacuously
     // true for anything in the tree, this would also pass - it must not.
     const list = screen.getByRole("tablist");
     expect(list.className).not.toContain("focus-visible:ring-[3px]");
+  });
+
+  it("carries no dead outline utility", () => {
+    // `outline-none` and `focus-visible:outline-1` on the SAME element are a
+    // contradiction that resolves silently in favour of nothing: the first
+    // declares `--tw-outline-style: none` unconditionally, the second only
+    // reads that variable back. The panel's visible indicator is the ring,
+    // and the outline utility was decoration that could be mistaken for one.
+    render(<Basic />);
+    const panel = screen.getByRole("tabpanel");
+
+    expect(panel.className).toContain("outline-none");
+    expect(panel.className).not.toMatch(/focus-visible:outline-\d/);
+
+    // POSITIVE CONTROL: the TRIGGER really does carry it, and there it is
+    // alive - it pairs with `focus-visible:outline-ring` and no
+    // `outline-none`. Without this, deleting the utility everywhere would
+    // pass the assertion above.
+    expect(screen.getAllByRole("tab")[0].className)
+      .toMatch(/focus-visible:outline-1/);
   });
 
   it("is a real tab stop that can actually hold focus", () => {

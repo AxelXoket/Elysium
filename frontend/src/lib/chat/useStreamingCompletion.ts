@@ -521,6 +521,18 @@ export function useStreamingCompletion() {
             // the raced-first-GET seeding case AND any ghost row a previous
             // aborted exchange left behind - one cheap GET per send.
             void qc.invalidateQueries({ queryKey: keys.messages(chatId) });
+            // The turn that just ended is what the extractor reads, and it
+            // writes proposals into the notebook without anyone asking. The
+            // panel had no way to learn that: nothing in this file ever
+            // touched a notebook key, so a suggestion the server made sat
+            // invisible until the user switched chats.
+            //
+            // Cheap where it matters: invalidateQueries only REFETCHES
+            // active queries, and the notebook query is only active while
+            // the panel is open - which is exactly when a stale panel is a
+            // problem. With the panel closed this marks a key stale and
+            // costs nothing.
+            void qc.invalidateQueries({ queryKey: keys.notebookEntries(chatId) });
             // Same-batch teardown: the transient streaming bubble must vanish
             // in the SAME commit the cached rows land, or React paints an
             // intermediate frame showing the reply twice. The finally-block
@@ -693,6 +705,19 @@ export function useStreamingCompletion() {
             }
             removeUserRows();
             qc.invalidateQueries({ queryKey: keys.messages(chatId) });
+            // What the mutation wrapper does and this raw call did not.
+            // Deleting a turn also destroys the unreviewed proposals that
+            // came from it and rolls the extractor's cursor back, so the
+            // panel kept offering suggestions the server had already thrown
+            // away - and pressing Keep on one answered 404.
+            //
+            // The raw call above stays raw on purpose (H11): the mutation
+            // pushes an error toast, and a 404 there just means the server's
+            // own cleanup won the race. This adds the half that was missing,
+            // not the half that was refused - and it sits OUTSIDE that try
+            // for the same reason. Whichever side deleted the row deleted
+            // the proposals with it, so the panel is stale either way.
+            qc.invalidateQueries({ queryKey: keys.notebookEntries(chatId) });
             callbacks?.onAbortedEmpty?.({ attachmentsSurvived });
           }
         } else {
@@ -794,6 +819,9 @@ export function useStreamingCompletion() {
             // Variant append: deactivate the previous sibling IN PLACE and
             // dedupe-append the new active row - nothing is removed, old
             // variants stay navigable.
+            // Same reason as the send path: a regenerated turn is another
+            // turn for the extractor to read.
+            void qc.invalidateQueries({ queryKey: keys.notebookEntries(chatId) });
             const deactivatedId = event.deactivated_message_id ?? null;
             const anchor =
               event.assistant_message.variant_group ??
@@ -1025,6 +1053,10 @@ export function useStreamingCompletion() {
             qc.invalidateQueries({ queryKey: keys.chats() });
             // D3 discipline: settle on server truth in the background.
             void qc.invalidateQueries({ queryKey: keys.messages(chatId) });
+            // The edit path DELETES notes server-side - every proposal that
+            // came from the messages this edit replaced - and answered
+            // nothing about it. The panel went on showing them.
+            void qc.invalidateQueries({ queryKey: keys.notebookEntries(chatId) });
             clearEntry(chatId);
             // Idle-looking chat, still-open body: see startSend's `done`.
             drainingRef.current.add(chatId);

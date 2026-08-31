@@ -50,6 +50,7 @@ import {
   filterParamsByModel,
 } from "../generation";
 import {
+  acceptsImages,
   getModelContextLength,
   getModelMaxCompletionTokens,
 } from "../models";
@@ -111,6 +112,17 @@ export interface ContextUsageInput {
    * somebody noticed. A number that crosses the wire cannot drift, which is
    * why the voice block is the one fixed cost this estimator never got wrong. */
   notebookChars?: number | null;
+  /** Characters of the message about to be SENT, when the caller knows it.
+   *
+   * The backend counts the outgoing message in the part that cannot shrink;
+   * this file deliberately does not count it in `usedTokens` (see the
+   * approximation note in the module doc comment) and that stays as it is.
+   * It is used for the refusal threshold ONLY.
+   *
+   * No caller supplies it today, and the default of 0 is the safe direction:
+   * a refusal can be missed, never invented. A gauge that cries wolf about a
+   * send that would have worked is worse than one that stays quiet. */
+  pendingMessageChars?: number | null;
 }
 
 export interface ContextUsageEstimate {
@@ -130,6 +142,33 @@ export interface ContextUsageEstimate {
   totalMessages: number;
   /** Always true - this is chars/3 math, never a real tokenizer count. */
   isEstimate: true;
+  /**
+   * The backend's refusal, predicted before the send.
+   *
+   * `null` when the turn would go through. The estimator's trim loop always
+   * ends by declaring the history fitted, and `percent` is clamped to 100, so
+   * a request the backend refuses outright used to show as "88%, amber" and
+   * then fail - the gauge saying the one thing it exists to prevent.
+   *
+   * Mirrors `completions.py`: the fixed blocks and the outgoing message are
+   * the part that CANNOT shrink, so when they alone exceed what is available
+   * there is nothing left to trim and the request is refused.
+   *
+   * `boundaries_do_not_fit` - the backend's other refusal - is deliberately
+   * NOT predicted here. Telling it apart needs the boundary block's own
+   * character count, and the notebook route sends the three blocks as one
+   * number. Guessing which of the two refusals it is would put a specific,
+   * wrong sentence on screen.
+   */
+  willRefuse: "context_too_large" | null;
+  /**
+   * How far over the line, in characters. 0 when the turn fits.
+   *
+   * `percent` is clamped to 100, which is right for a bar and loses the size
+   * of the overrun - and "over by forty characters" and "over by nine
+   * thousand" are different problems for a reader deciding what to cut.
+   */
+  overflowChars: number;
 }
 
 export type ContextUsageState = "normal" | "warning" | "danger";
@@ -207,14 +246,25 @@ export function buildPersonaBlock(
  * IMAGE_TOKEN_ESTIMATE is calibrated for an image sent as INPUT, which is the
  * only kind this now counts.
  *
+ * TWO gates, because the backend has two. The role gate above is one; the
+ * other is whether the model takes images at all. `_entry_chars` charges
+ * nothing for an attachment when `include_images` is false, and
+ * `include_images` is `_model_accepts_images(meta)`. Without the second gate
+ * the gauge charged 3300 characters per past image on a text-only model - for
+ * bytes that are never sent - and the history trim it drives would evict real
+ * turns to reserve room for them.
+ *
+ * `acceptsImages` mirrors that backend rule, absent-metadata behaviour
+ * included: unknown means yes on both sides.
+ *
  * `attachments` is read defensively - older cached Message objects may predate
  * the field; the safe optional read yields 0.
  */
-function messageChars(message: Message): number {
+function messageChars(message: Message, imagesSent: boolean): number {
   const attachments = (
     message as Message & { attachments?: readonly { id: number }[] }
   ).attachments;
-  const replayed = message.role === "user";
+  const replayed = imagesSent && message.role === "user";
   const attachmentCount = replayed ? attachments?.length ?? 0 : 0;
   return (
     message.content.length +
@@ -303,7 +353,8 @@ export function estimateContextUsage(
 
   // completions.py _assemble_messages: trim history from the OLDEST end
   // until it fits what is left after the fixed cost.
-  const perMessageChars = messages.map(messageChars);
+  const imagesSent = acceptsImages(model);
+  const perMessageChars = messages.map((m) => messageChars(m, imagesSent));
   let historyChars = perMessageChars.reduce((sum, chars) => sum + chars, 0);
   const remaining = availableChars - fixedChars;
   let droppedMessages = 0;
@@ -311,6 +362,18 @@ export function estimateContextUsage(
     historyChars -= perMessageChars[droppedMessages];
     droppedMessages += 1;
   }
+
+  // The part that cannot shrink, and therefore the refusal.
+  //
+  // `completions.py`: `min_required = system_chars + user_msg_chars`, and
+  // `if min_required > available` it raises rather than trimming further. The
+  // loop above can drop every message and still not get under the line - and
+  // it exits quietly declaring the history fitted, which is how a request the
+  // backend refuses showed up as an amber gauge.
+  const pendingChars = Math.max(0, input.pendingMessageChars ?? 0);
+  const minRequired = fixedChars + pendingChars;
+  const willRefuse = minRequired > availableChars ? "context_too_large" : null;
+  const overflowChars = willRefuse ? minRequired - availableChars : 0;
 
   const totalMessages = messages.length;
   const includedMessages = totalMessages - droppedMessages;
@@ -327,6 +390,8 @@ export function estimateContextUsage(
         : 0;
 
   return {
+    willRefuse,
+    overflowChars,
     usedTokens,
     capacityTokens,
     reservedOutputTokens,

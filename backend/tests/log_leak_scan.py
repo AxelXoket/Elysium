@@ -172,6 +172,18 @@ CONTENT_DENYLIST = frozenset({
     # the user typed for every voice created before that, and the two are
     # indistinguishable at a log site.
     "dropped_samples", "voice_id",
+    # Added with the notebook grounding change. The scanner keys on the NAME
+    # and does not propagate taint through a list comprehension, a
+    # conditional expression or `next(...)`, so every one of these was
+    # invisible while holding transcript text:
+    #   `chunk_text`      the transcript window itself
+    #   `haystacks`       every folded message body in it
+    #   `folded_evidence` a quoted sentence somebody actually said
+    #   `_body`           one whole message, unpacked from `haystacks`
+    # The leading underscore on the last one is deliberate: it is the
+    # discard half of a tuple unpack, and a name being ignored today is no
+    # reason for the gate to stop seeing it.
+    "chunk_text", "haystacks", "folded_evidence", "_body",
 })
 
 #: Calls that build a string out of what they are given. Used only to decide

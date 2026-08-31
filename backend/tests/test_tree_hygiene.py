@@ -222,6 +222,11 @@ LIVE_VERIFY_TOOLS = {
     "verify_hygiene.py",
     "verify_image_output.py",
     "verify_tts_latency.py",
+    # Added 2026-08-30 with the two enforcement lanes. It is not a retired
+    # script coming back: nothing by this name was ever deleted, and it is
+    # the entry point both installed git hooks run. Its own module docstring
+    # argues why the work is split into a cheap lane and a slow one.
+    "run_gates.py",
 }
 
 

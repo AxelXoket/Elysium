@@ -8,6 +8,8 @@ loud, and the auto-filled text stays editable, because Whisper mishears.
 """
 import struct
 import wave
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -273,3 +275,92 @@ def test_replacing_a_clip_with_a_new_transcript_uses_the_new_one(refs_root):
     voice = refs.describe("narrator3")
     assert voice.transcript == "second words"
     assert voice.transcript_source == "user"
+
+
+class TestAStagedClipDoesNotSurviveACrash:
+    """The half that was never swept.
+
+    save_upload stages the clip in the refs root and replaces it into the
+    voice folder. Every cleanup path for that staged file lives inside the
+    same call, so a crash between the write and the replace left the user's
+    whole recording in the root - and the `.incoming-` pattern appeared in
+    exactly one production line, the one that writes it. Nothing looked.
+    """
+
+    def _stale(self, root: Path, name: str = ".incoming-abc.wav") -> Path:
+        staged = root / name
+        staged.write_bytes(b"RIFF" + bytes(64))
+        old = time.time() - refs._STAGING_MAX_AGE_S - 60
+        os.utime(staged, (old, old))
+        return staged
+
+    def test_a_leftover_staged_clip_is_gone_after_the_next_listing(
+        self, refs_root,
+    ) -> None:
+        staged = self._stale(refs_root)
+        assert staged.exists()
+
+        refs.list_voices()
+
+        assert not staged.exists(), (
+            "a whole voice recording is still sitting in the refs root"
+        )
+
+    def test_a_real_voice_beside_it_is_untouched(self, refs_root) -> None:
+        # POSITIVE CONTROL. A sweep that removed everything would pass the
+        # case above and destroy the user's voices doing it.
+        self._stale(refs_root)
+        refs.save_upload("ayse", "ref.wav", _wav_bytes(),
+                         label="Ayse", transcript="Merhaba dunya.")
+        clip = refs._audio_in(refs._voice_dir("ayse"))
+        assert clip is not None and clip.exists()
+
+        refs.list_voices()
+
+        assert clip.exists(), "the sweep took a real clip"
+        assert [v.voice_id for v in refs.list_voices()] == ["ayse"]
+
+    def test_a_staged_clip_younger_than_the_gate_is_left_alone(
+        self, refs_root,
+    ) -> None:
+        # GROUND CONTROL for the age gate. Without it a sweep running while
+        # somebody is uploading deletes the upload in progress.
+        fresh = refs_root / ".incoming-def.wav"
+        fresh.write_bytes(b"RIFF" + bytes(64))
+
+        refs.discard_stale_staging()
+
+        assert fresh.exists(), (
+            "the sweep has no age gate, so a concurrent upload can be "
+            "deleted out from under itself"
+        )
+
+    def test_it_reports_what_it_removed(self, refs_root) -> None:
+        self._stale(refs_root, ".incoming-one.wav")
+        self._stale(refs_root, ".incoming-two.wav")
+        assert refs.discard_stale_staging() == 2
+        assert refs.discard_stale_staging() == 0
+
+    def test_a_directory_wearing_the_prefix_is_left_alone(self, refs_root) -> None:
+        """Files only, and this is the test that makes that a rule.
+
+        A voice folder is opaque-named and none of them carry this prefix
+        today. But a sweep that could take a directory is one rename away
+        from taking a voice.
+
+        Honest note: removing the `is_file` guard leaves this test green,
+        because `secure_delete.discard` refuses a directory on its own
+        (measured: it cannot open it and returns False). The guard is
+        therefore an equivalent mutant, not an uncovered line. What this test
+        pins is the OUTCOME - a directory survives - which stays true however
+        the two checks are arranged, and which would go red the day either
+        one starts removing trees.
+        """
+        folder = refs_root / ".incoming-looks-like-one"
+        folder.mkdir()
+        (folder / "ref.wav").write_bytes(b"RIFF" + bytes(64))
+        old = time.time() - refs._STAGING_MAX_AGE_S - 60
+        os.utime(folder, (old, old))
+
+        assert refs.discard_stale_staging() == 0
+        assert folder.is_dir() and (folder / "ref.wav").exists()

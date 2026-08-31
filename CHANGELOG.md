@@ -6,7 +6,49 @@ it. README links here rather than carrying its own copy.
 
 ## Since 1.1.6
 
-Nothing yet. The next release is **v1.2.0**, which is where RAG lands.
+The next release is **v1.2.0**, which is where RAG lands. Everything below is
+in the tree and NOT in any exe you can download yet.
+
+### Changed
+
+- **The quote under a note is cut at 240 characters.** It was stored at
+  whatever length arrived. The JSON schema asked the model for 240 and a
+  model that ignored the request was obeyed, so a note could carry an
+  unbounded stretch of the conversation into the vault and into every later
+  prompt. Now the cap is enforced on our side. This is written down here
+  rather than under v1.1.5, where it was first described: neither shipped
+  release does it.
+- **Old spoken audio is cleared on the voice engine's health tick**, not only
+  when the next sentence is spoken. A session that stopped talking used to
+  leave everything it had said sitting in the cache until the next launch.
+  Same correction: described under v1.1.6 before it existed.
+
+### Fixed
+
+- **A vault lock could never return.** The stand-down waited on the notebook
+  worker's task even when that task belonged to a different event loop, and
+  the wait was resolved from the other loop's thread on a future this one
+  would never be woken for. Measured: the worker task reached CANCELLED and
+  the wait had not returned seventy-five seconds later.
+- **The Sweep button and the background reader could pay twice for one
+  answer**, and either could mark the other's live, already-billed call
+  failed and move the cursor past a range nothing had read.
+- **A daily call reserved before midnight was refunded out of the next day's
+  allowance**, so the ceiling let one extra billed call through per stale
+  reservation, and the cost of such a call landed on a day whose call count
+  was zero.
+- **A worker's own words could reach the log.** The voice engine's progress
+  frames were written to `elysium.log` verbatim, and those carry the sentence
+  being spoken, a Windows path (and therefore the account name), and the name
+  of a reference clip - which for an older voice is the label typed on screen.
+- **A crashed rotation's empty leftover pinned superseded key material**
+  beside the vault on every unlock, permanently.
+- **Re-initialising a vault could destroy the only key to a copy it kept.**
+  The superseded salt and mirror were shredded whenever no rotation backup
+  was left, without asking whether a premigrate or orphaned encrypted copy
+  was still on disk.
+- **The schema version stamp had not moved** for three objects, so an older
+  build would have opened and edited a database it did not understand.
 
 ## v1.1.6
 
@@ -125,7 +167,7 @@ the exe and nothing else.
 - **A hard daily ceiling on what the notebook may spend** - sixty calls a day, counted in the database so a restart does not reset it, and enforced as a **block before the request** rather than a warning after it. Repeated failures pause the reader; enough of them stop it until you press "Try again now"
 - **It tells you what it did** - runs, calls and credits spent today, the same two figures summed over its whole life sitting beside them, and why anything was skipped, in words. The lifetime figure is informational only - spend today alone still governs the daily cap. A refused run and a quiet week are otherwise the same screen
 - **Saved, and takeable back** - when the model writes a note without asking, the panel says so once and offers Undo. With automatic acceptance on there is no review step, so this is the only moment you are told
-- **The Turkish original, under the English note** - notes are written in English on purpose: a small cheap model reads and writes it far better. The cost is a paraphrase you cannot check, so the sentence as it was actually said is kept verbatim and shown underneath
+- **The Turkish original, under the English note** - notes are written in English on purpose: a small cheap model reads and writes it far better. The cost is a paraphrase you cannot check, so the sentence as it was actually said is kept and shown underneath
 - **A note says when it came from the model's own words** - each note now records whose sentence its quote was lifted from, and one lifted out of the model's own reply says so on its face. This is the one thing no checker can supply: the app already verifies that a note matches its quote, and that check says nothing whatever when the model is quoting itself. So it is a label, not a filter - the note still goes in. Marking was chosen over a review queue on measurement rather than taste: at the rate this actually happens such a queue would be almost entirely correct notes, and the research on queues that cry wolf is that people stop reading them and then miss the real one
 - **Hide the window from screen capture** - Settings › Security. Screenshots, screen recording and screen sharing see a blank window instead of your conversation. Off by default, stored in the vault rather than the browser, and deliberately **not** applied while the vault is locked - there is nothing on that screen to protect. A layer, not a guarantee
 - **The conversation is closed to the accessibility tree, and this switch defaults ON** - an audit built an unprivileged probe (no launch token, no elevation, just a program running as the same user) and read the chat title, the character name and the message bodies out of WebView2's accessibility tree, verbatim. That tree is the page handed to Windows so screen readers can speak it, and hiding the window from screen capture is no defence at all against it: capture exclusion hides PIXELS, and this is text. Elysium now starts its browser with the tree switched off. Every other protection here waits to be asked for and this one does not, deliberately: the screen-capture switch has a visible cost that lands on the owner's own screenshots, while this one costs assistive technology, which most people do not run, and what it prevents is any program on the machine reading a whole private conversation without asking anyone for permission. The cost is stated rather than buried - while it is on, a screen reader cannot read Elysium at all. The way out is `setx ELYSIUM_ACCESSIBILITY_PRIVACY 0` and a restart, and an environment variable is the requirement rather than the lazy option: somebody who needs a screen reader cannot navigate to a checkbox inside an app their screen reader cannot read, and the switch has to be usable before the vault is unlocked, which rules out keeping it in the vault. It takes effect at STARTUP ONLY, because the flag is an argument to the browser process and is read once as that process is created; changing it while Elysium runs does nothing at all, unlike the screen-capture switch, which is a call on a window that already exists and can follow every lock. Only exactly `0` disables it - `false`, `no`, `off` and an empty value leave it on rather than letting a typo quietly undo a privacy control - and the launch log names the state that took effect

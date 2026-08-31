@@ -49,6 +49,7 @@ import { Button } from "@/components/ui/button";
 import { request } from "@/lib/api/client";
 import { keys } from "@/lib/query/keys";
 import { useVaultStatus } from "@/lib/query/vault";
+import { useErrorStore } from "@/lib/errors";
 
 /** POST /vault/discard-premigrate-backup. See the file header for why this
  *  schema lives here instead of lib/api/vault.ts: that file is shared ground
@@ -57,6 +58,10 @@ const DiscardPremigrateSchema = z.object({
   removed: z.boolean(),
   reason: z.string(),
 });
+//: How many times this button has FAILED. Module-level so it survives
+//: the notice unmounting when /vault/status refetches after a failure.
+let premigratePresses = 0;
+
 
 function useDiscardPremigrateBackup() {
   const qc = useQueryClient();
@@ -69,6 +74,29 @@ function useDiscardPremigrateBackup() {
     // disappear once the file the status query reported is actually gone.
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: keys.vault() });
+    },
+    // K-22's idiom, four irreversible deletions later. There was no
+    // `onError` anywhere on these, no MutationCache to catch them, and the
+    // `role="alert"` paragraphs in the notices report fields of a SUCCESSFUL
+    // response - so a 500 or a 423 said nothing at all, and "the file is
+    // gone" looked exactly like "nothing was even attempted" to the one
+    // person who cannot check.
+    //
+    // Per hook rather than a MutationCache default: `useUnlockVault` and
+    // `useChangeVaultPassphrase` show their failures INSIDE the screen on
+    // purpose, and a global handler would double every one of those.
+    // A SOURCE, same reason as its three siblings in lib/query/vault.ts.
+    //
+    // This notice renders directly above the orphaned-copy one, and both
+    // answer 423 with the same code and no chat id. Without a source the
+    // second Remove pressed inside the first toast's window said nothing at
+    // all - and the `role="alert"` paragraph below reads fields of a
+    // SUCCESSFUL response, so it says nothing on a failure either.
+    onError: (err: unknown) => {
+      premigratePresses += 1;
+      useErrorStore.getState().pushError(err, "error", {
+        source: `vault:discard-premigrate#${premigratePresses}`,
+      });
     },
   });
 }

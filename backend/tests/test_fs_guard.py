@@ -256,3 +256,113 @@ class TestTheTwoHolesMeasuredOn22August:
         with pytest.raises(fs_guard.ForbiddenWrite):
             exec(caller, {"open": open, "target": marker})
         assert not marker.exists()
+
+
+class TestTheGuardCannotSwitchItselfOff:
+    """The three ways this protection was conditional.
+
+    It is the last thing between a test suite and the owner's own vault - the
+    real `salt.bin`, `verifier.bin` and `kdf.json`, which are not recoverable
+    once overwritten. It was conditional on an environment variable being
+    set, and on a path snapshot taken before the test body could change it.
+    """
+
+    def test_the_packaged_vault_is_guarded_by_name(self, monkeypatch) -> None:
+        """The branch nothing asserted.
+
+        `%LOCALAPPDATA%\\Elysium` is the only entry in the list that names
+        the REAL vault during a test run: `config` reports the development
+        directory, because it computes the packaged one only in a frozen
+        build. Every existing test here drives the development branch.
+
+        The write is aimed at a file inside a SUBDIRECTORY THAT DOES NOT
+        EXIST, and that is not fastidiousness. A mutation experiment on this
+        very guard removed the packaged path from the list, ran this test,
+        and the write landed in the owner's real data directory - a harmless
+        probe file, removed immediately, but the shape of the accident is the
+        one that is not recoverable if it lands on `salt.bin`.
+
+        With a missing parent, an unguarded write raises FileNotFoundError
+        instead of creating anything. So the test fails when the guard fails,
+        and it cannot write to the real vault in either case.
+        """
+        import os
+
+        local = os.environ.get("LOCALAPPDATA")
+        assert local, "ground: this machine has the variable the guard needs"
+        parent = Path(local) / "Elysium" / "fs-guard-probe-dir-never-created"
+        assert not parent.exists(), "ground: the probe directory is absent"
+        target = parent / "probe.tmp"
+
+        with pytest.raises(fs_guard.ForbiddenWrite):
+            target.write_text("this must never land", encoding="utf-8")
+        assert not parent.exists(), "the guard let a directory be created"
+
+    def test_it_refuses_to_run_at_all_without_the_variable(
+            self, monkeypatch) -> None:
+        """Silence was the defect. With LOCALAPPDATA unset the list simply
+        stopped covering the real vault, every write to it became legal, and
+        the suite went on passing - a protection that switches itself off
+        according to the environment is not one."""
+
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+
+        with pytest.raises(RuntimeError, match="LOCALAPPDATA"):
+            fs_guard._real_data_paths()
+
+    def test_it_follows_a_config_that_moved_to_a_real_directory(
+            self, monkeypatch) -> None:
+        """The snapshot timing, and the reason the answer is a UNION.
+
+        The guarded list is built at fixture setup, before the test body
+        runs, and that timing is right for the ordinary case: a test points
+        `config.DB_PATH` at its own tmp_path, and a list rebuilt afterwards
+        would start guarding the fixture - every test refused by its own
+        protection.
+
+        It is wrong for the other case. Two tests here set `sys.frozen` and
+        reload `config`, which moves `DATA_DIR` to the PACKAGED location, and
+        the snapshot then describes a directory the application would no
+        longer write to. So the list is re-read as well, and anything the
+        re-read finds OUTSIDE the temp root is added.
+
+        Both halves are asserted: a real directory config moved to is
+        guarded, and a fixture directory it moved to is not.
+        """
+        import os
+
+        import config
+
+        local = os.environ.get("LOCALAPPDATA")
+        assert local, "ground: the variable the guard needs"
+        # A path outside the temp root that does not exist, so nothing can be
+        # created here whatever the guard does.
+        moved = Path(local) / "Elysium-not-a-real-directory-for-this-test"
+        monkeypatch.setattr(config, "DATA_DIR", str(moved))
+
+        guarded = fs_guard._real_data_paths()
+        assert any(str(moved) in str(path) for path in guarded), (
+            "the guard is still describing the directory config used to have")
+
+        with pytest.raises(fs_guard.ForbiddenWrite):
+            (moved / "salt.bin").write_text("x", encoding="utf-8")
+        assert not moved.exists(), "the guard let a directory be created"
+
+    def test_a_fixture_directory_is_not_guarded(
+            self, monkeypatch, tmp_path) -> None:
+        """THE ground control for the union, and the reason it is one.
+
+        Pointing config at a tmp_path is what almost every test in this suite
+        does. If the re-read guarded that too, the protection would refuse
+        the whole suite - which is a failure mode that looks like safety and
+        is not.
+        """
+        import config
+
+        fixture = tmp_path / "fixture-data"
+        fixture.mkdir()
+        monkeypatch.setattr(config, "DATA_DIR", str(fixture))
+
+        (fixture / "salt.bin").write_text("x", encoding="utf-8")
+        assert (fixture / "salt.bin").read_text(encoding="utf-8") == "x"
+

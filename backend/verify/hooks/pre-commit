@@ -14,12 +14,23 @@
 # To install or repair:
 #     cp backend/verify/hooks/pre-commit .git/hooks/pre-commit
 #
-# Deliberately thin. Everything it knows is in verify_hygiene.py, so changing a
-# rule does not mean reinstalling anything.
+# Deliberately thin. Everything it knows is in run_gates.py, so changing what a
+# lane runs does not mean reinstalling anything.
 #
-# --staged, not the default: at this moment the only content that matters is
-# what is about to become a commit. The working tree may hold half-finished
-# edits that are nobody's business yet.
+# This is the cheap lane. It runs the hygiene scanner over the index, checks
+# that both installed hooks are the versioned ones, and runs the test files
+# this commit is staging. The whole backend suite, the frontend suite and the
+# exe build live in the pre-push hook beside it.
+#
+# Cheap is relative and the numbers are in run_gates.py: 0.2s when no test
+# file is staged, about 2s for an ordinary one, and up to 38s for a commit
+# that stages several slow ones. The owner's under-two-seconds rule holds for
+# the common case and not for every case; that is written down rather than
+# rounded off.
+#
+# The index, not the working tree: at this moment the only content that
+# matters is what is about to become a commit. The working tree may hold
+# half-finished edits that are nobody's business yet.
 
 set -e
 
@@ -30,7 +41,7 @@ for candidate in \
     python
 do
     if command -v "$candidate" >/dev/null 2>&1; then
-        exec "$candidate" backend/verify/verify_hygiene.py --staged
+        exec "$candidate" backend/verify/run_gates.py --hook pre-commit
     fi
 done
 

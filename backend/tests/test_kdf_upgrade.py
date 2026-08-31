@@ -35,6 +35,32 @@ def _legacy_vault(tmp_path: Path, passphrase: str = "a-real-passphrase-here"
     return vault, key
 
 
+def _legacy_install(tmp_path: Path, monkeypatch,
+                    passphrase: str = "a-real-passphrase-here"):
+    """A legacy vault WITH its database, at a path of its own.
+
+    _legacy_vault above writes an identity and nothing else, which is all the
+    direct-call tests need. Driving /vault/unlock needs the other half: the
+    route unlocks, runs the migration bootstrap against a real database, and
+    only then upgrades. Pointed at the suite's own vault it would be
+    unlocking one install's database with another install's key.
+    """
+    import config
+    import database
+    import vault_state
+
+    db_path = tmp_path / "app.db"
+    monkeypatch.setattr(config, "DB_PATH", str(db_path))
+    monkeypatch.setattr(database, "DB_PATH", str(db_path))
+    vault, key = _legacy_vault(tmp_path, passphrase)
+    vault_state.set_key(key)
+    try:
+        database.init_db()
+    finally:
+        vault_state.clear_key()
+    return vault, key
+
+
 class TestTheParametersAreRecorded:
     def test_a_new_vault_records_the_current_ones(self, tmp_path) -> None:
         vault = crypto.KeyVault(tmp_path)
@@ -190,13 +216,139 @@ class TestTheUpgradeHappensAtUnlockAndOnlyThere:
             upgraded = _upgrade_kdf_if_needed(
                 vault, "a-real-passphrase-here", key)
 
-            assert upgraded is True
+            # `.upgraded`, not the value itself: the function now returns
+            # what it could NOT revoke alongside whether it ran, because
+            # the unlock route had no way to report the first half.
+            assert upgraded.upgraded is True
+            assert upgraded.unrevoked == []
             assert vault.read_params() == crypto.KDF_CURRENT
             assert rekeyed, "the database was never re-keyed"
             assert vault_state.get_key() == rekeyed[0]
         finally:
             from tests.conftest import TEST_VAULT_KEY
             vault_state.set_key(TEST_VAULT_KEY)
+
+    def test_unlock_reports_a_sidecar_left_under_the_old_key(
+        self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The unlock that re-keys the vault has to say what it could not.
+
+        A KDF upgrade changes the key without the user asking for anything,
+        and every snapshot beside the database is still readable under the
+        old one until this function moves it. When it cannot, the name went
+        to a log line and stopped there: the response carried `kdf_upgraded`
+        and nothing else, so the user was told their key had been
+        strengthened and not told that a complete copy of the vault still
+        opens with the superseded one.
+        """
+        import vault_state
+
+        vault, key = _legacy_install(tmp_path, monkeypatch)
+        vault_state.clear_key()
+
+        # The snapshot the upgrade is supposed to revoke, and cannot.
+        #
+        # A rotation backup rather than the premigrate one: the unlock
+        # bootstrap runs BEFORE the upgrade and discards a premigrate copy of
+        # its own accord once a migration pass comes back clean, so a
+        # premigrate name would be gone before the code under test ran and
+        # the test would measure the sweep instead of the revocation.
+        sidecar = tmp_path / "app.db.rekey.bak-1700000000"
+        sidecar.write_bytes(b"a full copy of the vault")
+
+        monkeypatch.setattr("database.rekey_db", lambda *a, **kw: None)
+        # True for the database, FALSE for the sidecar. A blanket True would
+        # have the unlock sweep delete it before the upgrade ran: that sweep
+        # removes exactly the copies this vault can open, on the grounds that
+        # they are duplicates of the live file. The one this test is about is
+        # the other kind - the copy that answers to a key nobody holds any
+        # more - so it has to read as unopenable, which is also the truth
+        # about the twenty-four bytes written above.
+        monkeypatch.setattr(
+            "database.check_key",
+            lambda k, db_path=None, **kw: sidecar.name not in str(db_path))
+        monkeypatch.setattr("database.backup_encrypted",
+                            lambda path, key=None: Path(path).write_bytes(b"x"))
+
+        def _held_open(path, new_key, old_key):
+            raise OSError(13, "held open by another process")
+
+        monkeypatch.setattr("database.rekey_file", _held_open)
+
+        r = client.post("/api/v1/vault/unlock",
+                        json={"passphrase": "a-real-passphrase-here"})
+
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["ok"] is True, "a failed revocation must not lock anyone out"
+        assert body["kdf_upgraded"] is True
+        assert sidecar.name in body["unrevoked"]
+
+    def test_a_clean_unlock_reports_nothing_unrevoked(
+        self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ground control. An `unrevoked` hardcoded to a name would satisfy
+        the test above and mean nothing; and a vault with no upgrade to do
+        must still answer the field rather than omit it."""
+        import config
+        import database
+        import vault_state
+
+        db_path = tmp_path / "app.db"
+        monkeypatch.setattr(config, "DB_PATH", str(db_path))
+        monkeypatch.setattr(database, "DB_PATH", str(db_path))
+        vault = crypto.KeyVault(tmp_path)
+        key = vault.initialize("a-real-passphrase-here")
+        vault_state.set_key(key)
+        try:
+            database.init_db()
+        finally:
+            vault_state.clear_key()
+
+        r = client.post("/api/v1/vault/unlock",
+                        json={"passphrase": "a-real-passphrase-here"})
+
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["kdf_upgraded"] is False
+        assert body["unrevoked"] == []
+
+    def test_unlock_also_reports_what_the_vault_could_not_clean_up(
+        self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Positive control on the SECOND source.
+
+        `unrevoked` has always carried two different things on the
+        change-passphrase route: the sidecars that would not re-key, and the
+        half-written identity files a rotation could not remove
+        (KeyVault.left_behind). Carrying only the first here would give the
+        same field two meanings depending on which route produced it.
+        """
+        import vault_state
+
+        vault, key = _legacy_install(tmp_path, monkeypatch)
+        vault_state.clear_key()
+
+        monkeypatch.setattr("database.rekey_db", lambda *a, **kw: None)
+        monkeypatch.setattr("database.check_key", lambda k, *a, **kw: True)
+        monkeypatch.setattr("database.backup_encrypted",
+                            lambda path, key=None: Path(path).write_bytes(b"x"))
+
+        real_change = crypto.KeyVault.change_passphrase
+
+        def leaves_something(self, *a, **kw):
+            out = real_change(self, *a, **kw)
+            self.left_behind.append("salt.bin.new")
+            return out
+
+        monkeypatch.setattr(crypto.KeyVault, "change_passphrase",
+                            leaves_something)
+
+        r = client.post("/api/v1/vault/unlock",
+                        json={"passphrase": "a-real-passphrase-here"})
+
+        assert r.status_code == 200, r.text
+        assert r.json()["unrevoked"] == ["salt.bin.new"]
 
     def test_a_vault_already_current_is_left_completely_alone(
         self, client, monkeypatch: pytest.MonkeyPatch
@@ -210,7 +362,7 @@ class TestTheUpgradeHappensAtUnlockAndOnlyThere:
             AssertionError("re-keyed a vault that did not need it")))
 
         assert _upgrade_kdf_if_needed(vault, "a-real-passphrase-here",
-                                      key) is False
+                                      key).upgraded is False
 
     def test_a_failed_upgrade_leaves_the_vault_openable(
         self, client, monkeypatch: pytest.MonkeyPatch
@@ -228,7 +380,7 @@ class TestTheUpgradeHappensAtUnlockAndOnlyThere:
         monkeypatch.setattr("database.check_key", lambda k, *a, **kw: False)
 
         assert _upgrade_kdf_if_needed(vault, "a-real-passphrase-here",
-                                      key) is False
+                                      key).upgraded is False
         assert vault.read_params() == crypto.KDF_LEGACY
         assert vault.unlock("a-real-passphrase-here") == key
 

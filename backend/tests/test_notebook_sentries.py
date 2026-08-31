@@ -278,9 +278,11 @@ class TestNoteTextNeverReachesALog:
         chat_id = seed(client)
         entry = notebook.create_entry(chat_id, self.SECRET)
         with caplog.at_level(logging.DEBUG):
-            client.patch(f"/api/v1/notebook/entries/{entry['id']}",
+            client.patch(f"/api/v1/notebook/entries/{entry['id']}"
+                         f"?chat_id={chat_id}",
                          json={"text": self.SECRET + " Amended."})
-            client.delete(f"/api/v1/notebook/entries/{entry['id']}")
+            client.delete(f"/api/v1/notebook/entries/{entry['id']}"
+                          f"?chat_id={chat_id}")
         assert "mill deed" not in caplog.text
 
     def test_the_worker_logs_no_part_of_a_model_note(
@@ -327,7 +329,8 @@ class TestNoteTextNeverReachesALog:
         chat_id = seed(client)
         with caplog.at_level(logging.INFO):
             entry = notebook.create_entry(chat_id, "x")
-            client.delete(f"/api/v1/notebook/entries/{entry['id']}")
+            client.delete(f"/api/v1/notebook/entries/{entry['id']}"
+                          f"?chat_id={chat_id}")
         assert "Notebook entry removed" in caplog.text
 
 

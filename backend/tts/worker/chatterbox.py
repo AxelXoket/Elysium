@@ -529,8 +529,16 @@ def _retime(wav, rate, send):
         # not lose a sentence that generated perfectly well. But it is
         # REPORTED - a silently ignored dial is indistinguishable from a broken
         # one, which is the bug this whole change is about.
+        # THE EXCEPTION GOES IN `detail`, NOT IN `note`.
+        #
+        # It used to be the note, and a note is echoed to the log verbatim -
+        # so a stretch failure whose message quotes the sentence it could not
+        # stretch wrote that sentence into elysium.log, in the clear, beside
+        # the vault, during synthesis. `detail` is sanitized at the boundary
+        # down to the exception's class name, which is the part that helps.
         send(_wire.event("progress", stage="retime_failed", pct=0.9,
-                         note=f"{type(exc).__name__}: {exc}"))
+                         note=_wire.NOTE_RETIME_FAILED,
+                         detail=f"{type(exc).__name__}: {exc}"))
         return wav
     send(_wire.event("progress", stage="retimed", pct=0.9,
                      rate=round(_dsp.clamp_rate(rate), 3)))

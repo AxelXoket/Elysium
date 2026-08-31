@@ -162,3 +162,7 @@ docs/*
 # catches the directory, its logs and its voice folder with it.
 /.st/
 /.selftest_tmp/
+
+# The local list the personal-name gate reads. Never committed: writing the
+# name into the tree would be the leak the gate exists to catch.
+backend/tests/.banned_names

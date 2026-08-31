@@ -10,6 +10,8 @@ Both defects are silent and unrecoverable from the UI:
     beside them.
 """
 
+import pytest
+
 import crypto
 import database
 
@@ -133,3 +135,49 @@ def test_rekey_file_moves_a_snapshot_to_the_new_key(tmp_path):
 
     assert database.check_key(new_key, str(snapshot)) is True
     assert database.check_key(old_key, str(snapshot)) is False
+
+
+def test_rekey_file_raises_when_the_pragma_silently_no_ops(tmp_path,
+                                                           monkeypatch):
+    """The case that had no test: PRAGMA rekey returning without doing it.
+
+    Under a concurrent write lock SQLCipher can accept the pragma and change
+    nothing, with no error. The sibling function two doors down has said so
+    in its docstring since it was written, and the main database enforces it
+    - but the sidecar path did not, and the sidecars are full copies of the
+    vault. So a passphrase change reported success while a complete copy of
+    everything was still open to the OLD passphrase.
+
+    The no-op is simulated at the one place it can happen, the rekey branch
+    of _key_pragma. Everything else runs for real: the file, the old key, the
+    fresh connection that reads it back.
+    """
+    old_key = crypto.derive_key("old", crypto.new_salt())
+    new_key = crypto.derive_key("new", crypto.new_salt())
+
+    snapshot = tmp_path / "app.db.premigrate.bak"
+    con = database.sqlite3.connect(str(snapshot))
+    try:
+        database._key_pragma(con, old_key)
+        con.execute("CREATE TABLE secrets (v)")
+        con.commit()
+    finally:
+        con.close()
+
+    real = database._key_pragma
+
+    def deaf(connection, key, *, rekey=False):
+        if rekey:
+            return                      # accepted, and nothing happened
+        real(connection, key)
+
+    monkeypatch.setattr(database, "_key_pragma", deaf)
+
+    with pytest.raises(RuntimeError):
+        database.rekey_file(str(snapshot), new_key, old_key)
+
+    # And the point of the raise: the file really is still on the old key, so
+    # the caller that catches this is telling the user the truth.
+    monkeypatch.undo()
+    assert database.check_key(old_key, str(snapshot)) is True
+    assert database.check_key(new_key, str(snapshot)) is False

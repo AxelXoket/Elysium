@@ -65,7 +65,13 @@ export const BoundarySchema = z.object({
   rating_ceiling: z.string().nullish(),
   exempt_from_trim: z.number(),
   last_confirmed_at: z.string().nullish(),
-  active: z.number(),
+  /** Present on the row and no longer meaningful. Nothing in the
+   *  application has ever written it - there is not one UPDATE against the
+   *  column in the tree - so it has been 1 on every row that ever existed,
+   *  and the three filters that read it decided nothing. A limit is removed
+   *  by deleting it, which is permanent on purpose. Optional here so the
+   *  client neither requires it nor depends on it. */
+  active: z.number().optional(),
   created_at: z.string(),
   updated_at: z.string(),
 });
@@ -129,6 +135,12 @@ export const WorkerStatusSchema = z.object({
      *  well, so the two must not be added together. Defaulted so an older
      *  server that does not send it renders as zero rather than crashing. */
     abandoned: z.number().default(0),
+    /** Every failure that cost money: the abandoned ones plus the writes
+     *  that failed after the reply had already been sent, generated and
+     *  billed. `abandoned` alone is a subset, and the panel used to draw its
+     *  "nothing was lost" line from that subset - so a run that spent a call
+     *  and threw the answer away was reported as costing nothing. */
+    paid_and_lost: z.number().default(0),
     skip_reasons: z.record(z.string(), z.number()).default({}),
   }),
   spend: z.object({
@@ -136,6 +148,15 @@ export const WorkerStatusSchema = z.object({
     tokens_in: z.number(),
     tokens_out: z.number(),
     cost: z.number(),
+    /** How many of those calls the provider priced as nothing at all.
+     *
+     *  `cost` is NOT NULL in the database, so a call the provider did not
+     *  price had to be stored as 0 - and the panel then rendered $0.00000,
+     *  which says the call was free when what actually happened is that
+     *  nobody knows what it cost. This is what lets the total say how much
+     *  of itself is missing. `.default(0)` so an older backend still
+     *  parses. */
+    cost_unknown: z.number().default(0),
   }),
   /** The same shape, summed over every day this vault has ever run rather
    *  than just today. `spend` is what governs the daily cap; this is not -
@@ -148,7 +169,10 @@ export const WorkerStatusSchema = z.object({
     tokens_in: z.number(),
     tokens_out: z.number(),
     cost: z.number(),
-  }).default({ calls: 0, tokens_in: 0, tokens_out: 0, cost: 0 }),
+    cost_unknown: z.number().default(0),
+  }).default({
+    calls: 0, tokens_in: 0, tokens_out: 0, cost: 0, cost_unknown: 0,
+  }),
   worker: z.object({
     /** closed = running · open = cooling down · stopped = waiting for you */
     state: z.string(),
@@ -164,10 +188,35 @@ export const WorkerStatusSchema = z.object({
      *  backend computed them on every request and the client threw them away.
      *  A dead worker went on reporting "Running." with a growing queue, which
      *  is the exact failure the fields were added to prevent. */
+    /** The total above is these two added together, and reporting only the
+     *  sum let the second answer for the first: an overflow means the worker
+     *  fell behind, an offer while it was down means the vault locked, and
+     *  the vault locks on an idle timer many times a day. The backend has
+     *  computed both since the counters were split; the client declared
+     *  neither, and z.object strips what it does not declare. */
+    queue_overflows: z.number().default(0),
+    offers_while_down: z.number().default(0),
     refused_by_breaker: z.number().default(0),
     alive: z.boolean().default(true),
     died: z.string().nullish(),
     unhandled: z.number().default(0),
+    /** Paid replies that landed nothing - a duplicate work key, an attempt
+     *  reclaimed by a retry, a range cleared while the reply was out. Kept
+     *  apart from `runs` because "it ran" and "it ran and wrote something"
+     *  are different claims. */
+    settled_empty: z.number().default(0),
+    /** What the parser refused, by reason. Empty is the healthy answer. */
+    dropped: z.record(z.string(), z.number()).default({}),
+    /** True while a reader-requested sweep of a chat's unread history is in
+     *  flight, so the button can be disabled rather than refused. */
+    sweeping: z.boolean().default(false),
+    /** What nobody has read, counted once at unlock. Reported, never acted
+     *  on: an automatic catch-up scan would spend the reader's own credits
+     *  on a backlog they never asked anyone to read. */
+    backlog: z.object({
+      chats: z.number(),
+      messages: z.number(),
+    }).default({ chats: 0, messages: 0 }),
     last_error: z.string().nullish(),
   }),
   daily_cap: z.number(),
@@ -175,7 +224,27 @@ export const WorkerStatusSchema = z.object({
 
 export type WorkerStatus = z.infer<typeof WorkerStatusSchema>;
 
-export const AutoAcceptSchema = z.object({ enabled: z.boolean() });
+/** POST /notebook/sweep/{chat_id}. `started` false with a reason is the
+ *  ordinary answer, not an error: there may be nothing unread, or a sweep
+ *  may already be running. */
+export const SweepSchema = z.object({
+  started: z.boolean(),
+  reason: z.string().optional(),
+  after_id: z.number().optional(),
+});
+export type SweepResult = z.infer<typeof SweepSchema>;
+
+/** `enabled` is the GLOBAL setting - what the switch writes. `effective` is
+ *  what the chat in question will actually do, which is a different answer
+ *  whenever the chat carries a per-chat override; `overridden` says which of
+ *  the two decided it. The panel used to render `enabled` alone, so a chat
+ *  opened from an imported card showed "on" while the extractor was
+ *  correctly forcing review. Defaults keep an older backend parsing. */
+export const AutoAcceptSchema = z.object({
+  enabled: z.boolean(),
+  effective: z.boolean().optional(),
+  overridden: z.boolean().default(false),
+});
 
 /** The phrase that stops a turn in CODE rather than by asking the model.
  *  Empty means off. */

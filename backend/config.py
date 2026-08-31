@@ -197,7 +197,9 @@ MAX_UPLOAD_BYTES: int = 10 * 1024 * 1024   # 10 MiB per image
 # shield can ever spool.
 UPLOAD_MULTIPART_OVERHEAD: int = 64 * 1024
 UPLOAD_BODY_LIMIT: int = MAX_UPLOAD_BYTES + UPLOAD_MULTIPART_OVERHEAD
-UPLOAD_SPOOL_LIMIT: int = UPLOAD_BODY_LIMIT + 1
+# UPLOAD_SPOOL_LIMIT is derived further down, once the voice-clip cap
+# is in scope: there are two multipart routes now and the ceiling has
+# to clear the larger of the two shields, not just this one.
 MAX_ATTACHMENTS_PER_MESSAGE: int = 4
 IMAGE_MAX_DIMENSION: int = 2048            # longest side; larger gets downscaled
 # RAM ceiling for provider-payload assembly: blobs are prefetched newest-first
@@ -317,6 +319,28 @@ TTS_UV_CACHE_DIR: str = str(TTS_DIR / "uv-cache")
 TTS_REF_MIN_S: float = 3.0
 TTS_REF_MAX_S: float = 30.0
 TTS_REF_MAX_BYTES: int = 30 * 1024 * 1024
+
+#: Body shield for the voice-clip route, the same shape as UPLOAD_BODY_LIMIT.
+#:
+#: The clip route was outside the shield entirely: main.py only guarded
+#: /api/v1/uploads/, so a POST to /api/v1/tts/voices/<id> was read in full
+#: before anything measured it.
+TTS_REF_BODY_LIMIT: int = TTS_REF_MAX_BYTES + UPLOAD_MULTIPART_OVERHEAD
+
+#: One spool ceiling, above EVERY body shield.
+#:
+#: The invariant is the one the image band taught: spool > shield means
+#: nothing that survives a shield can ever be rolled out of memory into a
+#: plaintext file in %TEMP%. It used to be `UPLOAD_BODY_LIMIT + 1`, which held
+#: that line for images and quietly failed it for voice clips - the clip cap
+#: is three times the image one, so an ordinary fifteen megabyte recording
+#: went to disk in the clear, and Starlette removes that file with a plain
+#: unlink rather than a shred.
+#:
+#: Taking the maximum keeps the derivation single-source rather than
+#: reopening the band: raising the ceiling cannot admit a larger image,
+#: because the image shield still refuses by Content-Length first.
+UPLOAD_SPOOL_LIMIT: int = max(UPLOAD_BODY_LIMIT, TTS_REF_BODY_LIMIT) + 1
 
 
 # ---------------------------------------------------------------------------

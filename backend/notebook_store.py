@@ -24,6 +24,8 @@ formally intact while doing nothing.
 """
 from __future__ import annotations
 
+import unicodedata
+from collections import Counter
 from typing import Any
 
 import config
@@ -50,10 +52,11 @@ SEVERITIES = ("hard", "veiled", "soft")
 #: short enough to blunt anything pasted in from elsewhere.
 ENTRY_MAX_CHARS = 240
 
-#: The longest prefix `_boundary_line` can build - "- (not on the page) " -
-#: plus the one newline that joins a line to the next. Every ceiling below is
-#: measured in ASSEMBLED characters, so a limit costs its phrasing plus this.
-_BOUNDARY_LINE_COST = 21
+# `_BOUNDARY_LINE_COST` used to be a literal 21 here - the longest prefix
+# `_boundary_line` could build, plus the newline that joins one line to the
+# next. It is now DERIVED from that function, so it is defined immediately
+# after it (see `_worst_line_cost`). Every ceiling below is still measured in
+# ASSEMBLED characters: a limit costs its phrasing plus that number.
 
 #: One limit's ceiling, for BOTH its label and its phrasing.
 #:
@@ -122,6 +125,8 @@ ALL_CODES: frozenset[str] = frozenset({
     "boundary_too_long",
     "boundary_set_too_long",
     "chat_not_found",
+    "boundary_not_found",
+    "imported_chat_always_reviews",
 })
 
 
@@ -225,12 +230,18 @@ def create_entry(chat_id: int, text: str, *, kind: str = "fact",
     return _row(row)
 
 
-def update_entry(entry_id: int, **fields) -> dict:
+def update_entry(entry_id: int, chat_id: int | None = None, **fields) -> dict:
     """Edit a note's content or its flags.
 
-    `provenance`, `chat_id` and `source_message_id` are NOT accepted, and the
-    omission is the feature: editing a model's suggestion must not launder it
-    into the user's own. See the module docstring.
+    `provenance`, `chat_id` and `source_message_id` are NOT accepted as
+    FIELDS, and the omission is the feature: editing a model's suggestion
+    must not launder it into the user's own. See the module docstring.
+
+    `chat_id` here is the opposite thing and that is why it is a parameter
+    rather than a key in `**fields`: not something the caller may change, but
+    the scope the caller must belong to. Without it a call made from one chat
+    could edit - and, because this returns the row, READ - a note in another
+    one, by primary key alone.
     """
     allowed = {"text", "kind", "durability", "importance", "pinned", "status"}
     # Validated like its neighbours. `status` was the one field in the set
@@ -257,6 +268,18 @@ def update_entry(entry_id: int, **fields) -> dict:
 
     sets = ", ".join(f"{k} = ?" for k in fields)
     with get_db() as con:
+        if chat_id is not None and not _in_chat(con, entry_id, chat_id):
+            # BEFORE the update and before the read. Refusing after either
+            # would still have changed the row, or still have handed its text
+            # back, which is the half of this defect nobody would notice.
+            #
+            # `notebook_entry_not_found`, not `chat_not_found`. The chat in
+            # the query parameter exists - it is the note that is not in it,
+            # or is gone. `chat_not_found` renders as "This chat no longer
+            # exists", which is false in every case this fires and sends the
+            # reader looking for the wrong thing. The accept route already
+            # answers this way for the identical situation.
+            raise NotebookError("notebook_entry_not_found")
         con.execute(
             f"UPDATE notebook_entries SET {sets}, updated_at = datetime('now') "
             "WHERE id = ?", (*fields.values(), entry_id))
@@ -267,7 +290,27 @@ def update_entry(entry_id: int, **fields) -> dict:
     return _row(row)
 
 
-def delete_entry(entry_id: int) -> bool:
+def _in_chat(con, entry_id: int, chat_id: int) -> bool:
+    """Does this note belong to this chat?
+
+    The read side of this module has had a scope gate since it was written -
+    `list_boundaries` and `uses_global_boundaries` both take a chat and use
+    it. The write side did not: accept, patch and delete all treated the
+    primary key as the whole identity, so a call made from one chat could
+    change, delete, or read back the text of a note in another one. Two of
+    those routes hand the row back, so it was a read as much as a write.
+
+    A separate argument, never a `**fields` key: `update_entry`'s own
+    docstring refuses `chat_id` there, and it is right to - that dictionary
+    is what a caller may CHANGE, and the chat a note lives in is not it.
+    """
+    row = con.execute(
+        "SELECT 1 FROM notebook_entries WHERE id = ? AND chat_id = ?",
+        (entry_id, chat_id)).fetchone()
+    return row is not None
+
+
+def delete_entry(entry_id: int, chat_id: int | None = None) -> bool:
     """Remove a note the USER asked to remove.
 
     A hard delete, unlike supersession. The distinction matters: retirement is
@@ -277,12 +320,110 @@ def delete_entry(entry_id: int) -> bool:
     """
     with get_db() as con:
         con.execute("BEGIN IMMEDIATE")
-        # Anything that pointed at it stops pointing, so no row is left naming
-        # a target that does not exist.
-        con.execute("UPDATE notebook_entries SET superseded_by = NULL "
+        if chat_id is not None and not _in_chat(con, entry_id, chat_id):
+            # Not this chat's note. Refused rather than ignored: answering
+            # "deleted: false" would read as "it was already gone".
+            #
+            # Same correction as `update_entry`: the chat is there, the note
+            # is not in it.
+            raise NotebookError("notebook_entry_not_found")
+        # Anything that pointed at it stops pointing, so no row is left
+        # naming a target that does not exist - AND stops being retired.
+        #
+        # A note leaves the prompt because a newer note replaced it. Delete
+        # the replacement and that reason is gone, but `retired_at` stayed
+        # set: the older note was out of the prompt for ever, on the strength
+        # of a row that no longer exists, with nothing anywhere in the app
+        # able to bring it back. `update_entry` does not allow the column,
+        # there is no route for it, and the one other place that clears it is
+        # a narrow foreign-key repair with a different purpose entirely.
+        #
+        # Same WHERE, same statement, one transaction: the pointer and the
+        # retirement were always two halves of one fact, and clearing one
+        # without the other is what left the contradiction behind.
+        #
+        # Deliberate consequence, and it is the right one: the older note can
+        # now be retired again by a later replacement. "Retired twice" is not
+        # a second event only while the FIRST reason still stands.
+        con.execute("UPDATE notebook_entries "
+                    "SET superseded_by = NULL, retired_at = NULL, "
+                    "    updated_at = datetime('now') "
                     "WHERE superseded_by = ?", (entry_id,))
         cur = con.execute("DELETE FROM notebook_entries WHERE id = ?", (entry_id,))
     return cur.rowcount > 0
+
+
+#: What a MODEL's suggestion is allowed to retire, written once.
+#:
+#: Three conditions, and each of them was a way for the extractor to delete
+#: something it had no business touching:
+#:
+#:   * `provenance = 'model'` - the retirement UPDATE named only the id, so a
+#:     suggestion could retire a note the USER typed. The one thing the whole
+#:     notebook is for is that what the reader writes down stays.
+#:   * `pinned = 0` - pinning is the reader saying "this one, always". A note
+#:     they pinned was retirable by a sentence a model produced.
+#:   * `status = 'accepted'` - and this one only became reachable when the
+#:     model started SEEING pending proposals (so it would stop re-proposing
+#:     them). Seeing them means being able to name them, and naming one in
+#:     `supersedes` would have retired a suggestion the reader had not looked
+#:     at yet. The narrowing goes in first for exactly that reason.
+_SUPERSEDABLE = (
+    "retired_at IS NULL AND provenance = ? AND pinned = 0 AND status = ?")
+
+
+def _supersedes_target(fact: dict, existing_ids: list[int]) -> int | None:
+    """The id a proposal says it replaces, or None.
+
+    The model answers with an INDEX into the numbered list it was shown, so
+    the bounds check is not a formality: a hallucinated 47 against a list of
+    six would otherwise read whatever `existing_ids[47]` raised.
+    """
+    idx = fact.get("supersedes")
+    if idx is None or not isinstance(idx, int):
+        return None
+    if not (0 <= idx < len(existing_ids)):
+        return None
+    return existing_ids[idx]
+
+
+def retire_superseded(con, chat_id: int, target_id: int,
+                      superseded_by: int) -> int:
+    """Retire a note on a model's word, if the model is allowed to.
+
+    Returns how many rows moved - 0 when the target was the reader's own
+    note, was pinned, was still only a proposal, or was already retired.
+    Refusing is the normal outcome, not an error: the model is guessing about
+    a list it was shown, and the guard is what makes the guess safe to act
+    on.
+    """
+    return con.execute(
+        "UPDATE notebook_entries SET retired_at = datetime('now'), "
+        "superseded_by = ?, updated_at = datetime('now') "
+        f"WHERE id = ? AND chat_id = ? AND {_SUPERSEDABLE}",
+        (superseded_by, target_id, chat_id,
+         PROV_MODEL, STATUS_ACCEPTED)).rowcount
+
+
+def _dedup_key(text: str) -> str:
+    """What makes two notes the same note, for the purpose of not writing the
+    second one.
+
+    The insert loop was unconditional and the table's only uniqueness is
+    `(chat_id, position)`, so the same fact arriving twice - which is what
+    happens when the extractor reads an overlapping window, or re-reads a
+    range after an edit - produced two rows saying the same thing. Both then
+    went into every payload, and the reader deleted one by hand.
+
+    Deliberately blunt: casefold, collapse whitespace, drop trailing
+    punctuation. It catches the case that actually happens (the identical
+    sentence again) and nothing else. Anything cleverer - stemming,
+    similarity, embeddings - starts deciding that two DIFFERENT facts are one
+    fact, and losing a note the reader would have kept is a worse failure
+    than showing a near-duplicate they can delete.
+    """
+    folded = " ".join(str(text or "").split()).casefold()
+    return folded.rstrip(".!?,;: ")
 
 
 def retire_entry(entry_id: int, superseded_by: int | None = None) -> bool:
@@ -392,7 +533,13 @@ def _set_cost(con, where: str, args: tuple = ()) -> int:
     """
     return con.execute(
         f"SELECT COALESCE(SUM(LENGTH(phrasing)), 0) + COUNT(*) * ? "
-        f"FROM boundaries WHERE active = 1 AND {where}",
+        # No `active = 1`. The column is NOT NULL DEFAULT 1 and there is
+        # not one UPDATE against it anywhere in the tree - it has been 1
+        # on every row that ever existed, so the filter has always been a
+        # no-op reading as a feature. A limit is removed by deleting it,
+        # which is permanent on purpose (KARAR 07); a soft-off switch
+        # nothing can set is a promise the panel cannot keep.
+        f"FROM boundaries WHERE {where}",
         (_BOUNDARY_LINE_COST, *args)).fetchone()[0]
 
 
@@ -426,7 +573,7 @@ def _refuse_if_the_set_will_not_fit(con, chat_id: int | None,
         worst_own = con.execute(
             "SELECT COALESCE(MAX(t), 0) FROM ("
             "  SELECT SUM(LENGTH(phrasing)) + COUNT(*) * ? AS t "
-            "  FROM boundaries WHERE active = 1 AND scope = 'chat' "
+            "  FROM boundaries WHERE scope = 'chat' "
             "  GROUP BY chat_id)", (_BOUNDARY_LINE_COST,)).fetchone()[0]
         total = globals_cost + worst_own + mine
     if total > BOUNDARY_SET_MAX_CHARS:
@@ -465,6 +612,15 @@ def create_boundary(label: str, phrasing: str, severity: str, *,
         raise NotebookError("boundary_invalid")
     scope = "chat" if chat_id is not None else "global"
     with get_db() as con:
+        if chat_id is not None and con.execute(
+                "SELECT 1 FROM chats WHERE id = ?",
+                (chat_id,)).fetchone() is None:
+            # The same gate `create_entry` has had since it was written.
+            # `boundaries.chat_id` is a foreign key with enforcement on, so a
+            # chat that is gone made the INSERT raise IntegrityError - which
+            # left the route as an uncaught 500 with no code behind it, for
+            # the ordinary case of a chat being deleted in another window.
+            raise NotebookError("chat_not_found")
         # BEGIN IMMEDIATE for the same reason create_entry takes it: the set is
         # measured and then added to, and two writers landing between those two
         # moments would each read a total that does not include the other's row.
@@ -483,16 +639,63 @@ def create_boundary(label: str, phrasing: str, severity: str, *,
     return _row(row)
 
 
-def delete_boundary(boundary_id: int) -> bool:
+def delete_boundary(boundary_id: int, chat_id: int | None = None) -> bool:
+    """Remove a limit. Permanent, by design (KARAR 07).
+
+    `chat_id` scopes the deletion the same way it scopes the note routes. A
+    GLOBAL limit belongs to no chat and is deletable from anywhere, which is
+    what `scope = 'global'` means; a chat-scoped one may only be deleted from
+    the chat it was written in.
+
+    OMITTING IT DOES NOT LIFT THE SCOPE, and it used to. The check ran only
+    `if chat_id is not None`, so a caller who supplied the WRONG chat was
+    correctly refused and a caller who supplied NONE deleted another chat's
+    safety limit outright - a scope every caller opts out of by not typing
+    it, which is word for word the reason `accept_entry` made its own
+    `chat_id` required. With none given, a chat-scoped limit is refused and
+    a global one is removed; that is what "global" means and it is the only
+    case the optional parameter was ever for.
+    """
     with get_db() as con:
+        if chat_id is None:
+            row = con.execute(
+                "SELECT 1 FROM boundaries WHERE id = ? AND scope = 'global'",
+                (boundary_id,)).fetchone()
+            if row is None:
+                raise NotebookError("boundary_not_found")
+        else:
+            row = con.execute(
+                "SELECT 1 FROM boundaries WHERE id = ? "
+                "AND (scope = 'global' OR chat_id = ?)",
+                (boundary_id, chat_id)).fetchone()
+            if row is None:
+                # `boundary_not_found`, which is what this route answered
+                # before the chat scope was added. Two things reach this
+                # line - a limit belonging to another chat, and a limit
+                # somebody already deleted in another window - and the
+                # SECOND is the common one. It has a sentence of its own
+                # ("That limit is no longer there. It may have been removed
+                # in another window."), and `chat_not_found` stopped it
+                # rendering while telling the reader their chat was gone.
+                raise NotebookError("boundary_not_found")
         cur = con.execute("DELETE FROM boundaries WHERE id = ?", (boundary_id,))
     return cur.rowcount > 0
 
 
 def set_use_global_boundaries(chat_id: int, use: bool) -> None:
+    """Turn the global limits on or off for ONE chat.
+
+    Reads `rowcount`. Without it the UPDATE matched nothing for a chat id
+    that does not exist and the route answered `{"ok": true}` - so a caller
+    could be told a safety setting had been applied to a conversation that
+    was not there.
+    """
     with get_db() as con:
-        con.execute("UPDATE chats SET use_global_boundaries = ? WHERE id = ?",
-                    (1 if use else 0, chat_id))
+        changed = con.execute(
+            "UPDATE chats SET use_global_boundaries = ? WHERE id = ?",
+            (1 if use else 0, chat_id)).rowcount
+    if not changed:
+        raise NotebookError("chat_not_found")
 
 
 # ---------------------------------------------------------------------------
@@ -528,20 +731,29 @@ def delete_for_chats(con, chat_ids) -> None:
 
 
 def forget_proposals_from_messages(con, message_ids) -> None:
-    """Drop UNACCEPTED suggestions that came from messages being deleted.
+    """Delete EVERY note that came from a message being deleted.
 
-    Accepted notes stay. Deleting a message is the user removing a turn, not
-    retracting a fact they approved - and a fact they approved may well have
-    been stated in several places. A suggestion they never looked at is the
-    opposite: its only evidence is going away, so reviewing it later would mean
-    judging a quote that can no longer be checked.
+    It used to drop only the unreviewed suggestions, on the argument that a
+    fact the reader approved is not retracted by removing one turn. That
+    argument is about the FACT. It is not about the QUOTE, and the quote is
+    what the row carries.
+
+    `evidence` is a verbatim span of the message - it has to be, the parser
+    refuses a quote it cannot find in the source text - capped at 240
+    characters. So an accepted note held, word for word, a sentence out of a
+    message the reader had deleted: shown in the panel, matched by the
+    panel's search, and sent over the wire on every read of that chat. The
+    one thing deleting a message is supposed to accomplish is that its words
+    stop existing, and this was the row where they did not.
+
+    KARAR 11 decides it: a deleted message takes its notes with it. The
+    documented exception is the right-arrow regeneration flow, and that flow
+    is not one of the callers here - regenerating sets `active = 0` and
+    deletes no message at all. The three callers measured: deleting a message
+    and everything after it (a person pressing delete), the abort cleanup for
+    a send that never landed, and the edit path, which discards the turns it
+    replaces. All three are real removals.
     """
-    # And the accepted ones let go of their reference. `source_message_id` is
-    # a foreign key with enforcement on, so a row keeping it would abort the
-    # DELETE FROM messages entirely - the same "undeletable" failure the chat
-    # path was built to avoid, arriving through the other door. The note stays;
-    # only its pointer to a turn that no longer exists goes.
-    #
     # Chunked, because this list is unbounded: deleting the first message of a
     # long chat passes one parameter per message and SQLite has a variable
     # limit. Its sibling three lines up in the same handler already chunks the
@@ -550,23 +762,28 @@ def forget_proposals_from_messages(con, message_ids) -> None:
     for chunk in iter_chunks(ids):
         marks = ",".join("?" * len(chunk))
         # FIRST: let go of anything pointing AT the rows about to go.
-        # `superseded_by` is a foreign key with enforcement on, and
-        # `commit_extraction` writes the retirement whether or not the
-        # proposal was accepted - so an accepted note could hold a reference
-        # to an unreviewed proposal, and deleting that proposal aborted the
-        # whole DELETE. The user's message became undeletable, the edit
-        # rolled back, and on the abort path the orphan row survived silently.
+        # `superseded_by` is a foreign key with enforcement on, so a row
+        # keeping a reference to a deleted one aborts the whole DELETE - the
+        # user's message becomes undeletable, the edit rolls back, and on the
+        # abort path the orphan row survives silently.
+        #
+        # WITHOUT the status filter, and that is not a tidy-up: the delete
+        # below now removes accepted rows too, so a note pointing at one of
+        # THOSE would abort exactly the same way. Releasing only the pointers
+        # to proposals while deleting more than proposals is the shape that
+        # brings the "undeletable message" failure back through the door it
+        # was closed at.
         con.execute(
             f"UPDATE notebook_entries SET superseded_by = NULL, "
             f"retired_at = NULL WHERE superseded_by IN ("
             f"  SELECT id FROM notebook_entries "
-            f"  WHERE status = '{STATUS_PROPOSED}' "
-            f"    AND source_message_id IN ({marks}))", chunk)
+            f"  WHERE source_message_id IN ({marks}))", chunk)
+        # Every note from those messages, whatever its status. The old
+        # version kept the accepted ones and then blanked their
+        # `source_message_id`, which left the row - and its verbatim quote -
+        # in the database with nothing left to say where the words came from.
         con.execute(
-            f"DELETE FROM notebook_entries WHERE status = '{STATUS_PROPOSED}' "
-            f"AND source_message_id IN ({marks})", chunk)
-        con.execute(
-            f"UPDATE notebook_entries SET source_message_id = NULL "
+            f"DELETE FROM notebook_entries "
             f"WHERE source_message_id IN ({marks})", chunk)
 
     # And the READING RECORD for anything that covered them.
@@ -697,15 +914,106 @@ class BoundariesDoNotFit(Exception):
     """
 
 
+#: What each `on_violation` value tells the model to DO, in reading language
+#: rather than in the column's vocabulary.
+#:
+#: The column has been collected, validated and stored since the table was
+#: written, and it reached the model in neither direction: not in the prompt,
+#: not from the panel. A person could set "stop the scene" on a hard limit
+#: and the model was never told - the setting existed, was saved, was shown
+#: back to them, and did nothing. KARAR 01 binds it.
+#:
+#: `pause` is the default and deliberately says nothing extra: it is what a
+#: limit means already, and repeating it on every line would spend the
+#: block's budget saying "behave normally".
+_ON_VIOLATION_PROSE = {
+    "rewind": "if it happens, go back and take the scene another way",
+    "fast_forward": "if it happens, skip past it rather than write it",
+    "pause": "",
+    "hard_stop": "if it happens, stop the scene and say so",
+}
+
+#: What a rating ceiling asks for. Also collected, validated, stored and
+#: never sent - and unlike `on_violation` it had no sentence in the security
+#: document either, so nothing anywhere described what it did.
+_RATING_PROSE = {
+    "G": "keep this at a G rating",
+    "PG": "keep this at a PG rating",
+    "PG-13": "keep this at a PG-13 rating",
+    "R": "keep this at an R rating",
+}
+
+
+def _col(row, name: str):
+    """One column, whether the row is a sqlite Row or a plain dict.
+
+    Both shapes reach `_boundary_line` - `list_boundaries` hands back dicts,
+    the cost measurement below builds plain ones - and a sqlite Row raises
+    IndexError rather than returning None for a name it does not carry.
+    """
+    try:
+        return row[name]
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
 def _boundary_line(row) -> str:
+    """One limit, as the model reads it.
+
+    Three parts, and the last two used to be missing entirely: what kind of
+    limit it is, what it is about, and what to DO about it. A setting that is
+    collected, validated, stored and shown back to the person who set it,
+    while never reaching the model, is worse than no setting - it is a
+    promise the app displays and does not keep.
+    """
     mark = {"hard": "never", "veiled": "not on the page", "soft": "prefer not"}
     verb = "seek" if row["polarity"] == "seek" else mark[row["severity"]]
-    return f"- ({verb}) {row['phrasing']}"
+    line = f"- ({verb}) {row['phrasing']}"
+    tail = []
+    action = _ON_VIOLATION_PROSE.get(_col(row, "on_violation") or "", "")
+    if action:
+        tail.append(action)
+    rating = _RATING_PROSE.get(_col(row, "rating_ceiling") or "", "")
+    if rating:
+        tail.append(rating)
+    if tail:
+        line += " - " + "; ".join(tail)
+    return line
+
+
+def _worst_line_cost() -> int:
+    """Everything `_boundary_line` adds around the phrasing, at its worst.
+
+    MEASURED from the function, not typed beside it. The old value was 21 -
+    the longest prefix, "- (not on the page) " - and then the line grew a
+    tail. A hand-written number would have stayed at 21, and the assembled
+    block would have overrun its own budget by the width of that tail on
+    every line, silently, because nothing measures the block against the
+    constant that is supposed to describe it.
+    """
+    from itertools import product
+
+    worst = 0
+    for severity, polarity, action, rating in product(
+            ("hard", "veiled", "soft"), ("avoid", "seek"),
+            tuple(_ON_VIOLATION_PROSE), (None, *_RATING_PROSE)):
+        line = _boundary_line({
+            "severity": severity, "polarity": polarity, "phrasing": "",
+            "on_violation": action, "rating_ceiling": rating,
+        })
+        worst = max(worst, len(line))
+    return worst + 1        # the newline that joins it to the next line
+
+
+#: The real number, from the real function. See `_worst_line_cost`.
+_BOUNDARY_LINE_COST = _worst_line_cost()
 
 
 def build_boundary_block(chat_id: int) -> str:
     """The limits in force here. Never trimmed, never merged, never expired."""
-    rows = [r for r in list_boundaries(chat_id) if r["active"]]
+    # Every stored limit. See list_boundaries: nothing writes `active`, so
+    # filtering on it decided nothing and hid the column's deadness.
+    rows = list(list_boundaries(chat_id))
     if not rows:
         return ""
     tag = _tag()
@@ -769,22 +1077,54 @@ def build_notebook_blocks(chat_id: int, available_chars: int) -> dict:
     # one or that instruction is false for one of them.
     tag = _tag()
 
+    #: Each group's OWN opener. Both groups used to be measured with the
+    #: model header, and the two are not the same length: `_open_notebook` is
+    #: 296 characters, `_open_notebook_model` is 271. The user block was
+    #: measured 25 characters short.
+    #:
+    #: The untagged `_NOTEBOOK_OPEN` constants are deliberately NOT used here.
+    #: Measuring with those under-counted by a hundred characters per block,
+    #: which is the previous version of this same defect; they exist for the
+    #: arithmetic tests and nothing else.
+    openers = {PROV_USER: _open_notebook, PROV_MODEL: _open_notebook_model}
+
+    def _frame(prov: str) -> int:
+        """What a group costs before a single line goes into it.
+
+        `_block` writes `"\n".join([opener, *lines, close])`, which is n + 1
+        newlines for n lines - and the per-line cost below already carries
+        one newline each. So the frame adds exactly ONE, not the two that
+        were here. Combined with the header above, the user block was
+        measured 24 characters short and could stand that far OVER the
+        ceiling: those characters go into `system_chars`, and then every
+        send in that chat fails with `context_too_large` - a message about
+        the context window that names nothing about the notebook, and never
+        suggests the one thing that fixes it.
+        """
+        return len(openers[prov](tag)) + len(_close_notebook(tag)) + 1
+
+    #: Every line measured ONCE.
+    #:
+    #: The old `_size` rescanned `live` and re-measured every surviving line
+    #: on each call - and it was called from INSIDE the eviction loop below.
+    #: n notes, up to n evictions, O(n) each. Nothing caps how many notes a
+    #: chat may hold (`create_entry` checks the text length and the enums and
+    #: nothing else), so the quadratic has no ceiling either.
+    line_cost = {r["id"]: len(_entry_line(r)) + 1 for r in live}
+
     def _size(ids: set[int]) -> int:
-        rows = [r for r in live if r["id"] in ids]
-        if not rows:
-            return 0
-        user = [r for r in rows if r["provenance"] == PROV_USER]
-        model = [r for r in rows if r["provenance"] == PROV_MODEL]
-        total = 0
-        for group in (user, model):
-            if group:
-                # The REAL markers, tag included. Measuring the untagged
-                # constants under-counted by a hundred characters per block
-                # and the assembled text came out over the ceiling.
-                total += (len(_open_notebook_model(tag))
-                          + len(_close_notebook(tag)) + 2)
-                total += sum(len(_entry_line(r)) + 1 for r in group)
-        return total
+        """The whole assembly's length, from the table above.
+
+        Used to seed the running total and to measure the pinned set; the
+        loop keeps the total up to date rather than calling this per step.
+        A row whose provenance is neither group appears in no block, and so
+        costs nothing here - the same as before.
+        """
+        rows = [r for r in live
+                if r["id"] in ids and r["provenance"] in openers]
+        groups = {r["provenance"] for r in rows}
+        return (sum(line_cost[r["id"]] for r in rows)
+                + sum(_frame(prov) for prov in groups))
 
     # Pinned rows are exempt from eviction, not from arithmetic. With enough
     # of them the loop below exits with the notebook still over the ceiling,
@@ -794,10 +1134,37 @@ def build_notebook_blocks(chat_id: int, available_chars: int) -> dict:
     # suggested. The pin promise is "never dropped to make room for another
     # NOTE", not "allowed to break the chat".
     pinned_size = _size({r["id"] for r in live if r["pinned"]})
-    for row in droppable:
-        if _size(keep) <= ceiling:
-            break
+
+    total = _size(keep)
+    #: How many of each group are still in `keep`, so the moment a group
+    #: empties is known without rescanning.
+    remaining = Counter(r["provenance"] for r in live
+                        if r["provenance"] in openers)
+
+    def _drop(row) -> None:
+        """Take one row out of `keep` and out of the running total.
+
+        The group-empties case is the one that is easy to leave out and hard
+        to see: forgetting it does not overflow the ceiling, it evicts MORE
+        than necessary. The block comes out SHORTER, every `<= ceiling`
+        assertion stays green, and the only visible symptom is notes quietly
+        going missing. That is why the test guarding it asserts an EQUALITY
+        on `sent` rather than an inequality on the length.
+        """
+        nonlocal total
         keep.discard(row["id"])
+        prov = row["provenance"]
+        if prov not in openers:
+            return
+        total -= line_cost[row["id"]]
+        remaining[prov] -= 1
+        if remaining[prov] == 0:
+            total -= _frame(prov)
+
+    for row in droppable:
+        if total <= ceiling:
+            break
+        _drop(row)
         excluded.append((row["id"], "over_ceiling"))
 
     if pinned_size > ceiling:
@@ -806,9 +1173,9 @@ def build_notebook_blocks(chat_id: int, available_chars: int) -> dict:
         # the person who just pinned something is the one who can be told why.
         for row in sorted((r for r in live if r["pinned"]),
                           key=lambda r: -r["position"]):
-            if _size(keep) <= ceiling:
+            if total <= ceiling:
                 break
-            keep.discard(row["id"])
+            _drop(row)
             excluded.append((row["id"], "pinned_over_ceiling"))
 
     kept = [r for r in live if r["id"] in keep]
@@ -841,15 +1208,32 @@ def record_exclusions(chat_id: int, excluded) -> None:
     """
     dropped = {eid: reason for eid, reason in excluded}
     with get_db() as con:
-        stale = con.execute(
-            "SELECT COUNT(*) FROM notebook_entries "
+        # What is ALREADY written, not merely how much of it there is.
+        #
+        # The old guard read a COUNT and returned only when there was nothing
+        # stored and nothing to store. That answers "is there anything to do
+        # at all", which is the wrong question while the ceiling is biting:
+        # `dropped` is full every turn and the count is above zero every
+        # turn, so the guard never closed and every single sent message took
+        # `BEGIN IMMEDIATE` and ran two UPDATEs to write down the identical
+        # set it had just written. This function runs on EVERY message, and
+        # holding the writer lock to change nothing stalls every live stream
+        # in the process for as long as another writer holds it.
+        #
+        # The set is deterministic for a given (notes, ceiling) pair, so on a
+        # chat that is sitting still it matches from the second turn on.
+        stored = {r["id"]: r["excluded_reason"] for r in con.execute(
+            "SELECT id, excluded_reason FROM notebook_entries "
             "WHERE chat_id = ? AND excluded_reason IS NOT NULL",
-            (chat_id,)).fetchone()[0]
-        # Nothing to clear and nothing to write is the common case by far -
-        # this runs on EVERY sent message, and taking the writer lock to do
-        # nothing would stall every live stream in the process for as long as
-        # another writer holds it.
-        if not stale and not dropped:
+            (chat_id,)).fetchall()}
+        # NOT a guard at the CALL SITE. The router calls this
+        # unconditionally on purpose - guarded on `excluded` being non-empty,
+        # the clearing half below never ran on a quiet turn, rows kept a
+        # reason from an earlier turn forever, and the panel showed notes as
+        # "not sent" while they were being sent every time. The badge
+        # inverted its own meaning. The comparison belongs here, where both
+        # halves are visible.
+        if stored == dropped:
             return
         con.execute("BEGIN IMMEDIATE")
         con.execute(
@@ -877,15 +1261,108 @@ def record_exclusions(chat_id: int, excluded) -> None:
 # owner's instruction on 22 August 2026; the block stays where it is, because
 # a cap enforced at one call site is not a cap.
 
+def first_unread_message(con, chat_id: int) -> int | None:
+    """The oldest message in this chat that no extraction has ever covered.
+
+    NOT a MAX. The ordinary worker's cursor is `MAX(to_message_id)` and that
+    is right for it - it is a hot path, it runs on every turn, and it only
+    ever needs to know where the front is. But a MAX can only move forward,
+    so anything it stepped over is unreachable by it for good, and there are
+    three ordinary ways to be stepped over: the character budget dropping the
+    oldest lines of a batch, a chat whose first read deliberately jumped to
+    the present, and a range whose extraction failed while a later one
+    succeeded.
+
+    `notebook_extractions` has been a RANGE table since it was written -
+    `from_message_id` and `to_message_id` - so the question "which message
+    has nobody read" is answerable today, with no new column and no schema
+    bump. It just was never asked.
+
+    Answered by walking the covered ranges in order rather than with a NOT
+    EXISTS per message: the ranges are few (one per completed extraction) and
+    the messages are many.
+
+    Returns the id BEFORE the first unread message, which is what the planner
+    wants for `after_id`, or None when everything is covered.
+    """
+    covered = con.execute(
+        "SELECT from_message_id, to_message_id FROM notebook_extractions "
+        "WHERE chat_id = ? AND (status = 'done' "
+        "     OR (status = 'failed' AND error_type = ?)) "
+        "ORDER BY from_message_id",
+        (chat_id, ABANDONED_IN_FLIGHT)).fetchall()
+    rows = con.execute(
+        "SELECT id FROM messages WHERE chat_id = ? AND active = 1 "
+        "ORDER BY id", (chat_id,)).fetchall()
+    if not rows:
+        return None
+
+    spans = []
+    for lo, hi in covered:
+        if lo is None or hi is None:
+            continue
+        if spans and lo <= spans[-1][1] + 1:
+            spans[-1] = (spans[-1][0], max(spans[-1][1], hi))
+        else:
+            spans.append((lo, hi))
+
+    previous = 0
+    for (mid,) in rows:
+        if any(lo <= mid <= hi for lo, hi in spans):
+            previous = mid
+            continue
+        # `previous` is the id just below the first uncovered message, which
+        # is exactly what `_plan_work(after_id=...)` reads as "start here".
+        return previous
+    return None
+
+
+def unread_backlog(con) -> dict:
+    """How much conversation nobody has read, across every chat.
+
+    A COUNT and nothing else. This deliberately does NOT start any work, and
+    the research report this comes from says so in as many words: do not
+    build an automatic catch-up scan that spends money at startup or at
+    unlock. The module's own stated position is the reason - a background job
+    spending somebody's own API credits on a model they never selected is not
+    a convenience - and an automatic sweep of a long backlog is exactly that,
+    at whatever scale the backlog happens to be.
+
+    So the silent loss becomes a visible OFFER instead: the panel can say
+    "3 chats have 512 unread messages" and the reader decides. Nothing here
+    costs a call, and the answer is computed once at unlock rather than on
+    every status poll.
+
+    NOT a MAX. Same reason as `first_unread_message`: a maximum cannot see
+    under itself, and the ranges that were stepped over are exactly what this
+    is counting.
+    """
+    rows = con.execute(
+        "SELECT m.chat_id, COUNT(*) FROM messages m "
+        "WHERE m.active = 1 AND NOT EXISTS ("
+        "  SELECT 1 FROM notebook_extractions e "
+        "  WHERE e.chat_id = m.chat_id "
+        "    AND (e.status = 'done' "
+        "         OR (e.status = 'failed' AND e.error_type = ?)) "
+        "    AND m.id BETWEEN e.from_message_id AND e.to_message_id) "
+        "GROUP BY m.chat_id", (ABANDONED_IN_FLIGHT,)).fetchall()
+    return {"chats": len(rows), "messages": sum(r[1] for r in rows)}
+
+
 def spend_today(con) -> dict:
     """Calls and cost recorded for the current local day."""
     row = con.execute(
-        "SELECT calls, tokens_in, tokens_out, cost FROM notebook_spend "
+        "SELECT calls, tokens_in, tokens_out, cost, cost_unknown "
+        "FROM notebook_spend "
         "WHERE day = date('now', 'localtime')").fetchone()
     if row is None:
-        return {"calls": 0, "tokens_in": 0, "tokens_out": 0, "cost": 0.0}
+        return {"calls": 0, "tokens_in": 0, "tokens_out": 0, "cost": 0.0,
+                "cost_unknown": 0}
     return {"calls": row[0], "tokens_in": row[1],
-            "tokens_out": row[2], "cost": row[3]}
+            "tokens_out": row[2], "cost": row[3],
+            # How many of those calls the provider priced as nothing at all.
+            # Without it the total reads as complete when it is not.
+            "cost_unknown": row[4]}
 
 
 def spend_lifetime(con) -> dict:
@@ -913,13 +1390,27 @@ def spend_lifetime(con) -> dict:
     """
     row = con.execute(
         "SELECT COALESCE(SUM(calls), 0), COALESCE(SUM(tokens_in), 0), "
-        "COALESCE(SUM(tokens_out), 0), COALESCE(SUM(cost), 0) "
+        "COALESCE(SUM(tokens_out), 0), COALESCE(SUM(cost), 0), "
+        "COALESCE(SUM(cost_unknown), 0) "
         "FROM notebook_spend").fetchone()
     return {"calls": row[0], "tokens_in": row[1],
-            "tokens_out": row[2], "cost": row[3]}
+            "tokens_out": row[2], "cost": row[3], "cost_unknown": row[4]}
 
 
-def claim_call(con, cap: int) -> int:
+def spend_day(con) -> str:
+    """The day key a claim and its refund must agree on.
+
+    Read from SQLite rather than from Python so it is the same clock, the
+    same `localtime` interpretation and the same format as every other
+    statement in this file. Both `claim_call` and `release_call` take it as
+    a parameter now: the pair used to derive it independently, hours apart,
+    and a pair that derives its own key is a pair that disagrees at
+    midnight.
+    """
+    return con.execute("SELECT date('now', 'localtime')").fetchone()[0]
+
+
+def claim_call(con, cap: int, day: str | None = None) -> int:
     """Reserve one call against today's ceiling, or raise.
 
     Reserved BEFORE the request, not recorded after it. A counter incremented
@@ -937,32 +1428,143 @@ def claim_call(con, cap: int) -> int:
     # button that used to sit beside this path: a cap of sixty passed
     # ninety-nine billed calls. That button is gone, but the race is not - the
     # worker still claims concurrently, so the one statement stays.
+    # STILL ONE STATEMENT. `day` is a bound parameter, not a second
+    # statement folded in: the caller reads it with `spend_day` and passes
+    # it here and to `release_call`, so both halves of a claim/refund pair
+    # name the same row even when hours separate them.
+    if day is None:
+        day = spend_day(con)
     changed = con.execute(
         "INSERT INTO notebook_spend (day, calls) "
-        "VALUES (date('now', 'localtime'), 1) "
+        "VALUES (?, 1) "
         "ON CONFLICT(day) DO UPDATE SET calls = calls + 1 "
-        "WHERE calls < ?", (cap,)).rowcount
+        "WHERE calls < ?", (day, cap)).rowcount
     if not changed:
         raise NotebookError("notebook_daily_cap_reached")
-    return spend_today(con)["calls"]
+    # THAT day's count, not today's. `spend_today` was a second statement
+    # re-deriving the date, so with an explicit `day` it answered about a
+    # different row than the one just written - and re-opened, in the return
+    # value, the very two-statement midnight window the parameter closes.
+    row = con.execute(
+        "SELECT calls FROM notebook_spend WHERE day = ?", (day,)).fetchone()
+    return row[0] if row else 0
 
 
-def record_usage(con, usage: dict) -> None:
+def release_call(con, day: str | None = None) -> int:
+    """Give today's slot back, for a call that never left.
+
+    The reservation is deliberately one-way and stays that way: it is taken
+    BEFORE the request, because a counter incremented on success cannot bound
+    anything - failed calls are billed too, and a failing model is the one a
+    retry loop calls hardest. That is right for every call that reaches the
+    socket.
+
+    It is wrong for the ones that do not. Two paths abandon the turn after
+    the claim and before a single byte is written: the running-row trace
+    cannot be written, and the prompt fails to build. Nothing was sent,
+    nothing was billed, and the day's budget was one call smaller anyway -
+    sixty a day, so a chat that hits either path repeatedly can spend the
+    whole allowance on requests that never happened.
+
+    A SEPARATE statement, not a branch inside `claim_call`. That INSERT is
+    one statement on purpose: the read-then-write version was a check-then-act
+    race that let a cap of sixty pass ninety-nine billed calls. Nothing is
+    added to it.
+
+    Floored at zero. `calls` is a count of calls made; a negative one is not a
+    smaller number, it is a corrupt row that would hand out free calls
+    tomorrow.
+
+    THE DAY IS THE CALLER'S, and defaulting it was a real overcharge.
+    This used to re-derive `date('now','localtime')` at refund time while
+    `claim_call` had stamped it at claim time. The two are the same key
+    only if no local date change happened in between - and the window is
+    not microseconds: a preamble abandoned by a vault lock is refunded from
+    a done-callback whose task lived as long as the planning did, and this
+    is a desktop app that stays open across midnight, across a timezone
+    move and across a clock correction.
+
+    Measured across a midnight: yesterday's phantom claim is never given
+    back, AND today's counter is decremented for a call today never made -
+    so the ceiling passes one extra billed call per stale claim. Both
+    halves wrong, in opposite directions, from one missing parameter.
+
+    Floored at zero. `calls` is a count of calls made; a negative one is not
+    a smaller number, it is a corrupt row that would hand out free calls
+    tomorrow.
+
+    Returns the number used on THAT day after the release - not today's,
+    which for a cross-midnight refund is a number about a different day.
+    """
+    if day is None:
+        day = spend_day(con)
+    con.execute(
+        "UPDATE notebook_spend SET calls = calls - 1 "
+        "WHERE day = ? AND calls > 0", (day,))
+    row = con.execute(
+        "SELECT calls FROM notebook_spend WHERE day = ?", (day,)).fetchone()
+    return row[0] if row else 0
+
+
+def record_usage(con, usage: dict,
+                 attempt_token: str | None = None,
+                 day: str | None = None) -> None:
     """Add what the call actually cost to today's row.
 
     Separate from claim_call because the claim must survive a failed request:
     if this were the only writer, every failure would be free and the ceiling
     would only ever count successes.
+
+    `day` IS THE CLAIM'S DAY, for the same reason `release_call` takes one.
+    A call claimed at 23:59 and answered at 00:01 used to put its cost on a
+    row whose call count is zero - so the panel read "0 of 60 calls today,
+    0.0004 credits", a charge with no call, and yesterday showed a call with
+    no charge. The reservation and what it cost are two halves of one event
+    and they belong on one row.
     """
+    # ONE PHYSICAL CALL, ONE ROW. notebook_spend is day-keyed and additive,
+    # so it could not tell two settles of the SAME provider reply apart from
+    # two replies - and every path that re-enters commit_extraction with a
+    # reply it has already seen (a stale attempt, a duplicate work key)
+    # added the same tokens again. The provider's own id is the physical
+    # identity of the call; the attempt token this process minted is the
+    # fallback when the provider did not send one.
+    #
+    # With NEITHER, the call is still counted. An unidentifiable call is
+    # still money, and quietly dropping it would understate the total in
+    # exactly the direction nobody would notice.
+    if day is None:
+        day = spend_day(con)
+    call_id = usage.get("request_id") or attempt_token
+    if call_id is not None:
+        already = con.execute(
+            "INSERT OR IGNORE INTO notebook_spend_calls "
+            "(call_id, day, tokens_in, tokens_out, cost) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (str(call_id), day, int(usage.get("tokens_in") or 0),
+             int(usage.get("tokens_out") or 0),
+             usage.get("cost"))).rowcount == 0
+        if already:
+            return
+
+    # NULL is not zero. `cost` here is NOT NULL, so an unpriced call has to
+    # land as 0.0 - and the screen then said the call was free, when what
+    # happened is that nobody knows what it cost. The nullable truth is one
+    # row up in notebook_spend_calls and in notebook_extractions.cost; this
+    # counter is what lets the total say how much of itself is missing.
+    unknown = 1 if usage.get("cost") is None else 0
     con.execute(
-        "INSERT INTO notebook_spend (day, calls, tokens_in, tokens_out, cost) "
-        "VALUES (date('now', 'localtime'), 0, ?, ?, ?) "
+        "INSERT INTO notebook_spend "
+        "(day, calls, tokens_in, tokens_out, cost, cost_unknown) "
+        "VALUES (?, 0, ?, ?, ?, ?) "
         "ON CONFLICT(day) DO UPDATE SET "
-        "  tokens_in  = tokens_in  + excluded.tokens_in, "
-        "  tokens_out = tokens_out + excluded.tokens_out, "
-        "  cost       = cost       + excluded.cost",
-        (int(usage.get("tokens_in") or 0), int(usage.get("tokens_out") or 0),
-         float(usage.get("cost") or 0.0)))
+        "  tokens_in    = tokens_in    + excluded.tokens_in, "
+        "  tokens_out   = tokens_out   + excluded.tokens_out, "
+        "  cost         = cost         + excluded.cost, "
+        "  cost_unknown = cost_unknown + excluded.cost_unknown",
+        (day, int(usage.get("tokens_in") or 0),
+         int(usage.get("tokens_out") or 0),
+         float(usage.get("cost") or 0.0), unknown))
 
 
 # ── One extraction, one transaction ─────────────────────────────────────────
@@ -999,16 +1601,92 @@ SKIP_REASONS: frozenset[str] = frozenset({
     # to read). Told apart by whether `to_message_id` still resolves to a row
     # in `messages` - an edit leaves it there, `clear_chat` does not.
     "range_cleared",
+    # No API key in the vault, so the call CANNOT LEAVE THIS MACHINE.
+    #
+    # The daily quota used to be claimed before anyone asked whether a
+    # request was possible, and `openrouter.complete`'s very first statement
+    # reads the key and raises. So on a vault with no key set - or one whose
+    # key was deleted - twenty slots of a sixty-call budget burned without a
+    # single byte going out, the breaker then stopped the worker, and the
+    # panel said "stopped" with no reason attached. The effective ceiling was
+    # twenty, and the number on the screen said sixty.
+    #
+    # KARAR 23: egress is a call that LEAVES. A call that cannot leave is
+    # neither egress nor spend, so this is a skip with a name rather than a
+    # claim with a failure.
+    "api_key_not_set",
 })
+
+def _is_imported(con, chat_id: int) -> bool:
+    """Whether this chat was opened from an imported character card.
+
+    The same signal the chat INSERT reads, from the same column, so the two
+    cannot disagree: `characters.raw_json` is non-empty only on the import
+    path - the importer stores the whole card, and a hand-written character
+    leaves it at `{}`.
+
+    `.strip()` in Python rather than SQL `TRIM`, and deliberately: the INSERT
+    uses Python's, which strips all Unicode whitespace, while SQL's strips
+    ASCII space only. A card whose body begins with a newline would be
+    "imported" to one of them and not the other.
+    """
+    row = con.execute(
+        "SELECT c.raw_json FROM chats ch JOIN characters c "
+        "ON c.id = ch.character_id WHERE ch.id = ?", (chat_id,)).fetchone()
+    if row is None:
+        return False
+    raw = (row["raw_json"] or "").strip()
+    return bool(raw) and raw not in ("{}", "null")
+
+
+def set_auto_accept_override(chat_id: int, value: bool | None) -> None:
+    """Say what THIS chat does, or hand the decision back to the global one.
+
+    The column had exactly one writer - the chat INSERT - and no route,
+    button or setting could ever change it. So a chat that was wrongly
+    treated as trusted stayed that way for its whole life, and one that was
+    wrongly forced into review could not be released either. `None` clears
+    the override and returns the chat to the global switch, which is what
+    NULL has always meant.
+
+    WITH ONE REFUSAL: a chat opened from an IMPORTED card cannot have its
+    shield taken off. README and SECURITY both promise, inside their locked
+    sections, that such a chat always requires approval regardless of the
+    setting - and this route arrived without the guard, so the promise held
+    everywhere except through the one door built to change it.
+
+    Turning the shield ON is allowed, and so is `None`. `None` returns the
+    chat to the global switch, whose default is ON, so it lowers the shield
+    just as surely as `True` does and is refused for the same reason.
+    """
+    with get_db() as con:
+        if value is not False and _is_imported(con, chat_id):
+            raise NotebookError("imported_chat_always_reviews")
+        changed = con.execute(
+            "UPDATE chats SET notebook_auto_accept_override = ? WHERE id = ?",
+            (None if value is None else (1 if value else 0), chat_id)).rowcount
+    if not changed:
+        raise NotebookError("chat_not_found")
+
 
 def auto_accept_for(con, chat_id: int) -> bool:
     """Whether a proposal from THIS chat may be accepted without review.
 
-    The per-chat override wins over the global switch and is only ever written
-    as 0: a chat opened from an imported card or lorebook forces review, no
-    matter what the general setting says. An import is somebody else's text
-    arriving in bulk, and reviewing it item by item is exactly the effort a
-    salami attack is built to defeat.
+    The per-chat override wins over the global switch. It is written as 0 for
+    a chat opened from an imported card or lorebook - that chat forces
+    review, no matter what the general setting says, because an import is
+    somebody else's text arriving in bulk and reviewing it item by item is
+    exactly the effort a salami attack is built to defeat - and as NULL for
+    every other chat, which means "no opinion, use the global switch".
+
+    The docstring used to say the column "is only ever written as 0", which
+    was wrong in a way that mattered: the same INSERT writes NULL, and NULL
+    is what makes the global switch reachable at all.
+
+    THIS FUNCTION IS THE ANSWER. The status route used to read half of the
+    setting for itself - the global key, and nothing else - so the switch on
+    screen and the decision in the extractor could disagree, and did, for
+    exactly the chats the override exists to protect.
     """
     row = con.execute(
         "SELECT notebook_auto_accept_override FROM chats WHERE id = ?",
@@ -1032,7 +1710,8 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
                       skip_reason: str | None = None,
                       error_type: str | None = None,
                       require_trace: bool = False,
-                      attempt_token: str | None = None) -> dict:
+                      attempt_token: str | None = None,
+                      claim_day: str | None = None) -> dict:
     """Write the whole outcome of one extraction. Returns what was done.
 
     A duplicate work key is NOT an error: it means this exact range, under this
@@ -1063,7 +1742,12 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
     # made the spend counter under-report exactly the calls the user most
     # needs to see.
     if usage:
-        record_usage(con, usage)
+        # THE CLAIM'S DAY, carried the whole way. The reservation and what
+        # it cost are two halves of one event; splitting them across a
+        # midnight put a charge on a day with no call and a call on a day
+        # with no charge, which is the reading `cost_unknown` exists to make
+        # impossible.
+        record_usage(con, usage, attempt_token, day=claim_day)
 
     # This chat has now been looked at by the extractor, and that fact must
     # outlive the row that just proved it. `forget_proposals_from_messages`
@@ -1072,9 +1756,18 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
     # and `_plan_work`'s upgrading-user branch reads that silence as "never
     # read at all" and jumps to the present, abandoning everything before it.
     # A flag that a delete cannot touch is the only durable answer.
-    con.execute(
-        "UPDATE chats SET notebook_extracted_ever = 1 WHERE id = ? "
-        "AND notebook_extracted_ever = 0", (chat_id,))
+    #
+    # ONLY when something was actually read. It used to be unconditional, so
+    # a SKIPPED attempt - the daily cap, an unhealthy proxy, no API key -
+    # set the flag while moving no cursor. The flag then told `_plan_work`
+    # that this chat had been read before, the upgrading-user branch stopped
+    # firing, and the chat was read from its OLDEST message instead of the
+    # present: the exact behaviour that branch exists to avoid, reached by
+    # the one path that never read anything at all.
+    if status != "skipped":
+        con.execute(
+            "UPDATE chats SET notebook_extracted_ever = 1 WHERE id = ? "
+            "AND notebook_extracted_ever = 0", (chat_id,))
 
     # Looked up rather than caught. `except IntegrityError` treated EVERY
     # constraint failure as "already done" - including the foreign key that
@@ -1110,7 +1803,13 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
         # declared vocabulary before it is written, not just when this
         # function invents the reason itself.
         if skip_reason is not None:
-            assert skip_reason in SKIP_REASONS, skip_reason
+            if skip_reason not in SKIP_REASONS:
+                # Same reasoning as `_record_skip` in notebook_worker: an
+                # `assert` is a gate with `python -O` as its off switch. This
+                # is one of THREE writers that share the vocabulary, and a
+                # fix that closed only the worker's would leave these two
+                # open - the gate would read as closed and be half open.
+                raise ValueError(f"undeclared skip reason: {skip_reason}")
         # A caller with no token of its own (every non-worker caller) leaves
         # whatever token is already on the row alone, rather than blanking it.
         new_token = attempt_token if attempt_token is not None else prior[1]
@@ -1153,7 +1852,13 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
         # token stops here rather than reaching the status route as prose
         # nobody wrote.
         if skip_reason is not None:
-            assert skip_reason in SKIP_REASONS, skip_reason
+            if skip_reason not in SKIP_REASONS:
+                # Same reasoning as `_record_skip` in notebook_worker: an
+                # `assert` is a gate with `python -O` as its off switch. This
+                # is one of THREE writers that share the vocabulary, and a
+                # fix that closed only the worker's would leave these two
+                # open - the gate would read as closed and be half open.
+                raise ValueError(f"undeclared skip reason: {skip_reason}")
         con.execute(
             "INSERT INTO notebook_extractions "
             "(work_key, chat_id, from_message_id, to_message_id, status, "
@@ -1175,17 +1880,32 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
     if proposals and con.execute("SELECT 1 FROM messages WHERE id = ?",
                                  (to_id,)).fetchone() is None:
         source_id = None
+    # Everything this chat is already saying, so the same sentence is not
+    # written down twice. Retired rows are excluded on purpose: a note the
+    # reader superseded is not a reason to refuse the fact when it comes back
+    # as current again.
+    seen = {_dedup_key(r[0]) for r in con.execute(
+        "SELECT text FROM notebook_entries "
+        "WHERE chat_id = ? AND retired_at IS NULL", (chat_id,)).fetchall()}
+
     written = 0
     retired = 0
+    duplicates = 0
     for fact in proposals:
+        key = _dedup_key(_flat(fact["text"]))
+        if key in seen:
+            duplicates += 1
+            continue
+        seen.add(key)
         nxt = con.execute(
             "SELECT COALESCE(MAX(position), -1) + 1 FROM notebook_entries "
             "WHERE chat_id = ?", (chat_id,)).fetchone()[0]
         cur = con.execute(
             "INSERT INTO notebook_entries "
             "(chat_id, position, kind, text, evidence, durability, importance,"
-            " pinned, status, provenance, source_message_id, evidence_role) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            " pinned, status, provenance, source_message_id, evidence_role, "
+            " supersedes_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (chat_id, nxt, fact["kind"], _flat(fact["text"]),
              fact.get("evidence"), fact["durability"],
              # Clamped BELOW a user's default of 2. The model rates its own
@@ -1205,7 +1925,16 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
              # shown for what it is rather than held back, because the
              # research says a review queue nobody reads is worse than an
              # honest label somebody can see.
-             fact.get("evidence_role")))
+             fact.get("evidence_role"),
+            # The intent, carried on the row rather than discarded.
+            #
+            # In review mode the `if not accept: continue` below is correct
+            # and stays - retiring on behalf of a suggestion nobody has read
+            # removes a note the reader approved. But the intent was thrown
+            # away with the action, so accepting the proposal an hour later
+            # left the note it replaces in the prompt forever, and both
+            # statements went out together.
+            _supersedes_target(fact, existing_ids)))
         written += 1
 
         # A15b: retirement happens HERE, in this transaction, or the old note
@@ -1218,19 +1947,13 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
         # source message undeletable.
         if not accept:
             continue
-        idx = fact.get("supersedes")
-        if idx is None or not (0 <= idx < len(existing_ids)):
+        target = _supersedes_target(fact, existing_ids)
+        if target is None:
             continue
-        target = existing_ids[idx]
-        changed = con.execute(
-            "UPDATE notebook_entries SET retired_at = datetime('now'), "
-            "superseded_by = ?, updated_at = datetime('now') "
-            "WHERE id = ? AND chat_id = ? AND retired_at IS NULL",
-            (cur.lastrowid, target, chat_id)).rowcount
-        retired += changed
+        retired += retire_superseded(con, chat_id, target, cur.lastrowid)
 
     return {"duplicate": False, "written": written, "retired": retired,
-            "accepted": accept}
+            "accepted": accept, "duplicates": duplicates}
 
 
 ABANDONED_IN_FLIGHT = "abandoned_in_flight"
@@ -1244,13 +1967,28 @@ microseconds against a call that runs for up to two minutes.
 """
 
 
-def settle_orphaned_running(con, chat_id: int) -> int:
+def settle_orphaned_running(con, chat_id: int, keep=()) -> int:
     """Close out any `running` row for this chat. Returns how many.
 
-    Safe because the worker is ONE task draining one chat at a time (`run`
-    awaits `_handle`, and `start` refuses to make a second task), so a
-    `running` row seen at the top of a cycle cannot belong to a call that is
-    still in flight - there is no such call.
+    `keep` is the work keys this process has in flight RIGHT NOW, and it is
+    not optional in production - it is the correction to an argument that
+    stopped being true.
+
+    The argument used to read: "safe because the worker is ONE task draining
+    one chat at a time, so a `running` row seen at the top of a cycle cannot
+    belong to a call that is still in flight - there is no such call."
+    `sweep()` created one. It runs `_handle` from the HTTP request task,
+    concurrently with the loop's own, and `_plan_work` calls this function
+    before it plans anything. So pressing the sweep button while the loop
+    was mid-call marked the loop's live, paid, in-flight row `failed`, and
+    the cursor moved past a range whose answer was still on its way.
+
+    A key in `keep` is therefore left alone: this process is holding it, the
+    money for it is in the air, and the task that owns it will settle it
+    into `done` or `failed` itself. Everything else with a `running` row is
+    a genuine orphan - the app killed with the window, the vault locked
+    mid-request - and closing those out is what the rest of this docstring
+    is about.
 
     It has to be closed out, and the cursor has to move past it, or the chat
     stops dead: the planner reads a fixed window forward from the cursor, so
@@ -1261,10 +1999,33 @@ def settle_orphaned_running(con, chat_id: int) -> int:
     a lost reply as an answer - and counted, so a run that vanished is not the
     same screen as a quiet week.
     """
+    # A BARE STRING IS NOT ONE KEY, and `keep=()` invites one.
+    #
+    # `tuple("abc")` is three one-character keys: the set would protect
+    # nothing AND fail the live row it was handed, with a healthy-looking
+    # rowcount. A `None` inside it is quieter and worse - `NOT IN (NULL)` is
+    # never true, so NOTHING is ever settled, for every chat, and the caller
+    # logs only when `rowcount` is non-zero.
+    if isinstance(keep, str):
+        raise TypeError("keep is a collection of work keys, not one key")
+    keep = tuple(keep)
+    if any(k is None for k in keep):
+        raise ValueError("keep must not contain None; NOT IN (NULL) is never "
+                         "true and would silence this sweep entirely")
+    if not keep:
+        return con.execute(
+            "UPDATE notebook_extractions SET status = 'failed', error_type = ? "
+            "WHERE chat_id = ? AND status = 'running'",
+            (ABANDONED_IN_FLIGHT, chat_id)).rowcount
+    # Never chunked, and it does not need to be: `keep` holds the work keys
+    # ONE process has in flight, and this process runs at most two `_handle`
+    # coroutines at a time - the loop's and the sweep button's.
+    holes = ",".join("?" * len(keep))
     return con.execute(
         "UPDATE notebook_extractions SET status = 'failed', error_type = ? "
-        "WHERE chat_id = ? AND status = 'running'",
-        (ABANDONED_IN_FLIGHT, chat_id)).rowcount
+        f"WHERE chat_id = ? AND status = 'running' "
+        f"AND work_key NOT IN ({holes})",
+        (ABANDONED_IN_FLIGHT, chat_id, *keep)).rowcount
 
 
 def already_done(con, work_key: str) -> bool:
@@ -1303,11 +2064,31 @@ def extraction_stats(con, chat_id: int | None = None) -> dict:
         f"SELECT COUNT(*) FROM notebook_extractions {where} "
         f"{'AND' if where else 'WHERE'} error_type = ?",
         (*args, ABANDONED_IN_FLIGHT)).fetchone()[0]
+    # EVERY failure that cost money, not just the abandoned ones.
+    #
+    # The panel says "Nothing was lost - the messages they could not read
+    # stay unread, not skipped" about `failed - abandoned`, and that sentence
+    # is only true of a call that never happened. A `write_*` failure is the
+    # other kind: by the time it runs the reply has been sent, generated and
+    # BILLED - the code says so in as many words - and the notes it carried
+    # are gone. Counting it under "nothing was lost" charges the reader for a
+    # call and then tells them it cost nothing.
+    #
+    # Matched on the prefix the write path already stamps, which is pinned
+    # by two tests and must not change.
+    paid_and_lost = con.execute(
+        f"SELECT COUNT(*) FROM notebook_extractions {where} "
+        f"{'AND' if where else 'WHERE'} (error_type = ? "
+        "     OR error_type LIKE 'write\\_%' ESCAPE '\\')",
+        (*args, ABANDONED_IN_FLIGHT)).fetchone()[0]
     return {
         "done": by_status.get("done", 0),
         "failed": by_status.get("failed", 0),
         "skipped": by_status.get("skipped", 0),
         "abandoned": abandoned,
+        # A superset of `abandoned`: everything above plus the writes that
+        # failed after the reply had already been paid for.
+        "paid_and_lost": paid_and_lost,
         "skip_reasons": {r[0]: r[1] for r in skips if r[0]},
     }
 
@@ -1340,16 +2121,43 @@ def set_safeword(word: str) -> None:
     set_setting(config.SETTING_SAFEWORD, word)
 
 
-def _fold_tr(text: str) -> str:
-    """Lowercased the Turkish way, so a safeword survives being typed.
+def _fold_tr(text: str) -> tuple[str, ...]:
+    """Every lowercasing this text could reasonably have been meant as.
 
-    `İ` lowercases to `i` in Turkish and to `i` + a combining dot elsewhere;
-    `I` lowercases to `i` elsewhere and to `ı` in Turkish. A safeword the user
-    typed in one case and matched in the other would silently fail exactly
-    once - the one time it mattered.
+    `İ` lowercases to `i` in Turkish and to `i` plus a combining dot
+    elsewhere; `I` lowercases to `i` elsewhere and to `ı` in Turkish. The
+    first version of this picked ONE of those and applied it to everything:
+    every `I` became `ı` before lowercasing, unconditionally. So `EXIT` folded
+    to `exıt`, the stored `exit` folded to `exit`, and the check missed.
+    Measured on `exit`, `quit`, `limit`, `pain` and `kill` - ordinary words,
+    all of them broken, and the suite was green because its one fixture used
+    `kırmızı`, whose three dotless letters cannot expose it.
+
+    So both candidates are produced and either may match. That is not a
+    preference between locales, it follows from the error the control exists
+    to prevent. A MISS is unrecoverable: the message goes to the model, the
+    scene continues, and the one thing the safeword is for did not happen. A
+    false positive is recoverable: the message stops and the user types again.
+    With `.lower()` locale-independent and the user free to type `I` or `İ`,
+    any single fold misses one spelling. The only shape that never misses is
+    to try both.
+
+    Narrowing the match set later is a separate, safe change. Starting narrow
+    and widening later does not give back the safewords missed in between.
+
+    NFC first, because a decomposed `İ` (an `I` carrying a combining dot) and
+    a composed one are the same letter on screen and different bytes here.
     """
-    return (text.replace("I", "ı").replace("İ", "i").lower()
-            .replace("̇", ""))
+    text = unicodedata.normalize("NFC", text)
+    turkish = text.replace("İ", "i").replace("I", "ı").lower()
+    invariant = text.lower()
+    # The combining dot survives `.lower()` on the invariant path, and a
+    # safeword typed decomposed would otherwise carry one the stored form
+    # does not. Kept on both candidates: it was here before NFC was, it costs
+    # nothing, and removing it was not measured.
+    return tuple(dict.fromkeys(
+        candidate.replace("̇", "") for candidate in (turkish, invariant)
+    ))
 
 
 def safeword_in(message: str) -> bool:
@@ -1361,4 +2169,10 @@ def safeword_in(message: str) -> bool:
     word = safeword()
     if not word:
         return False
-    return _fold_tr(word) in _fold_tr(message)
+    # Any candidate spelling of the word inside any candidate spelling of the
+    # message. Still SUBSTRING, deliberately: "red. stop" has to work as well
+    # as "red", and widening the fold does not change that.
+    haystacks = _fold_tr(message)
+    return any(needle in hay
+               for needle in _fold_tr(word)
+               for hay in haystacks)

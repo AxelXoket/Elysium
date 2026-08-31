@@ -146,6 +146,40 @@ def check_verifier(key: bytes, stored: bytes) -> bool:
 
 # ---------------------------------------------------------------- vault files
 
+#: Every file that makes up a vault's IDENTITY, as opposed to its data.
+#:
+#: The names were spelled out in routers/vault.py's reset path and nowhere
+#: else, which is how the launch sweep came to miss them: it knew about
+#: `app.db.rekey.bak-*` and nothing about the salt, the verifier or the
+#: mirror. This module writes them, so this module is where the list lives.
+IDENTITY_NAMES: tuple[str, ...] = (
+    "salt.bin", "verifier.bin", "kdf.json", "vault.recovery",
+)
+
+
+def shelved_identity_paths(vault_dir: "Path") -> list["Path"]:
+    """The superseded identity files a rotation shelved, in a stable order.
+
+    change_passphrase renames the old salt, verifier and mirror to
+    `<name>.bak-<ts>` before swapping the new ones in, and shreds them at the
+    end. Between those two points there are forty-two lines of work, and a
+    process killed in that window leaves the set behind: taken together they
+    are a working recipe for the key the rotation was replacing, sitting in
+    the clear next to a database that copy can still open.
+
+    Only ever safe to remove once the LIVE identity is known good, which is
+    why the sweep that uses this runs after an unlock has already succeeded.
+    Called before that it could shred the only remaining way back.
+    """
+    out: list["Path"] = []
+    for name in IDENTITY_NAMES:
+        try:
+            out += sorted(vault_dir.glob(f"{name}.bak-*"))
+        except OSError:
+            continue
+    return out
+
+
 class KeyVault:
     """Manages the passphrase-derived key's identity files (salt + verifier).
 

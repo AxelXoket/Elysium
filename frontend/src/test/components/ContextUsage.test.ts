@@ -16,10 +16,15 @@ import {
   getContextUsageState,
   formatTokensCompact,
 } from "@/lib/context";
+import {
+  CHARS_PER_TOKEN,
+  IMAGE_TOKEN_ESTIMATE,
+} from "@/lib/context/estimateContextUsage";
 import type { Model } from "@/lib/schemas/models";
 import type { Character } from "@/lib/schemas/characters";
 import type { Persona } from "@/lib/schemas/personas";
 import type { Message } from "@/lib/schemas/chats";
+import type { ContextUsageEstimate } from "@/lib/context/estimateContextUsage";
 
 // ── Fixture builders ─────────────────────────────────────────────
 
@@ -193,10 +198,17 @@ describe("estimateContextUsage", () => {
     //   context_budget_chars = (4000 - 256) * 3 = 11232
     //   available = 11232 - 300 = 10932 -> capacity = 3644
     // fixed = 166 -> remaining = 10766; both messages always fit.
+    // A VISION model, and the modality is stated rather than inherited.
+    // `makeModel` defaults `input_modalities` to ["text"], so this fixture
+    // was quietly text-only - and the backend charges nothing for an
+    // attachment on a model that does not take images. The subject of this
+    // test is the 1100-token charge, so the model has to be one that can
+    // actually receive the picture.
     const ctx4000 = makeModel({
       id: "test/ctx-4000",
       context_length: 4000,
       max_completion_tokens: 100,
+      input_modalities: ["text", "image"],
     });
     const plain = [msg(1, "a".repeat(1000)), msg(2, "b".repeat(1000))];
     // Without attachments: used = ceil((195 + 2000) / 3) = ceil(2195/3) = 732.
@@ -230,15 +242,140 @@ describe("estimateContextUsage", () => {
     expect(withAttachment!.includedMessages).toBe(2);
   });
 
+  it("charges nothing for a past image when the model takes no images", () => {
+    // The SECOND gate. `_entry_chars` charges an attachment only when
+    // `include_images` is true, and `include_images` is
+    // `_model_accepts_images(meta)`. Charging 3300 characters on a text-only
+    // model reserves room for bytes that are never sent, and the history trim
+    // this drives would evict real turns to make it.
+    const textOnly = makeModel({
+      id: "test/text-only",
+      context_length: 4000,
+      max_completion_tokens: 100,
+      input_modalities: ["text"],
+    });
+    const plain = [msg(1, "a".repeat(1000)), msg(2, "b".repeat(1000))];
+    const withImage = [
+      { ...plain[0], attachments: [{ id: 7 }] } as Message,
+      plain[1],
+    ];
+
+    const without = estimateContextUsage({
+      model: textOnly, character: character100, personas: persona50,
+      messages: plain,
+    });
+    const withAttachment = estimateContextUsage({
+      model: textOnly, character: character100, personas: persona50,
+      messages: withImage,
+    });
+
+    expect(withAttachment!.usedTokens - without!.usedTokens).toBe(0);
+  });
+
+  it("still charges the image on a model that takes images", () => {
+    // GROUND CONTROL for the gate above, with the modality stated rather
+    // than absent - the test at the top of this pair leaves it absent, which
+    // the backend reads as "unknown, let the provider decide".
+    const vision = makeModel({
+      id: "test/vision",
+      context_length: 4000,
+      max_completion_tokens: 100,
+      input_modalities: ["text", "image"],
+    });
+    const plain = [msg(1, "a".repeat(1000)), msg(2, "b".repeat(1000))];
+    const withImage = [
+      { ...plain[0], attachments: [{ id: 7 }] } as Message,
+      plain[1],
+    ];
+
+    const without = estimateContextUsage({
+      model: vision, character: character100, personas: persona50,
+      messages: plain,
+    });
+    const withAttachment = estimateContextUsage({
+      model: vision, character: character100, personas: persona50,
+      messages: withImage,
+    });
+
+    expect(withAttachment!.usedTokens - without!.usedTokens).toBe(
+      IMAGE_TOKEN_ESTIMATE);
+  });
+
+  it("still charges the image when the model lists no modalities", () => {
+    // The half of the mirror that is easy to get wrong, and the reason
+    // `acceptsImages` is not `input_modalities.includes("image")`.
+    //
+    // `_model_accepts_images` refuses ONLY when metadata POSITIVELY says the
+    // model has no image input; unknown or empty metadata is allowed through,
+    // because the provider is the final arbiter. Reading it as a plain
+    // membership test makes every model with a cold metadata cache look
+    // text-only, and the gauge then under-reports on exactly the models it
+    // knows least about. Deriving this rule twice, differently, is what once
+    // let the attachment gate accept an image that assembly silently dropped.
+    const unknown = makeModel({
+      id: "test/unknown",
+      context_length: 4000,
+      max_completion_tokens: 100,
+      input_modalities: [],
+    });
+    const plain = [msg(1, "a".repeat(1000)), msg(2, "b".repeat(1000))];
+    const withImage = [
+      { ...plain[0], attachments: [{ id: 7 }] } as Message,
+      plain[1],
+    ];
+
+    const without = estimateContextUsage({
+      model: unknown, character: character100, personas: persona50,
+      messages: plain,
+    });
+    const withAttachment = estimateContextUsage({
+      model: unknown, character: character100, personas: persona50,
+      messages: withImage,
+    });
+
+    expect(withAttachment!.usedTokens - without!.usedTokens).toBe(
+      IMAGE_TOKEN_ESTIMATE);
+  });
+
+  it("charges a message with no attachment the same under either model", () => {
+    // POSITIVE CONTROL: the modality gate touches attachments and nothing
+    // else. Without this, a fix that shrank every message on a text-only
+    // model would pass both tests above.
+    const shared = {
+      context_length: 4000, max_completion_tokens: 100,
+    };
+    const textOnly = makeModel({
+      ...shared, id: "test/text-only", input_modalities: ["text"] });
+    const vision = makeModel({
+      ...shared, id: "test/vision", input_modalities: ["text", "image"] });
+    const plain = [msg(1, "a".repeat(1000)), msg(2, "b".repeat(1000))];
+
+    const a = estimateContextUsage({
+      model: textOnly, character: character100, personas: persona50,
+      messages: plain,
+    });
+    const b = estimateContextUsage({
+      model: vision, character: character100, personas: persona50,
+      messages: plain,
+    });
+
+    expect(a!.usedTokens).toBe(b!.usedTokens);
+  });
+
   it("charges nothing for a picture the model produced", () => {
     // A generated image is display-only: the backend's role gate keeps it out
     // of every later payload and charges 0 budget for it, so charging here
     // would over-report the gauge the moment image output is used. Mirrors
     // completions.py's _entry_chars.
+    //
+    // A VISION model on purpose. With the default text-only fixture the
+    // assistant image would be free for TWO reasons at once, and this test
+    // would go green without the role gate doing anything at all.
     const ctx4000 = makeModel({
       id: "test/ctx-4000",
       context_length: 4000,
       max_completion_tokens: 100,
+      input_modalities: ["text", "image"],
     });
     const plain = [msg(1, "a".repeat(1000)), msg(2, "b".repeat(1000))];
     const baseline = estimateContextUsage({
@@ -646,3 +783,103 @@ describe("G2: the voice-delivery block in the fixed cost", () => {
     expect(withVoice.usedTokens).toBeGreaterThan(0);
   });
 });
+
+describe("predicting the backend's refusal", () => {
+  // completions.py: `min_required = system_chars + user_msg_chars`, and
+  // `if min_required > available: raise HTTPException(400, ...)`. The trim
+  // loop can drop every message and still be over the line - and it exits
+  // declaring the history fitted, so the gauge said "amber" for a request
+  // that could not be sent at all.
+  //
+  // The threshold is built from the estimator's own numbers rather than
+  // hand-copied, so the two cannot drift.
+
+  function estimateWith(notebookChars: number, pendingChars = 0) {
+    const ctx4000 = makeModel({
+      id: "test/ctx-4000",
+      context_length: 4000,
+      max_completion_tokens: 100,
+      input_modalities: ["text", "image"],
+    });
+    return estimateContextUsage({
+      model: ctx4000,
+      character: character100,
+      personas: persona50,
+      messages: [msg(1, "a".repeat(100))],
+      notebookChars,
+      pendingMessageChars: pendingChars,
+    });
+  }
+
+  it("says nothing when the turn fits", () => {
+    // GROUND CONTROL: without it, a field hard-wired to "context_too_large"
+    // passes every assertion below.
+    const fits = estimateWith(0);
+    expect(fits!.willRefuse).toBeNull();
+    expect(fits!.overflowChars).toBe(0);
+    expect(fits!.percent).toBeLessThan(100);
+  });
+
+  it("refuses when the blocks that cannot shrink exceed the budget", () => {
+    // capacityTokens * CHARS_PER_TOKEN is the estimator's own `available`.
+    const base = estimateWith(0)!;
+    const available = base.capacityTokens * CHARS_PER_TOKEN;
+
+    const over = estimateWith(available + 5000);
+
+    expect(over!.willRefuse).toBe("context_too_large");
+    expect(over!.overflowChars).toBeGreaterThan(0);
+  });
+
+  /** The smallest value of `arg` for which the estimate refuses.
+   *
+   * Found by bisection rather than by rebuilding the budget arithmetic in
+   * the test. `willRefuse` is monotone in either input - more characters
+   * never un-refuses - so the flip point is exact, and nothing here has to
+   * retype a formula that could drift away from the one under test.
+   */
+  function flipPoint(f: (n: number) => ContextUsageEstimate | null): number {
+    let lo = 0;
+    let hi = 1_000_000;
+    expect(f(lo)!.willRefuse).toBeNull();
+    expect(f(hi)!.willRefuse).toBe("context_too_large");
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (f(mid)!.willRefuse) hi = mid;
+      else lo = mid + 1;
+    }
+    return lo;
+  }
+
+  it("turns over at exactly one character, not before", () => {
+    // POSITIVE CONTROL at the boundary. Without it the field is decorative:
+    // any threshold at all satisfies the two tests above.
+    const flip = flipPoint((n) => estimateWith(n));
+
+    expect(estimateWith(flip - 1)!.willRefuse).toBeNull();
+    expect(estimateWith(flip - 1)!.overflowChars).toBe(0);
+    expect(estimateWith(flip)!.willRefuse).toBe("context_too_large");
+    expect(estimateWith(flip)!.overflowChars).toBeGreaterThan(0);
+  });
+
+  it("grows the overflow by one for each character past the line", () => {
+    // The half `percent` cannot carry: it is clamped to 100, so "over by
+    // forty" and "over by nine thousand" read identically on the bar.
+    const flip = flipPoint((n) => estimateWith(n));
+
+    expect(estimateWith(flip + 100)!.overflowChars
+           - estimateWith(flip)!.overflowChars).toBe(100);
+  });
+
+  it("counts the outgoing message when the caller supplies it", () => {
+    // The backend's `min_required` includes the message being sent. This
+    // file deliberately leaves it out of `usedTokens`; it belongs in the
+    // refusal threshold, and the default of 0 means a refusal can be missed
+    // but never invented.
+    const flip = flipPoint((n) => estimateWith(0, n));
+
+    expect(estimateWith(0, flip - 1)!.willRefuse).toBeNull();
+    expect(estimateWith(0, flip)!.willRefuse).toBe("context_too_large");
+  });
+});
+

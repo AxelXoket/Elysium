@@ -71,10 +71,25 @@ def _real_data_paths() -> list[Path]:
         Path(config.UPLOADS_DIR),
         Path(config.TTS_DIR),
     ]
+    # The packaged location, and it is the ONLY entry that names the real
+    # vault during a test run - `config` reports the development directory
+    # here, because it only computes the packaged one in a frozen build.
+    #
+    # Which is why an undefined LOCALAPPDATA is not a shrug. Without it this
+    # list stops covering the real vault entirely, every write to it becomes
+    # legal, and the suite goes on passing - a protection that switches
+    # itself off according to the environment, silently, is not one.
     local = os.environ.get("LOCALAPPDATA")
-    if local:
-        guarded.append(Path(local) / "Elysium")
-    return [p for p in guarded]
+    if not local:
+        raise RuntimeError(
+            "fs_guard cannot find LOCALAPPDATA, so it cannot name the real "
+            "vault, so it would let the suite write to it. Refusing to run "
+            "with the guard weakened rather than reporting a pass that was "
+            "never guarded. Set LOCALAPPDATA, or run somewhere this guard "
+            "has been taught about."
+        )
+    guarded.append(Path(local) / "Elysium")
+    return guarded
 
 
 def _temp_root() -> Path | None:
@@ -151,13 +166,38 @@ def _called_from_tests() -> bool:
 
 def install(monkeypatch) -> None:
     """Refuse writes to the machine's own data for the duration of one test."""
-    guarded = [p for p in (_resolve(q) for q in _real_data_paths()) if p]
+    # SNAPSHOT PLUS A RE-READ, and both halves are load-bearing.
+    #
+    # The snapshot is taken HERE, before the test body runs, and that timing
+    # is deliberate: an ordinary test points `config.DB_PATH` at its own
+    # tmp_path, and a list rebuilt afterwards would start guarding the
+    # fixture - every test in the suite refused by its own protection.
+    #
+    # But the snapshot alone was not enough either. A test that reloads
+    # `config` with `sys.frozen` set moves `DATA_DIR` to the PACKAGED
+    # location, and the snapshot describes a directory that is no longer the
+    # one the application would write to. The real vault stayed covered only
+    # by the hardcoded `%LOCALAPPDATA%\Elysium` entry - one environment
+    # variable away from nothing at all.
+    #
+    # So the list is the union: what config said at install, plus whatever it
+    # says NOW that is not inside the temp root. A path under the temp root
+    # is a fixture by construction; anything else is somebody's real data.
+    installed = [p for p in (_resolve(q) for q in _real_data_paths()) if p]
     temp_root = _temp_root()
+
+    def _current() -> list[Path]:
+        live = [p for p in (_resolve(q) for q in _real_data_paths()) if p]
+        if temp_root is None:
+            return live
+        return [p for p in live
+                if p != temp_root and temp_root not in p.parents]
 
     def check(target: object, how: str) -> None:
         where = _resolve(target)
         if where is None:
             return
+        guarded = installed + [p for p in _current() if p not in installed]
         for root in guarded:
             if where == root or root in where.parents:
                 raise _refuse(where, root, how)

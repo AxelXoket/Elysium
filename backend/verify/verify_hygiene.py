@@ -571,8 +571,23 @@ def staged_files(problems: list[str] | None = None) -> Iterable[tuple[str, str]]
 HOOK_SOURCE = os.path.join(HERE, "hooks", "pre-commit")
 HOOK_SOURCE_REL = os.path.relpath(HOOK_SOURCE, REPO_ROOT).replace("\\", "/")
 
+#: The second lane. pre-commit is the cheap one; this is the one that runs the
+#: whole suite and builds the exe. Both are checked here for the same reason:
+#: an uninstalled hook is indistinguishable from an installed one until
+#: something looks, and the slow lane is the one anybody in a hurry is most
+#: tempted to leave off.
+PUSH_HOOK_SOURCE = os.path.join(HERE, "hooks", "pre-push")
+PUSH_HOOK_SOURCE_REL = os.path.relpath(
+    PUSH_HOOK_SOURCE, REPO_ROOT).replace("\\", "/")
 
-def installed_hook_path() -> str:
+#: (versioned source, its repo-relative path, the name git knows it by).
+HOOKS = (
+    (HOOK_SOURCE, HOOK_SOURCE_REL, "pre-commit"),
+    (PUSH_HOOK_SOURCE, PUSH_HOOK_SOURCE_REL, "pre-push"),
+)
+
+
+def installed_hook_path(name: str = "pre-commit") -> str:
     """Where git will ACTUALLY look for the hook.
 
     Not a hardcoded .git/hooks. `core.hooksPath` redirects the whole directory
@@ -582,9 +597,9 @@ def installed_hook_path() -> str:
     the real one is missing. Asking git removes the guess.
     """
     try:
-        out = _git("rev-parse", "--git-path", "hooks/pre-commit").strip()
+        out = _git("rev-parse", "--git-path", f"hooks/{name}").strip()
     except Exception:                                      # pragma: no cover
-        return os.path.join(REPO_ROOT, ".git", "hooks", "pre-commit")
+        return os.path.join(REPO_ROOT, ".git", "hooks", name)
     return out if os.path.isabs(out) else os.path.join(REPO_ROOT, out)
 
 
@@ -623,7 +638,8 @@ def hook_mode_state(rel_source: str = HOOK_SOURCE_REL) -> tuple[bool, str]:
 
 
 def hook_state(source_path: str = HOOK_SOURCE,
-               installed_path: str | None = None) -> tuple[bool, str]:
+               installed_path: str | None = None,
+               label: str = "pre-commit") -> tuple[bool, str]:
     """Is the versioned hook the one git will run? Returns (ok, message).
 
     This check exists because the failure it looks for is otherwise completely
@@ -634,7 +650,7 @@ def hook_state(source_path: str = HOOK_SOURCE,
     copied, and nothing says so.
     """
     if installed_path is None:
-        installed_path = installed_hook_path()
+        installed_path = installed_hook_path(label)
 
     def read(path: str) -> bytes | None:
         try:
@@ -659,14 +675,14 @@ def hook_state(source_path: str = HOOK_SOURCE,
     rel_dest = os.path.relpath(installed_path, REPO_ROOT).replace("\\", "/")
     install = f"cp {rel_source} {rel_dest}"
     if have is None:
-        return False, (f"no pre-commit hook is installed, so nothing checks a "
+        return False, (f"no {label} hook is installed, so nothing checks a "
                        f"commit at the moment it is made.\n"
                        f"        install it with:  {install}")
     if have != want:
-        return False, (f"the installed pre-commit hook differs from the "
+        return False, (f"the installed {label} hook differs from the "
                        f"versioned one.\n"
                        f"        replace it with:  {install}")
-    return True, "pre-commit hook installed and current"
+    return True, f"{label} hook installed and current"
 
 
 @dataclass
@@ -824,18 +840,21 @@ def main(argv: list[str]) -> int:
     # The mode check runs in BOTH modes, unlike the installed-copy check. It is
     # about what the commit is going to publish, and the commit that publishes
     # a 644 hook is exactly the one this should stop.
-    mode_ok, mode_message = hook_mode_state()
-    print(f"\n  [{PASS if mode_ok else FAIL}] hook mode  {mode_message}")
-    ok = ok and mode_ok
+    for _source, rel, label in HOOKS:
+        mode_ok, mode_message = hook_mode_state(rel)
+        print(f"\n  [{PASS if mode_ok else FAIL}] hook mode  "
+              f"{label}: {mode_message}")
+        ok = ok and mode_ok
 
     # Only in working tree mode. In staged mode this script IS what the hook
     # invoked, so asking whether a hook is installed answers itself, and a
     # failure here would block the commit over a condition the commit has
     # already disproved.
     if not staged:
-        hook_ok, message = hook_state()
-        print(f"\n  [{PASS if hook_ok else FAIL}] hook  {message}")
-        ok = ok and hook_ok
+        for source, _rel, label in HOOKS:
+            hook_ok, message = hook_state(source, None, label)
+            print(f"\n  [{PASS if hook_ok else FAIL}] hook  {message}")
+            ok = ok and hook_ok
 
     print()
     if ok:

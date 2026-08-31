@@ -109,6 +109,13 @@ def test_the_spool_ceiling_sits_above_the_body_shield():
     assert config.UPLOAD_SPOOL_LIMIT > config.UPLOAD_BODY_LIMIT
     assert config.UPLOAD_BODY_LIMIT > config.MAX_UPLOAD_BYTES
 
+    # And for the OTHER multipart route, which is the bigger of the two and
+    # was outside this ordering entirely. A voice clip may be three times an
+    # image, so a ceiling that only cleared the image shield sent an ordinary
+    # recording to %TEMP% in the clear - the same band, one route over.
+    assert config.UPLOAD_SPOOL_LIMIT > config.TTS_REF_BODY_LIMIT
+    assert config.TTS_REF_BODY_LIMIT > config.TTS_REF_MAX_BYTES
+
 
 def test_all_three_limits_come_from_one_constant():
     """They were three independently-written numbers; a band opened because
@@ -116,13 +123,28 @@ def test_all_three_limits_come_from_one_constant():
     assert config.UPLOAD_BODY_LIMIT == (
         config.MAX_UPLOAD_BYTES + config.UPLOAD_MULTIPART_OVERHEAD
     )
-    assert config.UPLOAD_SPOOL_LIMIT == config.UPLOAD_BODY_LIMIT + 1
+    assert config.TTS_REF_BODY_LIMIT == (
+        config.TTS_REF_MAX_BYTES + config.UPLOAD_MULTIPART_OVERHEAD
+    )
+    # The maximum, not the image shield plus one. There are two multipart
+    # routes and the ceiling has to clear BOTH, or the route it does not clear
+    # gets the band back.
+    assert config.UPLOAD_SPOOL_LIMIT == 1 + max(
+        config.UPLOAD_BODY_LIMIT, config.TTS_REF_BODY_LIMIT
+    )
 
     import main
     from routers import uploads
     from starlette.formparsers import MultiPartParser
     assert main._UPLOAD_BODY_LIMIT == config.UPLOAD_BODY_LIMIT
     assert MultiPartParser.spool_max_size == config.UPLOAD_SPOOL_LIMIT
+
+    # Every multipart route the shield knows about is derived from a config
+    # constant rather than a number typed into main.py.
+    assert dict(main._BODY_LIMITS) == {
+        "/api/v1/uploads/": config.UPLOAD_BODY_LIMIT,
+        "/api/v1/tts/voices/": config.TTS_REF_BODY_LIMIT,
+    }
 
 
 def test_an_upload_in_the_old_band_never_reaches_a_temp_file(client, monkeypatch):

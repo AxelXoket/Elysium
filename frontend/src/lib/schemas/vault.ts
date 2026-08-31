@@ -75,10 +75,16 @@ export const VaultOkSchema = z.object({
    *  bare ok - leaving a full unencrypted copy of the vault on disk that the
    *  user had no way to learn about (audit KÖK 2). */
   backup: z.string().nullish(),
-  /** /vault/change-passphrase: encrypted sidecar copies the rotation could
-   *  NOT re-key. Each is a complete copy of the vault that is STILL readable
-   *  with the OLD passphrase - the one thing a rotation is supposed to
-   *  revoke. Empty on the normal path. */
+  /** /vault/change-passphrase AND /vault/unlock: encrypted sidecar copies
+   *  the rotation could NOT re-key. Each is a complete copy of the vault that
+   *  is STILL readable with the OLD passphrase - the one thing a rotation is
+   *  supposed to revoke. Empty on the normal path.
+   *
+   *  Unlock returns it because unlock can rotate the key without anyone
+   *  asking: a vault whose key-derivation settings are a generation old is
+   *  upgraded on the one path where the passphrase exists in memory, and that
+   *  changes the key. Until now that route reported `kdf_upgraded` and
+   *  nothing else, so the names went into elysium.log and no further. */
   unrevoked: z.array(z.string()).optional(),
   /** /vault/lock: generated speech that survived the wipe and is still
    *  readable on disk. "Locked" is a promise about what can be read, so a

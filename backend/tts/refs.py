@@ -351,12 +351,95 @@ def _hash_name(voice_id: str) -> str:
     return hashlib.sha256(_index_key() + voice_id.encode("utf-8")).hexdigest()
 
 
+def _handle(voice_id: str) -> str:
+    """A short opaque tag for a voice, for diagnostics and nothing else.
+
+    Every id in this module used to go into the log verbatim. For a voice
+    created before the frontend started minting UUIDs that id is the slug of
+    the label the user typed on screen, so four WARNING/DEBUG lines wrote a
+    name the user reads out of the vault and into elysium.log, where it stays.
+    The delete route next door had already stopped doing that; this file had
+    not.
+
+    The folder hash is what a diagnosis actually needs: it is the name on
+    disk, so a support question ("which voice?") is answerable by looking at
+    the directory, and the tag alone gives the label back to nobody - that is
+    the whole point of _hash_name, keyed by a per-install secret.
+
+    Twelve hex characters, because a log line is read by a person and the
+    number of voices on one install is small. It never raises: a log call is
+    not allowed to be the thing that breaks a delete.
+    """
+    try:
+        return _hash_name(voice_id)[:12]
+    except Exception:                                     # noqa: BLE001
+        return "unresolved"
+
+
 _migrate_lock = threading.Lock()
 #: Which refs roots have already been checked for legacy folders THIS
 #: PROCESS. Keyed by the resolved root path rather than a single bool so
 #: tests that repoint `config.TTS_REFS_DIR` per-case do not see a migration
 #: that ran once for an earlier root silently skip a later, different one.
 _migrated_roots: set[str] = set()
+
+
+#: How old a staged upload has to be before a sweep may remove it.
+#:
+#: save_upload writes the clip to `.incoming-<hash><suffix>` in the refs root
+#: and then replaces it into the voice folder. Every cleanup path for that
+#: file lives INSIDE the same call, so a crash or a power cut between the
+#: write and the replace leaves the user's whole recording sitting in the
+#: root, and nothing in this tree ever looked for it: the pattern appears in
+#: exactly one production line, the one that writes it.
+#:
+#: The gate is an age rather than an owner tag. The alternative was to bury
+#: the process and thread id in the name and only remove foreign owners, the
+#: way _index_key does for its temporary file. That is more precise and worse
+#: here: a pid is reused, so "foreign" is a guess about a number the system
+#: hands out again, and getting it wrong deletes a live upload. An hour is
+#: several orders of magnitude longer than a save_upload call and several
+#: orders shorter than the gap to the next launch, so no live upload is ever
+#: inside it and no crashed one ever survives past the next touch.
+_STAGING_MAX_AGE_S: float = 3600.0
+
+#: The prefix save_upload stages under. One place, so the sweep and the writer
+#: cannot drift apart.
+_STAGING_PREFIX = ".incoming-"
+
+
+def discard_stale_staging() -> int:
+    """Remove staged clips a previous run left behind. Returns how many.
+
+    Files only, never directories. Measured: `secure_delete.discard` already
+    refuses a directory (it cannot open it, and says so), so the `is_file`
+    test below changes no behaviour today and a mutation removing it stays
+    green. It is kept as the near check rather than the far one: the rule
+    this function has to hold is "never take a voice folder", and reading it
+    here is worth more than trusting a refusal three modules away.
+    """
+    root = refs_dir()
+    if not root.is_dir():
+        return 0
+    cutoff = time.time() - _STAGING_MAX_AGE_S
+    removed = 0
+    for child in root.iterdir():
+        if not child.name.startswith(_STAGING_PREFIX):
+            continue
+        try:
+            if not child.is_file() or child.stat().st_mtime > cutoff:
+                continue
+        except OSError:
+            continue
+        try:
+            if secure_delete.discard(child):
+                removed += 1
+        except OSError:
+            # A sweep that raises turns a leftover file into a broken
+            # listing. The file staying is the smaller failure, and the next
+            # touch tries again.
+            logger.warning("Could not discard a stale staged clip.")
+    return removed
 
 
 def _ensure_migrated() -> None:
@@ -367,6 +450,7 @@ def _ensure_migrated() -> None:
         if root in _migrated_roots:
             return
         migrate_legacy_voice_dirs()
+        discard_stale_staging()
         _migrated_roots.add(root)
 
 
@@ -557,7 +641,8 @@ def list_voices() -> list[ReferenceVoice]:
             out.append(describe(voice_id))
         except RefError:
             # A folder the user is still filling in should not break the list.
-            logger.debug("tts: skipping unusable voice folder for %s", voice_id)
+            handle = _handle(voice_id)
+            logger.debug("tts: skipping unusable voice folder %s", handle)
     return out
 
 
@@ -624,7 +709,7 @@ def save_upload(voice_id: str, filename: str, data: bytes, *,
     # (a power cut, not just an exception this function already catches)
     # would otherwise leave a label sitting in a filename at the one place
     # this whole change exists to keep clean.
-    staged = refs_dir() / (".incoming-" + _hash_name(voice_id) + suffix)
+    staged = refs_dir() / (_STAGING_PREFIX + _hash_name(voice_id) + suffix)
     staged.parent.mkdir(parents=True, exist_ok=True)
     staged.write_bytes(data)
     try:
@@ -724,7 +809,9 @@ def delete(voice_id: str) -> bool:
     if not folder.is_dir():
         return True
     if secure_delete.is_redirected(folder):
-        logger.warning("voice %s is a redirected name - not deleted", voice_id)
+        handle = _handle(voice_id)
+        logger.warning("voice %s is a redirected name - not deleted",
+                       handle)
         return False
     # rglob + a per-FILE redirect check is not a guard: a file reached through
     # a junction has an ordinary path of its own, so the check passes and the
@@ -732,12 +819,14 @@ def delete(voice_id: str) -> bool:
     # ancestor, which is what shred_tree does.
     _, stuck, pruned = secure_delete.shred_tree(folder)
     if stuck:
+        handle = _handle(voice_id)
         logger.warning("voice %s: %d file(s) could not be removed",
-                       voice_id, len(stuck))
+                       handle, len(stuck))
     if pruned:
         # rmtree would walk straight into what was just refused.
-        logger.warning("voice %s contains a redirected folder - left in place",
-                       voice_id)
+        handle = _handle(voice_id)
+        logger.warning("voice %s contains a redirected folder - left in "
+                       "place", handle)
         return False
     shutil.rmtree(folder, ignore_errors=True)
     return not folder.exists()

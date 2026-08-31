@@ -148,11 +148,40 @@ class TestWhatStaysReachable:
         self, client, armed: str
     ) -> None:
         # <img src> cannot carry a custom header. Sec-Fetch-Site is set by the
-        # browser and cannot be forged from the page, so requiring it still
-        # refuses a program with curl.
+        # browser and cannot be forged from the page, so a hostile PAGE is
+        # still refused. A local program is not, and the case below says so
+        # out loud rather than leaving this comment to imply otherwise.
         response = client.get("/api/v1/uploads/images/999999",
                               headers={"sec-fetch-site": "same-origin"})
         assert response.status_code != 403
+
+    def test_a_program_that_sets_the_header_by_hand_is_not_refused(
+        self, client, armed: str
+    ) -> None:
+        """The size of the exemption, measured rather than described.
+
+        README.md and SECURITY.md both said this gate "refuses a program with
+        curl", and main.py's own comment said the same. It does not:
+        `curl -H "Sec-Fetch-Site: same-origin"` is one flag, and nothing on
+        the server can tell that request from a browser's. The documents now
+        say what this test measures, and this test is what stops them drifting
+        back.
+        """
+        # No browser anywhere in this call: the header is typed in, exactly as
+        # a command-line tool would type it.
+        response = client.get("/api/v1/uploads/images/999999",
+                              headers={"sec-fetch-site": "same-origin"})
+        assert response.status_code != 403, (
+            "the same-origin exemption stopped accepting a hand-set header; "
+            "if that is deliberate, the two documents have to change with it"
+        )
+
+        # GROUND CONTROL, and the half that IS still true: the same request
+        # with a cross-site signal, which a browser would send from another
+        # origin, is refused.
+        cross = client.get("/api/v1/uploads/images/999999",
+                           headers={"sec-fetch-site": "cross-site"})
+        assert cross.status_code == 403
 
     def test_the_same_image_route_is_refused_without_that_signal(
         self, client, armed: str

@@ -11,6 +11,17 @@ import pytest
 from test_notice_channel import voice  # noqa: F401
 
 from tts import preflight, readiness, registry
+
+#: The folder name both roots use, in ONE place.
+#:
+#: It used to be a person's own voice label, typed out as a literal nine
+#: times. Two of those literals are the whole point of the test below: the
+#: SAME name under two different roots has to hash to two different uids.
+#: Written as separate literals, renaming one of them turns that test green
+#: for the wrong reason - different names produce different uids no matter
+#: what _uid_for does. One constant makes that mistake impossible to make by
+#: hand.
+MODEL_FOLDER = "aurora"
 from tts.errors import TTS_GPU_UNAVAILABLE, TTS_INSUFFICIENT_VRAM
 from tts.base import DetectedModel
 from tts.vram import GpuInfo
@@ -87,16 +98,27 @@ def _issues_for(monkeypatch, fit) -> set[str]:
 # ---------------------------------------------------------------------------
 
 def test_two_roots_with_the_same_folder_name_no_longer_collide(tmp_path):
-    """Verified in the audit: two `velvet` folders under different roots hashed
+    """Verified in the audit: two `aurora` folders under different roots hashed
     to ONE uid. _resolve returned whichever came first (loading the wrong
     model), evaluate_all overwrote one verdict with the other, the two shared
     their saved settings, and React rendered a duplicate key."""
-    a, b = tmp_path / "a", tmp_path / "b"
-    (a / "velvet").mkdir(parents=True)
-    (b / "velvet").mkdir(parents=True)
+    roots = (tmp_path / "a", tmp_path / "b")
+    folders = [root / MODEL_FOLDER for root in roots]
 
-    uid_a = registry._uid_for(a, a / "velvet")
-    uid_b = registry._uid_for(b, b / "velvet")
+    # The PREMISE, asserted rather than assumed. Without this line the test
+    # has a silent way to pass for the wrong reason: two folders with
+    # DIFFERENT names hash to different uids no matter what _uid_for does, so
+    # renaming one of them turns the assertion at the bottom green while
+    # measuring nothing. That is not hypothetical - the name here used to be
+    # a person's own label written out as nine separate literals, and taking
+    # it out one literal at a time is exactly how the collision test would
+    # have been lost.
+    assert len({f.name for f in folders}) == 1
+
+    for folder in folders:
+        folder.mkdir(parents=True)
+    uid_a, uid_b = (registry._uid_for(root, folder)
+                    for root, folder in zip(roots, folders))
     assert uid_a != uid_b
 
 
@@ -104,9 +126,9 @@ def test_the_same_folder_still_keeps_one_uid(tmp_path):
     """The property the scheme exists for: identity is WHERE it sits, and that
     must not wobble between two reads of the same place."""
     root = tmp_path / "models"
-    (root / "velvet").mkdir(parents=True)
-    assert registry._uid_for(root, root / "velvet") == registry._uid_for(
-        root, root / "velvet",
+    (root / MODEL_FOLDER).mkdir(parents=True)
+    assert registry._uid_for(root, root / MODEL_FOLDER) == registry._uid_for(
+        root, root / MODEL_FOLDER,
     )
 
 
@@ -115,7 +137,7 @@ def test_case_still_does_not_split_one_folder_in_two():
     not become two models. Asserted on the digest rather than through the
     filesystem: on a case-SENSITIVE runner the two paths really are different
     folders, and the test would be asserting the platform, not the code."""
-    assert registry._digest("R", "Velvet") == registry._digest("R", "velvet")
+    assert registry._digest("R", MODEL_FOLDER) == registry._digest("R", MODEL_FOLDER)
     assert registry._digest("Root", "v") == registry._digest("root", "v")
 
 

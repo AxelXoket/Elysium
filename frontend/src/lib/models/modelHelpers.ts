@@ -157,6 +157,36 @@ export function hasOutputModality(
  *  - model only accepts text and/or image input
  *  - model has empty input modalities
  */
+/**
+ * Whether a payload for this model may carry image parts.
+ *
+ * The mirror of `_model_accepts_images` in backend/routers/completions.py,
+ * and it deliberately does NOT read like `hasInputModality(model, "image")`.
+ * The backend refuses only when cached metadata POSITIVELY says the model has
+ * no image input; unknown or empty metadata is allowed through, because the
+ * provider is the final arbiter. Deriving that rule twice, differently, is
+ * what once let the attachment gate accept an image that assembly then
+ * silently dropped - no error, no event, no log, and the user billed for a
+ * reply about an image the model never received.
+ *
+ * So: absent or empty modalities mean YES here, exactly as they do there.
+ *
+ * AND EVERY IMAGE GATE USES IT. This function existed for a while with the
+ * three gates a person actually touches - the attach button, the paste and
+ * drop path, and payload assembly - still on `hasInputModality`, which is
+ * the second derivation this comment warns about. They disagreed on exactly
+ * the shape OpenRouter sends when a model's architecture block omits the
+ * field: the composer said "does not support image input" and refused an
+ * attachment, while the estimator charged for the images already in the
+ * chat and the backend would have sent every one of them.
+ */
+export function acceptsImages(
+  model: Pick<Model, "input_modalities"> | null | undefined,
+): boolean {
+  const mods = model?.input_modalities ?? [];
+  return !(model != null && mods.length > 0 && !mods.includes("image"));
+}
+
 export function shouldShowTextOnlyNote(
   model: Pick<Model, "input_modalities"> | null | undefined,
 ): boolean {

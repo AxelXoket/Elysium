@@ -57,7 +57,11 @@ class TestWhatItCost:
     def test_nothing_spent_reads_as_zero_not_as_missing(self, db) -> None:
         with get_db() as con:
             assert notebook.spend_today(con) == {
-                "calls": 0, "tokens_in": 0, "tokens_out": 0, "cost": 0.0}
+                "calls": 0, "tokens_in": 0, "tokens_out": 0, "cost": 0.0,
+                # How many of the day's calls the provider priced as nothing
+                # at all. `cost` is NOT NULL, so an unpriced call had to be
+                # stored as 0 and the panel rendered it as free.
+                "cost_unknown": 0}
 
     def test_usage_accumulates_across_calls(self, db) -> None:
         with get_db() as con:
@@ -109,7 +113,8 @@ class TestTheLifetimeTotal:
     def test_a_fresh_vault_reads_as_zero_not_as_missing(self, db) -> None:
         with get_db() as con:
             assert notebook.spend_lifetime(con) == {
-                "calls": 0, "tokens_in": 0, "tokens_out": 0, "cost": 0.0}
+                "calls": 0, "tokens_in": 0, "tokens_out": 0, "cost": 0.0,
+                "cost_unknown": 0}
 
     def test_it_sums_every_day_not_only_today(self, db) -> None:
         """The positive control: today's count and the lifetime total must
@@ -150,7 +155,14 @@ class TestTheLifetimeTotal:
                 "calls INTEGER NOT NULL DEFAULT 0, "
                 "tokens_in INTEGER NOT NULL DEFAULT 0, "
                 "tokens_out INTEGER NOT NULL DEFAULT 0, "
-                "cost REAL NOT NULL DEFAULT 0)")
+                "cost REAL NOT NULL DEFAULT 0, "
+                # Present, because what this test models is the NULLABLE
+                # `day` a legacy vault carries - not a table from before
+                # cost_unknown existed. A real upgraded vault gets that
+                # column from _migrate_notebook's guarded ALTER; only `day`
+                # is left on its old shape, and only because dropping it
+                # would destroy somebody's spend history.
+                "cost_unknown INTEGER NOT NULL DEFAULT 0)")
             con.execute(
                 "INSERT INTO notebook_spend (day, calls, tokens_in, "
                 "tokens_out, cost) VALUES (NULL, 3, 30, 3, 0.003)")

@@ -270,7 +270,101 @@ def _migrate(con: sqlite3.Connection) -> None:
 #: stamped higher; the bump at the bottom of _migrate_notebook records success.
 #: History: 0/1 pre-v1.1 · 2 messages.updated_at · 3 notebook + boundaries ·
 #: 4 notebook_extractions.attempt_token + chats.notebook_extracted_ever.
-_SCHEMA_VERSION = 4
+#: 5 notebook_entries.supersedes_id, notebook_spend.cost_unknown, and the
+#:   notebook_spend_calls ledger.
+#:
+#: Bumped LATE, and the omission mattered. Those THREE landed under 4, so
+#: the downgrade guard below - whose whole argument is that an older build
+#: 'will happily write rows that the newer schema's constraints would have
+#: refused, and nothing notices' - was disarmed for exactly them. A v1.1.6
+#: exe reopening this database would drop every supersedes intent on the
+#: floor, write unpriced calls as a real zero, and leave the per-call
+#: ledger blind to calls it had already been charged for.
+#:
+#: Three, not four, and the correction is worth writing down because the
+#: first version of this comment made the mistake it was written to fix.
+#: `chats.notebook_auto_accept_override` was named here as a fourth; it
+#: landed in the SAME commit as `_SCHEMA_VERSION = 3` and was stamped
+#: correctly from birth. The auto-accept backfill flag is a row in
+#: `settings` - not in sqlite_master, so no version stamp was ever going
+#: to cover it.
+#:
+#: And the hole is older than 4. Six objects landed while the constant sat
+#: at 3 - messages.truncated, notebook_entries.evidence_role,
+#: notebook_extractions.started_at and three indexes - so version 3 names
+#: two different shapes on shipped builds, which is why the fingerprint
+#: gate records one hash per version going FORWARD and cannot reconstruct
+#: what came before. Version 4, measured from its bump to HEAD, was
+#: accurate throughout.
+_SCHEMA_VERSION = 5
+
+
+#: Marks the one-time backfill below as done.
+_AUTO_ACCEPT_BACKFILL_KEY = "notebook_auto_accept_backfilled"
+
+
+def _migrate_notebook_backfill(con: sqlite3.Connection) -> None:
+    """Give the shield to chats that predate the column. ONCE.
+
+    `notebook_auto_accept_override` only ever gets a value at chat creation,
+    and the migration that added it did not backfill - its sibling eleven
+    lines away does, which is what made the omission visible. So every chat
+    opened before that migration carries NULL, including the ones from
+    imported cards, and those fell through to a global switch that defaults
+    to ON: somebody else's text accepted without review, on the machines that
+    had been using the app the longest.
+
+    ONCE, and that is not an optimisation. A reader can now hand a chat back
+    to the global switch by clearing its override - which writes NULL, the
+    same NULL this looks for. Run on every launch, this would undo that
+    choice at the next start, quietly, and there would be no way to make it
+    stick. The flag is what makes the reader's answer final.
+
+    The signal is the one the chat INSERT uses: a character whose raw card
+    was stored came from an import.
+    """
+    # Read by INDEX, not by name. `get_setting_con` reads `row["value"]`,
+    # which needs a row factory - and the migration connection does not have
+    # one, so borrowing that helper here raised a TypeError inside init_db
+    # and took the whole unlock down with it.
+    # GUARDED, because this runs from `_migrate` and `_migrate` runs against
+    # databases that are not finished yet: the phase-2 migration tests build
+    # a tables-of-that-era file and migrate it forward, and `settings` is not
+    # in it. A migration step that raises on a shape it was not written for
+    # takes the whole migration - and with it the unlock - down.
+    try:
+        done = con.execute("SELECT value FROM settings WHERE key = ?",
+                           (_AUTO_ACCEPT_BACKFILL_KEY,)).fetchone()
+    except Exception:                                         # noqa: BLE001
+        # `Exception`, not `sqlite3.OperationalError`: this module's `sqlite3`
+        # IS `sqlcipher3.dbapi2`, and a caller can hand in a connection from
+        # the STDLIB module instead - the phase-2 migration tests do exactly
+        # that. Two different classes with the same name, and catching one of
+        # them lets the other take the whole migration down.
+        return
+    if done is not None and done[0] == "1":
+        return
+    try:
+        _run_auto_accept_backfill(con)
+    except Exception:                                         # noqa: BLE001
+        # Same reason as above: a database without `characters.raw_json`, or
+        # without `chats`, is one this step has nothing to say about - and
+        # the class it raises depends on which sqlite module built it.
+        return
+
+
+def _run_auto_accept_backfill(con: sqlite3.Connection) -> None:
+    con.execute(
+        "UPDATE chats SET notebook_auto_accept_override = 0 "
+        "WHERE notebook_auto_accept_override IS NULL "
+        "AND character_id IN ("
+        "  SELECT id FROM characters "
+        "  WHERE raw_json IS NOT NULL "
+        "    AND TRIM(raw_json) NOT IN ('', '{}', 'null'))")
+    con.execute(
+        "INSERT INTO settings (key, value) VALUES (?, '1') "
+        "ON CONFLICT(key) DO UPDATE SET value = '1'",
+        (_AUTO_ACCEPT_BACKFILL_KEY,))
 
 
 def _migrate_notebook(con: sqlite3.Connection) -> None:
@@ -443,6 +537,61 @@ CREATE TABLE IF NOT EXISTS notebook_spend (
         con.execute(
             "ALTER TABLE notebook_extractions ADD COLUMN attempt_token TEXT")
 
+    if "supersedes_id" not in entry_cols:
+        # The intent, kept until somebody acts on it.
+        #
+        # A model proposal can say "this replaces note 4". In AUTOMATIC mode
+        # that is applied in the same transaction. In REVIEW mode it was
+        # thrown away at the `if not accept: continue` above - the row was
+        # written, the reader accepted it later, and the note it replaced
+        # stayed in the prompt forever, so both statements went out together
+        # and one of them was known to be stale.
+        #
+        # `superseded_by` is the OTHER direction and cannot carry this: it
+        # says "I was replaced BY that", is written on the old row, and only
+        # exists once the replacement has actually happened. This says "I
+        # intend to replace that", lives on the new row, and is consumed by
+        # the accept route.
+        con.execute(
+            "ALTER TABLE notebook_entries ADD COLUMN supersedes_id INTEGER")
+
+    spend_cols = {r[1] for r in
+                  con.execute("PRAGMA table_info(notebook_spend)").fetchall()}
+    if "cost_unknown" not in spend_cols:
+        # How many of the day's calls the provider priced as NOTHING AT ALL.
+        #
+        # `cost` here is NOT NULL, so an unpriced call was stored as 0.0 and
+        # rendered as $0.00000 - a screen that says a call was free when what
+        # actually happened is that nobody knows what it cost. The nullable
+        # truth lives in notebook_extractions.cost, one row per call; this is
+        # the counter that lets the total say how much of itself is missing.
+        con.execute(
+            "ALTER TABLE notebook_spend ADD COLUMN "
+            "cost_unknown INTEGER NOT NULL DEFAULT 0")
+
+    # ONE PHYSICAL CALL, ONE ROW IN THE MONEY LEDGER.
+    #
+    # notebook_spend is day-keyed and additive, so it had no way to tell two
+    # settles of the SAME provider call apart from two calls. Every retry
+    # path that re-enters commit_extraction with the same reply - a stale
+    # attempt, a duplicate work key, a reconnect - added its tokens again,
+    # and the ledger drifted upward with no way to notice.
+    #
+    # Keyed on the id the PROVIDER issued, falling back to the attempt token
+    # this process minted. With neither, the call is counted (an unidentified
+    # call is still money) and the ledger is honest about not being able to
+    # deduplicate it.
+    con.execute("""
+CREATE TABLE IF NOT EXISTS notebook_spend_calls (
+          call_id     TEXT    PRIMARY KEY NOT NULL,
+          day         TEXT    NOT NULL,
+          tokens_in   INTEGER NOT NULL DEFAULT 0,
+          tokens_out  INTEGER NOT NULL DEFAULT 0,
+          cost        REAL,
+          created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+
     chat_cols = {r[1] for r in con.execute("PRAGMA table_info(chats)").fetchall()}
     if "notebook_extracted_ever" not in chat_cols:
         # Outlives the rows that would otherwise be the only evidence of it.
@@ -477,6 +626,12 @@ CREATE TABLE IF NOT EXISTS notebook_spend (
         con.execute(
             "ALTER TABLE chats ADD COLUMN notebook_auto_accept_override INTEGER"
         )
+    # OUTSIDE the `if`. A vault that already ran the ALTER but never got a
+    # backfill is exactly the state this exists for, and it is the common
+    # one - the column has been shipping for a while. Idempotent by its own
+    # flag rather than by the column's absence.
+    _migrate_notebook_backfill(con)
+
 
     # Orphan sweep BEFORE the indexes. An older build restored from
     # app.db.premigrate.bak can carry rows whose chat is gone, and foreign keys
@@ -672,6 +827,22 @@ def rekey_file(path: str, new_key: bytes, current_key: bytes) -> None:
     rotation that left them under the old key did not actually revoke anything.
     Raises on a bad key or an unreadable file - the caller decides how loud
     that is.
+
+    AND raises when the rekey silently did not happen. `PRAGMA rekey` can
+    no-op under a concurrent write lock without saying anything, which is
+    written down two functions below and enforced for the main database in
+    crypto.KeyVault.change_passphrase - but was never applied here. A silent
+    no-op on a SIDECAR is the worse of the two: these files are complete
+    copies of the vault, so the passphrase change reports success while a full
+    copy of everything is still open to the old passphrase.
+
+    The check has to be a FRESH connection, which is why it is check_key and
+    not a read-back on `con`. After a no-op this connection's cipher context
+    is still the one current_key set up, so `SELECT count(*) FROM
+    sqlite_master` succeeds on both branches and carries no information at
+    all. (That is also why the query above it says "fail fast on bad key" -
+    it runs BEFORE the rekey and answers a different question.) Only a new
+    sqlite3.connect actually reads the file's own header back.
     """
     con = sqlite3.connect(path)
     try:
@@ -680,6 +851,8 @@ def rekey_file(path: str, new_key: bytes, current_key: bytes) -> None:
         _key_pragma(con, new_key, rekey=True)
     finally:
         con.close()
+    if not check_key(new_key, path):
+        raise RuntimeError("rekey_did_not_take")
 
 
 def rekey_db(new_key: bytes, current_key: bytes | None = None) -> None:
@@ -976,12 +1149,24 @@ ROTATION_BACKUP_GLOB = ".rekey.bak-*"
 
 
 def rotation_backup_paths() -> list[Path]:
-    """Every full copy a rotation left behind, in a stable order."""
+    """Every full COPY a rotation left behind, in a stable order.
+
+    Sidecars are not copies, and the same filter as orphaned_enc_tmp_paths
+    for the same reason: `app.db.rekey.bak-123-wal` matches the glob and is a
+    journal, not a database. It cannot open under any key, so it failed
+    check_key - and both readers treat a rotation backup that will not open
+    as "a complete copy of the vault under the PREVIOUS passphrase". So a
+    journal file produced a permanent alarm in /vault/status naming a leak
+    that did not exist, and jammed the one path that removes a genuinely
+    stranded copy, because that path refuses to act while any match is
+    unreadable.
+    """
     src = Path(DB_PATH)
     try:
-        return sorted(src.parent.glob(src.name + ROTATION_BACKUP_GLOB))
+        found = sorted(src.parent.glob(src.name + ROTATION_BACKUP_GLOB))
     except OSError:
         return []
+    return [p for p in found if not p.name.endswith(_SIDECAR_SUFFIXES)]
 
 
 def plaintext_backups() -> list[Path]:

@@ -60,6 +60,8 @@
 | POST | /notebook/safeword | Set or clear it. **The only limit in this app enforced in code**: matched before the provider is called, and when it matches nothing is sent and nothing is stored (`400 safeword_triggered` from every completion route) | Since 1.1.5 (notebook) |
 | GET | /notebook/worker | What the background extractor has done: counters (`stats.done`/`failed`/`skipped`/`abandoned`, plus `stats.skip_reasons` naming why each skip happened, keyed by reason string), today's spend, lifetime spend (`spend_lifetime`, same shape as `spend`, summed over every day - never gates anything, `spend` alone governs the daily cap), and the circuit-breaker state. `abandoned` counts calls whose row was still `error_type: abandoned_in_flight`: the process died or the vault locked with the call already on the wire, so the money is gone but the answer never arrived; the row is closed out as `failed` and counted here rather than left to re-send and re-bill the same range forever. `plan_invalidated` and `range_cleared` are the two `skip_reasons` keys for a reply that arrives after the work it answered was invalidated. They are NOT edit versus clear, which is what this row and the panel both used to claim. `commit_extraction` asks exactly one question when its `running` row has gone: does `to_message_id` still name a row in `messages`? It still does after an edit that landed on the range end (the message survives, only its wording changed), and that case alone is `plan_invalidated`. It does not after a deleted message (a delete takes every message after it as well), a cleared chat, an aborted send being cleaned up, or an edit whose swept tail was where the range ended: all four are `range_cleared`, measured against the real routes. This row said "a regenerated reply" until 2026-08-20 and that entry was wrong - regenerating deletes nothing (`_append_variant` deactivates the old variant in place), so it reaches neither key, the extraction is written normally, and a note can be taken from a reply the user discarded. The aborted-send cleanup, which IS a real fourth route, was missing from the same list. Both discard the proposals and both still record the cost, so a skip under either name is a paid call. Deleting the CHAT reaches neither key: the chat row is gone, the foreign key on the insert fires, and the worker counts that under `worker.unhandled` as `write_IntegrityError` rather than as a skip. A refusal nobody can see is the same screen as a notebook that found nothing | FAZ 5 (notebook) |
 | POST | /notebook/worker/reset | Lift a tripped or stopped circuit breaker by hand. Without it, recovering from a provider outage means restarting the whole application | FAZ 5 (notebook) |
+| POST | /notebook/sweep/{chat_id} | Read the part of this chat nobody has read. The extractor's cursor is a maximum and only moves forward, and the first read of a chat that already had a long history starts at the PRESENT on purpose - a notebook describing a conversation four hundred messages ago is worse than an empty one - so everything under that point was unreachable by any route. This is the way back: ONE unit of work per press, through the worker's own door, claimed against the same daily call cap and recorded in the same table as an ordinary turn. Answers `{started: false, reason}` rather than an error for the two ordinary refusals: `nothing_unread` (everything here has been covered) and `already_running` (a sweep is in flight; pressing three times is still one request). Nothing on this path runs by itself - `worker.backlog` on `GET /notebook/worker` reports what is unread and the reader decides, because a background job spending somebody's own credits on a backlog they never asked anyone to read is not a convenience | FAZ 3 (notebook) |
+| POST | /notebook/{chat_id}/auto-accept | Decide whether THIS chat keeps model-written notes without asking, or hand the decision back to the global switch with `enabled: null`. The column behind it had exactly one writer for most of its life - the chat INSERT, which sets it to 0 for a chat opened from an imported card - so until now a chat that was wrongly trusted stayed trusted for its whole life. It matters most for the case the import signal cannot see: somebody who pastes a downloaded card's fields into the form by hand leaves no record that the text came from outside, and no signal in the application can know that. `GET /notebook/auto-accept?chat_id=` reports the same decision back as `effective`, with `overridden` saying whether the chat or the global switch decided it | FAZ 3 (notebook) |
 | GET | /notebook/auto-accept | Whether proposals are accepted without review. **Unset is ON** - the default, not "off" | FAZ 5 (notebook) |
 | POST | /notebook/auto-accept | Turn review on or off. A chat opened from an imported card overrides this to OFF for itself, whatever the global says | FAZ 5 (notebook) |
 | POST | /notebook/entries/{id}/accept | Promote one proposal. Changes `status` and nothing else - `provenance` stays `model` forever | FAZ 5 (notebook) |
@@ -753,8 +755,7 @@ most 128 characters) - `notebook_model_id_invalid` / `_too_long`.
      "raw": "the model's reply, verbatim" | null,
      "proposals": [ { "text", "evidence", "kind", "durability",
                       "importance", "supersedes" } ],
-     "dropped": 3,
-     "dropped_by_reason": { "ungrounded": 2, "too_long": 1 },
+     "dropped": { "ungrounded": 2, "too_long": 1 },
      "failure": "truncated" | null,
      "usage": { "tokens_in", "tokens_out", "cost",
                 "request_id", "finish_reason" } }
@@ -765,14 +766,26 @@ or unusable reply is a failure; `[]` with `failure: null` is the model
 legitimately finding nothing, which for a quiet scene is correct. Collapsing
 the two is the single most expensive wound this design inherits.
 
-`dropped_by_reason` exists because one integer cannot tell "a quote was
-invented" - the defence working - from "a Turkish quote failed a byte
-comparison" - the defence eating a true fact.
+`dropped` (the wire name; earlier drafts of this document called it
+`dropped_by_reason`, which exists nowhere in the code) exists because one
+integer cannot tell "a quote was invented" - the defence working - from "a
+Turkish quote failed a byte comparison" - the defence eating a true fact.
+
+`ungrounded` is the one key that does NOT keep that promise, and it is worth
+knowing which way it fails. It counts three refusals: a quote that appears
+nowhere, a quote assembled from the end of one message and the start of the
+next, and a quote sitting in a stretch of the transcript that names no
+speaker. The first is the defence working. The other two are structural -
+they say the span is not a quotation of any one thing anybody said - and a
+pile of them reads exactly like fabrication on this screen.
 
 Every note carries **`evidence_role`** on `GET /notebook/{chat_id}`: `"user"`,
 `"assistant"`, or `null` for a note somebody typed themselves. It records
 whose sentence the note's quote was lifted from, read off the `role:` prefix
-of the transcript line the quote was found in.
+of the message the quote was found in. A note the extractor writes always
+carries one of the two roles: a quote whose speaker cannot be read is refused
+rather than stored with a blank. `null` therefore means a note somebody typed
+themselves - or one written before that refusal landed.
 
 It is the one signal no verifier can supply. The grounding check asks whether
 a note is supported by its quote; nothing can ask whether the QUOTE was

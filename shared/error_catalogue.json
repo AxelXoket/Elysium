@@ -426,6 +426,13 @@
       ]
     },
     {
+      "code": "imported_chat_always_reviews",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
       "code": "notebook_entry_not_found",
       "statuses": [
         404
@@ -963,7 +970,9 @@
     },
     {
       "code": "tts_reference_invalid",
-      "statuses": [],
+      "statuses": [
+        400
+      ],
       "channels": [
         "http",
         "voice_sse"

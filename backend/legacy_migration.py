@@ -472,9 +472,26 @@ def discard_premigrate_backup() -> None:
         logger.warning("uploads-migration: premigrate backup delete failed.")
 
 
+def premigrate_backup_paths() -> list[Path]:
+    """Every full-vault pre-migration copy on disk, canonical name first.
+
+    The canonical name was the only one anybody asked about, and it is not
+    the only one that gets written. When a pass cannot OPEN the snapshot it
+    does not delete it - it renames it to `<name>.unreadable-<ts>` and moves
+    on (see the write path above). Every failed pass leaves another one, each
+    a complete copy of the vault, and `exists()` on the canonical name
+    reported False for all of them: the reset route already swept the whole
+    family, while status could not see any of it.
+    """
+    base = premigrate_backup_path()
+    found = [base] if base.exists() else []
+    found += sorted(base.parent.glob(base.name + ".unreadable-*"))
+    return found
+
+
 def premigrate_backup_present() -> bool:
     """True while a stale pre-migration snapshot of the whole vault sits on
-    disk.
+    disk, under ANY of the names one can have.
 
     ensure_premigrate_backup() writes it before the first uploads-migration
     pass that could delete a row, and it is NOT gated on the `pending` flag
@@ -485,7 +502,7 @@ def premigrate_backup_present() -> bool:
     vault, and until now no route reported it and no route removed it - the
     only trace was a log line from the one unlock that wrote it.
     """
-    return premigrate_backup_path().exists()
+    return bool(premigrate_backup_paths())
 
 
 def discard_premigrate_backup_now(key: bytes) -> tuple[bool, str]:

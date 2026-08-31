@@ -900,6 +900,68 @@ class TestTheCopyARotationLeavesWhenItIsKilled:
         assert client.get("/api/v1/vault/status").json()[
             "rotation_backups"] == [leftover.name]
 
+    def test_a_journal_beside_a_rotation_backup_is_not_a_rotation_backup(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `-wal` is not a copy of anything.
+
+        The glob that finds rotation backups is `app.db.rekey.bak-*`, and
+        `app.db.rekey.bak-123-wal` matches it. A journal opens under no key,
+        so it fails check_key, and both readers of that answer treat an
+        unreadable rotation backup as "a full copy of the vault, readable
+        with the passphrase you just revoked". So a journal file produced a
+        permanent alarm in /vault/status about a leak that did not exist -
+        and jammed the sweep, which refuses to act while any match is
+        unreadable. The sibling function has carried this filter since it was
+        written.
+
+        Measured on the function rather than through the route, because a
+        route cannot hold the fixture still: check_key opens the backup with
+        sqlite, and sqlite removes a stale journal belonging to a database it
+        opened. The file the test is about is gone before the status request
+        is answered.
+        """
+        import database
+
+        monkeypatch.setattr(database, "DB_PATH", str(tmp_path / "app.db"))
+        (tmp_path / "app.db").write_bytes(b"the live database")
+        copy = tmp_path / "app.db.rekey.bak-1700000000"
+        copy.write_bytes(b"a complete copy of the vault")
+        for suffix in database._SIDECAR_SUFFIXES:
+            (tmp_path / (copy.name + suffix)).write_bytes(b"not a database")
+
+        found = database.rotation_backup_paths()
+
+        # Ground control: the real copy IS still found. A filter that ate
+        # everything would satisfy the second assertion and lose the feature.
+        assert found == [copy]
+        assert not [p for p in found
+                    if p.name.endswith(database._SIDECAR_SUFFIXES)]
+
+    def test_a_journal_is_not_reported_as_unrevoked_by_a_rotation(
+        self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The same filter on the other reader.
+
+        `_rekey_sidecars` globs `app.db*.bak*`, which catches the same
+        journal, tries to re-key it, fails - and puts a write-ahead log on
+        the list of complete vault copies that are still open to the old
+        passphrase.
+        """
+        import database
+        import vault_state
+        from routers import vault as vault_router
+
+        vault, db_path = _vault_with_db(tmp_path, monkeypatch)
+        journal = db_path.with_name(db_path.name + ".rekey.bak-1700000000-wal")
+        journal.write_bytes(b"not a database, a write-ahead log")
+        vault_state.clear_key()
+
+        left = vault_router._rekey_sidecars(
+            db_path, db_path.with_name("nothing"), b"old" * 11, b"new" * 11)
+
+        assert journal.name not in left
+
     def test_the_sweep_does_not_touch_the_live_database(
         self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

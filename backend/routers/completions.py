@@ -36,7 +36,11 @@ import json
 import logging
 import threading
 
+import uuid
+
 import anyio.to_thread
+
+import audio_sweep
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -844,6 +848,33 @@ async def _prepare_completion(
     else:
         effective_tokens = model_ctx or _DEFAULT_CONTEXT_LEN
 
+    # ── Validate and filter gen_params ─────────────────────────────────────
+    #
+    # BEFORE the arithmetic below, which is the whole of this half. The check
+    # used to sit eighty lines further down, so an out-of-range `max_tokens`
+    # was multiplied into a character budget first: `-5000` gives
+    # `max_tokens_chars = -15000`, the comparison two lines on is then false,
+    # `available` GROWS by fifteen thousand characters, the notebook ceiling
+    # inflates with it, and exclusion reasons computed against a ceiling that
+    # never existed were written to the vault. Then the request was refused.
+    # The turn never happened and it left a trace anyway.
+    #
+    # The bounds are `openrouter`'s (`max_tokens: (int, 1, 131072)`) and are
+    # read from there rather than repeated here. Pydantic `Field(ge=, le=)` on
+    # the request model would also have caught it, and is NOT used: this app
+    # returns its own error CODE rather than FastAPI's validation array, which
+    # the model's own comment a few hundred lines up explains, and a `Field`
+    # constraint would have changed `invalid_gen_params` into a shape three
+    # frontend tests, the error catalogue and the frontend contract all
+    # describe. Moving the existing check is the same guarantee with no
+    # contract change at all.
+    try:
+        filtered_gen_params = validate_and_filter_gen_params(
+            generation_params.model_dump(exclude_none=True)
+        )
+    except ValueError:
+        raise HTTPException(422, "invalid_gen_params")
+
     req_max_tokens = generation_params.max_tokens
     max_tokens_val = req_max_tokens if req_max_tokens else meta_max_tokens
     safety = min(CONTEXT_SAFETY_MARGIN, effective_tokens // 8)
@@ -889,15 +920,6 @@ async def _prepare_completion(
     notebook = await anyio.to_thread.run_sync(
         lambda: notebook_store.build_notebook_blocks(
             chat_id, context_budget_chars - max_tokens_chars))
-    # Unconditional. Guarded on `excluded` being non-empty, the CLEARING half
-    # never ran on a turn where nothing was excluded - so once the pressure
-    # stopped, rows kept a reason from an earlier turn forever and the panel
-    # showed them as "not sent" while they were being sent every single time.
-    # The badge inverted its own meaning, which is worse than not having it.
-    await anyio.to_thread.run_sync(
-        lambda: notebook_store.record_exclusions(
-            chat_id, notebook["excluded"]))
-
     messages = _assemble_messages(
         system_block,
         persona_block,
@@ -919,6 +941,22 @@ async def _prepare_completion(
         trimmed_out=trimmed_out,
     )
 
+    # AFTER the assembly, because the assembly can still refuse the turn -
+    # `boundaries_do_not_fit` and `context_too_large` both raise out of it.
+    # Written before, the reasons for a turn that never happened were left in
+    # the vault, and the panel showed notes as "not sent this turn" for a turn
+    # nobody had.
+    #
+    # Still UNCONDITIONAL. Guarded on `excluded` being non-empty, the CLEARING
+    # half never ran on a turn where nothing was excluded - so once the
+    # pressure stopped, rows kept a reason from an earlier turn forever and the
+    # panel showed them as "not sent" while they were being sent every single
+    # time. The badge inverted its own meaning, which is worse than not having
+    # it. Moving the call must not become adding a guard to it.
+    await anyio.to_thread.run_sync(
+        lambda: notebook_store.record_exclusions(
+            chat_id, notebook["excluded"]))
+
     # Both numbers, together, and the second one is the older debt. History has
     # always been trimmed oldest-first with nothing recording it; shipping a
     # count for the notebook alone would teach that dropped context gets
@@ -928,14 +966,6 @@ async def _prepare_completion(
         "notebook_total": notebook["total"],
         "history_trimmed": trimmed_out[0] if trimmed_out else 0,
     }
-
-    # ── Validate and filter gen_params ─────────────────────────────────────
-    try:
-        filtered_gen_params = validate_and_filter_gen_params(
-            generation_params.model_dump(exclude_none=True)
-        )
-    except ValueError:
-        raise HTTPException(422, "invalid_gen_params")
 
     if meta and meta.get("supported_parameters"):
         supported = set(meta["supported_parameters"])
@@ -1384,6 +1414,11 @@ def _delete_message_row(
         logger.warning(
             "Cleanup delete failed: chat_id=%d message_id=%d", chat_id, message_id,
         )
+    else:
+        # After the commit, and only if it committed. An abandoned turn had
+        # already written its row and, if the reply was spoken, its audio;
+        # this path removed the row and left the recording.
+        audio_sweep.forget_spoken_audio([message_id])
 
 
 class StaleExchangeError(Exception):
@@ -1781,6 +1816,12 @@ async def _stream_exchange(
     _build_lock = threading.Lock()
     _build_state = {"abandoned": False}
 
+    # One token per stream, and it goes into the name of every wav this
+    # reply produces. Two concurrent streams must not share a pattern: the
+    # old `speak-0-` was shared by all of them, so a bulk rename onto one
+    # message id would have taken the other stream's audio with it.
+    stream_token = uuid.uuid4().hex[:12]
+
     def _open_speaker():
         hook = stream_hook.open_speaker(
             bool(getattr(body, "speak", False)),
@@ -1802,7 +1843,8 @@ async def _stream_exchange(
                      or tts_runtime.a_voice_model_is_selected()),
             narrative=getattr(body, "speak_narrative", "same"),
             make_synth=lambda: tts_runtime.make_stream_synth(
-                rate=getattr(body, "speak_rate", None)),
+                rate=getattr(body, "speak_rate", None),
+                stream_token=stream_token),
             # The FUNCTION, not the table: reading it is a vault call, and a
             # stream that only arms a dormant speaker (most of them) must not
             # pay for one up front. The hook resolves it when it speaks.
@@ -2018,10 +2060,30 @@ async def _stream_exchange(
             raise
         finalizing = False
         persisted = True
+        spoken_id = done.get("assistant_message", {}).get("id")
         logger.info(
             "Streaming %s success: chat_id=%d asst_msg_id=%s",
-            label, chat_id, done.get("assistant_message", {}).get("id"),
+            label, chat_id, spoken_id,
         )
+        # The row exists now, so the audio this stream made can finally carry
+        # its id. Until this landed, a live reply's wav was called
+        # `speak-0-...` and forget_message_audio - the whole machine for
+        # destroying the spoken form of a deleted message - globs
+        # `speak-<mid>-*` and never matched it. Deleting the message removed
+        # the row and left the recording of it in the clear.
+        #
+        # Off the loop: it is a handful of renames, and a rename on Windows
+        # can block on a file that is still playing.
+        if isinstance(spoken_id, int) and spoken_id > 0:
+            try:
+                from tts.host import get_host
+                await anyio.to_thread.run_sync(
+                    get_host().adopt_stream_audio, stream_token, spoken_id)
+            except Exception:                            # noqa: BLE001
+                # Never fail a delivered reply over bookkeeping. The files
+                # are still swept by age, by the lock and at launch.
+                logger.warning("tts: could not adopt streamed audio onto its "
+                               "message", exc_info=True)
         # The notify already happened INSIDE finalize()'s own worker thread,
         # right after its write committed (see `_notify_notebook_from_thread`)
         # - not here, because a bare Task.cancel() can keep that write running
@@ -2659,10 +2721,12 @@ def _finalize_edit(
             (chat_id, message_id),
         ).fetchall()]
         delete_for_messages(con, swept)  # rows + orphan blobs, same txn (E6)
-        # The sixth. Editing a message discards everything after it, which is
-        # the same shape as deleting a turn: accepted notes stay, unaccepted
-        # suggestions from the discarded turns go, and every survivor lets go
-        # of its reference so the delete can proceed.
+        spoken_swept = list(swept)
+        # The sixth. Editing a message discards everything after it, which
+        # is the same shape as deleting a turn: every note taken from those
+        # messages goes, accepted or not, because `evidence` holds the
+        # message's own words verbatim and the point of replacing the wording
+        # is that the old wording stops existing.
         # The edited message ITSELF goes in the list, not only what came
         # after it. Its text is about to be rewritten, and the reading record
         # covering it must roll back or the new wording is never extracted
@@ -2705,6 +2769,10 @@ def _finalize_edit(
         ).fetchone()
 
     user_atts = load_for_messages([message_id]).get(message_id, [])
+    # After the `with`, so the swap has committed. An edit sweeps every
+    # message after the one it replaces, and this path removed those rows and
+    # left their recordings in the audio cache.
+    audio_sweep.forget_spoken_audio(spoken_swept)
     return {
         "user_message": _msg_to_dict(user_row, user_atts),
         "assistant_message": _msg_to_dict(asst_row, generated_rows),

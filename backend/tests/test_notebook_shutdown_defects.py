@@ -177,12 +177,32 @@ class TestDefect1APaidReplySurvivesQuiesce:
         notebook_worker.start()
         try:
             notebook_worker.worker.offer(chat_id)
-            for _ in range(50):
+            # WAITS FOR THE RUN, and says so if it never comes.
+            #
+            # This loop used to break on the `done` row alone and then assert
+            # that nothing was settling - and it passed for the wrong reason:
+            # with no API key seeded in the `db` fixture the worker never
+            # reached the provider at all, so `done` never appeared, the loop
+            # ran its half second out, and "nothing is settling" was true
+            # because nothing had ever started. The positive control was
+            # measuring an idle worker.
+            #
+            # Now the fixture seeds the key, the run really happens, and the
+            # wait is for the settle TASK rather than for the row it writes
+            # (the row lands inside that task, so the row can exist while the
+            # task is still finishing). The `else` is the vacuity guard: if
+            # the run never completes, that is a failure, not a pass.
+            for _ in range(200):
+                if (notebook_worker.worker.settling is None
+                        or notebook_worker.worker.settling.done()):
+                    with get_db() as con:
+                        if notebook.extraction_stats(con, chat_id)["done"]:
+                            break
                 await asyncio.sleep(0.01)
-                with get_db() as con:
-                    if notebook.extraction_stats(con, chat_id)["done"]:
-                        break
-            assert notebook_worker.worker.settling is None, (
+            else:
+                raise AssertionError("the run never finished")
+            assert (notebook_worker.worker.settling is None
+                    or notebook_worker.worker.settling.done()), (
                 "ground: the run finished, nothing should still be settling")
 
             started = time.monotonic()
@@ -466,8 +486,15 @@ class TestDefect3RolledBackCursorIsNotReadAsFresh:
             "a chat with no extraction history at all did not jump to the "
             "present")
 
-    def test_the_flag_is_set_by_any_extraction_and_survives_a_rollback(
+    def test_the_flag_is_set_by_a_REAL_extraction_and_survives_a_rollback(
             self, db) -> None:
+        """NARROWED. It used to say "by any extraction", and that promise was
+        wrong in the one direction that mattered: a SKIPPED attempt set the
+        flag too, having read nothing and moved no cursor - which then told
+        the planner this chat had been read before and sent it back to its
+        oldest message. What this test measures, and always measured, is a
+        real extraction. The skipped case is in test_notebook_sweep.py.
+        """
         chat_id = _seed(4)
         with get_db() as con:
             flag = con.execute(

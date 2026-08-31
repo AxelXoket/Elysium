@@ -6,6 +6,8 @@ import {
 
 import { keys } from "./keys";
 import {
+  setChatAutoAccept,
+  sweepChat,
   listNotebook,
   createNote,
   patchNote,
@@ -83,15 +85,15 @@ export const useCreateNote = () =>
 
 export const usePatchNote = () =>
   useNotebookMutation(
-    (id: number, payload: Parameters<typeof patchNote>[1]) =>
-      patchNote(id, payload),
+    (id: number, chatId: number, payload: Parameters<typeof patchNote>[2]) =>
+      patchNote(id, chatId, payload),
   );
 
 export const useDeleteNote = () =>
-  useNotebookMutation((id: number) => deleteNote(id));
+  useNotebookMutation((id: number, chatId: number) => deleteNote(id, chatId));
 
 export const useAcceptNote = () =>
-  useNotebookMutation((id: number) => acceptNote(id));
+  useNotebookMutation((id: number, chatId: number) => acceptNote(id, chatId));
 
 export const useReorderNotes = () =>
   useNotebookMutation((chatId: number, ids: number[]) =>
@@ -104,7 +106,8 @@ export const useCreateBoundary = () =>
   );
 
 export const useDeleteBoundary = () =>
-  useNotebookMutation((id: number) => deleteBoundary(id));
+  useNotebookMutation((id: number, chatId?: number | null) =>
+    deleteBoundary(id, chatId));
 
 export const useSetUseGlobalBoundaries = () =>
   useNotebookMutation((chatId: number, use: boolean) =>
@@ -172,10 +175,40 @@ export function useResetWorker() {
   });
 }
 
-export function useAutoAccept() {
+export function useSweepChat() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: [number]) => sweepChat(...args),
+    onSuccess: () => {
+      // The whole namespace, the same as every other notebook mutation: a
+      // sweep writes notes AND moves the worker's counters, and naming one
+      // key is how the other goes stale.
+      void qc.invalidateQueries({ queryKey: keys.notebook() });
+      void qc.invalidateQueries({ queryKey: ["extraction", "worker"] });
+    },
+  });
+}
+
+export function useAutoAccept(chatId?: number | null) {
   return useQuery({
-    queryKey: ["extraction", "auto-accept"] as const,
-    queryFn: getAutoAccept,
+    // The chat is IN the key. Without it the answer for one chat would be
+    // served to the next, and the answer is chat-specific now.
+    queryKey: ["extraction", "auto-accept", chatId ?? null] as const,
+    queryFn: () => getAutoAccept(chatId),
+  });
+}
+
+export function useSetChatAutoAccept() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: [number, boolean | null]) => setChatAutoAccept(...args),
+    onSuccess: () => {
+      // The whole prefix, so every chat's cached answer is refreshed - the
+      // key now carries a chat id and naming one of them would leave the
+      // others stale.
+      void qc.invalidateQueries({ queryKey: ["extraction", "auto-accept"] });
+      void qc.invalidateQueries({ queryKey: keys.notebook() });
+    },
   });
 }
 
@@ -184,7 +217,13 @@ export function useSetAutoAccept() {
   return useMutation({
     mutationFn: (args: [boolean]) => setAutoAccept(...args),
     onSuccess: () => {
+      // The prefix, not the exact key: the key carries a chat id now.
       void qc.invalidateQueries({ queryKey: ["extraction", "auto-accept"] });
+      // Turning automatic acceptance ON accepts what is already pending, so
+      // the switch changes the ENTRIES too - and only its own key was being
+      // invalidated. The panel kept every proposal sitting in the pending
+      // state the user had just cleared.
+      void qc.invalidateQueries({ queryKey: keys.notebook() });
     },
   });
 }

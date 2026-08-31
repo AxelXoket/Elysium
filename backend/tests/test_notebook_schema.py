@@ -363,14 +363,56 @@ class TestALimitCannotGrowBigEnoughToStopTheApp:
         arithmetic behind BOUNDARY_MAX_CHARS is quietly wrong, and the block
         starts overrunning the budget it was sized for with nothing saying so.
         """
+        # FOUR dimensions, not two. The line grew a tail - what to do when
+        # the limit is crossed, and the rating ceiling - and a loop that only
+        # walked severity and polarity would have kept reporting the old
+        # worst case while the real one was five times longer. That is
+        # exactly the silent budget overrun this test exists to prevent,
+        # arriving through the test rather than the code.
         worst = 0
         for severity in notebook.SEVERITIES:
             for polarity in ("avoid", "seek"):
-                line = notebook._boundary_line(
-                    {"phrasing": "", "severity": severity,
-                     "polarity": polarity})
-                worst = max(worst, len(line) + 1)
+                for action in notebook._ON_VIOLATION_PROSE:
+                    for rating in (None, *notebook._RATING_PROSE):
+                        line = notebook._boundary_line(
+                            {"phrasing": "", "severity": severity,
+                             "polarity": polarity, "on_violation": action,
+                             "rating_ceiling": rating})
+                        worst = max(worst, len(line) + 1)
         assert worst == notebook._BOUNDARY_LINE_COST
+
+    def test_a_line_carries_what_to_do_about_the_limit(self, db) -> None:
+        """The setting that was collected, validated, stored, shown back to
+        the person who set it - and never sent. Every value has to reach the
+        model, or the panel is displaying a promise the app does not keep."""
+        for action, prose in notebook._ON_VIOLATION_PROSE.items():
+            line = notebook._boundary_line(
+                {"phrasing": "no gore", "severity": "hard",
+                 "polarity": "avoid", "on_violation": action,
+                 "rating_ceiling": None})
+            if prose:
+                assert prose in line, action
+            else:
+                # `pause` is what a limit means already; saying it on every
+                # line would spend the block's budget on "behave normally".
+                assert line == "- (never) no gore"
+
+    def test_a_line_carries_the_rating_ceiling(self, db) -> None:
+        for rating, prose in notebook._RATING_PROSE.items():
+            line = notebook._boundary_line(
+                {"phrasing": "no gore", "severity": "hard",
+                 "polarity": "avoid", "on_violation": "pause",
+                 "rating_ceiling": rating})
+            assert prose in line, rating
+
+    def test_a_line_with_neither_is_unchanged(self, db) -> None:
+        """GROUND CONTROL. The ordinary limit - default action, no rating -
+        must read exactly as it always did, or every existing block just got
+        longer for nothing."""
+        line = notebook._boundary_line(
+            {"phrasing": "no gore", "severity": "soft", "polarity": "seek",
+             "on_violation": "pause", "rating_ceiling": None})
+        assert line == "- (seek) no gore"
 
     def test_the_set_is_capped_and_not_only_each_limit(self, db) -> None:
         """Eight limits at the cap is a large block; eighty is a broken app,
@@ -391,8 +433,17 @@ class TestALimitCannotGrowBigEnoughToStopTheApp:
 
     def test_a_short_limit_still_goes_in_beside_a_full_set(self, db) -> None:
         """The positive control for the set ceiling: it refuses what does not
-        fit, not everything arriving after a lot of text."""
-        for _ in range(6):
+        fit, not everything arriving after a lot of text.
+
+        The count is DERIVED. It was a literal 6, which was one less than the
+        capacity at the time; the line cost has since grown and six no longer
+        leaves room for anything. A number that has to be edited whenever the
+        arithmetic moves is a number that will be edited to whatever makes
+        the test pass.
+        """
+        capacity = notebook.BOUNDARY_SET_MAX_CHARS // (
+            notebook.BOUNDARY_MAX_CHARS + notebook._BOUNDARY_LINE_COST)
+        for _ in range(capacity - 1):
             self._limit()
         row = notebook.create_boundary("no gore", "Avoid graphic injury.",
                                        "hard")

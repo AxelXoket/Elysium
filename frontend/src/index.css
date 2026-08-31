@@ -1096,6 +1096,42 @@
     color var(--duration-fast) var(--ease-smooth);
 }
 
+/* KAPSAM 0 - the focus indicator, and the reason it needed restoring.
+ *
+ * `button.tsx` asks for `focus-visible:border-ring focus-visible:ring-3
+ * focus-visible:ring-ring/50`. The `border: ... !important` above eats the
+ * first of those - this file is unlayered and Tailwind's utilities live in
+ * `@layer utilities`, so an unlayered rule wins whatever the specificity
+ * says. What survives is the ring at 50% opacity, which composites to
+ * 1.97:1 at the panel's top stop and 1.88:1 at its bottom - under WCAG SC
+ * 1.4.11's 3:1 floor. That clause covers components AND STATES, keyboard
+ * focus is a state, and nothing else on screen marks it, so there is no
+ * exemption to fall back on.
+ *
+ * Scoped to these two classes rather than fixed on the ring token, which
+ * would move every focusable element in the app. Same shape as the `:hover`
+ * and `:active` rules below - the language is already here. Opaque
+ * `var(--ring)` reads 4.58:1 / 3.98:1 against the two stops. */
+.persona-ghost-action:focus-visible,
+.persona-danger-action:focus-visible {
+  border-color: var(--ring) !important;
+}
+
+/* KAPSAM 1 - the secondary ink, one notch darker along its own hue.
+ *
+ * `--color-es-text-muted` (#5E6B7A) reads 5.08:1 at the top of the gradient
+ * and 4.49:1 at the very bottom - missing AA by 0.006, and only in the last
+ * few percent of the panel. Six of these thirteen buttons carry 12px text.
+ *
+ * Fixed HERE rather than on the token: eight other places read
+ * `--color-es-text-muted` through the live cascade, and this is the one
+ * surface that fails. #596674 is the same colour scaled 0.95 toward black -
+ * 4.85:1 at the bottom stop, 5.48:1 at the top, still visibly lighter than
+ * `--color-es-text-light` so the panel keeps its two ink tiers. */
+.persona-ghost-action {
+  color: #596674 !important;
+}
+
 .persona-danger-action {
   color: #96424E !important;
 }

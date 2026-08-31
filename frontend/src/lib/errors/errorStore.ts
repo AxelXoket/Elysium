@@ -45,6 +45,16 @@ export interface ErrorEvent {
    */
   chatId?: number;
   /**
+   * Which button, when two of them can fail the same way at once.
+   *
+   * The four vault discards push the same codes with no chat id, so a 423
+   * on the second notice was byte-identical to the 423 on the first and was
+   * dropped - in a panel whose in-line alerts only ever report the fields of
+   * a SUCCESSFUL response, so the second button reported nothing at all.
+   * Undefined everywhere else, and undefined never equals a real source.
+   */
+  source?: string;
+  /**
    * Whether the half of the reply that had arrived was kept. K-26.
    *
    * The backend has always sent this and the frontend has always parsed it,
@@ -55,8 +65,19 @@ export interface ErrorEvent {
   partialSaved?: boolean;
 }
 
-/** The context a caller can attach. Both optional; most sites have neither. */
-export type ErrorContext = Pick<ErrorEvent, "chatId" | "partialSaved">;
+/** The context a caller can attach. All optional; most sites have none.
+ *
+ *  `source` is the caller saying "this is a different event from that one",
+ *  and it exists because the dedupe below could not tell four buttons apart.
+ *  The four vault discards push the same codes with no chat id, so a 423 on
+ *  the second notice was identical to the 423 on the first and vanished -
+ *  in a panel whose in-line alerts only ever report success. Anything that
+ *  is one deliberate user action per push should pass it; anything that can
+ *  genuinely fire twice for one event must NOT, or the dedupe stops working
+ *  where it is needed. */
+export type ErrorContext = Pick<ErrorEvent, "chatId" | "partialSaved"> & {
+  source?: string;
+};
 
 interface ErrorState {
   errors: ErrorEvent[];
@@ -158,6 +179,11 @@ function identityOf(event: ErrorEvent): string {
     event.chatId === undefined ? "-" : String(event.chatId),
     event.partialSaved === undefined ? "-" : String(event.partialSaved),
     MESSAGE_IS_THE_EVENT.has(event.code) ? event.message : "",
+    // The axis that was missing. Without it, `vault_locked` from the
+    // orphaned-copy button and `vault_locked` from the premigrate button
+    // one row below it were the same event, and only the first was ever
+    // shown. Absent for every existing caller, so nothing else changes.
+    event.source ?? "",
   ].join("\u0000");
 }
 

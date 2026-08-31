@@ -17,6 +17,7 @@ import {
 } from "@/components/notebook/BoundaryPanel";
 import { mockFetch } from "../mocks/api";
 import { useUiStore } from "@/lib/store/uiStore";
+import { useErrorStore } from "@/lib/errors";
 
 function boundary(over: Partial<Record<string, unknown>> = {}) {
   return {
@@ -265,9 +266,12 @@ describe("the safeword", () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
-  function mount(word = "") {
+  function mount(
+    word = "",
+    post: { status?: number; body: unknown } = { body: { ok: true } },
+  ) {
     mockFetch({
-      "POST /notebook/safeword": { body: { ok: true } },
+      "POST /notebook/safeword": post,
       "/notebook/safeword": { body: { word } },
       "/notebook/7/boundaries": { body: { boundaries: [], use_global: true } },
     });
@@ -308,6 +312,119 @@ describe("the safeword", () => {
       expect(JSON.parse(String((call![1] as RequestInit).body)))
         .toEqual({ word: "kırmızı" });
     });
+  });
+
+  it("does not go on showing a word the server refused", async () => {
+    // THE defect. `shown` is `local ?? server` and nothing ever cleared the
+    // local value, so after a POST that failed the box displayed the typed
+    // word exactly as if it had been saved. For this control that is the
+    // worst possible failure: a safeword is a thing you believe is
+    // protecting you, and believing it is set when it is not inverts the
+    // feature.
+    const user = userEvent.setup();
+    mount("kırmızı", { status: 500, body: { detail: "boom" } });
+    const box = await screen.findByLabelText(/safeword/i);
+    await waitFor(() => expect(box).toHaveValue("kırmızı"));
+
+    await user.clear(box);
+    await user.type(box, "mor");
+    await user.tab();
+
+    // Back to what the server actually holds.
+    await waitFor(() => expect(box).toHaveValue("kırmızı"));
+  });
+
+  it("still shows the new word when the save SUCCEEDS", async () => {
+    // GROUND CONTROL. Clearing the local value on every path must not throw
+    // away a word that was saved - the box has to end up showing the new
+    // one, which it can only do by reading it back from the server.
+    const user = userEvent.setup();
+    let stored = "";
+    (globalThis as unknown as Record<string, unknown>).__unused = stored;
+    mockFetch({
+      "POST /notebook/safeword": { body: { ok: true } },
+      "/notebook/safeword": { body: { word: "mor" } },
+      "/notebook/7/boundaries": { body: { boundaries: [], use_global: true } },
+    });
+    renderWithQueryClient(<BoundaryPanel />);
+    const box = await screen.findByLabelText(/safeword/i);
+    await waitFor(() => expect(box).toHaveValue("mor"));
+
+    await user.clear(box);
+    await user.type(box, "yeşil");
+    await user.tab();
+
+    // The refetch answers "mor", and the box shows the server's word rather
+    // than the one still sitting in local state.
+    await waitFor(() => expect(box).toHaveValue("mor"));
+    stored = "mor";
+    expect(stored).toBe("mor");
+  });
+
+  it("locks the field while the save is in flight", async () => {
+    // The field stayed writable while its own POST was on the wire, so a
+    // second edit could be typed over a value still being saved and the two
+    // answers raced - last one home wins, silently.
+    const user = userEvent.setup();
+    let release: (() => void) | null = null;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+
+    function json(body: unknown): Response {
+      return new Response(JSON.stringify(body), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/notebook/safeword") && init?.method === "POST") {
+          await held;
+          return json({ ok: true });
+        }
+        if (url.includes("/notebook/safeword")) return json({ word: "" });
+        if (url.includes("/boundaries")) {
+          return json({ boundaries: [], use_global: true });
+        }
+        if (url.includes("/vault/status")) {
+          return json({ initialized: true, unlocked: true });
+        }
+        return json({});
+      }) as unknown as typeof fetch);
+
+    renderWithQueryClient(<BoundaryPanel />);
+    const box = await screen.findByLabelText(/safeword/i);
+    await waitFor(() => expect(box).toBeEnabled());
+    await user.type(box, "kırmızı");
+    await user.tab();
+
+    await waitFor(() => expect(box).toBeDisabled());
+    release!();
+    await waitFor(() => expect(box).toBeEnabled());
+  });
+
+  it("reports a failed save WITHOUT naming a chat", async () => {
+    // Deliberately in the other direction. The safeword is a global setting,
+    // not a property of whichever chat happens to be open, and attaching a
+    // chat id here would make the error's identity depend on that - the
+    // exact class of bug two earlier fixes were written for. This test is
+    // the gate that keeps the correct behaviour correct.
+    const user = userEvent.setup();
+    useErrorStore.getState().clearAll();
+    mount("kırmızı", { status: 500, body: { detail: "boom" } });
+    const box = await screen.findByLabelText(/safeword/i);
+    await waitFor(() => expect(box).toHaveValue("kırmızı"));
+
+    await user.clear(box);
+    await user.type(box, "mor");
+    await user.tab();
+
+    await waitFor(() => {
+      expect(useErrorStore.getState().errors.length).toBeGreaterThan(0);
+    });
+    for (const entry of useErrorStore.getState().errors) {
+      expect((entry as unknown as { chatId?: number }).chatId).toBeUndefined();
+    }
   });
 
   it("does not save when nothing changed", async () => {
@@ -391,3 +508,138 @@ describe("the length a limit is allowed to be", () => {
     expect(box).toHaveAttribute("maxLength", String(BOUNDARY_MAX_CHARS));
   });
 });
+
+/**
+ * The same lie, on the panel where it costs more.
+ *
+ * Neither query's `isError` was read, so a 500 emptied `rows` and the panel
+ * printed "No limits set." - about limits the reader wrote down precisely so
+ * a model would not cross them. This is the panel's own stated failure mode
+ * ("a limit that looks like it is in force when it is not") read backwards.
+ */
+describe("when the limits cannot be loaded", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({ selectedChatId: 7 });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("says so, and does not claim there are no limits", async () => {
+    mockFetch({
+      "/notebook/7/boundaries": { status: 500, body: { detail: "boom" } },
+    });
+    renderWithQueryClient(<BoundaryPanel />);
+
+    expect(await screen.findByText(/could not be loaded/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no limits set/i)).not.toBeInTheDocument();
+  });
+
+  it("still says No limits set when the list really is empty", async () => {
+    // GROUND CONTROL, as above: the sentence that was already correct has to
+    // survive the fix.
+    mockFetch({
+      "/notebook/7/boundaries": { body: { boundaries: [], use_global: true } },
+    });
+    renderWithQueryClient(<BoundaryPanel />);
+
+    expect(await screen.findByText(/no limits set/i)).toBeInTheDocument();
+    expect(screen.queryByText(/could not be loaded/i)).not.toBeInTheDocument();
+  });
+
+  it("says neither when there are limits to show", async () => {
+    mockFetch({
+      "/notebook/7/boundaries": {
+        body: { boundaries: [boundary()], use_global: true },
+      },
+    });
+    renderWithQueryClient(<BoundaryPanel />);
+
+    expect(await screen.findByText("no gore")).toBeInTheDocument();
+    expect(screen.queryByText(/no limits set/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/could not be loaded/i)).not.toBeInTheDocument();
+  });
+
+  it("says so with no chat open, when the GLOBAL list is the one that failed",
+    async () => {
+      // The other branch of the same choice: with no chat open the panel
+      // reads useGlobalBoundaries instead, so that is the query whose
+      // failure has to be believed.
+      useUiStore.setState({ selectedChatId: null });
+      mockFetch({
+        "/notebook/boundaries": { status: 500, body: { detail: "boom" } },
+      });
+      renderWithQueryClient(<BoundaryPanel />);
+
+      expect(await screen.findByText(/could not be loaded/i))
+        .toBeInTheDocument();
+      expect(screen.queryByText(/no limits set/i)).not.toBeInTheDocument();
+    });
+});
+
+/**
+ * The two settings the app collected, stored, and told nobody about.
+ *
+ * `on_violation` and `rating_ceiling` have been columns since the table was
+ * written - validated by a CHECK, saved, and shown back to the person who
+ * set them - and they reached the model in neither direction: no control
+ * here, no line in the prompt. A setting that exists, saves, and does
+ * nothing is worse than no setting, because the panel displays it as a
+ * promise.
+ */
+describe("what to do when a limit is crossed", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({ selectedChatId: 7 });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  function sent(): Record<string, unknown> {
+    const calls = (globalThis.fetch as unknown as {
+      mock: { calls: [string, { body?: string }][] };
+    }).mock.calls;
+    const post = calls.find(
+      ([url, init]) => url.includes("/notebook/boundaries") && init?.body);
+    return JSON.parse(post![1].body!) as Record<string, unknown>;
+  }
+
+  it("sends the action and the rating the reader chose", async () => {
+    mockFetch({
+      "/notebook/7/boundaries": { body: { boundaries: [], use_global: true } },
+      "/notebook/boundaries": { body: boundary() },
+    });
+    renderWithQueryClient(<BoundaryPanel />);
+
+    await userEvent.type(
+      await screen.findByPlaceholderText(/keep out of the story/i), "no gore");
+    await userEvent.selectOptions(
+      screen.getByTestId("boundary-on-violation"), "hard_stop");
+    await userEvent.selectOptions(screen.getByTestId("boundary-rating"), "PG-13");
+    await userEvent.click(screen.getByLabelText("Add limit"));
+
+    await waitFor(() => {
+      expect(sent().on_violation).toBe("hard_stop");
+    });
+    expect(sent().rating_ceiling).toBe("PG-13");
+  });
+
+  it("omits the rating entirely when none is chosen", async () => {
+    // GROUND CONTROL. The column is nullable and its CHECK does not allow an
+    // empty string, so sending "" would be a 400 on the most ordinary path
+    // there is: adding a limit without touching either new control.
+    mockFetch({
+      "/notebook/7/boundaries": { body: { boundaries: [], use_global: true } },
+      "/notebook/boundaries": { body: boundary() },
+    });
+    renderWithQueryClient(<BoundaryPanel />);
+
+    await userEvent.type(
+      await screen.findByPlaceholderText(/keep out of the story/i), "no gore");
+    await userEvent.click(screen.getByLabelText("Add limit"));
+
+    await waitFor(() => {
+      expect(sent().on_violation).toBe("pause");
+    });
+    expect("rating_ceiling" in sent()).toBe(false);
+  });
+});
+

@@ -1,5 +1,6 @@
 import { request } from "./client";
 import {
+  SweepSchema,
   NotebookEntrySchema,
   WorkerStatusSchema,
   AutoAcceptSchema,
@@ -40,8 +41,17 @@ export function createNote(
   });
 }
 
+/** Every note route names the chat it is acting from.
+ *
+ *  The backend used to accept the primary key as the whole identity, so a
+ *  call made from one chat could edit, delete or read back a note in another
+ *  one - and patch and accept both hand the row's text back, so it was a
+ *  read as much as a write. `chat_id` is required there now; it is required
+ *  here for the same reason, rather than optional and forgotten.
+ */
 export function patchNote(
   id: number,
+  chatId: number,
   payload: {
     text?: string;
     kind?: string;
@@ -52,7 +62,8 @@ export function patchNote(
 ): Promise<NotebookEntry> {
   // `provenance` is absent from the payload type on purpose. The backend
   // refuses it loudly; not offering it here keeps the idea out of the UI too.
-  return request(`/notebook/entries/${id}`, NotebookEntrySchema, {
+  return request(
+    `/notebook/entries/${id}?chat_id=${chatId}`, NotebookEntrySchema, {
     method: "PATCH",
     body: JSON.stringify(payload),
   });
@@ -62,14 +73,16 @@ export function patchNote(
  *  patch body has no `status` field and must not grow one, because the same
  *  door would then be open to `provenance` - and a proposal that can rewrite
  *  who wrote it is the classic promotion bypass. */
-export function acceptNote(id: number) {
-  return request(`/notebook/entries/${id}/accept`, NotebookEntrySchema, {
+export function acceptNote(id: number, chatId: number) {
+  return request(
+    `/notebook/entries/${id}/accept?chat_id=${chatId}`, NotebookEntrySchema, {
     method: "POST",
   });
 }
 
-export function deleteNote(id: number) {
-  return request(`/notebook/entries/${id}`, NotebookOkSchema, {
+export function deleteNote(id: number, chatId: number) {
+  return request(
+    `/notebook/entries/${id}?chat_id=${chatId}`, NotebookOkSchema, {
     method: "DELETE",
   });
 }
@@ -104,8 +117,12 @@ export function createBoundary(payload: {
   });
 }
 
-export function deleteBoundary(id: number) {
-  return request(`/notebook/boundaries/${id}`, NotebookOkSchema, {
+/** `chatId` is optional here and required on the note routes, and the
+ *  difference is the data: a GLOBAL limit belongs to no chat, so demanding
+ *  one would mean inventing a scope for a row that has none. */
+export function deleteBoundary(id: number, chatId?: number | null) {
+  const scope = chatId == null ? "" : `?chat_id=${chatId}`;
+  return request(`/notebook/boundaries/${id}${scope}`, NotebookOkSchema, {
     method: "DELETE",
   });
 }
@@ -147,8 +164,29 @@ export function resetWorker() {
   });
 }
 
-export function getAutoAccept() {
-  return request("/notebook/auto-accept", AutoAcceptSchema);
+/** Ask the worker to read this chat's unread history.
+ *
+ *  One work unit per press, claimed against the same daily cap as an
+ *  ordinary turn. The chat's older history is otherwise unreachable: the
+ *  worker's cursor is a maximum and a first read of a long chat starts at
+ *  the present on purpose. */
+export function sweepChat(chatId: number) {
+  return request(`/notebook/sweep/${chatId}`, SweepSchema, { method: "POST" });
+}
+
+export function getAutoAccept(chatId?: number | null) {
+  const scope = chatId == null ? "" : `?chat_id=${chatId}`;
+  return request(`/notebook/auto-accept${scope}`, AutoAcceptSchema);
+}
+
+/** Decide for ONE chat, or hand the decision back to the global switch with
+ *  `null`. The column behind this had no writer but the chat INSERT, so a
+ *  chat that was wrongly trusted stayed trusted for its whole life. */
+export function setChatAutoAccept(chatId: number, enabled: boolean | null) {
+  return request(`/notebook/${chatId}/auto-accept`, NotebookOkSchema, {
+    method: "POST",
+    body: JSON.stringify({ enabled }),
+  });
 }
 
 export function setAutoAccept(enabled: boolean) {

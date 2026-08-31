@@ -24,9 +24,21 @@ SPECS = [BACKEND / "elysium_onefile.spec", BACKEND / "elysium.spec"]
 
 
 def _spec_bodies():
+    """The PyInstaller specs, or a RED test.
+
+    This used to skip. A packaging gate that turns green when the artefact
+    it guards is missing has passed on exactly the state it exists to catch:
+    "no spec here" is not evidence that the packaging is correct, it is the
+    absence of any evidence at all.
+
+    Latent today - both specs are on disk, so this branch never runs and the
+    change alters nothing about the current suite. It only speaks in the
+    checkout where they are gone.
+    """
     found = [(p, p.read_text(encoding="utf-8")) for p in SPECS if p.is_file()]
     if not found:
-        pytest.skip("no PyInstaller spec in this checkout")
+        pytest.fail("no PyInstaller spec in this checkout: "
+                    + ", ".join(str(s) for s in SPECS))
     return found
 
 

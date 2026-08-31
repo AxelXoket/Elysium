@@ -3,7 +3,7 @@ import { useSettings } from "@/lib/query/settings";
 import { useModels } from "@/lib/query/models";
 import { useUiStore } from "@/lib/store/uiStore";
 import { parseApiError } from "@/lib/errors";
-import { findModelById, hasInputModality } from "@/lib/models";
+import { acceptsImages, findModelById } from "@/lib/models";
 import { AttachmentStrip } from "./AttachmentStrip";
 import { ACCEPTED_IMAGE_ACCEPT } from "./attachments";
 import type { StagedAttachment } from "./attachments";
@@ -194,7 +194,14 @@ export const Composer = memo(function Composer({
     (a) => a.status === "ready",
   );
   const selectedModel = findModelById(models?.models, selectedModelId);
-  const supportsImageInput = hasInputModality(selectedModel, "image");
+  // `acceptsImages`, not `hasInputModality`. The two disagree on empty
+  // metadata, which is what OpenRouter sends whenever a model's
+  // architecture block omits the field - and the backend, the payload
+  // assembler and the budget estimator all take the permissive side.
+  // This gate taking the other one told the reader a model was
+  // text-only while the app itself was charging them for the images
+  // already in the chat and would have sent every one of them.
+  const supportsImageInput = acceptsImages(selectedModel);
   const attachBlocked = preflightBlocked || isPending || !supportsImageInput;
   // Staged images on a text-only model cannot be sent - the backend rejects
   // them (model_no_image_input). Block send instead of wasting a round-trip.

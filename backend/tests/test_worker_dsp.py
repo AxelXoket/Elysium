@@ -11,6 +11,8 @@ registered engine interpreter - real coverage on a machine with a voice engine
 set up, an honest skip on one without. The shape checks below run everywhere.
 """
 import ast
+import functools
+import importlib.util
 import re
 import json
 import os
@@ -110,12 +112,63 @@ def test_a_rate_of_one_asks_nobody_to_do_anything():
 # no timing test anywhere in this suite, and did not before this deletion.
 
 
+@functools.lru_cache(maxsize=1)
+def _dsp_module():
+    """`_dsp.py` IMPORTED, not read.
+
+    The two files cannot share a constant - `_dsp` lives in the worker tree,
+    which the app venv does not have on its path - so the check has to reach
+    across. It reaches by importing the module and reading the attribute,
+    which is the value the worker will actually use.
+
+    Importing it works because `_dsp` imports numpy INSIDE its functions
+    rather than at module scope; nothing at import time needs a package the
+    app venv lacks. An earlier version of this helper parsed the number out
+    of the source text instead and said the module could not be imported at
+    all - that reason was wrong, and it kept the file's last source-text read
+    alive for no gain.
+
+    The check this replaced was worse still: a SUBSTRING search.
+    `MIN_RATE = 0.80` renders in an f-string as `MIN_RATE = 0.8`, so the
+    needle was `"MIN_RATE = 0.8"` - and `MIN_RATE = 0.85` in `_dsp.py`
+    contains it. The one divergence the test exists to catch was exactly the
+    divergence it could not see.
+    """
+    spec = importlib.util.spec_from_file_location("_dsp_probe", WORKER_DSP)
+    assert spec and spec.loader, f"cannot load {WORKER_DSP}"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _worker_constant(name: str) -> float:
+    """One number out of the imported `_dsp`, as a NUMBER."""
+    value = getattr(_dsp_module(), name)
+    assert isinstance(value, float), f"_dsp.{name} is {type(value).__name__}"
+    return value
+
+
 def test_the_advertised_range_matches_the_host_side_dial():
     """Two files hold the same numbers; a divergence would let the UI offer a
     rate the DSP then silently clamps away."""
-    src = WORKER_DSP.read_text(encoding="utf-8")
-    assert f"MIN_RATE = {speed.MIN_RATE}" in src
-    assert f"MAX_RATE = {speed.MAX_RATE}" in src
+    assert _worker_constant("MIN_RATE") == speed.MIN_RATE
+    assert _worker_constant("MAX_RATE") == speed.MAX_RATE
+
+
+def test_the_numbers_are_the_ones_the_host_actually_clamps_to():
+    """POSITIVE CONTROL, and the half a value comparison still cannot give.
+
+    Two files can agree on a number that neither of them uses. This drives
+    the host's own clamp at both ends and asserts it lands on those values -
+    so the constants are not just equal to each other, they are the limits
+    the dial really has.
+    """
+    assert speed.clamp(speed.MIN_RATE - 1.0) == speed.MIN_RATE
+    assert speed.clamp(speed.MAX_RATE + 1.0) == speed.MAX_RATE
+    # And a rate inside the range is left alone, or "clamps to the limits"
+    # would be satisfied by a function that returns a limit for everything.
+    middle = (speed.MIN_RATE + speed.MAX_RATE) / 2
+    assert speed.clamp(middle) == middle
 
 
 def test_the_no_op_threshold_is_the_same_on_both_sides():

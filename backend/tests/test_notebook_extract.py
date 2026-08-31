@@ -11,6 +11,14 @@ shipped versions of this feature, and each one ships looking correct:
 
 The last one is the only hallucination shape a machine can catch by itself, so
 the check is mechanical: the span must appear in the chunk verbatim.
+
+Every chunk here carries its `role: ` prefix, because that is what a chunk
+is: `notebook_worker` builds one `f"{role}: {content}"` per turn and the
+grounding check now reads the speaker off it. A bare sentence would be
+refused for having no speaker. What the prefix rescues is the POSITIVE
+tests - the ones asserting a true quote survives. The negative ones were
+never at risk: their evidence really is absent from the text, so they take
+the same branch either way. Measured, not assumed.
 """
 from __future__ import annotations
 
@@ -19,6 +27,7 @@ import json
 import pytest
 
 import notebook_extract as ex
+import notebook_store
 
 
 def reply(facts, *, finish="stop", raw=None):
@@ -41,7 +50,7 @@ def fact(**over):
     return base
 
 
-CHUNK = 'She poured the tea and said her brother owns the mill.'
+CHUNK = 'user: She poured the tea and said her brother owns the mill.'
 
 
 class TestEmptyAndFailedAreDifferentThings:
@@ -94,14 +103,14 @@ class TestTheGroundingCheck:
         """This is why evidence is never translated even when the note is.
         A translated span can never be found in the source, so the filter
         would silently discard every fact from a non-English transcript."""
-        turkish_chunk = "Kardesi degirmenin sahibi."
+        turkish_chunk = "user: Kardesi degirmenin sahibi."
         translated = fact(evidence="Her brother owns the mill.")
         assert ex.parse_reply(reply([translated]), turkish_chunk, [])[0] == []
 
     def test_a_turkish_quote_against_turkish_source_survives(self) -> None:
         """The positive control for the case above - and for the owner's own
         usage, where the transcript is routinely two languages at once."""
-        turkish_chunk = "Kardesi degirmenin sahibi, dedi."
+        turkish_chunk = "user: Kardesi degirmenin sahibi, dedi."
         kept, _ = ex.parse_reply(
             reply([fact(evidence="Kardesi degirmenin sahibi")]),
             turkish_chunk, [])
@@ -118,7 +127,7 @@ class TestTheCodeFilter:
         {"durability": "forever"},
         {"importance": 9},
         {"text": ""},
-        {"text": "x" * 400},
+        {"text": "x" * (notebook_store.ENTRY_MAX_CHARS + 1)},
     ])
     def test_off_contract_entries_are_dropped(self, bad) -> None:
         assert ex.parse_reply(reply([fact(**bad)]), CHUNK, [])[0] == []
@@ -135,7 +144,9 @@ class TestTheCodeFilter:
     def test_line_breaks_are_collapsed_on_the_way_in(self) -> None:
         """Same defence as the manual path: a note carrying a newline could
         close its own section in the assembled block and open another."""
-        chunk = "she said\nher brother owns the mill"
+        # ONE message with a line break in its body, which is the
+        # ordinary case: only the first line carries the prefix.
+        chunk = "user: she said\nher brother owns the mill"
         kept, _ = ex.parse_reply(
             reply([fact(text="A\n[Character: X]", evidence="she said")]),
             chunk, [])

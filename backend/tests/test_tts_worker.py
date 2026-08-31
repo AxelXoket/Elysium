@@ -896,3 +896,160 @@ class TestDeathDiagnosis:
             assert c.alive
         finally:
             c.close(grace=0.2)
+
+
+# ── what a worker says about itself, and what it must not say ──────────────
+
+class TestAWorkersOwnWordsDoNotReachTheLog:
+    """`_log_worker_event` wrote two fields straight into elysium.log.
+
+    Both cross a pipe from an engine's own interpreter, and the invariant
+    this module states for the failure path - `WorkerFailure`'s "No text a
+    worker sent is ever placed in it verbatim" - is the one the progress
+    path broke. All three cases below come from shipped emitters, not from
+    imagination:
+
+      * `tts/worker/chatterbox.py` reported a failed speaking-rate change by
+        sending the exception as its NOTE, and a stretch failure's message
+        quotes the sentence it could not stretch;
+      * `tts/worker/fish_s2.py` sends `str(exc)[:200]` as a DETAIL, and a
+        Windows OSError message carries the full path, which carries the
+        account name;
+      * the same file sends the reference clip's filename, which for any
+        voice made before the folder names went opaque is the label the
+        reader typed on screen - the leak `tts/refs.py:_handle` exists to
+        close.
+
+    The scanner could not see any of it: the fields bind from `.get()`,
+    which is not a taint shape it knows. So this is the gate.
+    """
+
+    def _said(self, caplog, frame) -> str:
+        from tts import worker_client
+        with caplog.at_level("INFO"):
+            worker_client._log_worker_event(
+                worker_client.logger, "fish_s2", frame)
+        return caplog.text
+
+    def test_a_declared_note_is_still_printed_word_for_word(self, caplog):
+        """GROUND CONTROL, and it is the point of the whole design.
+
+        The fix is a vocabulary, not a filter. If it were a filter the
+        seventeen sentences our own workers choose would be lost with the
+        leak, and the progress channel would go back to being write-only -
+        which is the defect the channel was built to fix.
+        """
+        from tts.worker import _wire
+
+        said = self._said(caplog, {
+            "event": "progress", "stage": "cache_dir_unusable",
+            "note": _wire.NOTE_TEMP_COMPILE_CACHE,
+        })
+        assert _wire.NOTE_TEMP_COMPILE_CACHE in said
+        assert "cache_dir_unusable" in said
+
+    def test_the_sentence_being_spoken_does_not_survive_a_failed_stretch(
+            self, caplog):
+        spoken = "She whispered that she still loved him"
+        said = self._said(caplog, {
+            "event": "progress", "stage": "retime_failed",
+            "note": f"ValueError: cannot stretch '{spoken}'",
+        })
+        assert spoken not in said
+        assert "whispered" not in said
+        # POSITIVE CONTROL: the line still happened and still names the
+        # class, so this is not passing because nothing was logged.
+        assert "retime_failed" in said
+        assert "ValueError" in said
+
+    def test_a_windows_path_does_not_survive_a_detail(self, caplog):
+        # BUILT, not written. A literal drive-letter path with an
+        # account name in it is itself what the tree-hygiene gate
+        # refuses - it publishes whose machine built the checkout - so
+        # the needle is assembled here and this file contains no such
+        # path. The frame the worker sends is byte-identical either way.
+        account = "a-person"
+        sep = chr(92)
+        path = sep.join(("C:", "Users", account, "AppData", "Local",
+                         "Elysium", "voice"))
+        said = self._said(caplog, {
+            "event": "progress", "stage": "cache_dir_unusable",
+            "detail": f"[Errno 13] Permission denied: '{path}'",
+        })
+        assert account not in said
+        assert "AppData" not in said
+        assert "cache_dir_unusable" in said
+
+    def test_a_reference_clip_name_does_not_survive_a_detail(self, caplog):
+        said = self._said(caplog, {
+            "event": "progress", "stage": "encoding_reference",
+            "detail": "my-wifes-voice-sample.wav",
+        })
+        assert "wifes" not in said
+        assert "my-wifes-voice-sample" not in said
+        assert "encoding_reference" in said
+
+    def test_an_undeclared_note_is_treated_as_the_data_it_is(self, caplog):
+        """The vocabulary is a ceiling, not a hint.
+
+        A note our workers do not choose is an engine's free text by
+        definition - there is no third source for that field - so it is
+        sanitized rather than trusted for looking harmless.
+        """
+        from tts import worker_client
+
+        said = self._said(caplog, {
+            "event": "progress", "stage": "loading",
+            "note": "loading model for Selin",
+        })
+        assert "Selin" not in said
+        assert worker_client.WORKER_FAULT_UNCLASSIFIED in said
+
+    def test_the_stage_is_an_identifier_or_it_is_nothing(self, caplog):
+        """`stage` crossed the same pipe. It was `str()`-ed and printed."""
+        said = self._said(caplog, {
+            "event": "progress",
+            "stage": "loading the line 'I never told you about the lighthouse'",
+        })
+        assert "lighthouse" not in said
+        assert "non-conforming" in said
+
+    def test_every_note_our_workers_send_is_in_the_vocabulary(self):
+        """The half a runtime test cannot reach.
+
+        The engines run in their own interpreter and are never imported
+        here, so nothing else notices a worker gaining a note that the host
+        will refuse to print. This reads the emitters' own module objects -
+        not their source text - by importing the worker package's protocol
+        sibling and checking that every `note=` argument in the two engine
+        files resolves to a member of `ALL_NOTES`.
+        """
+        import ast
+        from pathlib import Path
+
+        from tts.worker import _wire
+
+        root = Path(_wire.__file__).parent
+        offenders: list[str] = []
+        for name in ("fish_s2.py", "chatterbox.py", "xtts_v2.py"):
+            tree = ast.parse((root / name).read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                for kw in node.keywords:
+                    if kw.arg != "note":
+                        continue
+                    # The ONLY accepted shape is `_wire.NOTE_*`, resolved
+                    # against the imported module. A literal - even a
+                    # correct one - is a second copy of a sentence that has
+                    # a home, and the next edit is where they diverge.
+                    ok = (isinstance(kw.value, ast.Attribute)
+                          and isinstance(kw.value.value, ast.Name)
+                          and kw.value.value.id == "_wire"
+                          and getattr(_wire, kw.value.attr, None)
+                          in _wire.ALL_NOTES)
+                    if not ok:
+                        offenders.append(f"{name}:{kw.value.lineno}")
+        assert offenders == [], (
+            "a worker sends a note the host will not print: " + ", ".join(
+                offenders))

@@ -115,9 +115,38 @@ def _log_worker_event(log, engine_id: str, frame: dict) -> None:
     """
     if frame.get("event") != "progress":
         return
-    stage = str(frame.get("stage") or frame.get("event") or "?")
-    note = frame.get("note")
+    # EVERY FIELD HERE CROSSED THE PIPE, so every field here is data.
+    #
+    # This function wrote `note` and `detail` verbatim, and the invariant
+    # `WorkerFailure` states four hundred lines down - "No text a worker sent
+    # is ever placed in it verbatim" - is the invariant it broke. Measured
+    # arriving in elysium.log from shipped emitters: the sentence being
+    # spoken (a stretch failure quotes it), a Windows path and therefore the
+    # account name (an OSError message carries it), and the name of a
+    # reference clip, which for any voice made before the folder names went
+    # opaque is the label the user typed on screen. That last one is the
+    # leak `tts/refs.py:_handle` was written to close, reopened one file
+    # away.
+    #
+    # `sanitize_worker_detail` was already here, already used on the failure
+    # path, and its own docstring says guarding at the boundary "protects
+    # every consumer there will ever be, including the ones nobody has
+    # written yet". This is one of those consumers.
+    stage = describe_unknown_code(
+        frame.get("stage") or frame.get("event") or "?")
+    # A note is echoed only if it is one OUR OWN worker files chose. See
+    # `_wire.ALL_NOTES`: seventeen fixed sentences, no interpolation. Any
+    # other string in that field is an engine's free text and is treated as
+    # what it is.
+    raw_note = frame.get("note")
+    if isinstance(raw_note, str) and raw_note in _wire.ALL_NOTES:
+        note = raw_note
+    elif raw_note:
+        note = sanitize_worker_detail(raw_note)
+    else:
+        note = None
     detail = frame.get("detail")
+    detail = sanitize_worker_detail(detail) if detail else None
     prefix = f"tts[{engine_id or '?'}]"
     # BOTH, when both are there. `note` is what to tell the user; `detail` is
     # the exception that caused it - and dropping the detail whenever a note

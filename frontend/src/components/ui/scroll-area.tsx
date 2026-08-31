@@ -15,7 +15,13 @@ function ScrollArea({
     >
       <ScrollAreaPrimitive.Viewport
         data-slot="scroll-area-viewport"
-        className="size-full rounded-[inherit] transition-[color,box-shadow] outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1"
+        // `focus-visible:outline-1` was here too and drew nothing, the same
+        // dead pairing removed from TabsContent: `outline-none` sets
+        // `--tw-outline-style: none` unconditionally, and `outline-1` only
+        // sets a width and reads that variable back. The ring is the real
+        // indicator. Left in place it reads, to the next person, like a
+        // second focus affordance that does not exist.
+        className="size-full rounded-[inherit] transition-[color,box-shadow] outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
       >
         {children}
       </ScrollAreaPrimitive.Viewport>

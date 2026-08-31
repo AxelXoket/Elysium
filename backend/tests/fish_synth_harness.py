@@ -101,11 +101,33 @@ class _Torch:
         self.seeds.append(seed)
 
 
+#: A third dimension that is deliberately NOT a frame count.
+#:
+#: Zero, so a reader that lands on it gets an obviously wrong answer rather
+#: than a plausible one: "no audio at all" is loud, and a second plausible
+#: frame count is exactly what hid the ambiguity in the first place.
+_NOT_FRAMES = 0
+
+
 class _Codes:
-    """What the generation returns: the token count is all this path reads."""
+    """What the generation returns: the token count is all this path reads.
+
+    THREE dimensions, and the third is the whole point of the shape.
+
+    `fish_s2.py` reads `codes.shape[1]` for the frame count, in four places.
+    With a two-element shape `shape[1]` and `shape[-1]` are the SAME element,
+    so a stub of `(1, produced)` answers both identically and a production
+    slip from one to the other would run through this harness untouched -
+    which is the one thing a stub exists to prevent. The harness's only
+    justification is that it represents the production path.
+
+    `shape[0]` stays 1: `fish_s2.py:1665` reads it as the codebook count, and
+    that reader is outside this harness's path but must not be fed a lie
+    either.
+    """
 
     def __init__(self, produced: int):
-        self.shape = (1, produced)
+        self.shape = (1, produced, _NOT_FRAMES)
 
 
 class _SoundFile:

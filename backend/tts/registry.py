@@ -125,7 +125,7 @@ def _root_key(root: Path) -> str:
 
     Mixed into the uid because the relative path alone is NOT unique across
     roots (audit KÖK 15): runtimes.json carries `extra_roots`, so two roots can
-    each hold a folder called `velvet` - verified, one uid for both. _resolve
+    each hold a folder called `aurora` - verified, one uid for both. _resolve
     then returned whichever came first (loading the wrong model),
     evaluate_all overwrote one verdict with the other, the two shared their
     saved settings, and React rendered a duplicate key.

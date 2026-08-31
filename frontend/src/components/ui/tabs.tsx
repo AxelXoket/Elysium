@@ -79,8 +79,18 @@ function TabsContent({ className, ...props }: TabsPrimitive.Panel.Props) {
       // tailwind-merge only lets a later utility win within the same
       // variant+property group, and no caller here passes its own
       // outline/ring utilities to collide with.
+      //
+      // `focus-visible:outline-1` was here too and drew nothing. Tailwind's
+      // `outline-none` sets `--tw-outline-style: none` AND `outline-style:
+      // none`, unconditionally; `outline-1` only sets a width and reads
+      // `outline-style: var(--tw-outline-style)`, which is still `none`. So
+      // the utility was a second focus indicator in name only - the kind of
+      // line that makes the next reader believe an accessibility affordance
+      // exists when it does not. The ring above is the real one, and the
+      // TRIGGER keeps its outline because there it pairs with
+      // `focus-visible:outline-ring` and no `outline-none`.
       className={cn(
-        "flex-1 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1",
+        "flex-1 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
         className
       )}
       {...props}

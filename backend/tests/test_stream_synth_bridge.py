@@ -38,7 +38,11 @@ class FakeHost:
     def load(self, model, values):
         self.loads += 1
 
-    def speak(self, text, values, extra=None, message_id=None):
+    def speak(self, text, values, extra=None, message_id=None,
+              stream_token=None):
+        # stream_token joined the real signature when streamed audio
+        # stopped being written as `speak-0-`; a double that refuses it
+        # fails the call the bridge actually makes.
         self.calls.append({"text": text, "values": values, "extra": extra or {}})
         return {"path": f"C:/cache/abc{len(self.calls)}.wav",
                 "seconds": 1.25, "sample_rate": 44100}

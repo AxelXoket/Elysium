@@ -290,3 +290,39 @@ def test_clearing_a_persona_description_stops_sending_it(client, provider):
     assert "Keeps to herself." not in joined, joined
     assert "[User Persona: Nova]" in joined, (
         "clearing the description took the name with it")
+
+
+def test_the_refusal_turns_over_at_exactly_one_character(client, provider):
+    """The threshold itself, and the reason it is written down here.
+
+    The frontend gauge predicts this refusal (`willRefuse` in
+    estimateContextUsage.ts) so a request that cannot be sent stops looking
+    like "88%, amber". A predictor is only as good as the inequality it
+    copies, and the two live in different languages with no shared fixture -
+    so each side pins its own boundary at ONE character and the pair can be
+    read together.
+
+    Found by bisection on the message length rather than by rebuilding the
+    budget arithmetic here: the refusal is monotone in message size, so the
+    flip point is exact and no formula is retyped.
+    """
+    chat = _seeded_chat(client, provider, turns=1)
+
+    def refuses(n: int) -> bool:
+        resp = _send(client, chat, "q" * n,
+                     context_budget_tokens=SMALL_BUDGET)
+        return resp.status_code == 400
+
+    lo, hi = 1, 20000
+    assert not refuses(lo), "ground: a small message goes through"
+    assert refuses(hi), "ground: a huge one does not"
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if refuses(mid):
+            hi = mid
+        else:
+            lo = mid + 1
+
+    assert not refuses(lo - 1)
+    assert refuses(lo)
+

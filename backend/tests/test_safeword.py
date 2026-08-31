@@ -11,6 +11,8 @@ path that can send.
 """
 from __future__ import annotations
 
+import unicodedata
+
 import pytest
 
 import config
@@ -182,3 +184,142 @@ class TestItCannotBeSetToSomethingThatDisarmsIt:
             resp = client.post("/api/v1/notebook/safeword", json={"word": word})
             assert resp.status_code == 400
             assert resp.json()["detail"] == code
+
+
+@pytest.fixture
+def armed_latin(db):
+    """A safeword with no Turkish letters in it at all.
+
+    The fixture above picked `kırmızı`, and every one of its three `ı` is
+    already dotless. That word cannot fail the way the folding fails, so the
+    suite was green while the control was broken for a whole family of
+    ordinary words: `exit`, `quit`, `limit`, `pain`, `kill`.
+    """
+    notebook.set_safeword("exit")
+    yield "exit"
+    notebook.set_safeword("")
+
+
+class TestALatinSafewordSurvivesCapitals:
+    """The case the old folding could not pass.
+
+    `_fold_tr` turned every `I` into `ı` before lowercasing, unconditionally.
+    So `EXIT` folded to `exıt`, the stored `exit` folded to `exit`, and the
+    check missed. A safeword that misses is the one failure this feature
+    exists to prevent, and it fails silently: the message goes to the model.
+    """
+
+    def test_the_word_alone(self, armed_latin) -> None:
+        assert notebook.safeword_in("exit")
+
+    @pytest.mark.parametrize("typed", ["EXIT", "Exit", "eXiT", "EXIT!"])
+    def test_whatever_case_it_was_typed_in(self, armed_latin, typed) -> None:
+        assert notebook.safeword_in(typed)
+
+    def test_an_ordinary_message_still_does_not_trip_it(self, armed_latin) -> None:
+        # POSITIVE CONTROL. Widening the fold must not make everything match.
+        assert not notebook.safeword_in("the story continues")
+
+
+class TestTheSameLetterTypedTwoWays:
+    """NFC and NFD spell `İ` differently and look identical on screen."""
+
+    def test_a_decomposed_capital_matches_a_composed_one(self, db) -> None:
+        notebook.set_safeword("İZİN")           # composed, U+0130
+        try:
+            decomposed = "İŻİN".replace("Ż", "Z")
+            assert notebook.safeword_in(decomposed)
+        finally:
+            notebook.set_safeword("")
+
+    def test_an_unrelated_message_does_not_match(self, db) -> None:
+        # POSITIVE CONTROL for the normalisation.
+        notebook.set_safeword("İZİN")
+        try:
+            assert not notebook.safeword_in("nothing like it here")
+        finally:
+            notebook.set_safeword("")
+
+
+class TestALetterThatDecomposesToSomethingElse:
+    """The half NFC is actually load-bearing for.
+
+    A decomposed `İ` is rescued by the combining-dot strip further down, so it
+    proves nothing about normalisation on its own - measured, by removing the
+    NFC call and watching nothing fail. `Ğ` has no such rescue: decomposed it
+    is `G` plus a combining breve, and `.lower()` leaves the breve exactly
+    where it is. Composed and decomposed then fold to two different strings
+    and the safeword misses.
+    """
+
+    def test_a_decomposed_breve_matches_a_composed_one(self, db) -> None:
+        composed = "ĞUVEN"                       # G with breve
+        decomposed = unicodedata.normalize("NFD", composed)
+        assert composed != decomposed, "the fixture is not testing anything"
+        notebook.set_safeword(composed)
+        try:
+            assert notebook.safeword_in(decomposed)
+        finally:
+            notebook.set_safeword("")
+
+    def test_an_unrelated_message_does_not_match(self, db) -> None:
+        # POSITIVE CONTROL: normalising both sides must not match everything.
+        notebook.set_safeword("ĞUVEN")
+        try:
+            assert not notebook.safeword_in("nothing like it here")
+        finally:
+            notebook.set_safeword("")
+
+
+class TestARefusedSafewordDoesNotComeBack:
+    """The one string in this app that must never appear in a response.
+
+    Two ceilings were declared for the same field: pydantic's on the request
+    model, and the real one inside set_safeword. Pydantic's ran first, and
+    with no RequestValidationError handler in this app FastAPI's default
+    answered - which serialises pydantic's `errors()`, and pydantic v2 puts
+    the REJECTED VALUE in an `input` key. So typing too long a safeword sent
+    it straight back over the wire, and the user was shown a sentence written
+    for generation parameters rather than the one written for this.
+    """
+
+    LONG = "please stop the scene right now " * 8   # 256 characters
+
+    def test_the_refusal_carries_a_code_and_not_the_word(self, client) -> None:
+        resp = client.post("/api/v1/notebook/safeword",
+                           json={"word": self.LONG})
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "safeword_too_long"
+        assert self.LONG not in resp.text
+        # Not just the whole string: no recognisable run of it either.
+        assert "please stop the scene" not in resp.text
+
+    def test_an_accepted_safeword_is_not_echoed_either(self, client) -> None:
+        # GROUND CONTROL. Without it, a response body that was empty for
+        # every request would satisfy the assertion above.
+        try:
+            resp = client.post("/api/v1/notebook/safeword",
+                               json={"word": "amber"})
+            assert resp.status_code == 200
+            assert "amber" not in resp.text
+        finally:
+            client.post("/api/v1/notebook/safeword", json={"word": ""})
+
+    def test_a_long_looking_phrase_that_is_short_when_typed_is_accepted(
+        self, client,
+    ) -> None:
+        """The behaviour change the second ceiling was hiding.
+
+        set_safeword collapses runs of whitespace before measuring. Pydantic
+        measured the raw string, so a phrase padded with spaces was refused
+        for a length it does not have once typed out.
+        """
+        padded = "red" + (" " * 70) + "light"      # 78 raw, 9 collapsed
+        assert len(padded) > 64
+        try:
+            resp = client.post("/api/v1/notebook/safeword",
+                               json={"word": padded})
+            assert resp.status_code == 200
+            assert notebook.safeword() == "red light"
+        finally:
+            client.post("/api/v1/notebook/safeword", json={"word": ""})

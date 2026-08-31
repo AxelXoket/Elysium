@@ -284,6 +284,55 @@ function normalizeTab(raw: unknown): RightPanelTab {
   return map[raw as string] ?? "models";
 }
 
+/**
+ * EXACTLY what this store writes to device storage.
+ *
+ * One list, exported, and the single source of truth. The same thirty-two
+ * names used to be written out by hand in three places - here, in
+ * settings-persistence.test.ts, and in static-safety.test.ts - and a list
+ * that exists three times is a list that goes stale in two of them with
+ * nothing to say so.
+ *
+ * localStorage is not encrypted, so every ADDITION here is a privacy
+ * decision. `satisfies` proves each entry is a real field of the state; it
+ * does NOT prove the set is the RIGHT set, and it cannot - that is what the
+ * behavioural test reading the written blob is for.
+ */
+export const PERSISTED = [
+  "selectedCharacterId",
+  "selectedChatId",
+  "activeRightPanelTab",
+  "sidebarCollapsed",
+  "rightPanelCollapsed",
+  "msgFontPx",
+  "msgLineHeight",
+  "msgContrast",
+  "narrationEnabled",
+  "quoteTintEnabled",
+  "continuousVoice",
+  "voiceHintDismissed",
+  "narrationMigrated",
+  "msgInk",
+  "surfaceFinish",
+  "msgOpacity",
+  "chatBgOn",
+  "chatBgLum",
+  "chatBgContrast",
+  "chatBgTint",
+  "chatBgFocusX",
+  "chatBgFocusY",
+  "chatBgZoom",
+  "chatBgAspect",
+  "ambientFogOn",
+  "genTemperature",
+  "genTopP",
+  "genTopK",
+  "genRepetitionPenalty",
+  "genMaxOutput",
+  "genSeed",
+  "genContextBudget",
+] as const satisfies readonly (keyof UiState)[];
+
 export const useUiStore = create<UiState>()(
   persist(
     (set) => ({
@@ -448,45 +497,14 @@ export const useUiStore = create<UiState>()(
       },
       // Only harmless UI preferences are persisted - never secrets, content, or API data.
       // Persona fields are NOT persisted here (Phase 6E-A - persona persistence deferred to 6E-B).
-      partialize: (state) => ({
-        selectedCharacterId: state.selectedCharacterId,
-        selectedChatId: state.selectedChatId,
-        // selectedModelId is deliberately ABSENT (v1.2 privacy fix): it is a
-        // model NAME, not a bare id, and now lives in the vault instead - see
-        // UiState's doc comment on the field and the migrate branch above.
-        activeRightPanelTab: state.activeRightPanelTab,
-        sidebarCollapsed: state.sidebarCollapsed,
-        rightPanelCollapsed: state.rightPanelCollapsed,
-        msgFontPx: state.msgFontPx,
-        msgLineHeight: state.msgLineHeight,
-        msgContrast: state.msgContrast,
-        narrationEnabled: state.narrationEnabled,
-        quoteTintEnabled: state.quoteTintEnabled,
-        continuousVoice: state.continuousVoice,
-        voiceHintDismissed: state.voiceHintDismissed,
-        narrationMigrated: state.narrationMigrated,
-        msgInk: state.msgInk,
-        surfaceFinish: state.surfaceFinish,
-        msgOpacity: state.msgOpacity,
-        chatBgOn: state.chatBgOn,
-        chatBgLum: state.chatBgLum,
-        chatBgContrast: state.chatBgContrast,
-        chatBgTint: state.chatBgTint,
-        chatBgFocusX: state.chatBgFocusX,
-        chatBgFocusY: state.chatBgFocusY,
-        chatBgZoom: state.chatBgZoom,
-        chatBgAspect: state.chatBgAspect,
-        ambientFogOn: state.ambientFogOn,
-        // v1.1 (FF7) generation sampling scalars - neutral names, never
-        // stopSequences (those are user content).
-        genTemperature: state.genTemperature,
-        genTopP: state.genTopP,
-        genTopK: state.genTopK,
-        genRepetitionPenalty: state.genRepetitionPenalty,
-        genMaxOutput: state.genMaxOutput,
-        genSeed: state.genSeed,
-        genContextBudget: state.genContextBudget,
-      }),
+      // ONE list, from the export above. Thirty-two hand-written
+      // `key: state.key` lines are thirty-two chances to put a field on the
+      // disk by accident, and the source-text guard that watched them could
+      // only check the NAMES - `msgFontPx: state.vaultKey` passed it.
+      partialize: (state) =>
+        Object.fromEntries(
+          PERSISTED.map((key) => [key, state[key]]),
+        ) as Pick<UiState, (typeof PERSISTED)[number]>,
     },
   ),
 );

@@ -15,6 +15,7 @@ import userEvent from "@testing-library/user-event";
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 
 import { PlaintextBackupNotice } from "@/components/settings/PlaintextBackupNotice";
+import { useErrorStore } from "@/lib/errors";
 import { mockFetch } from "@/test/mocks/api";
 
 const BACKUP = "app.db.plain.bak-20260101120000";
@@ -302,5 +303,75 @@ describe("answering the delete question from the keyboard", () => {
     expect(
       await screen.findByRole("button", { name: /delete the unencrypted/i }),
     ).toHaveFocus();
+  });
+
+
+  describe("when the deletion fails", () => {
+    // Four irreversible deletions, and none of them had an `onError`. No
+    // MutationCache either, and the `role="alert"` paragraphs in these
+    // notices report fields of a SUCCESSFUL response - so a 500 or a 423
+    // said nothing at all. "The file is gone" and "nothing was even
+    // attempted" looked identical to the one person who cannot check.
+    //
+    // COUNTED across both lists, and after a reset. The store dedups by
+    // identity, so a leftover event from an earlier test would satisfy
+    // "there is an error" without this change doing anything.
+    function errorCount(): number {
+      const s = useErrorStore.getState();
+      return s.errors.length + s.queuedErrors.length;
+    }
+
+    beforeEach(() => useErrorStore.getState().clearAll());
+
+    it("tells the user when the request is refused", async () => {
+      mockFetch({
+        "/vault/status": { body: { initialized: true, unlocked: true, orphaned_copy: false,
+          plaintext_backups: [BACKUP] } },
+        "/vault/discard-plaintext-backup": { status: 500, body: { detail: "boom" } },
+      });
+      renderWithQueryClient(<PlaintextBackupNotice />);
+      await userEvent.click(await screen.findByRole(
+        "button", { name: /delete the unencrypted/i }));
+      await userEvent.click(
+        screen.getByRole("button", { name: /^delete$/i }));
+      await waitFor(() => expect(errorCount()).toBe(1));
+    });
+
+    it("tells the user when the vault is locked", async () => {
+      // POSITIVE CONTROL. 423 is the likeliest of these in practice - the
+      // vault locks on idle while the notice is still on screen - and it
+      // travels a different path through the client than a 500.
+      mockFetch({
+        "/vault/status": { body: { initialized: true, unlocked: true, orphaned_copy: false,
+          plaintext_backups: [BACKUP] } },
+        "/vault/discard-plaintext-backup": { status: 423, body: { detail: "vault_locked" } },
+      });
+      renderWithQueryClient(<PlaintextBackupNotice />);
+      await userEvent.click(await screen.findByRole(
+        "button", { name: /delete the unencrypted/i }));
+      await userEvent.click(
+        screen.getByRole("button", { name: /^delete$/i }));
+      await waitFor(() => expect(errorCount()).toBe(1));
+    });
+
+    it("says nothing when the deletion succeeds", async () => {
+      // GROUND CONTROL. Without it a handler that reports on every outcome
+      // passes both tests above and puts an error on screen for work that
+      // went fine.
+      mockFetch({
+        "/vault/status": { body: { initialized: true, unlocked: true, orphaned_copy: false,
+          plaintext_backups: [BACKUP] } },
+        "/vault/discard-plaintext-backup": { body: { removed: 1, left: [] } },
+      });
+      renderWithQueryClient(<PlaintextBackupNotice />);
+      await userEvent.click(await screen.findByRole(
+        "button", { name: /delete the unencrypted/i }));
+      await userEvent.click(
+        screen.getByRole("button", { name: /^delete$/i }));
+      await waitFor(() => expect(
+        vi.mocked(globalThis.fetch).mock.calls.some(([url]) =>
+          String(url).includes("/vault/discard-plaintext-backup"))).toBe(true));
+      expect(errorCount()).toBe(0);
+    });
   });
 });

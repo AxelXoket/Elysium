@@ -942,7 +942,8 @@ def _closing_tag(tone: str) -> str:
 
 
 def make_stream_synth(uid: str | None = None, *, rate: float | None = None,
-                      message_id: int | None = None):
+                      message_id: int | None = None,
+                      stream_token: str | None = None):
     """A `synth(text) -> {path, seconds}` callable for the streaming speaker.
 
     The queue must not know what an engine is - that is what keeps its timing
@@ -1005,7 +1006,8 @@ def make_stream_synth(uid: str | None = None, *, rate: float | None = None,
         if not _dsp_noop(dsp_rate):
             payload["rate"] = dsp_rate
         result = host.speak(spoken, values, extra=payload,
-                            message_id=message_id)
+                            message_id=message_id,
+                            stream_token=stream_token)
         path = Path(result.get("path", ""))
         return {
             "path": str(path),
@@ -1288,7 +1290,18 @@ def list_voices() -> dict:
 @router.post("/voices/{voice_id}")
 async def upload_voice(voice_id: str, file: UploadFile = File(...),
                        label: str = Form(""), transcript: str = Form("")) -> dict:
-    data = await file.read()
+    # One byte past the cap, never the whole body. The same shape
+    # uploads.py:70-73 uses, and for the same reason: the ceiling used to be
+    # measured inside refs.save_upload, which is AFTER the entire file is in
+    # memory, so the check could only ever report a body that had already
+    # been buffered.
+    #
+    # Cut here rather than leaving it to refs: a truncated byte string reads
+    # as a malformed audio header down there, and the user would be told the
+    # file is invalid when what is true is that it is too big.
+    data = await file.read(int(config.TTS_REF_MAX_BYTES) + 1)
+    if len(data) > int(config.TTS_REF_MAX_BYTES):
+        raise HTTPException(400, refs.TTS_REFERENCE_INVALID)
     try:
         # Off the event loop (audit KÖK 8): save_upload makes a directory,
         # writes the clip, SHREDS the previous one (a full overwrite pass) and

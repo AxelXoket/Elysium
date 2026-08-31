@@ -27,6 +27,7 @@ import logging
 import shutil
 import sys
 import time
+from typing import NamedTuple
 from functools import partial
 from pathlib import Path
 
@@ -307,11 +308,66 @@ def _sweep_crashed_rotation_backups(key: bytes) -> list[str]:
       discard path in this file refuses to do, and a route offering to do it
       would be a button that destroys data nobody could check first.
 
-    Returns the names it left behind, so /vault/status can say they are there.
+    THE SECOND FAMILY. A rotation also shelves the old salt, verifier and
+    mirror as `<name>.bak-<ts>` and shreds them forty-two lines later. Killed
+    in between, it leaves a working recipe for the key it was replacing, in
+    the clear, beside a database that key still opens - and this sweep looked
+    only at `app.db.rekey.bak-*`, so nothing ever removed them. The one place
+    that knew those names was /vault/reset, which is not a path anybody takes
+    to recover from a crash.
+
+    They are shredded rather than reported, and that is not a contradiction
+    of the paragraph above: the "I do not delete what I cannot read" rule is
+    about ENCRYPTED USER DATA, where an unreadable file might be the only
+    copy of something. These are superseded key material, and this function
+    runs only after an unlock has already proved the LIVE identity works.
+
+    Returns the names of the DATABASE copies it left behind. The caller
+    ignores the return value and /vault/status reads the same list again from
+    database.rotation_backup_paths() - so nothing is lost, but the sentence
+    that used to be here ("so /vault/status can say they are there")
+    described a wire that was never connected.
     """
     left: list[str] = []
+    vault_dir = Path(config.DB_PATH).parent
+    # THE DATABASES FIRST, and the order is the whole of it.
+    #
+    # The loop below KEEPS any copy that does not open with the current key,
+    # and tells the user it is readable with their previous passphrase. What
+    # turns that passphrase into that key is the superseded salt and cost
+    # parameters - the very files the identity sweep removes. Run the other
+    # way round, this function shredded the recipe and then promised the
+    # dish: the kept copy opens for nobody, the message is false, and
+    # /vault/status names the file forever because the discard route refuses
+    # to act while any match is unreadable.
     for path in database.rotation_backup_paths():
         if not database.check_key(key, str(path)):
+            # A file with NOTHING IN IT is not a copy of anything.
+            #
+            # `backup_encrypted` creates its destination before it copies a
+            # single page, so a rotation killed early leaves a zero-byte
+            # `app.db.rekey.bak-*` - the likeliest crash artefact there is.
+            # `check_key` refuses a zero-byte file outright and correctly so,
+            # which lands it here, where the old code called it "readable
+            # with the previous passphrase" and kept it. That was false, and
+            # because a kept copy now suppresses the identity sweep below, it
+            # pinned the superseded salt and verifier beside the vault on
+            # every unlock, for good. The reorder that made the identity
+            # files safe turned this one case from a transient leftover into
+            # a permanent leak.
+            try:
+                empty = path.stat().st_size == 0
+            except OSError:
+                empty = False
+            if empty:
+                if secure_delete.discard(path):
+                    logger.info(
+                        "Removed %s, an empty file left by a rotation that "
+                        "was killed before it copied anything.", path.name)
+                    continue
+                logger.warning(
+                    "%s is empty and could not be removed.", path.name)
+                continue
             left.append(path.name)
             logger.error(
                 "%s is a complete copy of the vault left by an interrupted "
@@ -326,6 +382,72 @@ def _sweep_crashed_rotation_backups(key: bytes) -> list[str]:
             left.append(path.name)
             logger.warning("%s could not be removed and is still on disk.",
                            path.name)
+
+    # ONLY NOW, and only if nothing was left behind.
+    #
+    # These are superseded key material and removing them is right - when
+    # there is nothing left for them to open. While a database copy is still
+    # on disk they are the other half of what would open it, and the message
+    # above has just told the user that copy is readable with their previous
+    # passphrase.
+    #
+    # SAID PLAINLY, because an earlier version of this comment overstated
+    # it: `recover_with_db` does NOT read these files. It tries `salt.bin`,
+    # `salt.bin.new` and the `vault.recovery` mirror, and no route in this
+    # application opens a `.rekey.bak-*` with a shelved salt. So keeping
+    # them preserves the raw material of a recovery, not a recovery the app
+    # can perform. That is still the right side to err on - destroying the
+    # only key to a file we are deliberately keeping is not reversible - but
+    # it is a smaller claim than "the one recovery path the user has".
+    # AND THE OTHER TWO SHELVES. `left` names `app.db.rekey.bak-*` only.
+    #
+    # Two more families of COMPLETE vault copies can be in this folder, and
+    # this application knows about both: `app.db.premigrate.bak` with its
+    # `.unreadable-<ts>` siblings, and `app.db.enc-tmp*`. Both are reported
+    # by /vault/status and both have a discard route of their own. Neither
+    # was asked before the shred below, so a vault that had lost its
+    # `salt.bin` - a sync client, a partial restore, an antivirus quarantine
+    # - and was re-initialised through the door /vault/init was widened to
+    # allow, had the recipe for its own surviving copy destroyed in the same
+    # request that created the new vault. `discard_orphaned_enc_tmp` then
+    # answered `different_key` about a passphrase whose salt was gone.
+    #
+    # Only the ones this key CANNOT open count. A copy that opens under the
+    # live key needs no superseded identity to read it, so keeping the old
+    # salt for it would mean never sweeping at all.
+    stranded: list[str] = []
+    try:
+        import legacy_migration
+
+        for path in legacy_migration.premigrate_backup_paths():
+            if path.exists() and not database.check_key(key, str(path)):
+                stranded.append(path.name)
+        for path in database.orphaned_enc_tmp_paths():
+            if path.exists() and not database.check_key(key, str(path)):
+                stranded.append(path.name)
+    except Exception:                                     # pragma: no cover
+        # A sweep that cannot enumerate has to assume there IS something to
+        # protect. Shredding on the strength of a failed listing is the one
+        # outcome that cannot be undone.
+        logger.warning(
+            "Could not enumerate the other vault copies; the superseded "
+            "identity files are kept.")
+        stranded.append("(unlisted)")
+
+    if left or stranded:
+        logger.info(
+            "Superseded identity files were kept: %d vault copy/copies are "
+            "still on disk and need them to be readable at all.",
+            len(left) + len(stranded))
+        return left
+    for shelved in crypto.shelved_identity_paths(vault_dir):
+        if secure_delete.discard(shelved):
+            logger.info("Removed %s, a superseded identity file left by an "
+                        "interrupted rotation.", shelved.name)
+        else:
+            logger.warning(
+                "%s is part of a working recipe for a superseded vault key "
+                "and could not be removed.", shelved.name)
     return left
 
 
@@ -347,6 +469,14 @@ def _bootstrap_unlocked() -> str | None:
     Returns the plaintext backup path if a migration ran this call, else None.
     """
     _purge_voice_cache()
+    # What nobody has read, counted once. A COUNT, not a scan: the offer goes
+    # on the screen and the reader decides whether to spend anything on it.
+    # See notebook_store.unread_backlog.
+    try:
+        import notebook_worker
+        notebook_worker.worker.count_backlog()
+    except Exception:                                         # noqa: BLE001
+        logger.warning("Could not count the notebook backlog.", exc_info=True)
     import legacy_migration
 
     key = vault_state.get_key()
@@ -559,12 +689,19 @@ def _vault_status_sync() -> dict:
         # complete while the file is there. No route reported this or
         # removed it before now.
         "premigrate_backup": legacy_migration.premigrate_backup_present(),
+        # The NAMES, because the boolean above cannot say how many there are
+        # or what they are called, and a machine that has had several failed
+        # migration passes has one `.unreadable-<ts>` copy per pass. Same
+        # shape as rotation_backups for the same reason.
+        "premigrate_backups": [
+            p.name for p in legacy_migration.premigrate_backup_paths()],
         # Same shape as orphaned_copy_readable, and the same reason: null
         # while locked, because the question needs the key to answer.
         "premigrate_backup_readable": (
             database.check_key(
                 key, str(legacy_migration.premigrate_backup_path()))
-            if key is not None and legacy_migration.premigrate_backup_present()
+            if key is not None
+            and legacy_migration.premigrate_backup_path().exists()
             else None
         ),
     }
@@ -702,8 +839,29 @@ async def vault_init(body: PassphraseBody) -> dict:
         }
 
 
+class KdfUpgrade(NamedTuple):
+    """What an unlock-time KDF upgrade did, and what it could not revoke.
+
+    It used to be a bare bool, and the second half went to a log line and
+    nowhere else. `_rekey_sidecars` returns the snapshots that are still
+    openable with the OLD key, `KeyVault.left_behind` returns the half-written
+    identity files a failed rotation could not remove, and the
+    change-passphrase route puts both on the wire under `unrevoked`. The
+    unlock path ran the same rotation, produced the same two lists, and told
+    the user nothing - so a full copy of the vault could stay readable under a
+    key the user believes has been replaced, and the only trace was in
+    elysium.log.
+
+    Same field name as change-passphrase on purpose: one meaning, one shape,
+    one thing for the frontend to understand.
+    """
+
+    upgraded: bool
+    unrevoked: list[str]
+
+
 def _upgrade_kdf_if_needed(vault: KeyVault, passphrase: str,
-                           old_key: bytes) -> bool:
+                           old_key: bytes) -> KdfUpgrade:
     """Re-derive this vault's key under the current KDF parameters.
 
     Only possible HERE. Strengthening the derivation changes the key, so the
@@ -718,7 +876,7 @@ def _upgrade_kdf_if_needed(vault: KeyVault, passphrase: str,
     the one this function exists to make. The next unlock tries again.
     """
     if not vault.needs_kdf_upgrade():
-        return False
+        return KdfUpgrade(False, [])
     db_path = Path(config.DB_PATH)
     backup = db_path.with_name(db_path.name + f".rekey.bak-{int(time.time())}")
     try:
@@ -744,19 +902,27 @@ def _upgrade_kdf_if_needed(vault: KeyVault, passphrase: str,
                 "KDF upgrade failed AND its backup %s could not be removed; "
                 "it is a full copy of the vault under the current key.",
                 backup.name)
-        return False
+        # The upgrade did not happen, so nothing was revoked and nothing was
+        # left under a superseded key. The vault is exactly as it was.
+        return KdfUpgrade(False, [])
     vault_state.set_key(new_key)
     # The same revocation the passphrase route performs. The passphrase has
     # not changed, but the KEY has, so every snapshot beside the database is
     # still readable under the old one.
     unrevoked = _rekey_sidecars(db_path, backup, old_key, new_key)
+    # The other half, and the change-passphrase route has always carried it:
+    # the identity files a rotation could not clean up after itself. Dropping
+    # it here would leave the two routes disagreeing about what `unrevoked`
+    # means.
+    unrevoked.extend(name for name in vault.left_behind
+                     if name not in unrevoked)
     if unrevoked:
         logger.warning("KDF upgrade left %d sidecar(s) under the old key: %s",
                        len(unrevoked), ", ".join(unrevoked))
     if not secure_delete.discard(backup):
         logger.warning("KDF upgrade could not remove %s", backup.name)
     logger.info("Vault KDF upgraded to n=%d", crypto.KDF_CURRENT["n"])
-    return True
+    return KdfUpgrade(True, unrevoked)
 
 
 @router.post("/unlock")
@@ -885,7 +1051,7 @@ async def vault_unlock(body: PassphraseBody) -> dict:
             raise HTTPException(500, "vault_unlock_failed")
         # AFTER the bootstrap, so a vault that could not finish migrating is
         # not also re-keyed in the same breath.
-        upgraded = await anyio.to_thread.run_sync(
+        kdf = await anyio.to_thread.run_sync(
             partial(_upgrade_kdf_if_needed, vault, body.passphrase, key),
         )
         _apply_screen_privacy(True)
@@ -903,7 +1069,14 @@ async def vault_unlock(body: PassphraseBody) -> dict:
             "backup": Path(migrated_backup).name if migrated_backup else None,
             # Reported rather than silent: this unlock re-encrypted the whole
             # database, which is worth being able to see in a log or a test.
-            "kdf_upgraded": upgraded,
+            "kdf_upgraded": kdf.upgraded,
+            # The names of every full-vault copy this upgrade could NOT move
+            # off the old key, under the same field name change-passphrase
+            # uses. Empty on the ordinary path. It went to a log line and
+            # nowhere else before: the one route that re-keys the database
+            # without being asked was also the one that could not say what it
+            # failed to revoke.
+            "unrevoked": kdf.unrevoked,
         }
     finally:
         # Covers every exit that did NOT already release: the two
@@ -995,7 +1168,13 @@ def _rekey_sidecars(db_path: Path, skip: Path, old_key: bytes,
     # skipped it answered {"unrevoked": []} while every chat stayed readable
     # under the passphrase the user was rotating away from - which is the
     # precise failure this function's docstring says it exists to prevent.
-    candidates = list(db_path.parent.glob(db_path.name + "*.bak*"))
+    candidates = [p for p in db_path.parent.glob(db_path.name + "*.bak*")
+                  # Same filter, same reason as rotation_backup_paths: a
+                  # `-wal` beside a rotation backup matches this glob, is a
+                  # journal rather than a database, and rekeying it fails -
+                  # which put a journal file on the `unrevoked` list as a
+                  # full copy of the vault still open to the old passphrase.
+                  if not p.name.endswith(database._SIDECAR_SUFFIXES)]
     # The whole orphan family, from database, rather than the one canonical
     # name spelled out here. Migration can move a stranded copy aside under a
     # different suffix, and a name this glob does not know is a complete vault
@@ -1058,6 +1237,27 @@ async def vault_change_passphrase(body: ChangePassphraseBody) -> dict:
         await _refuse_passphrase("passphrase change")
 
     async with _vault_lock:
+        # Stand the notebook worker down before the key moves, exactly as the
+        # lock path does. PRAGMA rekey can silently no-op under a concurrent
+        # write lock, and the worker is the one thing in this process that
+        # writes to the database without a request behind it - so the rekey
+        # this route is about to run had a writer racing it and nothing said
+        # so. crypto.change_passphrase VERIFIES the rekey took and turns a
+        # no-op into a 500, which means the missing quiesce did not corrupt
+        # anything; it just produced the failure.
+        #
+        # In the SECOND lock block, not the first: the first one only checks
+        # the old passphrase, and standing the worker down for a typo would
+        # cost five seconds and a drained queue for nothing.
+        #
+        # The shell is the lock path's, down to the swallow: a worker that
+        # will not stand down must not fail a passphrase change. The rekey
+        # still verifies itself either way.
+        try:
+            import notebook_worker
+            await notebook_worker.quiesce()
+        except Exception:                                     # noqa: BLE001
+            logger.warning("Notebook worker did not stand down cleanly.")
 
         # FB5b: NO set_key(old_key) here. Reading the current key from
         # vault_state would force a LOCKED vault open (the 423 gate would let
@@ -1195,7 +1395,7 @@ def _reset_identity_files(vault_dir: Path) -> list[str]:
     # a hardlink, a lock, a read-only bit - this whole family is held back so
     # the surviving database is not bricked worse than it already is, and the
     # mirror is the last copy of the recipe for it.
-    for name in ("salt.bin", "verifier.bin", "kdf.json", "vault.recovery"):
+    for name in crypto.IDENTITY_NAMES:
         candidates = [vault_dir / name, vault_dir / f"{name}.new"]
         candidates += sorted(vault_dir.glob(f"{name}.bak-*"))
         for path in candidates:

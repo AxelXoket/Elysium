@@ -16,6 +16,7 @@ disagree with the fit without losing the data.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -45,6 +46,28 @@ SAMPLES = [
 ]
 
 
+def _reference_voice_id() -> str:
+    """Which voice to clone from, without naming anybody.
+
+    This used to be a string literal, and the string was the owner's own
+    voice label - live in tracked source, and from there published. A
+    measurement script has no business carrying it: the id is a property of
+    the machine the measurement runs on, not of the code.
+
+    ELYSIUM_LATENCY_VOICE names one explicitly. With nothing set, the first
+    voice this install actually has is used, which is what somebody running
+    this by hand wants anyway.
+    """
+    chosen = os.environ.get("ELYSIUM_LATENCY_VOICE", "").strip()
+    if chosen:
+        return chosen
+    from tts import refs as tts_refs
+    found = tts_refs.list_voices()
+    if not found:
+        raise LookupError("no reference voice on this install")
+    return found[0].voice_id
+
+
 def _line(char="-"):
     print(char * 78)
 
@@ -60,15 +83,19 @@ def _find_model():
 
 
 def _reference():
-    """The velvet reference the app itself uses, as the worker wants it.
+    """The reference voice the app itself uses, as the worker wants it.
 
     Goes through tts.refs rather than building the path by hand: the folder
     a voice id resolves to is opaque now (an install's own choice of names
-    must not sit readable on disk as folder names), so "velvet" is no longer
+    must not sit readable on disk as folder names), so the id is no longer
     a path component - only refs.describe still knows how to find it.
+
+    Which id, in turn, comes from _reference_voice_id: naming one here in
+    the source would put back on paper exactly the thing the opaque folder
+    names were introduced to take off the disk.
     """
     try:
-        voice = tts_refs.describe("velvet")
+        voice = tts_refs.describe(_reference_voice_id())
     except tts_refs.RefError:
         return {}, {}
     wav = Path(voice.path) / voice.audio_name
@@ -109,7 +136,7 @@ def main() -> int:
     model = _find_model()
     values, extra = _reference()
     if not values:
-        print("WARNING: no velvet reference found; measuring UNCLONED speech, "
+        print("WARNING: no reference voice found; measuring UNCLONED speech, "
               "which is not the path the app takes.")
 
     host = tts_host.get_host()

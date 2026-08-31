@@ -247,12 +247,21 @@ class TestTheRouterLogLine:
         assert "Mariel" not in loud.text
         assert "harbour" not in loud.text
 
-    def test_a_voice_that_will_not_delete_is_not_named_in_the_log(
+    def test_the_delete_route_does_not_name_the_voice(
             self, loud, monkeypatch):
         """A voice_id is the frontend's own uuid for anything made since the
         voice folders were hashed, but on an older install it is a slug of the
         label the user typed. The log line cannot tell the two apart, so it
-        names neither."""
+        names neither.
+
+        NARROWED. This was called `test_a_voice_that_will_not_delete_is_not_
+        named_in_the_log`, which is a promise about the whole delete surface,
+        and it keeps that promise by replacing `refs.delete` with a lambda -
+        so the four lines inside refs.delete that DID name the voice never
+        ran, and the gate that was supposed to cover them measured the one
+        function that had already been fixed. The name now says what it
+        measures: this route. TestRefsDeleteItself below drives the real one.
+        """
         from routers import tts_runtime
 
         monkeypatch.setattr(tts_runtime.refs, "delete", lambda vid: False)
@@ -265,3 +274,138 @@ class TestTheRouterLogLine:
         # The log says a voice would not go, which is the diagnosable fact.
         assert "could not be removed" in loud.text
         assert "mariel" not in loud.text.lower()
+
+
+# ── the module the route calls, driven for real ────────────────────────────
+
+class TestRefsDeleteItself:
+    """`refs.delete` and `refs.list_voices`, with nothing replaced.
+
+    Four log lines in tts/refs.py wrote `voice_id` verbatim. Every one is a
+    branch you only reach when something on disk has gone wrong, which is why
+    they survived: the happy path never touches them, and the one test that
+    named this surface stubbed the function out entirely.
+
+    Each test below drives one of the four branches, and each makes three
+    assertions rather than one:
+
+      * the id is NOT in the log - the promise;
+      * a record was actually emitted - the ground control, without which the
+        test also passes on a build that logs nothing at all;
+      * the opaque handle IS in the log - the positive control, without which
+        "delete the log line" would look like a fix and the diagnosis would
+        be gone.
+    """
+
+    ID = "mariel-the-harbourmaster"
+
+    @pytest.fixture
+    def refs_root(self, monkeypatch, tmp_path):
+        import config
+        from tts import refs
+
+        root = tmp_path / "voice" / "refs"
+        root.mkdir(parents=True)
+        monkeypatch.setattr(config, "TTS_REFS_DIR", str(root), raising=False)
+        # _migrated_roots is process-wide and keyed by path; a fresh tmp_path
+        # is a fresh key, so nothing carries over from an earlier test.
+        return root
+
+    def _voice(self, refs_root, voice_id=None, *, audio=True):
+        """A voice folder on disk, made the way the module makes them."""
+        from tts import refs
+
+        folder = refs._voice_dir(voice_id or self.ID)
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "voice.json").write_text(
+            '{"voice_id": "%s", "label": "Mariel"}' % (voice_id or self.ID),
+            encoding="utf-8")
+        if audio:
+            (folder / "ref.wav").write_bytes(b"RIFF----WAVEfmt ")
+        return folder
+
+    def _handle(self, voice_id=None):
+        from tts import refs
+        return refs._hash_name(voice_id or self.ID)[:12]
+
+    def _clean(self, log):
+        text = log.text
+        assert self.ID not in text
+        assert "mariel" not in text.lower()
+        assert "harbourmaster" not in text.lower()
+        return text
+
+    def test_a_redirected_voice_folder_is_named_by_its_handle(
+            self, loud, refs_root, monkeypatch):
+        import secure_delete
+        from tts import refs
+
+        self._voice(refs_root)
+        # The real branch needs a junction. Rather than ask the test runner
+        # for the privilege to create one, the DETECTOR is replaced and the
+        # leaking function is not: refs.delete runs exactly as shipped.
+        monkeypatch.setattr(secure_delete, "is_redirected", lambda p: True)
+
+        assert refs.delete(self.ID) is False
+        text = self._clean(loud)
+        assert "is a redirected name" in text          # ground control
+        assert self._handle() in text                  # positive control
+
+    def test_a_file_that_will_not_shred_is_named_by_its_handle(
+            self, loud, refs_root, monkeypatch):
+        import secure_delete
+        from tts import refs
+
+        self._voice(refs_root)
+        monkeypatch.setattr(secure_delete, "is_redirected", lambda p: False)
+        monkeypatch.setattr(secure_delete, "shred_tree",
+                            lambda folder: (0, ["ref.wav"], []))
+
+        refs.delete(self.ID)
+        text = self._clean(loud)
+        assert "file(s) could not be removed" in text  # ground control
+        assert self._handle() in text                  # positive control
+
+    def test_a_pruned_subfolder_is_named_by_its_handle(
+            self, loud, refs_root, monkeypatch):
+        import secure_delete
+        from tts import refs
+
+        self._voice(refs_root)
+        monkeypatch.setattr(secure_delete, "is_redirected", lambda p: False)
+        monkeypatch.setattr(secure_delete, "shred_tree",
+                            lambda folder: (0, [], ["inner"]))
+
+        assert refs.delete(self.ID) is False
+        text = self._clean(loud)
+        assert "contains a redirected folder" in text  # ground control
+        assert self._handle() in text                  # positive control
+
+    def test_an_unusable_voice_folder_is_named_by_its_handle(
+            self, loud, refs_root):
+        """The fourth line, and the only one on a read path.
+
+        Nothing is replaced here at all: a folder with a recorded id and no
+        audio in it is exactly what `describe` refuses, which is the branch
+        list_voices logs from.
+        """
+        from tts import refs
+
+        self._voice(refs_root, audio=False)
+
+        assert refs.list_voices() == []
+        text = self._clean(loud)
+        assert "skipping unusable voice folder" in text   # ground control
+        assert self._handle() in text                     # positive control
+
+    def test_the_handle_survives_a_refs_dir_that_cannot_be_read(
+            self, loud, refs_root, monkeypatch):
+        """_handle never raises: a log call is not allowed to be the thing
+        that breaks a delete."""
+        from tts import refs
+
+        monkeypatch.setattr(refs, "_hash_name",
+                            lambda vid: (_ for _ in ()).throw(OSError("no")))
+        assert refs._handle(self.ID) == "unresolved"
+        assert self.ID not in loud.text
+

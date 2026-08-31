@@ -47,6 +47,31 @@ from . import runtimes
 
 logger = logging.getLogger(__name__)
 
+def _message_tag_of(name: str) -> int | None:
+    """The message id in a cache file name, or None if it does not carry one.
+
+    The shape is `speak-<tag>-<ms>-<tid>.wav`. A tag that is not a positive
+    integer belongs to something with no message: a preview, a probe, or a
+    stream that has not been adopted yet. Those are swept by age, by the lock
+    and at launch, never by a message delete, because there is no message to
+    match them against.
+    """
+    if not name.startswith("speak-") or not name.endswith(".wav"):
+        return None
+    tag = name[len("speak-"):].split("-", 1)[0]
+    if not tag.isdigit():
+        return None
+    value = int(tag)
+    return value if value > 0 else None
+
+
+#: What a streamed wav carries instead of a message id, until it has one.
+#:
+#: `t` rather than a bare number so the two tag shapes can never be confused:
+#: `speak-5-...` is message five, `speak-t5-...` is a stream that happens to
+#: have drawn the token "5".
+_STREAM_TAG_PREFIX = "t"
+
 STATE_UNLOADED = "unloaded"
 STATE_LOADING = "loading"
 STATE_LOADED = "loaded"
@@ -353,12 +378,14 @@ class VoiceHost:
     # -- speaking -----------------------------------------------------------
     def speak(self, text: str, values: dict | None = None,
               out_path: str | None = None, extra: dict | None = None,
-              message_id: int | None = None) -> dict:
+              message_id: int | None = None,
+              stream_token: str | None = None) -> dict:
         with self._lock:
             client = self._client
             if client is None or not client.alive or self._state != STATE_LOADED:
                 raise self._fail(TTS_WORKER_UNAVAILABLE, "no model is loaded")
-        out = out_path or self._next_out_path(message_id)
+        out = out_path or self._next_out_path(
+            message_id, stream_token=stream_token)
         payload = {"text": text, "out": out, "values": values or {}}
         payload.update(extra or {})
         with self._lock:
@@ -414,7 +441,8 @@ class VoiceHost:
                 self._uid = None
                 self._vram_mb = None
 
-    def _next_out_path(self, message_id: int | None = None) -> str:
+    def _next_out_path(self, message_id: int | None = None, *,
+                       stream_token: str | None = None) -> str:
         cache = Path(config.TTS_CACHE_DIR)
         cache.mkdir(parents=True, exist_ok=True)
         _refuse_to_speak_outside_our_own_folder(cache)
@@ -428,11 +456,65 @@ class VoiceHost:
         #
         # 0 for the paths that have no message yet (a preview, a probe). Those
         # are still swept by age, by the lock and at launch.
-        tag = message_id if isinstance(message_id, int) and message_id > 0 else 0
+        # A LIVE reply has no message id yet: the assistant row is written
+        # after the last delta, on purpose, and stream_hook.py says so. So
+        # every streamed wav was tagged 0, and `speak-0-` is not a name that
+        # can be looked up: forget_message_audio globs `speak-<mid>-*` and
+        # never saw the most common way audio gets made in this app.
+        #
+        # A per-stream token closes that without moving the row write. The
+        # stream knows its own token, so when the row finally lands it can
+        # rename exactly its own files and nothing else - which matters,
+        # because two concurrent streams would otherwise share one `speak-0-`
+        # pattern and a bulk rename would take the other stream's audio.
+        #
+        # 0 stays for the paths that have neither: a preview, a probe. Those
+        # are still swept by age, by the lock and at launch.
+        if isinstance(message_id, int) and message_id > 0:
+            tag: str | int = message_id
+        elif stream_token:
+            tag = f"{_STREAM_TAG_PREFIX}{stream_token}"
+        else:
+            tag = 0
         # Monotonic-ish and collision-free without needing a clock the tests
         # would have to freeze.
         return str(cache / f"speak-{tag}-{int(time.time() * 1000)}"
                            f"-{threading.get_ident()}.wav")
+
+    def adopt_stream_audio(self, stream_token: str, message_id: int) -> list[str]:
+        """Give a finished stream's audio the id of the row it belongs to.
+
+        Called once, after the assistant row is written. Everything this
+        stream produced is named `speak-t<token>-...`; each file is renamed to
+        `speak-<mid>-...` so that forget_message_audio can find it, which
+        until now it could not: a streamed reply was audio nobody could
+        delete by name.
+
+        Returns the names it could not rename. A wav that is still open -
+        Windows keeps a lock while it plays - is left where it is rather than
+        raised over: the file is swept by age, by the lock and at launch
+        anyway, and a rename that throws would take down the reply that just
+        succeeded.
+        """
+        if not stream_token or not isinstance(message_id, int) or message_id <= 0:
+            return []
+        cache = Path(config.TTS_CACHE_DIR)
+        if not cache.is_dir() or secure_delete.is_redirected(cache):
+            return []
+        prefix = f"speak-{_STREAM_TAG_PREFIX}{stream_token}-"
+        left: list[str] = []
+        for wav in sorted(cache.glob(f"{prefix}*.wav")):
+            target = cache / f"speak-{message_id}-{wav.name[len(prefix):]}"
+            try:
+                os.replace(wav, target)
+            except OSError:
+                left.append(wav.name)
+        if left:
+            logger.warning(
+                "tts: %d streamed audio file(s) could not be renamed onto "
+                "their message and stay findable only by age: %s",
+                len(left), ", ".join(left))
+        return left
 
     def forget_message_audio(self, message_id: int) -> list[str]:
         """Destroy the spoken form of one message. Returns what would not go.
@@ -443,11 +525,29 @@ class VoiceHost:
         else, and a recording of a reply the user just deleted is the sharpest
         case of that: they deleted it BECAUSE they wanted it gone.
         """
+        return self.forget_messages_audio([message_id])
+
+    def forget_messages_audio(self, message_ids) -> list[str]:
+        """The same, for many messages, in ONE pass over the cache.
+
+        Deleting a chat used to call the single-message form once per row, and
+        each call globbed the whole directory again: a hundred messages meant
+        a hundred scans of the same folder, on the thread that had just
+        committed the delete. The name already carries the id, so one walk
+        answers for every id at once.
+        """
+        wanted = {int(m) for m in message_ids
+                  if isinstance(m, int) and int(m) > 0}
+        if not wanted:
+            return []
         cache = Path(config.TTS_CACHE_DIR)
         if not cache.is_dir() or secure_delete.is_redirected(cache):
             return []
         left: list[str] = []
-        for wav in cache.glob(f"speak-{int(message_id)}-*.wav"):
+        for wav in sorted(cache.iterdir()):
+            tag = _message_tag_of(wav.name)
+            if tag is None or tag not in wanted:
+                continue
             if not secure_delete.shred(wav):
                 left.append(wav.name)
         if left:
@@ -675,10 +775,32 @@ class VoiceHost:
 
     # -- health -------------------------------------------------------------
     def poll_health(self) -> dict:
-        """Called on a timer and on every status read. Three jobs: notice a
-        worker that died on its own, give back memory nobody is using, and
-        retry whatever the last cache wipe could not remove."""
+        """Called on a timer and on every status read. Four jobs: notice a
+        worker that died on its own, give back memory nobody is using, retry
+        whatever the last cache wipe could not remove, and hold the audio
+        cache to its retention window."""
         self._retry_stuck_wipe()
+        # The age limit, applied while the app is simply OPEN.
+        #
+        # `_trim_cache` had ONE trigger: `_next_out_path`, which runs per
+        # synthesised sentence. So the retention window was enforced only
+        # while somebody kept talking. Stop talking and the files sit there
+        # until the vault locks - which is to say the promise "audio older
+        # than TTS_CACHE_MAX_AGE_S is gone" was true only for people who
+        # never paused. This cache is the conversation in audible form, in
+        # the clear, beside a database that went to the trouble of being
+        # encrypted.
+        #
+        # Here rather than in a timer of its own: this method already runs on
+        # `TTS_HEALTH_POLL_S` and already does exactly this kind of janitorial
+        # retry work. `_trim_cache` carries its own `is_redirected` guard and
+        # swallows OSError, so a file being written while the pulse walks the
+        # directory is not a new failure - and the age threshold does not
+        # reach a file that was just created.
+        try:
+            self._trim_cache(Path(config.TTS_CACHE_DIR))
+        except OSError:                                   # pragma: no cover
+            pass
         with self._lock:
             client = self._client
             state = self._state

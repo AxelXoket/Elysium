@@ -24,6 +24,7 @@ import {
   getModelModalities,
   hasInputModality,
   hasOutputModality,
+  acceptsImages,
   shouldShowTextOnlyNote,
   getContextBudgetBounds,
   CONTEXT_BUDGET_MIN,
@@ -475,5 +476,54 @@ describe("Model helper privacy checks", () => {
     expect(bounds).not.toHaveProperty("zdr");
     expect(bounds).not.toHaveProperty("data_collection");
     expect(bounds).not.toHaveProperty("allow_fallbacks");
+  });
+});
+
+describe("one rule for images, not two", () => {
+  /**
+   * `acceptsImages`' own doc comment says it deliberately does NOT read like
+   * `hasInputModality(model, "image")`, names the difference, and says what
+   * deriving the rule twice once cost - a gate that accepted an image the
+   * assembler then silently dropped. Three gates a person actually touches
+   * were nonetheless left on the other derivation: the attach button, the
+   * paste/drop path, and payload assembly.
+   *
+   * They disagree on a shape OpenRouter sends routinely. `openrouter.py`
+   * normalises the architecture block with `or []`, so any model that omits
+   * or nulls `input_modalities` arrives as `[]` - and the backend, the
+   * assembler and the budget estimator all read that as "we do not know,
+   * let the provider decide", while `hasInputModality` reads it as "no".
+   */
+  const unknown = { input_modalities: [] };
+  const textOnly = { input_modalities: ["text"] };
+  const vision = { input_modalities: ["text", "image"] };
+
+  it("treats unknown metadata the way the backend does", () => {
+    // The backend is `_model_accepts_images`: refuse only when the metadata
+    // POSITIVELY says there is no image input.
+    expect(acceptsImages(unknown)).toBe(true);
+    expect(acceptsImages(null)).toBe(true);
+    expect(acceptsImages(undefined)).toBe(true);
+  });
+
+  it("still refuses a model that says it is text-only", () => {
+    // GROUND CONTROL. A rule that answered yes to everything would pass the
+    // test above and send images to a model that cannot read them.
+    expect(acceptsImages(textOnly)).toBe(false);
+    expect(acceptsImages(vision)).toBe(true);
+  });
+
+  it("names the one case where the two helpers must differ", () => {
+    // POSITIVE CONTROL for the disagreement itself. If `hasInputModality`
+    // were ever "fixed" to match, the gates would agree by accident and the
+    // note-worthy difference - which is real and intended - would vanish
+    // with nothing recording that it had.
+    expect(hasInputModality(unknown, "image")).toBe(false);
+    expect(acceptsImages(unknown)).toBe(true);
+    // And they agree everywhere else, which is why swapping the gates
+    // changes nothing for a model whose metadata is present.
+    for (const m of [textOnly, vision]) {
+      expect(hasInputModality(m, "image")).toBe(acceptsImages(m));
+    }
   });
 });

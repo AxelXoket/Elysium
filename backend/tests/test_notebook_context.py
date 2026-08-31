@@ -296,3 +296,102 @@ class TestAStaleExclusionReasonIsCleared:
         self._turn(chat, 9000)
         self._turn(chat, 9000)
         assert any(e["excluded_reason"] for e in notebook.list_entries(chat))
+
+
+class TestTheSameSetIsNotWrittenTwice:
+    """`record_exclusions` runs on EVERY sent message.
+
+    The early return read a COUNT: it fired only when there was nothing
+    stored and nothing to store. That is the wrong question while the ceiling
+    is biting - `dropped` is full every turn and the count is above zero
+    every turn, so the guard never closed and every message took
+    `BEGIN IMMEDIATE` and rewrote the identical set. Holding the writer lock
+    to change nothing stalls every live stream in the process for as long as
+    another writer holds it.
+
+    Measured by counting the writes the connection actually performed
+    (`total_changes`), not by timing anything.
+    """
+
+    @staticmethod
+    def _write_count(chat_id: int, excluded) -> int:
+        """How many writing statements `record_exclusions` issued.
+
+        `get_db` hands out a FRESH connection per call, so a trace callback
+        installed on a connection of the test's own sees nothing - the first
+        version of this helper measured zero for every case and one of these
+        tests passed on it. The wrapper goes around `get_db` itself, which is
+        the only place the real connection is reachable.
+        """
+        import contextlib
+
+        import database
+
+        real = database.get_db
+        seen: list[str] = []
+
+        @contextlib.contextmanager
+        def traced(*a, **kw):
+            with real(*a, **kw) as con:
+                con.set_trace_callback(seen.append)
+                try:
+                    yield con
+                finally:
+                    con.set_trace_callback(None)
+
+        # NOT monkeypatch.undo() - that reverts everything the fixtures set,
+        # including the vault key and DB_PATH, and the next statement then
+        # opens the real file with the wrong key. Restore just this name.
+        saved = notebook.get_db
+        notebook.get_db = traced
+        try:
+            notebook.record_exclusions(chat_id, excluded)
+        finally:
+            notebook.get_db = saved
+        return sum(1 for s in seen if s.strip().upper().startswith(
+            ("BEGIN IMMEDIATE", "UPDATE")))
+
+    def test_a_second_identical_call_writes_nothing(
+            self, db, chat) -> None:
+        for i in range(40):
+            notebook.create_entry(chat, f"{i:03d} " + "x" * 200)
+        blocks = notebook.build_notebook_blocks(chat, 9000)
+        assert blocks["excluded"], "ground: the ceiling really is biting"
+
+        notebook.record_exclusions(chat, blocks["excluded"])
+        first = [e["excluded_reason"] for e in notebook.list_entries(chat)]
+        assert any(first), "ground: the first call wrote the reasons"
+
+        assert self._write_count(chat, blocks["excluded"]) == 0
+
+        assert [e["excluded_reason"]
+                for e in notebook.list_entries(chat)] == first, (
+            "the early return must not change what is stored")
+
+    def test_a_different_set_still_writes(
+            self, db, chat) -> None:
+        """GROUND CONTROL. Without it the fix is satisfied by a function that
+        returns immediately every time, which would freeze the badge."""
+        for i in range(40):
+            notebook.create_entry(chat, f"{i:03d} " + "x" * 200)
+        blocks = notebook.build_notebook_blocks(chat, 9000)
+        notebook.record_exclusions(chat, blocks["excluded"])
+
+        smaller = blocks["excluded"][:-1]
+        assert self._write_count(chat, smaller) > 0
+
+    def test_clearing_a_stale_reason_still_writes(
+            self, db, chat) -> None:
+        """POSITIVE CONTROL for the half that is easiest to lose: stored
+        reasons and NOTHING dropped is the quiet turn after the pressure
+        stopped, and it must still run."""
+        for i in range(40):
+            notebook.create_entry(chat, f"{i:03d} " + "x" * 200)
+        blocks = notebook.build_notebook_blocks(chat, 9000)
+        notebook.record_exclusions(chat, blocks["excluded"])
+        assert any(e["excluded_reason"] for e in notebook.list_entries(chat))
+
+        assert self._write_count(chat, []) > 0
+        assert not any(e["excluded_reason"]
+                       for e in notebook.list_entries(chat))
+
