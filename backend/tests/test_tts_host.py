@@ -25,6 +25,9 @@ from tts.errors import (
     TTS_WORKER_CRASHED,
     TTS_WORKER_UNAVAILABLE,
 )
+# Imported, never retyped: a test that spells "loading" out by hand goes on
+# agreeing with itself after the host stops using that word.
+from tts.host import STATE_ERROR, STATE_LOADED, STATE_LOADING
 from tts.worker_client import WorkerFailure
 
 FAKE = str(Path(__file__).resolve().parent / "fake_worker.py")
@@ -322,27 +325,154 @@ class TestWorkerScriptResolution:
 # observed live: 90 seconds of red error while the load ran to success.
 
 
-def test_the_loading_uid_is_published_before_the_load_finishes():
-    from pathlib import Path
+class TestTheHostSaysWhichModelIsComingUp:
+    """These three replaced source-text scans (KADEME 21).
 
-    source = (Path(__file__).resolve().parent.parent
-              / "tts" / "host.py").read_text(encoding="utf-8")
-    head = source[source.index("self._state = STATE_LOADING"):]
-    body = head[: head.index("client = None")]
-    assert "self._uid = model.uid" in body, (
-        "the host does not publish which model is loading"
-    )
-    assert "self._engine_id = model.engine_id" in body
+    The old pair sliced `tts/host.py`'s own text between two landmarks and
+    asserted `"self._uid = model.uid"` appeared inside the slice, and that
+    `"self._uid = prior_uid"` appeared anywhere in the file. Both pass on a
+    line that is dead, unreachable, commented out inside a string, or that
+    assigns the right name in the wrong order - which is the whole reason the
+    rule exists. They are driven now: a load is held open mid-flight and the
+    snapshot is read from ANOTHER thread, exactly as `/tts/active` reads it
+    while the model comes up, and a refusal is fired at a host that already
+    has a model resident.
+    """
 
+    def test_the_loading_uid_is_published_before_the_load_finishes(self, host):
+        """What `/tts/active` can see WHILE the card is filling.
 
-def test_a_refused_load_still_restores_the_previous_identity():
-    """Publishing early is only safe because the failure path puts it back."""
-    from pathlib import Path
+        The identity used to be written only on success, so for the whole
+        (60-99 s) load the snapshot answered uid=None: every voice control
+        stayed in its ready face instead of "still loading", and the readiness
+        check counted our own in-flight allocation as somebody else's,
+        announcing "Not enough GPU memory to load this voice model" about the
+        load in progress. Observed live as 90 seconds of red error while the
+        load ran to success.
 
-    source = (Path(__file__).resolve().parent.parent
-              / "tts" / "host.py").read_text(encoding="utf-8")
-    assert "prior_uid, prior_engine, prior_vram, prior_alive = prior" in source
-    assert "self._uid = prior_uid" in source
+        The hold sits in `check_fit`, which is the FIRST thing `load()` does
+        after the state block - so a pass here says the identity is public
+        before any preflight work, not merely before the worker spawns.
+        """
+        model = _model()
+
+        # GROUND CONTROL. Nothing is published before the load starts, so a
+        # mid-load uid of "uid1" cannot be something that was already there.
+        before = host.snapshot()
+        assert before["uid"] is None and before["engine_id"] is None, (
+            "ground control failed: the fresh host already claimed an "
+            "identity, so this test could not tell publication from leftovers")
+
+        arrived = threading.Event()
+        may_finish = threading.Event()
+        held: list[bool] = []
+        real_fit = tts_host.check_fit
+
+        def hold_the_load_open(*a, **kw):
+            arrived.set()
+            held.append(may_finish.wait(30))
+            return real_fit(*a, **kw)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(tts_host, "check_fit", hold_the_load_open)
+            t = threading.Thread(target=lambda: host.load(model, {}),
+                                 daemon=True)
+            t.start()
+            try:
+                assert arrived.wait(10), (
+                    "the load never reached the preflight, so nothing was "
+                    "observed mid-flight and this run proved nothing")
+                # Read from the MAIN thread while the loading thread is parked
+                # inside check_fit: this is a concurrent reader, the same as
+                # the status route.
+                mid = host.snapshot()
+            finally:
+                may_finish.set()
+            t.join(timeout=30)
+
+        assert held == [True], (
+            "the load was not still in flight when the snapshot was taken, so "
+            "this run measured a finished load rather than a running one")
+        assert mid["state"] == STATE_LOADING, (
+            f"the host reported {mid['state']!r} while a model was coming up, "
+            f"so the UI cannot show a loading face")
+        assert mid["uid"] == model.uid, (
+            f"mid-load the host reported uid {mid['uid']!r} instead of "
+            f"{model.uid!r}: /tts/active cannot match the requested model, so "
+            f"every voice control sits in its ready face and the readiness "
+            f"check blames our own in-flight allocation on somebody else")
+        assert mid["engine_id"] == model.engine_id, (
+            f"mid-load the host reported engine {mid['engine_id']!r} instead "
+            f"of {model.engine_id!r}, so nothing can tell WHICH engine is "
+            f"occupying the card")
+
+        # And the held load really did go on to succeed - the publication is
+        # early, not a substitute for finishing.
+        done = host.snapshot()
+        assert done["state"] == STATE_LOADED and done["uid"] == model.uid
+
+    def test_a_refused_load_still_restores_the_previous_identity(
+        self, host, monkeypatch
+    ):
+        """Publishing early is only safe because the failure path puts it back.
+
+        A refusal happens BEFORE `_drop_client`, so the previously loaded model
+        is untouched and still holding VRAM. If the early publish is not undone
+        the app reports "nothing loaded" while a process owns the card:
+        invisible in the UI, and to anyone wondering where the memory went.
+        """
+        host.load(_model(), {})
+        resident = host.snapshot()
+        assert resident["state"] == STATE_LOADED and resident["uid"] == "uid1", (
+            "ground control failed: there was no resident model to preserve")
+        assert resident["vram_mb"] is not None, (
+            "ground control failed: the resident model reported no VRAM "
+            "figure, so a wiped one would look identical to a kept one")
+
+        # A game grabs the card between the two loads.
+        _fake_smi(monkeypatch, free=400, used=15903)
+        with pytest.raises(WorkerFailure) as exc:
+            host.load(_model(uid="uid2", path="/models/other"), {})
+        assert exc.value.code == TTS_INSUFFICIENT_VRAM
+
+        assert host._client is not None and host._client.alive, (
+            "ground control failed: the refusal ended the resident worker, so "
+            "there was nothing left for the snapshot to be wrong about")
+        after = host.snapshot()
+        for key in ("state", "uid", "engine_id", "vram_mb"):
+            assert after[key] == resident[key], (
+                f"a refused load rewrote {key}: the host now says "
+                f"{after[key]!r} where the resident model is {resident[key]!r}, "
+                f"so the app reports nothing loaded while a live worker holds "
+                f"the card")
+        assert after["error_code"] == TTS_INSUFFICIENT_VRAM, (
+            "the refusal must still be reported - restoring the identity may "
+            "not also swallow the reason the user was refused")
+
+    def test_a_refusal_with_nothing_resident_claims_nothing(self, host,
+                                                            monkeypatch):
+        """POSITIVE CONTROL for the restore above.
+
+        The restore must be conditional on something ACTUALLY being resident.
+        A branch that always put an identity back - or one that never cleared
+        it after the early publish - would pass the test above and leave a
+        fresh host claiming a model it never loaded. That claim is what makes
+        the UI offer a Speak button wired to no worker at all.
+        """
+        _fake_smi(monkeypatch, free=400, used=15903)
+        with pytest.raises(WorkerFailure) as exc:
+            host.load(_model(), {})
+        assert exc.value.code == TTS_INSUFFICIENT_VRAM
+
+        snap = host.snapshot()
+        assert snap["state"] == STATE_ERROR, (
+            f"a refusal with nothing resident left the host in "
+            f"{snap['state']!r} instead of an error state")
+        assert (snap["uid"], snap["engine_id"], snap["vram_mb"]) == (
+            None, None, None), (
+            f"the early publish survived a refusal that loaded nothing: the "
+            f"host claims {snap['uid']!r} on {snap['engine_id']!r} with no "
+            f"worker behind it")
 
 
 # ── Unloading a model must not delete the audio being played ────────────────
@@ -354,10 +484,11 @@ def test_a_refused_load_still_restores_the_previous_identity():
 # anywhere to explain it. VRAM and privacy have different lifetimes.
 
 
-def _host_source() -> str:
-    from pathlib import Path
-    return (Path(__file__).resolve().parent.parent
-            / "tts" / "host.py").read_text(encoding="utf-8")
+# _host_source() was deleted in KADEME 21. It read tts/host.py's whole text and
+# handed it back, and NOTHING called it - the last caller went with
+# test_wipe_cache_still_exists_for_the_callers_that_need_it below. A dead
+# source reader is not a test that needs converting, it is a loaded gun left on
+# the table for the next person who wants to grep instead of drive.
 
 
 # test_wipe_cache_still_exists_for_the_callers_that_need_it was deleted in

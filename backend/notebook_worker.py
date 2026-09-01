@@ -713,16 +713,30 @@ class Worker:
                 # on. `openrouter` raises one class and puts the separated reason
                 # in the message, which is why the settle path two hundred lines
                 # down already records `str(exc)`.
-                # NOT released, deliberately. This except catches both sides of
-                # the only line that matters: a request that never reached the
-                # socket (`api_key_not_set` is raised by `complete`'s first
-                # statement, and a proxy or egress refusal lands here too) and one
-                # that was sent, billed, and then failed. Telling them apart needs
-                # a `sent_at` stamp the table does not have, and adding a column
-                # means a schema migration that is not open. Giving the slot back
-                # on a guess would refund calls that really were paid for, which
-                # is the failure this whole reservation exists to prevent - so the
-                # conservative half is the one that ships.
+                # RELEASED ONLY WHEN NOTHING WAS BILLED.
+                #
+                # This except catches both sides of the only line that
+                # matters: a request that never reached a socket
+                # (`api_key_not_set`, a refused proxy, a destination the
+                # egress gate would not open, a connect timeout) and one that
+                # was sent, generated, billed and then failed. Keeping the
+                # slot for both was the conservative half, and it cost a
+                # sixtieth of the day every time a proxy was misconfigured.
+                #
+                # NOT a `sent_at` column, which is what this was waiting for.
+                # A stamp we write after the fact cannot tell a connect
+                # timeout from a read timeout - both are one
+                # `TimeoutException` by the time anyone could write it, and
+                # one of them has been paid for. The exception knows, because
+                # it is raised at the point where the answer is a fact. See
+                # `OpenRouterError.reached_provider`.
+                #
+                # `is False`, not `not`: an exception from somewhere else
+                # carries no such attribute, and `getattr(..., True)` keeps
+                # the old behaviour for it. Unknown still means billed.
+                if getattr(exc, "reached_provider", True) is False:
+                    await anyio.to_thread.run_sync(
+                        _release_one, plan["claim_day"])
                 await _record_failure(chat_id, plan, _failure_type(exc))
                 return
 

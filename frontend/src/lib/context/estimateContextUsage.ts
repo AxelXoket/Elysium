@@ -122,6 +122,23 @@ export interface ContextUsageInput {
    * No caller supplies it today, and the default of 0 is the safe direction:
    * a refusal can be missed, never invented. A gauge that cries wolf about a
    * send that would have worked is worse than one that stays quiet. */
+  /**
+   * The message being written, charged the way the backend charges it.
+   *
+   * WIRED SINCE 1 September 2026, and it had no caller before that - which
+   * made `willRefuse` unable to detect the one state it exists for. With
+   * this at 0 the prediction could only fire when the FIXED blocks alone
+   * overflowed, and in that state the meter already reads 100% and danger.
+   * The useful warning is green-at-60%, a long paste, refusal - and that
+   * needs this number.
+   *
+   * TEXT ONLY, said plainly. `_entry_chars` on the backend also charges a
+   * staged image at IMAGE_TOKEN_ESTIMATE * CHARS_PER_TOKEN, but staged
+   * attachments live in ChatCanvas component state and neither gauge is
+   * below it. So a draft carrying images is UNDER-charged here. That keeps
+   * the direction this field was designed around - a refusal can be missed,
+   * never invented - and is a smaller gap than charging nothing.
+   */
   pendingMessageChars?: number | null;
 }
 

@@ -376,30 +376,273 @@ def test_the_event_buffer_is_readable():
 # sentence, until the worker was restarted.
 
 
-def _fish_source() -> str:
-    from pathlib import Path
-    return (Path(__file__).resolve().parent.parent
-            / "tts" / "worker" / "fish_s2.py").read_text(encoding="utf-8")
+# Everything from here down used to READ fish_s2.py's own text and look for
+# substrings in it. A grep cannot tell a rule that RUNS from a rule that is
+# merely written down: it passes on a build where the line sits in dead code
+# or in an unreachable branch, and it fails on a correct build that spells the
+# same rule differently. These drive the real functions instead, against the
+# boundary stubs below - the same trade fish_synth_harness.py already makes
+# for the synthesis path, and for the same reason: the real engine needs a
+# CUDA card, but everything between the model and the card is replaceable.
+
+
+class _Card:
+    """Only the torch.cuda calls fish_s2's load path actually makes.
+
+    A fake that answers more than the real thing is asked would hide a wrong
+    call. `free_gb` is a dial because every codec-policy test below is about
+    what the same code does at two different readings of the same card.
+    """
+
+    def __init__(self, free_gb: float) -> None:
+        self.free_gb = free_gb
+
+    def is_available(self) -> bool:
+        return True
+
+    def mem_get_info(self):
+        return int(self.free_gb * 1e9), int(16 * 1e9)
+
+    def memory_reserved(self) -> int:
+        return 0
+
+    def memory_allocated(self) -> int:
+        return 0
+
+    def reset_peak_memory_stats(self) -> None:
+        pass
+
+    def max_memory_allocated(self) -> int:
+        return 0
+
+    def empty_cache(self) -> None:
+        pass
+
+    def synchronize(self) -> None:
+        pass
+
+
+class _DeviceScope:
+    """`with torch.device("cuda"):` - the one context manager _build_model
+    opens."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _FakeTorch:
+    bfloat16 = "bfloat16"
+
+    def __init__(self, free_gb: float) -> None:
+        self.cuda = _Card(free_gb)
+
+    def device(self, name):
+        return _DeviceScope()
+
+
+def _eager_decode(*a, **kw):
+    """The stand-in for `decode_one_token_ar`.
+
+    Its IDENTITY is the whole point - several tests below ask which decode the
+    worker installed, not what it computes - so being called is a bug worth
+    saying out loud.
+    """
+    raise AssertionError("the eager decode was called, not merely selected")
+
+
+class _FakeModel:
+    """What `init_model` hands back, reduced to what `_build_model` touches."""
+
+    def __init__(self, hard_max: int = 4096) -> None:
+        self.config = type("Config", (), {"max_seq_len": hard_max})()
+        self.max_seq_len = hard_max
+        self.caches = None
+
+    def setup_caches(self, max_batch_size, max_seq_len, dtype):
+        self.caches = (max_batch_size, max_seq_len, dtype)
+
+
+class _Codec:
+    """A codec that remembers where it was last moved to: "resident" and
+    "parked" are the two states every policy test below asks about."""
+
+    def __init__(self) -> None:
+        self.device = "cuda"
+
+    def to(self, device):
+        self.device = str(device)
+        return self
+
+
+class _Tokens:
+    """Encoded reference tokens: `_op_prepare_ref` reads both shape axes."""
+
+    def __init__(self) -> None:
+        self.shape = (2, 100)
+
+
+class _DecodedCodes:
+    """What the generation hands the decode.
+
+    THREE axes on purpose, the same shape and the same reason as
+    fish_synth_harness._Codes: with a two-element shape `shape[1]` and
+    `shape[-1]` are the same element, so a production slip from one to the
+    other would run through the stub untouched - which is the one thing a stub
+    exists to prevent. `shape[0]` stays 1 because it is read elsewhere as the
+    codebook count, and a stub must not feed a lie to a reader outside its own
+    path either.
+    """
+
+    def __init__(self, produced: int) -> None:
+        self.shape = (1, produced, 0)
+
+
+def _fish(free_gb: float = 6.0):
+    """A fresh fish_s2 module with its engine boundary already fed.
+
+    Fresh per call because STATE, _ENGINE and _COSTS are module globals and an
+    estimator carrying another test's measurements is the one thing these must
+    never share. The real `_engine()` is left in place rather than stubbed: it
+    returns `_ENGINE` untouched once that dict is populated, so the import
+    guard is fed, not bypassed.
+    """
+    import fish_synth_harness as synth
+
+    mod = synth.load_worker()
+    mod._ENGINE.update(torch=_FakeTorch(free_gb), decode_eager=_eager_decode)
+    return mod
+
+
+def _install_codec(mod, codec):
+    """Make `_codec(send)` behave like the real one on its happy path: hand
+    the codec back AND leave it in STATE, which is what the keep/park policy
+    then acts on."""
+
+    def _codec(send):
+        mod.STATE["codec"] = codec
+        return codec
+
+    mod._codec = _codec
+    return codec
+
+
+def _fake_torchao(monkeypatch):
+    """fp8 quantisation is not the subject here and torchao lives in the
+    engine venv, not this one. Stubbing it makes `_build_model`'s outcome the
+    same whether or not the real package happens to be importable, so these
+    tests measure the compile decision and nothing else.
+    """
+    import types
+
+    quant = types.ModuleType("torchao.quantization")
+    quant.quantize_ = lambda model, config: None
+    quant.Float8DynamicActivationFloat8WeightConfig = lambda: object()
+    package = types.ModuleType("torchao")
+    package.quantization = quant
+    monkeypatch.setitem(sys.modules, "torchao", package)
+    monkeypatch.setitem(sys.modules, "torchao.quantization", quant)
+
+
+def _warmup_run(mod, *, compiler_works: bool):
+    """Run the real `_warmup` with the compile attempt as a dial."""
+    attempts: list[int] = []
+
+    def _run_generation(text, prompt_text, prompt_tokens, budget, **knobs):
+        attempts.append(budget)
+        if not compiler_works and len(attempts) == 1:
+            # The real shape of it: torch.compile is lazy, so a missing
+            # MSVC/triton toolchain surfaces HERE, as a RuntimeError out of the
+            # inductor backend, and not as an import error at load time.
+            raise RuntimeError("Compiler: cl is not found.")
+        return object()
+
+    mod._run_generation = _run_generation
+    events: list[dict] = []
+    mod._warmup(events.append)
+    return attempts, events
 
 
 def test_the_eager_fallback_is_recorded_as_sticky_state():
-    source = _fish_source()
-    assert '"compile_broken": False' in source, "the sticky flag is gone"
-    assert 'STATE["compile_broken"] = True' in source, (
-        "_warmup no longer records that the compiler is unusable here"
-    )
+    """A compiler this machine does not have is a property of the MACHINE.
+
+    `_ensure_model` rebuilds after a VRAM eviction WITHOUT re-running
+    `_warmup`, so a failure that is not written down here lets the rebuild ask
+    for torch.compile again - and the next sentence then dies inside
+    `_op_synthesize`, where there is no fallback. A working (slow) voice
+    becomes permanently broken until the worker is restarted.
+    """
+    mod = _fish()
+    attempts, events = _warmup_run(mod, compiler_works=False)
+
+    assert len(attempts) == 2, (
+        "the eager retry never ran, so a missing toolchain took the whole load "
+        "down instead of dropping to a slow voice")
+    assert mod.STATE["compiled"] is False, (
+        "the worker still reports a compiled decode after the compile failed")
+    assert mod.STATE["decode"] is _eager_decode, (
+        "the compiled decode is still installed, so the first real sentence "
+        "will hit the same failure with no fallback under it")
+    assert mod.STATE["compile_broken"] is True, (
+        "the unusable compiler was not recorded as sticky machine state; the "
+        "next post-eviction rebuild will ask for torch.compile again")
+    assert "compile_failed" in [e.get("stage") for e in events], (
+        "the drop to eager was silent, so the log cannot explain a slow voice")
 
 
-def test_build_model_asks_for_compile_only_when_it_can_work():
-    source = _fish_source()
-    assert 'want_compile = not STATE.get("compile_broken")' in source
-    assert 'compile=want_compile' in source, (
-        "_build_model still asks for torch.compile unconditionally"
-    )
-    assert 'STATE["compiled"] = want_compile' in source
-    assert 'STATE["compiled"] = True' not in source, (
-        "a post-eviction rebuild would report itself as compiled again"
-    )
+def test_a_compiler_that_works_is_not_recorded_as_broken():
+    """GROUND CONTROL. Without it, code that set `compile_broken` on every
+    load would satisfy the test above - and would then disable torch.compile
+    on every machine, permanently, for the life of the worker."""
+    mod = _fish()
+    attempts, events = _warmup_run(mod, compiler_works=True)
+
+    assert len(attempts) == 1, "a successful compile must not be retried"
+    assert mod.STATE["compile_broken"] is False, (
+        "a machine with a working toolchain was marked as broken, which costs "
+        "it the compiled decode on every rebuild from here on")
+    assert "compile_failed" not in [e.get("stage") for e in events]
+
+
+def test_build_model_asks_for_compile_only_when_it_can_work(monkeypatch):
+    """One machine, two states, two different requests to `init_model`.
+
+    `_build_model` used to set `STATE["compiled"] = True` unconditionally, so
+    a post-eviction rebuild on a machine `_warmup` had already proven cannot
+    compile reported itself as compiled AND installed the compiled decode.
+    Both halves run here, because each is the other's control: a build that
+    always asks, and a build that never asks, each satisfy exactly one of them.
+    """
+    for compile_broken, want in ((False, True), (True, False)):
+        mod = _fish()
+        _fake_torchao(monkeypatch)
+        asked: list[bool] = []
+        compiled_decode = object()
+
+        def init_model(path, device, dtype, compile, _asked=asked,
+                       _decode=compiled_decode):
+            _asked.append(compile)
+            return _FakeModel(), _decode
+
+        mod._ENGINE["init_model"] = init_model
+        mod.STATE["compile_broken"] = compile_broken
+
+        events: list[dict] = []
+        mod._build_model(Path("model"), 2048, events.append)
+
+        assert asked == [want], (
+            f"with compile_broken={compile_broken} the worker asked init_model "
+            f"for compile={asked}; asking a compiler that has already been "
+            f"proven unusable is not optimism, it is the next crash")
+        assert mod.STATE["compiled"] is want, (
+            "STATE['compiled'] does not match what was actually asked for, so "
+            "every reader of it - the load result, the ping, the generation - "
+            "is being told about a decode path that does not exist")
+        assert mod.STATE["decode"] is (compiled_decode if want
+                                       else _eager_decode), (
+            "the installed decode does not match the compile decision")
 
 
 # ── The load timeout is a SILENCE budget, not a wall clock ─────────────────
@@ -457,17 +700,100 @@ def test_a_non_progress_frame_does_not_extend_it():
     assert pending.last_progress == 0.0
 
 
-def test_the_wait_loop_measures_silence_not_elapsed_time():
-    """The contract, read off the source: the budget is compared against time
-    since the last progress frame."""
-    from pathlib import Path
+#: A worker whose only job is to be slow in one of the two ways that matter.
+#:
+#: It speaks the REAL protocol through `_wire.serve` over real pipes, because
+#: the claim under test is about the client's wait loop and nothing short of a
+#: real conversation exercises it: the frames have to arrive from another
+#: process, on the reader thread, while the caller is blocked.
+_SILENCE_WORKER = '''\
+import sys
+import time
+from pathlib import Path
 
-    source = (Path(__file__).resolve().parent.parent
-              / "tts" / "worker_client.py").read_text(encoding="utf-8")
-    assert "time.monotonic() - pending.last_progress" in source
-    assert "if not pending.done.wait(timeout):" not in source, (
-        "the fixed wall-clock wait is back - a cold compile cannot finish"
-    )
+sys.path.insert(0, r"{worker_dir}")
+import _wire
+
+
+def handle(op, req, send):
+    """Report for `talk` seconds, then say nothing for `quiet`, then answer."""
+    deadline = time.monotonic() + float(req.get("talk") or 0.0)
+    while time.monotonic() < deadline:
+        time.sleep(0.2)
+        send(_wire.event("progress", stage="compiling"))
+    time.sleep(float(req.get("quiet") or 0.0))
+    return {{"worked": True}}
+
+
+if __name__ == "__main__":
+    channel = _wire.claim_stdout()
+    sys.exit(_wire.serve(handle, channel=channel))
+'''
+
+
+def _silence_worker(tmp_path) -> str:
+    script = tmp_path / "silence_worker.py"
+    script.write_text(
+        _SILENCE_WORKER.format(worker_dir=str(Path(_wire.__file__).parent)),
+        encoding="utf-8")
+    return str(script)
+
+
+def test_a_worker_that_keeps_reporting_outlives_its_budget(tmp_path):
+    """The load timeout is a SILENCE budget, not a wall clock.
+
+    This used to be asserted by reading worker_client.py and looking for the
+    subtraction - which pins the spelling of one line and would pass on a build
+    where that line sits in a branch the wait loop never takes. What it stands
+    for is measured here instead: a worker that keeps reporting runs three
+    times past a one-second budget and is still answered, because the first
+    inductor compile legitimately runs ~346 s against a 180 s budget and every
+    cold start was killed mid-compile before this rule existed.
+    """
+    client = WorkerClient(sys.executable, _silence_worker(tmp_path),
+                          engine_id="silence")
+    client.start(timeout=30)
+    try:
+        started = time.monotonic()
+        result = client.request(_wire.OP_LOAD, {"talk": 3.0}, timeout=1.0)
+        elapsed = time.monotonic() - started
+    finally:
+        client.close(grace=1.0)
+
+    assert result.get("worked") is True, (
+        "a worker that reported progress throughout was cut off anyway; the "
+        "budget is being charged against elapsed time, so the documented cold "
+        "compile is impossible and voice only ever works by accident")
+    assert elapsed > 2.0, (
+        f"the request finished in {elapsed:.1f}s, so it never actually "
+        "outlived its 1.0s budget and this proves nothing")
+
+
+def test_a_worker_that_goes_quiet_is_killed_at_its_budget(tmp_path):
+    """THE OTHER HALF, and the reason the budget cannot simply be raised.
+
+    Only evidence of WORK may extend it. Without this, "measure silence"
+    degenerates into "never time out", and a worker wedged mid-allocation on
+    the card sits there holding VRAM until the app is restarted.
+    """
+    client = WorkerClient(sys.executable, _silence_worker(tmp_path),
+                          engine_id="silence")
+    client.start(timeout=30)
+    try:
+        started = time.monotonic()
+        with pytest.raises(WorkerFailure) as caught:
+            client.request(_wire.OP_LOAD, {"quiet": 30.0}, timeout=1.0)
+        elapsed = time.monotonic() - started
+    finally:
+        client.close(grace=0)
+
+    assert caught.value.code == TTS_LOAD_TIMEOUT, (
+        f"a silent worker was diagnosed as {caught.value.code}")
+    assert elapsed < 10.0, (
+        f"the silent worker was tolerated for {elapsed:.1f}s against a 1.0s "
+        "budget; a wedged worker is not being caught in time")
+    assert not client.alive, (
+        "the wedged worker survived its own timeout, still holding the card")
 
 
 # ── The codec must not be a surprise on the first Speak ────────────────────
@@ -479,33 +805,82 @@ def test_the_wait_loop_measures_silence_not_elapsed_time():
 # (~0.3 s to bring back). Only the first one had nothing parked to restore.
 
 
-def _fish_source() -> str:
-    from pathlib import Path
-    return (Path(__file__).resolve().parent.parent
-            / "tts" / "worker" / "fish_s2.py").read_text(encoding="utf-8")
+def test_the_codec_is_warmed_during_load(tmp_path, monkeypatch):
+    """A finished load leaves the codec already read in, from the right place.
 
+    This used to grep for the call and then compare two `str.index` positions
+    to pin the ORDER. Both halves are one observable fact instead: the load
+    runs for real, and the only thing asserted is which path the DAC was read
+    from. Nothing was read at all -> the prewarm is gone, and the user's first
+    press of Speak pays the 1.7 GB disk read (measured at 35.3 s of a 51.6 s
+    first sentence). Read from a bare "codec.pth" -> the prewarm ran before
+    `model_path` was published, `_codec()` resolved it against the working
+    directory, and the load skipped the prewarm with tts_worker_failed, which
+    is what the shipped build did twice.
+    """
+    monkeypatch.delenv("TORCHINDUCTOR_CACHE_DIR", raising=False)
+    model_dir = tmp_path / "fish"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text("{}", encoding="utf-8")
+    (model_dir / "codec.pth").write_bytes(b"stand-in for 1.7 GB of DAC")
 
-def test_the_codec_is_warmed_during_load():
-    source = _fish_source()
-    assert "_prewarm_codec(send)" in source, "the first Speak still pays the disk read"
-    # ...and only AFTER model_path is published. _codec() resolves codec.pth
-    # relative to it, so an earlier call looked for a bare "codec.pth" in the
-    # working directory and skipped the prewarm with tts_worker_failed -
-    # observed in the shipped build, twice.
-    published = source.index('STATE["model_path"] = str(ckpt)')
-    called = source.index("    _prewarm_codec(send)")
-    assert called > published, "prewarm runs before it can resolve codec.pth"
+    mod = _fish()
+    codec = _Codec()
+    read_from: list[str] = []
+
+    def load_dac(name, path, device):
+        read_from.append(path)
+        return codec
+
+    mod._ENGINE["load_dac"] = load_dac
+    mod._build_model = lambda ckpt, kv_len, send: None
+    mod._warmup = lambda send: 0.0
+
+    events: list[dict] = []
+    result = mod._op_load({"model_path": str(model_dir), "values": {}},
+                          events.append)
+
+    assert read_from == [str(model_dir / "codec.pth")], (
+        f"the codec was read from {read_from} during load. Empty means the "
+        "prewarm never ran and the first sentence pays the disk read; a bare "
+        "'codec.pth' means it ran before model_path was published and could "
+        "not resolve the file at all.")
+    assert "codec_prewarm_skipped" not in [e.get("stage") for e in events], (
+        "the load reported the prewarm as skipped, so the head start it "
+        "exists to give was not given")
+    assert result["model_path"] == str(model_dir)
 
 
 def test_the_prewarmed_codec_stays_resident_when_there_is_room():
     """The user hears the difference: a parked codec costs a PCIe copy on the
-    first sentence, for nothing on a card with headroom."""
-    source = _fish_source()
-    body = source[source.index("def _prewarm_codec"):]
-    body = body[: body.index("def _drop_codec")]
-    assert "_should_keep_codec(_free_gb())" in body, (
-        "the prewarm no longer consults the measured keep policy"
-    )
+    first sentence, for nothing on a card with headroom.
+
+    Asserted at TWO readings of the same card, one either side of the measured
+    reserve, because a prewarm that always keeps and a prewarm that always
+    parks each satisfy exactly one of them.
+    """
+    reserve = _fish()._VRAM_RESERVE_GB
+    for free_gb, resident in ((reserve + 0.5, True), (reserve - 0.5, False)):
+        mod = _fish(free_gb=free_gb)
+        codec = _install_codec(mod, _Codec())
+        events: list[dict] = []
+        mod._prewarm_codec(events.append)
+
+        if resident:
+            assert mod.STATE["codec"] is codec, (
+                f"at {free_gb} GB free the prewarm parked the codec anyway; "
+                "the first sentence now pays a PCIe copy on a card with room")
+            assert mod.STATE["codec_parked"] is None
+            assert codec.device == "cuda"
+        else:
+            assert mod.STATE["codec"] is None, (
+                f"at {free_gb} GB free - below the measured reserve of "
+                f"{reserve} - the prewarm kept the codec resident; the next "
+                "decode is the one that pays for it")
+            assert mod.STATE["codec_parked"] is codec, (
+                "the codec was thrown away rather than parked, so the next "
+                "sentence reloads it from disk instead of copying it back")
+            assert codec.device == "cpu"
 
 
 # test_prewarming_parks_rather_than_keeping_it_resident was deleted in
@@ -522,12 +897,44 @@ def test_the_prewarmed_codec_stays_resident_when_there_is_room():
 
 
 def test_a_failed_prewarm_is_not_fatal():
-    """A head start, not a requirement - the lazy path still works."""
-    source = _fish_source()
-    body = source[source.index("def _prewarm_codec"):]
-    body = body[: body.index("def _drop_codec")]
-    assert "except BaseException" in body
-    assert "codec_prewarm_skipped" in body
+    """A head start, not a requirement - the lazy path still works.
+
+    Both widths are driven, because the catch is deliberately `BaseException`
+    and an `Exception` would look identical to a grep: `_codec()` reaches
+    `_engine()`, which answers a damaged runtime with `sys.exit()`. A load that
+    has already built and compiled the model must not be taken down by an
+    optimisation, whichever of the two it raises.
+    """
+    for boom in (RuntimeError("the codec file is unreadable"),
+                 SystemExit(_wire.EXIT_ENGINE_IMPORT)):
+        mod = _fish()
+
+        def _codec(send, exc=boom):
+            raise exc
+
+        mod._codec = _codec
+        events: list[dict] = []
+        mod._prewarm_codec(events.append)          # must simply return
+
+        skipped = [e for e in events
+                   if e.get("stage") == "codec_prewarm_skipped"]
+        assert skipped, (
+            f"a prewarm that raised {type(boom).__name__} said nothing about "
+            "it, so a first sentence that is suddenly 35 s slow has no "
+            "explanation anywhere")
+        assert skipped[0].get("note") == mod._wire.NOTE_LAZY_FIRST_SENTENCE
+        assert mod.STATE["codec"] is None and mod.STATE["codec_parked"] is None, (
+            "the failed prewarm left something behind, so the lazy path is no "
+            "longer free to load the codec properly")
+
+    # GROUND CONTROL: the skip is reported because it happened, not on every
+    # load. A prewarm that always announced failure would satisfy the loop.
+    mod = _fish()
+    _install_codec(mod, _Codec())
+    events = []
+    mod._prewarm_codec(events.append)
+    assert "codec_prewarm_skipped" not in [e.get("stage") for e in events], (
+        "a prewarm that succeeded still reported itself as skipped")
 
 
 # test_the_park_restore_block_is_not_duplicated was deleted in KADEME 20b.
@@ -610,29 +1017,153 @@ def test_the_three_old_vram_floors_are_gone():
     was PRESENT, which test_tts_packaging.py::test_the_keep_floor_matches_
     the_pre_generation_guard already pins behaviourally through
     _should_keep_codec - so that line went. The three lines above it assert
-    ABSENCE, and pinning a deletion is the one thing a source scan is
-    allowed to do: no behaviour test can observe a constant that is not
-    there. Those stay, and the name now says what they check.
+    ABSENCE, and no behaviour test can observe a constant that is not there.
+    Those stay - but they ask the loaded MODULE OBJECT now, not the file's
+    text: a constant deleted from the code and left behind in a comment or a
+    docstring would satisfy a source scan, and satisfying it is exactly what a
+    half-finished deletion does.
     """
-    source = _fish_source()
-    assert "_DECODE_FLOOR_GB" not in source
-    assert "_CODEC_FLOOR_GB" not in source
-    assert "_CODEC_KEEP_GB" not in source
+    mod = _fish()
+    for gone in ("_DECODE_FLOOR_GB", "_CODEC_FLOOR_GB", "_CODEC_KEEP_GB"):
+        assert not hasattr(mod, gone), (
+            f"{gone} is back. A fixed VRAM floor cannot see the size of the "
+            "work coming, which is how a card sitting comfortably above it "
+            "still OOMed on a maximal decode")
+    # POSITIVE CONTROL for three absence claims: the module really did load,
+    # and it really does still carry the two things that replaced them. Without
+    # this the whole test passes against an empty object.
+    assert hasattr(mod, "_VRAM_RESERVE_GB"), "the module under test is empty"
+    assert callable(mod._should_keep_codec)
 
 
-def test_only_should_keep_codec_decides_whether_the_codec_stays():
-    """The 4.0 GB threshold is gone, not just lowered in one of its homes.
+def _clip(tmp_path):
+    clip = tmp_path / "ref.wav"
+    clip.write_bytes(b"RIFF")
+    return clip
 
-    It survived in the two reference-encoding paths long after the decode
-    stopped using it, so "we set it to 1 GB" was true of exactly one caller
-    and the other two kept dropping the codec on a card with room to spare.
+
+def _drive_prewarm(mod, tmp_path, send):
+    mod._prewarm_codec(send)
+
+
+def _drive_reference_prompt(mod, tmp_path, send):
+    mod._prompt({"reference": {"path": str(_clip(tmp_path)),
+                               "transcript": "merhaba"}}, {}, send)
+
+
+def _drive_prepare_ref(mod, tmp_path, send):
+    mod.STATE["model_path"] = str(tmp_path)
+    mod._op_prepare_ref({"audio": str(_clip(tmp_path)),
+                         "transcript": "merhaba"}, send)
+
+
+#: The three paths that borrow the codec and then have to decide whether to
+#: hand it back. The decode is the fourth and asks in its own phrasing, because
+#: it already has the reading in hand; it is driven in
+#: TestAnOutOfMemoryDecodeIsRecoverable through the harness.
+_CODEC_BORROWERS = {
+    "prewarm": _drive_prewarm,
+    "reference prompt": _drive_reference_prompt,
+    "prepare_ref": _drive_prepare_ref,
+}
+
+
+def _stub_reference_encode(mod, codec):
+    """Everything between the clip on disk and the policy decision, faked -
+    and nothing else. What runs for real is which policy each path asks."""
+    mod._encode_ref = lambda path, codec_arg, device: (_Tokens(), 1.5, 44100)
+    mod._save_tokens = lambda tokens, target, send: target
+    mod._free_for_codec = lambda send, why, force=False, frames=0: False
+    _install_codec(mod, codec)
+
+
+def test_only_should_keep_codec_decides_whether_the_codec_stays(tmp_path):
+    """One policy, three callers, and the reading that used to split them.
+
+    The 4.0 GB threshold survived in the two reference-encoding paths long
+    after the decode stopped using it, so "we set it to 1 GB" was true of
+    exactly one caller while the other two dropped the codec on a card with
+    room to spare - a reload from disk, about five seconds, on the next
+    sentence, every time.
+
+    This used to be a `source.count(...) == 3`, which cannot tell three live
+    callers from two live ones and a mention in a comment, and breaks the day
+    a fourth caller spells the same question differently. All three are run
+    instead, at the SAME two readings: one deliberately between the current
+    reserve and the old floor, where the two policies disagree, and one
+    genuinely tight, where they agree. A resurrected constant in any single
+    path shows up as that path disagreeing with the other two.
     """
-    source = _fish_source()
-    assert "_CODEC_KEEP_GB" not in source
-    # Prewarm + the two reference-encoding paths; the decode asks in its own
-    # phrasing because it already has the reading in hand.
-    assert source.count("not _should_keep_codec(_free_gb())") == 3
-    assert "_should_keep_codec(free_after)" in source
+    reserve = _fish()._VRAM_RESERVE_GB
+    assert reserve < 4.0, (
+        "the reserve has moved above the old floor, so the reading below no "
+        "longer separates the two policies and this test proves nothing")
+
+    for free_gb, resident in ((reserve + 0.5, True), (reserve - 0.5, False)):
+        for name, drive in _CODEC_BORROWERS.items():
+            mod = _fish(free_gb=free_gb)
+            codec = _Codec()
+            _stub_reference_encode(mod, codec)
+            events: list[dict] = []
+            drive(mod, tmp_path, events.append)
+
+            assert (mod.STATE["codec"] is codec) is resident, (
+                f"at {free_gb} GB free the '{name}' path "
+                f"{'parked' if resident else 'kept'} the codec, while the one "
+                f"measured policy says {'keep' if resident else 'park'}. That "
+                "path is deciding on a threshold of its own.")
+
+    # THE THIRD DIMENSION, and the one a keep/park dial alone cannot see: a
+    # path that BORROWED a resident codec must not hand back memory it never
+    # took. Run on the tight card, where the policy would otherwise park it.
+    for name in ("reference prompt", "prepare_ref"):
+        mod = _fish(free_gb=reserve - 0.5)
+        codec = _Codec()
+        _stub_reference_encode(mod, codec)
+        mod.STATE["codec"] = codec            # already resident before the call
+        events = []
+        _CODEC_BORROWERS[name](mod, tmp_path, events.append)
+        assert mod.STATE["codec"] is codec, (
+            f"the '{name}' path dropped a codec that was resident before it "
+            "ran, so encoding a reference clip silently costs the next "
+            "sentence a reload")
+
+
+def test_the_decode_asks_the_same_policy_and_publishes_the_answer():
+    """THE FOURTH CALLER, and the only one that already has the reading.
+
+    `_decode_to_audio` measures free VRAM once and asks the policy with the
+    number in hand, so it spells the question differently from the other
+    three - which is precisely why counting one phrasing in the source text
+    could never have covered it. It is the caller that runs after every single
+    sentence, and it PUBLISHES its decision, because the ~5 s-per-sentence
+    reload regression was only ever caught by seeing this event.
+    """
+    reserve = _fish()._VRAM_RESERVE_GB
+    for free_gb, keep in ((reserve + 0.5, True), (reserve - 0.5, False)):
+        mod = _fish(free_gb=free_gb)
+        codec = _Codec()
+        codec.sample_rate = 44100
+        _install_codec(mod, codec)
+        mod._decode_once = lambda codes, codec_arg, torch_arg: [0.0] * 1000
+        mod._free_for_codec = lambda send, why, force=False, frames=0: False
+
+        events: list[dict] = []
+        audio, sr = mod._decode_to_audio(_DecodedCodes(400), events.append)
+
+        assert sr == 44100 and audio, "the decode produced nothing to judge"
+        published = [e for e in events
+                     if e.get("stage") == "codec_policy"
+                     and e.get("where") == "post-decode"]
+        assert published, (
+            "the decode did not say what it decided about the codec; the only "
+            "way the per-sentence reload was ever noticed was by reading this")
+        assert published[0]["keep"] is keep, (
+            f"at {free_gb} GB free the decode published keep="
+            f"{published[0]['keep']} while the one measured policy says "
+            f"{keep}; the decode is judging on a threshold of its own")
+        assert (mod.STATE["codec"] is not None) is keep, (
+            "what the decode published is not what it did to the codec")
 
 
 class TestAnOutOfMemoryDecodeIsRecoverable:

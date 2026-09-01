@@ -247,6 +247,72 @@ class TestEngineOverride:
         assert r.status_code == 400
         assert outside.read_text(encoding="utf-8") == "{}"   # untouched
 
+    def test_the_STAGING_file_cannot_be_planted_either(
+            self, client, monkeypatch, tmp_path):
+        """The guards above all watch the FINAL name. The temporary was the
+        soft part.
+
+        It was `elysium-model.json.tmp-<pid>` - a name anyone who can read a
+        process list can predict - written with `write_text`, which opens
+        with plain `w` and FOLLOWS a link. Plant that name as a link to any
+        file the user owns and the next engine pick truncates it to
+        `{"engine_id": "..."}`. The comment above the write reasons about
+        `os.replace` and the final path; neither bullet was about this file.
+        """
+        import os
+
+        import pytest
+
+        root = _point_models_at(monkeypatch, tmp_path)
+        d = make_fish(root, "staged")
+        # A PLAIN FILE at the predictable name, not a symlink.
+        #
+        # A link is the attack, but creating one needs a privilege this
+        # machine may not have, and a test that skips proves nothing. The
+        # property that makes the attack impossible is the same either way:
+        # the writer must never OPEN a name it did not create. So the guard
+        # is written against a name that already exists at all - which the
+        # old `write_text` would have truncated exactly as it truncated the
+        # link's target.
+        planted = d / f"elysium-model.json.tmp-{os.getpid()}"
+        planted.write_text("SOMETHING THE USER WOULD MISS", encoding="utf-8")
+        assert pytest and os                     # (kept: used by siblings)
+
+        uid = client.get("/api/v1/tts/models").json()["models"][0]["uid"]
+        r = client.post(f"/api/v1/tts/models/{uid}/engine",
+                        json={"engine_id": "xtts_v2"})
+
+        assert planted.read_text(encoding="utf-8") ==             "SOMETHING THE USER WOULD MISS", (
+            "the staging write opened a name it did not create. Planted as "
+            "a link instead of a plain file, that is any file the user owns "
+            "truncated to a line of JSON")
+        # GROUND CONTROL: the request still did its job. A route that simply
+        # stopped working would pass the assertion above and prove nothing.
+        assert r.status_code == 200, r.text
+        side = json.loads((d / "elysium-model.json").read_text(encoding="utf-8"))
+        assert side["engine_id"] == "xtts_v2"
+
+    def test_no_staging_file_is_left_behind(
+            self, client, monkeypatch, tmp_path):
+        """POSITIVE CONTROL for the cleanup, and for the model folder.
+
+        `mkstemp` names are unpredictable, which is what makes them safe and
+        also what makes a leaked one impossible to find by eye. The folder a
+        scan reads must contain exactly the sidecar and the model files.
+        """
+        root = _point_models_at(monkeypatch, tmp_path)
+        d = make_fish(root, "tidy")
+        before = {p.name for p in d.iterdir()}
+        uid = client.get("/api/v1/tts/models").json()["models"][0]["uid"]
+
+        assert client.post(f"/api/v1/tts/models/{uid}/engine",
+                           json={"engine_id": "xtts_v2"}).status_code == 200
+
+        after = {p.name for p in d.iterdir()}
+        assert after - before == {"elysium-model.json"}, (
+            "the engine pick left a temporary behind in the user's model "
+            "folder: " + repr(sorted(after - before)))
+
     def test_sidecar_write_refuses_a_hardlink_and_spares_its_twin(
         self, client, monkeypatch, tmp_path
     ):

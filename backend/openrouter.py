@@ -36,6 +36,8 @@ from typing import Any, AsyncIterator
 import anyio.to_thread
 import httpx
 
+import network_client
+
 from config import (
     OPENROUTER_BASE_URL,
     MODEL_LIST_TTL,
@@ -64,10 +66,25 @@ class OpenRouterError(Exception):
       api_key_invalid, openrouter_auth_failed, openrouter_moderation_blocked,
       openrouter_insufficient_credits, openrouter_rate_limited,
       openrouter_server_error, openrouter_timeout, openrouter_error.
+
+    `reached_provider` answers the one question a caller holding a paid
+    reservation has to ask: was anything billed? It is set at the raise site,
+    where the answer is a FACT - `api_key_not_set` is raised before a client
+    is even built, a connect timeout means no bytes left, a non-success
+    status means the request arrived. A caller cannot work this out
+    afterwards: a read timeout and a connect timeout are the same
+    `TimeoutException` from the outside, and one of them has already been
+    paid for.
+
+    DEFAULT TRUE. An unrecognised failure is treated as billed, so a
+    reservation is kept rather than handed back on a guess - refunding a call
+    that really was paid for is the failure the reservation exists to
+    prevent.
     """
-    def __init__(self, reason: str) -> None:
+    def __init__(self, reason: str, *, reached_provider: bool = True) -> None:
         super().__init__(reason)
         self.reason = reason
+        self.reached_provider = reached_provider
 
 
 # ---------------------------------------------------------------------------
@@ -572,7 +589,8 @@ async def complete(
     # bare cancel during a write used to race a duplicate one.
     api_key = await anyio.to_thread.run_sync(get_secret, SECRET_API_KEY)
     if not api_key:
-        raise OpenRouterError("api_key_not_set")
+        # NOTHING LEFT. Raised before a client exists, let alone a socket.
+        raise OpenRouterError("api_key_not_set", reached_provider=False)
 
     payload: dict = {
         "model": model_id,
@@ -634,7 +652,22 @@ async def complete(
 
     except OpenRouterError:
         raise
+    except network_client.EgressRefused:
+        # The destination gate refused before the socket opened. Nothing
+        # left this machine, so nothing was billed.
+        logger.warning("Completion request refused by the destination gate.")
+        raise OpenRouterError("openrouter_error", reached_provider=False)
+    except httpx.ConnectTimeout:
+        # BEFORE the generic timeout, and the order is the whole point:
+        # `ConnectTimeout` is a subclass, and it is the half where nothing
+        # reached the provider. Folded into the parent, a call that never
+        # opened a socket kept its reservation for the rest of the day.
+        logger.warning("Completion request could not connect: model=%s",
+                       model_id)
+        raise OpenRouterError("openrouter_timeout", reached_provider=False)
     except httpx.TimeoutException:
+        # Read, write or pool. The request was accepted and the answer was
+        # lost on the way back, which is billed.
         logger.warning("Completion request timed out: model=%s", model_id)
         raise OpenRouterError("openrouter_timeout")
     except httpx.ProxyError as exc:
@@ -645,8 +678,20 @@ async def complete(
         # forever against a proxy that will never work. The proxy health gate
         # cannot cover this: it only runs when proxy_required is on.
         logger.warning("%s rejected by the configured proxy.", "Completion request")
-        raise OpenRouterError("proxy_auth_failed") from exc
+        # The tunnel was never established, so the request never reached
+        # OpenRouter and nothing was billed.
+        raise OpenRouterError(
+            "proxy_auth_failed", reached_provider=False) from exc
+    except httpx.ConnectError as exc:
+        # DNS, a refused connection, a dead route. No socket, no bill.
+        logger.warning("Completion request could not reach the provider.")
+        raise OpenRouterError(
+            "openrouter_error", reached_provider=False) from exc
     except Exception as exc:
+        # UNRECOGNISED, so ASSUMED BILLED. The default is the conservative
+        # one on purpose: keeping a reservation for a call that never left
+        # costs one of sixty; handing one back for a call that was paid for
+        # is the overspend the reservation exists to prevent.
         logger.warning("Completion request failed: %s", type(exc).__name__)
         raise OpenRouterError("openrouter_error") from exc
 
@@ -838,7 +883,8 @@ async def complete_stream(
     # generator that is never iterated still never pays for it.
     api_key = await anyio.to_thread.run_sync(get_secret, SECRET_API_KEY)
     if not api_key:
-        raise OpenRouterError("api_key_not_set")
+        # NOTHING LEFT. Raised before a client exists, let alone a socket.
+        raise OpenRouterError("api_key_not_set", reached_provider=False)
 
     payload: dict = {
         "model": model_id,

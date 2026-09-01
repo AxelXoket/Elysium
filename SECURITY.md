@@ -403,7 +403,7 @@ by hand gets the same lines on a console and no file at all.
 
 Leaks of both kinds were found in this round, and the ones still open are
 named at the end of this section rather than left out of it. What keeps the
-rest closed is a gate that reads every logging call in the shipped tree - 75
+rest closed is a gate that reads every logging call in the shipped tree - 76
 files, and that number is checked rather than remembered - and fails the build
 on a value that can carry
 content or a name: an exception's own message, which nothing stops from being

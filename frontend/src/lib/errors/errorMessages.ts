@@ -240,8 +240,13 @@ const ERROR_MESSAGES: Record<string, string> = {
     "That voice model is no longer available. Rescan the models folder.",
   tts_model_unrecognized:
     "Those files were not recognised as a supported voice model.",
+  // "Missing" alone was a lie half the time. The backend now also catches a
+  // file that IS in the folder but is not the size the download recorded - a
+  // half-finished download - and this sentence is all the user ever sees, so
+  // it has to cover both. Telling somebody a file is missing while they are
+  // looking straight at it sends them after the wrong thing.
   tts_model_incomplete:
-    "This voice model folder is missing files it needs to load.",
+    "This voice model folder is incomplete. A file it needs is missing or did not finish downloading.",
   tts_engine_unknown:
     "This voice engine is not supported yet.",
   // Setting the runtime up is Elysium's job, not the user's - so this says what

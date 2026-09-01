@@ -252,14 +252,22 @@ class TtsAdapter(ABC):
             this method's fault and closing this method would not close it.
 
         And this method as written cannot close it either: it returns the
-        size the file HAS, never the size it SHOULD have. Using it for an
-        integrity check needs an expected-size or hash source that does not
-        exist yet - a downloader-side manifest, or the HF metadata - and that
-        is a decision, not an implementation detail.
+        size the file HAS, never the size it SHOULD have.
 
-        So it stays, with the deferral stated accurately rather than
-        optimistically. What it must not do is read as though the check it is
-        waiting for has not arrived: half of it has, and it went elsewhere.
+        THE SECOND HALF HAS NOW ARRIVED TOO, and it did not use this method
+        either. Updated 1 September 2026: the expected-size source was chosen
+        (a manifest written by the downloader, not HF metadata and not a hash)
+        and lives in `tts/manifest.py`, read by `readiness.py`. It names its
+        own files, so the fixed list here had nothing to add - and the three
+        overrides of this method cover file sets that do not agree with each
+        other or with `missing`, which is the reason a narrower list would
+        have weakened the check rather than fed it.
+
+        So both halves of the deferral are answered elsewhere and this symbol
+        has no caller. It is left in the contract rather than removed because
+        that is a separate decision with its own record (U-45, branch a2, which
+        asks for a written counter-argument first). What it must not do is read
+        as though something is still waiting on it. Nothing is.
         """
 
     @classmethod

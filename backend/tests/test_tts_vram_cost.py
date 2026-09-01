@@ -10,6 +10,7 @@ The probe is exercised against a FAKE torch on purpose. The real one needs a
 CUDA card, and the failures worth catching here are arithmetic and control
 flow, not kernel behaviour.
 """
+import contextlib
 import importlib.util
 import sys
 from pathlib import Path
@@ -374,6 +375,100 @@ def _quiet(*_a, **_k):
     """A `send` that goes nowhere - these tests are about state, not events."""
 
 
+class _BuildCuda:
+    """Only the allocator calls the build and the eviction actually make.
+
+    `is_available` is here because `_sweep` asks: a fake that answers less than
+    the real thing is asked would blow up inside the code under test and the
+    failure would look like a policy bug rather than a missing stub.
+    """
+
+    def __init__(self):
+        self.synchronized = 0
+        self.emptied = 0
+
+    def is_available(self):
+        return True
+
+    def synchronize(self):
+        self.synchronized += 1
+
+    def empty_cache(self):
+        self.emptied += 1
+
+
+class _BuildTorch:
+    """A `torch` with a device context manager and nothing else invented."""
+
+    bfloat16 = "bfloat16-sentinel"
+
+    def __init__(self):
+        self.cuda = _BuildCuda()
+        self.devices = []
+
+    def device(self, name):
+        self.devices.append(name)
+        return contextlib.nullcontext()
+
+
+class _BuiltModel:
+    """What `init_model` hands back - enough of it to cap the KV cache."""
+
+    class _Config:
+        max_seq_len = 4096
+
+    def __init__(self):
+        self.config = self._Config()
+        self.max_seq_len = None
+        self.caches = []
+        self.device = "cuda"
+
+    def setup_caches(self, max_batch_size, max_seq_len, dtype):
+        self.caches.append((max_batch_size, max_seq_len, dtype))
+        self.max_seq_len = max_seq_len
+
+
+def _build(mod, *, kv_len: int = 2048):
+    """Run the REAL `_build_model` against a fake engine.
+
+    Nothing about the build's POLICY is faked - only the boundary it cannot
+    have here: weights off disk, a CUDA allocator, and the fp8 quantiser.
+    torchao is not installed in this environment, so the quantise step takes
+    its documented "carry on in bf16" branch and the rest of the function runs
+    exactly as it does in production.
+    """
+    torch = _BuildTorch()
+    model = _BuiltModel()
+    engine = {
+        "torch": torch,
+        "init_model": lambda *_a, **_k: (model, "a freshly compiled decode"),
+        "decode_eager": "the eager decode",
+    }
+    mod._engine = lambda: engine
+    mod._ENGINE["torch"] = torch
+    sent = []
+    mod._build_model(Path("nowhere"), kv_len, sent.append)
+    return model, sent
+
+
+def _lowest_true(predicate, lo: float, hi: float, eps: float = 0.005) -> float:
+    """Bisect for the lowest value in (lo, hi] where `predicate` holds.
+
+    Both ends are ground controls. A predicate already true at `lo`, or still
+    false at `hi`, has no boundary inside the bracket at all, and the search
+    would hand back the edge of the bracket as if it had found one.
+    """
+    assert not predicate(lo), f"the predicate was already true at {lo}"
+    assert predicate(hi), f"the predicate was still false at {hi}"
+    while hi - lo > eps:
+        mid = (lo + hi) / 2.0
+        if predicate(mid):
+            hi = mid
+        else:
+            lo = mid
+    return hi
+
+
 class TestTheModelParksInsteadOfDying:
     """Destroying the model costs a ~28 s rebuild to reclaim memory a PCIe copy
     gives back in a second. That trade was only worth taking while this rung
@@ -437,26 +532,163 @@ class TestNothingIsLeftHoldingHostMemory:
         assert mod.STATE["codec_parked"] is None
 
     def test_a_fresh_build_drops_a_stale_park(self):
-        """Holding it would be ~7 GB nothing will ever restore."""
-        src = (Path(__file__).resolve().parents[1] / "tts" / "worker"
-               / "fish_s2.py").read_text(encoding="utf-8")
-        build = src[src.index("def _build_model"):]
-        build = build[: build.index("def _warmup")]
-        assert 'STATE["model_parked"] = None' in build
+        """Holding it would be ~7 GB nothing will ever restore.
+
+        KADEME 13 lesson applied again: this used to slice `_build_model`'s own
+        SOURCE TEXT out of the file, between two `def` lines, and look for the
+        string `STATE["model_parked"] = None` inside it. That passes on a build
+        where the line sits in a branch nothing reaches, and fails on one where
+        the same rule is spelled `STATE.update(model_parked=None)` - it tested
+        the file, not the program. It runs the real function now, against a
+        fake engine, and looks at the slot afterwards.
+        """
+        mod = _mod()
+        stale = _FakeModel()
+        mod.STATE["model"] = None
+        mod.STATE["model_parked"] = (stale, "a decode compiled for a dead model")
+        # Positive control for the absence asserted below: the slot is NOT
+        # empty going in, so "None afterwards" is a thing the build did rather
+        # than a thing that was already true.
+        assert mod.STATE["model_parked"] is not None
+
+        built, _sent = _build(mod)
+
+        assert mod.STATE["model"] is built, (
+            "the fake engine never got as far as installing a model, so this "
+            "test is measuring a crash rather than the park slot")
+        assert built is not stale, "the build handed back the parked copy"
+        assert mod.STATE["model_parked"] is None, (
+            "a rebuild from disk left the previous park in system RAM: ~7 GB "
+            "held for the life of the worker that nothing can ever restore")
+
+    def test_the_build_that_drops_the_park_is_a_working_build(self):
+        """Ground control for the test above. A `_build_model` that fell over
+        early would also leave `model_parked` untouched-looking, so what the
+        build DID is pinned too: a model, its decode, and the KV cap."""
+        mod = _mod()
+        mod.STATE["model_parked"] = None
+        built, sent = _build(mod, kv_len=2048)
+        assert mod.STATE["model"] is built
+        assert mod.STATE["decode"] == "a freshly compiled decode"
+        assert mod.STATE["kv_len"] == 2048, "the KV cache cap was not applied"
+        assert mod.STATE["evicted"] is False
+        assert [e["stage"] for e in sent][-1] == "loaded", (
+            "the build did not reach the end of its own progress sequence")
 
 
 class TestTheEvictionLadderIsOrderedByCost:
-    def _source(self):
-        return (Path(__file__).resolve().parents[1] / "tts" / "worker"
-                / "fish_s2.py").read_text(encoding="utf-8")
+    """The cheap rung runs while the model is still reachable, or it is not a
+    rung at all.
+
+    This used to compare two SUBSTRING POSITIONS in the file's own text -
+    `_park_model(send)` earlier in the string than `STATE["model"] = None`.
+    Text order is not execution order: an early-returning branch, a `finally`,
+    or a park moved into a helper all keep the substring positions and break
+    the behaviour. What is measured now is where the model ENDED UP.
+    """
+
+    def _card(self, mod, free_gb=0.2):
+        """A card with a torch on it and a fixed free reading."""
+        torch = _BuildTorch()
+        mod._ENGINE["torch"] = torch
+        mod._free_gb = lambda: free_gb
+        return torch
 
     def test_the_cheap_rung_is_tried_before_the_expensive_one(self):
-        """_park_model must run BEFORE the model is nulled out, or the park has
-        nothing left to park."""
-        src = self._source()
-        body = src[src.index("def _free_for_codec"):]
-        body = body[: body.index("# ── references")]
-        assert body.index("_park_model(send)") < body.index('STATE["model"] = None')
+        """`_park_model` must run BEFORE the model is nulled out, or the park
+        has nothing left to park. Run in the wrong order the eviction still
+        frees exactly the same VRAM and still returns True - the only thing
+        that changes is that the park slot comes out empty, which is why that
+        slot is what this looks at."""
+        mod = _mod()
+        model = _FakeModel()
+        mod.STATE["model"] = model
+        mod.STATE["decode"] = "compiled-decode"
+        mod.STATE["model_parked"] = None
+        card = self._card(mod)
+
+        assert mod._free_for_codec(_quiet, "a tight card", force=True) is True
+
+        assert mod.STATE["model"] is None, "the eviction did not happen at all"
+        assert mod.STATE["decode"] is None
+        assert mod.STATE["evicted"] is True
+        assert card.cuda.emptied >= 1, "the allocator was never asked to let go"
+        assert mod.STATE["model_parked"] == (model, "compiled-decode"), (
+            "the eviction nulled the model out before trying to park it, so "
+            "the cheap rung found nothing to park and the next sentence pays "
+            "a ~28 s rebuild from disk instead of a one-second PCIe copy")
+        assert model.device == "cpu", "the model never left the card"
+
+    def test_the_park_is_what_the_next_sentence_comes_back_from(self):
+        """The payoff, end to end: evict, then bring the model back. In the
+        wrong order there is nothing parked and `_ensure_model` rebuilds."""
+        mod = _mod()
+        model = _FakeModel()
+        mod.STATE["model"] = model
+        mod.STATE["decode"] = "compiled-decode"
+        mod.STATE["model_path"] = "somewhere"
+        self._card(mod)
+        rebuilt = []
+        mod._build_model = lambda *a, **k: rebuilt.append(True)
+
+        mod._free_for_codec(_quiet, "a tight card", force=True)
+        mod._ensure_model(_quiet)
+
+        assert rebuilt == [], (
+            "the model was destroyed rather than parked, so coming back cost "
+            "a ~28 s rebuild from disk")
+        assert mod.STATE["model"] is model, "a different model came back"
+        assert mod.STATE["decode"] == "compiled-decode", (
+            "the compiled decode did not come back with its model, so the "
+            "graph gets rebuilt for a model that already has one")
+        assert model.device == "cuda"
+        assert mod.STATE["model_parked"] is None
+
+    def test_the_ordinary_tight_card_climbs_the_same_ladder(self):
+        """`force=True` is the OOM-retry route. The everyday one is `_fits`
+        saying no, and the rungs have to be in that order there too."""
+        mod = _mod()
+        model = _FakeModel()
+        mod.STATE["model"] = model
+        mod.STATE["decode"] = "compiled-decode"
+        self._card(mod, free_gb=0.5)
+        assert mod._fits(400) is False, "the fixture is not a tight card"
+
+        assert mod._free_for_codec(_quiet, "a tight card", frames=400) is True
+        assert mod.STATE["model_parked"] == (model, "compiled-decode")
+
+    def test_with_nothing_resident_there_is_nothing_to_park(self):
+        """The positive control for all three above. `model_parked` is not a
+        tuple whatever happens and `_build_model` is not uncalled whatever
+        happens: with the model already gone the cheap rung has nothing to
+        take, the slot stays empty, and the restore really does rebuild."""
+        mod = _mod()
+        mod.STATE["model"] = None
+        mod.STATE["decode"] = None
+        mod.STATE["model_path"] = "somewhere"
+        self._card(mod)
+        rebuilt = []
+        mod._build_model = lambda *a, **k: rebuilt.append(True)
+
+        mod._free_for_codec(_quiet, "a tight card", force=True)
+        assert mod.STATE["model_parked"] is None
+
+        mod._ensure_model(_quiet)
+        assert rebuilt == [True]
+
+    def test_a_card_with_room_does_not_climb_the_ladder_at_all(self):
+        """The other ground control: the eviction is not unconditional, so a
+        park appearing above is a decision rather than a reflex."""
+        mod = _mod()
+        model = _FakeModel()
+        mod.STATE["model"] = model
+        mod.STATE["decode"] = "compiled-decode"
+        self._card(mod, free_gb=12.0)
+
+        assert mod._free_for_codec(_quiet, "plenty of room", frames=400) is False
+        assert mod.STATE["model"] is model, "a card with room lost its model"
+        assert mod.STATE["model_parked"] is None
+        assert model.device == "cuda"
 
 
 class TestOneReserveDecidesEverything:
@@ -667,6 +899,81 @@ class TestTheEvictionDecisionItself:
             mod._observe_cost("decode", units, gb)
         self._card(mod, free_gb=6.0)
         assert mod._fits(450, "decode") is False
+
+
+class TestTheKeepDecisionUsesTheSameReserveTheFitCheckDoes:
+    """`_should_keep_codec(free)` is `free >= _VRAM_RESERVE_GB`, so a test that
+    imports that constant and feeds it straight back asks whether `x >= x`.
+    That is true of EVERY threshold, including the `free < 4.0` this function's
+    own docstring records as the bug it replaced - the one that evicted the
+    codec after every sentence and paid a ~5 s reload for the next one.
+
+    The number is pinned from the other side instead. `_fits` enforces the same
+    reserve, and its boundary is observable without naming it: bisect the free
+    reading at which it flips, subtract the cost it was forecasting, and what
+    is left is the reserve as the fit check actually applies it. The keep
+    policy is then compared against THAT. Nothing is retyped, and the two
+    thresholds can no longer drift apart in silence.
+    """
+
+    UNITS = 400
+
+    def _reserve_from_fits(self, mod) -> float:
+        """What `_fits` demands be LEFT OVER, measured rather than read."""
+        def fits(free_gb):
+            mod._free_gb = lambda: free_gb
+            return mod._fits(self.UNITS)
+
+        return _lowest_true(fits, 0.0, 40.0) - mod._seed_gb(self.UNITS)
+
+    def test_the_fit_check_has_a_reserve_and_it_is_a_real_boundary(self):
+        """Ground control for the measurement the next two tests lean on: the
+        bisected figure is re-checked against the function directly, one step
+        either side."""
+        mod = _mod(codec_resident=True)
+        reserve = self._reserve_from_fits(mod)
+        assert 0.0 < reserve < 40.0, f"no reserve was found at all: {reserve}"
+
+        need = mod._seed_gb(self.UNITS)
+        mod._free_gb = lambda: need + reserve + 0.05
+        assert mod._fits(self.UNITS) is True
+        mod._free_gb = lambda: need + reserve - 0.05
+        assert mod._fits(self.UNITS) is False
+
+    def test_the_codec_is_kept_exactly_while_that_reserve_survives(self):
+        mod = _mod(codec_resident=True)
+        reserve = self._reserve_from_fits(mod)
+        keeps_above = _lowest_true(mod._should_keep_codec, 0.0, 40.0)
+        assert keeps_above == pytest.approx(reserve, abs=0.02), (
+            f"the codec is kept down to {keeps_above:.2f} GB free while the "
+            f"fit check reserves {reserve:.2f} GB - two thresholds for one "
+            "policy, and the wider one decides by accident")
+
+    def test_the_real_decode_drops_the_codec_on_that_same_line(self):
+        """Through `_decode_to_audio`, the caller that ACTS on the answer: the
+        codec is still on the card above the line and gone below it, and the
+        progress frame reports the decision that was actually taken."""
+        def survived(free_gb):
+            mod = synth.load_worker()
+            # `_drop_codec` sweeps the allocator on its way out. The harness's
+            # fake card does not answer `is_available`, and a gc pass is not
+            # what is being measured here.
+            mod._sweep = lambda: None
+            run = synth.decode_to_audio(free_gb=free_gb, mod=mod)
+            reported = [e for e in run.events if e.get("stage") == "codec_policy"]
+            assert len(reported) == 1, "the decode did not report a codec policy"
+            kept = run.mod.STATE["codec"] is not None
+            assert reported[0]["keep"] is kept, (
+                "the frame this policy is read from disagrees with what the "
+                "policy did - the only way the last regression was caught was "
+                "by seeing this number")
+            return kept
+
+        boundary = _lowest_true(survived, 0.0, 40.0)
+        assert boundary == pytest.approx(
+            self._reserve_from_fits(_mod(codec_resident=True)), abs=0.02), (
+            f"a real decode holds the codec down to {boundary:.2f} GB free, "
+            "which is not where the reserve is")
 
 
 class TestPeakAndRetainedAreMeasuredSeparately:

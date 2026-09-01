@@ -46,17 +46,6 @@ line: "D:" + "/Users/bob/build.log",          # any drive, not just C
 reason: the UNC case. See the record above.
 line: "\\\\" + "workstation\\Users\\bob\\x",  # UNC: a machine AND a person
 
-[H-06] backend/tests/test_tts_lock_lifecycle.py
-reason: this is the test that proves the setting is gone, and it cannot assert
-  the absence of a name without writing the name. Same family as the H-03
-  waivers above.
-line: assert not hasattr(config, "TTS_IDLE_UNLOAD_S")
-
-[H-06] backend/tests/test_tts_lock_lifecycle.py
-reason: the second half of the same assertion, checking the source of config
-  rather than the imported module.
-line: assert "TTS_IDLE_UNLOAD_S" not in _src("config")
-
 [H-06] backend/tests/test_tts_host.py
 reason: a comment recording what the removed reaper used to do and which code
   path it came through. Deleting the sentence would delete the reason the rule
@@ -71,3 +60,32 @@ reason: the parametrize table for H-03's own test. It cannot check that the
   could not simply be reworded: the other two were prose and now describe the
   entities instead of writing them.
 line: @pytest.mark.parametrize("entity", ["&mdash;", "&#8212;", "&#X27;",
+
+[H-06] backend/tests/test_tests_are_behavioural.py
+reason: the PAID note recording what the S-03 conversion replaced. It names
+  the old setting in the past tense, inside a comment, to say what the
+  deleted grep used to assert. Removing the name would remove the record of
+  why the entry is gone, which is the opposite of what this rule protects.
+line: # "TTS_IDLE_UNLOAD_S" was absent from config.py - which the same reaper
+
+[H-06] backend/tests/test_tts_lock_lifecycle.py
+reason: this file IS the gate on that setting's absence. It cannot assert
+  `not hasattr(config, "TTS_IDLE_UNLOAD_S")` without naming it, and its
+  positive control has to build a config object that carries the knob - a
+  scan for an absent name passes over an empty namespace, so without the
+  control the assertion proves nothing. Six hits, all in one file, all in
+  the service of keeping the setting deleted. The definition at :119 is on a
+  throwaway class inside a test, never on `config`.
+line: assert not hasattr(config, "TTS_IDLE_UNLOAD_S"), (
+
+[H-06] backend/tests/test_tts_lock_lifecycle.py
+reason: the positive control's throwaway config object. A scan for an absent
+  name passes over an empty namespace, so without a fake that HAS the knob
+  the absence assertion proves nothing. This defines it on a local class
+  inside a test, never on `config`.
+line: TTS_IDLE_UNLOAD_S = 600
+
+[H-06] backend/tests/test_tts_lock_lifecycle.py
+reason: the assertion that the positive control's scan really found the knob
+  it planted. It has to name what it expects to find.
+line: assert found == ["TTS_IDLE_UNLOAD_S"], (

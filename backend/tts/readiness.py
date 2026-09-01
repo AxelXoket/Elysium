@@ -27,7 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from . import runtimes
+from . import manifest, runtimes
 from .base import DetectedModel
 from .errors import (
     TTS_ENGINE_UNKNOWN,
@@ -72,6 +72,26 @@ ACTION_SETUP_RUNTIME = "setup_runtime"
 ACTION_FREE_VRAM = "free_vram"
 ACTION_REDOWNLOAD = "redownload"
 ACTION_CHANGE_LANGUAGE = "change_language"
+
+
+#: How many file names one issue will spell out before it counts the rest.
+#: Half the reason is that a list of two hundred names is not a sentence
+#: anybody reads. The other half is that the manifest half of the incomplete
+#: check reads its names from a JSON file inside a folder the user dropped in,
+#: so this is the length of attacker-influenced text the payload can carry.
+#: It is not rendered today (the UI keys off the code, never the detail), and
+#: this is what keeps that from being the only thing standing between a
+#: planted file name and the screen.
+MAX_NAMED_FILES = 8
+
+
+def _name_list(names) -> str:
+    """The first few names, then a count of the rest. Never unbounded."""
+    names = list(names)
+    if len(names) <= MAX_NAMED_FILES:
+        return ", ".join(names)
+    shown = ", ".join(names[:MAX_NAMED_FILES])
+    return f"{shown}, and {len(names) - MAX_NAMED_FILES} more"
 
 
 @dataclass(frozen=True)
@@ -167,6 +187,16 @@ def evaluate(
             fit=None,
         )
 
+    # ONE CODE, ONE ISSUE. Everything that reports the model's own files as
+    # incomplete collects here and leaves as a single Issue at step 2. That is
+    # a frontend fact rather than a preference: VoiceSettingsPage renders the
+    # blocker list with `key={issue.code}` and prints getErrorMessage(code),
+    # never the detail. Two Issues carrying this code would be a duplicate
+    # React key AND the identical sentence printed twice - which the descriptor
+    # branch below and the missing-files branch could already do together,
+    # before any of this was added.
+    trouble: list[str] = []
+
     # 1b. The settings page renders from the descriptor; prove it renders.
     #     A descriptor that raises would otherwise 500 the /schema endpoint
     #     while this verdict kept promising settings_available=True.
@@ -175,11 +205,7 @@ def evaluate(
         adapter.describe_settings(model)
     except Exception:
         settings_available = False
-        issues.append(Issue(
-            TTS_MODEL_INCOMPLETE, BLOCKER,
-            "this model's settings could not be read from its files",
-            action=ACTION_REDOWNLOAD,
-        ))
+        trouble.append("this model's settings could not be read from its files")
 
     # 1c. The worker program ships INSIDE the app; without it nothing can ever
     #     start, however healthy the model and the runtime are.
@@ -196,10 +222,38 @@ def evaluate(
 
     # 2. An interrupted download looks exactly like a working model until it is
     #    loaded, so name the files rather than failing later with a stack trace.
+    #
+    #    TWO WAYS TO BE INCOMPLETE, ONE ISSUE. `missing` asks is_file(), and a
+    #    zero-byte or half-written model.pth answers yes - so the interrupted
+    #    download this check is named after went straight through it (defect
+    #    Q-28). The manifest a downloader leaves beside the weights carries the
+    #    size each file had when the fetch finished, which is the number
+    #    nothing here ever had, and it closes the second half.
+    #
+    #    NO MANIFEST MEANS NO CLAIM. Every model already on a user's disk
+    #    predates the manifest and cannot grow one; for those the second half
+    #    does nothing at all, on purpose. It strengthens downloads made from
+    #    now on; it is not a new way to refuse an install that already speaks.
+    #
+    #    The two halves overlap, and the overlap has to be subtracted rather
+    #    than printed twice. A file the manifest recorded and the folder no
+    #    longer has is reported by BOTH: `missing` because the adapter requires
+    #    it, and the manifest because zero bytes is not the size it recorded.
+    #    Left alone, the sentence named the same file twice and the second
+    #    clause called a deleted file "present", which is the exact wrong
+    #    errand this wording exists to avoid - sending someone to look at a
+    #    file that is not there.
     if model.missing:
+        trouble.append("missing from the model folder: "
+                       + _name_list(model.missing))
+    short = tuple(f for f in manifest.short_files(Path(model.path))
+                  if f not in model.missing)
+    if short:
+        trouble.append("present but not the size the download recorded: "
+                       + _name_list(short))
+    if trouble:
         issues.append(Issue(
-            TTS_MODEL_INCOMPLETE, BLOCKER,
-            "missing from the model folder: " + ", ".join(model.missing),
+            TTS_MODEL_INCOMPLETE, BLOCKER, "; ".join(trouble),
             action=ACTION_REDOWNLOAD,
         ))
 

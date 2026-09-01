@@ -16,6 +16,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
 import { useErrorStore } from "@/lib/errors";
 import { useUiStore } from "@/lib/store/uiStore";
+import { useDraftStore } from "@/lib/store/draftStore";
 import type { Model, ModelList } from "@/lib/schemas/models";
 import type { Message } from "@/lib/schemas/chats";
 
@@ -537,5 +538,87 @@ describe("Model list provenance and key state", () => {
 
     expect(screen.queryByTestId("model-key-missing")).not.toBeInTheDocument();
     expect(screen.queryByTestId("model-key-ready")).not.toBeInTheDocument();
+  });
+});
+
+describe("the gauge says the backend will refuse", () => {
+  /**
+   * U-38, both halves. `pendingMessageChars` was added to the estimator and
+   * had NO CALLER; `willRefuse` was computed on every render and rendered by
+   * NOTHING. So the unit that exists because "the gauge cannot say the
+   * backend will refuse" left the gauge unable to say it, twice over.
+   *
+   * The bar cannot carry this. `percent` is driven by what is SENT and the
+   * refusal is about what CANNOT SHRINK - which includes the message still
+   * being typed. Two quantities, two marks, and this is the second one.
+   */
+  beforeEach(() => {
+    useDraftStore.getState().clearAll();
+    useErrorStore.getState().clearAll();
+    useUiStore.setState({
+      selectedModelId: meterModel.id,
+      selectedChatId: 9,
+      selectedCharacterId: null,
+    });
+  });
+
+  afterEach(() => {
+    useDraftStore.getState().clearAll();
+    useUiStore.setState({
+      selectedModelId: null,
+      selectedChatId: null,
+      selectedCharacterId: null,
+    });
+    vi.restoreAllMocks();
+  });
+
+  async function render(): Promise<HTMLElement> {
+    mockMeterRoutes([meterMsg(1, "x".repeat(600))]);
+    renderWithQueryClient(<ModelPanel />, { wrapper });
+    return await screen.findByTestId("context-usage-meter");
+  }
+
+  it("says nothing while the turn fits", async () => {
+    // GROUND CONTROL, and it is the whole point of a prediction: one that
+    // is always on screen is not a prediction, it is decoration.
+    await render();
+    expect(screen.queryByTestId("context-usage-refusal")).toBeNull();
+  });
+
+  it("warns once the message being written tips it over", async () => {
+    // The state the gauge could not see: this chat sits comfortably inside
+    // the budget, and what pushes it past the line is text that has not
+    // been sent yet.
+    useDraftStore.getState().setComposerDraft(9, "x".repeat(4000));
+
+    await render();
+
+    const refusal = await screen.findByTestId("context-usage-refusal");
+    expect(refusal).toHaveTextContent(/will be refused/i);
+    expect(refusal).toHaveTextContent(/over the budget/i);
+  });
+
+  it("charges the draft of the SELECTED chat only", async () => {
+    // POSITIVE CONTROL for the keying. A draft typed in another
+    // conversation is not part of this turn; the store is keyed by chat for
+    // exactly that reason, and reading it unkeyed would make every gauge in
+    // the app follow whichever chat was typed in last.
+    useDraftStore.getState().setComposerDraft(11, "x".repeat(4000));
+
+    await render();
+
+    expect(screen.queryByTestId("context-usage-refusal")).toBeNull();
+  });
+
+  it("leaves the bar reading what is actually SENT", async () => {
+    // The two marks measure different things and must not be collapsed.
+    // Folding the pending draft into `percent` would move the colour
+    // thresholds for every chat, and the bar would then claim characters
+    // that have not left the composer.
+    useDraftStore.getState().setComposerDraft(9, "x".repeat(4000));
+
+    const meter = await render();
+
+    expect(meter).toHaveTextContent("Context ≈ 217 / 775 tokens · 1 msg");
   });
 });

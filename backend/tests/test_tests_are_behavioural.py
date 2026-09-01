@@ -201,25 +201,62 @@ OWNED_FILES = frozenset({
 # verify_hygiene.py's waiver list has: this list may only ever be argued
 # smaller, never quietly left stale.
 KNOWN_PENDING_S03: dict[str, tuple[str, ...]] = {
-    "test_tts_host" + _PY: (
-        '/ "tts" / "host' + _PY + '").read_text(encoding="utf-8")',
-    ),
-    "test_tts_lock_lifecycle" + _PY: (
-        'return SOURCES[name].read_text(encoding="utf-8")',
-    ),
+    # PAID, 1 September 2026. test_tts_host.py had three reads of tts/host.py.
+    # Two were tests: one sliced the file between two landmarks and asserted
+    # "self._uid = model.uid" sat inside the slice, the other asserted
+    # "self._uid = prior_uid" appeared anywhere at all. The third was a dead
+    # `_host_source()` helper nobody called. All three are gone. The pair now
+    # drives the host: one parks a real load inside check_fit and reads the
+    # snapshot from another thread (what /tts/active sees while the card
+    # fills), the other loads a model, shrinks free VRAM under it and checks
+    # the resident identity survived the refusal - with a positive control
+    # proving a refusal on an EMPTY host still claims nothing.
+    # PAID, KADEME S03. test_tts_lock_lifecycle.py's SOURCES/_src helper is
+    # gone with both of its callers. One asserted the STRING
+    # "TTS_IDLE_UNLOAD_S" was absent from config.py - which the same reaper
+    # passes under any other name, or hard-coded, or off an env overlay the
+    # file never mentions. The other asserted two COMMENT blocks still said
+    # "idle unload"; comments do not run, and it was deleted rather than
+    # converted. What stands in their place drives the pulse: a scan of the
+    # live config namespace (with its own positive control), and a sweep that
+    # sets every numeric TTS_* setting to 0 and to 1 in turn and asserts a
+    # day-idle model is still loaded and its worker still open.
+    #
     # PAID, 31 August 2026. Two tests here sliced `tts_runtime.py`'s own text
     # between two `def` lines and compared substring positions - so they
     # asserted that `speaker.cancel()` appears before `speaker.close` in the
     # FILE, which is equally true of a `finally` that never runs. Both drive
     # the endpoint now: one records the THREAD each teardown call arrives on,
     # the other abandons the stream mid-utterance and waits for the close.
-    "test_tts_vram_cost" + _PY: (
-        '/ "fish_s2' + _PY + '").read_text(encoding="utf-8")',
-    ),
-    "test_tts_worker" + _PY: (
-        '/ "tts" / "worker" / "fish_s2' + _PY + '").read_text(encoding="utf-8")',
-        '/ "tts" / "worker_client' + _PY + '").read_text(encoding="utf-8")',
-    ),
+    #
+    # PAID, 1 September 2026. test_tts_vram_cost.py had two reads of
+    # tts/worker/fish_s2.py. One sliced `_build_model` out of the file between
+    # two `def` lines and looked for the string `STATE["model_parked"] = None`
+    # inside it - true of a line sitting in a branch nothing reaches, false of
+    # the identical rule spelled any other way. The other compared two
+    # SUBSTRING POSITIONS inside `_free_for_codec`, asserting `_park_model`
+    # appears earlier in the FILE than `STATE["model"] = None`; text order is
+    # not execution order. Both run the real functions now against a fake
+    # engine: one builds a model with a stale park in the slot and checks the
+    # slot afterwards, the other evicts a resident model and checks where the
+    # model ENDED UP - parked, restored without a rebuild - with a positive
+    # control proving an empty park and a real rebuild are both reachable.
+    # PAID, 1 September 2026. test_tts_worker.py's three reads are gone.
+    # Two of them sliced fish_s2.py's text - for the sticky compile_broken
+    # flag, the compile decision in _build_model, and the codec prewarm's
+    # position relative to the model_path publication, that last one by
+    # comparing two str.index() results. The third grepped worker_client.py
+    # for the subtraction that makes the load timeout a SILENCE budget. All
+    # of it runs now: the load path drives the real fish_s2 module against a
+    # faked engine boundary (the same trade fish_synth_harness.py makes), and
+    # the silence budget is measured against a real subprocess over real
+    # pipes that reports for three seconds against a one-second budget.
+    #
+    # The one read LEFT in that file is not pinned here and is not a hit:
+    # test_every_note_our_workers_send_is_in_the_vocabulary feeds the text to
+    # ast.parse() and resolves each note against the IMPORTED _wire module, so
+    # scan_file() waves it through under the same rule as
+    # test_privacy_promises.py.
 }
 
 # One file's read_text() is NOT pinned above, on purpose: test_worker_dsp.py

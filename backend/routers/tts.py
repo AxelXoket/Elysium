@@ -41,6 +41,7 @@ when an interpreter was recorded but has since gone missing.
 
 import json
 import os
+import tempfile
 import logging
 
 import secure_delete
@@ -346,10 +347,34 @@ def override_engine(uid: str, body: EngineBody) -> dict:
         #    bytes and simply stops sharing them with this one.
         #  * The sidecar is never half-written. A crash mid-write leaves the
         #    temporary file, not a truncated setting the next scan would read.
-        staged = path.with_name(f"{SIDECAR_NAME}.tmp-{os.getpid()}")
-        staged.write_text(json.dumps({"engine_id": body.engine_id}),
-                          encoding="utf-8")
-        os.replace(staged, path)
+        #  * AND THE STAGING FILE IS CREATED, NOT OPENED. The two bullets
+        #    above are both about `path`; neither is about the temporary,
+        #    and the temporary was the weak half. Its name was
+        #    `<sidecar>.tmp-<pid>` - predictable to anyone who can read a
+        #    process list - and `write_text` opens it with plain `w`, which
+        #    FOLLOWS a link. Planted as a link to any file the user owns,
+        #    the next engine pick truncated that file to
+        #    `{"engine_id": "..."}`. Measured, not theorised.
+        #
+        #    `mkstemp` creates with O_CREAT|O_EXCL, so a name that already
+        #    exists - link or not - fails the call instead of opening what
+        #    is behind it. The unpredictable name is the smaller half of the
+        #    fix; exclusive creation is what makes the race unwinnable
+        #    rather than merely unlikely.
+        fd, staged_name = tempfile.mkstemp(
+            dir=str(path.parent), prefix=f"{SIDECAR_NAME}.tmp-", suffix=".json")
+        staged = Path(staged_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump({"engine_id": body.engine_id}, fh)
+            os.replace(staged, path)
+        except BaseException:
+            # The staging file is ours alone - mkstemp just proved nothing
+            # else held that name - so removing it cannot touch anybody
+            # else's data, and leaving it would litter the model folder with
+            # a file no scan knows how to read.
+            staged.unlink(missing_ok=True)
+            raise
     except OSError:
         # The folder exists (we just scanned it) but is not writable - a
         # read-only drive or a permission problem. Telling the user to rescan

@@ -10,6 +10,7 @@ import { useGenerationSettings } from "@/components/generation/GenerationSetting
 import { buildActiveContextPreview } from "@/lib/preview";
 import { findModelById, TEXT_ONLY_NOTE } from "@/lib/models";
 import { useVoiceMode } from "@/lib/query/tts";
+import { useDraftStore } from "@/lib/store/draftStore";
 import { useNotebook } from "@/lib/query/notebook";
 import { estimateContextUsage, formatTokensCompact } from "@/lib/context";
 
@@ -73,6 +74,9 @@ export function ActiveContextPreviewCard() {
     : null;
   const { data: voiceMode } = useVoiceMode();
   const notebook = useNotebook(selectedChatId);
+  const composerDraftChars = useDraftStore((s) =>
+    selectedChatId == null ? 0 : (s.composer[selectedChatId]?.text.length ?? 0),
+  );
   const contextUsage = estimateContextUsage({
     model,
     character: chatCharacter,
@@ -87,6 +91,11 @@ export function ActiveContextPreviewCard() {
     // Same shape, same reason: a server-measured number, charged identically
     // by both gauges so they cannot disagree with each other or the backend.
     notebookChars: notebook.data?.notebook_chars ?? 0,
+    // And the same for the message being written. BOTH gauges or neither:
+    // two meters that charge different things are two meters that disagree,
+    // which is the failure the notebook and voice numbers above are
+    // deliberately shared to avoid.
+    pendingMessageChars: composerDraftChars,
   });
   const messagesValue =
     contextUsage && contextUsage.totalMessages > 0

@@ -241,7 +241,7 @@ shield like every other data route.
 | 404 | tts_model_not_found | No model in the models folder | Prompt to add one, offer rescan |
 | 400 | tts_model_unknown | Referenced model uid is gone (folder changed) | Rescan, clear selection |
 | 409 | tts_model_unrecognized | Folder present but no engine signature matched | Show as unrecognized, offer manual engine override |
-| 422 | tts_model_incomplete | Engine matched but required files are missing | Show which files, do not offer load |
+| 422 | tts_model_incomplete | Engine matched but the folder is incomplete: a required file is absent, or a file the download manifest recorded is not the size it recorded (a half-finished download) | Say both cases in one sentence, do not offer load. `detail` names the files but is diagnostic English, not user-facing text |
 | 400 | tts_engine_unknown | Engine id not registered | Show as unsupported |
 | 409 | tts_runtime_missing | The engine runtime was never set up | Offer "Set up voice" (the app installs it; the user never edits runtimes.json) |
 | 409 | tts_runtime_broken | Runtime was recorded once, its interpreter is gone now | Offer "Set up voice" again, worded as a repair |

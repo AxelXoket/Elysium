@@ -1,6 +1,7 @@
 import { useState, useMemo, useId, useEffect } from "react";
 import { useModels, useRefreshModels } from "@/lib/query/models";
 import { useVoiceMode } from "@/lib/query/tts";
+import { useDraftStore } from "@/lib/store/draftStore";
 import { useNotebook } from "@/lib/query/notebook";
 import { useChats, useMessages } from "@/lib/query/chats";
 import { useCharacters } from "@/lib/query/characters";
@@ -29,6 +30,7 @@ import { GenerationSettingsDialog } from "@/components/generation/GenerationSett
 import { useGenerationSettings } from "@/components/generation/GenerationSettingsContext";
 import { ActiveContextPreviewCard } from "@/components/preview/ActiveContextPreviewCard";
 import {
+  CHARS_PER_TOKEN,
   estimateContextUsage,
   formatTokensCompact,
   getContextUsageState,
@@ -175,6 +177,11 @@ export function ModelPanel() {
   // meters disagree with each other the moment the toggle flips.
   const { data: voiceMode } = useVoiceMode();
   const notebook = useNotebook(selectedChatId);
+  // Subscribed, not read once: the gauge has to move as the reader types,
+  // which is the only moment the prediction is worth anything.
+  const composerDraftChars = useDraftStore((s) =>
+    selectedChatId == null ? 0 : (s.composer[selectedChatId]?.text.length ?? 0),
+  );
   const contextUsage = estimateContextUsage({
     model: selectedModel ?? null,
     character: chatCharacter ?? null,
@@ -186,6 +193,13 @@ export function ModelPanel() {
     // Same shape, same reason: a server-measured number, charged identically
     // by both gauges so they cannot disagree with each other or the backend.
     notebookChars: notebook.data?.notebook_chars ?? 0,
+    // THE MESSAGE BEING WRITTEN, which is the half `willRefuse` was written
+    // for and could not see. The backend's `min_required` includes the
+    // outgoing message; with nothing passed here the estimator could only
+    // ever predict a refusal that the meter was already showing as 100% and
+    // danger. The state worth warning about - green at 60%, a long paste,
+    // then a refusal - was undetectable by construction.
+    pendingMessageChars: composerDraftChars,
   });
 
   return (
@@ -657,6 +671,33 @@ function ContextUsageMeter({ usage }: { usage: ContextUsageEstimate }) {
       >
         {label}
       </p>
+      {/* THE PREDICTION, SAID OUT LOUD.
+       *
+       * `willRefuse` was computed on every render and rendered by nothing,
+       * so U-38's actual complaint - the gauge cannot say the backend will
+       * refuse - survived the field that was added to answer it. The bar
+       * cannot carry it: `percent` is driven by what is SENT, and the
+       * refusal is about what CANNOT SHRINK, which includes the message
+       * still being typed. Two quantities, so two marks.
+       *
+       * `role="status"`, not `alert`: this appears while the reader is
+       * typing, and interrupting them mid-sentence is worse than saying it
+       * calmly. */}
+      {usage.willRefuse && (
+        <p
+          role="status"
+          className="mt-1 text-[11px]"
+          data-testid="context-usage-refusal"
+          style={{ color: METER_COLORS.danger }}
+        >
+          {"This will be refused as it stands: what has to be sent before "
+            + "the conversation even starts is about "
+            + formatTokensCompact(
+                Math.ceil(usage.overflowChars / CHARS_PER_TOKEN))
+            + " tokens over the budget. Shorten what you are sending, or "
+            + "raise the context budget."}
+        </p>
+      )}
       {/* Caveat surfaced to assistive tech (not mouse-hover only). The visible
           "≈" already marks the numbers as an estimate. */}
       <span id={caveatId} className="sr-only">

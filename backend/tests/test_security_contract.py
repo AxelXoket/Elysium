@@ -758,7 +758,7 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "::test_a_non_empty_ledger_is_not_described_as_closed",
     )),
     # And the file count in the same paragraph, for the same reason.
-    ("shipped tree - 75 files", (
+    ("shipped tree - 76 files", (
         "tests/test_locked_numbers.py::TestTheSweptTree"
         "::test_the_file_count_in_the_prose_is_the_one_the_gate_reads",
         "tests/test_locked_numbers.py::TestTheSweptTree"
@@ -1029,11 +1029,17 @@ UNPROVEN: tuple[tuple[str, str], ...] = (
      "not just by a sentence."),
     ("they hold none of your conversation",
      "surfaced by keying the voice/models row on its answer cell instead of "
-     "its label. True by inspection - tts/registry.py only ever READS "
-     "TTS_MODELS_DIR and no chat, note or audio path writes into it - but "
-     "inspection is what this registry refuses to accept as a proof. "
-     "Testable as a standing invariant over every write site the way the "
-     "narrow_data_dir gap below is, not written."),
+     "its label. True by inspection, and the inspection was redone on "
+     "1 September 2026 because it had gone stale: tts/registry.py still only "
+     "READS TTS_MODELS_DIR, but it is not the only module that touches the "
+     "folder. Two write sites exist and neither carries conversation - "
+     "routers/tts.py override_engine writes the engine sidecar, and "
+     "tts/manifest.py write() writes a table of file names and byte sizes "
+     "(no production caller today). No chat, note or audio path writes there. "
+     "But inspection is what this registry refuses to accept as a proof, and "
+     "the staleness just demonstrated why. Testable as a standing invariant "
+     "over every write site the way the narrow_data_dir gap below is, "
+     "not written."),
     ("Nothing purges these",
      "the lock, shutdown and launch paths are each tested for the AUDIO "
      "cache; no test asserts the opposite for voice/refs - that a reference "
@@ -1319,7 +1325,7 @@ def _acknowledged_problems(
 #: sample - so this covers all of it. Updating this constant is the
 #: deliberate act that means a human decided what a change claims and
 #: registered a proof for it.
-DOCUMENT_DIGEST = "3e7a8e2253c6f30a07433e938888d21b177513eb2314cfed1abb9d75596be42a"
+DOCUMENT_DIGEST = "90fe63c46713cc2cbdffcf4118b7e0c7252f2f3c6c1dbfd23523fcb889d1f6e4"
 
 
 class TestEveryProvenClaimHasAProof:
