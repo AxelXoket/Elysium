@@ -400,7 +400,7 @@ class TestNothingWalksThroughAJunction:
         outside, victim, content = self._victim(tmp_path)
         refs_root = tmp_path / "refs"
         monkeypatch.setattr(refs, "refs_dir", lambda: refs_root)
-        # The folder a voice actually lives in is opaque now (K-?? / owner's
+        # The folder a voice actually lives in is opaque now (K-?? / the
         # rule on names), not "voice3" - ask the module for it rather than
         # assuming the old identity-named path still means anything.
         folder = refs._voice_dir("voice3")
@@ -701,7 +701,7 @@ class TestAFailedRemovalIsNotCountedAsOne:
 
 
 class TestTheSpokenFormGoesWithItsMessage:
-    """K-45, and the owner's rule that produced it.
+    """K-45, and the rule that produced it.
 
     "Nothing that lives in the encrypted database gets written permanently
     anywhere else." A wav of a reply is that content read aloud. Deleting the

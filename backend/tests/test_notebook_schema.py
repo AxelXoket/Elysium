@@ -144,7 +144,7 @@ class TestTheMigrationSurvivesADamagedDatabase:
 
     def test_a_global_boundary_is_not_swept(self, db) -> None:
         """The sweep works by chat, and a global limit belongs to no chat. If
-        this ever goes red, every limit the owner wrote disappears on unlock."""
+        this ever goes red, every limit written once disappears on unlock."""
         with database.get_db() as con:
             con.execute(
                 "INSERT INTO boundaries (scope, label, phrasing, severity) "
@@ -156,7 +156,7 @@ class TestTheMigrationSurvivesADamagedDatabase:
 
     def test_duplicate_positions_are_renumbered_not_deleted(self, db) -> None:
         """The unique index cannot be built over them, and deleting the loser
-        would break the owner's rule that a note never disappears. So they move.
+        would break the rule that a note never disappears. So they move.
         """
         with database.get_db() as con:
             chat = _a_chat(con)

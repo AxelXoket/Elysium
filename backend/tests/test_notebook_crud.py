@@ -5,7 +5,7 @@ risks pointing opposite ways:
 
   * leave the rows behind and the chat becomes UNDELETABLE - the foreign key
     has no cascade and enforcement is on, so the delete fails and 500s;
-  * delete too much and a limit the owner wrote once disappears because an
+  * delete too much and a limit written once disappears because an
     unrelated conversation was tidied up.
 
 So every test here names which of those it is protecting against.
@@ -117,7 +117,7 @@ class TestProvenanceIsWrittenOnce:
 
 class TestRetiredIsNotDeleted:
     def test_a_retired_note_stays_visible(self, db, chat) -> None:
-        """The owner's rule: a note never disappears. Retirement takes it out
+        """The rule: a note never disappears. Retirement takes it out
         of the prompt, not off the screen."""
         entry = notebook.create_entry(chat, "wound on her left hand")
         newer = notebook.create_entry(chat, "the wound healed")
@@ -367,7 +367,7 @@ class TestWhatTheFirstAuditFound:
 
 
 class TestTheDryRunRouteIsGone:
-    """The owner removed the "Try it on this chat" preview on 22 August 2026.
+    """The "Try it on this chat" preview was removed on 22 August 2026.
 
     A removal proves nothing by being invisible. Deleting the handler and
     leaving it at that would pass whether the route were gone, renamed, or

@@ -96,8 +96,7 @@ def rebuilt_transparency(img):
     single one - so "just drop it" was never an option. Rebuilding it from
     what the pixels actually show changed NONE of the 168 affected files.
 
-    Two things are rebuilt, and the second is the strict half the owner asked
-    for:
+    Two things are rebuilt, and the second is the strict half:
 
       * the byte string is regenerated from the alpha values the image really
         uses, so unused entries carry nothing;

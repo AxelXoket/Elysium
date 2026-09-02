@@ -257,9 +257,9 @@ class TestOneExtractionIsOneTransaction:
 
 class TestAutoAccept:
     def test_the_default_is_ON(self, client) -> None:
-        """The owner's answer, and an unset key IS the default. Reading unset
-        as "off" would make a fresh install do nothing and look like a broken
-        worker rather than a setting."""
+        """ON is the settled default, and an unset key IS the default.
+        Reading unset as "off" would make a fresh install do nothing and look
+        like a broken worker rather than a setting."""
         chat_id = seed(client)
         with get_db() as con:
             assert notebook.auto_accept_for(con, chat_id) is True

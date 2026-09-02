@@ -19,8 +19,8 @@ Two lanes, because one budget cannot hold both jobs.
                tests in a child process. The commit that introduced this lane
                staged five test files and paid 38s.
 
-               So the owner's under-two-seconds rule for a gate test holds for
-               the common case and does not hold for a commit that stages a
+               So the under-two-seconds rule for a gate test holds for the
+               common case and does not hold for a commit that stages a
                slow file. Written down rather than rounded off: the honest
                shape is "you pay for what you changed", and on this tree one
                of the things you can change is expensive.
@@ -32,8 +32,8 @@ Two lanes, because one budget cannot hold both jobs.
                work leaves this machine, and "it compiled" is a claim nobody
                was checking either.
 
-THE BUILD LANE VERIFIES, IT DOES NOT PRODUCE. The owner's ruling, 30 August
-2026, and it is a boundary rather than a preference:
+THE BUILD LANE VERIFIES, IT DOES NOT PRODUCE. Settled 30 August 2026, and it
+is a boundary rather than a preference:
 
     Pre-push verification must not mutate, replace, regenerate, touch or
     otherwise alter any tracked release artifact or canonical build output.
@@ -63,7 +63,7 @@ asserted. What DOES switch them off, and cannot be fixed from inside a hook:
 somewhere empty, a merge or a rebase (git runs no pre-commit hook for either),
 and a fresh clone, because .git/hooks is not cloned. The working-tree hygiene
 sweep catches the last three afterwards; nothing catches the first two, which
-is why the owner's rule against them is a rule rather than a mechanism.
+is why the rule against them is a rule rather than a mechanism.
 
 The lane checks the installed hooks at commit time for exactly this reason: a
 deleted .git/hooks/pre-push used to switch off the whole build lane in silence.
@@ -250,7 +250,7 @@ def pre_push() -> int:
     """Everything, and then a verification build made outside the tree."""
     ok = verify_hygiene.main([]) == 0
 
-    print("\n  not run here, by the owner's ruling on artifact freshness:\n"
+    print("\n  not run here, by the settled rule on artifact freshness:\n"
           f"    {FRESHNESS_TEST}\n"
           "    freshness belongs to the release gate. This lane verifies; it\n"
           "    is not allowed to produce the artefact that would satisfy it.")
@@ -360,9 +360,9 @@ def _selftest(exe: Path, built_after: float) -> bool:
     # tidiness. run_app.py's own comment says the frozen self check stays
     # runnable while the real app is open BECAUSE it always redirects it, and
     # test_artifact_gate.py does the same thing for the same reason: a boot
-    # check that quietly touched the owner's database would be a worse bug
+    # check that quietly touched the real database would be a worse bug
     # than anything it could find. Without the redirect this lane claims the
-    # single-instance lock against the real app, raises the owner's window or
+    # single-instance lock against the real app, raises its window or
     # opens a modal box, rewrites the port file the window reads its settings
     # from, and hardens the ACL on the real vault folder.
     started = time.monotonic()

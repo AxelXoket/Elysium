@@ -44,7 +44,7 @@ interface ComposerProps {
   onSend: (messageText: string) => void;
   isPending: boolean;
   sendError: unknown;
-  /** Called when the user dismisses the error banner - the owner (ChatCanvas)
+  /** Called when the user dismisses the error banner - the parent (ChatCanvas)
    * drops the chat's error entry, so the banner stays gone across chat
    * switches until a NEW error arrives. */
   onDismissError?: () => void;

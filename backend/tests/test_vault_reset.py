@@ -1,4 +1,4 @@
-"""POST /vault/reset - the owner's "forgot your passphrase" answer.
+"""POST /vault/reset - the "forgot your passphrase" answer.
 
 There is no recovery in this vault by design (crypto.py: the key is never
 stored, forgetting the passphrase means the data is unrecoverable). What was

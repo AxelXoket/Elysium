@@ -13,7 +13,7 @@ means "nothing in flight and nothing finished recently", and a streamed reply
 holds the clock at zero for as long as it runs, so the interruption the old
 default was protecting against cannot happen. What the old default did protect
 was a decrypted vault sitting open on an unattended machine, which is the thing
-this module exists to prevent. Owner's decision, 8 August 2026.
+this module exists to prevent. Decided 8 August 2026.
 
 The setting lives in the vault itself, which is the right place: it is only
 readable while unlocked, which is exactly when the watchdog needs it.

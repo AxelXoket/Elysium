@@ -9,7 +9,7 @@
  *   - retired   - a newer note replaced it; kept, not sent
  *   - over the ceiling - it did not fit this turn; kept, not sent
  *
- * The owner's rule is that a note never disappears, so none of these is ever
+ * The rule is that a note never disappears, so none of these is ever
  * hidden. They are marked instead, and the mark says which one it is.
  *
  * Derived from the existing language on purpose: lucide icons at 13px, the
@@ -545,7 +545,7 @@ export function NotebookPanel() {
         )}
 
         {/* Once, not on every row. The per-row version told a Turkish-speaking
-            owner about their own language's model support every few lines,
+            reader about their own language's model support every few lines,
             which is a lecture rather than a note. */}
         {entries.some((e) => e.provenance === "model") && (
           <p className="text-xs leading-relaxed text-muted-foreground">

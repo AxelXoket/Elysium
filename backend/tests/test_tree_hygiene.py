@@ -217,7 +217,7 @@ def test_the_waiver_list_itself_parses(sweep):
 
 #: The three tools that survived 2026-08-17, each because it does something no
 #: test can: the hygiene gate the commit hook runs, the one that makes a live
-#: request with the owner's own key, and the one that measures real hardware.
+#: request with a real key, and the one that measures real hardware.
 LIVE_VERIFY_TOOLS = {
     "verify_hygiene.py",
     "verify_image_output.py",

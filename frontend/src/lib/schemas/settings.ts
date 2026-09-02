@@ -24,12 +24,12 @@ export const SettingsSchema = z.object({
   auto_lock_minutes: z.number().default(0),
   /** Hide the window from screen capture and screen sharing. Defaulted so a
    *  newer client against an older server parses, and the default is OFF -
-   *  the owner takes screenshots of this app, and a protection that silently
+   *  screenshots of this app get taken, and a protection that silently
    *  blanks them is a bug report rather than a feature. */
   screen_privacy_enabled: z.boolean().default(false),
   /** Which model is currently chosen. An OpenRouter model id
    *  ("anthropic/claude-3.5-sonnet") is a NAME a person reads on screen, not
-   *  a number - the exact shape the owner's rule bans from ever sitting
+   *  a number - the exact shape the rule bans from ever sitting
    *  outside the vault - so it lives here rather than in uiStore's
    *  localStorage blob. See uiStore.ts's version-3 migrate, which cleans the
    *  plaintext copy out of any existing install. Defaulted so a newer client

@@ -93,7 +93,7 @@ export function useAreaAspect<T extends HTMLElement>(): {
     // serialise-and-write of the whole preference blob to browser storage.
     // Eighteen synchronous writes on the main thread, while that same thread
     // is re-wrapping every message bubble, is what turned an ordinary reflow
-    // into the stuttering redraw the owner described. (Phrased without the
+    // into the stuttering redraw observed on screen. (Phrased without the
     // literal storage API name on purpose: static-safety S-09 greps for it to
     // keep persistence inside lib/store, and a comment must not trip a gate.)
     //

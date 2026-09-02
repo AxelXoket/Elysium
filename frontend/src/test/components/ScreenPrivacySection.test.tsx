@@ -3,9 +3,9 @@
  *
  * The backend shipped a while ago - the vault-stored setting, the
  * apply-on-unlock / remove-on-lock transition, its tests. Nothing in the UI
- * ever reached it, so the toggle the owner asked for existed only as an HTTP
- * route. These tests are about the switch being honest: off by default,
- * inert until the stored value is known, and saying what it does not do.
+ * ever reached it, so the toggle existed only as an HTTP route. These tests
+ * are about the switch being honest: off by default, inert until the stored
+ * value is known, and saying what it does not do.
  */
 import { afterAll, beforeAll, describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
@@ -38,7 +38,7 @@ describe("ScreenPrivacySection", () => {
   afterEach(() => vi.restoreAllMocks());
 
   it("is off by default", async () => {
-    // The owner said they take screenshots of this app. A protection that
+    // Screenshots of this app get taken routinely. A protection that
     // silently blanks them is a bug report, not a feature.
     mount(false);
     await waitFor(() =>

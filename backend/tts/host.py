@@ -104,9 +104,9 @@ def _refuse_to_speak_outside_our_own_folder(cache: Path) -> None:
     refuses a redirected name. Speech accumulated somewhere nothing would ever
     clean.
 
-    The owner's rule, in their words: nothing that lives in the encrypted
-    database may be written permanently anywhere else. A wav of the reply is
-    exactly that content, read aloud.
+    The rule: nothing that lives in the encrypted database may be written
+    permanently anywhere else. A wav of the reply is exactly that content,
+    read aloud.
 
     The test is "does this name lead somewhere else", not "is it under the
     data directory". abspath normalises without following links; resolve
@@ -520,7 +520,7 @@ class VoiceHost:
         """Destroy the spoken form of one message. Returns what would not go.
 
         K-45. Deleting a message removed its row and its image bytes from the
-        vault and left the wav of it on disk. The owner's rule is that content
+        vault and left the wav of it on disk. The rule is that content
         living in the encrypted database is not written permanently anywhere
         else, and a recording of a reply the user just deleted is the sharpest
         case of that: they deleted it BECAUSE they wanted it gone.
@@ -932,7 +932,7 @@ def wipe_audio_cache() -> tuple[int, list[str]]:
     when voice was last used. Weighed against wiping it:
 
       * it is NUMERIC/temporal metadata, not a name or content - the two
-        things the owner's rule names explicitly. It says nothing about
+        things the rule names explicitly. It says nothing about
         WHICH voice, WHO, or what was said; the wav sweep two lines below is
         what removes the thing that actually matters.
       * it is not the sharpest clock on this disk. app.db's own mtime (and

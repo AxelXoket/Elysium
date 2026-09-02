@@ -1,7 +1,7 @@
 """The house rule enforced over the SUITE itself: a test that reads source
 text to make an assertion is banned.
 
-The reason is exact, and it is the owner's own: a test that greps a
+The reason is exact: a test that greps a
 function's source passes when the line is present but dead, present but in an
 unreachable branch, present but commented out inside a string, or when the
 behaviour has moved somewhere the grep no longer looks. It reports coverage it
@@ -135,8 +135,8 @@ def scan_file(path: str, text: str) -> list[Hit]:
 # test_tree_hygiene.py names in its own docstring, applied here to the same
 # class of file. None of them currently trip scan_file() (the window
 # correlation above already tells a whole-tree sweep apart from a single-file
-# behaviour substitute), but the allowlist exists anyway, on the owner's
-# explicit instruction, as the argued-for exemption a future tightening of the
+# behaviour substitute), but the allowlist exists anyway, by explicit
+# intent, as the argued-for exemption a future tightening of the
 # read-and-assert rule would need to cross.
 ALLOWLIST: dict[str, str] = {
     "test_egress_chokepoint" + _PY:

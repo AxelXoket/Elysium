@@ -653,8 +653,8 @@ CREATE TABLE IF NOT EXISTS notebook_spend_calls (
 
     # Self-heal before the unique index, same reasoning as the variant-group
     # one above: duplicate positions would abort the CREATE on every boot with
-    # no way back in. Renumber the losers to the end rather than deleting them -
-    # the owner's rule is that a note never disappears.
+    # no way back in. Renumber the losers to the end rather than deleting them:
+    # a note never disappears.
     #
     # A FLAT OFFSET IS NOT ENOUGH, and the first version of this used one. It
     # added the same constant to every loser, which turns N rows sharing a

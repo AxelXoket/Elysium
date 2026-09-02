@@ -632,7 +632,7 @@ class TestAStuckFileGetsAnotherTry:
     until the next unlock+speak called wipe_cache() a second time - which,
     while the vault stays locked, may be never.
 
-    The message id in its name is not what this closes: the owner's rule
+    The message id in its name is not what this closes: the privacy rule
     permits a numeric id outside the vault, and nothing here disputes that.
     What it closes is the audible content surviving indefinitely - by
     piggybacking on poll_health, which already beats regardless of lock

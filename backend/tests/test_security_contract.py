@@ -368,7 +368,7 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "::test_the_module_count_is_the_ledger_s_own",
     )),
     # The model id left the browser profile this round. It is a name a
-    # person reads on screen, which is the one thing the owner's rule keeps
+    # person reads on screen, which is the one thing the privacy rule keeps
     # out of anywhere a locked vault cannot protect.
     ("The model you last picked used to be there and is not any more", (
         "tests/test_model_selection.py::TestTheRouteRoundTrips"
@@ -718,7 +718,7 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "::test_a_broken_reader_never_raises_on_the_launch_path",
     )),
     # ── The log ───────────────────────────────────────────────────────────
-    # The owner's rule itself. Two proofs for its two halves: the tree-wide
+    # The name rule itself. Two proofs for its two halves: the tree-wide
     # AST gate is what keeps a NAME out, and the at-rest test is what keeps
     # message CONTENT out of a log written by a real completed turn.
     ("a numeric id outside the vault is acceptable; a name you read on "
@@ -911,7 +911,7 @@ ACKNOWLEDGED_UNTESTABLE: tuple[
      "this was measured on", ReasonCategory.ONE_TIME_MEASUREMENT,
      "a registry read on the development machine, recorded in the comment "
      "directly above this entry with the key, the value and the date. "
-     "Nothing runnable re-checks it: a test that read the owner's real "
+     "Nothing runnable re-checks it: a test that read the machine's own "
      "clipboard setting would be a test whose result depends on the machine "
      "it runs on, which is the opposite of a gate.",
      "2026-08-20", "backend/tests/test_security_contract.py:814-822"),
@@ -1325,7 +1325,7 @@ def _acknowledged_problems(
 #: sample - so this covers all of it. Updating this constant is the
 #: deliberate act that means a human decided what a change claims and
 #: registered a proof for it.
-DOCUMENT_DIGEST = "90fe63c46713cc2cbdffcf4118b7e0c7252f2f3c6c1dbfd23523fcb889d1f6e4"
+DOCUMENT_DIGEST = "52f3cda304d6dca85d3006f71962534fbda64e87ea2b47747c9f9e36e270f031"
 
 
 class TestEveryProvenClaimHasAProof:

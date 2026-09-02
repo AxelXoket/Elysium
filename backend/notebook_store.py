@@ -171,10 +171,10 @@ def _row(r) -> dict[str, Any]:
 def list_entries(chat_id: int, *, include_retired: bool = True) -> list[dict]:
     """Everything this chat holds, retired rows included by default.
 
-    Retired is not deleted and the panel has to show it: the owner's rule is
-    that a note never disappears, and a superseded fact is the one case where
-    the app decided something on their behalf. It is excluded from the prompt,
-    not from the screen.
+    Retired is not deleted and the panel has to show it: a note never
+    disappears, and a superseded fact is the one case where the app decided
+    something on the reader's behalf. It is excluded from the prompt, not
+    from the screen.
     """
     where = "chat_id = ?"
     if not include_retired:
@@ -1202,9 +1202,9 @@ def build_notebook_blocks(chat_id: int, available_chars: int) -> dict:
 def record_exclusions(chat_id: int, excluded) -> None:
     """Write down why a note did not go, and clear the note on ones that did.
 
-    The owner's rule is that a note never disappears; this is what keeps that
-    true when the ceiling bites. The panel can then say "not sent this turn,
-    and here is why" instead of showing a row that looks active and is not.
+    A note never disappears; this is what keeps that true when the ceiling
+    bites. The panel can then say "not sent this turn, and here is why"
+    instead of showing a row that looks active and is not.
     """
     dropped = {eid: reason for eid, reason in excluded}
     with get_db() as con:
@@ -1257,9 +1257,9 @@ def record_exclusions(chat_id: int, excluded) -> None:
 #
 # The block is here rather than in the worker so that any caller inherits it.
 # It had two callers once: the unattended worker and a dry-run button the user
-# could press as fast as they could click. The button was removed on the
-# owner's instruction on 22 August 2026; the block stays where it is, because
-# a cap enforced at one call site is not a cap.
+# could press as fast as they could click. The button was removed on
+# 22 August 2026; the block stays where it is, because a cap enforced at one
+# call site is not a cap.
 
 def first_unread_message(con, chat_id: int) -> int | None:
     """The oldest message in this chat that no extraction has ever covered.
@@ -1695,7 +1695,7 @@ def auto_accept_for(con, chat_id: int) -> bool:
         return bool(row[0])
     from database import get_setting_con
     raw = get_setting_con(con, config.SETTING_NOTEBOOK_AUTO_ACCEPT)
-    # Default ON, per the owner's answer. An unset setting is the default, not
+    # Default ON, deliberately. An unset setting is the default, not
     # "off" - reading it as off would make the feature silently do nothing on
     # a fresh install and look like a bug in the worker.
     return raw != "0"
@@ -1920,11 +1920,10 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
              # describe and its guard would pass by describing an empty set.
              PROV_MODEL,
              source_id,
-             # Whose words the quote came from. Marked, not acted on: the
-             # owner's decision was that a note from the model's own reply is
-             # shown for what it is rather than held back, because the
-             # research says a review queue nobody reads is worse than an
-             # honest label somebody can see.
+             # Whose words the quote came from. Marked, not acted on: a
+             # note from the model's own reply is shown for what it is rather
+             # than held back, because the research says a review queue
+             # nobody reads is worse than an honest label somebody can see.
              fact.get("evidence_role"),
             # The intent, carried on the row rather than discarded.
             #
@@ -2042,7 +2041,7 @@ def already_done(con, work_key: str) -> bool:
 
 
 def extraction_stats(con, chat_id: int | None = None) -> dict:
-    """What the worker has done, for the counter the owner reads.
+    """What the worker has done, for the counter shown on screen.
 
     A47: a skipped extraction is NOT silent. The reason is stored per row and
     counted here, because "nothing happened" and "twelve runs were refused for

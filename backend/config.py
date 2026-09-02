@@ -230,7 +230,7 @@ IMAGE_TOKEN_ESTIMATE: int = 1100
 # exclusion does not touch that path, because it excludes PIXELS and the
 # accessibility tree is text.
 #
-# So the owner chose the stronger default knowingly. The cost is real and is
+# So the stronger default was chosen knowingly. The cost is real and is
 # not hidden: while this is on, a screen reader cannot read the app either.
 # Anyone who needs one turns it off, WITHOUT editing code, from a command
 # prompt, and this is the whole way out:
@@ -348,7 +348,7 @@ UPLOAD_SPOOL_LIMIT: int = max(UPLOAD_BODY_LIMIT, TTS_REF_BODY_LIMIT) + 1
 # ---------------------------------------------------------------------------
 #: Which model is currently chosen in the UI. An OpenRouter model id such as
 #: "anthropic/claude-3.5-sonnet" is a NAME a person reads on screen - exactly
-#: the shape the owner's own rule bans from ever sitting outside the vault -
+#: the shape that is banned from ever sitting outside the vault -
 #: so it lives here, next to the API key and the stop sequences, and never in
 #: the browser's localStorage. It used to be one of three keys in uiStore's
 #: `elysium-ui-state` blob; the other two (selectedChatId, selectedCharacterId)

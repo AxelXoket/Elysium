@@ -1271,7 +1271,7 @@ def narrow_data_dir(path: Path | str) -> list[str]:
     that was good: removing SYSTEM and Administrators buys nothing against an
     attacker already running as this user, and a silent repair hides that
     something on this machine widened it. Both halves survive here. What
-    changed is the owner's decision that a second ACCOUNT on the same
+    changed is the decision that a second ACCOUNT on the same
     computer should not be able to read salt.bin and verifier.bin - the two
     files an offline passphrase attack needs - and that this has to hold for
     everyone who installs the app, not just on a machine somebody audited by

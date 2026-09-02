@@ -6,9 +6,9 @@ that asserted something weaker than the guard says - which is worse than
 missing, because the row was ticked.
 
 Each class below names which one it is and what the weaker version failed to
-catch. The general rule the owner set applies throughout: constants are
-IMPORTED rather than restated, every guard has a ground and a positive
-control, and no test reads source text.
+catch. The general rule applies throughout: constants are IMPORTED rather
+than restated, every guard has a ground and a positive control, and no test
+reads source text.
 """
 from __future__ import annotations
 

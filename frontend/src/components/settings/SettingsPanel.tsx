@@ -43,16 +43,16 @@ export function SettingsPanel() {
                includes selectedCharacterId and selectedChatId. Which
                character and which chat were last open therefore sit in
                plaintext outside the vault and survive a lock. That is a
-               deliberate trade the owner made - reopening where you left off
-               is worth more than the change - so the note names what is kept
-               instead of pretending nothing is. The claim that survives is
-               the narrow one that is actually true: no key and no message
-               TEXT is in browser storage.
+               deliberate trade - reopening where you left off is worth
+               more than the change - so the note names what is kept instead
+               of pretending nothing is. The claim that survives is the
+               narrow one that is actually true: no key and no message TEXT
+               is in browser storage.
 
                selectedModelId is NOT in that list, on purpose (v1.2 privacy
                fix): an OpenRouter model id such as
                "anthropic/claude-3.5-sonnet" is a NAME a person reads on
-               screen, not a bare id like the two above, and the owner's own
+               screen, not a bare id like the two above, and the privacy
                rule bans that shape from ever sitting outside the vault. It
                moved into the encrypted settings table - see uiStore.ts's
                version-3 `migrate`, which also cleans the old plaintext copy

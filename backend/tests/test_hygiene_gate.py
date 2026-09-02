@@ -353,7 +353,7 @@ class TestAllowlistParsing:
 
 
 class TestTheReportIsJudgeable:
-    """The owner's requirement: a block has to be decidable at a glance.
+    """The requirement: a block has to be decidable at a glance.
 
     Not decoration. A gate that prints only "blocked" sends the reader to go
     find out what happened, and the fastest way to find out is to run the

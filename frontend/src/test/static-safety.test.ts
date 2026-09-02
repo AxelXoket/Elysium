@@ -184,7 +184,7 @@ const HEX = /^#[0-9a-fA-F]{6}$/;
 
 const PERSISTED_KEY_SHAPES: Record<string, PersistedShape> = {
   selectedCharacterId: {
-    why: "A row id. The owner's rule allows a numeric id outside the vault; the NAME that id resolves to is fetched over 127.0.0.1 and never stored here.",
+    why: "A row id. The rule allows a numeric id outside the vault; the NAME that id resolves to is fetched over 127.0.0.1 and never stored here.",
     accepts: rowId,
     sample: 7,
   },
@@ -1470,7 +1470,7 @@ describe("Static safety tests", () => {
    * (measured against its `_BODY_DIRS` / `_BODY_FILES`). So a chat title typed
    * once would sit in cleartext on disk, outside the vault, across every
    * launch, and be offered back as a dropdown suggestion the next time
-   * somebody renames a chat. That is the owner's rule broken twice over: the
+   * somebody renames a chat. That is the rule broken twice over: the
    * name is outside the vault, and it is back on screen unasked.
    *
    * WHY IT IS CLEAN TODAY, AND WHY THAT IS AN ACCIDENT. Nothing is stored
@@ -1697,7 +1697,7 @@ describe("Static safety tests", () => {
   //
   // S-09 exempts everything under lib/store from its `localStorage.setItem`
   // scan, because that is where the persisted UI store legitimately lives.
-  // draftStore.ts was asked to live there too - it is a store - which means
+  // draftStore.ts lives there too - it is a store - which means
   // the single rule that would normally notice a persistence mistake is
   // blind to this exact file. S-09b does not cover it either: its brace
   // walker reads uiStore.ts by hard-coded path and nothing else.

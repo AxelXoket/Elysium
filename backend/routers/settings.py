@@ -578,10 +578,10 @@ async def set_model_selection(body: ModelSelectionBody) -> dict:
     """Persist which model is selected, IN THE VAULT rather than the browser.
 
     An OpenRouter model id ("anthropic/claude-3.5-sonnet") is a NAME a person
-    reads on screen - exactly the shape the S-09b privacy rule, and the
-    owner's own rule, ban from ever sitting outside the vault. It used to
-    live in uiStore's `elysium-ui-state` blob in localStorage, in the clear;
-    it lives here now, next to the API key and the stop sequences.
+    reads on screen - exactly the shape the S-09b privacy rule bans from ever
+    sitting outside the vault. It used to live in uiStore's `elysium-ui-state`
+    blob in localStorage, in the clear; it lives here now, next to the API key
+    and the stop sequences.
 
     uiStore.ts's version-3 `migrate` strips the old plaintext copy out of
     every install that already has one - this endpoint alone would only stop
@@ -784,9 +784,9 @@ async def set_screen_privacy(body: ScreenPrivacyBody) -> dict:
     the auto-lock delay is: a protection setting somebody can read and change
     without the passphrase is not one.
 
-    OFF by default. The owner takes screenshots of this app, and a default
-    that blacks out their captures until they find the switch would be the app
-    deciding for them. Applied on vault transitions, never at launch - the
+    OFF by default. Screenshots of this app get taken, and a default that
+    blacks those captures out until the switch is found would be the app
+    deciding on its own. Applied on vault transitions, never at launch - the
     setting lives inside the vault and the window exists before it is open.
 
     What it cannot do, said plainly: macOS's newer capture API can still read

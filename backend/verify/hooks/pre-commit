@@ -24,7 +24,7 @@
 #
 # Cheap is relative and the numbers are in run_gates.py: 0.2s when no test
 # file is staged, about 2s for an ordinary one, and up to 38s for a commit
-# that stages several slow ones. The owner's under-two-seconds rule holds for
+# that stages several slow ones. The under-two-seconds rule holds for
 # the common case and not for every case; that is written down rather than
 # rounded off.
 #

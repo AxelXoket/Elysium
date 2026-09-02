@@ -6,7 +6,7 @@ and it is applied on LOCK TRANSITIONS rather than at launch.
 
 That is not a preference about where to put a call. `harden()` runs before the
 server starts and long before a passphrase has been entered, so a setting
-stored inside the vault is literally unreadable there. The owner's rule -
+stored inside the vault is literally unreadable there. The rule here -
 "while the app is locked, do not apply it either way" - is what makes that
 solvable rather than a contradiction: protection belongs on only while a
 conversation is on screen.
@@ -58,9 +58,9 @@ class TestItIsAStateTransitionNotASetting:
         assert calls == [True]
 
     def test_locking_removes_it_even_with_the_switch_on(self, db, monkeypatch):
-        """The owner's rule, and the reason the launch-order problem is not a
-        problem: there is nothing on a locked screen but a masked passphrase
-        box."""
+        """The locked half of the rule, and the reason the launch-order
+        problem is not a problem: there is nothing on a locked screen but a
+        masked passphrase box."""
         calls = self._record(monkeypatch)
         database.set_setting(vault_router.SETTING_SCREEN_PRIVACY, "1")
         vault_router._apply_screen_privacy(False)

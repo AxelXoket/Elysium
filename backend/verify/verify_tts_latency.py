@@ -49,7 +49,7 @@ SAMPLES = [
 def _reference_voice_id() -> str:
     """Which voice to clone from, without naming anybody.
 
-    This used to be a string literal, and the string was the owner's own
+    This used to be a string literal, and the string was a personal
     voice label - live in tracked source, and from there published. A
     measurement script has no business carrying it: the id is a property of
     the machine the measurement runs on, not of the code.

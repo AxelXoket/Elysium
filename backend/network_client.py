@@ -105,9 +105,9 @@ def allowed_hosts() -> frozenset[str]:
     took its contents from the thing it existed to check.
 
     A non-default host is honoured only when `ELYSIUM_ALLOW_BASE_URL_OVERRIDE`
-    is exactly "1". That keeps a real mock or staging provider usable - the
-    owner needs one - while making the poisoned-variable path fail loudly at
-    the chokepoint instead of succeeding in silence.
+    is exactly "1". That keeps a real mock or staging provider usable -
+    development needs one - while making the poisoned-variable path fail
+    loudly at the chokepoint instead of succeeding in silence.
 
     Read through `config.` rather than from a name bound at import, so a test
     that sets them is honoured. That is the whole of the claim: the callers in

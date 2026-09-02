@@ -439,8 +439,8 @@ const ERROR_MESSAGES: Record<string, string> = {
   // has its own sentence, and both of them would send someone off doing the
   // wrong thing. The passphrase is right; the two halves of the vault simply
   // come from different moments, which is what restoring one of them without
-  // the other does. Only the owner knows which half they meant to keep, so
-  // the message names the files rather than proposing a repair.
+  // the other does. Only whoever restored it knows which half they meant to
+  // keep, so the message names the files rather than proposing a repair.
   vault_identity_mismatch:
     "That passphrase is correct, but it does not open the database that is here - the key files and the database are from different vaults. This usually means one of them was restored from a backup without the other. Put back the matching app.db, or the matching salt.bin and verifier.bin, from the same backup.",
   change_passphrase_failed:

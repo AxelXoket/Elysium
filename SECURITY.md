@@ -392,8 +392,8 @@ allowed to report anything about the switch being on.
 ### The log
 
 `elysium.log` sits outside the vault in plain text and survives every lock, so
-what may go into it is a rule rather than a habit. The rule, in the owner's
-words: **a numeric id outside the vault is acceptable; a name you read on
+what may go into it is a rule rather than a habit. The rule, stated
+plainly: **a numeric id outside the vault is acceptable; a name you read on
 screen, or anything from inside the vault, never.** A chat id records that
 something happened. A chat's title records what it was about, and so does a
 character's name, or a persona's.

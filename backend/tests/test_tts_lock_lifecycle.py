@@ -89,7 +89,7 @@ def _cached_audio(count=3) -> Path:
 #     could ever experience, and it is DELETED rather than converted - there
 #     is no behaviour to drive for prose. The rationale it guarded has four
 #     copies (config.py beside TTS_LOAD_TIMEOUT_S, host.py where the reaper
-#     used to be, this module's docstring, and the owner's decision ledger),
+#     used to be, this module's docstring, and the decision ledger),
 #     so deleting the assertion loses no knowledge, only a false guard.
 #
 # What replaces them drives the host: no NAME in the config namespace looks

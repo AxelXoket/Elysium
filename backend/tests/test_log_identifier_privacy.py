@@ -113,7 +113,7 @@ _MUST_STAY_CLEAN = (
 #: and is still open: a voice created before the frontend started minting
 #: UUIDs still carries the slug of its label as its id inside its own
 #: voice.json. That is a stored value, not a logged one. Whether those ids get
-#: migrated is the owner's call; this gate only ever measured the log.
+#: migrated is a separate decision; this gate only ever measured the log.
 KNOWN_CONTENT_DEBT: dict[str, int] = {}
 
 #: TRACEBACK DEBT. `logger.exception(...)` or `exc_info=True` inside an except
@@ -122,10 +122,10 @@ KNOWN_CONTENT_DEBT: dict[str, int] = {}
 #:
 #: NOT a fix list. A traceback is the most useful thing in a crash report, and
 #: whether this tree should trade all of them away for a leak that is possible
-#: rather than demonstrated is a policy question for the owner, not something
-#: to settle inside a TTS change. What the ledger buys today is that the
-#: number cannot grow without somebody noticing. One was removed on the way
-#: past: tts/stream_speech.py's crash handler, because the code inside its try
+#: rather than demonstrated is a policy question, not something to settle
+#: inside a TTS change. What the ledger buys today is that the number
+#: cannot grow without somebody noticing. One was removed on the way past:
+#: tts/stream_speech.py's crash handler, because the code inside its try
 #: prepares reply text and an exception raised in there arrives holding it.
 #:
 #: run_app.py (2): found on 2026-08-20 when the scanner learned to see
@@ -431,9 +431,9 @@ class TestTheScannerCanActuallyFire:
     def test_a_row_id_from_a_statement_that_mentions_content_is_not_flagged(
             self) -> None:
         # The measured false positive that made content taint spread only
-        # through string building. A row id is precisely what the owner said
-        # belongs in the log, and the gate flagging it would have taught
-        # everyone to route around the gate.
+        # through string building. A row id is precisely what belongs in the
+        # log, and the gate flagging it would have taught everyone to route
+        # around the gate.
         source = (
             "import logging\n"
             "logger = logging.getLogger(__name__)\n"

@@ -149,9 +149,9 @@ class TestWhatIsAllowed:
     def test_an_explicit_opt_in_admits_a_real_staging_provider(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The owner needs a non-loopback test server sometimes, so the door
-        is not nailed shut - it needs a second, differently named switch that
-        says out loud what it does. Two variables are not a wall against
+        """A non-loopback test server is sometimes needed, so the door is not
+        nailed shut - it needs a second, differently named switch that says
+        out loud what it does. Two variables are not a wall against
         somebody who can already write one; what they remove is the SILENT
         path."""
         monkeypatch.setattr(config, "OPENROUTER_BASE_URL",

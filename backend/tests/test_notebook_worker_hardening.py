@@ -489,8 +489,8 @@ class TestPinnedNotesCannotBreakTheChat:
         assert len(blocks["user_block"]) <= notebook.NOTEBOOK_MAX_CHARS
 
     def test_the_pins_that_did_not_fit_are_named(self, client) -> None:
-        """They must not vanish quietly - the owner's rule is that a note
-        never disappears, and this is the one case where the app overrode a
+        """They must not vanish quietly - the rule is that a note never
+        disappears, and this is the one case where the app overrode a
         pin the user set on purpose."""
         chat_id = make_chat(client, make_character(client))
         for i in range(40):

@@ -999,7 +999,7 @@ def test_the_transparency_a_picture_really_uses_is_kept(client):
 
 
 def test_an_index_no_pixel_uses_is_dropped(client):
-    """The strict variant the owner asked for.
+    """The strict variant, chosen deliberately.
 
     An `int` tRNS naming a palette entry that no pixel refers to says
     something about the file's history and nothing about its appearance.

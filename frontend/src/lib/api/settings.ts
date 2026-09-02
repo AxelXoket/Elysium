@@ -119,7 +119,7 @@ export function setScreenPrivacy(enabled: boolean): Promise<OkResponse> {
  * Persist which model is selected, in the VAULT rather than the browser.
  *
  * An OpenRouter model id ("anthropic/claude-3.5-sonnet") is a NAME a person
- * reads on screen, the exact shape S-09b (and the owner's own rule) bans from
+ * reads on screen, the exact shape S-09b (and the privacy rule) bans from
  * localStorage. It used to be one of three keys in uiStore's
  * `elysium-ui-state` blob; it lives here now, next to the API key and the
  * stop sequences. See uiStore.ts's version-3 migrate, which cleans the

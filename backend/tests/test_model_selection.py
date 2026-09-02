@@ -3,7 +3,7 @@
 `selectedModelId` used to be one of three keys in uiStore's `elysium-ui-state`
 blob, written to WebView2's on-disk localStorage in the clear. Two of those
 keys (selectedChatId, selectedCharacterId) are bare numbers, which the
-owner's own rule permits to stay device-local. The third is not: an
+privacy rule permits to stay device-local. The third is not: an
 OpenRouter model id such as "anthropic/claude-3.5-sonnet" is a NAME a person
 reads on screen, and browser_profile.purge() deliberately spares Local
 Storage - so that name survived every lock, relaunch and shutdown, readable

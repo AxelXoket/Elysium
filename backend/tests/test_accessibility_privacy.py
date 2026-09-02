@@ -11,8 +11,8 @@ WHAT IS TESTED HERE, AND WHAT IS NOT
 
 The claim "the tree is closed" can only be proved by walking the tree of a
 running window from another process, and that needs a real window on a real
-desktop. That proof is in tests/accessibility_tree_harness.py, which the owner
-runs deliberately; it is not in this suite, because a test that opens a window
+desktop. That proof is in tests/accessibility_tree_harness.py, which is run
+deliberately; it is not in this suite, because a test that opens a window
 every time somebody types pytest is a test people stop running.
 
 What IS here is everything around that claim which can be driven without a
@@ -58,8 +58,8 @@ SECRET_PATH = SEP.join(("C:", "Users", "Somebody", "a-chat-title"))
 def _sleeping_child(marker: str) -> subprocess.Popen:
     """A real child process carrying a marker on its command line.
 
-    No console window: CREATE_NO_WINDOW. A test that flashes a window on the
-    owner's desktop is a test that gets deleted.
+    No console window: CREATE_NO_WINDOW. A test that flashes a window on
+    somebody's desktop is a test that gets deleted.
     """
     return subprocess.Popen(
         [sys.executable, "-c", f"import time; time.sleep({_CHILD_LIFETIME})",
@@ -69,7 +69,7 @@ def _sleeping_child(marker: str) -> subprocess.Popen:
 
 
 class TestTheDefaultIsOn:
-    """The owner chose the stronger stance knowingly, so the code has to
+    """The stronger stance was chosen knowingly, so the code has to
     default to it even when nobody has ever heard of the variable."""
 
     def test_nobody_asked_and_it_is_on(
@@ -337,7 +337,7 @@ class TestItIsArmedBeforeTheWindowExists:
         monkeypatch.delenv(win_hardening._WEBVIEW2_ARGUMENTS_ENV, raising=False)
         # harden() is NOT stubbed here: it is the caller under test. It is
         # pointed at a temp folder so the real one it hardens is not the
-        # owner's data directory.
+        # live data directory.
         monkeypatch.setattr(config, "DATA_DIR", tmp_path)
         monkeypatch.delenv("ELYSIUM_SELFTEST", raising=False)
         monkeypatch.setattr(run_app, "_setup_frozen_logging", lambda: None)

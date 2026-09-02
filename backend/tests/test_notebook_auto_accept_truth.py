@@ -95,7 +95,7 @@ class TestTheEscapeHatch:
 
         A DELIBERATE CONTRACT CHANGE, decided on 31 August 2026, not an
         application defect: the alternative was to reword a locked privacy
-        promise, and the owner kept the promise. `null` is refused alongside
+        promise, and the promise was kept. `null` is refused alongside
         `true` because the global default is ON, so handing the chat back
         lowers the shield just as surely.
         """

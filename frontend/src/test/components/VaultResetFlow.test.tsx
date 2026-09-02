@@ -73,7 +73,7 @@ function stubVaultFetch(sim: VaultSim) {
         // on disk, and when it IS the identity files are held back
         // ENTIRELY - the whole reason that branch exists is that destroying
         // salt.bin/verifier.bin over a database that survived would brick a
-        // vault the owner could otherwise still open. /vault/status derives
+        // vault that could otherwise still be opened. /vault/status derives
         // `initialized` from those two files existing (crypto.py's
         // is_initialized), so a reset that could not remove the database
         // leaves the vault initialised AND unlockable with the old

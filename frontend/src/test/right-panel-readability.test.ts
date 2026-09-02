@@ -42,8 +42,8 @@ const AAA = 7;
 /** The ceiling. Not a WCAG number - there is no upper bound in WCAG, which
  *  is exactly why this had to be decided rather than looked up.
  *
- *  It is derived from the app's own sidebar, which is the surface the owner
- *  named as "the normal theme": item text there measures between 5.5 and
+ *  It is derived from the app's own sidebar, which is the surface that sets
+ *  what the normal theme looks like: item text there measures between 5.5 and
  *  10.3:1 depending on where the sidebar gradient is under it. 11 is the top
  *  of that band with a little slack, so the right panel is held to the range
  *  the rest of the app already lives in. The old #1C2632 reads 14.15:1 at
@@ -172,8 +172,8 @@ describe("the right panel's primary ink", () => {
 
   it("GROUND: the value it replaced would fail that ceiling", () => {
     // The discriminating half. If #1C2632 passed here, the ceiling would be
-    // decoration and this file would go green on the exact state the owner
-    // complained about.
+    // decoration and this file would go green on the exact near-black state
+    // it exists to reject.
     const old = parseHex("#1C2632")!;
     const [top] = gradientStops();
     expect(contrastRatio(old, top)).toBeGreaterThan(TOO_LOUD);

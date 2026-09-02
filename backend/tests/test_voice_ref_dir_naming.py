@@ -1,4 +1,4 @@
-"""The owner's rule, verbatim: a name a person typed and can read on screen
+"""The rule, verbatim: a name a person typed and can read on screen
 must never sit outside the vault as a name on disk. `voice_id` is exactly
 that - the frontend slugs the label the user typed and uses the slug as both
 the API id and, until this file's change, the folder name. `dir voice\\refs`
@@ -8,7 +8,7 @@ and nothing to unlock, surviving every lock.
 This file proves three things about the fix in tts/refs.py:
   1. a NEW voice never gets a folder name that says anything about its id.
   2. an EXISTING (pre-fix) install migrates - in-process, on first touch,
-     with no separate step for the owner to remember.
+     with no separate step for anyone to remember.
   3. the migration is idempotent and safe to interrupt half way.
 
 Behavioural throughout: nothing here greps refs.py's source. Every assertion
@@ -201,7 +201,7 @@ class TestMigratingAnExistingInstall:
     def test_it_runs_automatically_on_first_touch_with_no_separate_step(
         self, refs_root
     ):
-        """The owner should not have to remember to run anything. The very
+        """Nobody should have to remember to run anything. The very
         first call into the module that resolves a folder must migrate."""
         _make_legacy_folder(refs_root, "legacyvoice")
         # No call to migrate_legacy_voice_dirs() anywhere in this test.

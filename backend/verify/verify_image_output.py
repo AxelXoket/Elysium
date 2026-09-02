@@ -51,7 +51,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Why it is needed even though the key arrives by environment: building the
 # HTTP client reads the PROXY secret, and that read opens the vault. So an
 # "isolated" run that only skipped the API-key lookup would still open the
-# owner's database on its way to the network. Pointing the whole data dir at a
+# real vault on its way to the network. Pointing the whole data dir at a
 # fresh temp directory is the only version of isolation that is actually true.
 _ISOLATED = bool(os.environ.get("ELYSIUM_IMAGE_API_KEY", "").strip())
 if _ISOLATED and not os.environ.get("ELYSIUM_DATA_DIR", "").strip():
@@ -100,9 +100,9 @@ async def main() -> int:
 
     # A throwaway key handed in through the environment skips the vault
     # ENTIRELY: no unlock, no passphrase, no read of app.db, nothing opened
-    # that could be the owner's real data. That is the supported way to let
-    # somebody else run this - a dedicated key with a spending cap, revoked
-    # afterwards - and it is why the branch exists at all.
+    # that could be real data. That is the supported way to let somebody else
+    # run this - a dedicated key with a spending cap, revoked afterwards - and
+    # it is why the branch exists at all.
     #
     # The value is never printed and never written anywhere. Only its presence
     # is reported.
@@ -110,7 +110,7 @@ async def main() -> int:
     if env_key:
         # A random key for a database that does not exist yet and will hold
         # nothing. It is here only so the proxy lookup inside the HTTP client
-        # build has somewhere to look that is not the owner's vault.
+        # build has somewhere to look that is not the real vault.
         vault_state.set_key(os.urandom(32))
         import database
 
@@ -171,7 +171,7 @@ async def _probe_model(config, MODALITIES_WITH_IMAGE, key: str) -> int:
 
     Split out so the environment-key path can skip every line of vault
     handling above it rather than merely passing through it: an isolated run
-    must not open, unlock, or even look at the owner's database.
+    must not open, unlock, or even look at the real vault.
     """
     import json
 

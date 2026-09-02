@@ -17,7 +17,7 @@ THE FOLDER NAME IS NOT THE ID
     What is not fine is spelling that id onto the filesystem: a folder named
     after the label turns `dir voice\\refs` into a readable roster of who the
     user has cloned, with no passphrase and nothing to unlock, surviving
-    every lock the vault ever does. The owner's rule draws the line at what a
+    every lock the vault ever does. The rule here draws the line at what a
     person can READ: a name on screen must never sit outside the vault as a
     name on disk.
 

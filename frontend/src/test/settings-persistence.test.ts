@@ -64,14 +64,14 @@ const NEVER = [
   "narrationVoice",
   // v1.2 privacy fix (audit finding): an OpenRouter model id such as
   // "anthropic/claude-3.5-sonnet" is a NAME a person reads on screen, not a
-  // bare number - the shape the owner's own rule bans from ever sitting
-  // outside the vault. It moved into the encrypted settings table (see
+  // bare number - the shape the rule bans from ever sitting outside the
+  // vault. It moved into the encrypted settings table (see
   // lib/query/settings.ts's useSetSelectedModel); version-3 `migrate` strips
   // the old plaintext copy out of every install that already has one, proven
   // below in "cleans a stale plaintext model id out of an existing install".
   // The other two selections next to it in the old blob - selectedChatId,
-  // selectedCharacterId - are bare numbers and the owner's rule permits
-  // those to stay device-local, so they remain in PERSISTED above.
+  // selectedCharacterId - are bare numbers and the rule permits those to
+  // stay device-local, so they remain in PERSISTED above.
   "selectedModelId",
   // Character names are user content and localStorage is not encrypted. The
   // answer was the encrypted settings table, not "do not persist at all" -
@@ -218,8 +218,8 @@ describe("every preference survives a restart", () => {
       .not.toBe(useUiStore);
     const next = store.getState();
 
-    // The bare numeric ids survive the migration untouched - the owner's own
-    // rule permits them to stay device-local, so there is nothing to clean.
+    // The bare numeric ids survive the migration untouched - the rule
+    // permits them to stay device-local, so there is nothing to clean.
     expect(next.selectedChatId).toBe(7);
     expect(next.selectedCharacterId).toBe(3);
     // The model NAME does not: it is gone from the live store...

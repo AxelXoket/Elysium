@@ -50,7 +50,7 @@ def _no_stray_orphan(db):
 
     Without it this fixture is autouse with no dependency, so pytest is free
     to set it up before `db` monkeypatches DB_PATH - and then its teardown
-    globs and UNLINKS in the real data folder beside the owner's own vault.
+    globs and UNLINKS in the real data folder beside the live vault.
     It also made `_orphan(readable=True)` read the live database, which is
     the one file this suite exists to never touch.
     """

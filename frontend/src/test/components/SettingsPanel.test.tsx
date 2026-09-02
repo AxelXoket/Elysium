@@ -279,7 +279,7 @@ describe("Settings Panel Tests", () => {
  *
  * selectedModelId used to be a third id in that same list. v1.2 moved it into
  * the encrypted settings table instead - it is a model NAME, not a bare id,
- * which the owner's own rule bans from ever sitting outside the vault - so
+ * which the privacy rule bans from ever sitting outside the vault - so
  * the note now says the opposite about it from what it says about the other
  * two, and the tests below check that split rather than a blanket "model" mention.
  *

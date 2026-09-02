@@ -376,7 +376,7 @@ def _widen(target: Path, sid: str) -> None:
 
 @WINDOWS_ONLY
 class TestTheDataFolderIsNarrowed:
-    """Owner's decision, 8 August 2026: report was not enough, take it back.
+    """Decision of 8 August 2026: report was not enough, take it back.
 
     The previous reasoning - that the default is already correct and a silent
     repair hides whatever widened it - was sound and only half of it is gone.

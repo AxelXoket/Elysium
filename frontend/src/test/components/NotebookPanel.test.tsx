@@ -3,7 +3,7 @@
  *
  * The panel's one job the storage layer cannot do is make three states legible
  * that look identical in a plain list: a note that IS being sent, one a newer
- * note replaced, and one the ceiling left out this turn. The owner's rule is
+ * note replaced, and one the ceiling left out this turn. The rule is
  * that a note never disappears, so none of them is hidden - which means the
  * mark is the only thing separating "working" from "silently not sent".
  */
@@ -403,7 +403,7 @@ describe("what the model wrote, and taking it back", () => {
   });
 
   it("says WHY the notes are in English - once, not on every row", async () => {
-    // Per row it was a lecture: a Turkish-speaking owner being told about
+    // Per row it was a lecture: a Turkish-speaking reader being told about
     // their own language's model support every few lines.
     mockFetch({ "/notebook/7": { body: {
       entries: [modelNote(), modelNote({ id: 6 })],

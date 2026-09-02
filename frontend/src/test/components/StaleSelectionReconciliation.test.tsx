@@ -270,7 +270,7 @@ describe("useStaleSelectionReconciliation", () => {
  * The model selection's vault round trip (v1.2 privacy fix).
  *
  * selectedChatId/selectedCharacterId still persist in localStorage (bare row
- * ids, which the owner's rule permits). selectedModelId does not: it is a
+ * ids, which the rule permits). selectedModelId does not: it is a
  * model NAME, and now lives in the encrypted settings table instead - these
  * are the tests that prove the hydrate-once-then-push bridge in
  * useStaleSelectionReconciliation actually does that job.

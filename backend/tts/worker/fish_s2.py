@@ -112,8 +112,8 @@ _PROMPT_OVERHEAD = 192        # system/user/assistant framing around the text
 #
 #: What the REST OF THE MACHINE is owed, at all times. Not a TTS budget - a
 #: floor under the desktop, the browser, and whatever game is running. Measured:
-#: with both models resident this card reports 1.76-2.02 GB free and the owner
-#: confirmed that is comfortable (streaming and video playback still fine).
+#: with both models resident this card reports 1.76-2.02 GB free, and that
+#: proved comfortable in use (streaming and video playback still fine).
 #: Every other question - may the codec stay, is there room to decode - is now
 #: answered by measuring the operation and checking it against THIS.
 _VRAM_RESERVE_GB = 1.0

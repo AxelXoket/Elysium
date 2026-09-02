@@ -40,7 +40,7 @@ describe("fog buffer sizing", () => {
 
   it("never returns the window's size for a panel", () => {
     // The specific wrong answer, named. 1600 wide squashed into a 319px panel
-    // is the ~3x horizontal compression the owner reported.
+    // is the ~3x horizontal compression the bug produced.
     const answer = bufferSizeFor(0, SIDEBAR.h, PANEL_MAX_EDGE);
     expect(answer).not.toEqual({ width: 960, height: 513 });
     expect(answer?.width).not.toBe(WINDOW.w);

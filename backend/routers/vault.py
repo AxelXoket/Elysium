@@ -105,7 +105,7 @@ def _check_length(passphrase: str) -> None:
 
 #: How long a wrong passphrase waits before it is told so.
 #:
-#: K-30, and the shape is the owner's decision after the measurement came in.
+#: K-30, and the shape was decided after the measurement came in.
 #: A graduated lockout was the original plan and it was dropped, for a reason
 #: worth keeping written down: no counter this app can persist is out of reach
 #: of somebody who has the data folder, so a ladder does nothing at all
@@ -228,7 +228,8 @@ def _purge_voice_cache() -> None:
 
 #: Kept in the vault, not in an env var and not in browser storage: a switch
 #: that protects the screen is not one somebody can read and flip without the
-#: passphrase. Off by default - the owner said they take screenshots.
+#: passphrase. Off by default: its cost is immediate and visible, since with
+#: it on a screenshot of this window comes out blank.
 SETTING_SCREEN_PRIVACY = "screen_privacy_enabled"
 
 
@@ -1724,8 +1725,8 @@ def _reset_door_is_open() -> bool:
     """Whether this build offers the reset door at all. TWO conditions.
 
     Neither is sufficient alone, and saying why is the whole value of this
-    function, because "only from the app window" is what was asked for and
-    neither half delivers it.
+    function, because "only from the app window" is the goal and neither
+    half delivers it.
 
     sys.frozen is a property of THIS PROCESS, not of the caller. A curl at the
     packaged exe is exactly as frozen as the window is. All it establishes is
@@ -1762,7 +1763,7 @@ def _reset_door_is_open() -> bool:
 @router.post("/reset")
 async def vault_reset(body: VaultResetBody) -> dict:
     """Wipe every artefact of this vault and leave DATA_DIR as if Elysium had
-    never been run. The "forgot your passphrase" answer the owner asked for:
+    never been run. The "forgot your passphrase" answer:
     there is no recovery, so the only honest response to a lost passphrase is
     starting over.
 

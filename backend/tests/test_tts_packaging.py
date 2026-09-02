@@ -217,8 +217,8 @@ class TestFishCodecResidency:
         mod = self._mod()
         assert mod._should_keep_codec(3.1) is True
         assert mod._should_keep_codec(5.0) is True
-        # The MEASURED post-decode reading on this card. The owner confirmed
-        # this much free VRAM is fine to live with, so the codec stays.
+        # The MEASURED post-decode reading on this card. This much free
+        # VRAM is fine to live with, so the codec stays.
         assert mod._should_keep_codec(1.76) is True
 
     def test_a_genuinely_tight_card_still_gives_the_memory_back(self):

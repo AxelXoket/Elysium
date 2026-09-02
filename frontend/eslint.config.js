@@ -37,11 +37,12 @@ import { TEST_TREE } from './privacy-scope.js'
 //    matches them, and a flat config skips an unmatched file in silence -
 //    ESLint says "File ignored because no matching configuration was
 //    supplied" and exits 0, which reads exactly like a pass. Covering them
-//    means an HTML processor plugin, and a new dependency is the owner's call,
-//    so the decision is written here instead of left implied: index.html and
-//    index.css are covered by static-safety.test.ts (S-05, S-06, S-23), which
-//    reads them as text, and that is the only line on them. If a second .css
-//    or .html file ever appears, that gate is where it has to be added.
+//    means an HTML processor plugin, and that is a new dependency rather
+//    than a config tweak, so the decision is written here instead of left
+//    implied: index.html and index.css are covered by static-safety.test.ts
+//    (S-05, S-06, S-23), which reads them as text, and that is the only line
+//    on them. If a second .css or .html file ever appears, that gate is where
+//    it has to be added.
 
 const RESTRICTED_GLOBALS = [
   { name: 'localStorage', message: 'S-09: device storage is for the ui store only, through its persist layer.' },

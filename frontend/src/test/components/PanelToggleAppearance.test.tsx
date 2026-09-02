@@ -1,7 +1,7 @@
 /**
  * PanelToggleAppearance.test.tsx - the collapse handle is an arrow, not a box.
  *
- * The owner's brief, verbatim in effect: no visible area around the arrow, an
+ * Four requirements: no visible area around the arrow, an
  * invisible press area, the arrow visible at all times without hover, and
  * faint - low contrast, not assertive.
  *

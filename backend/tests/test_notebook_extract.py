@@ -108,8 +108,8 @@ class TestTheGroundingCheck:
         assert ex.parse_reply(reply([translated]), turkish_chunk, [])[0] == []
 
     def test_a_turkish_quote_against_turkish_source_survives(self) -> None:
-        """The positive control for the case above - and for the owner's own
-        usage, where the transcript is routinely two languages at once."""
+        """The positive control for the case above - and for real usage,
+        where the transcript is routinely two languages at once."""
         turkish_chunk = "user: Kardesi degirmenin sahibi, dedi."
         kept, _ = ex.parse_reply(
             reply([fact(evidence="Kardesi degirmenin sahibi")]),

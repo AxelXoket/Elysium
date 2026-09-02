@@ -171,8 +171,8 @@ class TestWhatIsNeverSent:
                         senders.append(path.relative_to(root).as_posix())
         # The extractor, and only the extractor. It used to be two files:
         # the unattended worker, and a dry-run route the user pressed by hand.
-        # The route was removed on the owner's instruction on 22 August 2026,
-        # so the worker is now the only sender in the tree.
+        # The route was removed on 22 August 2026, so the worker is now the
+        # only sender in the tree.
         assert sorted(set(senders)) == ["notebook_worker.py"], senders
 
     def test_the_context_budget_is_an_app_side_number_only(

@@ -152,7 +152,7 @@ class TestTheCeiling:
         assert dear["id"] not in dropped
 
     def test_a_dropped_note_is_still_in_the_panel_with_a_reason(self, db, chat):
-        """The owner's rule: a note never disappears. It stops being sent, and
+        """The rule: a note never disappears. It stops being sent, and
         the screen says why."""
         self._fill(chat, 80)
         _, blocks, _ = _payload(chat)

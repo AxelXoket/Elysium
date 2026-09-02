@@ -153,7 +153,7 @@ export function BoundaryPanel() {
         // Omitted rather than sent empty: the column is nullable and its
         // CHECK does not allow "".
         ...(rating ? { rating_ceiling: rating } : {}),
-        // The scope the owner asked for. `chat_id` was never passed, so every
+        // The scope the picker above sets. `chat_id` was never passed, so every
         // limit the app could create was GLOBAL - the row below rendered
         // "- this chat" for something it had no way to produce, and turning
         // "use my global limits here" off hid every limit the user had ever

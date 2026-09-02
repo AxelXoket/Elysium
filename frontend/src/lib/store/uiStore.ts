@@ -107,9 +107,9 @@ interface UiState {
    * The currently-chosen model id. SESSION-ONLY in this store since v1.2 -
    * NOT written to localStorage (see `partialize` below). An OpenRouter
    * model id ("anthropic/claude-3.5-sonnet") is a NAME a person reads on
-   * screen, which the owner's own rule bans from ever sitting outside the
-   * vault; the other two selections above are bare numbers, which the rule
-   * permits to stay device-local.
+   * screen, which is banned from ever sitting outside the vault; the other
+   * two selections above are bare numbers, which the rule permits to stay
+   * device-local.
    *
    * It now lives in the encrypted settings table instead (POST
    * /settings/model-selection, GET /settings' selected_model_id). This

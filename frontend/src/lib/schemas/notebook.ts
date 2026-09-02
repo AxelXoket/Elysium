@@ -6,7 +6,7 @@ import { z } from "zod/v4";
  *  - `provenance` says who wrote it. It is set once at insert and no route can
  *    change it, so the badge on a row is a fact rather than a hint.
  *  - `retired_at` means a newer note replaced this one. It stays on screen and
- *    stops being sent - the owner's rule is that a note never disappears.
+ *    stops being sent - the rule is that a note never disappears.
  *  - `excluded_reason` means the ceiling bit this turn. Same idea: visible,
  *    not sent, and the reason is written down rather than guessed at.
  */

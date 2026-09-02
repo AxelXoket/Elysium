@@ -261,7 +261,7 @@ class TestTheTwoHolesMeasuredOn22August:
 class TestTheGuardCannotSwitchItselfOff:
     """The three ways this protection was conditional.
 
-    It is the last thing between a test suite and the owner's own vault - the
+    It is the last thing between a test suite and the real vault - the
     real `salt.bin`, `verifier.bin` and `kdf.json`, which are not recoverable
     once overwritten. It was conditional on an environment variable being
     set, and on a path snapshot taken before the test body could change it.
@@ -278,7 +278,7 @@ class TestTheGuardCannotSwitchItselfOff:
         The write is aimed at a file inside a SUBDIRECTORY THAT DOES NOT
         EXIST, and that is not fastidiousness. A mutation experiment on this
         very guard removed the packaged path from the list, ran this test,
-        and the write landed in the owner's real data directory - a harmless
+        and the write landed in the real data directory - a harmless
         probe file, removed immediately, but the shape of the accident is the
         one that is not recoverable if it lands on `salt.bin`.
 

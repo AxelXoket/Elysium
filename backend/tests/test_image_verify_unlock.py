@@ -8,7 +8,7 @@ desktop app does nothing for a separately launched Python process; they share
 no memory.
 
 It now unlocks itself from a getpass prompt. These tests cover the two paths
-that must never cost the owner money: no passphrase, and a wrong passphrase.
+that must never cost money: no passphrase, and a wrong passphrase.
 The happy path is deliberately NOT tested here - it spends real credits, which
 is the whole reason the script is run by hand.
 

@@ -240,8 +240,8 @@ describe("VoiceSettingsPage", () => {
   //
   // The id used to be a slug of the typed name (or, failing that, the
   // filename), and that slug became a URL path segment, a folder name on
-  // disk, and the text in the collision dialog itself - the owner's rule is
-  // that a name a person reads on screen never sits outside the vault, and a
+  // disk, and the text in the collision dialog itself. The rule it broke:
+  // a name a person reads on screen never sits outside the vault, and a
   // roleplay reference voice is named after the character it belongs to. The
   // id is opaque now (a UUID the label plays no part in producing), the
   // collision question moved to comparing what voices are CALLED rather than

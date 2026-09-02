@@ -33,7 +33,7 @@ this measurement scheduled. Both helpers instrument a heartbeat they start
 themselves; the gate proves liveness to a stranger.
 
 THE THRESHOLDS ARE MEASURED, NOT GUESSED. KADEME 20a ran a 0.12s unit of work
-on the owner's machine with a varying share of it held on the loop, five runs
+on this machine with a varying share of it held on the loop, five runs
 per row:
 
     share on the loop | ticks (min of 5) | longest gap

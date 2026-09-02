@@ -3,8 +3,8 @@
  *
  * The backend for this shipped a while ago: the vault-stored setting, the
  * apply-on-unlock / remove-on-lock transition, and its tests. Nothing in the
- * UI ever reached it, so the toggle the owner asked for existed only as an
- * HTTP route. This is that half.
+ * UI ever reached it, so the toggle existed only as an HTTP route. This is
+ * that half.
  *
  * Two things are said out loud rather than left to be discovered:
  *
@@ -14,7 +14,7 @@
  *     and screen-share paths. It is not a promise that no pixel can ever be
  *     read by anything.
  *
- * Default OFF, because the owner said they take screenshots of this app.
+ * Default OFF, because screenshots of this app get taken routinely.
  */
 import { MonitorOff } from "lucide-react";
 

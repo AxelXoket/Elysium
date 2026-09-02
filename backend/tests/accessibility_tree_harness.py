@@ -76,7 +76,7 @@ PAGE = """<!doctype html>
 <div id="char-name" aria-label="Character ZQCHARNAME4471">ZQCHARNAME4471</div>
 <div class="msg" role="article">ZQMSGBODY4471 the marker sentence that
 stands in for a private line.</div>
-<div class="msg" role="article">ZQUSERMSG4471 what the owner typed.</div>
+<div class="msg" role="article">ZQUSERMSG4471 what a person typed.</div>
 <textarea id="composer" aria-label="Write a message"></textarea>
 </body></html>
 """

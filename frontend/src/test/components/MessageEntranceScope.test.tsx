@@ -4,7 +4,7 @@
  * The list has gated its stagger to a tail window since FF5, but every bubble
  * ALSO wrapped itself in its own `FadeIn`, and that one was ungated. Opening a
  * three-hundred-message chat therefore started three hundred opacity tweens at
- * once, whatever the list said about the rows around them. The owner saw it as
+ * once, whatever the list said about the rows around them. It showed up as
  * the entrance animation touching every bubble instead of the visible ones.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";

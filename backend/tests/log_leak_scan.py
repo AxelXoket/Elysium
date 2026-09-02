@@ -1,10 +1,10 @@
 """Static scan: does a logging call in THIS tree pass something that can
 carry vault content or a name the app displays on screen?
 
-The rule, from the owner directly (2026-08-20): elysium.log is plaintext,
-outside the vault, and survives a lock. A numeric id (chat id, message id) is
-fine there - it is the diagnostic value notebook_worker.py's own comment
-defends, and the owner is explicitly fine with it. Two things are not fine:
+The rule, settled 2026-08-20: elysium.log is plaintext, outside the vault,
+and survives a lock. A numeric id (chat id, message id) is fine there - it is
+the diagnostic value notebook_worker.py's own comment defends, and that is
+accepted deliberately. Two things are not fine:
 
   * CONTENT - a message body, a note's text or evidence quote, a character's
     persona/description/greeting, a persona's text, a boundary's wording, an
@@ -12,7 +12,7 @@ defends, and the owner is explicitly fine with it. Two things are not fine:
     request, a TTS worker's own error text (an engine formats the text it was
     asked to speak into its exception, and that text is a model reply).
   * NAMES - anything a person can read on screen inside the app: a chat's
-    title, a character's name, a persona's name. The test is the owner's own:
+    title, a character's name, a persona's name. The test that governs it:
     "uygulamada gorunen isimler hicbir zaman disarda durmasin" - names shown
     in the app must never sit outside the vault.
 
@@ -32,7 +32,7 @@ THE SHAPES THIS CATCHES
      * `getattr(exc, "code", <literal>)` - the same rule spelled dynamically,
        and ONLY with a literal string naming one of those same attributes.
      * `len(exc...)` - a count is a number, and numbers are the thing the
-       owner explicitly allows.
+       rule explicitly allows.
    Any other getattr on a tainted value stays flagged: this cannot evaluate
    the attribute name, so it refuses rather than guesses.
 
@@ -71,7 +71,7 @@ pretending it did produced a measured false-positive cascade:
 `cur = con.execute("INSERT ...", (chat_id, text, ...))` mentions `text`, so
 `asst_msg_id = cur.lastrowid` looked content-bearing, and then so did every
 `logger.info("... id=%d", asst_msg_id)` downstream - which is the exact value
-the owner said belongs in the log. Passing content to a database is not the
+the rule says belongs in the log. Passing content to a database is not the
 same event as formatting it into a message. So content taint spreads only
 through expressions that are BUILDING A STRING out of it (f-string,
 concatenation, slice, `str()`, `.strip()`, ...), and exception taint spreads
@@ -110,9 +110,9 @@ It is defeated by:
     it is left uncaught and written down instead.
   * anything that leaves this tree by a route other than `logger` - a
     `print()`, a file written by hand, a message put on the wire.
-That ceiling is why this exists beside code review and the owner's own read,
-not instead of them - the same honesty test_egress_chokepoint.py applies to
-its own regex doors.
+That ceiling is why this exists beside code review and a careful read, not
+instead of them - the same honesty test_egress_chokepoint.py applies to its
+own regex doors.
 """
 from __future__ import annotations
 
@@ -154,7 +154,7 @@ _LOGGER_FACTORY = "getLogger"
 _SAFE_EXC_ATTRS = frozenset({"reason", "code"})
 
 #: Builtins that reduce anything at all to a number. A count is not a name
-#: and not content; the owner's rule allows numbers out of the vault.
+#: and not content; the rule allows numbers out of the vault.
 _NUMERIC_BUILTINS = frozenset({"len", "id", "hash", "int", "float", "round"})
 
 #: Variable names this codebase actually binds displayable content or a

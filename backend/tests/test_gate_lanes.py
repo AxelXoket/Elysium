@@ -217,7 +217,7 @@ class TestTheHooksFailClosed:
 
 
 class TestTheBuildLaneReadsItsOwnSelftest:
-    """The one step the owner added by hand, and it had no test at all.
+    """The one step added by hand, and it had no test at all.
 
     Deleting the whole build-and-selftest block left every test in this file
     green. The steps below are measured on the parsing, on the freshness
@@ -314,7 +314,7 @@ def _record_build_steps(tmp_path: Path,
 
 
 class TestTheVerificationBuildStaysOutsideTheRepository:
-    """The owner's ruling, 30 August 2026, as something measurable.
+    """The ruling of 30 August 2026, as something measurable.
 
     Pre-push verification must not mutate, replace, regenerate, touch or
     otherwise alter any tracked release artifact or canonical build output.
