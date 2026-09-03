@@ -104,16 +104,63 @@ const ERROR_MESSAGES: Record<string, string> = {
     + "are sending, shorten the persona or the character or the "
     + "post-history instruction, remove some notes or limits, or pick a "
     + "model with a larger window.",
-  // These two were byte-identical, and both are still emitted - by different
-  // producers, which is what the sentences now say. `invalid_generation_params`
-  // is synthesised in the FRONTEND (client.ts, stream.ts, parseApiError.ts)
-  // when a 422 body carries a structured detail instead of a code string, so
-  // the specific parameter never arrives. `invalid_gen_params` is the
-  // BACKEND's own 422 from validate_and_filter_gen_params. Same next action
-  // for both, because Generation Settings is where either one is fixed, and
-  // its Reset all button is the control that clears a bad value.
+  // Three codes for a rejected field, three different producers, and the
+  // sentences have to say which - because only one of them knows what the
+  // reader was doing.
+  //
+  // `validation_failed` is the BACKEND's app-level RequestValidationError
+  // handler in main.py. One handler answers every rejected body in the tree,
+  // so it cannot know whether it is refusing a vault passphrase, an upload, a
+  // notebook entry or a generation parameter. Its sentence therefore names no
+  // panel and asks for nothing destructive: the same words have to be true for
+  // all four. Sending them to Generation Settings and its Reset all button is
+  // what the first version of that handler did, by borrowing the code below,
+  // and it pointed a reader whose image upload arrived without its file at a
+  // destructive control in a panel they had never opened.
+  //
+  // Three more things its wording had to survive, all of them reachable. It
+  // answers DELETE routes with typed query parameters, so "nothing was saved"
+  // would be answering a question the reader did not ask and "nothing was
+  // changed" is the clause that covers saved, deleted and sent at once. It
+  // answers values nobody typed - the auto-lock radio group, an importance
+  // rank, a voice enum - so the next action has to include what was CHOSEN.
+  // And it answers mismatches the reader cannot see at all, so there is a
+  // last-resort action for the reader who changed nothing.
+  //
+  // That last action is "close Elysium and start it again", copied from
+  // `invalid_response_shape` below, and NOT "reload Elysium". There is no
+  // reload in the packaged window: run_app.py calls `webview.start()` without
+  // `debug`, so the Edge Chromium backend leaves
+  // `AreBrowserAcceleratorKeysEnabled` and `AreDefaultContextMenusEnabled`
+  // off and F5, Ctrl+R and the context menu are all dead. Three sentences
+  // further down this file used to say "reload" anyway; they now say this,
+  // and ErrorMessageCopy.test.ts sweeps every code so the next one cannot.
+  // Restarting does cost the reader something - draftStore.ts scopes drafts
+  // to the renderer process - so the sentence says that rather than letting
+  // them find out.
+  validation_failed:
+    "Something in that request was not a value Elysium could accept, so nothing was changed and nothing was sent. Check whatever you last typed, chose, or attached, then try again. If it keeps happening and you changed nothing, close Elysium and start it again - unsent drafts do not survive that.",
+  // `invalid_generation_params` is synthesised in the FRONTEND, in five
+  // branches: client.ts:88, stream.ts:254 and uploads.ts:125 when a 422 body
+  // carries an ARRAY under `detail`, and parseApiError.ts:77 and :82 for an
+  // array or an object. That is a shape the handler above cannot produce - it
+  // always sends a code string - so against this backend all five are
+  // defensive and none of them fires. That is the whole reason this one is
+  // still allowed to name a panel: the day it does fire, the 422 came from
+  // something that is not our handler, and two of those branches sit on the
+  // upload and dialog paths where "press Reset all" would be the wrong
+  // advice. Written down rather than fixed, because a sentence for a refusal
+  // this application cannot currently make would be a sentence nobody can
+  // check.
   invalid_generation_params:
     "A generation setting was rejected, and the reason did not arrive in a form Elysium could read. Open Generation Settings and press Reset all, then send again.",
+  // `invalid_gen_params` is the BACKEND's own 422 from
+  // validate_and_filter_gen_params, which knows the value was out of range.
+  // It shares a next action with the code above, because Generation Settings
+  // is where either one is fixed and its Reset all button is the control that
+  // clears a bad value. The two were once byte-identical and were
+  // differentiated rather than merged; this is the one of the pair that a
+  // route can actually reach today.
   invalid_gen_params:
     "One of the generation settings is outside the range this model accepts, so nothing was sent. Open Generation Settings and press Reset all, then send again.",
   // `unsupported_generation_params` lived here with a sentence and no sender.
@@ -461,17 +508,24 @@ const ERROR_MESSAGES: Record<string, string> = {
   // the whole row is one textarea, so this sentence pointed at two things that
   // are not on the screen. What the backend actually refuses here is a kind,
   // durability, importance or status value it does not recognise, none of
-  // which the panel lets anyone type. That makes it an app-side mismatch, and
-  // the only honest next action is to reload and write the note again.
+  // which the panel lets anyone type. That makes it an app-side mismatch, so
+  // the sentence has to say that the words are not what was refused - and the
+  // last-resort action is the one `validation_failed` uses, because the
+  // packaged window has no reload to offer.
   notebook_entry_invalid:
-    "That note could not be saved: something in it was not a value Elysium recognises. Reload Elysium and write it again - the wording itself is fine to reuse.",
+    "That note could not be saved: something in it was not a value Elysium recognises, so nothing was written. The wording is not what it refused, so it is fine to reuse - close Elysium and start it again, then write the note once more.",
   notebook_field_not_editable:
     "That part of a note cannot be changed after it is written. Who wrote a note - you or the model - is recorded once and stays.",
   // The list has to arrive whole. Pass two of the renumber writes positions by
   // list index, so a list missing one of the chat's notes hands a number a row
   // outside the list still holds - and a drag becomes a crash.
+  //
+  // Retrying the same drag sends the same stale list, so "try again" on its
+  // own would loop. The list only comes back whole on a fresh fetch, and
+  // useNotebookMutation invalidates on success only - a refused reorder
+  // leaves the panel holding exactly the list that was refused.
   notebook_reorder_incomplete:
-    "The notebook changed while you were rearranging it. Reload and try again.",
+    "The notebook changed while you were rearranging it, so nothing moved. The list on screen is behind what is stored, and dragging again would send the same stale order - close Elysium and start it again to see the notes as they are now.",
   // The one refusal that is a feature. Limits are never trimmed to make room,
   // because a limit that silently stops being sent is worse than no limit: you
   // believe it is in force, the model never sees it, and nothing reports the
@@ -538,9 +592,11 @@ const ERROR_MESSAGES: Record<string, string> = {
   // "choose how strict it is" asked for something already chosen. The backend
   // checks four enums here, not just severity, and the panel never offers an
   // invalid value for any of them - so reaching this means the app sent
-  // something its own store refused.
+  // something its own store refused. Nothing the reader can reach caused it,
+  // and the packaged window has no reload, so the way out is the restart
+  // `validation_failed` names.
   boundary_invalid:
-    "That limit could not be saved: one of its settings was not a value Elysium recognises. Reload Elysium and add the limit again.",
+    "That limit could not be saved: one of its settings was not a value Elysium recognises, so nothing was added. Nothing on the screen can be set to a value it would refuse - close Elysium and start it again, then add the limit once more.",
   boundary_not_found:
     "That limit is no longer there. It may have been removed in another window.",
   // Both ceilings are notebook_store.BOUNDARY_MAX_CHARS and

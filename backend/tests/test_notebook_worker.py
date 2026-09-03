@@ -639,21 +639,64 @@ class TestTheSkipVocabularyHasSentences:
         with get_db() as con:
             assert notebook.extraction_stats(con, chat_id)["skipped"] == 1
 
-    def test_the_panel_has_a_sentence_for_each(self) -> None:
-        """The gate that makes the declaration mean something. Reading the
-        panel's map is the only way to check the two vocabularies agree, and
-        the alternative is a token in a sentence."""
+    def test_the_vocabulary_is_exactly_what_the_screen_was_promised(
+            self) -> None:
+        """Half of the gate that makes the declaration mean something, and
+        the only half this side of the wall can answer honestly.
+
+        What it replaces, and why: this used to open WorkerPanel.tsx and
+        assert `f"{r}:" in text` for every reason. Three things were wrong
+        with that. It is a substring search standing in for a rendering, so
+        it passes on a key whose sentence is the empty string and on a key
+        sitting in dead code. The panel grew three MORE prose tables next to
+        SKIP_PROSE, so a reason whose name collides with a key in any of them
+        satisfies the search while having no skip sentence at all. And the
+        suite's own behavioural-test gate could not see the read, because its
+        scanner only recognised a quoted path ending in `.py` - which is the
+        defect that brought this test here.
+
+        The split follows shared/error_catalogue.json exactly: the token
+        vocabulary is a contract file both suites read, this side asserts the
+        backend declaration equals it in BOTH directions, and the claim about
+        what a reader actually SEES is made where the sentences are, by
+        mounting the panel once per reason
+        (frontend/src/test/components/WorkerPanel.test.tsx).
+
+        This is a completeness census over a vocabulary, not a behaviour
+        substitute: it asserts nothing about what any code path does. A
+        behavioural form would only ever see the reasons some test happened
+        to fire.
+        """
+        import json
         from pathlib import Path
 
-        panel = (Path(__file__).resolve().parents[2] / "frontend" / "src"
-                 / "components" / "notebook" / "WorkerPanel.tsx")
-        text = panel.read_text(encoding="utf-8")
-        missing = [r for r in notebook_worker.SKIP_REASONS
-                   if f"{r}:" not in text]
-        assert not missing, f"no sentence for: {missing}"
+        contract = (Path(__file__).resolve().parents[2] / "shared"
+                    / "notebook_skip_reasons.json")
+        declared = set(json.loads(
+            contract.read_text(encoding="utf-8"))["reasons"])
+
+        missing = sorted(set(notebook_worker.SKIP_REASONS) - declared)
+        orphan = sorted(declared - set(notebook_worker.SKIP_REASONS))
+        assert not missing, (
+            f"a writer can store these and the contract has no record: "
+            f"{missing}. Add each to shared/notebook_skip_reasons.json, then "
+            f"give it a sentence in WorkerPanel.tsx's SKIP_PROSE - until "
+            f"both exist the panel prints the raw token at the reader.")
+        assert not orphan, (
+            f"the contract declares these and no writer can produce them: "
+            f"{orphan}. Usually a reason somebody renamed. Delete the record "
+            f"and its sentence.")
 
     def test_the_declaration_is_not_empty(self) -> None:
-        """Ground: an empty set satisfies both assertions above."""
+        """Ground: an empty set satisfies every assertion above.
+
+        Both `pytest.raises` tests pass against a vocabulary of nothing, and
+        so does the contract check - two empty sets are equal in both
+        directions. This is the floor that stops the whole class from being
+        green while proving nothing, and because the contract is asserted
+        EQUAL rather than a subset, this one line puts a floor under the
+        shared file and the frontend walk that reads it as well.
+        """
         assert len(notebook_worker.SKIP_REASONS) >= 2
 
     def test_commit_extraction_refuses_an_undeclared_reason_too(

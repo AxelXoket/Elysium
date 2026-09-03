@@ -16,7 +16,10 @@ import {
 import { useUiStore } from "@/lib/store/uiStore";
 import { useDraftStore, editDraftKey } from "@/lib/store/draftStore";
 import { bubbleSurface } from "@/lib/appearance/bubbleSurface";
-import { imageUrl } from "@/lib/api/uploads";
+import {
+  fetchImageObjectUrl,
+  revokeImageObjectUrl,
+} from "@/lib/api/uploads";
 import { ImageLightbox } from "./ImageLightbox";
 import {
   Loader2,
@@ -1040,6 +1043,36 @@ function AttachmentThumbnail({
   onOpen: (attachment: Attachment) => void;
 }) {
   const [errored, setErrored] = useState(false);
+  // The bytes are FETCHED with the launch token and shown from a blob: URL.
+  // A bare <img src> could not carry the token, which is why the gate used to
+  // take a browser signal instead - a signal any process can type. Loading it
+  // here costs one state transition and closes that.
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    let mine: string | null = null;
+    void fetchImageObjectUrl(attachment.id)
+      .then((url) => {
+        // Unmounted while the fetch was in flight: revoke the URL nobody will
+        // ever hold, or the blob outlives the component that asked for it.
+        if (cancelled) {
+          revokeImageObjectUrl(url);
+          return;
+        }
+        mine = url;
+        setObjectUrl(url);
+      })
+      .catch(() => {
+        // Same placeholder a 404 always produced. The browser used to reach
+        // this through onError; the fetch reaches it directly.
+        if (!cancelled) setErrored(true);
+      });
+    return () => {
+      cancelled = true;
+      revokeImageObjectUrl(mine);
+      setObjectUrl(null);
+    };
+  }, [attachment.id]);
   const scale = Math.min(
     1,
     THUMB_MAX_H / attachment.height,
@@ -1074,7 +1107,7 @@ function AttachmentThumbnail({
         </span>
       ) : (
         <img
-          src={imageUrl(attachment.id)}
+          src={objectUrl ?? undefined}
           alt="attached image"
           width={attachment.width}
           height={attachment.height}

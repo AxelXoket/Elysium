@@ -16,12 +16,17 @@ import { clearStage, stageOccupied } from "@/lib/voice/stage";
 const getTagPrefs = vi.hoisted(() => vi.fn());
 const saveTagPrefs = vi.hoisted(() => vi.fn());
 const speakText = vi.hoisted(() => vi.fn());
+const revokeTtsObjectUrl = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/api/tts", () => ({
   getTagPrefs,
   saveTagPrefs,
   speakText,
   ttsAudioUrl: (id: string) => `/audio/${id}`,
+  // The preview FETCHES the wav with the launch token and plays it from a
+  // blob, rather than handing the element a URL it cannot attach a header to.
+  fetchTtsObjectUrl: (id: string) => Promise.resolve(`blob:audio-${id}`),
+  revokeTtsObjectUrl: revokeTtsObjectUrl,
 }));
 
 const PREFS = {

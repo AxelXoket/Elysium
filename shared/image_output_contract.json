@@ -1,0 +1,39 @@
+{
+  "purpose": "One truth table, read from both sides, for the question 'will this request ask the model for a picture?'. The backend answer is authoritative and is produced by _model_emits_images in backend/routers/completions.py; backend/tests/test_image_replay_gate.py replays every case through it, so this file cannot drift from the code it describes. The frontend reads the same cases in frontend/src/test/components/ModelMetadata.test.ts and asserts the one thing the UI is not allowed to get wrong: it may never render a 'will not be asked for one' claim about a case where the backend still asks.",
+  "why_it_exists": "The two sides answered this question in opposite directions for cached metadata with no output modality list. The backend said yes (provider is the final arbiter), the frontend said no, and the reader was shown the frontend's answer while the request carried the backend's. The split is deliberate and stays; what could not stay was a UI making a false negative claim about the request it just sent.",
+  "cases": [
+    {
+      "name": "no metadata cached at all",
+      "metadata": null,
+      "backend_asks_for_image": true
+    },
+    {
+      "name": "metadata present but no output_modalities field",
+      "metadata": {},
+      "backend_asks_for_image": true
+    },
+    {
+      "name": "output_modalities present but empty",
+      "metadata": { "output_modalities": [] },
+      "backend_asks_for_image": true
+    },
+    {
+      "name": "text only, a populated list without image",
+      "metadata": { "output_modalities": ["text"] },
+      "backend_asks_for_image": false
+    },
+    {
+      "name": "text and image",
+      "metadata": { "output_modalities": ["text", "image"] },
+      "backend_asks_for_image": true
+    },
+    {
+      "name": "vision input but text-only output",
+      "metadata": {
+        "input_modalities": ["text", "image"],
+        "output_modalities": ["text"]
+      },
+      "backend_asks_for_image": false
+    }
+  ]
+}

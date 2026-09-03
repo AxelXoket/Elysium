@@ -101,6 +101,24 @@ COOLDOWN_MAX_S = 3600.0
 #: the canceller wait for THAT task specifically.
 SETTLE_GRACE_S = 5.0
 
+#: Characters of `notebook_extract.TURNS_MAX_CHARS` that the pronoun window
+#: gets FIRST, before the new material is measured against what is left.
+#:
+#: RECENT_TURNS is described downstream as "context, not material", and it was
+#: budgeted like a remainder to match: whatever NEW_TURNS did not spend. The
+#: planner fills NEW_TURNS up to the ceiling, so on any busy chat the
+#: remainder is zero and the section the prompt asks for by name goes out as
+#: "(none)" - measured, a 12000-character `new` empties it every time. The
+#: window is two messages (`ORDER BY id DESC LIMIT 2`), so this is one sixth
+#: of the ceiling held back for a section that is normally a fraction of it,
+#: and only as much of it as the window will actually use is taken.
+#:
+#: Held here rather than beside the ceiling it comes out of, because the split
+#: is the PLANNER's decision: this is the one place the ids and the text are
+#: still side by side, and `build_user_message`'s residual arithmetic then
+#: leaves this much over by construction rather than by a second rule.
+RECENT_RESERVE_CHARS = 2000
+
 
 class Breaker:
     """Closed -> Open -> Half-Open, with a hand on the switch (A49)."""
@@ -899,9 +917,31 @@ class Worker:
         the moment the provider was failing. A safety feature that is an
         amplifier.
 
-        Halving what is READ is the real thing: fewer tokens, a smaller
-        window, the same number of calls. The rest of the backlog is not
-        lost - it stays unread and the next run picks it up.
+        Halving what is READ is the real thing for the token side: fewer
+        tokens and a smaller window, and with the provider fully down it
+        really does send less - 0.84x the characters.
+
+        IT IS NOT THE SAME NUMBER OF CALLS, and that half of this defence was
+        false from ONE consecutive failure. `batch_size` halves;
+        NOTEBOOK_EXTRACT_EVERY_TURNS does not, so the same backlog is bought
+        in more pieces and the fixed part of the prompt is paid again in each
+        of them. Measured with halving ON against OFF under an identical
+        provider outcome sequence, indexed per call: every call landing,
+        1.00x; one failure then all landing, 1.00x; three failures then all
+        landing, 1.00x; a fifty percent flaky provider, about 1.9x calls;
+        four failures to one landing, about 1.3x calls.
+
+        And the worse half of that last number is not the price, it is the
+        INVERSE PRODUCTIVITY: on four failures to one landing it pays about
+        1.3x and reads 24 messages where the unhalved run reads 180, which is
+        thirteen percent of the work. The day's calls run out on two-message
+        batches. In the degraded regime this mechanism exists for, it pays
+        more and does less.
+
+        Whether the trigger threshold should halve alongside the batch - which
+        is where that ratio comes from - is a decision, not an oversight, and
+        it is open. The rest of the backlog is not lost either way: it stays
+        unread and the next run picks it up.
         """
         size = config.NOTEBOOK_EXTRACT_EVERY_TURNS
         for _ in range(min(self.breaker.failures, 3)):
@@ -1438,6 +1478,16 @@ def _empty_reason(outcome: dict | None) -> str:
         return "settled_nothing"
     if outcome.get("stale_attempt"):
         return "settled_stale_attempt"
+    # BEFORE `duplicate`, and that ordering is the whole of it. The dead-chat
+    # gate in commit_extraction returns `duplicate` alongside `chat_gone` on
+    # purpose - the flag is what stops a reply nobody can be shown from
+    # counting as a healthy run and resetting the failure breaker - so a chat
+    # deleted while its reply was in flight arrived on this screen wearing the
+    # word for an already-answered work key. Nothing read `chat_gone`, so the
+    # one outcome that is not a retry, not a race and not the provider's fault
+    # was reported as the commonest of the three.
+    if outcome.get("chat_gone"):
+        return "settled_chat_gone"
     if outcome.get("duplicate"):
         return "settled_duplicate"
     return "settled_empty"
@@ -1608,7 +1658,22 @@ def _plan_work(chat_id: int, model_id: str, language: str,
         # so the other four hundred and eighty were silently never extracted.
         # The one silent-loss shape this whole module exists to prevent,
         # rebuilt at the other end of the same function.
-        if (min_new is None and last == 0 and pending > limit * 2
+        #
+        # AND THE EDGE IS `threshold`, NOT `limit`. `limit` is
+        # `Worker.batch_size`, which HALVES on the breaker's consecutive
+        # failures - three of them and it is 2, so the edge was 4 and a chat
+        # with five messages in it read as a four-hundred-message backlog.
+        # The branch then jumped to the present and left three of those five
+        # under a cursor that only moves forward. Three failures is not an
+        # open breaker (TRIP_AFTER is 5), so nothing else was refusing work
+        # at the time and the loss was silent. Whether this conversation is
+        # meeting the feature for the first time is a fact about the
+        # conversation; how healthy the provider is has no business in it.
+        # `threshold` is the caller's constant - `_prepare` passes
+        # `config.NOTEBOOK_EXTRACT_EVERY_TURNS` and nothing halves it - and
+        # keeping the two apart here is the same rule this function's
+        # docstring already states about conflating them.
+        if (min_new is None and last == 0 and pending > threshold * 2
                 and not ever_extracted):
             # NOTHING has EVER been read in this chat (not merely "since the
             # cursor last moved") and there is a backlog. That is the
@@ -1643,6 +1708,52 @@ def _plan_work(chat_id: int, model_id: str, language: str,
                 "WHERE chat_id = ? AND active = 1 AND id > ? ORDER BY id "
                 "LIMIT ?",
                 (chat_id, last, max(1, limit))).fetchall()
+
+        if after_id is not None and rows:
+            # WHERE THE HOLE ENDS.
+            #
+            # A sweep is told where to START and was never told where to
+            # stop: the walk above is a plain LIMIT, and `after_id` names the
+            # bottom of a hole, not its top. So a four-message hole sitting
+            # under a stretch of forty that had already been read was planned
+            # as forty-four - the four nobody had read, and forty that were
+            # paid for once. `work_key` hashes the RANGE, so a range nobody
+            # had asked before is a key nobody had answered before, and
+            # `already_done` waves it through. The same answer is bought
+            # twice, and the repository's own sweep test shows the shape.
+            #
+            # `work_key` is not the place to fix that and is deliberately
+            # left alone: it carries the model and the language because a
+            # different model is a different QUESTION, and the live worker
+            # depends on that. Coverage is a different question again - it
+            # asks whether anybody has READ these messages, whatever they
+            # were asked - so it is answered from the range table, with the
+            # same predicate the cursor and the unread scan already use.
+            #
+            # A plan is one contiguous range by construction (`from_id` and
+            # `to_id` are a span), so the walk stops at the first covered
+            # message rather than skipping over it. The next hole is the next
+            # press. The ordinary path is not asked: its cursor is a MAX, so
+            # nothing above it can be covered, and this is the hot path
+            # nineteen offers in twenty return from.
+            spans = [(lo, hi) for lo, hi in con.execute(
+                "SELECT from_message_id, to_message_id "
+                "FROM notebook_extractions WHERE chat_id = ? "
+                "AND (status = 'done' "
+                "     OR (status = 'failed' AND error_type = ?))",
+                (chat_id, notebook.ABANDONED_IN_FLIGHT)).fetchall()
+                if lo is not None and hi is not None]
+            uncovered = []
+            for row in rows:
+                if any(lo <= row["id"] <= hi for lo, hi in spans):
+                    break
+                uncovered.append(row)
+            if not uncovered:
+                # `after_id` is sitting under a message somebody has already
+                # read. There is nothing here to buy, and buying it anyway is
+                # the whole defect.
+                return None
+            rows = uncovered
 
         window = con.execute(
             "SELECT role, content FROM messages "
@@ -1693,7 +1804,29 @@ def _plan_work(chat_id: int, model_id: str, language: str,
     lines = [(r["id"], f"{r['role']}: "
               f"{voice_tags.strip_for_display(r['content'], r['role'])}")
              for r in rows]
-    kept = notebook_extract.budget_pairs(lines, notebook_extract.TURNS_MAX_CHARS)
+    # The same stripping for the context window. Not cosmetic: the grounding
+    # check in parse_reply compares a quote against one MESSAGE of `chunk`,
+    # and `chunk` is built from these same lines - so stripping one side and
+    # not the other would make every quote ungrounded and silently empty the
+    # feature.
+    #
+    # Built BEFORE the material is budgeted, because what it costs is what
+    # comes off the material's ceiling.
+    recent = [f"{r['role']}: "
+              f"{voice_tags.strip_for_display(r['content'], r['role'])}"
+              for r in reversed(window)]
+    # THE PRONOUN WINDOW IS A SECTION, NOT A REMAINDER.
+    #
+    # Downstream it is handed `TURNS_MAX_CHARS` minus whatever `new` spent,
+    # and this line used to spend all of it - so RECENT_TURNS was empty on
+    # exactly the chats long enough to need it, while the prompt goes on
+    # instructing the model to resolve pronouns against it. Taken out first,
+    # and only as much as the two messages will really use, so a short window
+    # costs the material nothing and a long one cannot be starved by it.
+    reserve = min(RECENT_RESERVE_CHARS,
+                  sum(len(line) + 1 for line in recent))
+    kept = notebook_extract.budget_pairs(
+        lines, notebook_extract.TURNS_MAX_CHARS - reserve)
     if not kept:
         # Even one line does not fit. Reading nothing is right; marking the
         # range read would be the silent loss this whole block is about.
@@ -1701,14 +1834,6 @@ def _plan_work(chat_id: int, model_id: str, language: str,
     rows = [r for r in rows if r["id"] in {i for i, _ in kept}]
 
     new = [text for _, text in kept]
-    # The same stripping for the context window. Not cosmetic: the grounding
-    # check in parse_reply compares a quote against one MESSAGE of `chunk`,
-    # and `chunk` is built from these same lines - so stripping one side and
-    # not the other would make every quote ungrounded and silently empty the
-    # feature.
-    recent = [f"{r['role']}: "
-              f"{voice_tags.strip_for_display(r['content'], r['role'])}"
-              for r in reversed(window)]
     # ACCEPTED notes and the model's OWN pending suggestions.
     #
     # The model could not see what it had already proposed, so on the next

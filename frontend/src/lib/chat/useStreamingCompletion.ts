@@ -433,7 +433,28 @@ export function useStreamingCompletion() {
       const { chatId } = vars;
       // One LIVE stream per chat - the UI enforces this; guard defensively.
       // A post-`done` voice drain is not live: claimChat supersedes it.
-      if (!claimChat(chatId)) return;
+      if (!claimChat(chatId)) {
+        // This is the last line, not the only one: `pendingForThisChat`
+        // normally keeps the composer disabled from stop until teardown. But
+        // that gate is derived state, and MessageBubble.tsx:365-372 records
+        // what happens when a gate like it goes stale while a box is open -
+        // a silent return that destroyed the retyped text. The window under
+        // it is real: `stop` only aborts, and the controller leaves the map
+        // in an async `finally` that on the abort-empty path sits behind an
+        // awaited DELETE. For the width of that request the chat still owns
+        // its slot and is not yet draining, so the claim is refused. The
+        // composer empties its own buffer BEFORE calling in, so the only
+        // surviving copy of those words is the argument this function was
+        // about to drop on the floor.
+        //
+        // `onError` and not a new `onFailure`: it is the channel the caller
+        // already listens on to put the text back and say why nothing went,
+        // which is the whole point. `onAbortedEmpty` would restore the text
+        // too, but it means "the user stopped THIS send" and nobody did.
+        // Same contract as startEdit's onFailure, one door along.
+        callbacks?.onError?.(makeApiError(0, "unknown_error"));
+        return;
+      }
 
       const controller = new AbortController();
       controllersRef.current.set(chatId, controller);
@@ -759,7 +780,15 @@ export function useStreamingCompletion() {
   const startRegenerate = useCallback(
     async (vars: StreamRegenerateVars) => {
       const { chatId, messageId } = vars;
-      if (!claimChat(chatId)) return;
+      if (!claimChat(chatId)) {
+        // No typed text is at stake on this path, but the silence is the
+        // same one: the button does nothing, the chat reads as idle, and the
+        // user is left believing the click never registered. Regenerate has
+        // no caller-side failure channel at all - every other way it can
+        // fail reaches the user through pushError, and so does this.
+        pushError(makeApiError(0, "unknown_error"), "error", { chatId });
+        return;
+      }
 
       const controller = new AbortController();
       controllersRef.current.set(chatId, controller);

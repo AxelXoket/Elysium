@@ -89,7 +89,33 @@ export function RightPanel() {
             loved part of the tab's feel and replays on mount. The switch
             stutter was NOT the remount itself - it was the cascade animating
             all 237 rows (~10s of scheduled tweens starving the fog's rAF);
-            ModelPanel now only animates the rows that can be seen entering. */}
+            ModelPanel now only animates the rows that can be seen entering.
+
+            READ THE SECOND HALF BEFORE COPYING THE FIRST. What the paragraph
+            above left out for a long time is that a remount does not only
+            replay an animation - it destroys everything the panel was
+            holding, and the panels hold text somebody typed. Clicking a
+            neighbouring tab silently threw away a half-written persona
+            description, a half-written note, a half-typed limit. No warning,
+            no undo, and the sentence above read as though the trade had been
+            considered when only one side of it had.
+
+            The trade is now taken on the other axis. The panels still
+            unmount, so the cascade still replays and nothing runs behind a
+            hidden tab; the text no longer lives in the panels. Each box
+            writes through `usePanelDraft` into the same module-scope store
+            that already holds unsent composer and edit text
+            (lib/store/draftStore.ts), so it survives the unmount the same way
+            those do and dies with the process the same way too. base-ui's
+            `keepMounted` was the other candidate and would have cost the
+            cascade plus four tabs' worth of live queries.
+
+            FIVE controls in the Security tab are deliberately NOT covered and
+            still lose their contents here: the API key box, the three vault
+            passphrase boxes, and the proxy URL. The store outlives a vault
+            lock by design, and a credential must not - and a URL counts,
+            because it is allowed to carry a user and a password inside it.
+            That exclusion is argued in full in the draft store's header. */}
 
         {/* Models tab */}
         <TabsContent value="models" className="flex-1 overflow-hidden">

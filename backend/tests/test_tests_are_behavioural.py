@@ -18,7 +18,21 @@ second and third above, and was fixed the same way:
   * test_release_hardening.py::test_run_app_reports_the_override_after_installing_its_handler
 
 Nothing stopped a fifth from appearing anywhere else in tests/. This file is
-that stop.
+that stop. A fifth did appear, and this file did NOT stop it, because the
+stop had a language in it:
+
+  * test_notebook_worker.py::test_the_panel_has_a_sentence_for_each
+
+That one read WorkerPanel.tsx and asserted a skip reason's token was in the
+text. Same shape as the four above, same weakness, and scan_file() returned
+[] for the whole file - the path pattern only recognised a quoted name
+ending in `.py`, so a suite whose other half is TypeScript had a hole the
+exact width of the wall between them. The rule was never about Python; it is
+about a substring standing in for behaviour. The pattern covers every source
+extension now (see _SOURCE_EXTS), and that test is gone: the vocabulary half
+of what it claimed is asserted against shared/notebook_skip_reasons.json,
+and the half about what a reader SEES is asserted by mounting the panel once
+per reason, in frontend/src/test/components/WorkerPanel.test.tsx.
 
 WHAT COUNTS, AND THE TWO CONFIDENCE LEVELS THIS FILE ACTS ON
 --------------------------------------------------------------
@@ -30,24 +44,24 @@ verify/ on 2026-08-19. Both are hard-gated across the WHOLE tests/ tree below,
 with no exceptions and no allowlist entry to argue for, because there is
 nothing to argue.
 
-Reading a .py file's text and asserting a substring is in it, or comparing two
-`.index()` positions from that text, is not unambiguous. tts/worker/*.py and
+Reading a source file's text and asserting a substring is in it, or comparing
+two `.index()` positions from that text, is not unambiguous. tts/worker/*.py and
 routers/tts_runtime.py are exercised by tests in a FOREIGN interpreter this
 suite does not control (see test_lint_gates.py's own docstring on why), so
 some of the files that read a module's text are working around a real
 constraint, not dodging one - and telling that apart from a lazy grep, in a
 file outside this pass's ownership, needs the kind of judgement an automated
 sweep cannot supply on its own. Calibrating this rule against the real tree on
-2026-08-19 turned up matches in several tts_* test modules outside this pass's
-three owned files (test_notebook_crud.py, test_release_hardening.py, this
+2026-08-19 turned up matches in several tts_* test modules outside the files
+that pass owned (test_notebook_crud.py, test_release_hardening.py, this
 file) - and one near-match, in test_worker_dsp.py, that reads a worker script
 only to build a deliberately broken COPY it then runs a real check against:
 the text there is an ingredient in something that EXECUTES, never the subject
 of an assertion, which is exactly the distinction this whole file exists to
 draw.
 
-So that rule is hard-gated on this pass's own three files - a fifth violation
-there fails the build the run it lands in - and TRACKED, not enforced,
+So that rule is hard-gated on this pass's own files - a violation in one of
+them fails the build the run it lands in - and TRACKED, not enforced,
 everywhere else: what the sweep already found is pinned by exact text below,
 the same way verify_hygiene.py pins a waiver. A pinned hit that no longer
 matches means somebody already fixed it and the entry is stale; a hit found
@@ -75,7 +89,27 @@ _GETSOURCE = "inspect" + "." + "getsource"
 _GETSOURCELINES = "inspect" + "." + "getsourcelines"
 _GETSOURCEFILE = "inspect" + "." + "getsourcefile"
 _CO_CONSTS = "." + "co_consts"
-_PY = "." + "py"  # the extension this scanner looks for next to a read call
+_PY = "." + "py"  # this suite's own extension: what _sweep() globs for
+_TSX = "." + "tsx"   # a second one, for the sample proving S-03 is not
+_JSON = "." + "json"  # about Python any more, and the two samples that
+_TXT = "." + "txt"    # fence the widening in on either side
+
+#: Every extension a SOURCE file in this repository can carry. The rule S-03
+#: enforces was never about Python: reading a module's text and asserting a
+#: substring is in it is the same lie whatever language the module is
+#: written in. This list was `.py` alone until 3 September 2026, and the hole
+#: that opened is on the record - test_notebook_worker.py read
+#: WorkerPanel.tsx and asserted a token was in it, the exact shape S-03
+#: forbids, and this scanner returned [] for that file. Anything a person
+#: WRITES belongs here; a data file a test creates for itself at runtime
+#: (`notes.txt`, `ordinary.txt` - fixtures, not source) deliberately does
+#: not, because reading one back is how those tests observe real behaviour.
+_SOURCE_EXTS = (
+    "py", "pyw", "pyi",
+    "ts", "tsx", "js", "jsx", "mjs", "cjs",
+    "html", "css", "json", "md",
+    "toml", "yml", "yaml", "ini", "cfg", "spec", "sh", "ps1",
+)
 
 # ── The three rules ──────────────────────────────────────────────────────────
 
@@ -88,16 +122,21 @@ _INSPECT_RE = re.compile(
 _CO_CONSTS_RE = re.compile(r"\." + r"co_consts\b")
 
 # A read_text()/.read() call is a candidate only when a quoted path ending in
-# the scanned extension sits within a few lines above it - the shape every
-# real hit shares, whether the path is built in one line or wrapped in
+# one of the scanned extensions sits within a few lines above it - the shape
+# every real hit shares, whether the path is built in one line or wrapped in
 # parentheses across several - and it is waved through when that same window
-# already feeds ast.parse(: a structural claim about a foreign-venv script,
-# which is the legitimate use this repo has for reading a module's text at
-# all (see test_privacy_source_boundaries.py and test_privacy_promises.py).
-_PY_PATH_RE = re.compile(r"""["'][^"'\n]*\.py["']""")
+# already feeds the text to a PARSER: ast.parse() for a foreign-venv script,
+# json.loads() for a shared contract file. Both mean the same thing, which is
+# why they are one rule: the text becomes a structure, and every assertion
+# downstream is about the structure. That is the legitimate use this repo has
+# for reading a source file at all (see test_privacy_source_boundaries.py,
+# test_privacy_promises.py and test_error_catalogue.py, whose docstring
+# argues the case at length).
+_SOURCE_PATH_RE = re.compile(
+    r"""["'][^"'\n]*\.(?:""" + "|".join(_SOURCE_EXTS) + r""")["']""")
 _READ_CALL_RE = re.compile(r"\.read_text\s*\(|\.read\s*\(\s*\)")
 _ASSERT_IN_RE = re.compile(r"\bassert\b.*\bin\b")
-_AST_PARSE_RE = re.compile(r"\bast\s*\.\s*parse\s*\(")
+_PARSE_RE = re.compile(r"\b(?:ast\s*\.\s*parse|json\s*\.\s*loads?)\s*\(")
 _WINDOW = 5  # lines of look-back for a path literal near a read call
 
 
@@ -122,7 +161,7 @@ def scan_file(path: str, text: str) -> list[Hit]:
         if not _READ_CALL_RE.search(line):
             continue
         window = "\n".join(lines[max(0, i - _WINDOW):i + 1])
-        if (_PY_PATH_RE.search(window) and not _AST_PARSE_RE.search(window)
+        if (_SOURCE_PATH_RE.search(window) and not _PARSE_RE.search(window)
                 and _ASSERT_IN_RE.search(text)):
             hits.append(Hit(path, "S-03", line.strip()))
     return hits
@@ -173,8 +212,14 @@ ALLOWLIST: dict[str, str] = {
 }
 
 # ── This pass's own files: hard gate, no exceptions ─────────────────────────
+#
+# test_notebook_worker.py joined the list on 3 September 2026, when the fifth
+# violation was found in it and fixed. It is named here rather than left to
+# the tracked sweep so a regression there arrives with the message that says
+# what to do about it, not with the one that offers a pin.
 OWNED_FILES = frozenset({
     "test_notebook_crud" + _PY,
+    "test_notebook_worker" + _PY,
     "test_release_hardening" + _PY,
     "test_tests_are_behavioural" + _PY,
 })
@@ -187,7 +232,7 @@ OWNED_FILES = frozenset({
 # then runs a real check against, never to assert on the text itself). Every
 # remaining entry is the same shape as the four this pass fixed: a read_text()
 # result, string-matched or index()-compared, standing in for behaviour. None
-# of these files are this pass's to edit - it owns exactly the three named in
+# of these files are this pass's to edit - it owns exactly the ones named in
 # OWNED_FILES above.
 #
 # The extension is held apart from the rest of each line, the same way it is
@@ -331,6 +376,25 @@ class TestTheDetectorFires:
         assert hits[0].line == (
             'src = (Path(__file__).parent / "thing' + _PY + '").read_text()')
 
+    def test_reading_a_tsx_file_and_asserting_on_it_is_a_hit(self) -> None:
+        """The blind spot itself, in miniature.
+
+        This is test_notebook_worker.py's old shape reduced to two lines: a
+        component file opened from the backend suite and searched for a
+        token. It returned [] for a year of `.py`-only matching. Kept
+        synthetic and separate from the sweep so it stays meaningful after
+        the real hit was fixed - the sweep can only ever prove the tree is
+        clean today, never that the detector still works.
+        """
+        sample = (
+            'panel = ROOT / "components" / "WorkerPanel' + _TSX + '"\n'
+            'text = panel.read_text(encoding="utf-8")\n'
+            'assert "some_reason:" in text\n'
+        )
+        hits = scan_file("sample", sample)
+        assert [h.rule for h in hits] == ["S-03"]
+        assert hits[0].line == 'text = panel.read_text(encoding="utf-8")'
+
 
 class TestTheDetectorDoesNotFireOnTheInnocentLine:
     def test_a_plain_behavioural_test_is_not_a_hit(self) -> None:
@@ -397,6 +461,42 @@ class TestTheDetectorDoesNotFireOnTheInnocentLine:
             "names = [n.func.attr for n in ast.walk(tree) "
             "if isinstance(n, ast.Call)]\n"
             'assert "close" in names\n'
+        )
+        assert scan_file("sample", sample) == []
+
+    def test_a_parsed_contract_file_is_not_a_hit(self) -> None:
+        """test_error_catalogue.py's shape, and the reason widening the
+        extension list needed json.loads() beside ast.parse().
+
+        A shared JSON contract IS source - somebody writes it by hand - so
+        it belongs in the extension list. But every assertion downstream is
+        about the decoded structure, never about the file's characters, and
+        that is the same trade ast.parse() makes. Six real reads in this
+        tree are this shape.
+        """
+        sample = (
+            'CATALOGUE = ROOT / "shared" / "error_catalogue' + _JSON + '"\n'
+            'RECORDS = json.loads(CATALOGUE.read_text(encoding="utf-8"))\n'
+            'assert "unknown_error" in RECORDS\n'
+        )
+        assert scan_file("sample", sample) == []
+
+    def test_reading_back_a_fixture_a_test_wrote_itself_is_not_a_hit(
+        self,
+    ) -> None:
+        """The other half of the extension list, and the reason it is a list
+        of SOURCE extensions rather than every extension there is.
+
+        test_browser_profile_purge.py plants a file in a directory it is
+        about to purge and reads it back to prove the purge left it alone;
+        test_fs_guard.py does the same with a path the guard is supposed to
+        permit. The read IS the observation there - it is how those tests see
+        what the code did - so a scanner that flagged it would be banning
+        behaviour rather than a substitute for it.
+        """
+        sample = (
+            'victim = tmp_path / "notes' + _TXT + '"\n'
+            'assert victim.read_text(encoding="utf-8") == "MUST SURVIVE"\n'
         )
         assert scan_file("sample", sample) == []
 

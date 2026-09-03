@@ -224,12 +224,23 @@ class SafewordBody(BaseModel):
     # itself a hundred lines above: declaring the ceiling twice only changes
     # WHICH refusal arrives first, and pydantic's arrives worse.
     #
-    # Worse in a way that matters for this field in particular. There is no
-    # RequestValidationError handler in this app, so FastAPI's default runs,
-    # and pydantic v2's errors() puts the REJECTED VALUE in an `input` field
-    # that goes back over the wire. For a safeword - a phrase somebody chose
-    # for the worst moment they expect to have - that is the one string in
-    # this application that must never come back out.
+    # Worse in a way that mattered for this field in particular. When this
+    # was written there was no `RequestValidationError` handler at all, so
+    # FastAPI's default ran and pydantic v2's `errors()` put the REJECTED
+    # VALUE in an `input` field that went back over the wire. For a safeword
+    # - a phrase somebody chose for the worst moment they expect to have -
+    # that is the one string in this application that must never come back
+    # out.
+    #
+    # H-42 has since put a handler in `main.py` that strips `input` and
+    # `ctx` from every item, so the echo is closed application-wide. That
+    # handler now answers with the route-neutral `validation_failed`, whose
+    # sentence is true here and points at no other panel, so a second refusal
+    # arriving first would no longer be actively misleading. It would still be
+    # the LESS USEFUL refusal: `validation_failed` can only say that something
+    # in the request was not a value this API accepts, while
+    # `safeword_too_long` names the field and the reason. This field keeps its
+    # own ceiling for that difference.
     #
     # The ceiling lives in notebook_store.set_safeword, which raises
     # safeword_too_long, which _refuse turns into a 400 carrying a code and

@@ -158,12 +158,18 @@ CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "tests/test_launch_token.py::TestWhenItIsArmed"
         "::test_a_request_with_the_header_passes",
         "tests/test_launch_token.py::TestWhatStaysReachable"
-        "::test_the_same_image_route_is_refused_without_that_signal",
+        "::test_the_image_route_is_refused_without_the_token",
         # The sentence used to say this gate "still refuses a program with
-        # curl". It does not, and this is the test that measures the real
-        # size of the exemption so the sentence cannot drift back.
+        # curl" while the server did not, then said the gap out loud, and now
+        # says it is closed. These two are what the sentence rests on: the
+        # forged header is turned away, and the token is what opens the route
+        # instead.
         "tests/test_launch_token.py::TestWhatStaysReachable"
-        "::test_a_program_that_sets_the_header_by_hand_is_not_refused",
+        "::test_a_program_that_sets_the_header_by_hand_is_refused",
+        "tests/test_launch_token.py::TestWhatStaysReachable"
+        "::test_a_forged_same_origin_header_does_not_open_the_image_route",
+        "tests/test_launch_token.py::TestWhatStaysReachable"
+        "::test_the_image_route_passes_with_the_token",
         "frontend/src/test/launchToken.test.ts::never writes the token to browser storage",
         "tests/test_launch_token.py::TestTheTokenDoesNotReachOurOwnSubprocesses"
         "::test_the_voice_engine_is_not_given_it",
@@ -272,7 +278,7 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
 #: test would notice. This closes that by refusing ANY change to the section
 #: until somebody comes here, decides what the change claims, and registers a
 #: proof for it. Updating this constant is the deliberate act.
-SECTION_DIGEST = "717cea6009cc15828877c734b0080cb8b078f889d5eec8bebbc596de0fcf0052"
+SECTION_DIGEST = "e0051ce34b5f40fcf642c8d8604bb0a7e7d00b581b3518f3695a519385b8cbfd"
 
 
 def _section() -> str:

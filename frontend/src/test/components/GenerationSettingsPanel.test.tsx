@@ -10,6 +10,10 @@ import {
   useGenerationSettings,
 } from "@/components/generation/GenerationSettingsContext";
 import { ModelPanel } from "@/components/models/ModelPanel";
+import {
+  IMAGE_OUTPUT_NOT_ASKED_NOTE,
+  IMAGE_OUTPUT_UNKNOWN_NOTE,
+} from "@/components/generation/ImageOutputSetting";
 import { useUiStore } from "@/lib/store/uiStore";
 import { mockFetch } from "@/test/mocks/api";
 import { settingsFixture } from "@/test/mocks/fixtures";
@@ -1149,5 +1153,118 @@ describe("pictures in replies: a toggle with no failure surface", () => {
         "the vault refused and the user was told nothing",
       ).toHaveLength(1),
     );
+  });
+});
+
+/**
+ * H-63: the switch is on, so what does the panel CLAIM about the request?
+ *
+ * The backend adds `modalities: ["text","image"]` unless the cached metadata
+ * positively rules image output out - absent metadata, a missing field and an
+ * empty list all mean "ask, the provider decides" (_model_emits_images,
+ * backend/routers/completions.py, pinned by the shared truth table both suites
+ * read). The panel used to read that same empty list as a definite no and
+ * print "it will not be asked for one" while the request went out asking.
+ *
+ * A privacy-first interface is allowed to say "I do not know". It is not
+ * allowed to say "no" about a request that says yes.
+ *
+ * Both sentences are IMPORTED from the component, so a copy edit cannot make
+ * an absence assertion pass by accident.
+ */
+describe("pictures in replies: what the panel claims about the request", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Opens the dialog with the switch already ON and `model` selected. */
+  async function renderWithPicturesOn(model: Model) {
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+
+    useUiStore.setState({ selectedModelId: model.id });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/settings/stop-sequences")) {
+          return json({ ok: true, stop_sequences: [] });
+        }
+        if (url.includes("/models/openrouter")) return json(modelList(model));
+        return json({ ...settingsFixture, image_output_enabled: true });
+      }),
+    );
+
+    renderWithQueryClient(<ModelPanel />, { wrapper: Extra });
+    await waitFor(() => {
+      expect(screen.getByTestId("generation-settings-trigger")).toBeInTheDocument();
+    });
+    await openDialog();
+
+    // The positive control for every absence assertion below. If the switch
+    // were off, neither note would render for any model and "the sentence is
+    // not there" would be worth nothing.
+    const toggle = await screen.findByRole("switch", {
+      name: "Let replies include pictures",
+    });
+    expect(toggle, "the harness did not reach the state under test")
+      .toHaveAttribute("aria-checked", "true");
+  }
+
+  const emptyList: Model = {
+    ...fullModel,
+    id: "test/no-modality-list",
+    // What the backend caches for a model whose OpenRouter architecture block
+    // omits output_modalities. This is the reachable case, not a contrivance.
+    output_modalities: [],
+  };
+
+  const textOnly: Model = {
+    ...fullModel,
+    id: "test/text-only-output",
+    output_modalities: ["text"],
+  };
+
+  const drawing: Model = {
+    ...fullModel,
+    id: "test/draws",
+    output_modalities: ["text", "image"],
+  };
+
+  it("does not claim a picture will not be asked for when it will be", async () => {
+    await renderWithPicturesOn(emptyList);
+
+    expect(
+      screen.queryByText(IMAGE_OUTPUT_NOT_ASKED_NOTE),
+      "the panel told the reader the request would not ask, and it does",
+    ).toBeNull();
+  });
+
+  it("says what it actually knows about that model instead", async () => {
+    // Positive control, same harness and same render as the assertion above:
+    // the block is reached and does produce copy, so the missing sentence is a
+    // real difference and not an empty render.
+    await renderWithPicturesOn(emptyList);
+
+    expect(screen.getByText(IMAGE_OUTPUT_UNKNOWN_NOTE)).toBeInTheDocument();
+  });
+
+  it("still says it plainly when the model's list rules image output out", async () => {
+    // Ground control. The definite-no path is the one that was always right
+    // and it has to survive the fix untouched.
+    await renderWithPicturesOn(textOnly);
+
+    expect(screen.getByText(IMAGE_OUTPUT_NOT_ASKED_NOTE)).toBeInTheDocument();
+    expect(screen.queryByText(IMAGE_OUTPUT_UNKNOWN_NOTE)).toBeNull();
+  });
+
+  it("says neither when the model declares image output", async () => {
+    await renderWithPicturesOn(drawing);
+
+    expect(screen.queryByText(IMAGE_OUTPUT_NOT_ASKED_NOTE)).toBeNull();
+    expect(screen.queryByText(IMAGE_OUTPUT_UNKNOWN_NOTE)).toBeNull();
   });
 });

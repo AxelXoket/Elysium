@@ -357,31 +357,37 @@ class TestVoiceTagsDoNotReachTheNotebook:
 
 
 class TestTheEdgeOfTheJumpThreshold:
-    def test_just_over_the_edge_jumps(self, client) -> None:
-        """`limit * 2` was never bracketed from either side.
+    """The edge, bracketed from both sides.
 
-        Counted from the real message list rather than from the seed count:
-        a chat opened from a character carries its greeting as a real row, so
-        "twenty seeded messages" is twenty-one pending.
-        """
+    It was written against `limit * 2` and is now `threshold * 2`. Same
+    bracket, different operand, and the operand is the whole point: `limit`
+    is `Worker.batch_size`, which halves on the breaker's consecutive
+    failures, so the edge used to move with the provider's health. See
+    test_notebook_planner_budget.py for what that cost.
+    """
+
+    def test_just_over_the_edge_jumps(self, client) -> None:
+        """Counted from the real message list rather than from the seed
+        count: a chat opened from a character carries its greeting as a real
+        row, so "twenty seeded messages" is twenty-one pending."""
         chat_id = seed(client, count=20)
         pending = len(message_ids(chat_id))
-        limit = (pending - 1) // 2          # pending > limit * 2, just
+        threshold = (pending - 1) // 2      # pending > threshold * 2, just
 
         plan = notebook_worker._plan_work(
-            chat_id, "vendor/cheap", "en", 4, limit)
+            chat_id, "vendor/cheap", "en", threshold, 20)
 
         ids = message_ids(chat_id)
         assert plan["to_id"] == ids[-1]
-        assert plan["from_id"] == ids[-limit]
+        assert plan["from_id"] == ids[-20]
 
     def test_exactly_on_the_edge_does_not(self, client) -> None:
         chat_id = seed(client, count=20)
         pending = len(message_ids(chat_id))
-        limit = (pending + 1) // 2          # pending == limit * 2 (or under)
+        threshold = (pending + 1) // 2      # pending == threshold * 2 (or under)
 
         plan = notebook_worker._plan_work(
-            chat_id, "vendor/cheap", "en", 4, limit)
+            chat_id, "vendor/cheap", "en", threshold, 20)
 
         assert plan["from_id"] == message_ids(chat_id)[0], (
-            "pending == limit * 2 is NOT more than limit * 2")
+            "pending == threshold * 2 is NOT more than threshold * 2")

@@ -144,69 +144,112 @@ class TestWhatStaysReachable:
                      "Access-Control-Request-Method": "GET"})
         assert response.status_code != 403
 
-    def test_an_element_loaded_image_passes_with_a_same_origin_signal(
+    def test_the_image_route_passes_with_the_token(
         self, client, armed: str
     ) -> None:
-        # <img src> cannot carry a custom header. Sec-Fetch-Site is set by the
-        # browser and cannot be forged from the page, so a hostile PAGE is
-        # still refused. A local program is not, and the case below says so
-        # out loud rather than leaving this comment to imply otherwise.
+        """The replacement for the element-loaded exemption.
+
+        The picture and the spoken reply used to be fetched by the BROWSER -
+        <img src> and an audio element - and an element load cannot carry a
+        custom header, so the gate accepted a browser signal in the token's
+        place. The frontend now fetches both itself and hands the bytes to a
+        blob: URL, so these two routes present the token like every other
+        route and need no exemption at all.
+
+        404 rather than 200: id 999999 is not in this vault. What is measured
+        is that the request REACHED the route, which is the half the gate
+        decides.
+        """
         response = client.get("/api/v1/uploads/images/999999",
-                              headers={"sec-fetch-site": "same-origin"})
+                              headers={launch_token.HEADER: armed})
         assert response.status_code != 403
 
-    def test_a_program_that_sets_the_header_by_hand_is_not_refused(
+    def test_the_audio_route_passes_with_the_token(
         self, client, armed: str
     ) -> None:
-        """The size of the exemption, measured rather than described.
+        response = client.get("/api/v1/tts/audio/no-such-clip",
+                              headers={launch_token.HEADER: armed})
+        assert response.status_code != 403
 
-        README.md and SECURITY.md both said this gate "refuses a program with
-        curl", and main.py's own comment said the same. It does not:
-        `curl -H "Sec-Fetch-Site: same-origin"` is one flag, and nothing on
-        the server can tell that request from a browser's. The documents now
-        say what this test measures, and this test is what stops them drifting
-        back.
+    def test_a_forged_same_origin_header_does_not_open_the_image_route(
+        self, client, armed: str
+    ) -> None:
+        """The hole the exemption was, measured from the attacker's side.
+
+        Sec-Fetch-Site is a forbidden header name for a browser fetch, which
+        is why it was trusted: script on a page cannot set it. A PROCESS is
+        under no such rule. `curl -H "Sec-Fetch-Site: same-origin"` is one
+        flag, and while that header was the whole gate for these two routes,
+        typing it read the vault's pictures out by counting ids upward.
+
+        Before the fix this returned 404 - the route answering, having been
+        let through. The gate answers first now.
+        """
+        response = client.get("/api/v1/uploads/images/999999",
+                              headers={"sec-fetch-site": "same-origin"})
+        assert response.status_code == 403
+        assert response.json()["detail"] == "launch_token_invalid"
+
+    def test_a_forged_same_origin_header_does_not_open_the_audio_route(
+        self, client, armed: str
+    ) -> None:
+        response = client.get("/api/v1/tts/audio/no-such-clip",
+                              headers={"sec-fetch-site": "same-origin"})
+        assert response.status_code == 403
+        assert response.json()["detail"] == "launch_token_invalid"
+
+    def test_a_program_that_sets_the_header_by_hand_is_refused(
+        self, client, armed: str
+    ) -> None:
+        """The size of the gap, measured rather than described.
+
+        This case used to assert the OPPOSITE, under the name
+        `..._is_not_refused`, because that was the truth: the documents said
+        the gate refused a program with curl and it did not. The exemption is
+        gone, so the sentence those documents make is the one the server now
+        keeps, and this is what stops it drifting back.
         """
         # No browser anywhere in this call: the header is typed in, exactly as
         # a command-line tool would type it.
-        response = client.get("/api/v1/uploads/images/999999",
-                              headers={"sec-fetch-site": "same-origin"})
-        assert response.status_code != 403, (
-            "the same-origin exemption stopped accepting a hand-set header; "
-            "if that is deliberate, the two documents have to change with it"
+        forged = client.get("/api/v1/uploads/images/999999",
+                            headers={"sec-fetch-site": "same-origin"})
+        assert forged.status_code == 403, (
+            "a hand-set Sec-Fetch-Site opened an element-loaded route again; "
+            "the Privacy Contract sentence depends on this staying shut"
         )
 
-        # GROUND CONTROL, and the half that IS still true: the same request
-        # with a cross-site signal, which a browser would send from another
-        # origin, is refused.
-        cross = client.get("/api/v1/uploads/images/999999",
-                           headers={"sec-fetch-site": "cross-site"})
-        assert cross.status_code == 403
+        # GROUND CONTROL: the token still opens it, so this is not a route
+        # that has simply been bricked for everyone.
+        with_token = client.get("/api/v1/uploads/images/999999",
+                                headers={launch_token.HEADER: armed})
+        assert with_token.status_code != 403
 
-    def test_the_same_image_route_is_refused_without_that_signal(
+    def test_the_image_route_is_refused_without_the_token(
         self, client, armed: str
     ) -> None:
-        # This is the curl case for the exempted routes, and it must still be
-        # refused or the exemption is a hole rather than a narrowing.
+        # The plain curl case, with no header games at all.
         assert client.get("/api/v1/uploads/images/999999").status_code == 403
 
     def test_a_cross_site_signal_does_not_open_it(self, client, armed: str
-                                                   ) -> None:
+                                                  ) -> None:
         response = client.get("/api/v1/uploads/images/999999",
                               headers={"sec-fetch-site": "cross-site"})
         assert response.status_code == 403
 
-    def test_the_exemption_does_not_cover_the_data_routes(
+    def test_a_same_origin_signal_does_not_open_the_data_routes(
         self, client, armed: str
     ) -> None:
-        # The narrowing must be exactly two routes. A same-origin signal on
-        # /chats would make the whole gate decorative.
+        # POSITIVE CONTROL for the absence the cases above assert. These
+        # routes never carried an exemption, so they answered 403 to a forged
+        # header before the fix as well as after. They are what proves the
+        # harness can see a 403 here at all, and therefore that the image
+        # route's pre-fix 404 was a real difference rather than a blind spot.
         for path in ("/api/v1/chats", "/api/v1/settings", "/api/v1/personas"):
             response = client.get(path,
                                   headers={"sec-fetch-site": "same-origin"})
             assert response.status_code == 403, path
 
-    def test_the_exemption_does_not_cover_writes_to_those_routes(
+    def test_a_same_origin_signal_does_not_open_a_write(
         self, client, armed: str
     ) -> None:
         response = client.delete("/api/v1/uploads/images/999999",

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ImageOff, X } from "lucide-react";
 import {
   Dialog,
@@ -6,7 +6,10 @@ import {
   DialogContent,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { imageUrl } from "@/lib/api/uploads";
+import {
+  fetchImageObjectUrl,
+  revokeImageObjectUrl,
+} from "@/lib/api/uploads";
 import type { Attachment } from "@/lib/schemas/chats";
 
 interface ImageLightboxProps {
@@ -65,6 +68,33 @@ export function ImageLightbox({ attachment, onClose }: ImageLightboxProps) {
  */
 function LightboxImage({ attachment }: { attachment: Attachment }) {
   const [errored, setErrored] = useState(false);
+  // Fetched with the launch token rather than loaded by the element, for the
+  // reason written on fetchImageObjectUrl: an <img src> cannot carry a header,
+  // and the signal the gate accepted in its place was free for any process to
+  // set. The dialog keys this component by attachment id, so a switch remounts
+  // and the cleanup below revokes the previous blob.
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    let mine: string | null = null;
+    void fetchImageObjectUrl(attachment.id)
+      .then((url) => {
+        if (cancelled) {
+          revokeImageObjectUrl(url);
+          return;
+        }
+        mine = url;
+        setObjectUrl(url);
+      })
+      .catch(() => {
+        if (!cancelled) setErrored(true);
+      });
+    return () => {
+      cancelled = true;
+      revokeImageObjectUrl(mine);
+      setObjectUrl(null);
+    };
+  }, [attachment.id]);
 
   if (errored) {
     return (
@@ -86,7 +116,7 @@ function LightboxImage({ attachment }: { attachment: Attachment }) {
 
   return (
     <img
-      src={imageUrl(attachment.id)}
+      src={objectUrl ?? undefined}
       alt="attached image"
       width={attachment.width}
       height={attachment.height}

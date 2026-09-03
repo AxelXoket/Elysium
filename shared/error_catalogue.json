@@ -289,7 +289,7 @@
       "code": "invalid_generation_params",
       "statuses": [],
       "channels": [],
-      "no_backend_producer": "Synthesised by the frontend, never sent by the backend. lib/api/client.ts:88 and lib/api/stream.ts:242 produce it when a 422 body carries a structured detail object instead of a code string, and lib/errors/parseApiError.ts:77 does the same for a ZodError."
+      "no_backend_producer": "Synthesised by the frontend, and only there. main.py's RequestValidationError handler sends the route-neutral validation_failed instead, because one app-level handler answers every rejected body in the tree and cannot know it is looking at generation parameters. Five branches survive as the defence against a 422 this application did not write: lib/api/client.ts:88, lib/api/stream.ts:254 and lib/api/uploads.ts:125 when the body carries an ARRAY under detail, and lib/errors/parseApiError.ts:77 and :82 for an array or an object. That shape is one the handler above cannot produce, since it always sends a code string, so none of the five can fire against this backend."
     },
     {
       "code": "invalid_openrouter_completion_response",
@@ -1115,6 +1115,15 @@
       "code": "unsupported_media_type",
       "statuses": [
         415
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "validation_failed",
+      "statuses": [
+        422
       ],
       "channels": [
         "http"

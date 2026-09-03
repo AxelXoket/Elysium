@@ -25,6 +25,15 @@ import {
   useSelectPersona,
 } from "@/lib/query/personas";
 import type { Persona, PersonaPatch } from "@/lib/schemas/personas";
+import {
+  PANEL_DRAFT_KEYS,
+  PERSONA_EDIT_DRAFT_PREFIX,
+  panelDraftKeys,
+  personaEditDraftKey,
+  personaIdFromEditDraftKey,
+  useDraftStore,
+  usePanelDraft,
+} from "@/lib/store/draftStore";
 
 const PRIVACY_NOTE =
   "Only the selected persona is used in generation. Saved inactive personas are not sent.";
@@ -35,11 +44,67 @@ interface PersonaFormState {
   error: string | null;
 }
 
-const emptyForm: PersonaFormState = {
-  displayName: "",
-  description: "",
-  error: null,
-};
+/**
+ * The two boxes of one persona form, held in the draft store.
+ *
+ * Shaped as the `useState` pair it replaced so `PersonaForm` below did not
+ * have to change at all: it still receives one object and one setter that
+ * accepts an updater. Only the validation message stays component-local -
+ * it is produced by pressing the button, not typed, so there is nothing in
+ * it to lose, and a stale "Display name is required." restored beside a box
+ * the user has since filled in would be a lie.
+ *
+ * The fallbacks are what the boxes show before anything is typed, which is
+ * how the edit form follows the stored persona until the moment the user
+ * disagrees with it.
+ */
+function usePersonaFormDraft(
+  nameKey: string,
+  descriptionKey: string,
+  nameFallback = "",
+  descriptionFallback = "",
+): [PersonaFormState, (next: PersonaFormState | ((current: PersonaFormState) => PersonaFormState)) => void] {
+  const [displayName, setDisplayName] = usePanelDraft(nameKey, nameFallback);
+  const [description, setDescription] = usePanelDraft(
+    descriptionKey,
+    descriptionFallback,
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  const form: PersonaFormState = { displayName, description, error };
+  const setForm = (
+    next: PersonaFormState | ((current: PersonaFormState) => PersonaFormState),
+  ) => {
+    // An updater is handed what the STORE holds right now, not what this
+    // render read. Two writes inside one event - a paste that fires input
+    // twice, a handler that adjusts a field and then clears the error -
+    // would otherwise compute the second one from a value that is already
+    // one write out of date, and the first keystroke would disappear.
+    const stored = useDraftStore.getState().panel;
+    const current: PersonaFormState = {
+      displayName: stored[nameKey]?.text ?? nameFallback,
+      description: stored[descriptionKey]?.text ?? descriptionFallback,
+      error,
+    };
+    const value = typeof next === "function" ? next(current) : next;
+    // Only what actually MOVED is written. Writing both fields on every call
+    // meant that typing one character in the name box copied the stored
+    // description - vault content the user never typed - into a store that
+    // sits outside the vault and survives a lock. It also froze the untouched
+    // box to a snapshot, so a row edited elsewhere stopped showing through.
+    // The same restraint keeps "a buffer exists" meaning "the user typed
+    // here", which is the fact two open/closed flags are derived from: a
+    // failed validation press sets only `error` and must leave no buffer.
+    if (value.displayName !== current.displayName) {
+      setDisplayName(value.displayName);
+    }
+    if (value.description !== current.description) {
+      setDescription(value.description);
+    }
+    setError(value.error);
+  };
+  return [form, setForm];
+}
 
 export function PersonaPanel() {
   const { data: personas, isLoading, error } = usePersonas();
@@ -49,12 +114,92 @@ export function PersonaPanel() {
   const selectPersona = useSelectPersona();
   const pushError = useErrorStore((s) => s.pushError);
 
-  const [createOpen, setCreateOpen] = useState(false);
-  const [createForm, setCreateForm] = useState<PersonaFormState>(emptyForm);
-  const [editingId, setEditingId] = useState<number | null>(null);
-  const [editForm, setEditForm] = useState<PersonaFormState>(emptyForm);
+  const clearPanelDraft = useDraftStore((s) => s.clearPanelDraft);
+  const clearPanelDraftsWithPrefix = useDraftStore(
+    (s) => s.clearPanelDraftsWithPrefix,
+  );
+
+  // WHICH FORM IS OPEN IS DERIVED FROM THE BUFFERS, not stored beside them.
+  //
+  // This panel is unmounted every time the reader looks at a neighbouring
+  // tab, so keeping only the TEXT would have fixed half the bug: the words
+  // would survive in the store while the form that shows them came back
+  // closed, and the "New Persona" button below wipes the form on the way
+  // open. Both flags are therefore read out of the draft store at mount.
+  //
+  // Lazy initial values rather than an effect: an effect runs after paint,
+  // so the reader would get one frame of a closed form snapping open.
+  const [createOpen, setCreateOpen] = useState(
+    () =>
+      panelDraftKeys().some(
+        (key) =>
+          key === PANEL_DRAFT_KEYS.personaCreateName ||
+          key === PANEL_DRAFT_KEYS.personaCreateDescription,
+      ),
+  );
+  const [editingId, setEditingId] = useState<number | null>(() => {
+    // The NEWEST matching key, not the first. Keys come back in insertion
+    // order, and only one edit form is ever on screen, so more than one live
+    // buffer means an older one was stranded - by a row deleted from another
+    // window, say. Taking the first would let that stranded key outrank the
+    // form the user was actually in and reopen a row they had walked away
+    // from, with the words they had just typed nowhere on screen.
+    let newest: number | null = null;
+    for (const key of panelDraftKeys()) {
+      const id = personaIdFromEditDraftKey(key);
+      if (id != null) newest = id;
+    }
+    return newest;
+  });
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   const [pendingSelectId, setPendingSelectId] = useState<number | null>(null);
+
+  const [createForm, setCreateForm] = usePersonaFormDraft(
+    PANEL_DRAFT_KEYS.personaCreateName,
+    PANEL_DRAFT_KEYS.personaCreateDescription,
+  );
+
+  // The row being edited, so its stored values can be the FALLBACK the two
+  // boxes show. Nothing is copied into the store when the pencil is pressed:
+  // a buffer appears only once the user disagrees with what is stored, which
+  // is also what keeps a reopened form from showing a stale copy of a row
+  // that changed underneath it.
+  const editingPersona =
+    editingId == null
+      ? null
+      : (personas?.find((p) => p.id === editingId) ?? null);
+  const [editForm, setEditForm] = usePersonaFormDraft(
+    // A row id is never null here in practice, but hooks cannot be skipped,
+    // so the closed state needs a key of its own. Nothing writes to it: the
+    // only writer is the form, and the form is not on screen.
+    editingId == null ? `${PERSONA_EDIT_DRAFT_PREFIX}closed.name` : personaEditDraftKey(editingId, "name"),
+    editingId == null
+      ? `${PERSONA_EDIT_DRAFT_PREFIX}closed.description`
+      : personaEditDraftKey(editingId, "description"),
+    editingPersona?.display_name ?? "",
+    editingPersona?.description ?? "",
+  );
+
+  // A row can disappear while its id is still held here - deleted from
+  // another window against the same vault, since every path in THIS panel
+  // that closes the form frees it. An id pointing at no row renders no form
+  // at all, so the panel would look like it had simply stopped offering to
+  // edit anything.
+  //
+  // Adjusted during render rather than in an effect, which is the pattern
+  // this codebase already uses for exactly this shape: React re-runs the
+  // render with the new value before committing, so nobody sees the frame in
+  // between. The stranded buffer itself is left where it is - freeing it
+  // here would mean writing to an external store mid-render, and it can no
+  // longer win anything now that the initializer above takes the newest key.
+  // It is a few bytes against a 64 MiB ceiling and a vault wipe frees it.
+  if (
+    editingId != null &&
+    personas != null &&
+    !personas.some((persona) => persona.id === editingId)
+  ) {
+    setEditingId(null);
+  }
 
   const activePersona = useMemo(
     () => findActivePersona(personas),
@@ -69,24 +214,41 @@ export function PersonaPanel() {
 
   const safeQueryError = error ? parseApiError(error).message : null;
 
+  const discardCreateDraft = () => {
+    clearPanelDraft(PANEL_DRAFT_KEYS.personaCreateName);
+    clearPanelDraft(PANEL_DRAFT_KEYS.personaCreateDescription);
+  };
+
   const resetCreate = () => {
-    setCreateForm(emptyForm);
+    discardCreateDraft();
     setCreateOpen(false);
+  };
+
+  const discardEditDraft = (personaId: number) => {
+    clearPanelDraftsWithPrefix(`${PERSONA_EDIT_DRAFT_PREFIX}${personaId}.`);
   };
 
   const openEdit = (persona: Persona) => {
     setConfirmDeleteId(null);
+    // Moving straight from one row's pencil to another's, with no Cancel in
+    // between, is an ordinary two clicks. Only one form is ever on screen, so
+    // leaving the first row's buffer behind would leave TWO rows armed - and
+    // the next mount picks whichever key it meets first, which reopened the
+    // row the user had walked away from and hid the words they had just
+    // typed. Abandoning the first row's text is what the old form did too:
+    // its single shared buffer was overwritten at exactly this point.
+    if (editingId != null && editingId !== persona.id) {
+      discardEditDraft(editingId);
+    }
     setEditingId(persona.id);
-    setEditForm({
-      displayName: persona.display_name,
-      description: persona.description,
-      error: null,
-    });
   };
 
   const closeEdit = () => {
+    // Closing the box is the user saying they are finished with it, so the
+    // buffer goes with it. Leaving it would reopen this row's form on the
+    // next mount, which is the behaviour a Cancel is meant to prevent.
+    if (editingId != null) discardEditDraft(editingId);
     setEditingId(null);
-    setEditForm(emptyForm);
   };
 
   const handleCreate = async () => {
@@ -216,9 +378,14 @@ export function PersonaPanel() {
             size="sm"
             variant="ghost"
             className="persona-ghost-action h-7 gap-1.5 px-2 text-xs"
+            // Wipes the boxes in BOTH directions, exactly as before. Opening
+            // a form that still held the last attempt's words was never the
+            // intent; what changed is only that a form left open across a
+            // tab switch comes back open, so this button is not on the path
+            // that restores it.
             onClick={() => {
               setCreateOpen((open) => !open);
-              setCreateForm(emptyForm);
+              discardCreateDraft();
             }}
             disabled={busy}
             aria-expanded={createOpen}
@@ -272,8 +439,12 @@ export function PersonaPanel() {
                 onCancelEdit={closeEdit}
                 onSaveEdit={() => handlePatch(persona)}
                 onSelect={() => handleSelect(persona.id)}
+                // closeEdit, not a bare setEditingId(null): this is the one
+                // place the form is shut without the user pressing Cancel,
+                // and shutting it without freeing the buffer stranded the
+                // row's words with no pencil left to reach them.
                 onAskDelete={() => {
-                  setEditingId(null);
+                  closeEdit();
                   setConfirmDeleteId(persona.id);
                 }}
                 onCancelDelete={() => setConfirmDeleteId(null)}

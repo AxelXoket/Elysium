@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 /**
  * WorkerPanel - what the background extractor has been doing with your money.
  *
@@ -15,12 +15,19 @@ import { useState } from "react";
  * follow the vocabulary its siblings use, not the dark settings dialog's.
  */
 import { BookOpen, RotateCcw } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { useUiStore } from "@/lib/store/uiStore";
 import { Switch } from "@/components/ui/switch";
 import { SlideIn } from "@/components/motion/SlideIn";
 import { useErrorStore } from "@/lib/errors/errorStore";
+// The sentences for this app's own reason codes, borrowed rather than
+// rewritten: a failed call's error_type carries one of those codes after a
+// colon, and the file below is where every code the backend can put in front
+// of a person keeps its English.
+import { getErrorMessage, isKnownErrorCode } from "@/lib/errors/errorMessages";
+import { keys } from "@/lib/query/keys";
 import {
   useWorkerStatus,
   useResetWorker,
@@ -75,9 +82,11 @@ import {
  *  you then threw away still lands, still gets written, and - with automatic
  *  acceptance on by default - still goes into the prompt. The panel used to
  *  tell you that case was thrown away. It is not. */
-// This table must stay IN this file: a backend test (test_notebook_worker.py)
-// reads WorkerPanel.tsx to prove every declared skip reason has a sentence
-// here, and moving it to a sibling module would blind that gate.
+// This table must stay EXPORTED: the test that proves every skip reason the
+// backend can write reaches the screen as words imports it, mounts the panel
+// once per reason and reads the rendered line. It no longer reads this file's
+// text, so the table may move to a sibling module, but it may not stop being
+// exported without blinding that check.
 // eslint-disable-next-line react-refresh/only-export-components -- co-located with the component on purpose (see above); fast-refresh boundary accepted, in the idiom button.tsx and badge.tsx already use
 export const SKIP_PROSE: Record<string, string> = {
   notebook_daily_cap_reached: "today's call limit was already used",
@@ -124,6 +133,232 @@ export function skipProse(reason: string): string {
   );
 }
 
+/** What may be echoed back to the reader in brackets.
+ *
+ *  The three fallbacks below print the raw token for a reason no table has
+ *  words for, and the value they print now comes from a DATABASE COLUMN
+ *  rather than from a fixed vocabulary. `error_type` has no gate of any
+ *  kind: `skip_reason` is checked against a frozen set before it is stored
+ *  and this one is not, and one of its five writers stores the text of an
+ *  exception rather than a class name. Every one of those texts is a bare
+ *  token today, so nothing leaks today, and that is exactly the shape of
+ *  promise that stops being true one raise site later.
+ *
+ *  So the echo is refused unless the value looks like what the writers are
+ *  supposed to produce: a leading letter or underscore, then letters,
+ *  digits, underscores and the one colon `_failure_type` puts between a
+ *  class and its reason code. Anything carrying a space, a path, a quote or
+ *  a sentence is dropped rather than rendered, and the count still reaches
+ *  the reader with its sentence. A screen this feature can reach is not a
+ *  place to find out that a message was interpolated somewhere upstream. */
+// eslint-disable-next-line react-refresh/only-export-components -- read by the three fallbacks below; same boundary
+export function echoable(token: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*(:[A-Za-z_][A-Za-z0-9_]*)?$/.test(token);
+}
+
+/** The token in brackets, or nothing at all when it may not be echoed. */
+function bracket(token: string): string {
+  return echoable(token) ? ` (${token})` : "";
+}
+
+/** Why a run FAILED, in words - the other half of the question SKIP_PROSE
+ *  answers. A refusal is a limit doing its job; a failure is something that
+ *  went wrong, and it reached this screen as a bare number with no reason
+ *  attached while the reason sat written on every one of those rows.
+ *
+ *  Short on purpose, and it is not the shape of the table above. The skip
+ *  vocabulary is a closed list the backend declares; this one is not - what
+ *  is written here is an EXCEPTION CLASS NAME, so a name this file has never
+ *  heard of is the ordinary case rather than the exception. The decoding
+ *  lives in `failureProse` below and this table holds only the fixed tokens
+ *  that are not class names. */
+// eslint-disable-next-line react-refresh/only-export-components -- same boundary as SKIP_PROSE above, and the tests walk this table by its own keys
+export const FAILURE_PROSE: Record<string, string> = {
+  // The one fixed literal the backend writes into this column. It also has a
+  // paragraph of its own further down and this is not a duplicate of it:
+  // that paragraph says what it COST and what happens to those messages,
+  // this line names the cause in a census that would otherwise print the
+  // token itself beside every other reason.
+  abandoned_in_flight:
+    "Elysium was shut down, or the vault locked, mid-request.",
+
+  // The other fixed family, and the one a reader most often needs: when the
+  // reply itself cannot be trusted the worker writes the bare reason with no
+  // class name in front of it. Eight tokens, declared by the parser, and
+  // every one of them is a direct answer to "why did it produce nothing".
+  no_choices: "The provider answered without a reply in it.",
+  truncated:
+    "The reply was cut off before it finished, so nothing in it could be "
+    + "relied on.",
+  refused:
+    "The model declined to answer for that stretch of the conversation.",
+  empty_content: "The reply came back empty.",
+  unparseable: "The reply was not readable as the form this feature asks for.",
+  not_an_object: "The reply came back in a shape this feature cannot read.",
+  // Named apart from the two around it because it is the one that could be
+  // mistaken for a quiet stretch. An empty list is how a model says it found
+  // nothing worth writing down, and it is not an error; this is the answer
+  // that left the list out altogether.
+  no_facts_key:
+    "The reply left out the part the notes are read from. That is not the "
+    + "same as finding nothing, which the model says with an empty list.",
+  facts_not_a_list:
+    "The reply put something other than a list of notes where the notes go.",
+};
+
+/** The sentence for one `error_type`, in whatever shape it arrives.
+ *
+ *  Five shapes reach this column and they are five different events:
+ *
+ *    a bare token           a reply that arrived and could not be trusted;
+ *                           the eight the parser declares, in the table above
+ *    prompt_Something       the request could not even be built, so nothing
+ *                           was sent and nothing was spent
+ *    write_Something        the reply came back and was billed, and the
+ *                           notes it carried could not be written down
+ *    Something:reason_code  the call failed and the cause is one of this
+ *                           app's own reason codes
+ *    Something              an exception class and nothing else
+ *
+ *  The reason code half is NOT given a sentence here. Those codes already
+ *  have their English in lib/errors/errorMessages.ts, which is where every
+ *  code this backend can put in front of a person keeps it; a second table
+ *  beside it is exactly how two screens come to disagree about what one code
+ *  means, and `plan_invalidated` reaching a reader as a raw token is what a
+ *  second hand-kept list already cost once in this file.
+ *
+ *  Returns a finished sentence rather than the clause `skipProse` returns,
+ *  because one of its answers is a borrowed one and those are written as
+ *  whole sentences. The caller therefore does not add a full stop.
+ *
+ *  The raw token rides along in brackets for anything not named, the same
+ *  way the skip fallback does it: a bug report needs it, a reader does not. */
+// eslint-disable-next-line react-refresh/only-export-components -- reads the table above; same reason, same boundary
+export function failureProse(errorType: string): string {
+  const known = FAILURE_PROSE[errorType];
+  if (known) return known;
+
+  // The write path stamps this prefix and the store matches on it, so it is
+  // the one piece of the vocabulary that is structure rather than a name.
+  if (errorType.startsWith("write_")) {
+    return "The reply came back and was paid for, but the notes it carried "
+      + `could not be written down${bracket(errorType)}.`;
+  }
+
+  // The mirror image, and worth its own sentence for exactly that reason:
+  // this one happens BEFORE the request, so no call was made and nothing was
+  // spent. Rolled into the generic answer it would read like a failure the
+  // reader had paid for.
+  if (errorType.startsWith("prompt_")) {
+    return "The request could not be assembled, so nothing was sent and "
+      + `nothing was spent${bracket(errorType)}.`;
+  }
+
+  const reason = errorType.slice(errorType.indexOf(":") + 1);
+  if (errorType.includes(":") && isKnownErrorCode(reason)) {
+    return getErrorMessage(reason);
+  }
+
+  return "The call failed for a reason this version has no words for"
+    + `${bracket(errorType)}.`;
+}
+
+/** Why a suggestion the model made never became a note.
+ *
+ *  These are the parser's own refusals, counted in memory for the life of
+ *  the process. Every one of them is a note the reader paid for and did not
+ *  get, and the whole set was declared on the wire and rendered nowhere -
+ *  so a gate throwing away good notes and a model that had nothing to say
+ *  were the same empty list.
+ *
+ *  A closed list, unlike the failures above: the parser declares these. */
+// eslint-disable-next-line react-refresh/only-export-components -- same boundary as SKIP_PROSE above, and the tests walk this table by its own keys
+export const DROP_PROSE: Record<string, string> = {
+  // Subjectless, or as near as English allows, because the sentence follows
+  // a count: "4 suggestions were thrown away: nothing in IT" reads as a
+  // sentence about one of them.
+  over_cap: "one run may keep only so many notes, and these were over that",
+  off_schema: "the note did not have the shape a note has to have",
+  too_long: "the note was longer than a note is allowed to be",
+  empty_text: "the note had no text at all",
+  ungrounded:
+    "the quote the note was built on was not in the messages being read, so "
+    + "there was nothing behind it",
+  // The honest half of a gate that is not free. Measured over a thirty case
+  // set it catches nine invented notes in ten and drops four true notes in
+  // twenty, and that second number only ever reaches a person here - so it
+  // is said, rather than left to look like the model having nothing to say.
+  unanchored:
+    "no name and no number from the quote appeared in the note itself. That "
+    + "check also throws away roughly one true note in five, so a note you "
+    + "expected may be missing rather than wrong",
+  not_worth_a_slot:
+    "the note was not worth a place in a notebook that is sent with every "
+    + "message",
+};
+
+/** As `skipProse`, for the parser's refusals. Same fallback, same reason:
+ *  the backend can grow a reason ahead of this file, and the token itself is
+ *  the one thing that must not be what a reader gets. */
+// eslint-disable-next-line react-refresh/only-export-components -- reads the table above; same reason, same boundary
+export function dropProse(reason: string): string {
+  return (
+    DROP_PROSE[reason]
+    ?? "it was thrown out for a reason this version has no words for"
+      + bracket(reason)
+  );
+}
+
+/** Why a reply that was paid for landed nothing.
+ *
+ *  The fourth vocabulary on this card, and the only one that arrives as a
+ *  SINGLE most-recent value rather than as a count per reason: the worker
+ *  keeps one `last_error`, and `_empty_reason` is the only thing that ever
+ *  writes a `settled_` token into it. So the prefix is what says this line
+ *  is the one the value belongs to, and the panel says "the most recent"
+ *  rather than describing all of them.
+ *
+ *  NOT promoted to a catalogue code, and that is a decision rather than an
+ *  omission. `shared/error_catalogue.json` and lib/errors/errorMessages.ts
+ *  hold the codes the BACKEND puts in front of a person through an error
+ *  channel - an HTTP detail, a stream notice - and every record there names
+ *  the raise site that can send it. None of these is ever raised: they are
+ *  a status-screen vocabulary, exactly like the skip reasons above, and
+ *  registering them would mean writing a producer entry for a code no
+ *  producer can emit. Same shape as its neighbours here, same fallback. */
+// eslint-disable-next-line react-refresh/only-export-components -- same boundary as SKIP_PROSE above, and the tests walk this table by its own keys
+export const EMPTY_PROSE: Record<string, string> = {
+  settled_empty: "every note it offered was one this chat already had",
+  settled_duplicate:
+    "those messages had already been read, so the answer was thrown away",
+  settled_stale_attempt:
+    "a second attempt at the same messages had already taken it over",
+  settled_chat_gone:
+    "the chat it was reading was deleted while the reply was on its way",
+  settled_nothing: "the write came back with no answer at all",
+};
+
+/** As `skipProse`, for the empty settles. */
+// eslint-disable-next-line react-refresh/only-export-components -- reads the table above; same reason, same boundary
+export function emptyProse(reason: string): string {
+  return (
+    EMPTY_PROSE[reason]
+    ?? "it landed nothing for a reason this version has no words for"
+      + bracket(reason)
+  );
+}
+
+/** Whether `last_error` is describing an empty settle rather than a failure.
+ *
+ *  One field carries the most recent event of ANY kind - a failed write, a
+ *  provider class, an empty settle - so a line that claimed it without
+ *  asking would attribute one signal's value to the other. The prefix is the
+ *  discriminator because `_empty_reason` is its only writer. */
+// eslint-disable-next-line react-refresh/only-export-components -- decides which line owns the table above; same boundary
+export function isEmptySettle(lastError: string | null | undefined): boolean {
+  return typeof lastError === "string" && lastError.startsWith("settled_");
+}
+
 /** The three states, said plainly. "closed" is engineering vocabulary for
  *  "working", and a panel that prints it is asking the reader to learn the
  *  implementation before they can read their own status. */
@@ -142,6 +377,7 @@ const STATE_PROSE: Record<string, string> = {
 
 export function WorkerPanel() {
   const chatId = useUiStore((s) => s.selectedChatId);
+  const qc = useQueryClient();
   const status = useWorkerStatus();
   const reset = useResetWorker();
   const sweep = useSweepChat();
@@ -154,6 +390,61 @@ export function WorkerPanel() {
   const body = status.data;
   const state = body?.worker.state ?? "closed";
   const skips = body?.stats.skip_reasons ?? {};
+  const failures = body?.stats.error_types ?? {};
+  const drops = body?.worker.dropped ?? {};
+  // Only when that value is describing THIS line's event. See isEmptySettle.
+  const emptyWhy = isEmptySettle(body?.worker.last_error)
+    ? body!.worker.last_error!
+    : "";
+
+  /* WHAT THE POLL IS FOR ON THE OTHER SIDE OF THIS TAB.
+   *
+   * The note list has no clock of its own. The only thing that ever
+   * invalidated it was a mutation the READER made, so notes the background
+   * extractor wrote while they sat reading stayed off the screen until they
+   * clicked away to another tab and back - money spent on notes the person
+   * who paid for them could not see. The status poll above is already the one
+   * signal that a run happened, so the refresh rides on it: no second timer,
+   * no shorter interval, and nothing that refetches the list on a clock.
+   *
+   * The whole `notebook` prefix, like every mutation in query/notebook.ts:
+   * a settled run moves the entries AND `notebook_chars`, and naming one key
+   * is how the other goes stale. The direction is one way, status -> notes,
+   * so the rule the worker key exists for is untouched: a note mutation still
+   * cannot drag a status poll along with it.
+   *
+   * CHANGED, not increased. `done` is a COUNT over `notebook_extractions`
+   * across every chat, and nothing keeps those rows: deleting or clearing a
+   * chat, deleting a character, and deleting or editing a message all remove
+   * them, so the number goes DOWN as readily as up. A trigger written as
+   * "higher than last time" would go blind for every run that lands after a
+   * delete, which is exactly the quiet miss this record is about. Any
+   * movement means the extractor settled something.
+   *
+   * It can also move when nothing was written - a run that found nothing, or
+   * one whose every proposal deduplicated - so this can cost one local
+   * request that changes no pixel. That is the price of the only signal there
+   * is, it goes to this machine rather than to a provider, and the opposite
+   * mistake is the defect.
+   *
+   * The COUNT is the dependency, not the response. `status.data` is a fresh
+   * object on every poll, so depending on it would run this on every tick
+   * and put the note list back on a twenty-second timer under another name.
+   * The ref is here for the other half: the first count to arrive is not a
+   * change, it is the starting point.
+   */
+  const doneCount = status.data?.stats.done;
+  const lastDoneCount = useRef(doneCount);
+  useEffect(() => {
+    if (doneCount === undefined) return;
+    const seenBefore = lastDoneCount.current !== undefined;
+    lastDoneCount.current = doneCount;
+    // The first status to arrive is not news. The note list was fetched on
+    // the same mount and is already as fresh as this number, so treating it
+    // as a change would buy a duplicate round trip every time the tab opens.
+    if (!seenBefore) return;
+    void qc.invalidateQueries({ queryKey: keys.notebook() });
+  }, [doneCount, qc]);
 
   async function toggle(next: boolean) {
     try {
@@ -367,6 +658,43 @@ export function WorkerPanel() {
               </p>
             )}
 
+            {/* WHY they failed, which the two lines above do not say.
+                Those two answer "how many" and "did it cost money"; a reader
+                looking at a notebook that wrote nothing needs the third
+                question, and the answer to it was stored on every failed row
+                from the start and read by nothing.
+
+                Subordinate wording on purpose - "of the failures", not "runs
+                failed" - because these numbers add up to `failed`, which is
+                already on screen above. Two lines that each look like a total
+                are how a reader ends up adding them.
+
+                It carries the abandoned rows too, and that is not the same
+                as folding the abandoned COUNTER into this dict: the counter
+                stays its own number above precisely because it is nested
+                inside `failed` and must never be summed with it. Here every
+                key is nested in the same way, so nothing is misread by
+                sitting beside its neighbour. */}
+            {Object.entries(failures).map(([why, n]) => (
+              <p
+                key={why}
+                className="text-xs leading-relaxed text-muted-foreground"
+                data-testid="worker-failure-reason"
+              >
+                {/* THE DENOMINATOR IS PART OF THE SENTENCE.
+                    Read cold, "2 of the failures" beside "3 runs failed"
+                    invites the one sum that must not be made: the two lines
+                    above are SUBSETS of `failed` (`failed` minus the paid
+                    ones, and the abandoned ones), so the census adds up to a
+                    total that appears nowhere else on the card. A reader
+                    checking the arithmetic found six against three and had
+                    no way to tell which number was wrong. Naming the total
+                    here makes the lines reconcile in front of them, and it
+                    is the only place `failed` itself is legible. */}
+                {n} of {body.stats.failed} failures: {failureProse(why)}
+              </p>
+            ))}
+
             {Object.entries(skips).map(([why, n]) => (
               <p
                 key={why}
@@ -389,12 +717,77 @@ export function WorkerPanel() {
             )}
 
             {body.worker.unhandled > 0 && (
-              <p className="text-xs leading-relaxed text-muted-foreground">
+              <p
+                className="text-xs leading-relaxed text-muted-foreground"
+                data-testid="worker-unhandled"
+              >
                 {body.worker.unhandled} runs ended in an unexpected error
-                {body.worker.last_error ? ` (${body.worker.last_error})` : ""}.
+                {/* The value is shared with the empty-settle line above, and
+                    it holds whichever event happened LAST. Printed here
+                    unconditionally it put that line's token in this line's
+                    parentheses, so "an unexpected error (settled_chat_gone)"
+                    named the wrong event with a word for the other one. The
+                    counter still speaks for itself; only the attribution is
+                    withheld. */}
+                {body.worker.last_error && !emptyWhy
+                  ? ` (${body.worker.last_error})`
+                  : ""}.
                 Those messages stay unread.
               </p>
             )}
+
+            {/* PAID FOR AND EMPTY. Not a failure and not a refusal: the call
+                went out, came back and was billed, and nothing could be
+                landed from it. It was reported by a counter and a code that
+                reach no screen, so on the panel it looked exactly like a
+                quiet week - which is the one thing this card exists not to
+                do. The three ways in are named because they call for
+                different things: two of them are races that fix themselves,
+                the third is the reader's own edit. */}
+            {body.worker.settled_empty > 0 && (
+              <p
+                className="text-xs leading-relaxed text-muted-foreground"
+                data-testid="worker-settled-empty"
+              >
+                {body.worker.settled_empty}{" "}
+                {body.worker.settled_empty === 1
+                  ? "reply was"
+                  : "replies were"}{" "}
+                paid for and produced no notes
+                {/* The reason, when the panel is entitled to it. `last_error`
+                    is one value describing the most recent event of any
+                    kind, so it is named as the most recent rather than as
+                    the reason all of them landed nothing - which it is not,
+                    and a count per reason is not on the wire. Without a
+                    reason the line keeps the three ways in, which is still
+                    more than the number alone said. */}
+                {emptyWhy
+                  ? <>. The most recent: {emptyProse(emptyWhy)}.</>
+                  : <>
+                      {" "}- those messages had already been read, a retry
+                      arrived first, or they changed while the reply was out.
+                    </>}
+              </p>
+            )}
+
+            {/* WHAT THE MODEL OFFERED AND THE PARSER REFUSED.
+                A note thrown away here was paid for and never shown, and the
+                counters were declared on the wire and rendered nowhere - so
+                a gate quietly discarding good notes and a model with nothing
+                to say produced the same empty list. */}
+            {Object.entries(drops).map(([why, n]) => (
+              <p
+                key={why}
+                className="text-xs leading-relaxed text-muted-foreground"
+                data-testid="worker-dropped-note"
+              >
+                {/* Counted in words, in the idiom the backlog line above
+                    already uses: these are small numbers and "1 suggestions"
+                    is the reading a reader trips over. */}
+                {n} suggestion{n === 1 ? " was" : "s were"} thrown away:{" "}
+                {dropProse(why)}.
+              </p>
+            ))}
 
             {body.worker.refused_by_breaker > 0 && (
               <p className="text-xs leading-relaxed text-muted-foreground">

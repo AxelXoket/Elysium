@@ -1,12 +1,32 @@
+import type { ModalitySupport } from "@/lib/models/modelHelpers";
 import { Button } from "../ui/button";
+
+/**
+ * Copy shown when the catalogue POSITIVELY rules image output out: the list is
+ * populated and "image" is not in it. Exported so the test that asserts its
+ * absence imports the sentence instead of retyping it, which is what makes the
+ * absence assertion mean anything.
+ */
+export const IMAGE_OUTPUT_NOT_ASKED_NOTE =
+  "The selected model does not list image output, so it will not be asked for one. The setting stays on for models that do.";
+
+/**
+ * Copy shown when the catalogue says NOTHING about output modalities.
+ *
+ * This is the sentence the unknown state was missing. `_model_emits_images`
+ * asks for a picture in exactly this state, so the reader has to be told that,
+ * not the opposite of it.
+ */
+export const IMAGE_OUTPUT_UNKNOWN_NOTE =
+  "Elysium has no output modality list for the selected model, so the request still asks for a picture and the provider decides.";
 
 /**
  * Let the model answer with a picture.
  *
  * Lives with the generation settings rather than with the appearance ones
  * because it changes the outgoing REQUEST: it adds `modalities: ["text","image"]`
- * when the selected model declares image output. It is stored in the vault for
- * the same reason.
+ * unless the selected model's cached metadata positively rules image output
+ * out. It is stored in the vault for the same reason.
  *
  * Off by default and deliberately not gated on the currently selected model's
  * capability: the switch is a standing preference, and greying it out because
@@ -22,8 +42,15 @@ export function ImageOutputSetting({
 }: {
   enabled: boolean;
   onChange: (enabled: boolean) => void;
-  /** Whether the selected model declares image output. Informational only. */
-  supported: boolean;
+  /**
+   * What the catalogue says about image output for the selected model.
+   * Informational only; the per-request decision is server-side.
+   *
+   * `"unknown"` must never render as `"no"`. The backend asks for a picture in
+   * that state, so a "will not be asked for one" line there would be a false
+   * negative about the request this app is about to send.
+   */
+  supported: ModalitySupport;
   busy?: boolean;
 }) {
   return (
@@ -52,10 +79,14 @@ export function ImageOutputSetting({
           ? "Models that can draw may answer with an image as well as words. Pictures are stored in your encrypted vault like any attachment, and are never sent back to the model on later turns."
           : "Off. Replies are text only."}
       </p>
-      {enabled && !supported ? (
+      {enabled && supported === "no" ? (
         <p className="text-[11px] leading-snug opacity-70">
-          The selected model does not list image output, so it will not be asked
-          for one. The setting stays on for models that do.
+          {IMAGE_OUTPUT_NOT_ASKED_NOTE}
+        </p>
+      ) : null}
+      {enabled && supported === "unknown" ? (
+        <p className="text-[11px] leading-snug opacity-70">
+          {IMAGE_OUTPUT_UNKNOWN_NOTE}
         </p>
       ) : null}
     </div>

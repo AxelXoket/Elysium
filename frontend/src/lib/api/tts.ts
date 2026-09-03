@@ -45,6 +45,7 @@ import { request, rawRequest } from "./client";
 /** Forward-compatible on purpose, like the other tts schemas. */
 const SpeakLiveSchema = z.object({ speaking: z.boolean() });
 import { API_BASE } from "./base";
+import { launchTokenHeader } from "./launchToken";
 
 // ── discovery + per-model settings ───────────────────────────────────────────
 
@@ -158,10 +159,40 @@ export function speakText(text: string): Promise<TtsSpeak> {
   });
 }
 
-/** URL of a synthesized wav - usable directly as an <audio src>. Served with
- * no-store so the embedded browser's persistent profile never keeps a copy. */
+/** URL of a synthesized wav. Served with no-store so the embedded browser's
+ * persistent profile never keeps a copy.
+ *
+ * NOT an `<audio src>`. Handing this straight to an audio element is what
+ * made the launch-token gate accept `Sec-Fetch-Site: same-origin` in the
+ * token's place on this route, and that header is free for any process to
+ * type. streamPlayer already fetched it properly; fetchTtsObjectUrl below is
+ * for the one caller that did not. */
 export function ttsAudioUrl(audioId: string): string {
   return `${API_BASE}/tts/audio/${encodeURIComponent(audioId)}`;
+}
+
+/**
+ * Fetch a synthesized wav WITH the launch token and hand back a blob: URL for
+ * an Audio element. The caller owns the URL and must revoke it once the clip
+ * is done, or every preview leaks a wav for the life of the document.
+ */
+export async function fetchTtsObjectUrl(audioId: string): Promise<string> {
+  const res = await fetch(ttsAudioUrl(audioId), {
+    credentials: "same-origin",
+    headers: { ...launchTokenHeader() },
+  });
+  if (!res.ok) {
+    throw new Error(`tts audio ${audioId}: HTTP ${res.status}`);
+  }
+  return URL.createObjectURL(await res.blob());
+}
+
+/** Revoke a URL from fetchTtsObjectUrl. Guarded because jsdom does not
+ *  implement revokeObjectURL. */
+export function revokeTtsObjectUrl(url: string | null): void {
+  if (url && typeof URL.revokeObjectURL === "function") {
+    URL.revokeObjectURL(url);
+  }
 }
 
 // ── engine setup (the app installs it; the user never opens a terminal) ──────

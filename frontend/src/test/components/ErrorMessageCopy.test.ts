@@ -17,7 +17,12 @@
  * shapes the house voice forbids (a dead end, a jab), and leave the prose free.
  */
 import { describe, it, expect } from "vitest";
-import { getErrorMessage, knownErrorCodes } from "@/lib/errors/errorMessages";
+import {
+  countedErrorCodes,
+  getCountMessage,
+  getErrorMessage,
+  knownErrorCodes,
+} from "@/lib/errors/errorMessages";
 
 /** Codes the audit found naming a control that does not exist by that name. */
 describe("sentences name controls that exist", () => {
@@ -191,6 +196,207 @@ describe("no two codes share a sentence", () => {
       else seen.set(msg, code);
     }
     expect(collisions).toEqual([]);
+  });
+});
+
+/**
+ * The one sentence shown for every rejected request in the tree.
+ *
+ * backend/main.py registers its RequestValidationError handler on the APP, not
+ * on a router, so `validation_failed` answers a rejected vault passphrase, an
+ * upload posted without its file, a notebook entry, a voice enum and a
+ * generation parameter with the SAME words. It shipped once as
+ * `invalid_generation_params`, whose sentence sends the reader to press Reset
+ * all in Generation Settings - so a refused upload pointed at a destructive
+ * button in a panel the reader had never opened. Nothing in this repository
+ * could see that, because nothing pinned the one property that makes a
+ * route-neutral code correct. This is that pin.
+ */
+describe("validation_failed is route-neutral", () => {
+  const msg = () => getErrorMessage("validation_failed");
+
+  //: Every panel this app can put in front of a reader, plus the control that
+  //: made the original defect destructive rather than merely confusing.
+  const PANELS = [
+    "Generation Settings",
+    "Reset all",
+    "Settings",
+    "Notebook",
+    "Persona",
+    "Character",
+    "Models",
+    "Voice",
+    "Vault",
+  ];
+
+  it("names no panel and no button", () => {
+    const named = PANELS.filter((p) => msg().includes(p));
+    expect(named, `validation_failed points the reader at: ${named.join(", ")}`)
+      .toEqual([]);
+  });
+
+  it("POSITIVE CONTROL: the same list catches a code that does name one", () => {
+    // Without this, an emptied PANELS or a typo in every entry would leave the
+    // assertion above green while the sentence pointed wherever it liked.
+    const named = PANELS.filter((p) =>
+      getErrorMessage("invalid_gen_params").includes(p));
+    expect(named).toContain("Generation Settings");
+    expect(named).toContain("Reset all");
+  });
+
+  it("says nothing was CHANGED, which is the clause that survives a DELETE", () => {
+    // The handler also answers DELETE routes with typed query parameters, so
+    // "nothing was saved" would be answering a question the reader did not
+    // ask. "Changed" covers saved, deleted and sent at once.
+    expect(msg()).toMatch(/nothing was changed/i);
+  });
+
+  it("offers an action the packaged window can actually perform", () => {
+    // run_app.py calls webview.start() with no debug flag, so the Edge
+    // Chromium backend leaves the browser accelerator keys and the default
+    // context menu disabled: F5, Ctrl+R and right-click Reload are all dead,
+    // and the only location.reload() in the tree sits behind ErrorBoundary's
+    // crash card, which a toast never reaches. "Reload Elysium" is therefore
+    // an instruction with nothing behind it.
+    expect(msg()).not.toMatch(/\breload\b/i);
+    expect(msg()).toMatch(/\b(try again|start it again)\b/i);
+  });
+
+  it("GROUND: the fallback would fail every check that has a discriminator", () => {
+    // "Please try again." is IN the fallback, which is exactly why the check
+    // above is an alternation and not a bare /try again/: the second arm is
+    // the one no generic message carries. So the ground control pins the two
+    // clauses that can actually tell this sentence from a shrug.
+    const fallback = getErrorMessage("__no_such_code__");
+    expect(msg()).not.toBe(fallback);
+    expect(fallback).not.toMatch(/nothing was changed/i);
+    expect(fallback).not.toMatch(/\bstart it again\b/i);
+  });
+});
+
+/**
+ * The instructions the packaged window cannot carry out.
+ *
+ * The check above pins one code. This one sweeps the whole map, because the
+ * defect it exists for was never about `validation_failed`: three more
+ * sentences said "Reload Elysium" at the same time, and the comment that
+ * explained why reload is impossible sat eight lines above two of them. A pin
+ * on one code cannot see the next sentence somebody writes.
+ *
+ * What makes an instruction impossible here: run_app.py calls
+ * `webview.start()` with no `debug` flag, so the Edge Chromium backend leaves
+ * `AreBrowserAcceleratorKeysEnabled` and `AreDefaultContextMenusEnabled` off.
+ * F5, Ctrl+R and right-click Reload are dead, there is no address bar, no
+ * menu bar, no devtools and no Back. Nothing in the renderer can put them
+ * back: navigationGuard.ts refuses off-origin navigation outright, and there
+ * is no host bridge to ask for a new window.
+ *
+ * Deliberately NOT banned: the bare verb "refresh". Seven codes use it for a
+ * stale list rather than for the window, and rewriting those needs each
+ * producing path measured for what the reader can actually reach - a
+ * different job from this one, and inventing sentences without that
+ * measurement is how the three "Reload" ones got written.
+ */
+describe("no sentence names an action the packaged window cannot perform", () => {
+  //: Each pattern is one way of saying "use the browser's own chrome".
+  const BROWSER_ONLY: readonly [string, RegExp][] = [
+    ["reload", /\breload\b/i],
+    ["refresh the page", /\brefresh the (page|window|app|browser)\b/i],
+    ["hard refresh", /\bhard refresh\b/i],
+    ["F5", /\bF5\b/],
+    ["Ctrl+R", /\bctrl\s*[-+]?\s*r\b/i],
+    ["Ctrl+Shift+R", /\bctrl\s*[-+]?\s*shift\s*[-+]?\s*r\b/i],
+    ["right-click", /\bright[- ]click\b/i],
+    ["context menu", /\bcontext menu\b/i],
+    ["developer tools", /\bdev(eloper )?tools\b/i],
+    ["address bar", /\baddress bar\b/i],
+    ["back button", /\bback button\b/i],
+    ["view source", /\bview source\b/i],
+    ["your browser", /\byour browser\b/i],
+    ["incognito", /\bincognito\b/i],
+  ];
+
+  const forbiddenIn = (text: string): string[] =>
+    BROWSER_ONLY.filter(([, re]) => re.test(text)).map(([name]) => name);
+
+  /** Every sentence this module can put in front of a reader, counted forms
+   *  in both their singular and plural shapes, plus the fallback. */
+  const everySentence = (): [string, string][] => [
+    ...knownErrorCodes().map(
+      (code) => [code, getErrorMessage(code)] as [string, string],
+    ),
+    ...countedErrorCodes().flatMap(
+      (code) =>
+        [
+          [`${code} (1)`, getCountMessage(code, 1)],
+          [`${code} (2)`, getCountMessage(code, 2)],
+        ] as [string, string][],
+    ),
+    ["__fallback__", getErrorMessage("__no_such_code__")],
+  ];
+
+  it("not one of them", () => {
+    const offenders = everySentence()
+      .map(([label, text]) => [label, forbiddenIn(text)] as const)
+      .filter(([, hits]) => hits.length > 0)
+      .map(([label, hits]) => `${label}: ${hits.join(", ")}`);
+    expect(offenders, "sentences telling the reader to use browser chrome")
+      .toEqual([]);
+  });
+
+  it("POSITIVE CONTROL: the sweep sees every one of them when it IS there", () => {
+    // Without this, one mistyped pattern would go quietly dead and the sweep
+    // above would report a clean map forever. Each plant is written the way a
+    // person would actually write it, not as the regex reversed.
+    const PLANTS: Record<string, string> = {
+      "reload": "Reload Elysium and write it again.",
+      "refresh the page": "Please refresh the page and try again.",
+      "hard refresh": "Do a hard refresh, then retry.",
+      "F5": "Press F5 to try again.",
+      "Ctrl+R": "Press Ctrl+R to load it again.",
+      "Ctrl+Shift+R": "Press Ctrl + Shift + R to load it again.",
+      "right-click": "Right-click the page and choose Reload.",
+      "context menu": "Open the context menu and pick Reload.",
+      "developer tools": "Open the developer tools and read the console.",
+      "address bar": "Type the address again in the address bar.",
+      "back button": "Press the back button and try once more.",
+      "view source": "Use view source to check what arrived.",
+      "your browser": "Close your browser and open it again.",
+      "incognito": "Try again in an incognito window.",
+    };
+    const blind = BROWSER_ONLY.filter(
+      ([name]) => !forbiddenIn(PLANTS[name]).includes(name),
+    ).map(([name]) => name);
+    expect(blind, "patterns that cannot see their own instruction").toEqual([]);
+    // And the map's own sentences are not what makes the plants trip: the
+    // sweep must be finding the planted text, not matching everything.
+    expect(forbiddenIn(getErrorMessage("boundary_empty"))).toEqual([]);
+  });
+
+  it("the codes that HAVE no in-window fix say so the one way that works", () => {
+    // Nothing the reader can reach caused any of these, so the sentence has to
+    // end somewhere. Closing the window and starting Elysium again is the only
+    // recovery the packaged app actually has - and the phrasing is shared so
+    // five sentences do not describe the same act five ways.
+    const RESTART = [
+      "validation_failed",
+      "invalid_response_shape",
+      "notebook_entry_invalid",
+      "notebook_reorder_incomplete",
+      "boundary_invalid",
+    ] as const;
+    const silent = RESTART.filter(
+      (code) => !/close Elysium and start it again/i.test(getErrorMessage(code)),
+    );
+    expect(silent, "codes that lost the only recovery they had").toEqual([]);
+  });
+
+  it("GROUND: the fallback carries neither the ban nor the cure", () => {
+    // The two checks above would both pass on a map that had quietly become
+    // nothing but fallbacks, which is the failure this rules out.
+    const fallback = getErrorMessage("__no_such_code__");
+    expect(forbiddenIn(fallback)).toEqual([]);
+    expect(fallback).not.toMatch(/close Elysium and start it again/i);
   });
 });
 

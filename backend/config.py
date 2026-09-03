@@ -408,3 +408,39 @@ SETTING_SAFEWORD = "notebook_safeword"
 NOTEBOOK_DAILY_CALL_CAP = int(os.environ.get(
     "ELYSIUM_NOTEBOOK_DAILY_CALLS", "60"))
 
+#: What one extraction prompt may carry, per section. The DEFAULTS are a
+#: ceiling rather than a suggestion, and their reason is the one written on the
+#: daily cap right above: the largest documented runaway in this space was not
+#: a loop, it was a context that grew every call.
+#:
+#: These three lived in notebook_extract.py as plain source constants while the
+#: other two arms of the same budget read the environment. Five arms of one
+#: cost, three of them unreachable without editing the app, is not a
+#: configuration surface - and the two that decide how much text is SENT were
+#: the unreachable ones. The values do not change here; only where they are
+#: written down does.
+#:
+#: SAID PLAINLY, because the sentence above used to read "not tuning knobs" and
+#: that is no longer the whole truth: raising these raises what ONE call costs,
+#: and the daily cap above bounds the number of calls, not their size. Nobody
+#: is stopped from setting a number that makes each call enormous. What the
+#: floor below stops is the other direction, which is the one that fails
+#: SILENTLY: a negative value turns `card[:N]` into a slice that cuts the card
+#: off at the wrong end and `budget_pairs(lines, N)` into a budget nothing can
+#: fit, and neither of those raises, logs, or shows anything on the panel.
+#: A value that is not a number at all still stops the app at import, loudly
+#: and in the same breath as the two arms that were already here.
+#:
+#: EXISTING_NOTES is the one that grows. Every accepted note joins every future
+#: extraction prompt forever, so an old chat with three hundred notes would
+#: ship sixty thousand characters of them - twenty-four times what the CHAT
+#: itself is ever allowed to send (NOTEBOOK_MAX_CHARS = 2500), on a model whose
+#: context window nothing had checked. Newest notes are kept: they are the ones
+#: a new fact is likely to supersede.
+NOTEBOOK_CARD_MAX_CHARS = max(1, int(os.environ.get(
+    "ELYSIUM_NOTEBOOK_CARD_CHARS", "4000")))
+NOTEBOOK_EXISTING_MAX_CHARS = max(1, int(os.environ.get(
+    "ELYSIUM_NOTEBOOK_EXISTING_CHARS", "6000")))
+NOTEBOOK_TURNS_MAX_CHARS = max(1, int(os.environ.get(
+    "ELYSIUM_NOTEBOOK_TURNS_CHARS", "12000")))
+

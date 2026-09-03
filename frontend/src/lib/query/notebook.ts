@@ -155,13 +155,22 @@ export function useSaveExtractSettings() {
 // Keyed outside the `["notebook"]` prefix, like the model picker and for the
 // same reason: a note mutation must not drag a status poll along with it.
 
+/** How often the panel asks what the worker has been doing.
+ *
+ *  Named rather than written inline because it is the app's ONE background
+ *  clock for the notebook: the note list hangs off this tick too (see
+ *  WorkerPanel) instead of running a second timer beside it, and a test that
+ *  waits for a poll has to wait for the same number the app uses rather than
+ *  a copy of it that can drift. */
+export const WORKER_POLL_MS = 20_000;
+
 export function useWorkerStatus() {
   return useQuery({
     queryKey: ["extraction", "worker"] as const,
     queryFn: getWorkerStatus,
     // The worker runs on its own clock. A poll is the only way the panel
     // learns that a run happened while the user was reading something else.
-    refetchInterval: 20_000,
+    refetchInterval: WORKER_POLL_MS,
   });
 }
 

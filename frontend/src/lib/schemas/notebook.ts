@@ -142,6 +142,19 @@ export const WorkerStatusSchema = z.object({
      *  and threw the answer away was reported as costing nothing. */
     paid_and_lost: z.number().default(0),
     skip_reasons: z.record(z.string(), z.number()).default({}),
+    /** WHY the failures failed, counted by class - the same breakdown
+     *  `skip_reasons` gives for refusals. The column has always been
+     *  written; nothing read it, so "it failed" and "your key was refused"
+     *  arrived on screen as one sentence.
+     *
+     *  Open-ended on purpose: the backend writes an exception class name,
+     *  optionally with one of this app's own reason codes after a colon, so
+     *  this is a record rather than an enum and the panel needs a fallback
+     *  for a name it has no words for. `.default({})` for the same reason
+     *  as the two fields above - a backend that predates this key must
+     *  render as "nothing to say", not as a parse failure that takes the
+     *  whole card off the screen. */
+    error_types: z.record(z.string(), z.number()).default({}),
   }),
   spend: z.object({
     calls: z.number(),

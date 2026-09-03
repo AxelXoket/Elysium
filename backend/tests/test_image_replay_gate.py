@@ -19,6 +19,9 @@ row, which is why it lands on its own.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import database
 import routers.completions as completions
 from tests.conftest import get_messages, make_character, make_chat
@@ -180,3 +183,61 @@ def test_it_reads_output_modalities_not_input():
     assert completions._model_emits_images(
         {"input_modalities": ["text", "image"], "output_modalities": ["text"]},
     ) is False
+
+
+# ── the shared truth table both sides read ──────────────────────────────────
+
+#: The frontend cannot import a Python predicate, so the two sides agree
+#: through a file. This is the backend half of that agreement: every case is
+#: replayed through the real function, so the table cannot describe a backend
+#: that no longer exists. The frontend half is
+#: frontend/src/test/components/ModelMetadata.test.ts.
+_CONTRACT = (
+    Path(__file__).resolve().parents[2] / "shared" / "image_output_contract.json"
+)
+
+
+def _contract_cases() -> list[dict]:
+    return json.loads(_CONTRACT.read_text(encoding="utf-8"))["cases"]
+
+
+def test_the_shared_table_still_describes_this_backend():
+    """A fixture nobody checks is a comment.
+
+    Change _model_emits_images and this goes red here, before the frontend can
+    keep quoting a rule the backend stopped following.
+    """
+    cases = _contract_cases()
+    assert cases, "an empty table asserts nothing"
+    for case in cases:
+        assert completions._model_emits_images(case["metadata"]) is case[
+            "backend_asks_for_image"
+        ], case["name"]
+
+
+def test_the_shared_table_carries_both_verdicts():
+    """Ground control for the loop above.
+
+    A table of all-True cases would pass against a predicate hardwired to True,
+    and a table with no unknown-metadata case would pass against the strict
+    predicate this unit deliberately did NOT write. Both shapes have to be in
+    the file for the cross-side assertion to mean anything.
+    """
+    cases = _contract_cases()
+    verdicts = {c["backend_asks_for_image"] for c in cases}
+    assert verdicts == {True, False}
+
+    unknown = [
+        c for c in cases
+        if c["metadata"] is None or not (c["metadata"].get("output_modalities") or [])
+    ]
+    assert unknown, "no unknown-metadata case: the disagreement would go unmeasured"
+    assert all(c["backend_asks_for_image"] is True for c in unknown)
+
+    definite_no = [
+        c for c in cases
+        if c["metadata"] and "image" not in (c["metadata"].get("output_modalities") or [])
+        and (c["metadata"].get("output_modalities") or [])
+    ]
+    assert definite_no, "no definite-no case: the 'will not be asked' copy would go unmeasured"
+    assert all(c["backend_asks_for_image"] is False for c in definite_no)

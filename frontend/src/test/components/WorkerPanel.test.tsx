@@ -11,9 +11,28 @@ import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
-import { SKIP_PROSE, WorkerPanel } from "@/components/notebook/WorkerPanel";
+import {
+  DROP_PROSE,
+  EMPTY_PROSE,
+  FAILURE_PROSE,
+  SKIP_PROSE,
+  WorkerPanel,
+  echoable,
+} from "@/components/notebook/WorkerPanel";
+import { getErrorMessage } from "@/lib/errors/errorMessages";
 import { mockFetch } from "../mocks/api";
 import { useUiStore } from "@/lib/store/uiStore";
+// The backend's skip vocabulary, as agreed rather than as retyped. Its other
+// half is backend/tests/test_notebook_worker.py, which asserts this list
+// equals notebook_store.SKIP_REASONS in both directions - so a reason the
+// worker can write and this file has never heard of fails over there, and a
+// reason listed here with no sentence fails down below. Same two-sided
+// arrangement shared/error_catalogue.json has, for the same reason: the
+// tokens are the backend's, the English is ours, and neither side can see
+// the other's half at runtime.
+import skipContract from "../../../../shared/notebook_skip_reasons.json";
+
+const BACKEND_SKIP_REASONS: string[] = skipContract.reasons;
 
 function statusBody(over: Record<string, unknown> = {}) {
   const worker = {
@@ -387,18 +406,58 @@ describe("runs that were paid for and lost", () => {
     expect(lines[0]).not.toEqual(lines[1]);
   });
 
-  it("every declared reason reaches the screen as words, not its token",
+  it("the agreed vocabulary is not empty", () => {
+    // The guard that stops the walk below from passing by walking nothing.
+    // A deleted contract, an emptied `reasons`, a rename that makes the
+    // import resolve to undefined would all leave the loop with zero
+    // iterations and every assertion in it green. The backend half carries
+    // its own floor for the same reason.
+    expect(BACKEND_SKIP_REASONS.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("every reason the BACKEND can write reaches the screen as words",
      async () => {
-    // Walks the vocabulary itself rather than a list retyped here: a reason
-    // added to the table without a sentence is exactly the failure the
-    // table exists to stop, and a hand-kept copy would not notice.
-    for (const reason of Object.keys(SKIP_PROSE)) {
+    // What this replaces, and why it is worth the extra file: a backend test
+    // opened WorkerPanel.tsx and asserted `${reason}:` appeared somewhere in
+    // it. Three ways that lied. It could not tell a sentence from an empty
+    // string. It could not tell SKIP_PROSE from the three prose tables that
+    // now sit beside it, so a reason whose name collided with a key in any
+    // of them passed with no skip sentence at all. And it never rendered
+    // anything, so a key present but unreachable read as covered.
+    //
+    // The union is deliberate: the contract catches a reason the backend can
+    // write and this panel has no words for, and the table's own keys catch
+    // a sentence that renders empty. Every one of them is checked by
+    // mounting the panel and reading the line a person would read.
+    const reasons = Array.from(
+      new Set([...BACKEND_SKIP_REASONS, ...Object.keys(SKIP_PROSE)]));
+    for (const reason of reasons) {
       mount({ stats: { done: 0, failed: 0, skipped: 1, abandoned: 0,
                        skip_reasons: { [reason]: 1 } } });
       const box = await screen.findByTestId("worker-status");
-      expect(box.textContent).not.toMatch(new RegExp(reason));
+      const line = Array.from(box.querySelectorAll("p"))
+        .map((p) => p.textContent ?? "")
+        .find((t) => t.includes("skipped:")) ?? "";
+      // The fallback sentence. It is the right answer for a reason from a
+      // newer backend, and the wrong one for a reason we have committed to
+      // having words for - which is every reason in the contract.
+      expect(line, reason).not.toMatch(/no words for/i);
+      // Asserted before the containment below, because `toContain("")` is
+      // satisfied by anything at all: a key stripped of its words would
+      // otherwise sail through an assertion written to catch exactly that.
+      expect(SKIP_PROSE[reason], reason).toBeTruthy();
+      expect(line, reason).toContain(SKIP_PROSE[reason]);
+      expect(line, reason).not.toMatch(new RegExp(reason));
       cleanup();
     }
+  });
+
+  it("has no sentence for a reason no writer can produce", () => {
+    // The other direction, and the one the walk above cannot see: a key left
+    // behind by a rename renders perfectly and means nothing. Cheap to
+    // check, and it is how the error catalogue's orphan rule reads too.
+    expect(Object.keys(SKIP_PROSE)
+      .filter((k) => !BACKEND_SKIP_REASONS.includes(k))).toEqual([]);
   });
 
   it("GROUND: a reason with no sentence still reads as English", async () => {
@@ -589,3 +648,349 @@ describe("what this chat does with suggestions", () => {
   });
 });
 
+
+/**
+ * WHY it failed, which is the question the card could not answer.
+ *
+ * `error_type` was written on every failed extraction from the day the
+ * column existed, and read by two queries that each ask it one fixed yes/no:
+ * "was this abandoned" and "did this cost money". Both answers are a single
+ * number, so "it failed three times" and "your key was refused three times"
+ * were the same sentence on screen - and only one of those is something a
+ * person can act on.
+ */
+describe("why the failures failed", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    cleanup();
+  });
+
+  it("names the class of the failure on screen", async () => {
+    // THE CLAIM. Two timeouts are not "two failures"; they are the provider
+    // going quiet, which is a different thing from a refused key.
+    mount({ stats: { done: 0, failed: 2, skipped: 0, abandoned: 0,
+                     paid_and_lost: 0, skip_reasons: {},
+                     error_types: { "OpenRouterError:openrouter_timeout": 2 } } });
+    // Scoped to the LINE, not to the whole card: a sentence that escaped
+    // its own paragraph would satisfy an assertion against the card.
+    const line = await screen.findByTestId("worker-failure-reason");
+    // The denominator is asserted with it: without a total on the card the
+    // census lines invite being added against "3 runs failed" above, which
+    // is a SUBSET of `failed` and does not reconcile.
+    expect(line.textContent).toMatch(/2 of 2 failures/);
+    // Imported, not retyped. The sentence belongs to the code catalogue,
+    // and a copy here would go on passing after the real one changed.
+    expect(line.textContent).toContain(getErrorMessage("openrouter_timeout"));
+  });
+
+  it("GROUND: says nothing about reasons when there are none", async () => {
+    // A line that is always on would satisfy the test above and put a
+    // failure report on every healthy install. An empty render proves
+    // nothing, so this is the half that makes the one above mean something.
+    mount({ stats: { done: 5, failed: 0, skipped: 0, abandoned: 0,
+                     paid_and_lost: 0, skip_reasons: {}, error_types: {} } });
+    await screen.findByTestId("worker-status");
+    expect(screen.queryByTestId("worker-failure-reason")).toBeNull();
+  });
+
+  it("borrows the sentence a reason code already has, rather than writing "
+     + "a second one", async () => {
+    // The rule this panel already paid for once: a code's English lives in
+    // lib/errors/errorMessages.ts and nowhere else, because two tables are
+    // how two screens come to disagree about one code. Imported, not
+    // retyped - a copy of the sentence here would pass while the real one
+    // changed underneath it.
+    mount({ stats: { done: 0, failed: 1, skipped: 0, abandoned: 0,
+                     paid_and_lost: 0, skip_reasons: {},
+                     error_types: { "OpenRouterError:api_key_not_set": 1 } } });
+    const line = await screen.findByTestId("worker-failure-reason");
+    expect(line.textContent).toContain(getErrorMessage("api_key_not_set"));
+    expect(line.textContent).not.toMatch(/OpenRouterError/);
+  });
+
+  it("says a failed write cost money and a failed prompt did not",
+     async () => {
+    // The two structural shapes, and they are opposites: `write_*` happens
+    // after the reply has been sent, generated and billed; `prompt_*`
+    // happens before anything leaves the machine. One sentence for both
+    // would tell a reader they had paid for a call that was never made.
+    mount({ stats: { done: 0, failed: 2, skipped: 0, abandoned: 0,
+                     paid_and_lost: 1, skip_reasons: {},
+                     error_types: { write_RuntimeError: 1,
+                                    prompt_KeyError: 1 } } });
+    const lines = (await screen.findAllByTestId("worker-failure-reason"))
+      .map((p) => p.textContent ?? "");
+    const write = lines.find((t) => t.includes("write_RuntimeError")) ?? "";
+    const prompt = lines.find((t) => t.includes("prompt_KeyError")) ?? "";
+    expect(write).toMatch(/was paid for/i);
+    expect(prompt).toMatch(/nothing was sent and nothing was spent/i);
+  });
+
+  it("every reason it has words for reaches the screen as words", async () => {
+    // Walks the table by its own keys rather than a list retyped here: a
+    // token added without a sentence is the exact failure the table exists
+    // to stop, and a hand-kept copy would not notice.
+    for (const token of Object.keys(FAILURE_PROSE)) {
+      mount({ stats: { done: 0, failed: 1, skipped: 0, abandoned: 0,
+                       paid_and_lost: 0, skip_reasons: {},
+                       error_types: { [token]: 1 } } });
+      const line = await screen.findByTestId("worker-failure-reason");
+      // BOTH halves, and the emptiness check before them. Asserting only
+      // that the token is absent is satisfied by a table whose sentences
+      // are all "", and `toContain("")` is satisfied by anything at all -
+      // so a key stripped of its words would pass two assertions that look
+      // like they were written to catch exactly that.
+      expect(FAILURE_PROSE[token], token).not.toEqual("");
+      expect(line.textContent, token).toContain(FAILURE_PROSE[token]);
+      expect(line.textContent, token).not.toMatch(new RegExp(token));
+      cleanup();
+    }
+  });
+
+  it("GROUND: a class it has never heard of still reads as English",
+     async () => {
+    // The vocabulary is open-ended - the backend writes an exception class
+    // name with no allow-list in front of it - so the unnamed case is the
+    // ordinary one here, not the exception. The token rides in brackets for
+    // a bug report; it must not BE the line.
+    const unknown = "SomeFutureError";
+    expect(FAILURE_PROSE[unknown]).toBeUndefined();
+    mount({ stats: { done: 0, failed: 1, skipped: 0, abandoned: 0,
+                     paid_and_lost: 0, skip_reasons: {},
+                     error_types: { [unknown]: 1 } } });
+    const line = await screen.findByTestId("worker-failure-reason");
+    expect(line.textContent).toMatch(/no words for/i);
+    expect((line.textContent ?? "").replace(/\s+/g, " ").trim())
+      .not.toEqual(`1 of 1 failures: ${unknown}`);
+  });
+
+  it("refuses to echo a value that is not a plain token", async () => {
+    // `error_type` is a database column with NO vocabulary gate, and one of
+    // its writers stores the TEXT of an exception rather than a class name.
+    // Every one of those texts is a bare token today. Rendering the column
+    // is what makes that a promise about the future, so the echo is refused
+    // for anything that does not look like one - the count and its sentence
+    // still reach the reader, the sentence-shaped value does not.
+    const leaky = "bad shape: Dr Marta said 'no' at C:/vault/x.db";
+    expect(echoable(leaky)).toBe(false);
+    mount({ stats: { done: 0, failed: 1, skipped: 0, abandoned: 0,
+                     paid_and_lost: 0, skip_reasons: {},
+                     error_types: { [leaky]: 1 } } });
+    const line = await screen.findByTestId("worker-failure-reason");
+    expect(line.textContent).toMatch(/1 of 1 failures/);
+    expect(line.textContent).toMatch(/no words for/i);
+    expect(line.textContent).not.toContain("Marta");
+    expect(line.textContent).not.toContain("vault");
+  });
+
+  it("POSITIVE CONTROL: it still echoes a value that IS a plain token",
+     async () => {
+    // Without this the test above is satisfied by a fallback that echoes
+    // nothing at all, which would take the one thing a bug report needs.
+    const token = "SomeFutureError:some_future_reason";
+    expect(echoable(token)).toBe(true);
+    mount({ stats: { done: 0, failed: 1, skipped: 0, abandoned: 0,
+                     paid_and_lost: 0, skip_reasons: {},
+                     error_types: { [token]: 1 } } });
+    const line = await screen.findByTestId("worker-failure-reason");
+    expect(line.textContent).toContain("(" + token + ")");
+  });
+
+  it("keeps the abandoned line as its own count beside the breakdown",
+     async () => {
+    // `abandoned` is counted INSIDE `failed`, so it is the one number here
+    // that may never be added to its neighbours. The census reports the
+    // same rows under their own name; it does not replace the counter, and
+    // a change that swallowed the counter would leave the reader with a
+    // dict whose shape invites exactly the sum that must not be made.
+    mount({ stats: { done: 0, failed: 2, skipped: 0, abandoned: 2,
+                     paid_and_lost: 2, skip_reasons: {},
+                     error_types: { abandoned_in_flight: 2 } } });
+    const line = await screen.findByTestId("worker-abandoned");
+    expect(line.textContent).toMatch(/2 runs were cut off/);
+    const census = await screen.findByTestId("worker-failure-reason");
+    expect(census.textContent).toContain(FAILURE_PROSE.abandoned_in_flight);
+    expect(census.textContent).toMatch(/2 of 2 failures/);
+    expect(census.textContent).not.toMatch(/abandoned_in_flight/);
+  });
+});
+
+/**
+ * WHAT IT OFFERED AND WHAT WAS THROWN AWAY.
+ *
+ * Two counters the backend has computed and declared on the wire for as long
+ * as they have existed, and that no screen rendered: the parser's own
+ * refusals, and the replies that were paid for and landed nothing. Between
+ * them they are the difference between "the model had nothing to say" and "a
+ * gate is discarding your notes", which arrived as the same empty list.
+ */
+describe("what the reader paid for and did not get", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    cleanup();
+  });
+
+  it("says when a check threw away notes, and admits that check is not free",
+     async () => {
+    // The anchor gate catches nine invented notes in ten and drops four
+    // true notes in twenty. That second number reaches a person here or
+    // nowhere, and without it a missing note looks like a model that found
+    // nothing rather than a gate that was too strict.
+    mount({ worker: { dropped: { unanchored: 4 } } });
+    const line = await screen.findByTestId("worker-dropped-note");
+    expect(line.textContent).toMatch(/4 suggestions were thrown away/i);
+    expect(line.textContent).toMatch(/no name and no number/i);
+    // The count is plural, so the reason may not be a sentence about one of
+    // them: "4 suggestions were thrown away: nothing in IT" was the reading.
+    expect(line.textContent).not.toMatch(/away: nothing in it/i);
+    expect(line.textContent).toMatch(/one true note in five/i);
+    expect(line.textContent).not.toMatch(/unanchored/);
+  });
+
+  it("GROUND: says nothing when the parser threw nothing away", async () => {
+    mount({ worker: { dropped: {} } });
+    await screen.findByTestId("worker-status");
+    expect(screen.queryByTestId("worker-dropped-note")).toBeNull();
+  });
+
+  it("every drop reason it declares reaches the screen as words", async () => {
+    for (const reason of Object.keys(DROP_PROSE)) {
+      mount({ worker: { dropped: { [reason]: 1 } } });
+      const line = await screen.findByTestId("worker-dropped-note");
+      expect(DROP_PROSE[reason], reason).not.toEqual("");
+      expect(line.textContent, reason).toContain(DROP_PROSE[reason]);
+      expect(line.textContent, reason).not.toMatch(new RegExp(reason));
+      cleanup();
+    }
+  });
+
+  it("GROUND: a drop reason with no sentence still reads as English",
+     async () => {
+    const unknown = "some_future_gate";
+    expect(DROP_PROSE[unknown]).toBeUndefined();
+    mount({ worker: { dropped: { [unknown]: 1 } } });
+    const line = await screen.findByTestId("worker-dropped-note");
+    expect(line.textContent).toMatch(/no words for/i);
+    // POSITIVE CONTROL for the negative below: the token IS carried, in
+    // brackets, so a bug report can still quote it. The negative says the
+    // line must not BE the token, which is what the old fallback rendered.
+    expect(line.textContent).toContain("(" + unknown + ")");
+    expect((line.textContent ?? "").replace(/\s+/g, " ").trim())
+      .not.toEqual(`1 suggestion was thrown away: ${unknown}.`);
+  });
+
+  it("says when a paid reply landed nothing at all", async () => {
+    // Not a failure and not a refusal: the call went out, came back and was
+    // billed, and nothing could be landed from it. Reported by a counter
+    // and a code that reached no screen, so on the panel it looked exactly
+    // like a quiet week.
+    mount({ worker: { settled_empty: 9 } });
+    const line = await screen.findByTestId("worker-settled-empty");
+    expect(line.textContent).toMatch(/9 replies were paid for/i);
+    expect(line.textContent).toMatch(/produced no notes/i);
+  });
+
+  it("GROUND: says nothing when every reply landed something", async () => {
+    mount({ worker: { settled_empty: 0 } });
+    await screen.findByTestId("worker-status");
+    expect(screen.queryByTestId("worker-settled-empty")).toBeNull();
+  });
+});
+
+/**
+ * THE EMPTY SETTLE, WHICH HAD NO WAY ONTO THE SCREEN AT ALL.
+ *
+ * A reply that is paid for and lands nothing does not increment `unhandled`,
+ * does not fail, and is not refused. Its reason was written to `last_error`,
+ * and `last_error` was rendered in exactly one place: inside the `unhandled`
+ * block. So the whole class was invisible however good the reason string
+ * was - and the reason string was being improved at the same time, into a
+ * screen that could not show it.
+ *
+ * One value, two signals. `last_error` carries the most recent event of any
+ * kind, so which line may claim it is itself a thing to prove.
+ */
+describe("a reply that was paid for and landed nothing", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    cleanup();
+  });
+
+  it("names the reason the most recent one landed nothing", async () => {
+    mount({ worker: { settled_empty: 3, last_error: "settled_chat_gone" } });
+    const line = await screen.findByTestId("worker-settled-empty");
+    expect(line.textContent).toMatch(/3 replies were paid for/i);
+    expect(line.textContent).toMatch(/most recent/i);
+    expect(line.textContent).toContain(EMPTY_PROSE.settled_chat_gone);
+    expect(line.textContent).not.toMatch(/settled_chat_gone/);
+  });
+
+  it("GROUND: with no reason recorded it still says what the three ways are",
+     async () => {
+    // The half that proves the assertion above is reading the reason rather
+    // than a sentence that is always there.
+    mount({ worker: { settled_empty: 3, last_error: null } });
+    const line = await screen.findByTestId("worker-settled-empty");
+    expect(line.textContent).not.toMatch(/most recent/i);
+    expect(line.textContent).toMatch(/a retry arrived first/i);
+  });
+
+  it("refuses a reason that belongs to the other signal", async () => {
+    // `last_error` holds whatever happened LAST, and a failed write is not
+    // an empty settle. Claimed here it would put a failure's token in a
+    // sentence about a reply that landed nothing.
+    mount({ worker: { settled_empty: 2, unhandled: 1,
+                      last_error: "write_RuntimeError" } });
+    const line = await screen.findByTestId("worker-settled-empty");
+    expect(line.textContent).not.toMatch(/most recent/i);
+    expect(line.textContent).not.toMatch(/write_RuntimeError/);
+  });
+
+  it("every empty reason it declares reaches the screen as words", async () => {
+    for (const reason of Object.keys(EMPTY_PROSE)) {
+      mount({ worker: { settled_empty: 1, last_error: reason } });
+      const line = await screen.findByTestId("worker-settled-empty");
+      expect(EMPTY_PROSE[reason], reason).not.toEqual("");
+      expect(line.textContent, reason).toContain(EMPTY_PROSE[reason]);
+      expect(line.textContent, reason).not.toMatch(new RegExp(reason));
+      expect(line.textContent, reason).toMatch(/most recent/i);
+      cleanup();
+    }
+  });
+
+  it("GROUND: an empty reason with no sentence still reads as English",
+     async () => {
+    const unknown = "settled_some_future_race";
+    expect(EMPTY_PROSE[unknown]).toBeUndefined();
+    mount({ worker: { settled_empty: 1, last_error: unknown } });
+    const line = await screen.findByTestId("worker-settled-empty");
+    expect(line.textContent).toMatch(/no words for/i);
+    expect(line.textContent).toContain("(" + unknown + ")");
+    expect(line.textContent).toMatch(/1 reply was paid for/i);
+  });
+
+  it("does not lend the empty reason to the unexpected-error line",
+     async () => {
+    // Both lines read the one field. Printed unconditionally next door it
+    // read "an unexpected error (settled_chat_gone)", which names the wrong
+    // event with the other one's word.
+    mount({ worker: { unhandled: 2, settled_empty: 1,
+                      last_error: "settled_chat_gone" } });
+    const line = await screen.findByTestId("worker-unhandled");
+    expect(line.textContent).toMatch(/2 runs ended in an unexpected error/i);
+    expect(line.textContent).not.toMatch(/settled_chat_gone/);
+  });
+
+  it("POSITIVE CONTROL: it still names a real unexpected error", async () => {
+    // The assertion above says something is ABSENT, so this proves the sweep
+    // can see it when it is there. A line that had simply stopped printing
+    // the field would satisfy the negative and lose the signal.
+    mount({ worker: { unhandled: 2, settled_empty: 0,
+                      last_error: "RuntimeError" } });
+    const line = await screen.findByTestId("worker-unhandled");
+    expect(line.textContent).toMatch(/\(RuntimeError\)/);
+  });
+});

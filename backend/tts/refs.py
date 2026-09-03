@@ -126,6 +126,13 @@ TRANSCRIPT_NAME = "transcript.txt"
 #: not itself a secret the app relies on to be hidden, only to be RANDOM -
 #: `list_voices()` already skips it (it is a file, not a directory).
 INDEX_KEY_NAME = ".voice-index-key"
+#: What the rebuild below appends to INDEX_KEY_NAME while a fresh key is on
+#: its way to disk. A constant rather than an inline f-string because a test
+#: has to assert that NO such file survives, and an absence checked against a
+#: retyped literal stops being an absence the moment the scheme changes: the
+#: glob simply matches nothing and the assertion passes forever. The pid and
+#: thread id that follow it are what keep two waiters off one name.
+INDEX_KEY_TMP_INFIX = ".new-"
 
 
 class RefError(TtsError):
@@ -293,7 +300,8 @@ def _index_key_locked() -> bytes:
         # error: the winner's key is just as good, so re-read rather than
         # return the local `key` that never reached the disk.
         tmp = path.with_name(
-            f"{path.name}.new-{os.getpid()}-{threading.get_ident()}")
+            f"{path.name}{INDEX_KEY_TMP_INFIX}"
+            f"{os.getpid()}-{threading.get_ident()}")
         try:
             fd2 = os.open(str(tmp), os.O_CREAT | os.O_TRUNC | os.O_WRONLY
                           | getattr(os, "O_BINARY", 0), 0o600)
@@ -307,10 +315,51 @@ def _index_key_locked() -> bytes:
         except OSError:
             # Somebody else got there first, or the disk said no. Either way
             # the file on disk is the authority, not this thread's `key`.
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
+            #
+            # discard(), not unlink(). `os.write` + `os.fsync` above have
+            # already put 32 bytes of key material on the platter, and this
+            # branch catches the `os.replace` failure too - so the temp file
+            # here can be a COMPLETE, synced copy of the salt. A plain unlink
+            # returns those blocks to the filesystem with the bytes intact
+            # for any undelete tool, and this particular secret is the one
+            # thing standing between the opaque folder names under refs/ and
+            # a dictionary attack that walks them back to the voice ids the
+            # user typed. It is the same class of content as everything else
+            # in this app, so it goes out the same door: overwrite, then
+            # remove. discard() rather than shred() because the open may
+            # have failed before the name ever existed, and "never there" is
+            # success. It cannot raise on this argument: every branch it
+            # reaches for an ordinary 32-byte file catches OSError.
+            #
+            # The return is dropped, and that is a real trade rather than an
+            # oversight. discard() refuses any name it cannot open for
+            # writing, and that is wider than the hardlink and junction
+            # guards it is easy to read it as: an ordinary temp file that some
+            # other handle is holding against writes is refused in exactly the
+            # same way, logged as "could not be opened - left untouched".
+            # Measured on this branch, that second one is the refusal that
+            # actually fires, with no attacker and no second name anywhere in
+            # it, and when it fires the temp keeps both its name and its 32
+            # bytes.
+            #
+            # It is still the right trade, for two measured reasons rather
+            # than one hopeful one. Reaching past a refusal is the one thing
+            # this module must never learn to do. And no holder this process
+            # can create reaches the bad case: CPython on Windows opens
+            # through the CRT, which shares reads and writes and never shares
+            # deletes, and nothing in this tree opens a file any other way -
+            # no CreateFileW, no win32file, no mmap, no msvcrt.locking. The
+            # only holder that loses ground against the old unlink is one that
+            # denies writes while permitting deletes, and that has to arrive
+            # from outside the process: an on-access scanner or a search
+            # indexer, inside a window of microseconds, on a branch that only
+            # runs at all when an earlier crash left the key file zero bytes
+            # long. Against every holder this app CAN produce, discard() is
+            # strictly ahead of the unlink it replaced, because it overwrites
+            # the key in the cases where that unlink raised and left it whole.
+            # It is the same trade every other discard() site in this app
+            # makes.
+            secure_delete.discard(tmp)
         # Re-read with patience, and not only because a loser needs the
         # winner's bytes. On Windows the read ITSELF fails with
         # PermissionError while somebody else's os.replace is in flight over

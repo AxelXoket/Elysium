@@ -33,6 +33,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SlideIn } from "@/components/motion/SlideIn";
 import { useUiStore } from "@/lib/store/uiStore";
+import {
+  PANEL_DRAFT_KEYS,
+  chatScopedPanelDraftKey,
+  useDraftStore,
+  usePanelDraft,
+} from "@/lib/store/draftStore";
 import { useErrorStore } from "@/lib/errors/errorStore";
 import {
   useNotebook,
@@ -154,8 +160,29 @@ export function NotebookPanel() {
   const accept = useAcceptNote();
   const pushError = useErrorStore((s) => s.pushError);
 
-  const [draft, setDraft] = useState("");
-  const [query, setQuery] = useState("");
+  // The note being written outlives this panel, because this panel does not
+  // outlive a click on a neighbouring tab. Same store as the composer's
+  // unsent text, for the same reason and with the same lifetime.
+  //
+  // Keyed on the chat, like the composer buffer and unlike anything else in
+  // this panel. The note is filed into whichever chat is open when Add is
+  // pressed, so a buffer shared across chats would offer a sentence written
+  // about one story for filing into the next one.
+  const noteDraftKey = chatScopedPanelDraftKey(
+    PANEL_DRAFT_KEYS.newNote,
+    chatId,
+  );
+  const [draft, setDraft] = usePanelDraft(noteDraftKey);
+  const clearPanelDraft = useDraftStore((s) => s.clearPanelDraft);
+  // The filter is held the same way, under its own field of the same chat.
+  // Being keyed on the chat is what enforces the rule the block below used to
+  // enforce by hand, and enforces it BETTER: the value is read during render
+  // from the key the open chat owns, so there is no frame in which the new
+  // chat is filtered by the old chat's word, and nothing has to remember to
+  // clear anything.
+  const [query, setQuery] = usePanelDraft(
+    chatScopedPanelDraftKey(PANEL_DRAFT_KEYS.newNote, chatId, "filter"),
+  );
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   // Undo on this strip deletes every note in it at once, permanently, and it
   // had no confirmation at all - one press of a ghost button. The same
@@ -164,18 +191,18 @@ export function NotebookPanel() {
   // not a new one.
   const [confirmUndo, setConfirmUndo] = useState(false);
 
-  // The filter belongs to the chat it was typed in, and this panel does not
-  // unmount when the chat changes - so without this the search follows the
-  // reader into the next chat. That is not a cosmetic leak. The search box
-  // only renders above five notes, so filtering a forty-note chat and then
-  // opening a three-note one hides all three behind a filter whose input has
-  // itself unmounted: an empty notebook, no visible cause, and no control
-  // that would clear it.
+  // The filter used to be cleared here by hand, and no longer is: it is now
+  // keyed on the chat, so opening another conversation reads that chat's own
+  // (usually absent) filter instead of inheriting this one's. The rule that
+  // mattered is unchanged and is now structural. Why it mattered: the search
+  // box only renders above five notes, so filtering a forty-note chat and
+  // then opening a three-note one hid all three behind a filter whose input
+  // had itself gone - an empty notebook, no visible cause, no control that
+  // would clear it.
   //
   // Adjusted during render rather than in an effect on purpose. An effect
   // runs after the DOM is painted, so the reader would still get one frame of
-  // the new chat filtered to nothing - which is the exact frame being fixed.
-  // React re-runs this render with the new state before committing anything.
+  // the new chat with the wrong strip armed.
   //
   // `confirmDeleteId` is deliberately NOT reset with it: notebook entry ids
   // are AUTOINCREMENT over the whole table, so an id carried in from another
@@ -189,7 +216,6 @@ export function NotebookPanel() {
   const [filterChatId, setFilterChatId] = useState(chatId);
   if (chatId !== filterChatId) {
     setFilterChatId(chatId);
-    setQuery("");
     setConfirmUndo(false);
   }
 
@@ -267,7 +293,9 @@ export function NotebookPanel() {
     if (!text || chatId == null) return;
     try {
       await create.mutateAsync([chatId, { text }]);
-      setDraft("");
+      // Dropped rather than emptied: the note is filed, so there is nothing
+      // left to protect and no reason to leave a zero-byte entry behind.
+      clearPanelDraft(noteDraftKey);
     } catch (err) {
       pushError(err, "error", { chatId });
     }

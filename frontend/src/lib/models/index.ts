@@ -13,3 +13,5 @@ export {
   CONTEXT_BUDGET_MIN,
   TEXT_ONLY_NOTE,
 } from "./modelHelpers";
+
+export type { ModalitySupport } from "./modelHelpers";

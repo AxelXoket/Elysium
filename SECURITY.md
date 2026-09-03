@@ -198,12 +198,14 @@ hand has no token and the gate is open. One route does not follow that rule:
 `/vault/reset` refuses outright when the gate is unarmed, rather than being
 left open. See "Resetting the vault," below.
 
-Two routes are exempt because a browser cannot attach a header to an image or an
-audio element. They are narrowed rather than opened: the request must carry
-`Sec-Fetch-Site: same-origin`. A page cannot forge that header - the browser
-sets it - so a hostile page is still refused. A local program CAN set it by
-hand, and then it passes; this paragraph claimed otherwise until 2026-08-30.
-The exemption is narrower than the rest of the gate rather than closed.
+Two routes used to be exempt because a browser cannot attach a header to an
+image or an audio element. The exemption asked for `Sec-Fetch-Site:
+same-origin` instead. A page cannot forge that header - the browser sets it -
+so a hostile page was refused, but a local program sets it with one flag and
+walked in, and upload ids are sequential, so every stored picture could be read
+by counting upward. That is closed. The app fetches both routes itself, with
+the token, and plays or shows the result from a `blob:` URL. No route is
+exempt from the token now.
 
 ### Resetting the vault
 

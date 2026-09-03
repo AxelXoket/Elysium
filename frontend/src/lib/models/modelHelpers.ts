@@ -8,7 +8,8 @@
  *  - getModelMaxCompletionTokens: max tokens with unknown-safe state
  *  - getModelSupportedParameters: safe string array of supported params
  *  - getModelModalities: input/output modality arrays
- *  - hasInputModality / hasOutputModality: modality check
+ *  - hasInputModality: boolean modality check
+ *  - hasOutputModality: three-state modality check (yes / no / unknown)
  *  - shouldShowTextOnlyNote: whether model advertises non-text input
  *  - getContextBudgetBounds: min/max for context budget UI control
  *  - TEXT_ONLY_NOTE: display copy for future UI
@@ -133,14 +134,42 @@ export function hasInputModality(
 }
 
 /**
- * Check whether the model advertises a specific output modality.
+ * What the catalogue says about one output modality.
+ *
+ * Three states, and the third one is the entire point. `"unknown"` is not a
+ * quiet `"no"`. It is the state the frontend is in when the catalogue carries
+ * no output modality list for a model, and it is exactly the state the backend
+ * treats as permissive: `_model_emits_images` in backend/routers/completions.py
+ * returns True for absent metadata, missing field, and empty list, because the
+ * provider is the final arbiter. Folding `"unknown"` into `"no"` let the UI
+ * tell the reader a picture would not be asked for while the request went out
+ * with `modalities: ["text","image"]`. A privacy-first interface does not get
+ * to make a false negative claim about what it just sent.
+ */
+export type ModalitySupport = "yes" | "no" | "unknown";
+
+/**
+ * What the model advertises for a specific output modality.
+ *
+ * `"unknown"` when there is no model, no field, or an empty list. OpenRouter
+ * omits `architecture.output_modalities` for part of the catalogue and the
+ * backend normalises that to `[]`, so an empty list is an absence of knowledge
+ * rather than a statement of incapability.
+ * `"no"` only when the list is populated and the modality is not in it.
+ *
+ * The sibling `acceptsImages` collapses the same three states into a boolean,
+ * and that is right for it: every image INPUT gate asks a yes/no question and
+ * unknown has to answer yes there to match the backend. This one has a
+ * consumer that renders a sentence to a reader, so it must be able to say "I
+ * do not know" instead of being forced to pick a side.
  */
 export function hasOutputModality(
-  model: Pick<Model, "output_modalities"> | null | undefined,
+  model: Partial<Pick<Model, "output_modalities">> | null | undefined,
   modality: string,
-): boolean {
-  if (!model?.output_modalities) return false;
-  return model.output_modalities.includes(modality);
+): ModalitySupport {
+  const mods = model?.output_modalities;
+  if (!mods || mods.length === 0) return "unknown";
+  return mods.includes(modality) ? "yes" : "no";
 }
 
 // ── Text-only note ───────────────────────────────────────────────

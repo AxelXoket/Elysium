@@ -33,6 +33,36 @@
  * blind it - and this is the one file where no other rule is behind it. The
  * prose paying a small price in directness is what lets the gate be exact.
  *
+ * WHAT ELSE LIVES HERE. The composer was not the only text an unmount could
+ * eat. The right-hand panel swaps its four tabs by unmounting the one that
+ * was open, so a half-written persona description, a half-written note or a
+ * half-typed limit died on a single click of a neighbouring tab - the same
+ * loss, with a different trigger, which is exactly the reason to solve it in
+ * the same place rather than in a second store. A second store would drift:
+ * two lifetimes, two ceilings, two answers to what a vault wipe does. The
+ * `panel` map below is therefore a third buffer kind next to `composer` and
+ * `edits`, sharing their byte accounting, their refusal path and their
+ * lifetime to the letter.
+ *
+ * WHAT THE PANEL MAP REFUSES TO HOLD. Credentials. The API key box and the
+ * three vault passphrase boxes are text a user types into this same panel,
+ * and they are deliberately NOT routed here: buffers in this store outlive a
+ * vault lock on purpose, and the lock path empties its neighbouring query and
+ * mutation stores precisely because one of them held a credential. Those four
+ * boxes keep their component-local state and keep losing it on a tab switch,
+ * which is the cheaper failure of the two. The proxy URL is treated the same
+ * way, because a URL is allowed to carry a user and a password inside it.
+ *
+ * WHAT THAT LIST DOES NOT NAME: VAULT CONTENT. It is not a credential and it
+ * is not excluded. A stored persona's name and description are the FALLBACK
+ * its edit boxes show, so the first keystroke in either box writes the whole
+ * value it is editing - the stored words plus the change - into this map.
+ * Only the box actually typed in is written, and an untouched form leaves
+ * nothing behind; but from that first keystroke the map holds text that came
+ * out of the vault, in a buffer that sits outside it and outlives a lock.
+ * The note and limit boxes start empty, so they never carry stored text in.
+ * Written down here so it is read rather than rediscovered from a call site.
+ *
  * MEMORY. Two ceilings, both counted in UTF-8 bytes rather than UTF-16 code
  * units, because bytes are what a paste actually costs and `String.length`
  * undercounts every non-Latin script the app supports. A write that would
@@ -42,8 +72,10 @@
  * to accept another is the same bug this file was written to fix, just with a
  * different trigger.
  */
+import { useCallback } from "react";
 import { create } from "zustand";
 import { useErrorStore, getErrorMessage } from "@/lib/errors";
+import type { ErrorContext } from "@/lib/errors/errorStore";
 
 /**
  * Per-buffer ceiling. Generous next to any real message - a 2 MiB composer
@@ -53,8 +85,9 @@ import { useErrorStore, getErrorMessage } from "@/lib/errors";
 export const MAX_DRAFT_BYTES = 2 * 1024 * 1024;
 
 /**
- * Whole-store ceiling across every composer and edit buffer. Bounds the worst
- * case a user could reach by opening many chats and pasting into each.
+ * Whole-store ceiling across every buffer of every kind - composer, edit and
+ * right-hand panel alike. Bounds the worst case a user could reach by opening
+ * many chats and pasting into each.
  */
 export const MAX_TOTAL_DRAFT_BYTES = 64 * 1024 * 1024;
 
@@ -139,11 +172,155 @@ type Refusal = "too_large" | "budget";
 export const DRAFT_TOO_LARGE_CODE = "draft_too_large";
 export const DRAFT_BUDGET_CODE = "draft_budget_exhausted";
 
+/**
+ * The stable key of every fixed right-panel text box that is held here.
+ *
+ * A record rather than six loose string literals, and imported rather than
+ * retyped at each call site, because two panels quietly agreeing on the same
+ * key would make one box echo into the other. Naming them once is what makes
+ * that collision a compile-time impossibility instead of a bug report.
+ *
+ * The names are namespaced by tab so the map reads as what it is: one entry
+ * per box, per tab, and nothing keyed by anything a person is called.
+ */
+export const PANEL_DRAFT_KEYS = {
+  /** Models tab: the model search box. */
+  modelSearch: "models.search",
+  /** Security tab: the proxy's display label. Not the URL - see the header. */
+  proxyAlias: "security.proxy-alias",
+  /** Persona tab: the create form's two boxes. */
+  personaCreateName: "persona.create.name",
+  personaCreateDescription: "persona.create.description",
+  /**
+   * Notes tab: the new-note box and the new-limit box.
+   *
+   * PREFIXES, not whole keys. Both boxes are filed into whichever chat is
+   * open when the button is pressed, so a buffer that was not keyed on the
+   * chat would follow the reader out of the story it was written for and
+   * offer itself for filing into the next one. The composer buffers above
+   * are keyed on the chat for exactly this reason; these two match them.
+   * Build the whole key with `chatScopedPanelDraftKey`.
+   */
+  newNote: "notes.new-note",
+  newLimit: "notes.new-limit",
+} as const;
+
+/**
+ * The FIELDS a new limit is made of, under `PANEL_DRAFT_KEYS.newLimit`.
+ *
+ * Four of them are not text somebody typed, and they are held anyway.
+ * Restoring the label beside four qualifiers that had snapped back to their
+ * defaults was worse than restoring nothing: the user saw their own words,
+ * pressed Add, and stored a HARD GLOBAL limit where they had set a soft one
+ * for this chat. Half a restore is a lie about the other half. They are
+ * strings already, so they cost the same accounting and carry the same
+ * lifetime as the label beside them.
+ */
+export const LIMIT_DRAFT_FIELDS = {
+  label: "text",
+  severity: "severity",
+  onViolation: "on-violation",
+  rating: "rating",
+  scope: "scope",
+} as const;
+
+/**
+ * Every panel buffer that belongs to one conversation.
+ *
+ * Named here rather than at the call site because `forgetChat` below has to
+ * free exactly this set when a chat is really deleted, and a list that lived
+ * in the panels would be one edit away from missing a key that nothing could
+ * then reach.
+ */
+const CHAT_SCOPED_PANEL_PREFIXES = [
+  PANEL_DRAFT_KEYS.newNote,
+  PANEL_DRAFT_KEYS.newLimit,
+] as const;
+
+/**
+ * Everything one conversation owns under `prefix`, as a key prefix.
+ *
+ * It ENDS in the separator, and that is the whole reason it is a function
+ * rather than a template written at the call site: `notes.new-note.1` is a
+ * prefix of `notes.new-note.17`, so forgetting chat 1 would have taken chat
+ * 17's buffer with it. The trailing dot makes the boundary explicit.
+ *
+ * A bare AUTOINCREMENT id, which the privacy rule allows outside the vault;
+ * nothing a person reads on screen goes into a key.
+ */
+export function chatScopedPanelDraftPrefix(
+  prefix: string,
+  chatId: number | null,
+): string {
+  // No chat open is a bucket of its own, spelled rather than folded into a
+  // sentinel number: a limit can be written with nothing open and filed
+  // globally, and that buffer belongs to no conversation at all.
+  return `${prefix}.${chatId ?? "none"}.`;
+}
+
+/** One field of one conversation's buffers under `prefix`. */
+export function chatScopedPanelDraftKey(
+  prefix: string,
+  chatId: number | null,
+  field = "text",
+): string {
+  return `${chatScopedPanelDraftPrefix(prefix, chatId)}${field}`;
+}
+
+/**
+ * Every persona edit buffer starts with this, and the id follows.
+ *
+ * The edit form is opened one row at a time, so the row it belongs to has to
+ * be part of the key: keying it on the field alone would show the buffer of
+ * whichever persona was edited last under the pencil of every other one.
+ * A bare AUTOINCREMENT id, never a display name - a name a person reads on
+ * screen does not leave the vault, and this store is outside it.
+ */
+export const PERSONA_EDIT_DRAFT_PREFIX = "persona.edit.";
+
+/** The canonical key for one field of one persona's edit form. */
+export function personaEditDraftKey(
+  personaId: number,
+  field: "name" | "description",
+): string {
+  return `${PERSONA_EDIT_DRAFT_PREFIX}${personaId}.${field}`;
+}
+
+/**
+ * Read the persona id back out of an edit key, or null if it is not one.
+ *
+ * Lives next to the builder so the two cannot drift, which is the failure
+ * that would matter: a parser that stopped agreeing with the builder would
+ * reopen the wrong row's form, silently, with someone else's words in it.
+ */
+export function personaIdFromEditDraftKey(key: string): number | null {
+  if (!key.startsWith(PERSONA_EDIT_DRAFT_PREFIX)) return null;
+  const rest = key.slice(PERSONA_EDIT_DRAFT_PREFIX.length);
+  const dot = rest.indexOf(".");
+  if (dot <= 0) return null;
+  const digits = rest.slice(0, dot);
+  // Tested rather than coerced: Number("") is 0 and Number(" 4 ") is 4, so a
+  // malformed key would come back as a real-looking row id.
+  if (!/^\d+$/.test(digits)) return null;
+  return Number(digits);
+}
+
 export interface DraftState {
   /** chatId -> the composer buffer for that chat. */
   composer: Record<number, DraftEntry>;
   /** `${chatId}:${messageId}` -> the edit buffer for that message. */
   edits: Record<string, EditEntry>;
+  /**
+   * Right-panel key -> the text in that box.
+   *
+   * Unlike the composer, an entry holding an EMPTY string is kept. Its
+   * existence is the record that the user touched the box at all, and two
+   * panels read exactly that: the persona create form reopens itself when a
+   * buffer exists, and the proxy alias counts as edited when one does. A user
+   * who typed a word and then deleted it has made a decision, and dropping
+   * the entry would throw that decision away along with the byte.
+   */
+  panel: Record<string, DraftEntry>;
   /**
    * Running total of every entry's `bytes`, maintained by delta. Recomputing
    * it by walking both maps on each keystroke would make typing cost grow
@@ -153,6 +330,11 @@ export interface DraftState {
 
   setComposerDraft: (chatId: number, text: string) => boolean;
   clearComposerDraft: (chatId: number) => void;
+
+  setPanelDraft: (key: string, text: string) => boolean;
+  clearPanelDraft: (key: string) => void;
+  /** Drop every panel buffer whose key starts with `prefix`. */
+  clearPanelDraftsWithPrefix: (prefix: string) => void;
 
   openEditDraft: (chatId: number, messageId: number, text: string) => boolean;
   setEditDraft: (chatId: number, messageId: number, text: string) => boolean;
@@ -217,18 +399,25 @@ function refuse(
  * a single event and the SECOND conversation to fail is told nothing at all.
  * That exact bug has been fixed in this codebase once already; passing the id
  * is what keeps it fixed.
+ *
+ * A panel box has no chat, so it carries `source` instead - the other half of
+ * the same identity, and the half the error store documents for exactly this
+ * shape: several controls that can fail the same way at the same moment. The
+ * key is the discriminator, so refusing the note box does not silence a
+ * refusal from the limit box beside it.
  */
-function announce(refusal: Refusal, chatId: number): void {
+function announce(refusal: Refusal, context: ErrorContext): void {
   const code =
     refusal === "too_large" ? DRAFT_TOO_LARGE_CODE : DRAFT_BUDGET_CODE;
   useErrorStore
     .getState()
-    .pushErrorDirect(code, getErrorMessage(code), "warning", { chatId });
+    .pushErrorDirect(code, getErrorMessage(code), "warning", context);
 }
 
 export const useDraftStore = create<DraftState>()((set, get) => ({
   composer: {},
   edits: {},
+  panel: {},
   totalBytes: 0,
 
   setComposerDraft: (chatId, text) => {
@@ -250,7 +439,7 @@ export const useDraftStore = create<DraftState>()((set, get) => ({
     const bytes = draftByteSize(text);
     const refusal = refuse(bytes, previousBytes, state.totalBytes);
     if (refusal != null) {
-      announce(refusal, chatId);
+      announce(refusal, { chatId });
       return false;
     }
 
@@ -268,6 +457,51 @@ export const useDraftStore = create<DraftState>()((set, get) => ({
     const composer = { ...state.composer };
     delete composer[chatId];
     set({ composer, totalBytes: state.totalBytes - previous.bytes });
+  },
+
+  setPanelDraft: (key, text) => {
+    const state = get();
+    const previous = state.panel[key];
+    const previousBytes = previous?.bytes ?? 0;
+    if (previous?.text === text) return true;
+
+    const bytes = draftByteSize(text);
+    const refusal = refuse(bytes, previousBytes, state.totalBytes);
+    if (refusal != null) {
+      announce(refusal, { source: key });
+      return false;
+    }
+
+    set({
+      panel: { ...state.panel, [key]: { text, bytes } },
+      totalBytes: state.totalBytes - previousBytes + bytes,
+    });
+    return true;
+  },
+
+  clearPanelDraft: (key) => {
+    const state = get();
+    const previous = state.panel[key];
+    if (previous == null) return;
+    const panel = { ...state.panel };
+    delete panel[key];
+    set({ panel, totalBytes: state.totalBytes - previous.bytes });
+  },
+
+  clearPanelDraftsWithPrefix: (prefix) => {
+    const state = get();
+    let panel: Record<string, DraftEntry> | null = null;
+    let freedBytes = 0;
+    for (const [key, entry] of Object.entries(state.panel)) {
+      if (!key.startsWith(prefix)) continue;
+      if (panel == null) panel = { ...state.panel };
+      delete panel[key];
+      freedBytes += entry.bytes;
+    }
+    // Nothing matched is not the same as "free to write anyway": a `set` here
+    // notifies every subscriber for no change at all.
+    if (panel == null) return;
+    set({ panel, totalBytes: state.totalBytes - freedBytes });
   },
 
   openEditDraft: (chatId, messageId, text) => {
@@ -304,6 +538,16 @@ export const useDraftStore = create<DraftState>()((set, get) => ({
   },
 
   forgetChat: (chatId) => {
+    // The panel buffers keyed on this chat go first, and through the same
+    // action the panels use. They were added after this function was written
+    // and are unreachable once the chat is gone: no note box and no limit
+    // box can ever be keyed on a chat that no longer opens, so a buffer left
+    // here could only be freed by destroying the whole vault.
+    for (const prefix of CHAT_SCOPED_PANEL_PREFIXES) {
+      get().clearPanelDraftsWithPrefix(
+        chatScopedPanelDraftPrefix(prefix, chatId),
+      );
+    }
     const state = get();
     const composerEntry = state.composer[chatId];
     const dropped = dropEditsOfChat(state.edits, chatId);
@@ -353,8 +597,52 @@ export const useDraftStore = create<DraftState>()((set, get) => ({
     set({ edits, totalBytes: state.totalBytes - freedBytes });
   },
 
-  clearAll: () => set({ composer: {}, edits: {}, totalBytes: 0 }),
+  clearAll: () => set({ composer: {}, edits: {}, panel: {}, totalBytes: 0 }),
 }));
+
+/**
+ * The keys that currently hold a panel buffer.
+ *
+ * Read outside React, so a component can decide at MOUNT time what its own
+ * shape should be before its first paint. Two panels need exactly that: the
+ * persona create form has to know whether to open itself, and it has to know
+ * it in a lazy initial value rather than in an effect, because an effect
+ * would show the form closed for one frame and then snap it open.
+ */
+export function panelDraftKeys(): string[] {
+  return Object.keys(useDraftStore.getState().panel);
+}
+
+/**
+ * One right-panel text box, bound to the store instead of to the component.
+ *
+ * Deliberately shaped like the `useState` pair it replaces, so a call site
+ * changes on one line and its JSX does not change at all. The reason that
+ * matters is the reason the bug existed: every one of these boxes looked
+ * correct in isolation, and what was wrong was where the value lived.
+ *
+ * The subscription selects a STRING, never the entry object, so a component
+ * re-renders when its own box changes and not when a sibling's does.
+ *
+ * `fallback` is what the box shows before anything is typed. It is a plain
+ * value rather than a stored one on purpose: an untouched box has no entry,
+ * so a form seeded from the server keeps following the server until the
+ * moment the user disagrees with it.
+ */
+export function usePanelDraft(
+  key: string,
+  fallback = "",
+): [string, (text: string) => void] {
+  const stored = useDraftStore((s) => s.panel[key]?.text);
+  const setPanelDraft = useDraftStore((s) => s.setPanelDraft);
+  const setValue = useCallback(
+    (text: string) => {
+      setPanelDraft(key, text);
+    },
+    [key, setPanelDraft],
+  );
+  return [stored ?? fallback, setValue];
+}
 
 type SetState = (partial: Partial<DraftState>) => void;
 type GetState = () => DraftState;
@@ -379,7 +667,7 @@ function writeEdit(
   const bytes = draftByteSize(text);
   const refusal = refuse(bytes, previousBytes, state.totalBytes);
   if (refusal != null) {
-    announce(refusal, chatId);
+    announce(refusal, { chatId });
     return false;
   }
 

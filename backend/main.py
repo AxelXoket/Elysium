@@ -22,7 +22,6 @@ Routers are added phase by phase. Only GET /healthz is live in Phase 1.
 import asyncio
 import contextlib
 import logging
-import re
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -386,11 +385,6 @@ def _request_own_origin(request: Request) -> str:
     return f"{request.url.scheme}://{request.url.netloc}"
 
 
-#: Loaded by an element rather than by fetch, so no header can ride along.
-_ELEMENT_LOADED = re.compile(
-    r"^/api/v1/(uploads/images/\d+|tts/audio/[^/]+)$")
-
-
 @app.middleware("http")
 async def launch_token_gate(request: Request, call_next):
     """Only the window this launch opened may use the API.
@@ -414,22 +408,15 @@ async def launch_token_gate(request: Request, call_next):
         return await call_next(request)
     if launch_token.accepts(request.headers.get(launch_token.HEADER)):
         return await call_next(request)
-    # Two routes are loaded by the BROWSER ITSELF - <img src> for a stored
-    # picture and the audio element for a spoken reply - and an element load
-    # cannot carry a custom header. Rewriting both to fetch-into-a-blob is the
-    # complete answer and is not this change.
-    #
-    # They are not simply exempted, and the narrowing is smaller than this
-    # comment used to claim. Sec-Fetch-Site is set by the browser and cannot
-    # be forged from the page, so a hostile PAGE is still refused. A local
-    # program is not: curl sends the header the moment somebody types -H,
-    # and the earlier wording said it was turned away. What this buys is
-    # that the two element-loaded routes are unreachable from another
-    # origin, not that they are unreachable from another process.
-    if (request.method == "GET"
-            and _ELEMENT_LOADED.match(path)
-            and request.headers.get("sec-fetch-site") == "same-origin"):
-        return await call_next(request)
+    # There is no second way in. Two routes used to have one: a stored picture
+    # and a spoken reply are loaded by the browser itself, an element load
+    # cannot carry a custom header, and the gate accepted
+    # `Sec-Fetch-Site: same-origin` in the token's place. That header is
+    # forbidden to page script but free to a PROCESS, so one curl flag walked
+    # through, and sequential ids made the pictures enumerable by counting
+    # upward. The frontend fetches both routes itself now and hands the bytes
+    # to a blob: URL, so they present the token like everything else and the
+    # exemption is gone rather than narrowed.
     return JSONResponse({"detail": "launch_token_invalid"}, status_code=403)
 
 
@@ -468,6 +455,8 @@ async def _vault_locked_handler(request: Request, exc: VaultLockedError):
 # "Internal Server Error", which the client renders as the generic toast - the
 # outcome the whole error vocabulary exists to prevent. Scoped to TtsError
 # only: everything else keeps its existing behaviour.
+from fastapi.exceptions import RequestValidationError
+from fastapi.encoders import jsonable_encoder
 from tts.errors import ALL_CODES as _TTS_CODES, TtsError as _TtsError
 
 
@@ -475,6 +464,66 @@ from tts.errors import ALL_CODES as _TTS_CODES, TtsError as _TtsError
 async def _tts_error_net(request: Request, exc: _TtsError):
     code = exc.code if exc.code in _TTS_CODES else "tts_worker_failed"
     return JSONResponse({"detail": code}, status_code=500)
+
+
+# H-42. A rejected body was handed straight back to the sender.
+#
+# FastAPI's default validation handler writes `jsonable_encoder(exc.errors())`
+# into the 422, and pydantic 2 puts an `input` field on every error item. For a
+# MISSING field that `input` is THE WHOLE BODY - so a request that forgot one
+# key came back carrying the API key, the proxy URL, the message text, and
+# whatever card or persona was in it, in the clear, to whoever sent it.
+#
+# The repository already knew. `routers/vault.py`'s `confirm` field carries a
+# `max_length` whose written justification is that echoing THAT field back is
+# harmless because it is a fixed public phrase - an argument that only makes
+# sense if echoing is what happens.
+#
+# `loc`, `type` and `msg` are what a caller needs to fix the request. `input`
+# is what they sent, which they already have, and `ctx` can carry the same
+# value again inside a constraint message. Both go.
+@app.exception_handler(RequestValidationError)
+async def _validation_error_without_the_body(
+        request: Request, exc: RequestValidationError):
+    safe = [
+        {"loc": e.get("loc", []), "type": e.get("type", ""),
+         "msg": e.get("msg", "")}
+        for e in exc.errors()
+    ]
+    # `detail` IS A CODE HERE, and the code has to be route-neutral. Both of
+    # those are things this handler fixes.
+    #
+    # FastAPI's default put the error LIST under `detail`, so the one field
+    # every other route uses to carry a catalogued name carried an array
+    # instead. The frontend coped by reading the SHAPE - an array meant
+    # `invalid_generation_params` - and a shape is not a name anything can
+    # enumerate: `tests/error_enumeration.py` reads a literal or a module
+    # constant out of a `detail`, and an arbitrary array is neither. So the
+    # name is sent, and the items ride in a field of their own.
+    #
+    # WHY THE NAME CANNOT NAME A PANEL. This is an app-level handler, not a
+    # router-level one. Measured on 2026-09-03: 48 routes take a request body,
+    # and every rejected body in the application - plus every typed query and
+    # path parameter in the tree - arrives here. Generation parameters are a
+    # handful of those routes. The first version of this handler reused
+    # `invalid_generation_params`, whose sentence tells the reader to open
+    # Generation Settings and press Reset all. Measured over three of the
+    # other routes: an upload posted without its file, an unlock body carrying
+    # a key the vault model does not accept, and a safeword sent as a number
+    # all answered with that name, so each sent its reader to a destructive
+    # button in a panel they had not touched. One handler cannot know which
+    # route it is answering for, so the name it sends must be true for all of
+    # them, and the only thing true for all of them is that something in the
+    # request was not a value this API accepts.
+    #
+    # `validation_failed` says that and nothing more. The specific fields are
+    # still there for a caller that wants them, in `errors`.
+    # `normalizeDetail` returns a string `detail` unchanged, so the reader
+    # gets one sentence, and the site is a literal the census can read.
+    return JSONResponse(
+        {"detail": "validation_failed",
+         "errors": jsonable_encoder(safe)},
+        status_code=422)
 
 
 app.add_middleware(
@@ -565,6 +614,12 @@ _CSP = (
     # blob: is required, and by two separate features: attachment previews
     # before upload, and the chat wallpaper's CSS background-image.
     "img-src 'self' blob:; "
+    # media-src, for the same reason and by the same route: the spoken
+    # reply is fetched with the launch token and played from a blob: URL.
+    # Without this directive it falls back to default-src 'self', which
+    # does not cover blob:, and the policy refuses the audio before it
+    # can play.
+    "media-src 'self' blob:; "
     "object-src 'none'; "
     "frame-src 'none'; "
     "base-uri 'none'; "

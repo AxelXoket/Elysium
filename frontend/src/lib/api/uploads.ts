@@ -32,11 +32,47 @@ export const UploadedImageSchema = z.object({
 export type UploadedImage = z.infer<typeof UploadedImageSchema>;
 
 /**
- * URL of an uploaded image binary (GET /uploads/images/{id}) - usable
- * directly as an <img src> (plain GET, correct Content-Type, no auth).
+ * URL of an uploaded image binary (GET /uploads/images/{id}).
+ *
+ * NOT an `<img src>`. It used to be, and that is exactly what forced the
+ * launch-token gate to accept a browser signal in the token's place for this
+ * route: an element load cannot carry a custom header. The signal it took,
+ * `Sec-Fetch-Site`, is forbidden to page script but free to any process, so
+ * one curl flag walked in and sequential ids made every stored picture
+ * enumerable. Use fetchImageObjectUrl below, which presents the token.
  */
 export function imageUrl(id: number): string {
   return `${BASE}/uploads/images/${id}`;
+}
+
+/**
+ * Fetch an uploaded image WITH the launch token and hand back a blob: URL an
+ * `<img src>` can use.
+ *
+ * The caller owns the returned URL and must revoke it when the element goes
+ * away, or the blob stays pinned for the life of the document. Rejects on any
+ * non-2xx, so the "image unavailable" placeholder both call sites already
+ * render still covers a 404 the way it did when the browser did the fetching.
+ */
+export async function fetchImageObjectUrl(id: number): Promise<string> {
+  const res = await fetch(imageUrl(id), {
+    credentials: "same-origin",
+    headers: { ...launchTokenHeader() },
+  });
+  if (!res.ok) {
+    if (res.status === 423) notifyVaultLocked();
+    throw new Error(`image ${id}: HTTP ${res.status}`);
+  }
+  return URL.createObjectURL(await res.blob());
+}
+
+/** Revoke a URL from fetchImageObjectUrl. jsdom does not implement
+ *  revokeObjectURL, so the guard keeps component teardown from throwing in
+ *  tests that never stubbed it. */
+export function revokeImageObjectUrl(url: string | null): void {
+  if (url && typeof URL.revokeObjectURL === "function") {
+    URL.revokeObjectURL(url);
+  }
 }
 
 /**
@@ -73,13 +109,23 @@ export async function uploadImage(file: File): Promise<UploadedImage> {
 
   if (!res.ok) {
     if (res.status === 423) notifyVaultLocked();
-    // Keep in sync with client.ts handleResponse: backend detail code or a
-    // safe fallback - raw upstream text never leaves this module.
+    // Keep in sync with client.ts handleResponse and stream.ts: backend
+    // detail code or a safe fallback - raw upstream text never leaves this
+    // module.
+    //
+    // The 422 array branch is the half this module was missing. A `detail`
+    // that is an ARRAY is FastAPI's own unhandled validation shape rather
+    // than one of our codes, and the other two transports collapse it to a
+    // code the message map has a sentence for. Here it fell through to the
+    // generic fallback instead, so the same rejected request read as two
+    // different failures depending on which transport happened to send it.
+    const body = json as Record<string, unknown>;
     const detail =
-      typeof (json as Record<string, unknown>)?.detail === "string" &&
-      ((json as Record<string, unknown>).detail as string).length > 0
-        ? ((json as Record<string, unknown>).detail as string)
-        : "unknown_error";
+      res.status === 422 && Array.isArray(body?.detail)
+        ? "invalid_generation_params"
+        : typeof body?.detail === "string" && body.detail.length > 0
+          ? (body.detail as string)
+          : "unknown_error";
     const err: ApiError = {
       status: res.status,
       detail,

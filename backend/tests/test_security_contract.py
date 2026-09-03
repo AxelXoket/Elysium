@@ -524,12 +524,20 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "::test_no_token_means_everything_is_accepted",
     )),
     ("Sec-Fetch-Site: same-origin", (
+        # The paragraph used to register a case asserting the exemption WORKED.
+        # It is now a claim that the exemption is gone, so what is registered
+        # is the refusal of the forged header, the refusal with no header at
+        # all, and the token being the thing that opens the route.
         "tests/test_launch_token.py::TestWhatStaysReachable"
-        "::test_an_element_loaded_image_passes_with_a_same_origin_signal",
+        "::test_a_forged_same_origin_header_does_not_open_the_image_route",
         "tests/test_launch_token.py::TestWhatStaysReachable"
-        "::test_the_same_image_route_is_refused_without_that_signal",
+        "::test_a_forged_same_origin_header_does_not_open_the_audio_route",
+        "tests/test_launch_token.py::TestWhatStaysReachable"
+        "::test_the_image_route_is_refused_without_the_token",
         "tests/test_launch_token.py::TestWhatStaysReachable"
         "::test_a_cross_site_signal_does_not_open_it",
+        "tests/test_launch_token.py::TestWhatStaysReachable"
+        "::test_the_image_route_passes_with_the_token",
     )),
     ("System proxy environment variables are ignored on purpose", (
         "tests/test_privacy_promises.py::TestTheHttpClientIgnoresTheAmbientEnvironment"
@@ -1325,7 +1333,7 @@ def _acknowledged_problems(
 #: sample - so this covers all of it. Updating this constant is the
 #: deliberate act that means a human decided what a change claims and
 #: registered a proof for it.
-DOCUMENT_DIGEST = "52f3cda304d6dca85d3006f71962534fbda64e87ea2b47747c9f9e36e270f031"
+DOCUMENT_DIGEST = "cdfd7705048e6625bd98c1e21ae6f1d78bd2e3c576b2d2b20de7dd683d59d2e2"
 
 
 class TestEveryProvenClaimHasAProof:

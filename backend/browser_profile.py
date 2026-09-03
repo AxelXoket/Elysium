@@ -160,6 +160,30 @@ def block_crash_reporting(storage_path: Path | str) -> bool:
             # Same walk, same prune, same reporting as purge(): a renderer
             # minidump in here holds the decrypted DOM, and this was the last
             # hand-rolled loop that threw away what it could not destroy.
+            # The third value is deliberately still dropped here, and this is
+            # the one sweep in the app where that is the safer reading.
+            #
+            # Everywhere else a pruned name means "stop, rmtree would walk
+            # into what was just refused". MEASURED on this interpreter, that
+            # premise does not hold: `shutil.rmtree` walks with a private
+            # sentinel that makes `os.walk` report a reparse point as a file,
+            # so it never descends and the folder a junction points at keeps
+            # every byte. All it does is unlink the junction ENTRY.
+            #
+            # Stopping here instead would trade that one name for something
+            # far worse. The blocker below is the whole mechanism, and it
+            # cannot be written while a directory still occupies the name, so
+            # an early return leaves Crashpad ALIVE - free to write minidumps
+            # of the decrypted DOM into whatever the junction points at, and
+            # to upload them. purge() also stops on a pruned name, so nothing
+            # would ever clear it: one `mklink /J` here, which needs no
+            # privilege, and crash reporting is off for good with no signal.
+            #
+            # It is also not only junctions. is_redirected fails CLOSED on any
+            # OSError, so an ordinary directory named "reports " - trailing
+            # space, unopenable through the Win32 path - reports pruned too.
+            # Refusing on that would disable the block on a profile with no
+            # attacker in it at all.
             _, left, _pruned = _shred_tree(blocker)
             if left:
                 log.warning("browser_profile: %d crash file(s) could not be "

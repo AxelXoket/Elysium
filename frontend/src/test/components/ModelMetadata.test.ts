@@ -31,6 +31,7 @@ import {
   TEXT_ONLY_NOTE,
 } from "@/lib/models";
 import type { Model } from "@/lib/schemas/models";
+import imageOutputContract from "../../../../shared/image_output_contract.json";
 
 // ── Fixtures ─────────────────────────────────────────────────────
 
@@ -274,20 +275,110 @@ describe("hasInputModality", () => {
 });
 
 describe("hasOutputModality", () => {
-  it("returns true for text output", () => {
-    expect(hasOutputModality(gpt4, "text")).toBe(true);
+  it("says yes for text output", () => {
+    expect(hasOutputModality(gpt4, "text")).toBe("yes");
   });
 
-  it("returns true for audio output on audio model", () => {
-    expect(hasOutputModality(audioModel, "audio")).toBe(true);
+  it("says yes for audio output on audio model", () => {
+    expect(hasOutputModality(audioModel, "audio")).toBe("yes");
   });
 
-  it("returns false for audio output on text model", () => {
-    expect(hasOutputModality(gpt4, "audio")).toBe(false);
+  it("says no for audio output on a model whose list excludes it", () => {
+    expect(hasOutputModality(gpt4, "audio")).toBe("no");
   });
 
-  it("returns false for null model", () => {
-    expect(hasOutputModality(null, "text")).toBe(false);
+  // The three cases below used to collapse into the same `false` as the case
+  // above, which is the whole defect: "the catalogue says this model cannot"
+  // and "the catalogue says nothing" were one answer, and the UI read both as
+  // the first one.
+  it("says unknown for a null model", () => {
+    expect(hasOutputModality(null, "text")).toBe("unknown");
+  });
+
+  it("says unknown for an empty output modality list", () => {
+    expect(hasOutputModality(unknownModel, "image")).toBe("unknown");
+  });
+
+  it("says unknown when the field is absent entirely", () => {
+    expect(hasOutputModality({}, "image")).toBe("unknown");
+  });
+
+  it("keeps unknown and no distinct on the same model shape", () => {
+    // Ground control for the three assertions above: the only thing that
+    // changed between these two calls is whether the list has content, so
+    // "unknown" is coming from the emptiness and not from the helper having
+    // one answer for everything.
+    expect(hasOutputModality({ output_modalities: [] }, "image")).toBe(
+      "unknown",
+    );
+    expect(hasOutputModality({ output_modalities: ["text"] }, "image")).toBe(
+      "no",
+    );
+    expect(
+      hasOutputModality({ output_modalities: ["text", "image"] }, "image"),
+    ).toBe("yes");
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════
+// hasOutputModality vs the backend, over one shared truth table
+// ═════════════════════════════════════════════════════════════════
+
+/**
+ * The two sides answer "will this request ask for a picture?" from the same
+ * metadata, in two languages, and they used to answer it in opposite
+ * directions for a model whose output modality list is empty or absent.
+ *
+ * The split itself is deliberate and stays: the backend is permissive because
+ * the provider is the final arbiter, and backend/routers/completions.py says
+ * so in writing. What cannot stay is the UI turning "I do not know" into a
+ * printed "it will not be asked". So the invariant asserted here is not "both
+ * sides return the same boolean" - it is the narrower, true one: the frontend
+ * may render a definite NO only where the backend really will not ask.
+ *
+ * The cases and the backend verdicts are IMPORTED, never retyped.
+ * backend/tests/test_image_replay_gate.py replays the same file through
+ * _model_emits_images, so neither side can quote a stale table.
+ */
+type ImageOutputCase = {
+  name: string;
+  metadata: { output_modalities?: string[] } | null;
+  backend_asks_for_image: boolean;
+};
+
+const imageOutputCases = (
+  imageOutputContract as unknown as { cases: ImageOutputCase[] }
+).cases;
+
+describe("image output: frontend copy vs backend request", () => {
+  it("has a table with both verdicts in it", () => {
+    // Ground control. An all-yes or all-no table would pass the loop below
+    // against a helper hardwired to one answer.
+    expect(imageOutputCases.length).toBeGreaterThan(0);
+    expect(new Set(imageOutputCases.map((c) => c.backend_asks_for_image))).toEqual(
+      new Set([true, false]),
+    );
+  });
+
+  it("never says no about a model the backend will still ask", () => {
+    for (const testCase of imageOutputCases) {
+      const verdict = hasOutputModality(testCase.metadata, "image");
+      expect(
+        { case: testCase.name, saysNo: verdict === "no" },
+      ).toEqual(
+        { case: testCase.name, saysNo: !testCase.backend_asks_for_image },
+      );
+    }
+  });
+
+  it("still says no on every case the backend really refuses", () => {
+    // Positive control for the assertion above: the loop would also pass if
+    // the helper never returned "no" at all. At least one case must reach it.
+    const refused = imageOutputCases.filter((c) => !c.backend_asks_for_image);
+    expect(refused.length).toBeGreaterThan(0);
+    for (const testCase of refused) {
+      expect(hasOutputModality(testCase.metadata, "image")).toBe("no");
+    }
   });
 });
 

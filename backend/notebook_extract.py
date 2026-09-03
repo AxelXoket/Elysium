@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import secrets
 import unicodedata
 from collections import Counter
@@ -44,10 +45,20 @@ from openrouter import finish_reasons as _finish_reasons
 
 logger = logging.getLogger(__name__)
 
-#: Bumped whenever the prompt or the schema changes. It is part of the work
-#: key, so a change makes previously-processed ranges eligible again -
-#: deliberately, because the old answers came from a different question.
-PROMPT_VERSION = 1
+#: Bumped whenever the prompt or the schema changes, because the old answers
+#: came from a different question and should not be mistaken for answers to
+#: this one.
+#:
+#: WHAT IT DOES NOT DO, measured rather than assumed: it does not make an
+#: already-processed range run again. This comment used to claim it did, and
+#: the claim was worth money - a bump that reopened every range would refill
+#: the daily call cap in one pass. Planning is CURSOR driven; the cursor never
+#: reads `work_key`, so a bump changes what a NEW piece of work is called and
+#: reopens nothing. The key still earns its version: it is what stops a retry
+#: of the same call from being charged twice under two different prompts.
+#:
+#: 2: the few-shot examples became language-specific.
+PROMPT_VERSION = 2
 
 #: At most this many per call. A cap is the cheapest anti-junk device there is,
 #: and it also bounds the failure: a reply that overruns max_tokens loses the
@@ -223,6 +234,69 @@ _FEWSHOT = [
 ]
 
 
+#: The same six teaching points, in the language the transcript is actually
+#: in. SAME SHAPE, and that is the point of writing a second list rather than
+#: appending to the first: four negatives, in front, then two positives -
+#: exactly the ordering and exactly the ratio the comment above argues for.
+#:
+#: A REPLACEMENT, not an addition, so the prompt does not grow: measured, the
+#: six Turkish shots render 4 characters and 39 UTF-8 bytes longer than the
+#: six English ones. In TOKENS it is not free and the figure is not available
+#: here - Turkish diacritics cost more per character on older tokenisers,
+#: which is the caveat MAX_TOKENS already carries, and no tokeniser ships with
+#: this app to measure it with. What is claimed is only the bound: the growth
+#: is the size of one shot list against another, not one list added to
+#: another, and unbounded prompt growth is the failure this module keeps being
+#: warned about.
+#:
+#: It exists because the instruction directly above it was being taught with
+#: no example. Both prompts ORDER a cross-lingual answer - `text` in English,
+#: `evidence` in the transcript's own language, never translated - and all six
+#: examples were English in, English out. The one task the model is told to do
+#: that it cannot do by imitation was the one task it was shown nothing of.
+#: The two positives below are that demonstration and nothing else: a Turkish
+#: quote, copied verbatim, next to an English sentence.
+#:
+#: WRITTEN WITH REAL TURKISH ORTHOGRAPHY, unlike the instruction text above.
+#: That is deliberate rather than inconsistent. The instruction is prose the
+#: model reads; the examples stand in for TRANSCRIPT, and a real transcript
+#: has its diacritics. The grounding check downstream is a verbatim substring
+#: test, so an example that quietly taught "Turkish loses its dots when you
+#: copy it" would cost a true fact every time the model believed it.
+#: THE QUOTES NAME SOMEBODY, AND NOT IN FIRST POSITION. That is not a
+#: stylistic choice, it is what makes the two positives checkable: the code
+#: gate below reads the untranslatable words out of `evidence` and looks for
+#: one of them in `text`, and it deliberately ignores the FIRST word of a
+#: quote, because the first word of any sentence is capitalised by position
+#: rather than by being a name. A Turkish example opening on the place name
+#: would be an example the gate cannot check - teaching, by demonstration, the
+#: one shape that walks past the filter.
+#:
+#: The notes name people for the same reason the instruction does: "Nisha'nin
+#: babasi" and not "baba". The Turkish inputs carry the speaker's name because
+#: Turkish marks no gender - `dedi` is "said", not "she said" - so a note
+#: reading "She" would be a detail the transcript never supplied.
+_FEWSHOT_TR = [
+    ("Merhaba. Nasılsın?", []),
+    ("Yağmur pencerenin dışında yağmaya devam ediyordu.", []),
+    ("(EXISTING_NOTES zaten şunu içeriyor: kız kardeşi Mira)\n"
+     "\"Mira yine aradı,\" dedi.", []),
+    ("(CHARACTER_CARD zaten şunu içeriyor: emekli bir arşivci)\n"
+     "\"Arşivde çalışırdım,\" dedi.", []),
+    ("Mira, \"Bir daha Halden'e ayak basmayacağım,\" dedi. \"Onların "
+     "yaptıklarından sonra asla.\"",
+     [{"text": "Mira has sworn never to return to Halden.",
+       "evidence": "Bir daha Halden'e ayak basmayacağım",
+       "kind": "open_thread", "durability": "permanent",
+       "importance": 3, "supersedes": None}]),
+    ("Kadın çayları doldurup \"Ağabeyim Demir değirmenin sahibi,\" dedi.",
+     [{"text": "Demir owns the mill.",
+       "evidence": "Ağabeyim Demir değirmenin sahibi",
+       "kind": "fact", "durability": "permanent",
+       "importance": 2, "supersedes": None}]),
+]
+
+
 def system_prompt(language: str = "en") -> str:
     """The instruction, in the language the user chose.
 
@@ -232,28 +306,41 @@ def system_prompt(language: str = "en") -> str:
     non-English input is the model answering enum fields in the user's
     language, and that is an argument for consistency in either direction, not
     for English specifically. So the app ships both and lets the user measure.
+
+    THE EXAMPLES FOLLOW THE LANGUAGE TOO. They used to be the same six English
+    pairs under either instruction text, which meant the Turkish prompt asked
+    for a cross-lingual answer in Turkish and then demonstrated it six times in
+    English. A user only ever reaches for the Turkish prompt because the
+    English one read their transcript badly; handing them the same examples was
+    changing the half of the prompt that argues and leaving the half that
+    teaches.
     """
     base = _SYSTEM_TR if language == "tr" else _SYSTEM_EN
+    examples = _FEWSHOT_TR if language == "tr" else _FEWSHOT
     shots = "\n\n".join(
         f"Input: {inp}\nOutput: {json.dumps({'facts': out}, ensure_ascii=False)}"
-        for inp, out in _FEWSHOT)
+        for inp, out in examples)
     return f"{base}\n\nExamples:\n\n{shots}"
 
 
-#: What one extraction prompt may carry, per section. Not tuning knobs - a
-#: ceiling, and the reason it exists is written on the daily cap in config.py:
-#: the largest documented runaway in this space was not a loop, it was a
-#: context that grew every call.
+#: What one extraction prompt may carry, per section. THE DEFINITIONS AND
+#: THEIR REASONING NOW LIVE IN config.py, next to the daily cap they share a
+#: reason with; these three names are the compatibility spelling.
 #:
-#: EXISTING_NOTES is the one that grows. Every accepted note joins every
-#: future extraction prompt forever, so an old chat with three hundred notes
-#: would ship sixty thousand characters of them - twenty-four times what the
-#: CHAT itself is ever allowed to send (NOTEBOOK_MAX_CHARS = 2500), on a model
-#: whose context window nothing had checked. Newest notes are kept: they are
-#: the ones a new fact is likely to supersede.
-CARD_MAX_CHARS = 4000
-EXISTING_MAX_CHARS = 6000
-TURNS_MAX_CHARS = 12000
+#: They stay because they are the names the rest of the app already imports -
+#: `notebook_worker` budgets against `notebook_extract.TURNS_MAX_CHARS` and
+#: `notebook_extract.EXISTING_MAX_CHARS`, and the tests import them rather
+#: than retyping the numbers, which is the house rule working. Renaming them
+#: would have meant editing the worker for a move that changes no behaviour.
+#:
+#: THEY ARE A SNAPSHOT, TAKEN ONCE AT IMPORT. Every read INSIDE this module
+#: goes to `config` directly instead, so that the configured value is what the
+#: prompt is actually built against and a test can prove it by setting the
+#: configured value. In a running app the two cannot differ: `config` reads the
+#: environment once at import and nothing mutates it afterwards.
+CARD_MAX_CHARS = config.NOTEBOOK_CARD_MAX_CHARS
+EXISTING_MAX_CHARS = config.NOTEBOOK_EXISTING_MAX_CHARS
+TURNS_MAX_CHARS = config.NOTEBOOK_TURNS_MAX_CHARS
 
 
 def _budget(lines, ceiling, *, keep="tail"):
@@ -342,7 +429,7 @@ def _fit(existing: list[str], prefix: int) -> list[str]:
     """
     if not existing:
         return []
-    budget = max(0, EXISTING_MAX_CHARS - prefix)
+    budget = max(0, config.NOTEBOOK_EXISTING_MAX_CHARS - prefix)
     lengths = [len(line) for line in existing]
     if sum(lengths) <= budget:
         return list(existing)
@@ -410,7 +497,7 @@ def build_user_message(*, card: str, existing: list[str],
     # that passed every filter, was auto-accepted, and then re-entered
     # EXISTING_NOTES on every later extraction. A closed loop.
     tag = "#" + secrets.token_hex(8)
-    card = card[:CARD_MAX_CHARS]
+    card = card[:config.NOTEBOOK_CARD_MAX_CHARS]
     # NOT budgeted. The numbers the model is shown here are indices the
     # caller resolves against the FULL list - `parse_reply` bounds-checks on
     # `len(existing)` and `commit_extraction` looks up `existing_ids[idx]`.
@@ -422,9 +509,9 @@ def build_user_message(*, card: str, existing: list[str],
     #
     # The list is bounded where it is BUILT instead (see notebook_worker's
     # planner), so the two halves cannot drift apart again.
-    new = _budget(new, TURNS_MAX_CHARS, keep="tail")
+    new = _budget(new, config.NOTEBOOK_TURNS_MAX_CHARS, keep="tail")
     # RECENT_TURNS is context, not material: it gets whatever NEW_TURNS left.
-    recent = _budget(recent, max(0, TURNS_MAX_CHARS
+    recent = _budget(recent, max(0, config.NOTEBOOK_TURNS_MAX_CHARS
                                  - sum(len(n) + 1 for n in new)))
     # The numbering prefixes are charged to the budget, not added after it -
     # at twenty-character notes they were 22% of a cap whose entire purpose is
@@ -446,6 +533,108 @@ def build_user_message(*, card: str, existing: list[str],
     return _FENCE_RULE + (nl + nl).join(
         f"<{name} {tag}>{nl}{body}{nl}</{name} {tag}>"
         for name, body in sections)
+
+
+#: The marker a fence is built from. Written as a codepoint expression rather
+#: than three literal backticks so that this file, which is read in a markdown
+#: viewer as often as in an editor, cannot end up with the marker opening a
+#: block of its own.
+_FENCE = chr(96) * 3
+
+#: A fenced block, opening line and closing line matched TOGETHER.
+#:
+#: Deliberately a pattern rather than character surgery. Deleting every
+#: backtick in the body would peel this fence too, and would also quietly
+#: repair genuinely broken replies and eat the backticks out of a legitimate
+#: `text` field - which turns `unparseable` from a diagnosis into noise. A
+#: fence has a shape: three backticks, an optional language tag on the SAME
+#: line, a newline, a body, and three backticks again. Anything that does not
+#: have that shape is left exactly as it arrived.
+_FENCED_RE = re.compile(
+    r"```[^\S\n]*[A-Za-z0-9_+.-]*[^\S\n]*\r?\n(.*?)\r?\n?[^\S\n]*```",
+    re.DOTALL)
+
+#: A byte-order mark, which arrives as a CHARACTER and is not whitespace:
+#: `str.strip()` leaves it and `json.loads` refuses it. Written as a codepoint
+#: for the same reason `_LOOKALIKES` is - a glyph nothing renders is a glyph
+#: nobody can review.
+_BOM = chr(0xfeff)
+
+
+def _unwrap(content: str) -> str:
+    """Peel a provider's WRAPPING off a reply body. Never CHOOSE a body.
+
+    A provider that fences its JSON or leads with a byte-order mark has
+    answered the question and dressed the answer. Read raw, both land in the
+    same bucket as a genuinely broken reply - and that bucket is wired to the
+    circuit breaker, so a formatting habit stops extraction for every chat
+    after five replies and stops it for good after twenty. Classifying a
+    costume as a fault is what this exists to stop.
+
+    TWO RULES, and the second is the one that took measuring:
+
+    1. Exactly two fence markers in the whole body, forming one block that
+       ENDS the body: its contents. A preamble in front of the fence comes off
+       with it, because prose before an answer is throat-clearing.
+    2. ANYTHING ELSE IS RETURNED UNTOUCHED, including a body with two fences,
+       a body whose second fence never closed, a body that is prose with an
+       object somewhere inside it, and a body that goes on talking after the
+       fence closes.
+
+    There used to be a third rule in front of these, returning early when the
+    body already opened as JSON, to keep a fact whose own `text` carries fence
+    markers from being cut apart. Rule 1 makes it unreachable: a JSON body
+    ends in a brace or a bracket, never in a fence, and the marker inside a
+    string is never followed by the real newline the pattern needs. It was
+    removed rather than kept as reassurance, because a branch no input can
+    take is a branch nobody can check.
+
+    Rule 3 is not caution, it is the result of attacking rule 2. An earlier
+    version of this also sliced from the first `{` to the last `}` when no
+    fence was found, and that one line was worth three separate holes,
+    measured:
+
+      * a model that wrote out a draft and then RETRACTED it in the next
+        sentence had the retracted draft extracted and, with automatic
+        acceptance on, written to permanent memory;
+      * a model that said "I have not read your transcript, but JSON would
+        look like this" had the illustration stored as a finding;
+      * a model that quoted an instruction PASTED INTO THE TRANSCRIPT in
+        order to refuse it handed that instruction back as a fact - and
+        because the injected text really is in the chunk, the grounding check
+        and the anchor check both passed it. The forged-section attack this
+        module's own fence comment describes, arriving through the parser
+        instead.
+
+    Picking an object out of prose means deciding which of the things a model
+    said it meant, and a formatter cannot do that. Several fences is the same
+    question in another shape, which is why the MARKERS are counted rather
+    than the matched blocks: a complete first block followed by a second one
+    that was cut off mid-body leaves one match and three markers, and taking
+    that first block turns a truncated reply into a clean "nothing found" -
+    the range marked processed, the cursor moved on, nothing stored and no
+    error anywhere. That is the wound in the module docstring, rebuilt inside
+    the fix for something else.
+
+    Prose AFTER the closing fence is refused for the same reason and it is
+    not a hypothetical either: a fenced draft followed by "on reflection none
+    of that is supported" was measured handing the draft back. Before the
+    fence, prose is throat-clearing; after it, prose is a second opinion, and
+    a formatter that reads the first block and ignores the sentence
+    withdrawing it is answering a question nobody asked it.
+
+    So an ambiguous body stays `unparseable` and the reply is refused rather
+    than guessed at. A costume comes off; a debate does not.
+
+    NOTHING HERE DECIDES THAT A BODY IS VALID. `json.loads` still does.
+    """
+    text = content.lstrip(_BOM).strip().lstrip(_BOM).strip()
+    if text.count(_FENCE) != 2 or not text.endswith(_FENCE):
+        return text
+    fenced = _FENCED_RE.search(text)
+    if fenced is None:
+        return text
+    return fenced.group(1).strip().lstrip(_BOM).strip()
 
 
 class ExtractionFailed(Exception):
@@ -504,6 +693,117 @@ def _fold(text: str) -> str:
     for bad, good in _LOOKALIKES.items():
         text = text.replace(bad, good)
     return " ".join(text.split())
+
+
+#: Punctuation shaved off a token before it is used as an anchor. The quote
+#: arrives with the transcript's own commas and brackets attached to its words.
+_ANCHOR_EDGE = "\"'()[]{}<>.,;:!?/*_-"
+
+#: Below this, a token is too small to mean anything as a substring. A single
+#: letter or digit is in almost every sentence ever written.
+_ANCHOR_MIN_CHARS = 2
+
+
+def _anchors(evidence: str) -> list[str]:
+    """The words in a quote that a TRANSLATION of the quote would still carry.
+
+    The prompt asks for `text` in English and `evidence` in the transcript's
+    own language, so the two are not comparable word for word - which is
+    exactly why `text` had no gate at all. What DOES cross the language
+    boundary is the material that is never translated: names, places, and
+    numbers. If a quote names Halden, a sentence honestly derived from that
+    quote says Halden too.
+
+    TWO RULES, and the second one is the whole difficulty.
+
+    A token carrying a digit anchors wherever it stands. A capitalised token
+    anchors only when it is NOT the first word of the quote: the first word of
+    any sentence is capitalised by position, not by being a name, and Turkish
+    is full of ordinary nouns that open a quote. MEASURED - treating the
+    leading token as a name turns exactly three already-pinned true-fact tests
+    red, among them a quote opening on "Kardesi" ("her sibling"), which is a
+    common noun wearing a capital letter because of where it sits.
+
+    THE COST, MEASURED RATHER THAN HOPED FOR, because a gate that drops is
+    the expensive direction: automatic acceptance is on by default, so a
+    wrong pass still faces the other filters and the panel, while a wrong
+    drop loses a true note silently and the cursor moves past it forever.
+
+    Two costs, and they pull opposite ways. A quote whose only name is its
+    first word yields no anchor and its note is not checked at all - that is
+    the miss, and it is deliberate. The other is real and larger: when the
+    quote DOES name somebody, a note that answers with a pronoun instead of
+    the name is refused. "Agabeyim Demir degirmenin sahibi" against "Her
+    brother owns the mill" is a true extraction and this gate drops it.
+
+    That case is not arbitrary. The instruction two hundred lines up already
+    forbids it - "text: one self-contained sentence, third person, named
+    entities, no pronouns", and "Write Nisha's father, never father" - so
+    what is being refused is a note that broke a rule it was given, and
+    "Demir owns the mill" passes. But a rule in a prompt is a request, and
+    this turns one request into a refusal. Over a fixture set of realistic
+    cross-lingual pairs the drop rate on TRUE facts is pinned in the tests
+    rather than described here, so it moves visibly or not at all.
+
+    Turkish attaches case endings to a proper noun with an apostrophe
+    ("Halden'e", "Nisha'nin"), so the stem is taken from in front of it. That
+    is also what makes the English possessive ("Nisha's") match.
+    """
+    out: list[str] = []
+    for position, token in enumerate(_fold(evidence).split()):
+        stem = token.split("'")[0].strip(_ANCHOR_EDGE)
+        if len(stem) < _ANCHOR_MIN_CHARS:
+            continue
+        if any(ch.isdigit() for ch in stem) or (position and stem[:1].isupper()):
+            out.append(stem)
+    return out
+
+
+#: Turkish letters to their nearest ASCII, for the ANCHOR comparison only.
+#:
+#: Written from codepoints for the same reason `_LOOKALIKES` is. This is NOT
+#: the grounding check and must never be used there: that one is a verbatim
+#: substring test and folding a letter out of it would let a quote match text
+#: nobody wrote. Here the two sides are in DIFFERENT LANGUAGES by instruction,
+#: and an English sentence about a Turkish name is routinely written on an
+#: English keyboard - "Ayse" for the transcript's "Ayşe". Measured on the
+#: fixture corpus in the tests: one of five true-note drops was exactly that,
+#: a name present in both fields and spelled with and without its cedilla.
+#:
+#: Folding can only make the gate LOOSER, which is the safe direction: two
+#: different names that collapse to the same ASCII let a note through, and a
+#: note let through still faces every other filter.
+_ASCII_FOLD = str.maketrans({
+    chr(0x00e7): "c", chr(0x00c7): "C",   # c with cedilla
+    chr(0x011f): "g", chr(0x011e): "G",   # g with breve
+    chr(0x0131): "i", chr(0x0130): "I",   # dotless i, dotted I
+    chr(0x00f6): "o", chr(0x00d6): "O",   # o with diaeresis
+    chr(0x015f): "s", chr(0x015e): "S",   # s with cedilla
+    chr(0x00fc): "u", chr(0x00dc): "U",   # u with diaeresis
+    chr(0x00e2): "a", chr(0x00c2): "A",   # circumflexes, which Turkish
+    chr(0x00ee): "i", chr(0x00ce): "I",   # spelling treats as optional
+    chr(0x00fb): "u", chr(0x00db): "U",
+})
+
+
+def _is_anchored(text: str, anchors: list[str]) -> bool:
+    """Does the note keep at least ONE of its quote's untranslatable words?
+
+    A substring test rather than a token match, and loosely on purpose: an
+    anchor that appears inside a longer word still counts. Every looseness
+    here costs a drop that would not have happened, and a drop is the
+    expensive direction.
+
+    Case is not folded, for the reason `_fold` gives: Turkish dotted and
+    dotless I make casefold locale-dependent, and a name is spelled with the
+    same capitals in both fields. Turkish DIACRITICS are folded, because the
+    two fields are in different languages on purpose and the English one gets
+    typed on a keyboard that has no cedilla.
+    """
+    if not anchors:
+        return True
+    folded = _fold(text).translate(_ASCII_FOLD)
+    return any(anchor.translate(_ASCII_FOLD) in folded for anchor in anchors)
 
 
 def work_key(chat_id: int, from_id: int, to_id: int, model: str,
@@ -601,8 +901,19 @@ def parse_reply(reply: dict, chunk_text: str, existing: list[str], *,
     content = message.get("content")
     if not content:
         raise ExtractionFailed("empty_content")
+    # UNWRAPPED, not repaired. A fence, a preamble or a byte-order mark is a
+    # provider's formatting habit; `unparseable` is meant to name a reply that
+    # cannot be trusted, and the two used to share one bucket that feeds the
+    # circuit breaker. What `_unwrap` cannot do is make a broken body parse -
+    # `json.loads` is still the only thing that decides.
+    #
+    # The isinstance guard is not decoration: a provider that answers with a
+    # list or an object in `content` reached `json.loads` as a TypeError and
+    # was named `unparseable`, and peeling a non-string would have turned that
+    # named failure into a bare AttributeError no caller catches.
+    body = _unwrap(content) if isinstance(content, str) else content
     try:
-        parsed = json.loads(content)
+        parsed = json.loads(body)
     except (TypeError, ValueError) as exc:
         raise ExtractionFailed("unparseable") from exc
     # `in` is a SUBSTRING test on a str and a membership test on a list, so a
@@ -695,6 +1006,29 @@ def parse_reply(reply: dict, chunk_text: str, existing: list[str], *,
             # this application does not build. Refused rather than guessed:
             # the row used to be written with `evidence_role` set to None.
             dropped["ungrounded"] += 1
+            continue
+        # THE SECOND HALF OF THE SAME GATE, and the half that was missing.
+        #
+        # Everything above proves the QUOTE is real. Nothing proved the NOTE
+        # came from it. `text` met a length check and a blank check, and that
+        # was all - so a fact could carry a true, verbatim, correctly
+        # attributed Turkish quote and a sentence about something else
+        # entirely, and be kept. Measured: an untouched Turkish chunk with
+        # valid evidence and `text` reading "The capital of France is Paris."
+        # came back kept, dropped nothing, and - with automatic acceptance ON
+        # by default - was written to permanent memory and then handed back as
+        # EXISTING_NOTES on every later extraction. A closed loop, and this
+        # module's own comment on the fence already said the loop was open.
+        #
+        # The check is deterministic and costs nothing. A second model call
+        # was ruled out: a verifier that can be wrong is another thing that
+        # can be wrong, billed per note.
+        #
+        # SEPARATELY COUNTED. Folded into `ungrounded` it would say "the model
+        # invented a quote" about a model that copied one perfectly and then
+        # wrote the wrong sentence, and those two call for opposite responses.
+        if not _is_anchored(text, _anchors(evidence)):
+            dropped["unanchored"] += 1
             continue
         if (fact.get("kind") not in KINDS
                 or fact.get("durability") not in DURABILITIES):

@@ -19,6 +19,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { useUiStore } from "@/lib/store/uiStore";
+import {
+  LIMIT_DRAFT_FIELDS,
+  PANEL_DRAFT_KEYS,
+  chatScopedPanelDraftKey,
+  chatScopedPanelDraftPrefix,
+  useDraftStore,
+  usePanelDraft,
+} from "@/lib/store/draftStore";
 import { useErrorStore } from "@/lib/errors/errorStore";
 import {
   useChatBoundaries,
@@ -73,16 +81,47 @@ export function BoundaryPanel() {
   const setUseGlobal = useSetUseGlobalBoundaries();
   const pushError = useErrorStore((s) => s.pushError);
 
-  const [label, setLabel] = useState("");
-  const [severity, setSeverity] = useState("hard");
+  // Store-backed for the same reason the note box next door is: this panel
+  // is unmounted by an ordinary tab click, and a half-written limit is text
+  // the user typed. The selects below stay local - they have defaults, not
+  // contents.
+  // Keyed on the chat for the same reason the note box is: the scope select
+  // below can file this limit into the open chat, so the buffer must not
+  // follow the reader into a different one.
+  //
+  // The four qualifiers are held with the label rather than beside it. They
+  // are what the limit MEANS, and a label restored next to four controls
+  // that had snapped back to their defaults would put a hard global limit
+  // where the user had written a soft one for this chat - with their own
+  // words on screen saying it was theirs. This panel is the one place in the
+  // app where that particular lie costs the most.
+  const limitKey = (field: string) =>
+    chatScopedPanelDraftKey(PANEL_DRAFT_KEYS.newLimit, chatId, field);
+  const [label, setLabel] = usePanelDraft(limitKey(LIMIT_DRAFT_FIELDS.label));
+  const clearPanelDraftsWithPrefix = useDraftStore(
+    (s) => s.clearPanelDraftsWithPrefix,
+  );
+  const [severity, setSeverity] = usePanelDraft(
+    limitKey(LIMIT_DRAFT_FIELDS.severity),
+    "hard",
+  );
   // What should happen when the limit is crossed, and how far the scene may
   // go at all. Both columns have been collected, validated and stored since
   // the table was written, and neither had a control here or a line in the
   // prompt - so the app could store "stop the scene" and tell nobody.
-  const [onViolation, setOnViolation] = useState("pause");
-  const [rating, setRating] = useState("");
+  const [onViolation, setOnViolation] = usePanelDraft(
+    limitKey(LIMIT_DRAFT_FIELDS.onViolation),
+    "pause",
+  );
+  const [rating, setRating] = usePanelDraft(limitKey(LIMIT_DRAFT_FIELDS.rating));
   // Global by default: a limit is usually about the person, not the scene.
-  const [scope, setScope] = useState<"global" | "chat">("global");
+  const [storedScope, setScope] = usePanelDraft(
+    limitKey(LIMIT_DRAFT_FIELDS.scope),
+    "global",
+  );
+  // The buffer is a string, and only two of them mean anything here. Anything
+  // else is read as the default rather than trusted into the payload.
+  const scope: "global" | "chat" = storedScope === "chat" ? "chat" : "global";
 
   // Saved on blur, per A50: the vault can lock mid-thought, and a buffer
   // somebody typed and never committed is a buffer the lock eats.
@@ -160,7 +199,12 @@ export function BoundaryPanel() {
         // written.
         ...(scope === "chat" && chatId != null ? { chat_id: chatId } : {}),
       }]);
-      setLabel("");
+      // The whole set goes, not just the label: the qualifiers described a
+      // limit that now exists, and leaving them would arm the next one with
+      // settings nobody chose for it.
+      clearPanelDraftsWithPrefix(
+        chatScopedPanelDraftPrefix(PANEL_DRAFT_KEYS.newLimit, chatId),
+      );
     } catch (err) {
       pushError(err, "error", { chatId: chatId ?? undefined });
     }
@@ -249,6 +293,12 @@ export function BoundaryPanel() {
           value={label}
           maxLength={BOUNDARY_MAX_CHARS}
           placeholder="Something to keep out of the story..."
+          // The placeholder was the only thing naming this box, and a
+          // placeholder stops being read out the moment there is a value -
+          // so the one control on this island announced itself by its own
+          // contents while the user typed and as nothing once they paused.
+          // Same fix, same wording pattern, as the note box next door.
+          aria-label="New limit"
           disabled={busy}
           onChange={(e) => setLabel(e.target.value)}
           onKeyDown={(e) => {

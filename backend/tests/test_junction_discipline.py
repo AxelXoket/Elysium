@@ -23,12 +23,15 @@ A junction needs no privileges to create on Windows.
 """
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
 import browser_profile
+import secure_delete
 import config
 from tts import provision
 
@@ -167,3 +170,75 @@ class TestProvisionDoesNotDeleteThroughAJunction:
             provision._rmtree(tmp_path / "never-existed")
 
         assert not [r for r in caplog.records if "redirected" in r.message]
+
+
+class TestWhatTheStdlibActuallyDoesWithAJunction:
+    """Two measurements, kept because a decision rests on them.
+
+    `block_crash_reporting` runs `shutil.rmtree` over the crash database after
+    `shred_tree` has refused any redirected name inside it, and the obvious
+    reading of that is wrong in both directions. These pin the real behaviour
+    so the next person to weigh the trade is weighing it against facts.
+    """
+
+    def test_rmtree_removes_the_junction_it_will_not_follow(
+            self, tmp_path) -> None:
+        """It does NOT descend, so the target keeps every byte. It DOES
+        unlink the junction entry, and on Windows that succeeds on a
+        reparse-point directory. So the residue of the sweep is one deleted
+        name, not the files behind it."""
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        keepsake = elsewhere / "keepsake.txt"
+        keepsake.write_text("not ours", encoding="utf-8")
+        root = tmp_path / "root"
+        root.mkdir()
+        junction(root / "trap", elsewhere)
+
+        shutil.rmtree(root, ignore_errors=True)
+
+        assert keepsake.read_text(encoding="utf-8") == "not ours",             "rmtree descended through the junction after all"
+        assert not root.exists(),             "the junction did not even stop rmtree from taking the tree"
+
+    def test_plain_os_walk_does_descend_into_one(self, tmp_path) -> None:
+        """GROUND for why the prune in `shred_tree` cannot be handed to the
+        standard library. `os.walk` with its default `followlinks=False`
+        walks straight into a junction, because a junction is not a symlink
+        and `os.path.islink` answers False about it. Any hand-rolled walk
+        that trusted that flag would overwrite files outside the profile."""
+        elsewhere = tmp_path / "elsewhere"
+        (elsewhere / "inner").mkdir(parents=True)
+        (elsewhere / "inner" / "keepsake.txt").write_text(
+            "not ours", encoding="utf-8")
+        root = tmp_path / "root"
+        root.mkdir()
+        junction(root / "trap", elsewhere)
+
+        seen = {name for _d, _s, files in os.walk(root) for name in files}
+
+        assert "keepsake.txt" in seen,             "os.walk stopped at the junction on its own; the prune is dead code"
+        assert os.path.islink(root / "trap") is False,             "islink would have been enough, which it is not"
+
+    def test_a_name_that_cannot_be_stat_ed_also_reports_pruned(
+            self, tmp_path) -> None:
+        """And `pruned` does not mean "a junction was found".
+
+        `is_redirected` fails CLOSED on any OSError, so an ordinary directory
+        whose name cannot be opened through the Win32 path - a trailing
+        space, a trailing dot, a reserved device name - answers True with no
+        reparse point anywhere. Anything that treats `pruned` as proof of an
+        attacker is reading it wrong, which is why the crash blocker does not
+        branch on it.
+        """
+        root = tmp_path / "root"
+        root.mkdir()
+        odd = root / "reports "
+        # mkdir through the extended-length prefix, which is the only way to
+        # create the name; the ordinary path cannot even open it afterwards.
+        os.mkdir("\\\\?\\" + str(odd))
+        if not any(e.name == "reports " for e in os.scandir(root)):
+            pytest.skip("this filesystem folded the trailing space away")
+
+        assert secure_delete.is_redirected(odd) is True
+        _removed, _stuck, pruned = secure_delete.shred_tree(root)
+        assert pruned is True, "the fail-closed path no longer reports pruned"

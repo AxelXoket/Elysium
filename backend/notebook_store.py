@@ -1349,12 +1349,27 @@ def unread_backlog(con) -> dict:
     return {"chats": len(rows), "messages": sum(r[1] for r in rows)}
 
 
-def spend_today(con) -> dict:
-    """Calls and cost recorded for the current local day."""
+def spend_today(con, day: str | None = None) -> dict:
+    """Calls and cost recorded for one local day. Defaults to the current one.
+
+    `day` IS THE CLAIM'S DAY when a caller has one, for the same reason
+    `claim_call`, `release_call` and `record_usage` all take it. This was the
+    last statement in the file still asking SQLite what day it was on its own
+    account, and a read that derives its own key cannot be pointed at the row
+    a write just made: every day-boundary claim about the ceiling was
+    therefore unmeasurable, because the only way to look at yesterday's
+    counter was to wait a day.
+
+    The default goes through `spend_day` rather than repeating the literal,
+    so there is exactly one place in this module that decides what "today"
+    means and one format the `day` primary key is ever written in.
+    """
+    if day is None:
+        day = spend_day(con)
     row = con.execute(
         "SELECT calls, tokens_in, tokens_out, cost, cost_unknown "
         "FROM notebook_spend "
-        "WHERE day = date('now', 'localtime')").fetchone()
+        "WHERE day = ?", (day,)).fetchone()
     if row is None:
         return {"calls": 0, "tokens_in": 0, "tokens_out": 0, "cost": 0.0,
                 "cost_unknown": 0}
@@ -1749,6 +1764,53 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
         # impossible.
         record_usage(con, usage, attempt_token, day=claim_day)
 
+    # AND THEN NOTHING ELSE, if the chat it was about is gone. `chat_id` on
+    # `notebook_extractions` is a foreign key and `PRAGMA foreign_keys` is
+    # ON, so deleting a chat while its extraction is still on the wire made
+    # the INSERT below raise IntegrityError - which aborted the transaction,
+    # and the spend row written two statements up went back with it.
+    # Measured: `notebook_spend_calls` ends with no row and
+    # `notebook_extractions` with no row, for a call the provider had
+    # already generated and billed. The money is recorded FIRST for exactly
+    # this class of path, and a rollback undid the protection.
+    #
+    # Looked up rather than caught, the same way the `prior` lookup below
+    # is: `except IntegrityError` cannot tell "the chat is gone" from "this
+    # key was already written", and the whole reason that catch was removed
+    # is that it reported one as the other. This is `create_entry`'s gate,
+    # in the second writer that needed it.
+    #
+    # ONLY WHEN THERE IS MONEY TO PROTECT, and the `usage` test is the whole
+    # point of the gate rather than a shortcut. The one caller that arrives
+    # with no usage is the trace written BEFORE the request goes out, and it
+    # reads this function's failure as its answer: if that write cannot
+    # land, the worker refuses to make the call at all and hands the day's
+    # claimed slot back, because a call with no trace is unaccountable
+    # spend. Swallowing a dead chat there would report a row that does not
+    # exist, and the worker would then pay for a reply about a chat nobody
+    # can be shown - turning "refuse to spend" into "spend, then discard".
+    # So a settle with no money at stake falls through to the foreign key
+    # exactly as it always did: there is nothing written to lose, and the
+    # caller is entitled to learn the write did not happen.
+    #
+    # The row is not written and no `notebook_extracted_ever` flag is set:
+    # there is no chat left to plan for, so there is nothing for either to
+    # tell a later run.
+    #
+    # `duplicate` IS SET, and not because this was a duplicate. It is the
+    # flag the settling caller reads as "this reply could not be landed, and
+    # that is not the provider's fault" - the same bucket as an already
+    # answered key or a row reclaimed by a retry. Without it a dead-chat
+    # reply that happened to propose nothing counts as a healthy run and
+    # RESETS the failure breaker, wiping its memory of every real provider
+    # failure before it. `chat_gone` rides alongside so that bucket can be
+    # given its own words on the status screen without changing this
+    # function again.
+    if usage and con.execute("SELECT 1 FROM chats WHERE id = ?",
+                             (chat_id,)).fetchone() is None:
+        return {"duplicate": True, "written": 0, "retired": 0,
+                "accepted": False, "duplicates": 0, "chat_gone": True}
+
     # This chat has now been looked at by the extractor, and that fact must
     # outlive the row that just proved it. `forget_proposals_from_messages`
     # deletes extraction rows on an edit ON PURPOSE, so the cursor rolls back
@@ -1764,7 +1826,25 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
     # firing, and the chat was read from its OLDEST message instead of the
     # present: the exact behaviour that branch exists to avoid, reached by
     # the one path that never read anything at all.
-    if status != "skipped":
+    #
+    # `done`, not "anything but skipped". Excluding only the skips left
+    # `running` and `failed` lighting it, and those two say a call was
+    # ATTEMPTED, not that a range was read - the cursor beside this flag
+    # counts `done` rows and the one `failed` row that means the call was
+    # made and abandoned in flight, and nothing else. So a single network
+    # drop on the very first attempt left `last` at zero with the flag at
+    # one, the two disagreed about whether the chat had ever been read, and
+    # the disagreement is permanent: no later run can put the flag back.
+    # Measured on a five hundred message chat - one dropped connection and
+    # every subsequent run ground forward from the OLDEST message twenty at
+    # a time, about twenty five billed calls, which is the exact outcome the
+    # upgrading-user branch exists to prevent.
+    #
+    # The `running` case is the same story one step earlier: the row is
+    # written between the claim and the request, before any reply exists.
+    # `done` is the only status that means a range was answered, and it is
+    # the only one that may say so.
+    if status == "done":
         con.execute(
             "UPDATE chats SET notebook_extracted_ever = 1 WHERE id = ? "
             "AND notebook_extracted_ever = 0", (chat_id,))
@@ -1813,10 +1893,45 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
         # A caller with no token of its own (every non-worker caller) leaves
         # whatever token is already on the row alone, rather than blanking it.
         new_token = attempt_token if attempt_token is not None else prior[1]
+        # THE MONEY ADDS UP, THE STATE DOES NOT. One work key can be settled
+        # several times - `running`, then a `failed` that was paid for, then
+        # a retry that succeeded - and every one of those attempts that
+        # reached the provider was billed. `record_usage` upserts the day
+        # total additively for that reason, so a plain assignment here left
+        # the audit trail and the day total telling two different stories
+        # about the same money: after 0.01 and then 0.02 the row said 0.02
+        # while `notebook_spend` correctly said 0.03. The row is the only
+        # per-range answer to "what did this stretch cost", so it was the
+        # answer that was wrong.
+        #
+        # `status`, `skip_reason`, `finish_reason`, `error_type` and the
+        # attempt token stay ASSIGNMENTS. They describe where this range is
+        # now, not what it has cost so far, and summing a state is
+        # meaningless.
+        #
+        # COALESCE ON BOTH SIDES, and neither is decoration. The column is
+        # nullable and starts NULL on a `running` row, so `cost + ?` would
+        # make the first real price NULL. And a re-claim comes back through
+        # here with no usage at all, so the bound parameter is NULL too and
+        # would erase a price already recorded. NULL arithmetic in SQLite
+        # answers NULL either way, so without both guards the row forgets
+        # money it was told about.
+        #
+        # WHAT THIS COSTS, stated rather than hidden: NULL on this column
+        # used to mean "the provider returned no price", and a sum cannot
+        # carry that. A range charged 0.01 and then charged an unpriced
+        # amount now reads 0.01, the same as a range charged 0.01 and
+        # nothing else. The day-level counter still tells them apart -
+        # `notebook_spend.cost_unknown` counts exactly those calls - so the
+        # unknown is not lost, only absent from this row. Carrying it here
+        # too would need a column of its own beside `cost`.
         con.execute(
             "UPDATE notebook_extractions SET status = ?, request_id = ?, "
-            "skip_reason = ?, finish_reason = ?, tokens_in = ?, tokens_out = ?,"
-            " cost = ?, error_type = ?, attempt_token = ? WHERE work_key = ?",
+            "skip_reason = ?, finish_reason = ?, "
+            "tokens_in  = COALESCE(tokens_in,  0) + COALESCE(?, 0), "
+            "tokens_out = COALESCE(tokens_out, 0) + COALESCE(?, 0), "
+            "cost       = COALESCE(cost,       0) + COALESCE(?, 0), "
+            "error_type = ?, attempt_token = ? WHERE work_key = ?",
             (status, usage.get("request_id"), skip_reason,
              usage.get("finish_reason"), usage.get("tokens_in"),
              usage.get("tokens_out"), usage.get("cost"), error_type,
@@ -2080,6 +2195,39 @@ def extraction_stats(con, chat_id: int | None = None) -> dict:
         f"{'AND' if where else 'WHERE'} (error_type = ? "
         "     OR error_type LIKE 'write\\_%' ESCAPE '\\')",
         (*args, ABANDONED_IN_FLIGHT)).fetchone()[0]
+    # WHY they failed, and not only how many did.
+    #
+    # This column has been written on every failed row from the beginning,
+    # and every reader of it before this one asks it ONE FIXED QUESTION and
+    # answers in a single number: the two counts above ("was it abandoned",
+    # "did it cost money"), and the four cursor queries that step over a row
+    # wearing ABANDONED_IN_FLIGHT. Not one of them can say what the value
+    # WAS. So "it failed three times" and "it timed out three times" reached
+    # the screen as the same sentence, and only the second tells a reader
+    # whether the thing to fix is their connection, their proxy, or nothing
+    # at all.
+    #
+    # What it holds is not one shape. Five writers reach it: a bare parser
+    # token for a reply that could not be trusted, `prompt_<class>` for a
+    # request that could not be built, `write_<class>` for a reply that
+    # could not be stored, `<class>:<reason>` for a provider failure that
+    # named itself, and a bare class name. The panel takes them apart; this
+    # query only has to count them without inventing a grouping.
+    #
+    # Same shape as `skip_reasons`, NULL filter included: every row that has
+    # not failed carries NULL here, and a None key is a reason with no name.
+    # `if r[0]` rather than `is not None`, because that is the guard beside
+    # it and the difference is the empty string, which no writer produces.
+    #
+    # `abandoned` above keeps its own query rather than being read off this
+    # census. It is counted INSIDE `failed`, so the two may never be added,
+    # and that is a property of the counter rather than of the breakdown -
+    # folding it in here would put a number that must not be summed into a
+    # dict whose whole shape invites summing. The cost of that choice is one
+    # extra scan of this table per status poll, and it is paid on purpose.
+    errors = con.execute(
+        f"SELECT error_type, COUNT(*) FROM notebook_extractions {where} "
+        "GROUP BY error_type", args).fetchall()
     return {
         "done": by_status.get("done", 0),
         "failed": by_status.get("failed", 0),
@@ -2089,6 +2237,7 @@ def extraction_stats(con, chat_id: int | None = None) -> dict:
         # failed after the reply had already been paid for.
         "paid_and_lost": paid_and_lost,
         "skip_reasons": {r[0]: r[1] for r in skips if r[0]},
+        "error_types": {r[0]: r[1] for r in errors if r[0]},
     }
 
 

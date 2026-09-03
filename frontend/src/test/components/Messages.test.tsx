@@ -1,11 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { screen, waitFor, within, fireEvent } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { ChatCanvas } from "@/components/chat/ChatCanvas";
 import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
 import { useUiStore } from "@/lib/store/uiStore";
 import { mockFetch } from "../mocks/api";
+import {
+  LAUNCH_TOKEN_HEADER,
+  __setLaunchTokenForTest,
+} from "@/lib/api/launchToken";
 import { messageFixture } from "../mocks/fixtures";
 import type { Message } from "@/lib/schemas/chats";
 import type { ReactNode } from "react";
@@ -108,8 +112,24 @@ describe("Message attachments", () => {
     ],
   };
 
+  /** Routes that serve both attachment binaries. The thumbnail FETCHES them
+   *  now (with the launch token) rather than letting the element load a URL,
+   *  so a test that does not serve them is testing the failure path. */
+  const servesBothImages = {
+    "/uploads/images/9": { body: {} },
+    "/uploads/images/10": { body: {} },
+  };
+
+  let blobCount = 0;
+
   beforeEach(() => {
     vi.restoreAllMocks();
+    // jsdom implements neither half of the object-URL API. Naming each blob
+    // after the call that made it is what lets the assertions below tell one
+    // attachment's bytes from the other's.
+    blobCount = 0;
+    URL.createObjectURL = vi.fn(() => `blob:attachment-${++blobCount}`);
+    URL.revokeObjectURL = vi.fn();
     useUiStore.setState({
       selectedChatId: 1,
       selectedCharacterId: 1,
@@ -118,13 +138,21 @@ describe("Message attachments", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    Reflect.deleteProperty(URL, "createObjectURL");
+    Reflect.deleteProperty(URL, "revokeObjectURL");
+    __setLaunchTokenForTest(null);
   });
 
   it("renders a thumbnail per attachment above the message text", async () => {
+    // This case used to assert the src WAS the API url, which is the shape
+    // that forced the launch-token gate to accept a browser header in the
+    // token's place on this route. The bytes are fetched now and the element
+    // is pointed at a blob, so the blob is what gets asserted.
     mockFetch({
       "/chats/1/messages": {
         body: [messageFixture, userMessageWithImages],
       },
+      ...servesBothImages,
     });
 
     renderWithQueryClient(<ChatCanvas />, { wrapper });
@@ -132,14 +160,85 @@ describe("Message attachments", () => {
     expect(await screen.findByText("Look at these")).toBeInTheDocument();
     const thumbs = screen.getAllByAltText("attached image");
     expect(thumbs).toHaveLength(2);
-    expect(thumbs[0]).toHaveAttribute(
-      "src",
-      "http://127.0.0.1:8787/api/v1/uploads/images/9",
+    await waitFor(() =>
+      expect(thumbs[0]).toHaveAttribute("src", "blob:attachment-1"),
     );
-    expect(thumbs[1]).toHaveAttribute(
-      "src",
-      "http://127.0.0.1:8787/api/v1/uploads/images/10",
+    await waitFor(() =>
+      expect(thumbs[1]).toHaveAttribute("src", "blob:attachment-2"),
     );
+    // Nothing is still pointed at the raw binary route.
+    for (const thumb of thumbs) {
+      expect(thumb.getAttribute("src")).not.toContain("/uploads/images/");
+    }
+  });
+
+  it("AC-2: the thumbnail asks for the bytes with the launch token", async () => {
+    // What is measured is the ARGUMENT the mocked fetch received. Without the
+    // header the backend gate answers 403 and no picture ever arrives.
+    __setLaunchTokenForTest("token-for-this-launch");
+    const fetchMock = mockFetch({
+      "/chats/1/messages": {
+        body: [messageFixture, userMessageWithImages],
+      },
+      ...servesBothImages,
+    });
+
+    const view = renderWithQueryClient(<ChatCanvas />, { wrapper });
+    await screen.findByText("Look at these");
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find((c) =>
+        String(c[0]).includes("/uploads/images/9"),
+      );
+      expect(call).toBeDefined();
+      const headers = (call![1]?.headers ?? {}) as Record<string, string>;
+      expect(headers[LAUNCH_TOKEN_HEADER]).toBe("token-for-this-launch");
+    });
+    view.unmount();
+
+    // GROUND CONTROL: the header comes from the token module rather than
+    // being a constant this test hardcodes on both sides. With no token
+    // issued - the developer path, where the gate is unarmed - the very same
+    // request goes out carrying no such header at all.
+    __setLaunchTokenForTest(null);
+    fetchMock.mockClear();
+    const second = renderWithQueryClient(<ChatCanvas />, { wrapper });
+    await screen.findByText("Look at these");
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find((c) =>
+        String(c[0]).includes("/uploads/images/9"),
+      );
+      expect(call).toBeDefined();
+      const headers = (call![1]?.headers ?? {}) as Record<string, string>;
+      expect(headers[LAUNCH_TOKEN_HEADER]).toBeUndefined();
+    });
+    second.unmount();
+  });
+
+  it("AC-2: the blob is revoked when the thumbnail goes away", async () => {
+    // A blob: URL nobody revokes pins its bytes for the life of the document,
+    // which here is the life of the window. Fetching the picture instead of
+    // letting the element load it is only correct if the lifetime closes too.
+    mockFetch({
+      "/chats/1/messages": {
+        body: [messageFixture, userMessageWithImages],
+      },
+      ...servesBothImages,
+    });
+
+    const view = renderWithQueryClient(<ChatCanvas />, { wrapper });
+    await screen.findByText("Look at these");
+    await waitFor(() =>
+      expect(screen.getAllByAltText("attached image")[0]).toHaveAttribute(
+        "src",
+        "blob:attachment-1",
+      ),
+    );
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith("blob:attachment-1");
+
+    view.unmount();
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:attachment-1");
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:attachment-2");
   });
 
   it("opens a lightbox on thumbnail click and closes it with Escape", async () => {
@@ -148,6 +247,7 @@ describe("Message attachments", () => {
       "/chats/1/messages": {
         body: [messageFixture, userMessageWithImages],
       },
+      ...servesBothImages,
     });
 
     renderWithQueryClient(<ChatCanvas />, { wrapper });
@@ -175,20 +275,23 @@ describe("Message attachments", () => {
 
   // U1: broken/404 attachment binary → graceful placeholder, not the glyph.
   it("U1: a thumbnail that fails to load shows an image-unavailable placeholder", async () => {
+    // The first binary really 404s. This used to fire a synthetic `error`
+    // event at the element, which was the only way in while the BROWSER did
+    // the loading; fetching makes the real refusal reachable.
     mockFetch({
       "/chats/1/messages": {
         body: [messageFixture, userMessageWithImages],
       },
+      "/uploads/images/9": {
+        status: 404,
+        body: { detail: "attachment_not_found" },
+      },
+      "/uploads/images/10": { body: {} },
     });
 
     renderWithQueryClient(<ChatCanvas />, { wrapper });
 
     await screen.findByText("Look at these");
-    const thumbs = screen.getAllByAltText("attached image");
-    expect(thumbs).toHaveLength(2);
-
-    // Simulate the first binary 404ing.
-    fireEvent.error(thumbs[0]);
 
     await waitFor(() => {
       expect(screen.getByText("Image unavailable")).toBeInTheDocument();
@@ -207,6 +310,11 @@ describe("Message attachments", () => {
       "/chats/1/messages": {
         body: [messageFixture, userMessageWithImages],
       },
+      "/uploads/images/9": {
+        status: 404,
+        body: { detail: "attachment_not_found" },
+      },
+      "/uploads/images/10": { body: {} },
     });
 
     renderWithQueryClient(<ChatCanvas />, { wrapper });
@@ -216,7 +324,6 @@ describe("Message attachments", () => {
       screen.getByRole("button", { name: "View attached image 1 of 2" }),
     );
     const dialog = await screen.findByRole("dialog");
-    fireEvent.error(within(dialog).getByAltText("attached image"));
 
     await waitFor(() => {
       expect(within(dialog).getByText("Image unavailable")).toBeInTheDocument();

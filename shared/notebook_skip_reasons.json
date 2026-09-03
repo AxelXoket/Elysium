@@ -1,0 +1,11 @@
+{
+  "_why": "A skip reason is a machine token on the wire and a sentence on screen, and the two live on opposite sides of the wall: backend/notebook_store.py declares the vocabulary, frontend WorkerPanel.tsx turns each token into English. A reason added on one side and not the other reaches a reader as snake_case, which is the one thing that table exists to prevent. The check used to be a backend test that opened WorkerPanel.tsx and looked for the token followed by a colon anywhere in the file. That is a substring search standing in for a rendering: it passed on a key whose sentence was empty, and it passed on a token that happened to be a key in one of the panel's three OTHER prose tables. This file is the agreed vocabulary instead. The backend suite asserts it equals SKIP_REASONS exactly, in both directions; the frontend suite mounts the panel once per reason and reads what a person would read.",
+  "_shape": "reasons: every token any backend writer may store in notebook_extractions.skip_reason. Sorted, no duplicates. Adding one here without a sentence in SKIP_PROSE fails the frontend gate; adding one to SKIP_REASONS without a record here fails the backend gate.",
+  "reasons": [
+    "api_key_not_set",
+    "notebook_daily_cap_reached",
+    "plan_invalidated",
+    "proxy_gate",
+    "range_cleared"
+  ]
+}

@@ -1,7 +1,11 @@
 import { useState, useMemo, useId, useEffect } from "react";
 import { useModels, useRefreshModels } from "@/lib/query/models";
 import { useVoiceMode } from "@/lib/query/tts";
-import { useDraftStore } from "@/lib/store/draftStore";
+import {
+  PANEL_DRAFT_KEYS,
+  useDraftStore,
+  usePanelDraft,
+} from "@/lib/store/draftStore";
 import { useNotebook } from "@/lib/query/notebook";
 import { useChats, useMessages } from "@/lib/query/chats";
 import { useCharacters } from "@/lib/query/characters";
@@ -60,7 +64,9 @@ const IDLE_CHUNK = 48;
 export function ModelPanel() {
   const { data, isLoading, error } = useModels();
   const refresh = useRefreshModels();
-  const [search, setSearch] = useState("");
+  // Store-backed, not component-local: this panel is unmounted every time the
+  // reader looks at a neighbouring tab, and a typed filter is typed text.
+  const [search, setSearch] = usePanelDraft(PANEL_DRAFT_KEYS.modelSearch);
   const [filter, setFilter] = useState<ModalityFilter>(EMPTY_FILTER);
   const [sort, setSort] = useState<SortMode>("catalogue");
   const [sourceOpen, setSourceOpen] = useState(false);

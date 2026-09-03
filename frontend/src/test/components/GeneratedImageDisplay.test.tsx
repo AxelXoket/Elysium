@@ -26,6 +26,10 @@ import { GenerationSettingsProvider } from "@/components/generation/GenerationSe
 import { useUiStore } from "@/lib/store/uiStore";
 import { jsonResponse, mockFetchWithStreams } from "../helpers/streamMocks";
 import { settingsFixture } from "../mocks/fixtures";
+import {
+  LAUNCH_TOKEN_HEADER,
+  __setLaunchTokenForTest,
+} from "@/lib/api/launchToken";
 import type { Message } from "@/lib/schemas/chats";
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -89,6 +93,7 @@ function stubScroller(container: HTMLElement) {
 
 describe("a generated image in the transcript", () => {
   let body: Message[];
+  let fetchSpy: ReturnType<typeof mockFetchWithStreams>;
 
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -102,25 +107,47 @@ describe("a generated image in the transcript", () => {
       selectedCharacterId: 1,
       selectedModelId: "openai/gpt-4o",
     });
-    mockFetchWithStreams({
+    // The picture is FETCHED with the launch token now rather than loaded by
+    // the element from a URL, so the binary has to be served or every case
+    // below is exercising the "image unavailable" path instead.
+    __setLaunchTokenForTest("token-for-this-launch");
+    URL.createObjectURL = vi.fn(() => "blob:generated-42");
+    URL.revokeObjectURL = vi.fn();
+    fetchSpy = mockFetchWithStreams({
       "/settings": { body: settingsFixture },
       "/chats/1/messages": { response: () => jsonResponse(body) },
       "/chats": { response: () => jsonResponse([]) },
+      "/uploads/images/42": { response: () => jsonResponse({}) },
     });
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    Reflect.deleteProperty(URL, "createObjectURL");
+    Reflect.deleteProperty(URL, "revokeObjectURL");
+    __setLaunchTokenForTest(null);
   });
 
   async function renderCanvas() {
     const utils = renderWithQueryClient(<ChatCanvas />, { wrapper });
     const stub = stubScroller(utils.container);
     await screen.findByText("here you go");
+    // The element gets its src one async hop later than it used to: the
+    // component fetches the bytes itself. Waiting here keeps every scroll
+    // case below measuring scrolling rather than a race.
+    await waitFor(() => {
+      const img = screen
+        .getByRole("button", { name: /view attached image/i })
+        .querySelector("img");
+      expect(img?.getAttribute("src")).toBe("blob:generated-42");
+    });
     return { ...utils, ...stub };
   }
 
   it("shows the picture on an assistant reply", async () => {
+    // This used to assert the src CONTAINED the binary route, which is the
+    // shape that forced the launch-token gate to take a browser header in the
+    // token's place. The element is pointed at a blob now.
     await renderCanvas();
     const thumb = await screen.findByRole("button", {
       name: /view attached image 1 of 1/i,
@@ -128,7 +155,8 @@ describe("a generated image in the transcript", () => {
     expect(thumb).toBeInTheDocument();
     const img = thumb.querySelector("img");
     expect(img).not.toBeNull();
-    expect(img!.getAttribute("src")).toContain("/uploads/images/42");
+    expect(img!.getAttribute("src")).toBe("blob:generated-42");
+    expect(img!.getAttribute("src")).not.toContain("/uploads/images/");
   });
 
   it("asks the server for the bytes rather than carrying them inline", async () => {
@@ -139,6 +167,16 @@ describe("a generated image in the transcript", () => {
     const src = img.getAttribute("src") ?? "";
     expect(src.startsWith("data:")).toBe(false);
     expect(src).not.toContain("base64");
+
+    // AC-2: and it asks WITH the launch token. A generated picture is vault
+    // content; the request that collects it carries the same secret every
+    // other request does, measured off the argument the mock received.
+    const call = fetchSpy.mock.calls.find((c) =>
+      String(c[0]).includes("/uploads/images/42"),
+    );
+    expect(call).toBeDefined();
+    const headers = (call![1]?.headers ?? {}) as Record<string, string>;
+    expect(headers[LAUNCH_TOKEN_HEADER]).toBe("token-for-this-launch");
   });
 
   it("re-locks the scroll when the picture finishes loading", async () => {

@@ -19,7 +19,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Loader2, Play } from "lucide-react";
 
-import { getTagPrefs, saveTagPrefs, speakText, ttsAudioUrl } from "@/lib/api/tts";
+import {
+  fetchTtsObjectUrl,
+  getTagPrefs,
+  revokeTtsObjectUrl,
+  saveTagPrefs,
+  speakText,
+} from "@/lib/api/tts";
 import { isApiError } from "@/lib/api/client";
 import { getErrorMessage } from "@/lib/errors/errorMessages";
 import { useErrorStore } from "@/lib/errors/errorStore";
@@ -177,15 +183,27 @@ export function DeliverySection() {
       // superseded meanwhile? Then this response is abandoned: playing it
       // would be a voice from nowhere with no control able to stop it.
       if (seqRef.current !== seq) return;
+      // Fetched with the launch token, not handed to the element as a URL.
+      // The streaming player already did it this way; this preview was the
+      // one caller still loading /tts/audio as an element, and it is why the
+      // gate had to accept a header any process can type.
+      const url = await fetchTtsObjectUrl(result.audio_id);
+      // Superseded while the bytes were arriving: revoke rather than leak,
+      // and play nothing. Same check as above, repeated because the fetch is
+      // a second await and the answer can change across it.
+      if (seqRef.current !== seq) {
+        revokeTtsObjectUrl(url);
+        return;
+      }
       audioRef.current?.pause();
-      const audio = new Audio(ttsAudioUrl(result.audio_id));
+      const audio = new Audio(url);
       audioRef.current = audio;
-      audio.onended = () => {
+      const done = () => {
+        revokeTtsObjectUrl(url);
         if (seqRef.current === seq) setPreviewing(false);
       };
-      audio.onerror = () => {
-        if (seqRef.current === seq) setPreviewing(false);
-      };
+      audio.onended = done;
+      audio.onerror = done;
       await audio.play();
     } catch (err) {
       if (seqRef.current !== seq) return;

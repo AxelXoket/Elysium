@@ -28,9 +28,10 @@ import pytest
 
 import config
 import notebook_extract
+import notebook_store as notebook
 import notebook_worker
 import openrouter
-from database import set_setting
+from database import get_db, set_setting
 
 from tests.test_notebook_worker import fact, seed
 
@@ -154,6 +155,93 @@ class TestASettleThatLandedNothing:
 
         assert w.runs == 1
         assert w.settled_empty == 0
+
+
+class TestAChatDeletedMidCallIsNotADuplicate:
+    """The gate that catches a chat deleted while its reply was in flight
+    returns `duplicate` on purpose - that is what stops a reply nobody can be
+    shown from resetting the failure breaker - and it returns `chat_gone`
+    alongside so the bucket can be given its own words. Nothing read the
+    second flag, so the one outcome that is not a retry, not a race and not
+    the provider's fault reached the reader wearing the word for an
+    already-answered work key.
+
+    No catalogue entry and no sentence map: `last_error` is a free-form
+    string the panel prints in parentheses, alongside class names like
+    `RuntimeError` and `write_RuntimeError_unrecorded`. The gated vocabulary
+    next door is SKIP_REASONS, which is written to `notebook_extractions.
+    skip_reason` by a different pair of writers and is unaffected by this.
+    """
+
+    def test_the_real_gate_says_the_chat_is_gone(self, client) -> None:
+        """The producer and the reader, joined, with no hand-written dict in
+        between: whatever `commit_extraction` actually returns for a deleted
+        chat is what `_empty_reason` is asked about."""
+        chat_id = seed(client, count=4)
+        with get_db() as con:
+            # The order the delete route uses; the notebook rows hold a
+            # foreign key to the chat.
+            notebook.delete_for_chats(con, [chat_id])
+            con.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
+            con.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
+        with get_db() as con:
+            con.execute("BEGIN IMMEDIATE")
+            outcome = notebook.commit_extraction(
+                con, work_key="gone-word", chat_id=chat_id, from_id=1,
+                to_id=2, usage={"tokens_in": 10, "tokens_out": 5,
+                                "cost": 0.01})
+
+        # GROUND CONTROL: this really is the shape that used to read as a
+        # duplicate. If the gate ever stops setting `duplicate`, the reason
+        # below would be right for the wrong reason.
+        assert outcome["duplicate"] is True
+        assert outcome["chat_gone"] is True
+        assert notebook_worker._empty_reason(outcome) == "settled_chat_gone"
+
+    def test_an_ordinary_duplicate_still_says_duplicate(self, client) -> None:
+        """POSITIVE CONTROL, and it is the one that matters here: the new
+        branch sits ABOVE the duplicate branch, so a mistake in it renames
+        every duplicate in the app rather than only the dead-chat one."""
+        chat_id = seed(client, count=4)
+        for _ in range(2):
+            with get_db() as con:
+                con.execute("BEGIN IMMEDIATE")
+                outcome = notebook.commit_extraction(
+                    con, work_key="dup-word", chat_id=chat_id, from_id=1,
+                    to_id=2)
+
+        assert outcome["duplicate"] is True
+        assert not outcome.get("chat_gone")
+        assert notebook_worker._empty_reason(outcome) == "settled_duplicate"
+
+    @pytest.mark.anyio
+    async def test_the_status_screen_is_told_which_one_happened(
+            self, ready, monkeypatch) -> None:
+        """End to end, on the field the panel reads. `_empty_reason` is only
+        interesting because `status()` carries its answer out."""
+        chat_id, w = ready
+
+        async def answers_after_the_chat_is_gone(*a, **kw):
+            with get_db() as con:
+                notebook.delete_for_chats(con, [chat_id])
+                con.execute("DELETE FROM messages WHERE chat_id = ?",
+                            (chat_id,))
+                con.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
+            return {"id": "gone-panel", "choices": [{
+                "finish_reason": "stop",
+                "message": {"content": json.dumps({"facts": []})}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5,
+                          "cost": 0.01}}
+
+        monkeypatch.setattr(openrouter, "complete",
+                            answers_after_the_chat_is_gone)
+
+        await w._handle(chat_id)
+
+        # GROUND: the settle really landed nothing and really came through
+        # the empty path, which is the only path that writes this word.
+        assert w.settled_empty == 1
+        assert w.status()["last_error"] == "settled_chat_gone"
 
 
 class TestWhatTheParserRefused:

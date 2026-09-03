@@ -219,7 +219,11 @@ export function VaultGate({ children }: { children: ReactNode }) {
   // Three module-scope stores also outlive the unmount, and one of them is a
   // deliberate change to what "locked" means, so it is recorded rather than
   // left to be discovered: the draft store (lib/store/draftStore.ts) keeps
-  // unsent composer and edit text across a lock ON PURPOSE. Locking used to
+  // unsent composer, edit AND right-panel text across a lock ON PURPOSE. The
+  // panel half arrived after this paragraph was written, and it is the wider
+  // half: a half-written persona, note or limit is held here too, and an
+  // edited persona box carries the stored name or description it was seeded
+  // with. That is argued in the draft store's own header. Locking used to
   // destroy every half-written sentence in the app, which is a data loss the
   // lock screen was never meant to cause.
   //

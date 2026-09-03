@@ -1,4 +1,9 @@
 import { useState } from "react";
+import {
+  PANEL_DRAFT_KEYS,
+  useDraftStore,
+  usePanelDraft,
+} from "@/lib/store/draftStore";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -32,12 +37,28 @@ export function ProxySection() {
   const refreshHealth = useRefreshProxyHealth();
 
   const [urlInput, setUrlInput] = useState("");
-  const [aliasInput, setAliasInput] = useState("");
+  // The one box in this panel whose contents are kept across a tab switch.
+  // Its three neighbours - the URL above and the passphrases in the section
+  // below - are credentials and stay component-local on purpose; the draft
+  // store's header argues that exclusion in full. A label is not a secret.
+  const [aliasInput, setAliasInput] = usePanelDraft(
+    PANEL_DRAFT_KEYS.proxyAlias,
+  );
   // Same reason as requiredDirty: the alias field is write-only too, so an
   // untouched box must mean "keep what is stored", not "clear it". Sending
   // `aliasInput.trim() || null` unconditionally wiped the stored alias on
   // every later URL-only update.
-  const [aliasDirty, setAliasDirty] = useState(false);
+  //
+  // DERIVED from the buffer rather than tracked beside it. A plain
+  // `useState(false)` came back false after every tab switch, so a restored
+  // alias would have been shown to the user and then not saved - a worse
+  // failure than losing it outright, because the box looks like it worked.
+  // A buffer exists exactly when the user has typed in this box.
+  const aliasDirty = useDraftStore(
+    (s) => s.panel[PANEL_DRAFT_KEYS.proxyAlias] != null,
+  );
+  const clearPanelDraft = useDraftStore((s) => s.clearPanelDraft);
+  const clearAliasDraft = () => clearPanelDraft(PANEL_DRAFT_KEYS.proxyAlias);
   const [requiredToggle, setRequiredToggle] = useState(false);
   // Tracks whether the user touched the toggle since the last save. While NOT
   // dirty, the toggle mirrors the server value - this prevents a save that only
@@ -87,7 +108,12 @@ export function ProxySection() {
         const done: string[] = [];
         if (aliasDirty) {
           await setAlias.mutateAsync(aliasInput.trim() || null);
-          setAliasDirty(false);
+          // Dropping the buffer is what marks the box clean now, because
+          // "clean" is derived from the buffer's absence. It empties the box
+          // too, which the URL box above has always done on success - both
+          // are write-only, and a box still showing text the server has
+          // already taken invites a second, pointless save.
+          clearAliasDraft();
           done.push(aliasInput.trim() ? "Name saved" : "Name cleared");
         }
         if (requiredDirty) {
@@ -109,8 +135,11 @@ export function ProxySection() {
           : (settings?.proxy_alias ?? null),
       });
       setUrlInput(""); // Clear URL on success - write-only
-      setAliasInput("");
-      setAliasDirty(false);
+      // Dropped, not emptied. An empty buffer is still a buffer, and this
+      // box counts as edited whenever one exists - so writing "" here would
+      // leave the next URL-only save convinced the user had asked for the
+      // stored name to be cleared.
+      clearAliasDraft();
       setRequiredDirty(false); // Saved value is now the server value - resume syncing
       setFeedback({ type: "success", text: "Proxy configured" });
     } catch (err) {
@@ -123,7 +152,7 @@ export function ProxySection() {
     try {
       await deleteProxy.mutateAsync();
       setRequiredDirty(false);
-      setAliasDirty(false);
+      clearAliasDraft();
       setFeedback({ type: "success", text: "Proxy removed" });
     } catch (err) {
       setFeedback({ type: "error", text: parseApiError(err).message });
@@ -322,10 +351,8 @@ export function ProxySection() {
           type="text"
           placeholder="Alias (optional)"
           value={aliasInput}
-          onChange={(e) => {
-            setAliasDirty(true);
-            setAliasInput(e.target.value);
-          }}
+          // No dirty flag to raise: writing the buffer IS what raises it.
+          onChange={(e) => setAliasInput(e.target.value)}
           disabled={busy}
           className="text-xs"
           aria-label="Proxy alias input"

@@ -608,9 +608,40 @@ CREATE TABLE IF NOT EXISTS notebook_spend_calls (
             "ALTER TABLE chats ADD COLUMN "
             "notebook_extracted_ever INTEGER NOT NULL DEFAULT 0"
         )
+        # `done`, AND NOTHING ELSE - the same word commit_extraction uses.
+        #
+        # "Any row at all" was not a reconstruction of this flag, it was a
+        # second, wider rule for it. `skipped` is the daily cap or a missing
+        # key, plain `failed` is a dropped connection, `running` is written
+        # before the request even goes out: three ways to have ATTEMPTED
+        # without a range ever being covered, and all three lit the flag
+        # here. So a database that upgraded into this column while holding
+        # one such row arrived in the state commit_extraction now refuses to
+        # create - flag at one, cursor at zero - and arrived in it
+        # permanently, because nothing in this app ever clears the flag. On a
+        # long chat that is the whole history ground through from its oldest
+        # end, twenty messages and one billed call at a time, forever.
+        #
+        # The reference is the WRITER, not the cursor, and the two are not
+        # the same set. The cursor - `_plan_work`'s MAX(to_message_id) and
+        # `first_unread_message`'s covered ranges, which agree with each
+        # other exactly - also counts the one `failed` row that means the
+        # call was made and abandoned in flight, because that money is spent
+        # and re-reading the range would spend it twice. The flag does not,
+        # on purpose: an abandoned call READ nothing. That divergence is
+        # deliberate and harmless, and it is harmless for a reason that
+        # decides this line - the branch that consults the flag is only
+        # reachable when the cursor has NOT moved, and an abandoned row moves
+        # it. Copying the cursor's wider set into here would light the flag
+        # on a chat where a fresh install leaves it dark, which is one more
+        # migrated-only state that no later run can undo.
+        #
+        # So a chat's flag now reads the same whether its history was
+        # replayed through commit_extraction or found on disk by this line.
         con.execute(
             "UPDATE chats SET notebook_extracted_ever = 1 WHERE id IN "
-            "(SELECT DISTINCT chat_id FROM notebook_extractions)"
+            "(SELECT DISTINCT chat_id FROM notebook_extractions "
+            " WHERE status = 'done')"
         )
     if "use_global_boundaries" not in chat_cols:
         # NOT NULL DEFAULT 1 is legal in ALTER because 1 is a constant, unlike

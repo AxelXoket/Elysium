@@ -73,10 +73,146 @@ def no_unlink(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(os, "unlink", lambda *a, **kw: None)
 
 
+# How much bytes-written each file collected while a test ran, keyed by the
+# resolved path the deletion primitive opened.
+_OVERWRITTEN: dict[str, int] = {}
+
+# The chance the content assertion below goes red on a file that WAS fully
+# overwritten, and the reason it is expressed as a budget rather than as
+# "nothing of the original may survive". shred() fills the file with
+# os.urandom, so a byte of noise lands back on its original value with
+# probability 1/256, and demanding zero coincidences would put a gate test
+# one throw of 1-in-256-per-byte away from red. A run of R such bytes at one
+# offset has probability 256**-R, and there are at most (n - R + 1) offsets,
+# so the expected number of surviving runs of length R is bounded by
+# (n - R + 1) * 256**-R. _run_limit takes the shortest R that drives that
+# expectation under this budget. At 32 bytes that is R = 6
+# (27 * 256**-6 = 9.6e-14); at 512 bytes R = 7 (506 * 256**-7 = 7.0e-15); at
+# a megabyte R = 8 (1.0e6 * 256**-8 = 5.4e-14). A whole suite run makes a few
+# dozen of these throws, which leaves the odds of one flake around 1e-12 -
+# far enough away that this can be a gate test. A test that is occasionally
+# red gets muted, and a muted test guards nothing.
+_FLAKE_BUDGET = 1e-12
+
+
+def _run_limit(length: int) -> int:
+    """The shortest surviving stretch of the original this file calls a failure."""
+    span = 1
+    while max(length - span + 1, 1) * (256.0 ** -span) > _FLAKE_BUDGET:
+        span += 1
+    return span
+
+
+def _longest_survivor(survivor: bytes, original: bytes) -> int:
+    """The longest run of positions where the original byte is still there."""
+    longest = run = 0
+    for left, right in zip(survivor, original):
+        run = run + 1 if left == right else 0
+        longest = max(longest, run)
+    return longest
+
+
+def _watch_key(path: Path) -> str:
+    return os.path.realpath(str(path)).casefold()
+
+
+@pytest.fixture(autouse=True)
+def _count_the_overwrite(monkeypatch: pytest.MonkeyPatch):
+    """Count what the deletion primitive really pushed into each file.
+
+    Reading the corpse back is not enough on its own, and that gap was
+    measured rather than argued: a shred() that overwrites the first eight
+    bytes and then declares the whole length covered leaves a file of the
+    same length holding different bytes, which is the entire answer a
+    read-back can give. Twenty-four bytes of a thirty-two byte key survived
+    that and every assertion in this file stayed green, including all three
+    on the voice index key.
+
+    So the write gets counted where it happens. `open` is resolved through
+    secure_delete's own module globals, so shadowing it there wraps the one
+    handle the overwrite writes through and leaves every other file in the
+    process untouched. What is counted is what the handle REPORTS writing,
+    which is the same number K-47 taught this module not to throw away: a
+    short write that covers half the file reports half the file.
+    """
+    real_open = open
+
+    class _Counted:
+        """A file handle that keeps a tally, and is otherwise the handle."""
+
+        def __init__(self, handle, key: str) -> None:
+            self._handle = handle
+            self._key = key
+
+        def write(self, data):
+            step = self._handle.write(data)
+            _OVERWRITTEN[self._key] = _OVERWRITTEN.get(self._key, 0) + (step or 0)
+            return step
+
+        def __enter__(self):
+            self._handle.__enter__()
+            return self
+
+        def __exit__(self, *exc):
+            return self._handle.__exit__(*exc)
+
+        def __getattr__(self, name):
+            return getattr(self._handle, name)
+
+    def counted_open(path, *args, **kwargs):
+        key = _watch_key(Path(path))
+        handle = real_open(path, *args, **kwargs)
+        # Recorded at open, not at first write, so "opened and never written"
+        # reads as 0 rather than as "never seen".
+        _OVERWRITTEN.setdefault(key, 0)
+        return _Counted(handle, key)
+
+    _OVERWRITTEN.clear()
+    monkeypatch.setattr(secure_delete, "open", counted_open, raising=False)
+    yield
+    _OVERWRITTEN.clear()
+
+
 def _assert_destroyed(path: Path, original: bytes) -> None:
+    """The file is still on disk - os.unlink is stubbed - and holds no secret.
+
+    The first two questions used to be the only two, and between them they
+    accept a partial overwrite: one byte changed out of thirty-two is the
+    same length and different bytes, and so is one byte out of four thousand.
+    Measured against a shred() mutated to overwrite eight bytes and claim the
+    length, every call site of this helper stayed green. The two below close
+    that: the tally says the overwrite covered the whole file, and the run
+    check says no readable stretch of the original came through it.
+
+    One thing it still does not see, stated rather than hidden: an overwrite
+    that covers the whole length but writes bytes correlated with the
+    original in a SCATTERED way, every third byte say, leaves no long run and
+    a full tally. Bounding that would need the binomial tail in log space
+    inside a gate test, and no plausible edit to shred() produces it - every
+    way an overwrite has actually gone wrong here, short write and truncated
+    loop alike, leaves the survivors contiguous.
+    """
     survivor = path.read_bytes()
     assert len(survivor) == len(original), "the overwrite changed the length"
     assert survivor != original, f"{path.name} was unlinked without overwriting"
+
+    written = _OVERWRITTEN.get(_watch_key(path))
+    assert written is not None, (
+        f"{path.name} was never opened for writing, so nothing overwrote it"
+    )
+    assert written >= len(original), (
+        f"{path.name}: the overwrite covered {written} of {len(original)} "
+        "bytes, leaving the rest of the secret readable on disk"
+    )
+
+    limit = _run_limit(len(original))
+    longest = _longest_survivor(survivor, original)
+    assert longest < limit, (
+        f"{path.name}: {longest} consecutive bytes of the original are still "
+        f"in place; random noise reaches {limit} with probability under "
+        f"{_FLAKE_BUDGET:g}, so this is file the overwrite never reached "
+        "rather than coincidence"
+    )
 
 
 class TestDiscard:
@@ -1047,3 +1183,229 @@ class TestOnePassForManyMessages:
         tts_host.VoiceHost().forget_messages_audio([0, 1, 2, 3])
 
         assert preview.exists() and streamed.exists()
+
+
+class TestTheVoiceIndexKeyGoesOutTheSameDoor:
+    """The salt that keeps a folder name from naming a person.
+
+    Every folder under voice/refs is named sha256(index_key + voice_id), and
+    for a voice created before the frontend minted UUIDs that id is the slug
+    of the label the user typed. Without the key those names fall to a
+    dictionary attack in seconds; with it they give nothing back. So the 32
+    bytes in .voice-index-key are user content by consequence, even though no
+    user ever typed them.
+
+    The rebuild path writes a fresh key to a temp name, fsyncs it, and renames
+    it into place. When the rename loses - another process got there first, or
+    the disk refused - the temp file is a COMPLETE, synced copy of a key on
+    disk, and it was thrown away with a plain unlink: name removed, blocks
+    returned to the filesystem, bytes intact for any undelete tool. That is
+    the one thing this module's docstring says nothing in this app does.
+
+    One mutant here is genuinely equivalent and stays unkilled: swapping
+    `discard(tmp)` for `shred(tmp)` leaves every test below green. The two
+    differ only when the name does not exist, and then only in their return
+    value - MEASURED, both are silent, because shred() takes its identity
+    anchor with os.lstat first and returns False on that OSError before it
+    reaches any warning. This call site drops the return, so nothing
+    downstream can see the difference. discard() stays because it is the call
+    that MEANS "gone, including never there", and a later reader who wants
+    that answer should find the right function already in place.
+
+    That note used to read as if it were the only survivor, and it was not.
+    Inserting a plain `tmp.unlink()` immediately BEFORE the discard - the
+    "defensive tidy-up" shape somebody adds while reading this branch - was
+    also green, across every file that touches this code. It is not
+    equivalent: it is the exact defect secure_delete's own docstring exists to
+    prevent, the name removed and the key's blocks handed back to the
+    filesystem intact. Two things hid it. os.unlink is stubbed in the test
+    above, which turns the inserted call into a no-op, and the test after it
+    asserts only that the name is gone, which the mutant delivers. Reading the
+    corpse back cannot see this one at all, because the mutant leaves no
+    corpse. The instant of the unlink is the only place the difference
+    exists, so that is where the last two tests below stand.
+    """
+
+    def _empty_key(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """A refs root whose key file exists but is zero bytes.
+
+        That is the one state the rebuild branch answers to, and it is a real
+        one: a crash landing between the O_EXCL create and the write leaves it
+        behind forever. time.sleep is neutered because the two patience loops
+        on this path are half a second each and neither is what is being
+        measured.
+        """
+        from tts import refs
+
+        refs_root = tmp_path / "refs"
+        refs_root.mkdir()
+        (refs_root / refs.INDEX_KEY_NAME).write_bytes(b"")
+        monkeypatch.setattr(refs, "refs_dir", lambda: refs_root)
+        monkeypatch.setattr(refs.time, "sleep", lambda _s: None)
+        return refs, refs_root
+
+    def test_a_rebuilt_key_that_could_not_be_installed_is_overwritten(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        refs, refs_root = self._empty_key(tmp_path, monkeypatch)
+
+        landed: dict[str, bytes] = {}
+
+        def refuse(src, dst):
+            # Read the source BEFORE refusing. By this point os.write and
+            # os.fsync have run, so this is exactly what is on the platter -
+            # which makes the comparison below a measurement rather than a
+            # guess about what the key looked like.
+            landed["key"] = Path(src).read_bytes()
+            raise OSError("the disk said no")
+
+        monkeypatch.setattr(refs.os, "replace", refuse)
+        # Let the overwrite happen and keep the corpse for inspection, the
+        # same way every other test in this file reads the bytes back.
+        monkeypatch.setattr(os, "unlink", lambda *a, **kw: None)
+
+        # Nothing installed a usable key, so the caller is refused. That is
+        # the existing contract on this path and not what is under test here.
+        with pytest.raises(refs.RefError):
+            refs._index_key()
+
+        # POSITIVE CONTROL, inside the test: if the branch had not been
+        # reached at all, every assertion below would pass vacuously on an
+        # empty glob.
+        assert len(landed.get("key", b"")) == 32, \
+            "the rebuild branch never ran; the rest of this proves nothing"
+
+        leftovers = sorted(refs_root.glob(
+            refs.INDEX_KEY_NAME + refs.INDEX_KEY_TMP_INFIX + "*"))
+        assert len(leftovers) == 1, \
+            "os.unlink is stubbed, so the name must still be here to read"
+        _assert_destroyed(leftovers[0], landed["key"])
+
+    def test_the_discarded_temp_key_leaves_no_name_behind(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """POSITIVE CONTROL for the absence half of the test above.
+
+        With a real os.unlink the temp name is gone, so "exactly one leftover"
+        up there is the stub's doing and not this branch quietly keeping a
+        second copy of the key around.
+        """
+        refs, refs_root = self._empty_key(tmp_path, monkeypatch)
+
+        def refuse(src, dst):
+            raise OSError("the disk said no")
+
+        monkeypatch.setattr(refs.os, "replace", refuse)
+
+        with pytest.raises(refs.RefError):
+            refs._index_key()
+
+        assert list(refs_root.glob(refs.INDEX_KEY_NAME + refs.INDEX_KEY_TMP_INFIX + "*")) == []
+
+    def test_a_repair_that_succeeds_still_installs_the_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GROUND CONTROL. A destroy step that ate the key on the way past
+        would satisfy both tests above and leave the install unable to find
+        its own voices."""
+        refs, refs_root = self._empty_key(tmp_path, monkeypatch)
+
+        key = refs._index_key()
+
+        assert len(key) == 32
+        assert (refs_root / refs.INDEX_KEY_NAME).read_bytes() == key
+        assert list(refs_root.glob(
+            refs.INDEX_KEY_NAME + refs.INDEX_KEY_TMP_INFIX + "*")) == []
+
+    def _watch_unlink(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> list[tuple[str, bytes | None]]:
+        """Every os.unlink, with the bytes that were on disk at that instant.
+
+        The question the rest of this file asks - stub the unlink, read the
+        corpse back - cannot be asked on this branch, because the mutant that
+        matters here removes the name BEFORE anything overwrites it and then
+        leaves discard() nothing to find. There is no corpse: the blocks went
+        back to the filesystem still holding the key. The one moment the
+        difference is visible is the unlink itself, so the reading happens
+        there, and the real unlink still runs afterwards so the branch behaves
+        exactly as it ships.
+        """
+        seen: list[tuple[str, bytes | None]] = []
+        real_unlink = os.unlink
+
+        def watched(path, *args, **kwargs):
+            try:
+                seen.append((Path(path).name, Path(path).read_bytes()))
+            except OSError:
+                seen.append((Path(path).name, None))
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "unlink", watched)
+        return seen
+
+    def test_the_temp_key_name_is_never_removed_while_it_still_holds_the_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No unlink on this branch may reach a temp file that is still a key.
+
+        os.write and os.fsync have already put 32 bytes of live key material
+        on the platter by the time the rename is attempted, so removing that
+        name before the overwrite is the plain-unlink defect this whole module
+        was written to retire, aimed at the one secret standing between the
+        folder names under refs/ and a dictionary attack on the voice ids the
+        user typed.
+        """
+        refs, refs_root = self._empty_key(tmp_path, monkeypatch)
+
+        landed: dict[str, bytes] = {}
+
+        def refuse(src, dst):
+            landed["key"] = Path(src).read_bytes()
+            raise OSError("the disk said no")
+
+        monkeypatch.setattr(refs.os, "replace", refuse)
+        seen = self._watch_unlink(monkeypatch)
+
+        with pytest.raises(refs.RefError):
+            refs._index_key()
+
+        # POSITIVE CONTROL, inside the test: without the branch there is no
+        # key to compare against and everything below passes vacuously.
+        assert len(landed.get("key", b"")) == 32, \
+            "the rebuild branch never ran; the rest of this proves nothing"
+
+        temps = [(name, before) for name, before in seen
+                 if refs.INDEX_KEY_TMP_INFIX in name]
+        # GROUND CONTROL. The name really is removed on this path, so the
+        # sweep below is reading something rather than an empty list.
+        assert temps, "the temp key name was never unlinked at all"
+        for name, before in temps:
+            assert before != landed["key"], (
+                f"{name} was unlinked while it still held the whole key, so "
+                "its blocks went back to the filesystem readable"
+            )
+
+    def test_the_unlink_watcher_can_see_a_key_that_is_still_there(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """POSITIVE CONTROL for the absence asserted above.
+
+        That test says no unlink saw the key. An absence is free when the
+        watcher is blind, so here a temp name that DOES still hold the key is
+        removed through the same watcher and the same comparison flags it.
+        """
+        refs, refs_root = self._empty_key(tmp_path, monkeypatch)
+
+        key = os.urandom(32)
+        decoy = refs_root / (refs.INDEX_KEY_NAME
+                             + refs.INDEX_KEY_TMP_INFIX + "0-0")
+        decoy.write_bytes(key)
+
+        seen = self._watch_unlink(monkeypatch)
+        os.unlink(decoy)
+
+        temps = [(name, before) for name, before in seen
+                 if refs.INDEX_KEY_TMP_INFIX in name]
+        assert [name for name, before in temps if before == key] == [decoy.name], \
+            "the watcher cannot see a key it is looking straight at"
