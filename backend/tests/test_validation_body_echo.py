@@ -102,7 +102,9 @@ _RECORDS = {record["code"]: record for record in
 #: accepted and answers 200. A row that cannot 422 proves nothing, which is
 #: the trap `/settings/stop-sequences` set for the version of this file that
 #: used it as a control - that route clamps instead of refusing, on purpose,
-#: so a stale window cannot 422 a settings save.
+#: so a stale window cannot 422 a settings save. It does refuse a list longer
+#: than MAX_STOP_SEQUENCES_READ, which is a size no window can produce, so it
+#: is still no use as a row here.
 _LEAKY_ROUTES = [
     pytest.param("settings", "/api/v1/settings/api-key",
                  {"wrong_key": _SECRET}, "api_key", id="settings"),
@@ -116,10 +118,18 @@ _LEAKY_ROUTES = [
                  {"wrong_key": _SECRET}, "uid", id="tts"),
     pytest.param("chats", "/api/v1/chats",
                  {"wrong_key": _SECRET}, "character_id", id="chats"),
+    # S-9 rewrite. These two rows used to omit the required field, which is
+    # the case where pydantic's `input` is the WHOLE body. Neither field is
+    # required any more - a blank name now gets a default rather than a
+    # refusal - so an omission answers 201 and a row that cannot 422 proves
+    # nothing, exactly like the `/settings/stop-sequences` trap described
+    # above. A wrong-TYPED name still fails validation, still names the field
+    # it was aimed at, and still carries the secret in the position pydantic
+    # quotes back: `input` is then the list, secret and all.
     pytest.param("personas", "/api/v1/personas",
-                 {"wrong_key": _SECRET}, "display_name", id="personas"),
+                 {"display_name": [_SECRET]}, "display_name", id="personas"),
     pytest.param("characters", "/api/v1/characters",
-                 {"wrong_key": _SECRET}, "name", id="characters"),
+                 {"name": [_SECRET]}, "name", id="characters"),
     pytest.param("tts_runtime", "/api/v1/tts/voice-mode",
                  {"wrong_key": _SECRET}, "enabled", id="tts_runtime"),
 ]
@@ -142,8 +152,11 @@ _LEAKY_MODELS = [
     (CompleteRequest, {"message": _SECRET}),
     (ActiveBody, {"wrong_key": _SECRET}),
     (ChatCreate, {"wrong_key": _SECRET}),
-    (PersonaCreate, {"wrong_key": _SECRET}),
-    (CharacterCreate, {"wrong_key": _SECRET}),
+    # Same S-9 rewrite as the two rows above, for the same reason: with no
+    # required field left, an omission validates cleanly and the control
+    # would be demonstrating a leak that cannot happen.
+    (PersonaCreate, {"display_name": [_SECRET]}),
+    (CharacterCreate, {"name": [_SECRET]}),
     (VoiceModeBody, {"wrong_key": _SECRET}),
 ]
 
@@ -202,9 +215,12 @@ class TestNoRejectedBodyComesBack:
         """The rule, once per router, and the reason there are seven rows.
 
         Each payload carries the secret in the position that makes pydantic
-        quote the most: a missing required field, where `input` is the entire
-        body rather than one value. The completions row is the worst of them,
-        because the string it carries is the message a person typed.
+        quote the most. For a router with a required field that is an
+        OMISSION, where `input` is the entire body rather than one value; the
+        completions row is the worst of them, because the string it carries is
+        the message a person typed. The two name routes have no required field
+        left, so they carry a wrong-typed name instead and `input` is the
+        value itself - less body, same leak.
         """
         r = client.post(path, json=payload)
         _reached_the_handler(r, field)

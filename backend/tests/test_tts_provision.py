@@ -23,6 +23,7 @@ import config
 from tts import provision, runtimes
 from tts.errors import (
     TTS_INSUFFICIENT_DISK,
+    TTS_PROXY_UNAVAILABLE,
     TTS_PYTHON_NOT_FOUND,
     TTS_RUNTIME_INSTALLING,
     TTS_RUNTIME_INSTALL_FAILED,
@@ -366,28 +367,29 @@ class TestProvisioningHonoursTheProxy:
         assert env["HTTPS_PROXY"] is None
         assert env["NO_PROXY"] is None
 
-    def test_the_downloader_opens_through_the_proxy(self, monkeypatch):
+    def test_the_downloader_goes_through_the_proxy(self, monkeypatch):
         monkeypatch.setattr(provision, "_proxy_url", lambda: "http://proxy:8080")
-        opener = provision._url_opener()
-        handlers = [type(h).__name__ for h in opener.handlers]
-        assert "ProxyHandler" in handlers
-        proxy_handler = next(h for h in opener.handlers
-                             if type(h).__name__ == "ProxyHandler")
-        assert proxy_handler.proxies == {"http": "http://proxy:8080",
-                                         "https": "http://proxy:8080"}
+        client = provision._provision_client()
+        try:
+            assert client._mounts, "the download would not use the proxy"
+        finally:
+            client.close()
 
     def test_with_no_proxy_an_ambient_env_var_is_not_picked_up(self, monkeypatch):
-        """Not the DEFAULT opener: that reads HTTP_PROXY from the process
-        environment, which this app deliberately does not trust (every httpx
-        client is built with trust_env=False for the same reason)."""
+        """Not a client that reads HTTP_PROXY from the process environment,
+        which this app deliberately does not trust (every httpx client is
+        built with trust_env=False for the same reason)."""
         monkeypatch.setattr(provision, "_proxy_url", lambda: None)
         monkeypatch.setenv("HTTP_PROXY", "http://ambient:9999")
         monkeypatch.setenv("HTTPS_PROXY", "http://ambient:9999")
-        proxies = [h.proxies for h in provision._url_opener().handlers
-                   if type(h).__name__ == "ProxyHandler"]
-        assert all(p == {} for p in proxies), (
-            f"the opener would go through an ambient proxy: {proxies}"
-        )
+        client = provision._provision_client()
+        try:
+            assert client.trust_env is False
+            assert not client._mounts, (
+                f"the download would go through an ambient proxy: "
+                f"{client._mounts}")
+        finally:
+            client.close()
 
     def test_a_mandatory_proxy_with_none_configured_refuses_the_install(
         self, voice_dir, monkeypatch,
@@ -396,7 +398,7 @@ class TestProvisioningHonoursTheProxy:
         monkeypatch.setattr(provision, "_proxy_url", lambda: None)
         with pytest.raises(provision.ProvisionError) as exc:
             provision.start_install("fish_s2")
-        assert exc.value.code == TTS_RUNTIME_INSTALL_FAILED
+        assert exc.value.code == TTS_PROXY_UNAVAILABLE
         assert "proxy" in exc.value.detail.lower()
 
     def test_a_mandatory_proxy_that_IS_configured_proceeds(
@@ -428,7 +430,10 @@ class TestTheUvDownloadIsCancellable:
         cancel.set()
 
         class NeverEndingResponse:
-            def read(self, n):  # pragma: no cover - must not be reached
+            def raise_for_status(self):
+                return None
+
+            def iter_bytes(self, n=None):  # pragma: no cover - not reached
                 raise AssertionError("kept downloading after cancel")
 
             def __enter__(self):
@@ -437,11 +442,14 @@ class TestTheUvDownloadIsCancellable:
             def __exit__(self, *a):
                 return False
 
-        class Opener:
-            def open(self, url, timeout=None):
+        class Client:
+            def stream(self, method, url, timeout=None):
                 return NeverEndingResponse()
 
-        monkeypatch.setattr(provision, "_url_opener", lambda: Opener())
+            def close(self):
+                return None
+
+        monkeypatch.setattr(provision, "_provision_client", lambda: Client())
         lines: list[str] = []
         assert provision._download_uv(lines.append, cancel=cancel) is None
         assert any("cancel" in line for line in lines)
@@ -687,10 +695,33 @@ class TestAtomicUvExtract:
         digest = hashlib.sha256(archive_bytes).hexdigest()
         monkeypatch.setattr(provision, "UV_SHA256", digest, raising=False)
 
-        def fake_urlopen(url, timeout=0):
-            return io.BytesIO(archive_bytes)
+        # This used to patch `provision._urlopen`, a name that has never
+        # existed, with raising=False - so the fake landed on nothing, the
+        # real download ran, the suite's egress guard refused the connect, and
+        # _download_uv's generic handler turned that into the same `None` the
+        # assertions below expect. Both of them passed for the wrong reason
+        # and neither the SHA pin nor exploding_copy was ever reached.
+        class _Resp:
+            def raise_for_status(self):
+                return None
 
-        monkeypatch.setattr(provision, "_urlopen", fake_urlopen, raising=False)
+            def iter_bytes(self, n=None):
+                yield archive_bytes
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        class _Client:
+            def stream(self, method, url, timeout=0):
+                return _Resp()
+
+            def close(self):
+                return None
+
+        monkeypatch.setattr(provision, "_provision_client", lambda: _Client())
 
         def exploding_copy(src, dst, *a, **k):
             dst.write(b"trunc")
@@ -845,21 +876,31 @@ class TestUvDownloader:
         monkeypatch.setattr(config, "TTS_BIN_DIR", str(tmp_path / "bin"),
                             raising=False)
 
-        class _Resp(io.BytesIO):
+        class _Resp:
+            def raise_for_status(self):
+                return None
+
+            def iter_bytes(self, n=None):
+                yield payload
+
             def __enter__(self):
                 return self
 
             def __exit__(self, *a):
                 return False
 
-        # Patched at provision's OWN seam, not at urllib's: the downloader
-        # goes through _url_opener() so it honours the vault-stored proxy
-        # instead of the default (environment-reading) opener.
-        class _Opener:
-            def open(self, url, timeout=0):
-                return _Resp(payload)
+        # Patched at provision's OWN seam: the downloader goes through
+        # _provision_client(), which asks the egress gate for the proxy and is
+        # allowed to be refused by it. Faking httpx one layer lower would step
+        # over the gate and the host allowlist both.
+        class _Client:
+            def stream(self, method, url, timeout=0):
+                return _Resp()
 
-        monkeypatch.setattr(provision, "_url_opener", lambda: _Opener())
+            def close(self):
+                return None
+
+        monkeypatch.setattr(provision, "_provision_client", lambda: _Client())
 
     def test_a_verified_download_lands_in_our_bin(self, monkeypatch, tmp_path):
         self._fake_release(monkeypatch, tmp_path, correct_hash=True)

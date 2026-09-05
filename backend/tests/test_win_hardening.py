@@ -745,3 +745,75 @@ class TestTheProcessRefusesToBeRead:
             assert not (win_hardening._PROCESS_KEEP_MASK & bit), (
                 f"the keep mask grants {name}, which undoes the whole thing")
 
+
+
+@WINDOWS_ONLY
+class TestAHardeningStepPicksItsOwnBinary:
+    """A step that closes a hole must not open one to do it.
+
+    This file already writes the rule down at _ICACLS: a hardening step is
+    the last place to let the environment decide which program runs. It was
+    followed at one of the two native call sites and not at the other, so the
+    rule was true as prose and half true as code. The gain is defence in
+    depth rather than a door on its own - anything that can drop a whoami.exe
+    on PATH is already running as this user - which is exactly why it is
+    cheap to keep closed.
+    """
+
+    def _captured(self, monkeypatch: pytest.MonkeyPatch, stdout: str = ""):
+        """Run the next subprocess in-process and hand back its argv."""
+        seen: list[list[str]] = []
+        real_run = subprocess.run
+
+        def capture(argv, *args, **kwargs):
+            seen.append(list(argv))
+            return subprocess.CompletedProcess(argv, 0, stdout, "")
+
+        monkeypatch.setattr(subprocess, "run", capture)
+        assert real_run is not capture
+        return seen
+
+    def test_the_sid_lookup_names_the_program_it_wants(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = self._captured(
+            monkeypatch, '"MACHINE\\somebody","S-1-5-21-9-9-9-1001"\n')
+
+        assert win_hardening._own_user_sid() == "S-1-5-21-9-9-9-1001"
+
+        argv = seen[0]
+        assert os.path.isabs(argv[0]), (
+            f"the SID lookup let PATH choose the program: {argv[0]!r}")
+        assert argv[0].lower().endswith("whoami.exe")
+        assert argv[0] == win_hardening._WHOAMI
+
+    def test_the_permissions_call_already_did(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ground control, and the reason the assertion above is readable.
+
+        icacls has named its binary in full since the rule was written, so
+        this passes before and after the SID lookup was changed. If it ever
+        fails, the test above is reading argv wrong rather than finding a
+        real defect.
+        """
+        seen = self._captured(monkeypatch)
+
+        assert win_hardening._icacls("/?") is True
+
+        argv = seen[0]
+        assert os.path.isabs(argv[0])
+        assert argv[0].lower().endswith("icacls.exe")
+
+    def test_the_real_lookup_still_answers_with_a_sid(self) -> None:
+        """Positive control: nothing above proves the call works.
+
+        Both assertions above run against a stub, so they would pass just as
+        well if the path named a program that is not there. This one runs the
+        real thing on this machine. The value is checked for shape and never
+        logged: a machine SID is an identifier, not content.
+        """
+        sid = win_hardening._own_user_sid()
+
+        assert sid is not None, "the full path did not resolve on this machine"
+        assert sid.startswith("S-1-5-21-"), "that is not a user SID"

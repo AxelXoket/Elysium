@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { z } from "zod/v4";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -15,23 +15,49 @@ import {
   Loader2,
 } from "lucide-react";
 
-/** How a feedback line is coloured. Three kinds, not two, and that is the
+/** How a feedback line is coloured. Four kinds, not two, and that is the
  *  whole point of this section: "rejected" and "we never got an answer" are
  *  opposite facts, so they must not arrive wearing the same red.
+ *
+ *  `partial` DOES wear the same red as `error`, and that is deliberate rather
+ *  than a lapse in the rule above. It means the delete ran and a copy of the
+ *  secret outlived it, so the fact it reports is the one `error` reports: the
+ *  key is still reachable. What tells the two apart is the sentence and the
+ *  kind published beside it, not the hue.
  *
  *  Not exported, and not because nobody wants it: the react-refresh gate
  *  refuses a non-primitive export from a file that exports a component. The
  *  kind is published to the DOM instead, on `data-feedback`, which is the
  *  house pattern already (`data-state` on the context meter) and is a better
- *  contract anyway - a reader of the rendered page can tell the three apart,
+ *  contract anyway - a reader of the rendered page can tell the four apart,
  *  not only a reader of this module. */
 const FEEDBACK_COLOR = {
   success: "var(--color-es-success)",
   error: "var(--color-es-danger)",
+  partial: "var(--color-es-danger)",
   unknown: "var(--color-es-warning)",
 } as const;
 
 type Feedback = { type: keyof typeof FEEDBACK_COLOR; text: string };
+
+/**
+ * What the panel says when the delete left a copy behind.
+ *
+ * A string, and exported, so the test that proves this sentence reaches the
+ * screen can import it instead of holding its own copy: a test carrying its
+ * own wording goes green on the day the wording and the branch stop agreeing,
+ * which is the only day it was needed. A primitive export is the one kind the
+ * react-refresh gate allows out of a component file.
+ *
+ * The wording says three things because the reader has to act on all three:
+ * the vault row IS gone, a copy is NOT, and only the person at the keyboard
+ * can finish the job. "API key removed" alone is the failure the server's
+ * legacy_copy_left field exists to end.
+ */
+export const API_KEY_COPY_LEFT_TEXT =
+  "API key removed from the vault, but the OS credential store would not " +
+  "release its copy. That copy is still readable on this machine; delete it " +
+  "there by hand.";
 
 /**
  * The answers POST /settings/api-key/check can give.
@@ -114,16 +140,92 @@ export function ApiKeySection() {
 
   const [confirmDelete, setConfirmDelete] = useState(false);
 
+  /**
+   * Where focus goes when the thing holding it is taken away.
+   *
+   * Every step of the delete removes the element the keyboard is standing on:
+   * opening the confirm unmounts the trigger, and finishing or refusing the
+   * delete unmounts the confirm row. The browser's answer to that is
+   * document.body, i.e. the top of the page, which is where a keyboard user
+   * used to land after destroying their own API key.
+   *
+   * Refs and not autoFocus, because the same button is also reached with a
+   * pointer and autoFocus would fire on a render nobody asked for.
+   */
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  const feedbackRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * Whether the NEXT feedback line is the answer to a delete.
+   *
+   * A ref rather than a branch inside handleDelete, because the line does not
+   * exist yet when the handler returns; and rather than focusing on every
+   * feedback change, because Save and "Test stored key" leave focus on a
+   * control that is still on screen and moving it would be stealing it. Set
+   * immediately before the delete's own setFeedback, never before the null
+   * that clears the previous line.
+   */
+  const focusFeedbackNext = useRef(false);
+
   const handleDelete = async () => {
     setFeedback(null);
     setConfirmDelete(false);
     try {
-      await deleteApiKey.mutateAsync();
-      setFeedback({ type: "success", text: "API key removed" });
+      const result = await deleteApiKey.mutateAsync();
+      focusFeedbackNext.current = true;
+      // The vault row is gone either way. `legacy_copy_left` is the server
+      // saying the credential store kept its own copy, and the person who
+      // pressed this button pressed it because a key leaked, so "removed" on
+      // its own would be the wrong answer to the one press that cannot afford
+      // one. The field used to be stripped by the response schema.
+      setFeedback(
+        result.legacy_copy_left
+          ? { type: "partial", text: API_KEY_COPY_LEFT_TEXT }
+          : { type: "success", text: "API key removed" },
+      );
     } catch (err) {
+      focusFeedbackNext.current = true;
       setFeedback({ type: "error", text: parseApiError(err).message });
     }
   };
+
+  /** Whether the NEXT close of the confirm row is a cancel.
+   *
+   *  The close that follows a delete is not: the row goes away there too, but
+   *  the answer to the delete is what should hold focus, and two handlers
+   *  reaching for it in the same commit is a flicker at best. Only the Cancel
+   *  button raises this. */
+  const focusTriggerNext = useRef(false);
+
+  const cancelDelete = () => {
+    focusTriggerNext.current = true;
+    setConfirmDelete(false);
+  };
+
+  // Both sides of the confirm row, in the commit that rebuilt it. Opening it
+  // unmounts the trigger that had focus; cancelling unmounts the row that had
+  // it. Either way the browser's own answer is document.body, so the row and
+  // the trigger take it back in turn.
+  useEffect(() => {
+    if (confirmDelete) {
+      confirmRef.current?.focus();
+      return;
+    }
+    if (focusTriggerNext.current) {
+      focusTriggerNext.current = false;
+      triggerRef.current?.focus();
+    }
+  }, [confirmDelete]);
+
+  // The answer to a delete, once it is on screen. `tabIndex={-1}` on the box
+  // is what makes this possible; the box is already the announced one, so
+  // focus and announcement land in the same place instead of two.
+  useEffect(() => {
+    if (!focusFeedbackNext.current) return;
+    focusFeedbackNext.current = false;
+    feedbackRef.current?.focus();
+  }, [feedback]);
 
   const [checking, setChecking] = useState(false);
 
@@ -314,6 +416,7 @@ export function ApiKeySection() {
       {settings?.api_key_set && !confirmDelete && (
         <Button
           type="button"
+          ref={triggerRef}
           variant="ghost"
           size="sm"
           disabled={busy}
@@ -338,6 +441,7 @@ export function ApiKeySection() {
               button. */}
           <Button
             type="button"
+            ref={confirmRef}
             variant="ghost"
             size="sm"
             disabled={busy}
@@ -357,7 +461,7 @@ export function ApiKeySection() {
             variant="ghost"
             size="sm"
             disabled={busy}
-            onClick={() => setConfirmDelete(false)}
+            onClick={cancelDelete}
             className="text-xs"
           >
             Cancel
@@ -369,10 +473,17 @@ export function ApiKeySection() {
       {feedback && (
         <div
           className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs"
+          ref={feedbackRef}
           // Announced, because this line is the entire answer to a button
           // press and it appears somewhere the eye is not: a screen reader
           // user pressing "Test stored key" would otherwise get silence back.
           role="status"
+          // Focusable only on purpose, never in the tab order. The delete
+          // takes away the button the keyboard was standing on, and this is
+          // where it is put down instead: the one element on the panel that
+          // says what just happened. -1 keeps it out of everybody else's
+          // tabbing, so nothing changes for a reader who never deletes.
+          tabIndex={-1}
           // The KIND of answer, in one machine-readable word. Colour and icon
           // say it to a sighted reader; this says it to anything else, and it
           // is what keeps "rejected" and "could not check" distinguishable
@@ -387,8 +498,13 @@ export function ApiKeySection() {
           {/* A different mark for the third kind, not just a different colour.
               "We could not ask" is not a milder red; it is a question mark,
               and colour alone is the one signal a colour-blind reader loses.
-              The icons stay 12px lucide glyphs like every other one here. */}
-          {feedback.type === "error" && <AlertCircle size={12} />}
+              The icons stay 12px lucide glyphs like every other one here.
+              `partial` borrows the error glyph on purpose: a copy of the key
+              left on the machine is an alarm, not a milder shade of one, and
+              the sentence beside it is what says which alarm. */}
+          {(feedback.type === "error" || feedback.type === "partial") && (
+            <AlertCircle size={12} />
+          )}
           {feedback.type === "unknown" && <HelpCircle size={12} />}
           {feedback.text}
         </div>

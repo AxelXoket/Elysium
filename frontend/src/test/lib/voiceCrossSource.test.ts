@@ -17,7 +17,8 @@ vi.mock("@/lib/api/tts", () => ({
   // the LAST sentence was finished, so a long reply was silence first.
   streamMessageSpeech: vi.fn(
     async (
-      _body: unknown,
+      _messageId: number,
+      _chatId: number,
       { onEvent }: { onEvent: (e: never) => void },
     ) => {
       // One chunk and NO voice_done: this store is "still speaking" for the
@@ -55,7 +56,7 @@ describe("only one voice source speaks at a time", () => {
     reply.handle(chunk("live-1"));
     expect(reply.active).toBe(true);
 
-    await useVoicePlayer.getState().speak(42);
+    await useVoicePlayer.getState().speak(42, 2);
 
     expect(player.stop).toHaveBeenCalledTimes(1);
     expect(reply.active).toBe(false);
@@ -63,7 +64,7 @@ describe("only one voice source speaks at a time", () => {
   });
 
   it("a reply starting to speak stops the per-message player", async () => {
-    await useVoicePlayer.getState().speak(7);
+    await useVoicePlayer.getState().speak(7, 2);
     expect(useVoicePlayer.getState().phase).toBe("playing");
 
     const player = fakePlayer();
@@ -96,7 +97,7 @@ describe("only one voice source speaks at a time", () => {
 
   it("a superseded speak() response does not resurrect as ghost audio", async () => {
     const player = fakePlayer();
-    const pending = useVoicePlayer.getState().speak(9);
+    const pending = useVoicePlayer.getState().speak(9, 2);
     // The reply takes the stage while the synthesis request is still flying.
     createStreamVoice({ createPlayer: () => player as never }).handle(chunk("c"));
     await pending;

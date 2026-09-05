@@ -2,8 +2,10 @@
 
 One class of defect only - the app produces a degraded, truncated or empty
 result and says NOTHING, so the user cannot tell it apart from success. Each
-case below was found by reading the source, then survived an independent agent
-whose whole job was to refute it.
+case below was found by reading the source, then kept only after a second
+pass that set out to refute it and could not. The 25 refuted ones are the
+reason that second pass is worth its cost: the reading-the-source half of
+this method proposes about five times more defects than survive it.
 
 The bug that started it: /speak sent a whole message in one engine call and
 Fish S2 stopped at max_new_tokens, so a four-paragraph reply ended mid-sentence

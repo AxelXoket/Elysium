@@ -29,6 +29,20 @@ export interface Rgb {
 export const AA_NORMAL = 4.5;
 export const AAA_NORMAL = 7;
 
+/**
+ * WCAG SC 1.4.11: a graphic or a UI component - a focus ring, a meter fill, a
+ * bare collapse arrow - has to clear 3:1 against what it is drawn on, not the
+ * 4.5:1 letters need.
+ *
+ * It lives here rather than in the files that use it because three of them had
+ * each written the `3` out privately (`NON_TEXT` twice, `UI_COMPONENT_FLOOR`
+ * once), which is the same defect that pulled AA_NORMAL in here: a threshold
+ * restated in the test is a threshold the test cannot see move. Lower it in one
+ * copy and the other two go on printing comfortable numbers about surfaces
+ * nobody is checking any more.
+ */
+export const AA_NON_TEXT = 3;
+
 export function parseHex(hex: string): Rgb | null {
   const value = hex.trim().replace(/^#/, "");
   const full =

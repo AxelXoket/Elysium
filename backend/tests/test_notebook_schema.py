@@ -19,6 +19,9 @@ this could go wrong quietly are closed.
 """
 from __future__ import annotations
 
+import hashlib
+from pathlib import Path
+
 import pytest
 
 import database
@@ -37,6 +40,12 @@ def _a_chat(con) -> int:
 def _tables(con) -> set[str]:
     return {r[0] for r in con.execute(
         "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+
+
+def _file_md5(path: str) -> str:
+    """The bytes on disk. "Nothing was changed" is a claim about exactly these,
+    so nothing weaker than the file itself can check it."""
+    return hashlib.md5(Path(path).read_bytes()).hexdigest()
 
 
 class TestTheShapeArrives:
@@ -203,6 +212,63 @@ class TestADatabaseFromTheFuture:
         with database.get_db() as con:
             con.execute(f"PRAGMA user_version = {database._SCHEMA_VERSION}")
         database.init_db()
+
+    #: A table this build creates and a file from the future might not have -
+    #: the newer build could have dropped it or renamed it. _SCHEMA is
+    #: CREATE ... IF NOT EXISTS from top to bottom, so nearly all of it is a
+    #: no-op against such a file; this is the statement that is not, and it is
+    #: therefore the whole of the damage the guard exists to prevent.
+    MISSING_TABLE = "attachment_blobs"
+
+    def _a_file_the_guard_should_refuse(self, ahead: int) -> None:
+        """A database stamped `ahead` versions in front of this build, with
+        one of this build's own tables missing from it."""
+        with database.get_db() as con:
+            con.execute(f"DROP TABLE {self.MISSING_TABLE}")
+            con.execute(
+                f"PRAGMA user_version = {database._SCHEMA_VERSION + ahead}")
+
+    def test_it_writes_nothing_at_all_before_it_refuses(self, db) -> None:
+        """The refusal promises "Nothing was changed" and the promise used to
+        be conditional. `init_db` ran `executescript(_SCHEMA)` first and the
+        guard lived downstream of it, inside `_migrate` - and `executescript`
+        commits implicitly before every statement it runs. So a file from the
+        future got the missing table recreated and its bytes rewritten, and
+        was then told that nothing had happened.
+        """
+        self._a_file_the_guard_should_refuse(ahead=5)
+        before = _file_md5(db)
+
+        with pytest.raises(RuntimeError) as exc:
+            database.init_db()
+
+        assert "Nothing was changed" in str(exc.value)
+        # Measured before anything else reopens the file, because opening it
+        # is the thing under suspicion.
+        assert _file_md5(db) == before, (
+            "the file on disk changed under a refusal that promised it had not")
+        with database.get_db() as con:
+            assert self.MISSING_TABLE not in _tables(con), (
+                "the refusal recreated the very table it was refusing to touch")
+
+    def test_the_same_fixture_one_version_lower_does_change_the_file(
+        self, db
+    ) -> None:
+        """Positive control for the md5 above. "The bytes did not change"
+        would pass just as happily against an `init_db` that had stopped doing
+        anything at all, so the identical fixture at a version this build
+        accepts has to move them.
+        """
+        self._a_file_the_guard_should_refuse(ahead=0)
+        before = _file_md5(db)
+
+        database.init_db()
+
+        assert _file_md5(db) != before, (
+            "init_db wrote nothing to a database it accepts, so the md5 in the "
+            "test above is not evidence of anything")
+        with database.get_db() as con:
+            assert self.MISSING_TABLE in _tables(con)
 
 
 class TestPlaintextNeverReachesATempFile:

@@ -319,10 +319,18 @@ describe("motion guard", () => {
      requires the opposite of every new animation, so the promise is checked
      here rather than remembered. */
   it("answers prefers-reduced-motion for the settings surface", () => {
-    const css = readFileSync(CSS, "utf8");
+    // Brace-balanced, not a fixed slice. This used to cut 2200 characters
+    // from each match; the longest of these blocks is 1899, so the window
+    // ALWAYS ran past the closing brace and read whatever rule came next.
+    // Measured: delete .settings-tint-chip from the block and put a live
+    // `transition: transform` rule after it, and the class is still "covered"
+    // because the window reached the neighbour. blockAt counts depth and is
+    // already what the two rules above read with; the file re-read that used
+    // to sit here is gone too, since the match indices have to come from the
+    // same string blockAt slices.
     const blocks = [
       ...css.matchAll(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{/g),
-    ].map((m) => css.slice(m.index!, m.index! + 2200));
+    ].map((m) => blockAt(m.index!));
     expect(blocks.length, "no reduced-motion blocks found at all").toBeGreaterThan(0);
     const covered = blocks.join(" | ");
 
@@ -355,10 +363,17 @@ describe("motion guard", () => {
 
   it("GROUND: a class nothing reduces would be caught", () => {
     // Without this the assertions above pass on any string long enough.
-    const css = readFileSync(CSS, "utf8");
     const blocks = [
       ...css.matchAll(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{/g),
-    ].map((m) => css.slice(m.index!, m.index! + 2200));
-    expect(blocks.join(" | ")).not.toContain(".settings-no-such-class");
+    ].map((m) => blockAt(m.index!));
+    const covered = blocks.join(" | ");
+    // The ground needs its own ground: an empty sweep contains nothing at
+    // all, so the absence below would pass on a broken read. Anchor on a
+    // class that IS in a block first.
+    expect(
+      covered,
+      "the sweep read no reduced-motion block content at all",
+    ).toContain(".settings-switch-thumb");
+    expect(covered).not.toContain(".settings-no-such-class");
   });
 });

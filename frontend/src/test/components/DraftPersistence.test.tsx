@@ -26,7 +26,15 @@ import { GenerationSettingsProvider } from "@/components/generation/GenerationSe
 import { useUiStore } from "@/lib/store/uiStore";
 import { useErrorStore } from "@/lib/errors";
 import { keys } from "@/lib/query/keys";
-import { useDraftStore, editDraftKey } from "@/lib/store/draftStore";
+import {
+  useDraftStore,
+  editDraftKey,
+  chatScopedPanelDraftKey,
+  PANEL_DRAFT_KEYS,
+} from "@/lib/store/draftStore";
+import { RightPanel } from "@/components/layout/RightPanel";
+import { useSeenNotesStore } from "@/lib/chat/seenNotes";
+import { useContextNotesStore } from "@/lib/chat/contextNotes";
 import { RESET_CONFIRM_PHRASE } from "@/components/vault/VaultGate";
 import {
   mockFetchWithStreams,
@@ -781,7 +789,28 @@ describe("drafts through the send and edit pipelines", () => {
       d.setComposerDraft(1, "doomed chat draft");
       d.openEditDraft(1, 10, "doomed edit");
       d.setComposerDraft(2, "innocent bystander");
+      // The panel half of what one conversation owns, and a buffer that
+      // belongs to no conversation at all. Both are filed under key SHAPES
+      // the composer above does not use, so a clear that reached the
+      // composer bucket only would still pass the two lines below it.
+      d.setPanelDraft(
+        chatScopedPanelDraftKey(PANEL_DRAFT_KEYS.newNote, 1),
+        "a note about a doomed chat",
+      );
+      d.setPanelDraft(PANEL_DRAFT_KEYS.modelSearch, "opus");
     });
+
+    // GROUND CONTROL. "It is gone" is satisfied by a store that never held
+    // it, so the four buffers are asserted present before the delete runs.
+    const before = useDraftStore.getState();
+    expect(before.composer[1]?.text, "the composer draft was never set").toBe(
+      "doomed chat draft",
+    );
+    expect(before.edits[editDraftKey(1, 10)]?.text).toBe("doomed edit");
+    expect(
+      before.panel[chatScopedPanelDraftKey(PANEL_DRAFT_KEYS.newNote, 1)]?.text,
+    ).toBe("a note about a doomed chat");
+    expect(before.panel[PANEL_DRAFT_KEYS.modelSearch]?.text).toBe("opus");
 
     const { result } = renderHookWithQueryClient(() => useDeleteChat());
     await act(async () => {
@@ -789,12 +818,28 @@ describe("drafts through the send and edit pipelines", () => {
     });
 
     const after = useDraftStore.getState();
-    expect(after.composer[1]).toBeUndefined();
-    expect(after.edits[editDraftKey(1, 10)]).toBeUndefined();
+    expect(
+      after.composer[1],
+      "the deleted chat's composer draft outlived the deletion",
+    ).toBeUndefined();
+    expect(
+      after.edits[editDraftKey(1, 10)],
+      "the deleted chat's edit buffer outlived the deletion",
+    ).toBeUndefined();
+    expect(
+      after.panel[chatScopedPanelDraftKey(PANEL_DRAFT_KEYS.newNote, 1)],
+      "the deleted chat's panel note outlived the deletion",
+    ).toBeUndefined();
+    // POSITIVE CONTROL, two shapes. Without them a blanket clearAll on the
+    // delete path would pass every assertion above.
     expect(
       after.composer[2]?.text,
       "deleting one chat took another chat's draft",
     ).toBe("innocent bystander");
+    expect(
+      after.panel[PANEL_DRAFT_KEYS.modelSearch]?.text,
+      "deleting a chat took a global panel buffer with it",
+    ).toBe("opus");
   });
 
   it("closes the box while the save is in flight, and keeps the text", async () => {
@@ -1060,5 +1105,303 @@ describe("drafts through the send and edit pipelines", () => {
       "still mine",
     );
     expect(after.edits[editDraftKey(1, 10)]?.text).toBe("still open");
+  });
+});
+
+/**
+ * The right panel through the REAL gate.
+ *
+ * The panel half of "a draft outlives a lock" was nailed down in
+ * RightPanelDrafts.test.tsx with an unmount and a remount, because the lock
+ * path belongs to VaultGate and that file never mounts one. An unmount is
+ * what a lock DOES, but it is not a lock: it cannot notice a clear added to
+ * the gate's lock edge, and that edge is exactly where such a clear would be
+ * written. These three cases close that gap by driving the real gate.
+ *
+ * The claim has two halves and both are asserted, because on its own each
+ * one is indistinguishable from a defect:
+ *  - the words come back after the passphrase, and
+ *  - while the vault is shut the box is NOT ON SCREEN. Without the second
+ *    half, "the text survives a lock" would also describe a lock screen that
+ *    displays the user's unsent sentences.
+ * TEETH below supplies the third: a lock edge that cleared the store would
+ * bring the box back EMPTY, so the survival assertions are not green whatever
+ * the code does.
+ */
+const PANEL_CHAT_ID = 7;
+
+/** The note box's key for the chat these cases open, built, never retyped. */
+const PANEL_NOTE_KEY = chatScopedPanelDraftKey(
+  PANEL_DRAFT_KEYS.newNote,
+  PANEL_CHAT_ID,
+);
+
+/** The notebook worker card's status, shaped as its schema requires. */
+const panelWorkerStatus = {
+  stats: { done: 0, failed: 0, skipped: 0, skip_reasons: {} },
+  spend: { calls: 0, tokens_in: 0, tokens_out: 0, cost: 0 },
+  spend_lifetime: { calls: 0, tokens_in: 0, tokens_out: 0, cost: 0 },
+  worker: {
+    state: "closed",
+    failures: 0,
+    total_failures: 0,
+    queued: 0,
+    dropped_offers: 0,
+    runs: 0,
+    batch_size: 20,
+  },
+  daily_cap: 60,
+};
+
+/**
+ * Every route the Models and Notes tabs reach for, emptiest valid payload.
+ *
+ * Insertion order is load-bearing: the stub matches by URL SUBSTRING, so
+ * `/notebook/7/boundaries` has to sit above `/notebook/7` and
+ * `/notebook/extract/models` above `/models`, or a panel is served the wrong
+ * shape, its schema rejects it, and it renders an error state where these
+ * cases expect a box.
+ */
+const panelRoutes: Record<string, () => unknown> = {
+  "/notebook/extract/models": () => ({ models: [] }),
+  "/notebook/extract/settings": () => ({ model_id: null, prompt_language: "en" }),
+  "/notebook/worker": () => panelWorkerStatus,
+  "/notebook/safeword": () => ({ word: "" }),
+  "/notebook/auto-accept": () => ({
+    enabled: true,
+    effective: true,
+    overridden: false,
+  }),
+  [`/notebook/${PANEL_CHAT_ID}/boundaries`]: () => ({
+    boundaries: [],
+    use_global: true,
+  }),
+  "/notebook/boundaries": () => ({ boundaries: [], use_global: true }),
+  [`/notebook/${PANEL_CHAT_ID}`]: () => ({ entries: [], notebook_chars: 0 }),
+  "/models": () => modelListFixture,
+  "/settings": () => ({ ...settingsFixture, proxy_configured: true }),
+  "/proxy/health": () => ({
+    healthy: true,
+    latency_ms: 12,
+    reason: null,
+    cached: false,
+  }),
+  "/personas": () => [],
+  "/tts/voice-mode": () => ({ enabled: false, active: false, prompt_chars: 0 }),
+  [`/chats/${PANEL_CHAT_ID}/messages`]: () => [],
+  "/chats": () => [],
+  "/characters": () => [],
+};
+
+/**
+ * Every request the panels made was actually answered.
+ *
+ * An unmatched route comes back 404, the panel that asked renders an error
+ * instead of its controls, and a survival assertion waiting on a box that is
+ * simply absent would report the wrong thing. A 423 is not a miss: that is
+ * the locked half of these cases working as intended.
+ */
+async function assertPanelRoutesAnswered(
+  fetchMock: ReturnType<typeof vi.fn>,
+): Promise<void> {
+  const responses = await Promise.all(
+    fetchMock.mock.results.map((result) => result.value as Promise<Response>),
+  );
+  expect(
+    responses.length,
+    "the panels made no requests at all, so this check is vacuous",
+  ).toBeGreaterThan(0);
+  const missed = responses
+    .map((response, index) => ({
+      status: response.status,
+      url: String(fetchMock.mock.calls[index][0]),
+    }))
+    .filter((call) => call.status === 404);
+  expect(missed, "a panel route was not answered by the stub").toEqual([]);
+}
+
+/** The gated stub, returned so the 404 sweep above can read its calls. */
+function stubGatedPanelFetch(sim: VaultSim) {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    const json = (data: unknown, status = 200) =>
+      new Response(JSON.stringify(data), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
+
+    if (url.includes("/vault/status")) {
+      return json({ initialized: true, unlocked: sim.unlocked });
+    }
+    // The real backend answers every data endpoint 423 while shut, which is
+    // also the path the automatic idle lock reaches the frontend by.
+    if (!sim.unlocked) return json({ detail: "vault_locked" }, 423);
+
+    for (const [pattern, body] of Object.entries(panelRoutes)) {
+      if (url.includes(pattern)) return json(body());
+    }
+    return json({ detail: `No mock for ${url}` }, 404);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+/** Open the vault again. The panel half has no composer to wait on. */
+async function unlockPanel(sim: VaultSim, qc: QueryClient) {
+  sim.unlocked = true;
+  await act(async () => {
+    await qc.invalidateQueries({ queryKey: keys.vault() });
+  });
+}
+
+describe("right panel drafts through a real vault lock", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    useDraftStore.getState().clearAll();
+    useErrorStore.getState().clearAll();
+    // Both are module scope like the draft store, and the Notes tab reads
+    // them; a suite that does not set its own preconditions is one fixture
+    // change away from silent bleed.
+    useSeenNotesStore.setState({ byChat: {} });
+    useContextNotesStore.setState({ byChat: {} });
+    localStorage.clear();
+    sessionStorage.clear();
+    useUiStore.setState({
+      selectedChatId: PANEL_CHAT_ID,
+      selectedModelId: null,
+      selectedCharacterId: null,
+      activeRightPanelTab: "notebook",
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    useUiStore.setState({
+      selectedChatId: null,
+      selectedModelId: null,
+      selectedCharacterId: null,
+      activeRightPanelTab: "models",
+    });
+  });
+
+  it("SCENARIO 1: a real vault lock and unlock keeps the panel note", async () => {
+    const user = userEvent.setup();
+    const sim: VaultSim = { unlocked: true };
+    const fetchMock = stubGatedPanelFetch(sim);
+
+    const { queryClient } = renderWithQueryClient(
+      <VaultGate>
+        <RightPanel />
+      </VaultGate>,
+      { wrapper },
+    );
+
+    const note = await screen.findByRole("textbox", { name: "New note" });
+    await user.type(note, "a sentence nobody has decided to keep yet");
+    // PRECONDITION. "It came back" proves nothing about a sentence that was
+    // never written; this is the same guard the storage sweep above carries.
+    expect(
+      useDraftStore.getState().panel[PANEL_NOTE_KEY]?.text,
+      "the note never reached the store, so nothing was under test",
+    ).toBe("a sentence nobody has decided to keep yet");
+    await assertPanelRoutesAnswered(fetchMock);
+
+    await lock(sim, queryClient);
+
+    // POSITIVE CONTROL (a): the boundary that separates "held in RAM" from a
+    // lock screen that shows the user's unsent words. No node, no accessible
+    // name, no pixel.
+    expect(
+      screen.queryByRole("textbox", { name: "New note" }),
+      "the unsent note was readable off the lock screen",
+    ).not.toBeInTheDocument();
+
+    await unlockPanel(sim, queryClient);
+
+    expect(
+      await screen.findByRole("textbox", { name: "New note" }, { timeout: 5000 }),
+      "a real lock ate an unsent note",
+    ).toHaveValue("a sentence nobody has decided to keep yet");
+  });
+
+  it("SCENARIO 1b: a real lock keeps the model search text too", async () => {
+    // The note above is CHAT-SCOPED and the search is GLOBAL: they are filed
+    // under different key shapes, so a clear that reached one and not the
+    // other would still pass one of these two cases.
+    const user = userEvent.setup();
+    const sim: VaultSim = { unlocked: true };
+    useUiStore.setState({ activeRightPanelTab: "models" });
+    stubGatedPanelFetch(sim);
+
+    const { queryClient } = renderWithQueryClient(
+      <VaultGate>
+        <RightPanel />
+      </VaultGate>,
+      { wrapper },
+    );
+
+    const search = await screen.findByRole("textbox", { name: "Search models" });
+    await user.type(search, "opus");
+    expect(
+      useDraftStore.getState().panel[PANEL_DRAFT_KEYS.modelSearch]?.text,
+      "the search text never reached the store, so nothing was under test",
+    ).toBe("opus");
+
+    await lock(sim, queryClient);
+    expect(
+      screen.queryByRole("textbox", { name: "Search models" }),
+      "the search box was readable off the lock screen",
+    ).not.toBeInTheDocument();
+
+    await unlockPanel(sim, queryClient);
+
+    expect(
+      await screen.findByRole(
+        "textbox",
+        { name: "Search models" },
+        { timeout: 5000 },
+      ),
+      "a real lock ate the model search text",
+    ).toHaveValue("opus");
+  });
+
+  it("TEETH: a lock that cleared the store would empty the box", async () => {
+    // POSITIVE CONTROL (b) for both cases above. They assert that text comes
+    // back through a real gate; this one runs the identical trip with the
+    // store emptied as the lock lands - the exact effect a clear on
+    // VaultGate's lock edge would have - and watches the box come back
+    // blank. Without it, "the note survived" is a sentence that a panel
+    // which simply never lets go of anything would also satisfy, and the two
+    // cases above would be green however the gate were wired.
+    const user = userEvent.setup();
+    const sim: VaultSim = { unlocked: true };
+    stubGatedPanelFetch(sim);
+
+    const { queryClient } = renderWithQueryClient(
+      <VaultGate>
+        <RightPanel />
+      </VaultGate>,
+      { wrapper },
+    );
+
+    const note = await screen.findByRole("textbox", { name: "New note" });
+    await user.type(note, "a sentence a clear would destroy");
+    expect(
+      useDraftStore.getState().panel[PANEL_NOTE_KEY]?.text,
+      "the note never reached the store, so this control measures nothing",
+    ).toBe("a sentence a clear would destroy");
+
+    await lock(sim, queryClient);
+    act(() => {
+      useDraftStore.getState().clearAll();
+    });
+    await unlockPanel(sim, queryClient);
+
+    expect(
+      await screen.findByRole("textbox", { name: "New note" }, { timeout: 5000 }),
+      "the box refilled itself from somewhere, so the survival cases above prove nothing",
+    ).toHaveValue("");
   });
 });

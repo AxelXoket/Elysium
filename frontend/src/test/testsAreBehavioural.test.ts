@@ -439,13 +439,26 @@ export const KNOWN_PENDING: Record<
     ['const css = readFileSync(CSS_PATH, "utf-8");', 1],
   ],
   ["lib/motionTokens.test" + TS]: [
-    ["const providers = readFileSync(", 1],
+    // PAID, 3 September 2026. This was the line that read `app/providers.tsx`
+    // and looked for `reducedMotion="user"` in it. That string is in that
+    // file twice - once as the prop, once inside the comment above it - so
+    // the assertion passed on the comment alone, measured. The prop is read
+    // off the component that receives it now, in
+    // components/ReducedMotionRoot.test.tsx.
     [READ_CSS_FROM_SRC, 1],
   ],
   ["palette-guard.test" + TS]: [
     ['const colors = parseColors(readFileSync(CSS, "utf-8"));', 1],
     ['const css = readFileSync(CSS, "utf-8");', 3],
-    ['const css = readFileSync(CSS, "utf8");', 2],
+    // PAID, 3 September 2026. Two re-reads of the stylesheet, one per
+    // reduced-motion test, each feeding a fixed 2200-character slice taken
+    // from the match index. The blocks they claimed to read are at most 1899
+    // characters long, so every slice ran past the closing brace and counted
+    // the next rule as part of the block. Both tests use the depth-counting
+    // blockAt helper that was already in the file now, which means they read
+    // the describe-level text rather than a private copy - the match indices
+    // and the slice have to come from the same string for a brace count to
+    // mean anything.
   ],
   ["right-panel-readability.test" + TS]: [
     ["const src = readFileSync(", 1],

@@ -214,6 +214,12 @@ def _capture_wire(monkeypatch) -> list[dict]:
 
     monkeypatch.setattr(openrouter, "get_client", lambda: _Client())
     monkeypatch.setattr(openrouter, "get_secret", lambda name: "sk-test")
+    # complete()/complete_stream() also read the SAFEWORD out of the
+    # vault before the socket, and this file drives them with no vault
+    # at all. Says the same thing about the safeword that the line
+    # above says about the key: in this scenario there is not one.
+    monkeypatch.setattr(openrouter.safeword_filter, "needles",
+                        lambda: ())
     return bodies
 
 
@@ -330,8 +336,14 @@ def test_dedup_happens_at_the_source():
         client_obj = await drive()
         orig_get_client = openrouter.get_client
         orig_get_secret = openrouter.get_secret
+        # complete_stream() also reads the SAFEWORD out of the vault before
+        # the socket, and this run has no vault at all. Says the same thing
+        # about the safeword that the line below says about the key: in this
+        # scenario there is not one.
+        orig_needles = openrouter.safeword_filter.needles
         openrouter.get_client = lambda: client_obj
         openrouter.get_secret = lambda name: "sk-test"
+        openrouter.safeword_filter.needles = lambda: ()
         try:
             async for _ in openrouter.complete_stream(
                 [{"role": "user", "content": "hi"}], "m", {}, {},
@@ -342,6 +354,7 @@ def test_dedup_happens_at_the_source():
         finally:
             openrouter.get_client = orig_get_client
             openrouter.get_secret = orig_get_secret
+            openrouter.safeword_filter.needles = orig_needles
 
     anyio.run(run)
     # Four sightings of one url across two frames and two shapes.

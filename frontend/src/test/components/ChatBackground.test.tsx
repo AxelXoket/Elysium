@@ -21,8 +21,24 @@ import {
 import { SidebarFooter } from "@/components/sidebar/SidebarFooter";
 import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
 import { useUiStore } from "@/lib/store/uiStore";
+import { useErrorStore } from "@/lib/errors/errorStore";
+import { deleteChatBgBlob } from "@/lib/store/chatBgDb";
 import { mockFetch } from "../mocks/api";
 import type { ReactNode } from "react";
+
+/**
+ * The blob store, with one seam in it: the delete.
+ *
+ * jsdom has no IndexedDB, so the real function short-circuits to a resolved
+ * promise and the failing branch is unreachable from a test - which is how it
+ * kept an empty catch for as long as it did. Everything else is the real
+ * module, and the default here behaves exactly like the real one does in
+ * jsdom, so nothing above this line changes.
+ */
+vi.mock("@/lib/store/chatBgDb", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/store/chatBgDb")>()),
+  deleteChatBgBlob: vi.fn(async () => undefined),
+}));
 
 function wrapper({ children }: { children: ReactNode }) {
   return (
@@ -203,10 +219,117 @@ describe("Background settings page", () => {
     expect(useUiStore.getState().chatBgTint).toBe("#2A3648");
     expect(moss).toHaveAttribute("aria-checked", "true");
 
-    // Remove flips the flag off (blob deletion is a no-op in jsdom).
+    // Remove flips the flag off (the delete resolves; the branch where it
+    // does not has its own cases at the bottom of this file).
     await user.click(screen.getByRole("button", { name: "Remove" }));
     expect(useUiStore.getState().chatBgOn).toBe(false);
     // ...and the controls that only make sense with a wallpaper go with it.
     expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+  });
+});
+
+/**
+ * Removing the wallpaper when the blob will not go.
+ *
+ * The flag is closed before the delete is attempted and stays closed whatever
+ * happens - that part was always right and is pinned below so it stays right.
+ * What was wrong is what came after: the failure went into an empty catch, so
+ * the user's own picture stayed in the browser profile after they asked for
+ * it to go, and every surface in the app said the removal had worked.
+ *
+ * A warning rather than an error, because the action succeeded and only the
+ * cleanup did not. The two runs here are each other's control: if the store
+ * held a record in the successful run, the failing run would prove nothing.
+ */
+describe("Background settings page - a removal that leaves the blob behind", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.mocked(deleteChatBgBlob).mockReset();
+    vi.mocked(deleteChatBgBlob).mockResolvedValue(undefined);
+    useErrorStore.getState().clearAll();
+    useUiStore.setState({
+      activeRightPanelTab: "models",
+      chatBgOn: true,
+      chatBgLum: 0.3,
+      settingsOpen: false,
+      settingsInitialPage: null,
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    useErrorStore.getState().clearAll();
+  });
+
+  async function remove(user: ReturnType<typeof userEvent.setup>) {
+    renderWithQueryClient(<SidebarFooter />, { wrapper });
+    await user.click(screen.getByRole("button", { name: "Open settings" }));
+    await user.click(await screen.findByText("Chat background"));
+    await user.click(await screen.findByRole("button", { name: "Remove" }));
+  }
+
+  it("GROUND: a removal that works reports nothing at all", async () => {
+    const user = userEvent.setup();
+    mockFetch({});
+
+    await remove(user);
+
+    expect(useUiStore.getState().chatBgOn).toBe(false);
+    expect(vi.mocked(deleteChatBgBlob), "the blob was never asked to go")
+      .toHaveBeenCalledTimes(1);
+    expect(
+      useErrorStore.getState().errors,
+      "a removal that worked told the user something went wrong",
+    ).toEqual([]);
+  });
+
+  it("says so when the picture is still in the browser profile", async () => {
+    const user = userEvent.setup();
+    mockFetch({});
+    vi.mocked(deleteChatBgBlob).mockRejectedValue(
+      new Error("the profile refused the delete"),
+    );
+
+    await remove(user);
+
+    // The half of the old comment that was right: the flag is off either way,
+    // so nothing in the app still points at a picture it cannot reach.
+    expect(
+      useUiStore.getState().chatBgOn,
+      "a failed cleanup left the app claiming a wallpaper",
+    ).toBe(false);
+    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+
+    const { errors } = useErrorStore.getState();
+    expect(errors, "the leftover picture was never mentioned").toHaveLength(1);
+    expect(
+      errors[0].severity,
+      "a cleanup that did not finish was reported as a failed action",
+    ).toBe("warning");
+  });
+
+  it("is not swallowed by an unrelated failure already on screen", async () => {
+    // Two events, same code, no chat id between them: the store's identity
+    // rule would call the second one a repeat of the first and drop it. That
+    // is the silence again, arriving by a different route, which is why the
+    // push names which button it came from.
+    const user = userEvent.setup();
+    mockFetch({});
+    useErrorStore.getState().pushError(new Error("an unrelated failure"));
+    expect(useErrorStore.getState().errors).toHaveLength(1);
+    const earlier = useErrorStore.getState().errors[0];
+
+    vi.mocked(deleteChatBgBlob).mockRejectedValue(
+      new Error("the profile refused the delete"),
+    );
+    await remove(user);
+
+    const { errors } = useErrorStore.getState();
+    expect(errors, "the removal was read as a repeat of the other failure")
+      .toHaveLength(2);
+    // GROUND for the line above: the two really are the same code, so the
+    // dedupe had every reason to collapse them and something stopped it.
+    expect(errors[1].code).toBe(earlier.code);
+    expect(errors[1].severity).toBe("warning");
   });
 });

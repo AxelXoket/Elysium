@@ -434,10 +434,26 @@ class _NoHalving(notebook_worker.Worker):
 
     A subclass rather than a patch, so the two arms are two objects and
     neither can leak its behaviour into the other's run.
+
+    ALL FOUR accessors, not just the property. `_prepare` asks
+    `batch_size_for`/`trigger_threshold_for` now, and a control arm that
+    overrode only the argument-less pair would be the SAME worker as the
+    other arm - both measurements identical, every ratio 1.00x, and the
+    harness reporting agreement it had stopped measuring.
     """
 
     @property
     def batch_size(self) -> int:
+        return config.NOTEBOOK_EXTRACT_EVERY_TURNS
+
+    @property
+    def trigger_threshold(self) -> int:
+        return config.NOTEBOOK_EXTRACT_EVERY_TURNS
+
+    def batch_size_for(self, chat_id: int) -> int:
+        return config.NOTEBOOK_EXTRACT_EVERY_TURNS
+
+    def trigger_threshold_for(self, chat_id: int) -> int:
         return config.NOTEBOOK_EXTRACT_EVERY_TURNS
 
 
@@ -481,6 +497,24 @@ class TestWhatHalvingTheBatchCosts:
         assert on["calls"] <= off["calls"] * CALL_BUDGET_MULTIPLIER, (
             f"halving cost {on['calls']} calls against {off['calls']}")
 
+    def test_the_control_arm_really_does_disable_the_halving(self) -> None:
+        """GROUND for the whole class, and it is not a formality.
+
+        `_prepare` asks `batch_size_for`/`trigger_threshold_for`, not the
+        argument-less properties, so a control arm that overrode only the
+        properties would be the SAME worker as the other arm: both runs
+        identical, every ratio 1.00x, and a harness reporting agreement it
+        had quietly stopped measuring.
+        """
+        off = _NoHalving()
+        on = notebook_worker.Worker()
+        off.breaker.failures = on.breaker.failures = notebook_worker.PRESSURE_STEPS
+
+        assert off.batch_size_for(1) == config.NOTEBOOK_EXTRACT_EVERY_TURNS
+        assert off.trigger_threshold_for(1) == config.NOTEBOOK_EXTRACT_EVERY_TURNS
+        assert on.batch_size_for(1) < off.batch_size_for(1)
+        assert on.trigger_threshold_for(1) < off.trigger_threshold_for(1)
+
     @pytest.mark.anyio
     async def test_a_healthy_provider_costs_exactly_the_same(
             self, client, monkeypatch) -> None:
@@ -506,12 +540,19 @@ class TestWhatHalvingTheBatchCosts:
         one reads, because it spends the day's calls on two-message batches.
         In the regime the mechanism exists for it pays more and does less.
 
-        Whether the trigger threshold should halve alongside the batch - the
-        one line that would close this - is an open decision, so what is
-        nailed here is the measurement rather than the wish. The day that
-        decision lands, this goes RED and is rewritten as the budget:
+        THE TRIGGER THRESHOLD NOW HALVES ALONGSIDE THE BATCH, and this test
+        did NOT go red - which is the finding, and it is why the sentence
+        that used to stand here ("the day that decision lands, this goes RED
+        and is rewritten as `on["read"] >= off["read"] / 2`") had to go. A
+        reader who found it still here would conclude the decision had never
+        landed. It has: see `Worker.trigger_threshold`.
 
-            assert on["read"] >= off["read"] / 2
+        It changed nothing because the halved threshold is only in force
+        while the breaker has consecutive failures, and a failed extraction
+        does not advance the cursor - so the backlog in front of the gate is
+        already above the UNHALVED threshold every time the halved one is
+        asked. `read` stays where it was. The shortfall is the BATCH's, and
+        it is still here, so this pin is still the thing that measures it.
         """
         off = await _grind(client, monkeypatch,
                            halving=False, outcomes=FOUR_TO_ONE)

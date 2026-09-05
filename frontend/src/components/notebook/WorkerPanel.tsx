@@ -76,8 +76,8 @@ import {
  *  four happened to come out right while one entry was invented and one was
  *  absent.
  *
- *  What follows from that is NOT cosmetic and is an open question for the
- *  owner rather than something this comment settles: because nothing rolls
+ *  What follows from that is NOT cosmetic, and it is still open rather than
+ *  something this comment settles: because nothing rolls
  *  the notebook back on a regenerate, an extraction in flight over a reply
  *  you then threw away still lands, still gets written, and - with automatic
  *  acceptance on by default - still goes into the prompt. The panel used to
@@ -361,8 +361,14 @@ export function isEmptySettle(lastError: string | null | undefined): boolean {
 
 /** The three states, said plainly. "closed" is engineering vocabulary for
  *  "working", and a panel that prints it is asking the reader to learn the
- *  implementation before they can read their own status. */
-const STATE_PROSE: Record<string, string> = {
+ *  implementation before they can read their own status.
+ *
+ *  EXPORTED for the reason SKIP_PROSE is: the fallback below prints the raw
+ *  token when the backend grows a state this table has never heard of, and
+ *  the only thing that catches that is a test walking every state the
+ *  backend can report through this map. */
+// eslint-disable-next-line react-refresh/only-export-components -- co-located with the component, same boundary as SKIP_PROSE above
+export const STATE_PROSE: Record<string, string> = {
   closed: "Running.",
   open: "Paused after repeated failures. It will try again by itself.",
   // The state that was missing, and the omission was on the screen rather
@@ -375,10 +381,54 @@ const STATE_PROSE: Record<string, string> = {
   stopped: "Stopped after too many failures. It will not try again until you say so.",
 };
 
+/** The same states for ONE chat, and every sentence has to say that the rest
+ *  are fine. A reader who sees "Paused after repeated failures" with no such
+ *  clause reads it as the feature being down and goes looking for a fault
+ *  that is not there - which is the whole reason the breaker was split. */
+// eslint-disable-next-line react-refresh/only-export-components -- same boundary as STATE_PROSE
+export const CHAT_STATE_PROSE: Record<string, string> = {
+  open: "This chat is paused after repeated failures here. Other chats are"
+    + " unaffected, and it will try this one again by itself.",
+  half_open: "This chat is paused, but the cooldown is over: its next turn"
+    + " sends one trial call, and that call is billed. Other chats are"
+    + " unaffected.",
+  stopped: "This chat is stopped after too many failures here. Other chats"
+    + " keep running; this one will not try again until you say so.",
+};
+
+/** Why the "read the earlier part" button refused, said plainly.
+ *
+ *  This was three arms of an inline ternary whose last one was a catch-all
+ *  reading "It is already reading. Give it a moment." The moment the worker
+ *  learned to refuse a paused chat, that arm told the reader the exact
+ *  opposite of what was happening. A table with a named fallback cannot do
+ *  that quietly, and a test can walk it against the backend's own set. */
+// eslint-disable-next-line react-refresh/only-export-components -- same boundary as STATE_PROSE
+export const SWEEP_PROSE: Record<string, string> = {
+  nothing_unread: "Nothing here is unread - it has all been looked at.",
+  already_running: "It is already reading. Give it a moment.",
+  already_in_flight: "It is already reading this chat. Give it a moment.",
+  chat_paused: "This chat is paused after repeated failures here, so nothing"
+    + " was sent. Other chats are unaffected.",
+  chat_stopped: "This chat is stopped after too many failures here, so"
+    + " nothing was sent. Use the button below to try this chat again.",
+};
+
+/** What a refusal with no sentence reads as. Same shape and same reason as
+ *  `skipProse`: the code rides along in brackets for a bug report, the
+ *  sentence is what a reader gets, and neither is a bare token. */
+// eslint-disable-next-line react-refresh/only-export-components -- same boundary as STATE_PROSE
+export function sweepProse(reason: string | undefined): string {
+  if (!reason) return "It did not start, and did not say why.";
+  return SWEEP_PROSE[reason] ?? `It did not start (${reason}).`;
+}
+
 export function WorkerPanel() {
   const chatId = useUiStore((s) => s.selectedChatId);
   const qc = useQueryClient();
-  const status = useWorkerStatus();
+  // The chat is part of the QUESTION, not just of the answer: the worker's
+  // per-chat breaker is only reported for the chat that was asked about.
+  const status = useWorkerStatus(chatId);
   const reset = useResetWorker();
   const sweep = useSweepChat();
   const [swept, setSwept] = useState<string | null>(null);
@@ -389,6 +439,10 @@ export function WorkerPanel() {
 
   const body = status.data;
   const state = body?.worker.state ?? "closed";
+  // Undefined when nothing is selected OR when this chat has never failed -
+  // a healthy chat holds no breaker at all, and "no record" is exactly
+  // "nothing to report".
+  const chatState = body?.worker.chat?.state;
   const skips = body?.stats.skip_reasons ?? {};
   const failures = body?.stats.error_types ?? {};
   const drops = body?.worker.dropped ?? {};
@@ -465,9 +519,7 @@ export function WorkerPanel() {
       setSwept(
         out.started
           ? "Reading the earlier part of this chat now."
-          : out.reason === "nothing_unread"
-            ? "Nothing here is unread - it has all been looked at."
-            : "It is already reading. Give it a moment.",
+          : sweepProse(out.reason),
       );
     } catch (err) {
       pushError(err, "error");
@@ -483,9 +535,9 @@ export function WorkerPanel() {
     }
   }
 
-  async function unstick() {
+  async function unstick(only?: number) {
     try {
-      await reset.mutateAsync();
+      await reset.mutateAsync(only);
     } catch (err) {
       pushError(err, "error");
     }
@@ -573,6 +625,20 @@ export function WorkerPanel() {
             <p className="text-xs leading-relaxed text-muted-foreground">
               {STATE_PROSE[state] ?? state}
             </p>
+            {/* A SECOND line, never a replacement for the first. The
+                sentence above is about the whole feature and must not
+                change because one conversation broke; this one is about the
+                chat in front of the reader, and it exists because a chat
+                stopped on its own is otherwise a panel reading "Running."
+                over a conversation nothing will ever read. */}
+            {chatState && chatState !== "closed" && (
+              <p
+                className="text-xs leading-relaxed text-muted-foreground"
+                data-testid="worker-chat-state"
+              >
+                {CHAT_STATE_PROSE[chatState] ?? chatState}
+              </p>
+            )}
             <p className="text-xs leading-relaxed text-muted-foreground">
               {body.stats.done} runs · {body.spend.calls} of {body.daily_cap}{" "}
               calls today · {body.spend.cost.toFixed(5)} credits{" "}
@@ -796,6 +862,21 @@ export function WorkerPanel() {
               </p>
             )}
 
+            {/* Counted apart from the line above, and said apart. Folded
+                together, "the provider is down" and "these conversations are
+                broken" read as one number, and only one of them means the
+                rest of the notebook is working. */}
+            {body.worker.refused_by_chat_breaker > 0 && (
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                {body.worker.refused_by_chat_breaker} turns were passed over
+                in chats that keep failing on their own
+                {body.worker.tripped_chats > 0
+                  ? ` (${body.worker.tripped_chats} of them right now)`
+                  : ""}
+                . Every other chat kept running.
+              </p>
+            )}
+
             {body.worker.dropped_offers > 0 && (
               <p className="text-xs leading-relaxed text-muted-foreground">
                 {body.worker.dropped_offers} turns went unqueued while it was
@@ -857,7 +938,11 @@ export function WorkerPanel() {
         {/* Only when it means something. A reset button that is always there
             invites pressing it at random; one that appears when the thing is
             actually stuck says what it is for. */}
-        {(state === "stopped" || state === "open") && (
+        {/* `half_open` belongs here and was missing. The panel says the next
+            turn sends a BILLED trial call, and then offered the reader no
+            way to act on that - the one state where the sentence on screen
+            asks for a decision was the one state with no button. */}
+        {(state === "stopped" || state === "open" || state === "half_open") && (
           <Button
             type="button"
             size="sm"
@@ -868,6 +953,24 @@ export function WorkerPanel() {
           >
             <RotateCcw size={12} className="size-3" />
             Try again now
+          </Button>
+        )}
+
+        {/* A SECOND button, because they undo different things. The one
+            above lifts the process-wide refusal and every per-chat one with
+            it; this one unsticks exactly the conversation in front of the
+            reader and leaves the others where they are. */}
+        {chatId != null && chatState && chatState !== "closed" && (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            disabled={reset.isPending}
+            onClick={() => void unstick(chatId)}
+            className="persona-ghost-action h-7 gap-1.5 px-2 text-xs"
+          >
+            <RotateCcw size={12} className="size-3" />
+            Try this chat again
           </Button>
         )}
       </section>

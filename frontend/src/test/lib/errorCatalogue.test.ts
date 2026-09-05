@@ -67,9 +67,10 @@ describe("the error catalogue", () => {
     // proxy_url_required, invalid_proxy_scheme, proxy_url_invalid,
     // api_key_required_by_openrouter, invalid_openrouter_models_response,
     // openrouter_models_error, character_json_too_large,
-    // invalid_character_json, character_name_required). All fifteen are in the
-    // catalogue, so all fifteen are covered by iterating it. A hand-kept list
-    // is exactly the thing that goes stale while looking like coverage.
+    // invalid_character_json, character_name_required). Every one that the
+    // backend can still emit is in the catalogue, so every one is covered by
+    // iterating it - `character_name_required` has since been retired, which
+    // is precisely the drift a hand-kept list would have hidden.
     const missing = CODES.filter((c) => !isKnownErrorCode(c));
     expect(missing, `no sentence in errorMessages.ts for: ${missing.join(", ")}`)
       .toEqual([]);

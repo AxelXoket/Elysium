@@ -834,9 +834,35 @@
   opacity: 1;
 }
 
-/* Glass right panel surface */
+/* Glass right panel surface.
+ *
+ * The gradient alpha was raised from 0.97/0.94 to 0.98/0.97 on 5 September
+ * 2026, and NOTHING else moved: same two colours, same palette, no token
+ * touched, palette-guard's allowlist untouched.
+ *
+ * Both stops are translucent over --color-es-background, so the dark frame
+ * reaches the eye through them and every ratio quoted on this surface is a
+ * ratio on that COMPOSITE - which is what the rationale comments further down
+ * this block already quote (8.39/7.26 for the primary ink, 5.08/4.49 for the
+ * muted one, 11.8 to 13.0 for the meter). At 0.94 the bottom stop composited
+ * to rgb(225,231,237) and three inks landed under their floors on it:
+ * --color-es-danger at 4.42:1, --color-es-text-muted at 4.37:1 (which no test
+ * was even looking at) and the ghost ink at 4.85:1 with nothing left over. At
+ * 0.98/0.97 the stops composite to rgb(247,248,250) and rgb(231,237,243) and
+ * the same three read 4.67:1, 4.61:1 and 5.07:1.
+ *
+ * 0.94 was never the surface anybody saw anyway: with the ambient fog on by
+ * default an OPAQUE WebGL canvas sits inside this panel at z-index -1, above
+ * this gradient and below the content, so nothing behind the panel has been
+ * reaching the eye at all. Raising the alpha moves the measurement towards
+ * what ships rather than away from it.
+ *
+ * The gradient stays the FIRST declaration in this block on purpose: the four
+ * contrast tests read it out of the compiled sheet through a fixed-width
+ * window after `.glass-right {`, so a comment placed inside the block would
+ * push it out of reach. */
 .glass-right {
-  background: linear-gradient(180deg, rgba(252, 253, 255, 0.97), rgba(238, 244, 250, 0.94));
+  background: linear-gradient(180deg, rgba(252, 253, 255, 0.98), rgba(238, 244, 250, 0.97));
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
   /* Softened with --color-es-text-light below, not left behind it. These
@@ -866,8 +892,9 @@
      The right panel had inverted the app's hierarchy, painting its headings
      with the strongest ink it owns.
 
-     #3A4A5C measures 8.39:1 against the top gradient stop as painted and
-     7.26:1 against the bottom one, so every reading still clears WCAG AAA
+     #3A4A5C measures 8.54:1 against the top gradient stop as painted and
+     7.69:1 against the bottom one (8.39 and 7.26 before the gradient alpha
+     was raised above), so every reading still clears WCAG AAA
      for normal text (7:1) while landing inside the band the rest of the app
      uses. Cool slate, same family as --muted-foreground below it, so
      palette-guard's warm and green detectors stay quiet.
@@ -899,17 +926,38 @@
 
      Escalation here is by depth, not by a new hue, because amber is dead in
      this theme (index.css:3148, "severity is carried by weight and position
-     instead of colour"). Against that track: normal #3E72B0 reads 3.4 to
-     3.7:1, this reads 5.4 to 5.9:1, and danger is the rose, which differs by
-     hue as well. The
-     root value and its rationale are left intact above; this token is
-     consumed only by ModelPanel, which renders only here. */
-  --color-es-meter-warning: #2B5384;
+     instead of colour"). The root value and its rationale are left intact
+     above; this token is consumed only by ModelPanel, which renders only
+     here.
+
+     The first pass at that depth was #2B5384, and it went deep enough to
+     clear the track and stopped. Depth has to clear THREE things, and the
+     two it missed are the tiers either side of it: 1.59:1 against normal
+     #3E72B0 and 1.43:1 against danger #AF4650. Fixing the track had moved
+     the middle tier somewhere neither neighbour could be told apart from
+     it, which is the same three-states-that-are-really-two the pale azure
+     caused, one step along.
+
+     The band that clears all three at the non-text floor is narrow, and it
+     only opens downwards: normal and danger sit 1.11:1 apart in luminance,
+     so any colour 3:1 from both is far in luminance from both, and the
+     lighter side of that gap cannot also clear a near-white track. This is
+     the shallowest value the palette already declares that clears all
+     three, --color-es-surface, the same 213deg blue family as the primary,
+     so the tier reads as the deepest step of the app's own blue rather than
+     a fourth colour. Against the track composite above it reads 12.2 to
+     13.1:1; against normal 3.46:1; against danger 3.12:1. The last two are
+     token against token and do not move with the panel; the first one does,
+     and it was 11.8 to 13.0 before the gradient alpha was raised. */
+  --color-es-meter-warning: #141C26;
   --color-es-surface-elevated: rgba(255, 255, 255, 0.55);
   --color-es-glass-border-dark: rgba(30, 45, 62, 0.14);
   --color-es-glass-border-warm: rgba(30, 45, 62, 0.12);
-  /* --color-es-danger at its :root brightness (#C36A72) measures 3.37-3.67:1
-     against this panel's own gradient stops (WCAG contrast formula) - under
+  /* --color-es-danger at its :root brightness (#C36A72) measures 3.17-3.51:1
+     against this panel's own gradient stops as composited (WCAG contrast
+     formula; the figure quoted here was 3.37-3.67 while this one rationale
+     read the stops as opaque, which every other rationale in this block
+     already did not) - under
      the 4.5:1 floor text needs, because that value was only ever checked on
      the app's dark surfaces. Same hue and saturation as the root token
      (354.6deg, 42.6%), lightness taken from 59% down to 48%, so every
@@ -1119,15 +1167,25 @@
 
 /* KAPSAM 1 - the secondary ink, one notch darker along its own hue.
  *
- * `--color-es-text-muted` (#5E6B7A) reads 5.08:1 at the top of the gradient
- * and 4.49:1 at the very bottom - missing AA by 0.006, and only in the last
- * few percent of the panel. Six of these thirteen buttons carry 12px text.
+ * `--color-es-text-muted` (#5E6B7A) read 5.08:1 on this button fill at the top
+ * of the gradient and 4.49:1 at the very bottom - missing AA by 0.006, and only
+ * in the last few percent of the panel. Six of these thirteen buttons carry
+ * 12px text.
  *
  * Fixed HERE rather than on the token: eight other places read
- * `--color-es-text-muted` through the live cascade, and this is the one
- * surface that fails. #596674 is the same colour scaled 0.95 toward black -
- * 4.85:1 at the bottom stop, 5.48:1 at the top, still visibly lighter than
- * `--color-es-text-light` so the panel keeps its two ink tiers. */
+ * `--color-es-text-muted` through the live cascade, and this was the one
+ * surface that failed. #596674 is the same colour scaled 0.95 toward black.
+ *
+ * Both figures moved on 5 September 2026 when the panel's gradient alpha went
+ * to 0.98/0.97: the fill now composites lighter, so the token itself reads
+ * 5.16:1 / 4.70:1 here and would clear AA unaided. This override is therefore
+ * no longer load-bearing for THIS button - it is margin, 5.57:1 / 5.07:1, and
+ * it is kept for that. The token's own bare use on the panel is the reading
+ * that mattered and it was never measured until now: 5.03:1 / 4.37:1 before,
+ * 5.12:1 / 4.61:1 after, so the raise is what closed that one.
+ *
+ * Still visibly lighter than `--color-es-text-light`, so the panel keeps its
+ * two ink tiers. */
 .persona-ghost-action {
   color: #596674 !important;
 }
@@ -2969,11 +3027,36 @@
 }
 .es-collapse-inner {
   min-height: 0;
+  /* The clip is what sells the height animation, and it is also what cuts the
+     focus ring off every control inside: the global :focus-visible draws 2px
+     at a 2px offset, so the ring lives outside the box this hides. Two
+     surfaces already bought their way out of it with inner room
+     (.settings-voice-params and the right panel tab bodies below), which is a
+     per-surface patch for something the shared class owns. So the clip is
+     dropped once the section is OPEN, and only then - closed it still has to
+     hide the content it is animating past.
+
+     overflow cannot tween, it can only flip, and a flip at the START of the
+     opening is a visible pop: full-height content painted outside a row that
+     has not grown yet. `allow-discrete` makes the flip schedulable, the zero
+     duration keeps it a single step, and the delay on the open rule holds
+     that step until the row has finished growing. The closed state carries no
+     delay, so shutting clips again on the first frame. */
   overflow: hidden;
+  transition: overflow 0s allow-discrete;
+}
+.es-collapse[data-open="true"] .es-collapse-inner {
+  overflow: visible;
+  transition: overflow 0s var(--duration-normal) allow-discrete;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .es-collapse {
+    transition: none;
+  }
+  /* Nothing to wait for once the height snaps: holding the clip for the
+     length of an animation that is not running would just delay the ring. */
+  .es-collapse-inner {
     transition: none;
   }
 }

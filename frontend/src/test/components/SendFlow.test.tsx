@@ -123,6 +123,24 @@ function liveSendRoutes(streamResponse?: () => Promise<Response> | Response) {
   };
 }
 
+/**
+ * The waiting indicator, named rather than taken as "whatever is a status
+ * right now". These assertions have always been about the dots bubble - the
+ * comments beside them say so - but a bare role query owns every live region
+ * on screen, and the streaming reply became one of those. Read by its
+ * accessible name, "gone" keeps meaning the dots went away instead of
+ * quietly meaning nothing is announcing at all.
+ */
+const THINKING = "Assistant is thinking";
+
+function thinkingIndicator(): HTMLElement {
+  return screen.getByRole("status", { name: THINKING });
+}
+
+function noThinkingIndicator(): HTMLElement | null {
+  return screen.queryByRole("status", { name: THINKING });
+}
+
 describe("SendFlow", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -698,7 +716,7 @@ describe("SendFlow", () => {
     expect(await screen.findByText("Hello optimistic")).toBeInTheDocument();
 
     // Thinking bubble should be visible
-    expect(screen.getByRole("status")).toBeInTheDocument();
+    expect(thinkingIndicator()).toBeInTheDocument();
 
     // Release the stream
     releaseCompletion!();
@@ -709,7 +727,7 @@ describe("SendFlow", () => {
     ).toBeInTheDocument();
 
     // Thinking bubble should be gone
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(noThinkingIndicator()).toBeNull();
   });
 
   // T-57: error removes optimistic message; the Composer banner is the single
@@ -740,7 +758,7 @@ describe("SendFlow", () => {
     expect(useErrorStore.getState().errors).toHaveLength(0);
 
     // Thinking bubble should be gone
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(noThinkingIndicator()).toBeNull();
 
     // Input restored
     const textarea = screen.getByLabelText("Message") as HTMLTextAreaElement;
@@ -769,7 +787,7 @@ describe("SendFlow", () => {
     await screen.findByText("Hi! How can I help you?");
 
     // Thinking bubble should be gone
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(noThinkingIndicator()).toBeNull();
   });
 
   // T-59: input clears immediately on send (optimistic clear)
@@ -843,7 +861,7 @@ describe("SendFlow", () => {
     await user.click(screen.getByRole("button", { name: /send message/i }));
 
     // Pending indicators visible in the chat that owns the request
-    expect(await screen.findByRole("status")).toBeInTheDocument();
+    await waitFor(() => expect(thinkingIndicator()).toBeInTheDocument());
     expect(screen.getByLabelText("Message")).toBeDisabled();
 
     // Switch to another chat mid-request
@@ -853,7 +871,7 @@ describe("SendFlow", () => {
 
     // Chat 2 must not show chat 1's pending state
     await waitFor(() => {
-      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+      expect(noThinkingIndicator()).toBeNull();
       expect(screen.getByLabelText("Message")).not.toBeDisabled();
     });
 
@@ -861,7 +879,7 @@ describe("SendFlow", () => {
     act(() => {
       useUiStore.setState({ selectedChatId: 1 });
     });
-    expect(await screen.findByRole("status")).toBeInTheDocument();
+    await waitFor(() => expect(thinkingIndicator()).toBeInTheDocument());
     expect(screen.getByLabelText("Message")).toBeDisabled();
 
     // Release to clean up
@@ -1028,7 +1046,7 @@ describe("SendFlow", () => {
     ).not.toBeInTheDocument();
 
     // Before the first delta: thinking bubble
-    expect(screen.getByRole("status")).toBeInTheDocument();
+    expect(thinkingIndicator()).toBeInTheDocument();
 
     stream.emit({
       type: "user_message",
@@ -1044,7 +1062,7 @@ describe("SendFlow", () => {
 
     // Streaming bubble renders the accumulating text; thinking bubble gone
     expect(await screen.findByText(/Partial ans/)).toBeInTheDocument();
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(noThinkingIndicator()).toBeNull();
 
     // Backend will persist the partial on abort - refetch returns it
     messagesBody = [

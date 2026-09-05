@@ -130,9 +130,9 @@ describe("safeCharacterId", () => {
 // ═════════════════════════════════════════════════════════════════
 
 describe("buildStartChatInput", () => {
-  it("builds minimal input with only character_id", () => {
+  it("builds minimal input with character_id and an empty title", () => {
     const input = buildStartChatInput(1);
-    expect(input).toEqual({ character_id: 1 });
+    expect(input).toEqual({ character_id: 1, title: "" });
   });
 
   it("includes trimmed title when provided", () => {
@@ -145,15 +145,18 @@ describe("buildStartChatInput", () => {
     expect(input?.title).toBe("spaced");
   });
 
-  it("omits title when it is empty string", () => {
+  // Two rewrites, one reason: the helper used to DROP a blank title, which
+  // hid "the box was left empty" from the only layer that can act on it. An
+  // empty title is now sent as an empty string and the server answers it with
+  // a default name.
+  it("sends an empty title as an empty string", () => {
     const input = buildStartChatInput(1, "");
-    expect(input).toBeDefined();
-    expect(input).not.toHaveProperty("title");
+    expect(input).toEqual({ character_id: 1, title: "" });
   });
 
-  it("omits title when it is only whitespace", () => {
+  it("sends a whitespace-only title as an empty string", () => {
     const input = buildStartChatInput(1, "   ");
-    expect(input).not.toHaveProperty("title");
+    expect(input).toEqual({ character_id: 1, title: "" });
   });
 
   it("returns undefined for null character id", () => {
@@ -217,7 +220,7 @@ describe("Character detail vs start-chat separation", () => {
   it("buildStartChatInput is a pure helper - does not call API", () => {
     // Returns a plain object, not a Promise - no API call
     const input = buildStartChatInput(1);
-    expect(input).toEqual({ character_id: 1 });
+    expect(input).toEqual({ character_id: 1, title: "" });
     // It's not a Promise
     expect(input).not.toHaveProperty("then");
   });

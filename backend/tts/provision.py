@@ -54,6 +54,7 @@ from ._which import which_trusted
 from .errors import (
     TTS_ENGINE_UNKNOWN,
     TTS_INSUFFICIENT_DISK,
+    TTS_PROXY_UNAVAILABLE,
     TTS_PYTHON_NOT_FOUND,
     TTS_RUNTIME_INSTALLING,
     TTS_RUNTIME_INSTALL_FAILED,
@@ -318,6 +319,42 @@ def _proxy_required() -> bool:
         return True
 
 
+#: What the gate says when it refuses. A constant rather than a literal
+#: repeated at each raise site, so the tests that assert on the refusal import
+#: the sentence instead of retyping it and going stale against it.
+PROXY_REQUIRED_UNAVAILABLE = "a proxy is required but none is available"
+
+
+def _egress_gate() -> str | None:
+    """THE gate. Every byte this module sends out passes through here.
+
+    Returns the proxy to route through, or None when none is configured and
+    none is required. Raises ProxyUnreadable when the user armed the mandatory
+    proxy and this process cannot produce one - the vault is locked, or
+    nothing is set. Refusing is the whole point: a setting whose purpose is
+    "do not go out without the proxy" cannot answer "we could not read it" by
+    going out without the proxy.
+
+    It is one function because it used to be two answers. The installer has
+    exactly two ways onto the network - its own download of uv, and the uv
+    subprocess that fetches several gigabytes of packages - and they decided
+    this separately. The download side (then `_url_opener`, a name that no
+    longer exists) refused. `_proxy_env` called `_proxy_url`,
+    which swallows ProxyUnreadable into None, saw no proxy, and quietly set no
+    proxy variables at all, so the child went out bare. Same module, same
+    state, opposite behaviour, and the fail-open one was the multi-gigabyte
+    path - and the only one that runs at all on a machine that already has uv.
+
+    So the rule is not "each caller checks". It is that neither caller is
+    allowed to know how to answer this: the proxy arrives from here or the
+    call does not happen.
+    """
+    proxy = _proxy_url()
+    if not proxy and _proxy_required():
+        raise ProxyUnreadable(PROXY_REQUIRED_UNAVAILABLE)
+    return proxy
+
+
 #: Ambient variables that redirect where a child downloads from, or let it
 #: skip the proxy. uv and pip read all of these, and _run hands the child a
 #: copy of os.environ, so every one of them was in force.
@@ -367,9 +404,15 @@ def _proxy_env(base: dict) -> dict:
     place that inherited the user's shell, so a machine with HTTP_PROXY
     exported sent the whole download through a host this app never chose, and
     a machine with NO_PROXY=* sent it through none.
+
+    Raises ProxyUnreadable, from the gate, when a mandatory proxy cannot be
+    produced. That is a change of kind, not of degree: this function used to
+    return an environment with every proxy variable REMOVED and none put back,
+    which is the most direct instruction there is to go out bare, handed to
+    the child that downloads the most.
     """
     env = {**base, **{name: None for name in _ENV_NETWORK_STRIP}}
-    proxy = _proxy_url()
+    proxy = _egress_gate()
     if proxy:
         env.update({
             "HTTP_PROXY": proxy, "HTTPS_PROXY": proxy, "ALL_PROXY": proxy,
@@ -378,28 +421,26 @@ def _proxy_env(base: dict) -> dict:
     return env
 
 
-def _url_opener():
-    """A urllib opener that honours the CONFIGURED proxy.
+def _provision_client():
+    """A client for this module's own download, built THROUGH the gate.
 
-    The default opener consults the process environment; ours must consult the
-    vault, which is the only place this app stores a proxy. An empty
-    ProxyHandler is passed when none is set - deliberately explicit, so ambient
-    HTTP_PROXY variables the app does not trust (network_client builds every
-    client with trust_env=False) cannot leak back in here.
+    The gate runs first and is allowed to refuse: start_install's check
+    happens before the job is queued, and the vault can lock between there and
+    this ~25 MB request to GitHub, which would otherwise go out bare from a
+    machine whose user made the proxy mandatory.
+
+    The client itself is built in network_client, which is the one file
+    allowed to construct one (test_egress_chokepoint's
+    TestNothingElseBuildsAClient), so this download passes a host allowlist
+    the same way every other outbound request in the app does. It used to be a
+    hand-rolled urllib opener that no allowlist ever saw, and urllib's
+    ProxyHandler speaks only `http://` - measured, a user with `socks5h://`
+    got plain CONNECT bytes at their SOCKS port and the resulting failure was
+    reported to them as a broken machine.
     """
-    import urllib.request
+    from network_client import provisioning_client
 
-    proxy = _proxy_url()
-    if not proxy and _proxy_required():
-        # The gate in start_install runs before the job is queued; this one
-        # runs at the moment of the connection. Between them the vault can
-        # lock, and this is the ~25 MB request to GitHub that would otherwise
-        # go out bare from a machine whose user made the proxy mandatory.
-        raise ProxyUnreadable("a proxy is required but none is available")
-    handler = urllib.request.ProxyHandler(
-        {"http": proxy, "https": proxy} if proxy else {}
-    )
-    return urllib.request.build_opener(handler)
+    return provisioning_client(_egress_gate())
 
 
 def _download_uv(on_line, cancel=None) -> str | None:
@@ -418,7 +459,6 @@ def _download_uv(on_line, cancel=None) -> str | None:
         # A build without the pin must refuse loudly, not fetch unverified.
         on_line("uv download pin is not configured in this build")
         return None
-    import urllib.request
 
     bin_dir = Path(config.TTS_BIN_DIR)
     bin_dir.mkdir(parents=True, exist_ok=True)
@@ -432,26 +472,34 @@ def _download_uv(on_line, cancel=None) -> str | None:
     archive = bin_dir / f"uv.zip.partial.{os.getpid()}.{threading.get_ident()}"
     try:
         on_line(f"downloading uv {UV_VERSION} (about 25 MB)")
-        # Through the CONFIGURED proxy (see _url_opener): the default opener
-        # went direct, so a user with a proxy - even a mandatory one - had
-        # their real IP contact github.com the moment they pressed Set up.
-        with _url_opener().open(UV_URL, timeout=120) as resp, \
-                open(archive, "wb") as out:
-            digest = hashlib.sha256()
-            while True:
+        # Through the CONFIGURED proxy, and only if the gate allows it at all
+        # (see _provision_client): this used to be the default urllib opener,
+        # so a user with a proxy - even a mandatory one - had their real IP
+        # contact github.com the moment they pressed Set up.
+        client = _provision_client()
+        try:
+            with client.stream("GET", UV_URL, timeout=120) as resp, \
+                    open(archive, "wb") as out:
+                resp.raise_for_status()
+                digest = hashlib.sha256()
+                # Cancel used to be a no-op here: the job was already in _JOBS
+                # with running=true so the UI drew its Cancel button, pressing
+                # it set this event and returned 200 - and this loop never
+                # looked, so the download ran to completion and the button
+                # appeared to have done nothing. Checked before the first read
+                # as well as between chunks, so a cancel that arrives while
+                # the server is still thinking is not held until data does.
                 if cancel is not None and cancel.is_set():
-                    # Cancel used to be a no-op here: the job was already in
-                    # _JOBS with running=true so the UI drew its Cancel button,
-                    # pressing it set this event and returned 200 - and this
-                    # loop never looked, so the download ran to completion and
-                    # the button appeared to have done nothing.
                     on_line("uv download cancelled")
                     return None
-                chunk = resp.read(1024 * 256)
-                if not chunk:
-                    break
-                digest.update(chunk)
-                out.write(chunk)
+                for chunk in resp.iter_bytes(1024 * 256):
+                    if cancel is not None and cancel.is_set():
+                        on_line("uv download cancelled")
+                        return None
+                    digest.update(chunk)
+                    out.write(chunk)
+        finally:
+            client.close()
         if digest.hexdigest().lower() != UV_SHA256.lower():
             on_line("uv download did not match its pinned checksum - refused")
             return None
@@ -480,6 +528,15 @@ def _download_uv(on_line, cancel=None) -> str | None:
                     pass
         on_line("uv ready")
         return str(target)
+    except ProxyUnreadable:
+        # Out past the generic handler below, deliberately. Swallowed into
+        # `return None`, this arrived at the caller as "no uv" and became
+        # TTS_PYTHON_NOT_FOUND - "Elysium could not find a way to build the
+        # voice engine environment on this computer" - which blames the
+        # machine for the user's own proxy setting and sends them looking at
+        # their hardware for a locked vault.
+        on_line("the setup needs your proxy and could not get it")
+        raise
     except Exception as exc:                    # noqa: BLE001
         on_line(f"could not fetch uv: {type(exc).__name__}")
         return None
@@ -669,13 +726,13 @@ def start_install(engine_id: str) -> dict:
                 # to "go ahead": the vault holds the proxy, so being unable to
                 # read it is exactly when a download would go out bare.
                 raise ProvisionError(
-                    TTS_RUNTIME_INSTALL_FAILED,
+                    TTS_PROXY_UNAVAILABLE,
                     "a proxy is required but the vault could not be read - "
                     "unlock it and try again",
                 ) from None
             if not configured:
                 raise ProvisionError(
-                    TTS_RUNTIME_INSTALL_FAILED,
+                    TTS_PROXY_UNAVAILABLE,
                     "a proxy is required but none is configured - set one in "
                     "Settings before installing a voice engine",
                 )
@@ -714,7 +771,15 @@ def _install_worker(job: _Job, p: InstallPlan, uv: str | None) -> None:
 
     if uv is None:
         job.state = "preparing"
-        uv = _download_uv(log, cancel=job.cancel)
+        try:
+            uv = _download_uv(log, cancel=job.cancel)
+        except ProxyUnreadable as exc:
+            # The gate refused this module's own download. Its own code, so
+            # the sentence the user reads names the proxy instead of the
+            # machine, and staging is None because nothing has been built yet.
+            _fail(job, TTS_PROXY_UNAVAILABLE, str(exc), None, p.engine_id)
+            job.finished_at = time.time()
+            return
         if job.cancel.is_set():
             job.state = "cancelled"
             log("setup cancelled")
@@ -745,8 +810,18 @@ def _install_worker(job: _Job, p: InstallPlan, uv: str | None) -> None:
         "PYTHONUTF8": "1",
     }
     # uv resolves and downloads from PyPI and download.pytorch.org; without
-    # these it went direct even for a user who had configured a proxy.
-    env = _proxy_env(env)
+    # these it went direct even for a user who had configured a proxy. This is
+    # the OTHER egress path, the one worth several gigabytes, and it reaches
+    # the same gate the download above did - which is the whole point, because
+    # these two used to disagree and this was the one that said yes.
+    try:
+        env = _proxy_env(env)
+    except ProxyUnreadable as exc:
+        # Before the venv is created, so there is no staging directory to
+        # remove and nothing was started that has to be undone.
+        _fail(job, TTS_PROXY_UNAVAILABLE, str(exc), None, p.engine_id)
+        job.finished_at = time.time()
+        return
     spec = ENGINES.get(p.engine_id) or {}
     try:
         if staging.exists():

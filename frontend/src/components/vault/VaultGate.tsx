@@ -23,6 +23,7 @@ import { LockOverlay } from "@/components/vault/LockOverlay";
 import { useReducedMotion } from "@/components/motion/ReducedMotion";
 import { setVaultLockedHandler, isApiError, request } from "@/lib/api/client";
 import { getErrorMessage } from "@/lib/errors/errorMessages";
+import { useErrorStore } from "@/lib/errors";
 import { stopVoicePlayback } from "@/lib/voice/playerStore";
 import { setVaultLockAnimationHandler } from "@/lib/vaultLockUi";
 import { useDraftStore } from "@/lib/store/draftStore";
@@ -216,7 +217,8 @@ export function VaultGate({ children }: { children: ReactNode }) {
   // unlocked -> locked transition; only the gate's own vault key survives in
   // the CACHES.
   //
-  // Three module-scope stores also outlive the unmount, and one of them is a
+  // Module-scope stores also outlive the unmount, and none of them is in the
+  // query cache, so each one has to be decided here by name. One of them is a
   // deliberate change to what "locked" means, so it is recorded rather than
   // left to be discovered: the draft store (lib/store/draftStore.ts) keeps
   // unsent composer, edit AND right-panel text across a lock ON PURPOSE. The
@@ -259,6 +261,23 @@ export function VaultGate({ children }: { children: ReactNode }) {
       // them has already run, and after unlock the tree is rebuilt from the
       // vault anyway.
       qc.getMutationCache().clear();
+      // And the notice queue, which is the other module-scope store that was
+      // still holding something across the lock. ErrorToastStack is mounted
+      // inside the children this gate is about to swap away, and it rebuilds
+      // itself from this store when they come back - so a notice raised in
+      // the seconds before the lock, or one still waiting its turn behind
+      // five others, arrived over the app a beat after the passphrase was
+      // accepted, describing a chat from a session that had ended.
+      //
+      // Its entries are catalogue sentences and carry no vault content, so
+      // what this costs is not confidentiality; it is what "locked" means,
+      // which has to be "that session is over" for everything that is not a
+      // preference. The two navigation ids are the preference, and they stay
+      // - see the lock test for that line. Unconditional for the same reason
+      // the draft clear on reset is: clearing an empty queue is free, and a
+      // notice outliving the session it belongs to is the failure worth
+      // being blunt about.
+      useErrorStore.getState().clearAll();
     }
     wasUnlockedRef.current = unlocked;
   }, [status?.unlocked, qc]);

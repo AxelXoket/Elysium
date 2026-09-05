@@ -18,10 +18,11 @@ stretching) lives worker-side where numpy is; the crossfade that hides the
 seam between chunks lives in the frontend player, because two Audio elements
 played back to back click no matter what the backend does.
 
-FAILURE POLICY (the user's call, and the right one): if any sentence fails the
-whole queue stops and says so. Skipping a sentence and carrying on would
-produce a reply that is subtly missing a clause with nothing on screen to
-explain it - the listener would blame the model.
+FAILURE POLICY: if any sentence fails the whole queue stops and says so.
+Skipping a sentence and carrying on would produce a reply that is subtly
+missing a clause with nothing on screen to explain it - the listener would
+blame the model. Stopping loudly is the cheaper failure, because a silence
+that is visible can be retried and a missing clause cannot even be noticed.
 """
 from __future__ import annotations
 

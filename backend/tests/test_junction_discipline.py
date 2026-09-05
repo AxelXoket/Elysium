@@ -20,6 +20,13 @@ into one, check whether the name is a junction pointing somewhere else.
     somebody else's folder. That failure needs a voice, not another guard.
 
 A junction needs no privileges to create on Windows.
+
+Since H-142 the discipline has a second half, and the first half alone was
+half a defence. Refusing to delete THROUGH a redirected name stays. Refusing
+to remove the redirected NAME does not: the entry stayed, the sweep stopped,
+and one unprivileged `mklink /J` switched the whole module off for the life
+of the install with no signal a user would ever see. The entry now goes; what
+it points at is not touched.
 """
 from __future__ import annotations
 
@@ -53,7 +60,21 @@ def junction(link: Path, target: Path) -> None:
 
 
 class TestTheCrashBlockerLooksAtItsParent:
-    def test_it_refuses_a_redirected_ebwebview_parent(self, tmp_path) -> None:
+    def test_a_redirected_ebwebview_parent_is_replaced_not_obeyed(
+            self, tmp_path) -> None:
+        """This used to return False and leave the junction standing.
+
+        Both halves of that were wrong in the same direction. Nothing was
+        created through the link, which is right and still holds - but the
+        link stayed, so the block could never be established afterwards
+        either. `mklink /J` needs no elevation, so one command turned crash
+        reporting back on permanently and said so only once, in a warning
+        nobody sees on the launch path.
+
+        The link ENTRY is removed instead, and the folder it points at is not
+        touched. A profile deliberately moved to another disk is the accepted
+        cost, which is why the full path is logged rather than swallowed.
+        """
         profile = tmp_path / "profile"
         elsewhere = tmp_path / "someone-elses-documents"
         keepsake = elsewhere / "keepsake.txt"
@@ -61,11 +82,13 @@ class TestTheCrashBlockerLooksAtItsParent:
         keepsake.write_text("not ours", encoding="utf-8")
         junction(profile / "EBWebView", elsewhere)
 
-        assert browser_profile.block_crash_reporting(str(profile)) is False
+        assert browser_profile.block_crash_reporting(str(profile)) is True
 
         # Nothing created THROUGH the junction, and nothing destroyed.
         assert keepsake.read_text(encoding="utf-8") == "not ours"
         assert not (elsewhere / "Crashpad").exists()
+        # And the block really is in place, on our own disk this time.
+        assert (profile / "EBWebView" / "Crashpad").is_file()
 
     def test_it_still_blocks_a_normal_profile(self, tmp_path) -> None:
         """POSITIVE CONTROL. A guard that refuses everything would satisfy
@@ -219,26 +242,127 @@ class TestWhatTheStdlibActuallyDoesWithAJunction:
         assert "keepsake.txt" in seen,             "os.walk stopped at the junction on its own; the prune is dead code"
         assert os.path.islink(root / "trap") is False,             "islink would have been enough, which it is not"
 
-    def test_a_name_that_cannot_be_stat_ed_also_reports_pruned(
-            self, tmp_path) -> None:
-        """And `pruned` does not mean "a junction was found".
+class TestAnOrdinaryNameIsNotCalledRedirected:
+    """M5. Failing closed had a price, and it was paid in plaintext.
 
-        `is_redirected` fails CLOSED on any OSError, so an ordinary directory
-        whose name cannot be opened through the Win32 path - a trailing
-        space, a trailing dot, a reserved device name - answers True with no
-        reparse point anywhere. Anything that treats `pruned` as proof of an
-        attacker is reading it wrong, which is why the crash blocker does not
-        branch on it.
-        """
+    Win32 path normalisation trims a trailing space or dot from the LAST
+    component of a path. So `os.lstat(r"...\\reports ")` looks for `reports`,
+    does not find it, and raises ENOENT - and the fail-closed branch turned
+    that into "this is a redirected name". Two things followed, and the
+    second one is the real defect:
+
+      * the log said a junction had been refused when there was none, and
+      * `shred_tree` pruned the folder, so the files inside it were never
+        overwritten and never counted. They stayed readable, and the sweep
+        reported success.
+
+    The fix is a SECOND lstat through the extended-length prefix, which turns
+    normalisation off. `os.path.abspath` cannot stand in for it - measured:
+    it trims the space too. Only after that second attempt also fails does
+    the answer fall back to closed.
+    """
+
+    @staticmethod
+    def _odd_tree(tmp_path):
         root = tmp_path / "root"
         root.mkdir()
+        (root / "plain.json").write_text("ordinary", encoding="utf-8")
         odd = root / "reports "
         # mkdir through the extended-length prefix, which is the only way to
         # create the name; the ordinary path cannot even open it afterwards.
         os.mkdir("\\\\?\\" + str(odd))
         if not any(e.name == "reports " for e in os.scandir(root)):
             pytest.skip("this filesystem folded the trailing space away")
+        secret = odd / "secret.json"
+        secret.write_text('{"role":"user"}', encoding="utf-8")
+        return root, odd, secret
 
-        assert secure_delete.is_redirected(odd) is True
-        _removed, _stuck, pruned = secure_delete.shred_tree(root)
-        assert pruned is True, "the fail-closed path no longer reports pruned"
+    def test_an_odd_name_is_not_called_redirected(self, tmp_path) -> None:
+        root, odd, secret = self._odd_tree(tmp_path)
+        assert secret.read_text(encoding="utf-8") == '{"role":"user"}', (
+            "GROUND: the plaintext was never planted")
+
+        assert secure_delete.is_redirected(odd) is False
+        assert secure_delete.confirmed_reparse(odd) is False
+
+        removed, stuck, pruned = secure_delete.shred_tree(root)
+
+        assert pruned == [], (
+            "an ordinary folder was still reported as a redirected name")
+        assert removed == 2, (
+            "the file under the odd name was not shredded; expected 2 "
+            f"removals, got {removed} with {stuck} left behind")
+        assert not secret.exists(), "the plaintext is still on disk"
+
+    def test_a_real_junction_is_still_pruned_and_named(self, tmp_path) -> None:
+        """POSITIVE CONTROL. Loosening the fail-closed branch must not
+        loosen the guard it exists for."""
+        elsewhere = tmp_path / "elsewhere"
+        keepsake = elsewhere / "keepsake.txt"
+        elsewhere.mkdir()
+        keepsake.write_text("not ours", encoding="utf-8")
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "ours.bin").write_bytes(b"cache entry")
+        junction(root / "trap", elsewhere)
+
+        assert secure_delete.is_redirected(root / "trap") is True
+        assert secure_delete.confirmed_reparse(root / "trap") is True
+
+        removed, _stuck, pruned = secure_delete.shred_tree(root)
+
+        assert pruned == [str(root / "trap")]
+        assert removed == 1
+        assert keepsake.read_text(encoding="utf-8") == "not ours"
+
+    def test_a_name_that_is_not_there_is_still_refused(self, tmp_path) -> None:
+        """GROUND CONTROL. The fail-closed floor stays where it was: a path
+        nothing can answer for is still treated as redirected, which is what
+        every caller's `is_dir()` gate is written against."""
+        assert secure_delete.is_redirected(tmp_path / "never-existed") is True
+        assert secure_delete.confirmed_reparse(
+            tmp_path / "never-existed") is False
+
+    def test_an_ordinary_folder_is_not_redirected(self, tmp_path) -> None:
+        """POSITIVE CONTROL for the ground control above: the fail-closed
+        floor must not have swallowed the ordinary answer."""
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        assert secure_delete.is_redirected(plain) is False
+        assert secure_delete.confirmed_reparse(plain) is False
+
+    def test_a_trailing_dot_is_reported_rather_than_walked_past(
+            self, tmp_path) -> None:
+        """The other half of the name class, and the dangerous half.
+
+        A trailing SPACE and a trailing DOT are trimmed by the same Win32
+        rule, but they do not end the same way. `\\\\?\\` reaches a name
+        ending in a space through the ordinary path afterwards, so the folder
+        is walked and the plaintext in it is shredded. A name ending in a dot
+        is still unreachable: `scandir` raises ENOENT, `os.walk` yields
+        nothing for it, and with the default `onerror` it says nothing
+        either - so the file inside survives a sweep that reports a clean
+        tree, and `rmtree` is then authorised over a walk that never
+        happened. The refusal has to reach `stuck`, which is the value every
+        caller reads before it lets a plain unlink near the tree.
+        """
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "plain.json").write_text("ordinary", encoding="utf-8")
+        odd = root / "reports."
+        os.mkdir("\\\\?\\" + str(odd))
+        if not any(e.name == "reports." for e in os.scandir(root)):
+            pytest.skip("this filesystem folded the trailing dot away")
+        secret = "\\\\?\\" + str(odd / "secret.json")
+        with open(secret, "w", encoding="utf-8") as handle:
+            handle.write('{"role":"user"}')
+
+        removed, stuck, pruned = secure_delete.shred_tree(root)
+
+        assert removed == 1, "the reachable file should still have gone"
+        assert pruned == [], "an ordinary folder was called a redirected name"
+        assert stuck, (
+            "a folder the walk could not open was skipped in silence, and "
+            "the plaintext inside it is still readable")
+        assert os.path.exists(secret), (
+            "GROUND: the fixture never planted anything under the odd name")

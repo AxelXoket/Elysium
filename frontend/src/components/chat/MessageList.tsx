@@ -312,7 +312,14 @@ export const MessageList = memo(function MessageList({
 /** Transient assistant bubble rendering in-flight streamed text. */
 function StreamingBubble({ text, chatId }: { text: string; chatId: number }) {
   return (
-    <div className="mt-4 flex justify-start">
+    // The reply arrives one token at a time, so a reader who cannot see the
+    // screen has nothing to tell them it started or that it is still coming.
+    // Same live region ThinkingBubble already uses, for the same reason:
+    // `polite` waits for a gap instead of cutting the reader off. `aria-atomic`
+    // stays OFF on purpose - opening it would re-read the whole reply from the
+    // top on every token. The text stays in ONE <p>, so the appended words
+    // queue up and merge into a single announcement.
+    <div className="mt-4 flex justify-start" role="status" aria-live="polite">
       <div
         className="message-bubble-shell is-assistant max-w-[75%] rounded-xl px-5 py-3 text-sm leading-relaxed"
         style={{

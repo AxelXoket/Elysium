@@ -30,8 +30,8 @@ import type { Model } from "../schemas/models";
 export const CONTEXT_BUDGET_MIN = 512;
 
 /**
- * Display copy for text-only limitation.
- * Future Codex UI will show this when model advertises non-text modalities.
+ * Display copy for text-only limitation, shown when a model advertises
+ * non-text modalities.
  */
 export const TEXT_ONLY_NOTE =
   "This model may support other modalities, but Elysium currently sends text-only requests.";

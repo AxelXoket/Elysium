@@ -196,6 +196,38 @@ describe("PersonaPanel", () => {
     expect(localSetItem).not.toHaveBeenCalled();
   });
 
+  it("creates a persona with an empty display name", async () => {
+    // The panel used to answer an empty box with "Display name is required."
+    // over a form the person had already filled in everywhere else, and the
+    // API answered 422 behind it. Neither refuses now: the request goes out
+    // with an empty name and the server names the persona.
+    const user = userEvent.setup();
+    const mock = mockPersonaApi([]);
+    renderWithQueryClient(<PersonaPanel />, { wrapper });
+
+    await user.click(await screen.findByRole("button", { name: /new persona/i }));
+    await user.type(
+      screen.getByLabelText(/description/i),
+      "Prefers soft replies.",
+    );
+    await user.click(screen.getByRole("button", { name: /^create$/i }));
+
+    await waitFor(() => {
+      const postCall = mock.mock.calls.find(
+        ([url, init]) =>
+          String(url).includes("/personas") &&
+          (init as RequestInit | undefined)?.method === "POST" &&
+          !String(url).includes("/select"),
+      );
+      expect(postCall, "the panel refused an empty display name").toBeTruthy();
+      const body = JSON.parse((postCall?.[1] as RequestInit).body as string);
+      expect(body).toEqual({
+        display_name: "",
+        description: "Prefers soft replies.",
+      });
+    });
+  });
+
   it("opens edit form inline and patches only changed fields", async () => {
     const user = userEvent.setup();
     const mock = mockPersonaApi([activePersona]);

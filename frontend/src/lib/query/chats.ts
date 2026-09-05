@@ -62,11 +62,18 @@ export function useRenameChat() {
       // Cancel in-flight list refetches so they don't clobber the optimistic title
       await qc.cancelQueries({ queryKey: keys.chats() });
       const previousChats = qc.getQueryData<Chat[]>(keys.chats());
-      qc.setQueryData<Chat[]>(keys.chats(), (prev) =>
-        prev?.map((c) =>
-          c.id === vars.chatId ? { ...c, title: vars.title } : c,
-        ),
-      );
+      // Only a title we KNOW is applied ahead of the server. An emptied box
+      // is a rename to a default name the server picks, so writing "" here
+      // would flash the sidebar's `Chat #12` fallback - a name nobody chose -
+      // for as long as the round trip takes. The old title stays until the
+      // real one arrives.
+      if (vars.title !== "") {
+        qc.setQueryData<Chat[]>(keys.chats(), (prev) =>
+          prev?.map((c) =>
+            c.id === vars.chatId ? { ...c, title: vars.title } : c,
+          ),
+        );
+      }
       return { previousChats };
     },
     onError: (err, _vars, context) => {
@@ -76,6 +83,14 @@ export function useRenameChat() {
       // The chat list has no inline error surface - rename errors toast
       // (one-surface rule).
       pushError(err);
+    },
+    onSuccess: (renamed, vars) => {
+      // The server's row, not a guess. It carries the name a default rename
+      // actually produced, so the sidebar shows it without waiting for the
+      // refetch below.
+      qc.setQueryData<Chat[]>(keys.chats(), (prev) =>
+        prev?.map((c) => (c.id === vars.chatId ? renamed : c)),
+      );
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: keys.chats() });

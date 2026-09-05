@@ -524,3 +524,90 @@ class TestARefusalSaysWhyInTheLog:
         assert "a-chat-title" not in said
         assert "sk-secret-value" not in said
         assert "Bearer" not in said
+
+
+class TestTheInstallersDownloadHasADoorToo:
+    """The second client, and the reason it needed its own tests.
+
+    "Every outbound request this app makes passes one check" was true of the
+    chat client and quietly not true of the voice installer, which fetched uv
+    through a hand-built urllib opener that no allowlist ever saw: a redirect
+    could name any host at all and it was followed without a word. Moving that
+    download onto httpx put it behind a hook, and a hook nothing exercises is
+    a hook nobody would notice the removal of.
+    """
+
+    def test_the_two_lists_do_not_overlap(self) -> None:
+        # The separation is the design. Folding GitHub into allowed_hosts()
+        # would mean a bug on the chat path could carry the API key to a
+        # release CDN, and folding openrouter.ai into PROVISION_HOSTS would
+        # let the installer reach the provider.
+        assert not (network_client.PROVISION_HOSTS
+                    & network_client.allowed_hosts())
+
+    def test_the_release_host_and_its_redirect_are_both_admitted(self) -> None:
+        # One download, two hosts: github.com answers with a 302 to
+        # objects.githubusercontent.com, and a redirect arrives at the hook as
+        # a fresh request carrying the new host.
+        for host in ("github.com", "objects.githubusercontent.com"):
+            network_client._provision_hosts_only(
+                httpx.Request("GET", f"https://{host}/astral-sh/uv/x.zip"))
+
+    @pytest.mark.parametrize("url", [
+        "https://openrouter.ai/api/v1/models",
+        "https://raw.githubusercontent.com/x/y",
+        "https://github.com.evil.example/astral-sh/uv",
+        "https://evil.example/astral-sh/uv",
+    ])
+    def test_anything_else_is_refused(self, url: str) -> None:
+        with pytest.raises(network_client.EgressRefused):
+            network_client._provision_hosts_only(httpx.Request("GET", url))
+
+    def test_plain_http_is_refused_even_for_the_right_host(self) -> None:
+        # The installer downloads code that is then executed on this machine.
+        # Fetching it over http would let anyone on the path choose it.
+        with pytest.raises(network_client.EgressRefused):
+            network_client._provision_hosts_only(
+                httpx.Request("GET", "http://github.com/astral-sh/uv/x.zip"))
+
+    def test_the_hook_is_actually_installed_on_the_client(self) -> None:
+        # The tests above prove the function refuses. This proves the client
+        # calls it - which is the half that was missing for the opener it
+        # replaced, and the half a refactor silently removes.
+        for proxy in (None, "http://127.0.0.1:8080"):
+            client = network_client.provisioning_client(proxy)
+            try:
+                assert (network_client._provision_hosts_only
+                        in client.event_hooks["request"])
+                assert client.trust_env is False
+            finally:
+                client.close()
+
+    def test_the_configured_proxy_reaches_the_transport(self) -> None:
+        client = network_client.provisioning_client("http://127.0.0.1:8080")
+        try:
+            assert client._mounts, "the proxy was accepted and then not used"
+        finally:
+            client.close()
+        # Ground control: no proxy means no mounted transport, so the
+        # assertion above is about the argument and not about httpx always
+        # having mounts.
+        bare = network_client.provisioning_client(None)
+        try:
+            assert not bare._mounts
+        finally:
+            bare.close()
+
+    def test_the_refusal_log_names_the_host_and_nothing_else(
+        self, caplog
+    ) -> None:
+        request = httpx.Request(
+            "GET", "https://evil.example/astral-sh/uv/secret-path-token",
+            headers={"Authorization": "Bearer sk-secret-value"})
+        with caplog.at_level("WARNING", logger=network_client.logger.name):
+            with pytest.raises(network_client.EgressRefused):
+                network_client._provision_hosts_only(request)
+        said = " ".join(r.getMessage() for r in caplog.records)
+        assert "evil.example" in said
+        assert "secret-path-token" not in said
+        assert "sk-secret-value" not in said

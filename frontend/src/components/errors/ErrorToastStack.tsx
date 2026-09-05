@@ -18,13 +18,16 @@ const AUTO_DISMISS_MS = 4_500;
  *  cannot camp on the screen.
  */
 const READING_MS_PER_40_CHARS = 900;
-const MAX_DISMISS_MS = 14_000;
+/** The ceiling on all of the above, exported because it is the only honest
+ *  answer to "by when must any toast be gone" - a test that retypes a window
+ *  goes on passing after the window it names has moved. */
+export const MAX_DISMISS_MS = 14_000;
 
 function dismissDelayFor(message: string): number {
   const extra = Math.floor(message.length / 40) * READING_MS_PER_40_CHARS;
   return Math.min(MAX_DISMISS_MS, AUTO_DISMISS_MS + extra);
 }
-const EXIT_ANIMATION_MS = 180;
+export const EXIT_ANIMATION_MS = 180;
 
 export function ErrorToastStack() {
   const errors = useErrorStore((s) => s.errors);
@@ -88,15 +91,20 @@ function ErrorToast({
   // seen at all - counted as shown, gone, and if the queue was full it took a
   // waiting error down with it.
   //
-  // Two things pause it: the tab being hidden, and the pointer resting on the
-  // toast. The second matters because it is what somebody does while READING
-  // one, which is the moment it must not vanish.
+  // Three things pause it: the tab being hidden, the pointer resting on the
+  // toast, and keyboard focus inside it. The last two matter because they are
+  // what somebody does while READING one, which is the moment it must not
+  // vanish. Focus was the missing third: reaching the dismiss button by tab
+  // is the pointer-free way to rest on a toast, and it counted for nothing,
+  // so the only person who cannot hover was also the only person the toast
+  // could expire underneath.
   //
   // The REMAINING time is tracked rather than the timer restarted. A naive
   // paused flag gives a full 4.5 seconds back on every resume, so a toast
   // under the pointer never expires and a toast in a window that keeps losing
   // focus lives forever - a leak dressed as a fix.
   const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
   const [hidden, setHidden] = useState(
     () => typeof document !== "undefined" && document.visibilityState === "hidden",
   );
@@ -115,7 +123,7 @@ function ErrorToast({
   }, [error.id, error.message]);
 
   useEffect(() => {
-    if (hovered || hidden) return;
+    if (hovered || focused || hidden) return;
     const startedAt = Date.now();
     const timeoutId = window.setTimeout(() => {
       onClose(error.id);
@@ -128,7 +136,7 @@ function ErrorToast({
         remainingRef.current - (Date.now() - startedAt),
       );
     };
-  }, [error.id, onClose, hovered, hidden]);
+  }, [error.id, onClose, hovered, focused, hidden]);
 
   return (
     // Non-button container (role="status") so the toast text is announced
@@ -144,6 +152,18 @@ function ErrorToast({
       // READING it, which is the one moment it must not disappear.
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      // The keyboard equivalent. React's onFocus/onBlur are focusin/focusout,
+      // so focus landing on the dismiss button inside counts as focus on the
+      // toast. The relatedTarget guard is what keeps a tab step BETWEEN two
+      // controls inside the toast from reading as a departure: focusout fires
+      // before the matching focusin, and without the guard that gap unpauses
+      // the countdown for a frame every time focus moves within.
+      onFocus={() => setFocused(true)}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+          setFocused(false);
+        }
+      }}
     >
       <span className="error-toast-accent" aria-hidden="true">
         <AlertCircle size={14} strokeWidth={1.8} />

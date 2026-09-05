@@ -231,6 +231,29 @@ export const WorkerStatusSchema = z.object({
       messages: z.number(),
     }).default({ chats: 0, messages: 0 }),
     last_error: z.string().nullish(),
+    /** How much new material is worth a call. It shrinks with the batch
+     *  under repeated failures - ONE rule for both numbers - and the two
+     *  are reported together because a panel showing one without the other
+     *  is where the belief that they were the same number came from. */
+    trigger_threshold: z.number().default(0),
+    /** Turns refused by THIS chat's own breaker rather than the global one,
+     *  and how many separate chats are refusing at once. Counted apart: "the
+     *  provider is down" and "one conversation is broken" are different
+     *  answers and only one of them means the rest are fine. */
+    refused_by_chat_breaker: z.number().default(0),
+    tripped_chats: z.number().default(0),
+    /** The selected chat's OWN breaker, or null when nothing is selected or
+     *  the chat has never failed. Declared here or DISCARDED here: z.object
+     *  strips what it was not told about, and a chat stopped on its own
+     *  would show the reader a panel reading "Running." with no explanation
+     *  of why nothing is happening in front of them. */
+    chat: z.object({
+      state: z.string(),
+      failures: z.number(),
+      total_failures: z.number().default(0),
+      batch_size: z.number().default(0),
+      trigger_threshold: z.number().default(0),
+    }).nullish(),
   }),
   daily_cap: z.number(),
 });

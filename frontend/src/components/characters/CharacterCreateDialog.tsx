@@ -52,7 +52,9 @@ export function CharacterCreateDialog({ trigger }: CharacterCreateDialogProps) {
   };
 
   const handleSubmit = async () => {
-    if (!name.trim()) return;
+    // No name guard. An empty name is a valid request now - the server names
+    // the character - so refusing here would be the panel enforcing a rule
+    // the API no longer has.
     setError(null);
     const tags = tagsInput
       .split(",")
@@ -104,7 +106,7 @@ export function CharacterCreateDialog({ trigger }: CharacterCreateDialogProps) {
           {/* ── Section: Basic ── */}
           <section className="space-y-3">
             <SectionLabel>Basic</SectionLabel>
-            <Field label="Name *">
+            <Field label="Name">
               <Input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -247,7 +249,7 @@ export function CharacterCreateDialog({ trigger }: CharacterCreateDialogProps) {
             </Button>
             <Button
               size="sm"
-              disabled={create.isPending || !name.trim()}
+              disabled={create.isPending}
               onClick={handleSubmit}
               className="sidebar-dialog-action gap-1.5 text-xs"
             >

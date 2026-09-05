@@ -2,10 +2,11 @@
  * V5-c - the per-message speak button and the one shared player.
  *
  * Pinned behaviours: no selected voice model means NO button (an affordance
- * that can only fail is a broken promise); speaking sends message_id (the
- * tags live in the raw row, not in the visible text); two messages can never
- * talk over each other; a refusal surfaces through the shared error store
- * with the backend's own code.
+ * that can only fail is a broken promise); speaking sends message_id AND the
+ * chat it belongs to (the tags live in the raw row, not in the visible text,
+ * and ids are global so the row is only addressable inside its conversation);
+ * two messages can never talk over each other; a refusal surfaces through the
+ * shared error store with the backend's own code.
  */
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { screen, waitFor } from "@testing-library/react";
@@ -17,7 +18,11 @@ vi.mock("@/lib/api/tts", async (importOriginal) => ({
   // Only the streaming call is scripted; /tts/active and the rest keep going
   // through the real client so the button's readiness query is unchanged.
   streamMessageSpeech: vi.fn(
-    async (_body: unknown, { onEvent }: { onEvent: (e: unknown) => void }) => {
+    async (
+      _messageId: number,
+      _chatId: number,
+      { onEvent }: { onEvent: (e: unknown) => void },
+    ) => {
       onEvent({ type: "voice_chunk", audio_id: "speak-9", index: 0 });
     },
   ),
@@ -28,13 +33,13 @@ import { streamMessageSpeech } from "@/lib/api/tts";
 
 //: Derived from the real signature rather than restated - a hand-written
 //: shape here drifts from the endpoint it is standing in for.
-type SpeechOpts = Parameters<typeof streamMessageSpeech>[1];
+type SpeechOpts = Parameters<typeof streamMessageSpeech>[2];
 type SpeechEvent = Parameters<SpeechOpts["onEvent"]>[0];
 
 /** The default script: one chunk, and the utterance stays open. */
 function speaksOneChunk() {
   vi.mocked(streamMessageSpeech).mockImplementation(
-    async (_body, { onEvent }) => {
+    async (_messageId, _chatId, { onEvent }) => {
       onEvent({ type: "voice_chunk", audio_id: "speak-9", index: 0 });
     },
   );
@@ -44,6 +49,12 @@ import { useVoicePlayer } from "@/lib/voice/playerStore";
 import { mockFetch } from "../mocks/api";
 import { stubAudioContext } from "../helpers/fakeAudioContext";
 
+
+//: The conversation these buttons are rendered in. Named rather than inlined
+//: because the id has to be the SAME one on both sides of every assertion -
+//: a literal repeated at the call site and the expectation can drift apart
+//: and still look right.
+const CHAT = 4;
 
 const ACTIVE = {
   uid: "u1", state: "unloaded", engine_id: "fish_s2",
@@ -70,7 +81,7 @@ describe("SpeakButton", () => {
         body: { ...ACTIVE, uid: null, engine_id: null },
       },
     });
-    renderWithQueryClient(<SpeakButton messageId={5} />);
+    renderWithQueryClient(<SpeakButton messageId={5} chatId={CHAT} />);
     // Settled-query control (audit-2: a raw sleep could not distinguish
     // "correctly hidden" from "query broke"): wait until the active query
     // has actually been fetched, then assert the DELIBERATE absence.
@@ -95,7 +106,7 @@ describe("SpeakButton", () => {
         },
       },
     });
-    renderWithQueryClient(<SpeakButton messageId={5} />);
+    renderWithQueryClient(<SpeakButton messageId={5} chatId={CHAT} />);
     await waitFor(() =>
       expect(
         fetchMock.mock.calls.some(([url]) => String(url).includes("/tts/active")),
@@ -107,7 +118,7 @@ describe("SpeakButton", () => {
 
   it("speaks by message_id and flips to a stop control while playing", async () => {
     mockFetch({ "/tts/active": { body: ACTIVE } });
-    renderWithQueryClient(<SpeakButton messageId={9} />);
+    renderWithQueryClient(<SpeakButton messageId={9} chatId={CHAT} />);
 
     await userEvent.click(await screen.findByLabelText("Speak message"));
 
@@ -115,7 +126,8 @@ describe("SpeakButton", () => {
     // the raw row, and the client only ever holds the stripped view.
     await waitFor(() =>
       expect(streamMessageSpeech).toHaveBeenCalledWith(
-        { messageId: 9 },
+        9,
+        CHAT,
         expect.anything(),
       ),
     );
@@ -141,7 +153,7 @@ describe("SpeakButton", () => {
     // branch - the wiring an actual press goes through - was never executed.
     // Deleting that branch left the whole suite green.
     mockFetch({ "/tts/active": { body: ACTIVE } });
-    renderWithQueryClient(<SpeakButton messageId={9} />);
+    renderWithQueryClient(<SpeakButton messageId={9} chatId={CHAT} />);
 
     await userEvent.click(await screen.findByLabelText("Speak message"));
     await userEvent.click(await screen.findByLabelText("Stop speaking"));
@@ -157,16 +169,50 @@ describe("SpeakButton", () => {
   it("starting a second message bumps the sequence, abandoning the first", async () => {
     mockFetch({ "/tts/active": { body: ACTIVE } });
     const { speak } = useVoicePlayer.getState();
-    await speak(1);
+    await speak(1, CHAT);
     expect(useVoicePlayer.getState().messageId).toBe(1);
     expect(useVoicePlayer.getState().phase).toBe("playing");
 
     const seqBefore = useVoicePlayer.getState().requestSeq;
-    await speak(2);
+    await speak(2, CHAT);
     // The sequence bump IS the stop: any continuation still holding the older
     // seq is abandoned, which is what keeps the first voice from resurfacing.
     expect(useVoicePlayer.getState().requestSeq).toBeGreaterThan(seqBefore);
     expect(useVoicePlayer.getState().messageId).toBe(2);
+  });
+
+  it("sends the chat the button was rendered in, not a remembered one", async () => {
+    // Ground control for the assertion above it: that one would pass just as
+    // happily against a chat id soldered into the request builder. Two
+    // buttons in two conversations, one expectation each, and the value has
+    // to follow the button.
+    mockFetch({ "/tts/active": { body: ACTIVE } });
+    const other = renderWithQueryClient(
+      <SpeakButton messageId={11} chatId={CHAT} />,
+    );
+    await userEvent.click(await screen.findByLabelText("Speak message"));
+    await waitFor(() =>
+      expect(streamMessageSpeech).toHaveBeenLastCalledWith(
+        11,
+        CHAT,
+        expect.anything(),
+      ),
+    );
+    other.unmount();
+    // The shared player is still holding this id, so a second button for the
+    // same message would render its stop face and never make a request.
+    useVoicePlayer.getState().stop();
+
+    const elsewhere = CHAT + 38;
+    renderWithQueryClient(<SpeakButton messageId={11} chatId={elsewhere} />);
+    await userEvent.click(await screen.findByLabelText("Speak message"));
+    await waitFor(() =>
+      expect(streamMessageSpeech).toHaveBeenLastCalledWith(
+        11,
+        elsewhere,
+        expect.anything(),
+      ),
+    );
   });
 
   it("a backend refusal lands in the error store with the real code", async () => {
@@ -179,7 +225,7 @@ describe("SpeakButton", () => {
         detail: "tts_insufficient_vram",
       }),
     );
-    renderWithQueryClient(<SpeakButton messageId={3} />);
+    renderWithQueryClient(<SpeakButton messageId={3} chatId={CHAT} />);
     await userEvent.click(await screen.findByLabelText("Speak message"));
 
     await waitFor(() => {
@@ -206,7 +252,7 @@ describe("the player under adversity (audit-2)", () => {
     let release: () => void;
     let late: (e: SpeechEvent) => void;
     vi.mocked(streamMessageSpeech).mockImplementationOnce(
-      (_body, { onEvent }) => {
+      (_messageId, _chatId, { onEvent }) => {
         late = onEvent;
         return new Promise<void>((res) => {
           release = res;
@@ -214,7 +260,7 @@ describe("the player under adversity (audit-2)", () => {
       },
     );
 
-    const speakPromise = useVoicePlayer.getState().speak(9);
+    const speakPromise = useVoicePlayer.getState().speak(9, CHAT);
     expect(useVoicePlayer.getState().phase).toBe("requesting");
 
     useVoicePlayer.getState().stop();
@@ -234,7 +280,7 @@ describe("the player under adversity (audit-2)", () => {
 
   it("locking the vault stops the spoken conversation", async () => {
     mockFetch({ "/tts/active": { body: ACTIVE } });
-    await useVoicePlayer.getState().speak(4);
+    await useVoicePlayer.getState().speak(4, CHAT);
     expect(useVoicePlayer.getState().phase).toBe("playing");
 
     const { stopVoicePlayback } = await import("@/lib/voice/playerStore");

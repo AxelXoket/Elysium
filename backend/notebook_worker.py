@@ -36,15 +36,61 @@ WHAT IT REFUSES TO DO
     flight when the window closes is lost. That is accepted and written down
     rather than defended against.
 
-THE CIRCUIT BREAKER
-    Five consecutive failures open it for a cooldown; twenty stop it until
+THE CIRCUIT BREAKERS, AND WHY THERE ARE TWO
+    Five consecutive failures open one for a cooldown; twenty stop it until
     somebody says otherwise. The batch halves on the way down. The half-open
     probe is a SINGLE call, and a too-fast Open->Half-Open cycle is what makes
-    a breaker flap, so the cooldown grows with each trip.
+    a breaker flap, so the cooldown grows with each trip. That much is the
+    same for both of them, and `Breaker` is one class used twice.
+
+    ONE breaker for the whole process is what this file had, and it answered
+    the wrong question. A chat whose own material breaks every call - a
+    context the model will not fit, a card its moderation refuses, a range
+    whose reply never parses - walked the single breaker to `stopped` and
+    took every OTHER chat down with it. The fault was in one conversation and
+    the punishment was the feature.
+
+    So the failure is asked where it belongs before it is counted, and
+    `_fault_scope` is the only place that decides:
+
+    PER CHAT, in `chat_breakers`. A failure this chat's own content caused: a
+    truncated or unparseable reply, a moderation refusal, a write that cannot
+    land for this chat's rows, a prompt that cannot be built from this chat's
+    card. Only this chat stops. Every other chat keeps running, which is the
+    whole point of the split.
+
+    GLOBAL, in `breaker`. A failure no chat caused and every chat would
+    repeat: 429, 5xx, 401, 402, a timeout, a refused proxy. "Only the
+    problematic chat should stop" has no meaning here because the problem is
+    not in any chat - and without this half, one rate limit would burn
+    TRIP_AFTER billed calls per open conversation instead of TRIP_AFTER in
+    total, which is the runaway this module's daily cap exists to bound. The
+    ceiling is not a nicety; it is the reason the split is safe.
+
+    BOTH, when we cannot tell. `openrouter` raises one class for TLS errors,
+    protocol errors and undecodable bodies alike, and its generic
+    `openrouter_error` covers a context that will not fit AND a host that
+    cannot be reached, so a failure nobody has classified moves both
+    counters. The conservative default is the one that protects the money AND
+    stops the loop re-billing one chat.
+
+    AND A NET UNDER THE CLASSIFICATION. If more than CHAT_TRIP_FANOUT
+    unrelated chats are tripped at once, the global breaker takes a failure
+    too. A fault that appears in that many conversations at the same time is
+    not a property of any of them; it means this file put it in the wrong
+    bucket, and the net catches that without waiting for somebody to notice.
+
+    The per-chat breakers are created on a FAILURE, never on a look, so a
+    healthy install holds none of them. They are dropped when the chat
+    recovers, when the chat is deleted or cleared, after CHAT_BREAKER_TTL_S
+    without a failure, and by an LRU ceiling of CHAT_BREAKERS_MAX. An
+    unbounded dict keyed on a user-controlled id is a leak, and each of those
+    four is written down rather than assumed.
 """
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 from functools import partial
 import functools
 import logging
@@ -89,6 +135,118 @@ STOP_AFTER = 20
 #: billed call into a provider that is still broken.
 COOLDOWN_BASE_S = 60.0
 COOLDOWN_MAX_S = 3600.0
+
+#: What consecutive failures do to a number, and it is ONE function because
+#: there are TWO numbers: how much one call may READ (`batch_size`) and how
+#: much new material is worth a call at all (`trigger_threshold`). They used
+#: to be two rules - the batch halved, the threshold did not - so the same
+#: backlog was bought in more pieces and the fixed part of every prompt (the
+#: card, the existing notes, the instructions) was paid again in each of them.
+#: Two rules is how they drifted; one function is how they cannot.
+PRESSURE_FLOOR = 2
+PRESSURE_STEPS = 3
+
+#: How many separate chats may hold a breaker at once, and for how long after
+#: their last failure. An unbounded dict keyed on a chat id is a leak: the id
+#: comes from the user, and nothing else in this file would ever remove the
+#: entry. One `Breaker` is nine small fields, so the ceiling is about 64 KB
+#: and it does not grow with the number of chats.
+CHAT_BREAKERS_MAX = 256
+#: Twenty-four times the longest cooldown this module can impose. A chat that
+#: has not failed in a day is not carrying information any more, it is
+#: carrying stale data, and refusing on it costs a call nobody asked for.
+CHAT_BREAKER_TTL_S = 86400.0
+#: The net under `_fault_scope`. A fault that shows up in this many unrelated
+#: conversations at once is not a property of any of them - it means this
+#: file put it in the wrong bucket. Its price is named: the worst case is
+#: CHAT_TRIP_FANOUT * TRIP_AFTER billed calls instead of TRIP_AFTER, and the
+#: daily cap is still underneath.
+CHAT_TRIP_FANOUT = 8
+
+#: Every reason `Worker.sweep` can refuse with. Exported for the same reason
+#: SKIP_REASONS is: the panel turns each of these into a sentence, and a
+#: reason added without one reaches a reader as a snake_case token - or
+#: worse, falls into the panel's catch-all arm and tells a paused chat that
+#: it is "already reading", which is the opposite of what is happening.
+SWEEP_REFUSALS: frozenset[str] = frozenset({
+    "already_running", "already_in_flight", "nothing_unread",
+    "chat_paused", "chat_stopped",
+})
+
+
+def _pressured(size: int, failures: int) -> int:
+    """`size`, shrunk by however many consecutive failures there have been.
+
+    `min(size, ...)` rather than the bare `max(PRESSURE_FLOOR, size // 2)`
+    this replaces, and it is a defect being closed rather than a flourish: on
+    a configured value of 1, `max(2, 1 // 2)` is 2, so halving moved the
+    number UPWARD. Harmless while only the batch read it; with the trigger
+    threshold on the same rule it would have fired half as often under
+    pressure as it does when healthy. Shrinking must never grow.
+    """
+    for _ in range(min(failures, PRESSURE_STEPS)):
+        size = min(size, max(PRESSURE_FLOOR, size // 2))
+    return size
+
+
+#: Reasons that belong to the PROVIDER and not to any chat. Every one of them
+#: would repeat identically on the next conversation, so per-chat counting
+#: would just bill TRIP_AFTER calls per open chat before anything stopped.
+#: The codes are `openrouter._status_to_reason`'s vocabulary, matched against
+#: the tail of `_failure_type`'s output.
+_PROVIDER_REASONS: frozenset[str] = frozenset({
+    "openrouter_rate_limited",       # 429, an ACCOUNT-level answer
+    "openrouter_server_error",       # 5xx
+    "openrouter_auth_failed",        # 401
+    "api_key_invalid",
+    "api_key_required_by_openrouter",
+    "api_key_not_set",
+    "openrouter_insufficient_credits",   # 402
+    "openrouter_timeout",
+    "openrouter_unreachable",
+    "proxy_auth_failed",
+})
+
+#: Reasons that belong to THIS chat's own material. `openrouter_error` is
+#: deliberately NOT here: it is the catch-all for a 400 that will not fit
+#: (a chat fault) and for a host that cannot be reached (a provider fault)
+#: alike, so claiming it for either bucket would be a guess wearing a table's
+#: clothes. It falls through to "unknown" and moves both.
+_CHAT_REASONS: frozenset[str] = frozenset({
+    "openrouter_moderation_blocked",     # 403 + a moderation envelope
+})
+
+#: Prefixes of `_failure_type`'s output that name a fault in one chat's own
+#: material. `ExtractionFailed` is every unusable reply - truncated, refused,
+#: unparseable, off-schema - and each of those is a fact about the text that
+#: was sent. `write_` is a commit that could not land for these rows.
+#: `prompt_` is a prompt that could not be built from this card.
+_CHAT_PREFIXES: tuple[str, ...] = ("ExtractionFailed", "write_", "prompt_")
+
+
+def _fault_scope(error_type: str) -> str:
+    """Where a failure belongs: "chat", "provider" or "unknown".
+
+    One pure function, one decision, one place to argue with. Its input is
+    whatever `_failure_type` produced - `"OpenRouterError:openrouter_timeout"`,
+    `"write_RuntimeError"`, `"ExtractionFailed:truncated"` - and its output
+    is one word.
+
+    "unknown" is not a failure of this function; it is the honest answer for
+    a code nobody has classified, and it moves BOTH breakers. That is the
+    only default that protects the money (a provider fault counted per chat
+    bills TRIP_AFTER calls per open conversation) AND stops one chat being
+    re-billed forever (a chat fault counted globally is invisible until it
+    has taken every other chat down with it).
+    """
+    reason = error_type.partition(":")[2] or error_type
+    if reason in _PROVIDER_REASONS:
+        return "provider"
+    if reason in _CHAT_REASONS:
+        return "chat"
+    if error_type.startswith(_CHAT_PREFIXES):
+        return "chat"
+    return "unknown"
 
 #: How long `quiesce()`/`stop()` will wait for an ALREADY-PAID extraction to
 #: finish settling before locking anyway. What it is waiting for is one
@@ -136,6 +294,11 @@ class Breaker:
         # is a question about now - so the answer comes from the same clock
         # `allows()` uses rather than from a second one invented here.
         self._now: float | None = None
+        # When this breaker last recorded a FAILURE, on the caller's clock.
+        # The per-chat dictionary's TTL reads exactly this field and nothing
+        # else: a record whose last failure is a day old is stale data, not
+        # information, and keeping it refuses a call nobody asked it to.
+        self.last_failed_at: float | None = None
 
     @property
     def state(self) -> str:
@@ -207,6 +370,7 @@ class Breaker:
         self.failures += 1
         self.since_reset += 1
         self.total_failures += 1
+        self.last_failed_at = now
         if self.since_reset >= STOP_AFTER:
             self.stopped = True
             logger.warning(
@@ -248,7 +412,14 @@ class Worker:
         # gets "bound to a different event loop" from a queue that looks
         # perfectly healthy.
         self.queue: asyncio.Queue[int] | None = None
+        #: GLOBAL. Only faults no chat caused reach this one - see
+        #: `_fault_scope` and the module docstring.
         self.breaker = Breaker()
+        #: One per chat, and only for chats that have actually FAILED. An
+        #: OrderedDict rather than a dict because the ceiling below is an
+        #: LRU: `move_to_end` on every look is what makes "oldest accessed"
+        #: mean anything.
+        self.chat_breakers: "OrderedDict[int, Breaker]" = OrderedDict()
         # Two different events, counted apart. Both used to land in
         # `dropped_offers`, and only ONE of them means what the status panel
         # says it means: a queue that overflowed is a worker falling behind,
@@ -261,6 +432,11 @@ class Worker:
         self.queue_overflows = 0
         self.offers_while_down = 0
         self.refused_by_breaker = 0
+        #: Turns refused by the chat's OWN breaker, counted apart from the
+        #: global one. Folded together, "the provider is down" and "this one
+        #: conversation is broken" would read as the same number, and only
+        #: one of them means the other chats are fine.
+        self.refused_by_chat_breaker = 0
         #: Turns the claim gate refused because the other entry point was
         #: already inside that range. Counted rather than logged: this file
         #: is on log_leak_scan's must-stay-clean list, and the number is what
@@ -457,8 +633,17 @@ class Worker:
         # skipped row per turn with no ceiling. "Stopped" has to mean stop.
         # The reason is not lost: it is in-memory and on the status screen,
         # which is where a user looks when nothing is happening.
-        if not self.breaker.allows(loop.time()):
+        now = loop.time()
+        if not self.breaker.allows(now):
             self.refused_by_breaker += 1
+            return None
+        # And then the chat's own, for the same reason and at the same point.
+        # GLOBAL FIRST: it is the cheaper question and the wider one, and a
+        # process that is refusing everything should not walk a dictionary to
+        # find that out.
+        cb = self._chat_breaker(chat_id, now)
+        if cb is not None and not cb.allows(now):
+            self.refused_by_chat_breaker += 1
             return None
 
         model_id = await anyio.to_thread.run_sync(notebook_extract.extract_model)
@@ -470,8 +655,20 @@ class Worker:
         language = await anyio.to_thread.run_sync(_language)
         plan = await anyio.to_thread.run_sync(
             partial(_plan_work, chat_id, model_id, language,
-                    config.NOTEBOOK_EXTRACT_EVERY_TURNS, self.batch_size,
+                    self.trigger_threshold_for(chat_id),
+                    self.batch_size_for(chat_id),
                     min_new=min_new, after_id=after_id,
+                    # THE UNPRESSURED NUMBER, and the parameter exists only
+                    # so it can be. The first-read branch asks "is this
+                    # conversation meeting the feature for the first time",
+                    # which is a fact about the conversation - and both
+                    # numbers above now shrink when the provider is unwell,
+                    # so taking the edge off either of them would send a
+                    # twenty-message chat down the four-hundred-message
+                    # branch and leave eighteen of them permanently unread
+                    # with the breaker still CLOSED. That is H-14, and this
+                    # is the door it would have walked back in through.
+                    first_read_edge=config.NOTEBOOK_EXTRACT_EVERY_TURNS * 2,
                     # What the OTHER entry point is holding. `_plan_work`
                     # opens by closing out `running` rows as orphans, and
                     # without this the sweep button's first act was to fail
@@ -694,8 +891,11 @@ class Worker:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self.breaker.failed(loop.time())
-                await _record_failure(chat_id, plan, "prompt_" + type(exc).__name__)
+                # This chat's card and this chat's text are what failed to
+                # become a prompt; no other conversation is implicated.
+                error_type = "prompt_" + type(exc).__name__
+                self._note_failure(chat_id, loop.time(), error_type)
+                await _record_failure(chat_id, plan, error_type)
             # Same window as the one above, same reason: the prompt is built
                 # BEFORE the request, so this failure means nothing was sent.
                 # SUBSCRIPT, not `.get`. This line is only reachable after
@@ -724,7 +924,15 @@ class Worker:
                 # a 60s cooldown: the breaker opens and is already half-open, and
                 # every following turn gets another full billed call through a
                 # breaker reporting "open".
-                self.breaker.failed(loop.time())
+                #
+                # WHERE it is counted is `_fault_scope`'s decision, not this
+                # line's. A 429 or a 5xx is the account's answer and would
+                # repeat identically on every other chat; a moderation
+                # refusal is about the text this chat just sent. The same
+                # `except` catches both, so the sorting happens on the
+                # reason code rather than on the call site.
+                error_type = _failure_type(exc)
+                self._note_failure(chat_id, loop.time(), error_type)
                 # The class name alone said "OpenRouterError" for every single
                 # provider failure - a timeout, a refused proxy, a rate limit, a
                 # missing key - and threw away the only part a reader could act
@@ -755,7 +963,7 @@ class Worker:
                 if getattr(exc, "reached_provider", True) is False:
                     await anyio.to_thread.run_sync(
                         _release_one, plan["claim_day"])
-                await _record_failure(chat_id, plan, _failure_type(exc))
+                await _record_failure(chat_id, plan, error_type)
                 return
 
             # Defect 1. From here the call has been sent, generated and BILLED -
@@ -836,7 +1044,13 @@ class Worker:
             # A reply that cannot be trusted is a FAILURE, and the range stays
             # unread. Recorded as done-with-nothing it would be skipped
             # forever, which is the shape this whole design is built against.
-            self.breaker.failed(loop.time())
+            # THIS CHAT'S, every one of them. `truncated` is a context too
+            # big for the reply budget, `refused` is a moderation answer to
+            # this text, `unparseable` and the schema failures are what the
+            # model returned for this card and this range. None of them says
+            # anything about the next conversation, and counting them
+            # globally is what used to take every other chat down.
+            self._note_failure(chat_id, loop.time(), _failure_type(exc))
             await _record_failure(chat_id, plan, str(exc), usage=usage)
             return
 
@@ -860,9 +1074,13 @@ class Worker:
             # somebody steps away. By this line the call has been sent,
             # generated and paid for, and the work is lost. Five of those in a
             # row is precisely what the breaker is for.
-            self.breaker.failed(loop.time())
             self.unhandled += 1
             error_type = "write_" + type(exc).__name__
+            # A commit that cannot land for THESE rows: a foreign key on a
+            # chat deleted mid-call, a row this chat's own content broke.
+            # `_fault_scope` sends it to the chat, and the fan-out net is
+            # what catches a disk error that is really global.
+            self._note_failure(chat_id, loop.time(), error_type)
             if not await _record_failure(chat_id, plan, error_type,
                                          usage=usage):
                 # `_record` swallows its own failure to keep the loop alive,
@@ -902,6 +1120,11 @@ class Worker:
             self.last_error = _empty_reason(outcome)
             return
         self.breaker.succeeded()
+        # T1, and the rule that clears almost every record in practice: a
+        # chat that works again holds nothing at all. Kept next to the global
+        # `succeeded()` rather than in a tidier place, because the one thing
+        # that must never happen is these two drifting apart.
+        self._chat_recovered(chat_id)
         self.runs += 1
 
     @property
@@ -938,15 +1161,173 @@ class Worker:
         batches. In the degraded regime this mechanism exists for, it pays
         more and does less.
 
-        Whether the trigger threshold should halve alongside the batch - which
-        is where that ratio comes from - is a decision, not an oversight, and
-        it is open. The rest of the backlog is not lost either way: it stays
-        unread and the next run picks it up.
+        HALVING THE TRIGGER THRESHOLD ALONGSIDE IT DOES NOT MOVE ANY OF THAT,
+        and that was measured rather than argued. Under the same six outcome
+        sequences, at arrival rates from two messages a turn down to two
+        messages every twenty turns, a run in which
+        NOTEBOOK_EXTRACT_EVERY_TURNS halves with the batch produces the same
+        call count, the same characters and the same messages read: 1.00x on
+        every row. The reason is structural. The halved threshold is only in
+        force while `breaker.failures > 0`; a failed extraction does not
+        advance the cursor, because the cursor query counts `status='done'`
+        and `abandoned_in_flight` and nothing else. So the backlog standing
+        in front of the gate is already at or above the UNHALVED threshold
+        every time the halved one is consulted - 351 such decisions in the
+        sweep, none of them answered differently. The two come apart only in
+        a state the shipped code does not reach, a failure that DID advance
+        the cursor, and there the halved threshold buys 1.05x the coverage
+        for 1.14x the calls. It is the wrong lever: the thirteen percent
+        above comes from the batch, not from the threshold.
+
+        It halves anyway, for the one thing it does buy: the two numbers can
+        no longer drift apart, which is how the ten-fold spending bug at the
+        top of this docstring became possible in the first place.
+
+        The rest of the backlog is not lost either way: it stays unread and
+        the next run picks it up.
         """
-        size = config.NOTEBOOK_EXTRACT_EVERY_TURNS
-        for _ in range(min(self.breaker.failures, 3)):
-            size = max(2, size // 2)
-        return size
+        return _pressured(config.NOTEBOOK_EXTRACT_EVERY_TURNS,
+                          self.breaker.failures)
+
+    @property
+    def trigger_threshold(self) -> int:
+        """How much new material is worth a call. Same rule, same floor.
+
+        ONE line, `_pressured`, and deliberately not `return self.batch_size`
+        either: an alias reads as "these happen to be equal today" where this
+        reads as "these are the same question asked of two names". Writing the
+        loop a second time is exactly how they came apart before.
+        """
+        return _pressured(config.NOTEBOOK_EXTRACT_EVERY_TURNS,
+                          self.breaker.failures)
+
+    # ── the per-chat breakers ───────────────────────────────────────────
+    def _pressure(self, chat_id: int | None) -> int:
+        """Consecutive failures governing this chat's numbers.
+
+        The WORSE of the two counters, because both are true at once: a chat
+        that keeps failing should read less of itself, and a provider that
+        keeps failing should be sent less of anything.
+        """
+        worst = self.breaker.failures
+        if chat_id is not None:
+            cb = self.chat_breakers.get(chat_id)
+            if cb is not None:
+                worst = max(worst, cb.failures)
+        return worst
+
+    def batch_size_for(self, chat_id: int) -> int:
+        """`batch_size`, asked about one chat. See `batch_size`."""
+        return _pressured(config.NOTEBOOK_EXTRACT_EVERY_TURNS,
+                          self._pressure(chat_id))
+
+    def trigger_threshold_for(self, chat_id: int) -> int:
+        """`trigger_threshold`, asked about one chat."""
+        return _pressured(config.NOTEBOOK_EXTRACT_EVERY_TURNS,
+                          self._pressure(chat_id))
+
+    def _expire_chat_breakers(self, now: float | None) -> None:
+        """Drop records whose last failure is older than the TTL.
+
+        From the FRONT and stopping at the first survivor: the dictionary is
+        kept in last-touched order, so this is amortised O(1) rather than a
+        walk of every entry on every turn.
+
+        WHERE THAT IS APPROXIMATE, said out loud: last-touched order is not
+        last-failed order. A record that was merely looked at recently sits
+        behind one that failed recently, so a stale entry can outlive its TTL
+        until it reaches the front. That is a memory question and not a
+        behaviour one - by then its cooldown has long elapsed (an hour is the
+        ceiling) so it refuses nothing - and CHAT_BREAKERS_MAX bounds it
+        regardless. An exact sweep would walk every entry on every turn to
+        buy nothing.
+        """
+        if now is None:
+            return
+        while self.chat_breakers:
+            chat_id, cb = next(iter(self.chat_breakers.items()))
+            stamp = cb.last_failed_at
+            if stamp is None or now - stamp < CHAT_BREAKER_TTL_S:
+                return
+            del self.chat_breakers[chat_id]
+
+    def _chat_breaker(self, chat_id: int, now: float | None = None):
+        """This chat's breaker, or None. A LOOK, never a creation.
+
+        Creating on a look would give a healthy install one record per chat
+        it has ever seen, which is the leak this whole cleanup policy exists
+        against. Records are made in `_fail_chat` and nowhere else.
+        """
+        self._expire_chat_breakers(now)
+        cb = self.chat_breakers.get(chat_id)
+        if cb is not None:
+            self.chat_breakers.move_to_end(chat_id)
+        return cb
+
+    def _fail_chat(self, chat_id: int, now: float) -> "Breaker":
+        """Count one failure against this chat, making the record if needed.
+
+        Also the only place the fan-out net fires: if this failure leaves
+        more than CHAT_TRIP_FANOUT separate chats refusing at once, the
+        global breaker takes one too. See the module docstring - that is not
+        a second route for chat faults, it is the alarm on `_fault_scope`
+        being wrong.
+        """
+        self._expire_chat_breakers(now)
+        cb = self.chat_breakers.get(chat_id)
+        if cb is None:
+            cb = self.chat_breakers[chat_id] = Breaker()
+        self.chat_breakers.move_to_end(chat_id)
+        cb.failed(now)
+
+        # The ceiling, enforced AFTER the insert so the newest failure is
+        # never the one thrown away. What an eviction costs is named: that
+        # chat forgets its refusal and earns one more call. It takes
+        # CHAT_BREAKERS_MAX chats failing at once to reach, and the global
+        # breaker and the daily cap are both still underneath.
+        while len(self.chat_breakers) > CHAT_BREAKERS_MAX:
+            self.chat_breakers.popitem(last=False)
+
+        tripped = sum(1 for b in self.chat_breakers.values()
+                      if b.state_at(now) != "closed")
+        if tripped > CHAT_TRIP_FANOUT:
+            logger.warning(
+                "Notebook extraction: %d chats refusing at once; counting it "
+                "against the global breaker.", tripped)
+            self.breaker.failed(now)
+        return cb
+
+    def _chat_recovered(self, chat_id: int) -> None:
+        """A chat that works again holds nothing.
+
+        The cheapest of the four cleanup rules and the one that does most of
+        the work: in practice almost every record is made by a transient
+        failure and removed by the next success.
+        """
+        self.chat_breakers.pop(chat_id, None)
+
+    def forget_chat(self, chat_id: int) -> None:
+        """The chat is gone - deleted, or cleared down to nothing.
+
+        The messages that produced the failure went with it, so a refusal
+        that outlived them would be refusing a conversation that no longer
+        exists. Public because the routes that delete chats call it, and it
+        is deliberately silent about a chat it has never heard of.
+        """
+        self.chat_breakers.pop(chat_id, None)
+
+    def _note_failure(self, chat_id: int, now: float, error_type: str) -> None:
+        """Count one failure wherever `_fault_scope` says it belongs.
+
+        The single door. Every `breaker.failed()` in this file used to be
+        written out at the call site, which is how a rule that has to hold in
+        four places holds in three.
+        """
+        scope = _fault_scope(error_type)
+        if scope in ("provider", "unknown"):
+            self.breaker.failed(now)
+        if scope in ("chat", "unknown"):
+            self._fail_chat(chat_id, now)
 
     def _undo_abandoned_preamble(self, task: "asyncio.Task") -> None:
         """Give back what a preamble claimed for a turn that never happened.
@@ -1082,6 +1463,22 @@ class Worker:
         # this as "It is already reading. Give it a moment."
         if chat_id in self._active_chats:
             return {"started": False, "reason": "already_in_flight"}
+        # AND this chat's own breaker, refused HERE rather than three hundred
+        # lines down inside `_prepare`, because here there is somebody to
+        # tell. `_prepare` would return None and the button would report
+        # "Reading the earlier part of this chat now" over a turn that never
+        # happened - the panel saying the opposite of what is going on, which
+        # is the one failure a status screen must not have.
+        #
+        # Two reasons, not one: "it will retry by itself in a while" and "it
+        # will not retry until you say so" are different answers, and only
+        # one of them asks the reader to do something.
+        now = asyncio.get_running_loop().time()
+        cb = self._chat_breaker(chat_id, now)
+        if cb is not None and not cb.allows(now):
+            self.refused_by_chat_breaker += 1
+            return {"started": False,
+                    "reason": "chat_stopped" if cb.stopped else "chat_paused"}
         from database import get_db
 
         def _where() -> int | None:
@@ -1120,7 +1517,7 @@ class Worker:
             self._sweeping = False
         return {"started": True, "after_id": after_id}
 
-    def status(self, now: float | None = None) -> dict:
+    def status(self, now: float | None = None, chat_id: int | None = None) -> dict:
         """What the panel reads.
 
         `now` so the breaker is asked about the present rather than about
@@ -1128,6 +1525,12 @@ class Worker:
         loop when there is one - the status route is async, so there always
         is in production - and left as None only where no loop exists, which
         is a handful of synchronous tests.
+
+        `chat_id` adds the `chat` block and changes NOTHING else. Every key
+        outside it keeps meaning the global thing it has always meant: a
+        reader looking at a broken conversation must not be told the whole
+        feature has stopped, and a panel whose top-level sentence changed
+        with the selected chat would say exactly that.
         """
         if now is None:
             try:
@@ -1148,6 +1551,12 @@ class Worker:
             "queue_overflows": self.queue_overflows,
             "offers_while_down": self.offers_while_down,
             "refused_by_breaker": self.refused_by_breaker,
+            # Counted apart from the line above. Folded together, "the
+            # provider is down" and "one conversation is broken" read as the
+            # same number, and only one of them means the rest are fine.
+            "refused_by_chat_breaker": self.refused_by_chat_breaker,
+            "tripped_chats": sum(1 for b in self.chat_breakers.values()
+                                 if b.state_at(now) != "closed"),
             # 3: a dead loop used to report "closed" with a growing queue
             # forever. The screen and the truth diverging is the one failure
             # a status screen must not have.
@@ -1177,6 +1586,34 @@ class Worker:
             # answer, and an empty dict says that rather than saying nothing.
             "dropped": dict(self.dropped),
             "batch_size": self.batch_size,
+            # Reported beside the batch because they are one rule now, and
+            # a panel showing one without the other is where the belief that
+            # they were the same number came from.
+            "trigger_threshold": self.trigger_threshold,
+            # None unless somebody asked about a chat. Present either way:
+            # a key that appears and disappears is a key every client has to
+            # guess at, and zod strips what it was not told about.
+            "chat": self._chat_status(chat_id, now),
+        }
+
+    def _chat_status(self, chat_id: int | None, now: float | None) -> dict | None:
+        """The selected chat's own breaker, or None.
+
+        None both when nothing is selected and when the selected chat has
+        never failed - a healthy chat holds no record, and "no record" is
+        exactly "nothing to report".
+        """
+        if chat_id is None:
+            return None
+        cb = self.chat_breakers.get(chat_id)
+        if cb is None:
+            return None
+        return {
+            "state": cb.state_at(now),
+            "failures": cb.failures,
+            "total_failures": cb.total_failures,
+            "batch_size": self.batch_size_for(chat_id),
+            "trigger_threshold": self.trigger_threshold_for(chat_id),
         }
 
 
@@ -1564,6 +2001,7 @@ def _plan_work(chat_id: int, model_id: str, language: str,
                threshold: int, limit: int, *,
                min_new: int | None = None,
                after_id: int | None = None,
+               first_read_edge: int | None = None,
                keep=()) -> dict | None:
     """Decide whether there is enough new material, and gather it.
 
@@ -1588,6 +2026,19 @@ def _plan_work(chat_id: int, model_id: str, language: str,
       * `after_id` names where to read from, so a sweep can fill a hole the
         ordinary cursor has already passed. The cursor is a MAX and can only
         move forward; a range that was skipped is below it forever.
+
+    `first_read_edge` is the backlog above which a never-extracted chat is
+    read from the PRESENT instead of from the beginning, and it defaults to
+    `threshold * 2` so every caller that does not care behaves exactly as
+    before. It is a parameter at all because `threshold` is no longer a
+    constant: `Worker.trigger_threshold` shrinks under the breaker's
+    consecutive failures, alongside the batch, and an edge derived from a
+    number the breaker has moved is H-14 - a twenty-message chat read as a
+    four-hundred-message backlog, eighteen of them abandoned under a cursor
+    that only moves forward, with the breaker still CLOSED and nothing else
+    refusing work. Whether a conversation is meeting this feature for the
+    first time is a fact about the conversation; how healthy the provider is
+    has no business in it.
 
     Opening a second entry point into the worker is exactly the thing this
     module refuses elsewhere, so this is a keyword pair on the existing
@@ -1659,21 +2110,22 @@ def _plan_work(chat_id: int, model_id: str, language: str,
         # The one silent-loss shape this whole module exists to prevent,
         # rebuilt at the other end of the same function.
         #
-        # AND THE EDGE IS `threshold`, NOT `limit`. `limit` is
-        # `Worker.batch_size`, which HALVES on the breaker's consecutive
-        # failures - three of them and it is 2, so the edge was 4 and a chat
-        # with five messages in it read as a four-hundred-message backlog.
-        # The branch then jumped to the present and left three of those five
-        # under a cursor that only moves forward. Three failures is not an
-        # open breaker (TRIP_AFTER is 5), so nothing else was refusing work
-        # at the time and the loss was silent. Whether this conversation is
-        # meeting the feature for the first time is a fact about the
-        # conversation; how healthy the provider is has no business in it.
-        # `threshold` is the caller's constant - `_prepare` passes
-        # `config.NOTEBOOK_EXTRACT_EVERY_TURNS` and nothing halves it - and
-        # keeping the two apart here is the same rule this function's
-        # docstring already states about conflating them.
-        if (min_new is None and last == 0 and pending > threshold * 2
+        # AND THE EDGE IS NEITHER `limit` NOR, ANY LONGER, `threshold`.
+        # `limit` is `Worker.batch_size`, which HALVES on the breaker's
+        # consecutive failures - three of them and it is 2, so the edge was 4
+        # and a chat with five messages in it read as a four-hundred-message
+        # backlog. The branch then jumped to the present and left three of
+        # those five under a cursor that only moves forward. Three failures
+        # is not an open breaker (TRIP_AFTER is 5), so nothing else was
+        # refusing work at the time and the loss was silent.
+        #
+        # `threshold` was the fix, and it stopped being safe the day
+        # `Worker.trigger_threshold` started halving alongside the batch: the
+        # identical bug, through the other argument. So the edge is its own
+        # parameter now, the worker passes the UNPRESSURED constant, and
+        # every other caller gets `threshold * 2` and the old behaviour.
+        edge = first_read_edge if first_read_edge is not None else threshold * 2
+        if (min_new is None and last == 0 and pending > edge
                 and not ever_extracted):
             # NOTHING has EVER been read in this chat (not merely "since the
             # cursor last moved") and there is a backlog. That is the

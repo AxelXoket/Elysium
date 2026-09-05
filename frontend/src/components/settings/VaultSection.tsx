@@ -216,9 +216,17 @@ export function VaultSection() {
             rule uses `!important`, so this swap is about the size/line-height
             the class also carried, not the colour. `text-xs leading-relaxed`
             is the sibling panels' base for a line of this kind. */}
+        {/* `role="status"` and nothing wider. The outcome of re-encrypting the
+            whole database is worth hearing; the disclosure paragraph, the
+            three captions and the four leftover notices above are furniture
+            that was already on screen, and a region drawn round them would
+            re-read the panel every time this component renders. Polite on
+            purpose: the reader pressed the button and is waiting for exactly
+            this, so there is nothing to interrupt. */}
         {done && !localError && (
           <p
             data-testid="vault-success-message"
+            role="status"
             className="text-xs leading-relaxed font-semibold"
             style={{ color: "var(--color-es-primary-sage-deep)" }}
           >
@@ -233,7 +241,21 @@ export function VaultSection() {
             under a passphrase the user just tried to revoke. */}
         {done && !localError && unrevoked.length > 0 && (
           <section
-            aria-label="A copy still opens with the old passphrase"
+            // A landmark is a place on the page; it is announced when the
+            // reader walks into it, which is never for someone waiting on the
+            // result of a button. This is the one line on the screen that
+            // contradicts what the form just promised, so it interrupts.
+            //
+            // The whole block, not a headline: an alert is atomic, so the file
+            // name and what to do about it are read out with the sentence that
+            // raises the alarm. Announced once, because the region only exists
+            // while a name came back, and every new attempt empties it first.
+            //
+            // The `aria-label` that used to sit here is gone with the landmark
+            // that needed it. An atomic region is read name-then-content, and
+            // the label was word for word the heading below - the same
+            // sentence twice for the reader who can least afford it.
+            role="alert"
             data-testid="vault-unrevoked-notice"
             className="space-y-2 rounded-lg p-3"
             style={{

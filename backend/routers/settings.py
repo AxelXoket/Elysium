@@ -42,6 +42,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 import auto_lock
+import default_names
 import keyring_service
 from config import (
     SECRET_API_KEY,
@@ -89,6 +90,28 @@ class ApiKeyBody(BaseModel):
 
 
 class ProxyBody(BaseModel):
+    """URL, kill-switch and display label in one save.
+
+    `forbid` for the same reason as ProxyAliasBody, and this is the body that
+    shows the reason is not only about bodies with no required field: a
+    required field 422s a misspelling of ITS OWN name and nothing else. Two of
+    the three names here are required and the label still went missing. A
+    request spelling it `proxy_allias` arrived as `proxy_alias=None`, the route
+    stored an empty label, and the answer was `{"ok": true}`. The sibling
+    POST /settings/proxy/alias already refused that exact typo, so the two ends
+    of one feature disagreed about how strict they were.
+
+    What `forbid` does not change: an absent `proxy_alias` and a null one are
+    the same input here, and neither is a delete any more - both store the
+    default name, the same as an emptied box does. The panel always sends the
+    key, and sends it null only on a save that is also rewriting the URL - a
+    bare emptied box goes to POST /settings/proxy/alias instead - so the
+    absent case is tolerated here rather than used. Refusing unknown names
+    says nothing about either.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
     proxy_url: str
     proxy_required: bool
     proxy_alias: str | None = None
@@ -108,12 +131,18 @@ class ProxyAliasBody(BaseModel):
     hard path; it was an impossible one.
 
     `forbid` for the same reason as ModelSelectionBody, which is the only
-    other body in this file with NO required field: absence means "clear",
-    so an unknown field name is not a harmless typo. Under the default
+    other body in this file with NO required field: absence is not "leave it
+    alone", so an unknown field name is not a harmless typo. Under the default
     `ignore` a request carrying `proxy_allias` reached the route as
-    `proxy_alias=None`, the route wrote "", the stored label was DELETED, and
-    the answer was `{"ok": true}`. Every other body here has at least one
-    required field and so already 422s on a misspelling; these two did not.
+    `proxy_alias=None`; back when that meant "clear it" the route wrote "",
+    the stored label was DELETED, and the answer was `{"ok": true}`. The same
+    typo now lands on the default name instead of on nothing - a smaller
+    loss, and still not what was asked for.
+
+    A required field only 422s a misspelling of its OWN name, so having one
+    protects nothing else in the body: ProxyBody has two required fields and
+    still lost its optional label to `proxy_allias`, and carries `forbid` for
+    that reason now too.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -121,14 +150,69 @@ class ProxyAliasBody(BaseModel):
     proxy_alias: str | None = None
 
 
+#: The one piece of user text in this application that had NO ceiling at all.
+#: Measured before it was fixed: a 200,000-character alias was accepted by
+#: both write paths and read back whole, because nothing capped it in the
+#: schema, in the model, in the route, or in main.py's body-size middleware
+#: (which is scoped to /uploads/ and /tts/voices/). It is a label for one
+#: proxy in one panel, so fifty is generous for what it is - the neighbours
+#: are a 100-character stop sequence and a 200-character model id.
+MAX_PROXY_ALIAS_LEN = 50
+
+
+def _normalise_proxy_alias(value: str | None) -> str:
+    """Trim, refuse the absurd, and never store nothing.
+
+    ONE function because there are TWO doors onto this single label - the
+    full proxy save and the alias-only save - and they used to disagree about
+    everything they could disagree about. A ceiling on one of them is not a
+    ceiling.
+
+    An emptied box is answered with the default name rather than by deleting
+    the stored one. Deleting was the old behaviour and it is the one outcome
+    nobody asked for: the URL is write-only, so a person who cleared the name
+    box on a later save lost the only readable trace of which proxy this is.
+    There is exactly one proxy - no `proxies` table, no {proxy_id} path - so
+    the sequence never advances past the first number, and it is written
+    through the shared helper rather than as a literal so it cannot drift
+    from the prefix every other surface uses.
+    """
+    alias = (value or "").strip()
+    if len(alias) > MAX_PROXY_ALIAS_LEN:
+        raise HTTPException(400, "proxy_alias_too_long")
+    return default_names.name_or_default(alias, default_names.PROXY, ())
+
+
 #: Mirrors MAX_STOP_SEQUENCES / STOP_SEQUENCE_MAX_LENGTH in the dialog. Clamped
 #: rather than rejected: a stale UI must not be able to 422 a settings save.
 MAX_STOP_SEQUENCES = 4
 MAX_STOP_SEQUENCE_CHARS = 100
 
+#: Ceiling on what the route READS, not what it KEEPS.
+#:
+#: The clamp in save_stop_sequences bounds the kept list, and it stops the walk
+#: early only while entries are still being kept. Five million empty entries
+#: keep nothing and five million copies of one entry keep one; neither reaches
+#: four, so `break` never fires and the loop walks all five million on the
+#: event loop. Measured: a 20 MB body of five million entries answered 200 with
+#: the loop held for 0.327s by the walk alone. Parsing that body costs a
+#: further 0.116s, and no ceiling on entries removes that.
+#:
+#: Sixteen times the kept ceiling, not the kept ceiling itself: that would turn
+#: the clamp into a rejection and break the rule above it. A stale dialog
+#: sending a few entries too many is still clamped; the walk is the part that
+#: stops being open-ended.
+#:
+#: What this does NOT bound is BYTES. An entry has no length limit here - it is
+#: trimmed, not refused - and no body-size shield covers this prefix, so an
+#: accepted 64-entry body can still be arbitrarily large and is still buffered
+#: and parsed on the loop before any of this runs. Bounding that is a different
+#: change in a different place and is not made here.
+MAX_STOP_SEQUENCES_READ = MAX_STOP_SEQUENCES * 16
+
 
 class StopSequencesBody(BaseModel):
-    stop_sequences: list[str]
+    stop_sequences: list[str] = Field(max_length=MAX_STOP_SEQUENCES_READ)
 
 
 def _read_stop_sequences(raw: str | None) -> list[str]:
@@ -494,7 +578,7 @@ async def save_proxy(body: ProxyBody) -> dict:
         _save_proxy_sync,
         body.proxy_url.strip(),
         body.proxy_required,
-        (body.proxy_alias or "").strip(),
+        _normalise_proxy_alias(body.proxy_alias),
     )
 
     # Side effects only after the commit above.
@@ -725,10 +809,12 @@ async def set_proxy_alias(body: ProxyAliasBody) -> dict:
     Refused when no proxy is configured: a label for a thing that does not
     exist would show up in the panel as a proxy that is not there.
     """
-    alias = (body.proxy_alias or "").strip()
+    alias = _normalise_proxy_alias(body.proxy_alias)
     await anyio.to_thread.run_sync(_set_proxy_alias_sync, alias)
-    logger.info("Proxy alias %s.", "set" if alias else "cleared")
-    return {"ok": True, "proxy_alias": alias or None}
+    # Always "set" now: there is no path through this route that leaves the
+    # proxy without a name.
+    logger.info("Proxy alias set.")
+    return {"ok": True, "proxy_alias": alias}
 
 
 # ---------------------------------------------------------------------------

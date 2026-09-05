@@ -374,7 +374,9 @@ class TestRefsDeleteItself:
         self._voice(refs_root)
         monkeypatch.setattr(secure_delete, "is_redirected", lambda p: False)
         monkeypatch.setattr(secure_delete, "shred_tree",
-                            lambda folder: (0, [], ["inner"]))
+                            # The third value names the pruned PATHS now, not
+                            # just whether there were any.
+                            lambda folder: (0, [], [str(folder / "inner")]))
 
         assert refs.delete(self.ID) is False
         text = self._clean(loud)

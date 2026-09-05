@@ -425,7 +425,9 @@ def narrow_own_process() -> bool:
 def _own_user_sid() -> str | None:
     """This process's user SID as a string, or None if it cannot be had."""
     try:
-        out = subprocess.run(["whoami", "/user", "/fo", "csv", "/nh"],
+        # _WHOAMI, not "whoami": the full path is the rule this file already
+        # follows for icacls, and this call site had been the exception.
+        out = subprocess.run([_WHOAMI, "/user", "/fo", "csv", "/nh"],
                              capture_output=True, text=True, timeout=10,
                              creationflags=_NO_WINDOW)
     except (OSError, subprocess.SubprocessError):
@@ -582,7 +584,7 @@ def exclude_from_screen_capture(hwnd: int) -> bool:
 
 
 def screen_privacy_requested() -> bool:
-    """Whether the user asked for capture exclusion. Off unless asked."""
+    """Whether capture exclusion was asked for. Off unless asked."""
     return os.environ.get(_SCREEN_PRIVACY_ENV, "") == "1"
 
 
@@ -1249,6 +1251,15 @@ _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _ICACLS = str(Path(os.environ.get("SystemRoot", r"C:\Windows"))
               / "System32" / "icacls.exe")
 
+#: The same rule, and it lives here so there is one place to read it rather
+#: than one per call site. _own_user_sid asks Windows who this process is and
+#: then narrows the process to that answer; a name resolved through PATH lets
+#: anything that can write to a PATH directory supply it. Absent from an
+#: unusual install, the run fails and the caller gets None, which it already
+#: handles.
+_WHOAMI = str(Path(os.environ.get("SystemRoot", r"C:\Windows"))
+              / "System32" / "whoami.exe")
+
 
 def _icacls(*args: str) -> bool:
     """Run icacls, quietly. True on exit 0."""
@@ -1317,14 +1328,14 @@ def narrow_data_dir(path: Path | str) -> list[str]:
         # recomputed from its parent rather than owned by the child, so
         # removing it here removes it from salt.bin and verifier.bin as well.
         #
-        # A reviewer read it the other way (that Windows materialises the ACE
-        # onto each child, leaving the files behind) and that reading is what
-        # a per-file loop here would be for. It was written, and then two
-        # mutation rounds deleted it with every test still green - twice,
-        # because the first fixture reproduced an inherited ACE rather than an
-        # owned one. Unproven code in the app's hardening path is worse than
-        # none: it reads as protection nobody has to check. The reporting side
-        # investigated and left out, rather than kept "just in case".
+        # There is a reading of this that goes the other way: that Windows
+        # materialises the ACE onto each child and leaves the files behind. A
+        # per-file loop here is what that reading would need, and it was
+        # written. Then two mutation rounds deleted it with every test still
+        # green - twice, because the first fixture reproduced an inherited
+        # ACE rather than an owned one. Unproven code in the app's hardening
+        # path is worse than none: it reads as protection nobody has to
+        # check. Investigated and left out, rather than kept "just in case".
         if _icacls(target, "/remove:g", f"*{sid}"):
             removed.append(principal)
 

@@ -210,6 +210,84 @@ async def _one_host_only(request: httpx.Request) -> None:
         )
 
 
+#: Where the voice-engine installer fetches the pinned uv archive from.
+#:
+#: A SEPARATE list from allowed_hosts() on purpose, and the separation is the
+#: point rather than an oversight. allowed_hosts() guards the client that
+#: carries the API key and the conversation; widening it to admit GitHub would
+#: mean a bug in the chat path could send that key to a release CDN. These two
+#: sets never intersect, and neither client can reach the other's hosts.
+#:
+#: Both names are needed for ONE download: github.com answers the release URL
+#: with a 302 to objects.githubusercontent.com, and a redirect is a fresh
+#: request that arrives at the hook with the new host on it.
+PROVISION_HOSTS: frozenset[str] = frozenset({
+    "github.com",
+    "objects.githubusercontent.com",
+})
+
+
+def _provision_hosts_only(request: httpx.Request) -> None:
+    """_one_host_only's sibling, for the installer's download.
+
+    Synchronous because the installer runs on a worker thread with no event
+    loop, so its client is a sync httpx.Client and httpx will not await a
+    coroutine hook there. Same shape, same failure direction, different list.
+
+    It exists so the promise "every outbound request this app makes passes one
+    check" survives the installer. Before this, the uv download went out
+    through a hand-built urllib opener that no allowlist ever saw: a redirect
+    to any host at all was followed without a word.
+    """
+    host = (request.url.host or "").lower()
+    if host not in PROVISION_HOSTS:
+        logger.warning(
+            "egress: refused a voice-engine download redirected to %s; the "
+            "installer fetches from exactly two hosts and that is not one",
+            host)
+        raise EgressRefused(
+            f"refused an outbound request to {host!r}: the voice engine "
+            f"installer fetches from exactly two hosts and that is not one"
+        )
+    if request.url.scheme != "https" and host not in _PLAINTEXT_OK:
+        raise EgressRefused(
+            f"refused an outbound request to {host!r} over "
+            f"{request.url.scheme!r}: the installer downloads code that is "
+            f"then run on this machine, so the transport must be https"
+        )
+
+
+def provisioning_client(proxy: str | None) -> httpx.Client:
+    """A synchronous client for the one download the voice installer makes.
+
+    `proxy` is passed in rather than read here, because the caller has already
+    asked the gate for it and the gate is allowed to REFUSE. Reading it a
+    second time in this file would be a second answer to a question that has
+    exactly one, and the two could disagree at the worst moment - the whole
+    defect this replaced.
+
+    Why not urllib, which is what this path used to use: urllib's ProxyHandler
+    emits `CONNECT host:443` whatever the proxy scheme says. The settings
+    router accepts four (http, https, socks5, socks5h); measured against a
+    loopback listener, three of them got HTTP bytes at a port that does not
+    speak HTTP. That fails, and the failure surfaced as "Elysium could not
+    find a way to build the voice engine environment on this computer" - a
+    proxy problem, delivered as a verdict on the machine. httpx speaks all
+    four.
+
+    trust_env=False for the same reason every other client in this file has
+    it: the ambient environment is not a place this app takes destinations
+    from. follow_redirects=True because the release URL is a redirect, and the
+    hook above is what makes following one safe.
+    """
+    return httpx.Client(
+        proxy=proxy or None,
+        trust_env=False,
+        follow_redirects=True,
+        event_hooks={"request": [_provision_hosts_only]},
+    )
+
+
 def _build_client() -> httpx.AsyncClient:
     """Build a fresh AsyncClient. Uses proxy from keyring if present."""
     proxy_url = get_secret(SECRET_PROXY_URL)

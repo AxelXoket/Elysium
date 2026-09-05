@@ -82,6 +82,25 @@ _NOT_IN_CONTRACT = {
 }
 
 
+#: A floor under the route walk, and it is deliberately loose.
+#:
+#: The claim below is a SET DIFFERENCE, so an empty walk makes it empty by
+#: definition and "every route the app serves is documented" passes having read
+#: nothing. Three ways the walk can empty out and one of them is silent: the
+#: `/api/v1/` prefix could stop matching, `app.routes` could stop being a list
+#: of routes, and `getattr(route, "path", "")` answers `""` for every route the
+#: day a Starlette release renames that attribute. None of the three announces
+#: itself; all three read as "nothing served but undocumented".
+#:
+#: 111 pairs today, measured, and the floor sits at roughly half of that. The
+#: job here is to catch ZERO, not to pin the count: a floor near the real
+#: number would go red when an endpoint is RETIRED, which is a legitimate
+#: change and one that belongs in the contract document's own argument rather
+#: than in an arithmetic failure here. The failure message prints the live
+#: count, so re-measuring it never needs this comment to be current.
+_ROUTE_FLOOR = 60
+
+
 def _live_routes() -> set[tuple[str, str]]:
     from main import app
 
@@ -118,9 +137,20 @@ def test_every_route_the_app_serves_appears_in_the_contract():
         # prose says `{engine}`.
         return re.sub(r"\{[^}]*\}", "{}", path).rstrip("/")
 
+    live = _live_routes()
+    # Floor first, for the reason written beside _ROUTE_FLOOR: the difference
+    # below is empty whenever `live` is, and a green run would then mean "the
+    # route walk broke" rather than "the contract is complete". Same shape as
+    # the two floors further down this file.
+    assert len(live) >= _ROUTE_FLOOR, (
+        f"the route walk found nothing: {len(live)} route(s) under /api/v1/, "
+        f"floor {_ROUTE_FLOOR}. The comparison below cannot fail on an empty "
+        f"walk, so this is checked before it, not after."
+    )
+
     body = shape(_read(CONTRACT))
     missing = sorted(
-        {shape(path) for _method, path in _live_routes() if shape(path) not in body}
+        {shape(path) for _method, path in live if shape(path) not in body}
     )
     assert not missing, f"served but undocumented: {missing}"
 
@@ -282,4 +312,5 @@ def test_the_readme_documents_the_spec_the_release_is_built_from():
 # the working tree can see that: the suite reads the working tree, which is
 # exactly the copy that HAS the files. The gate for it is `git archive HEAD`
 # into a temp dir followed by an import, and it can only be written once the
-# files are committed - which is the user's call, not this suite's.
+# files are committed - which is a release step, not something this suite can
+# do for itself.

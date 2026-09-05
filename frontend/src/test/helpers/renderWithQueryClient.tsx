@@ -5,12 +5,20 @@
  * QueryClient with retries off, wrapped in a QueryClientProvider, handed to
  * render(ui, { wrapper }). This is that function, once.
  *
- * Retries are off in tests DELIBERATELY, and that is the one piece of config
- * worth keeping over the production defaults in lib/query/queryClient.ts: a
- * retrying query turns a single failed request into three, so an intended
- * error surfaces late (or as a fake-timer hang) instead of as the error the
- * test is asserting on. Mutations get the same treatment for the same reason;
- * a query-only test is unaffected by a mutation setting it never triggers.
+ * The client starts from the PRODUCTION global defaults in
+ * lib/query/queryClient.ts and overrides exactly one of them. It used to pass
+ * `retry` and nothing else, which meant tests ran with react-query's own
+ * staleTime of 0 while the app runs with 30s: the entire window in which the
+ * app serves cached data existed nowhere in the suite, so a defect living in
+ * that window was invisible to every test that could ever be written against
+ * this helper. Reading the defaults off the production client rather than
+ * restating its numbers here means the two cannot drift apart again.
+ *
+ * Retries are the one override, and it is DELIBERATE: a retrying query turns
+ * a single failed request into three, so an intended error surfaces late (or
+ * as a fake-timer hang) instead of as the error the test is asserting on.
+ * Mutations get the same treatment for the same reason; a query-only test is
+ * unaffected by a mutation setting it never triggers.
  *
  * The client is created FRESH per call so no cache leaks between tests, and it
  * is returned alongside the render result for the tests that read the cache
@@ -29,12 +37,19 @@ import {
 } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ComponentType, ReactElement, ReactNode } from "react";
+import { queryClient as productionQueryClient } from "@/lib/query/queryClient";
 
-/** A QueryClient tuned for tests: no retries on queries or mutations. */
+/**
+ * A QueryClient tuned for tests: the production global defaults, retries off.
+ *
+ * The production options are read, never copied, so staleTime and
+ * refetchOnWindowFocus stay whatever the app actually ships.
+ */
 export function createTestQueryClient(): QueryClient {
+  const productionQueries = productionQueryClient.getDefaultOptions().queries;
   return new QueryClient({
     defaultOptions: {
-      queries: { retry: false },
+      queries: { ...productionQueries, retry: false },
       mutations: { retry: false },
     },
   });

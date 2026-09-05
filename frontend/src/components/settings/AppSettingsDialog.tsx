@@ -738,8 +738,24 @@ function BackgroundSettingsPage() {
     clearChatBg();
     try {
       await deleteChatBgBlob();
-    } catch {
-      // The flag is off either way; a stale blob is unreachable.
+    } catch (err) {
+      // The flag is off either way and a stale blob is unreachable - both
+      // halves of that are still true, and neither of them makes the failure
+      // nothing. What is left behind is the user's own picture, sitting in
+      // the browser profile after they asked for it to go, and the empty
+      // catch meant the one surface that could have said so said nothing.
+      //
+      // Warning, not error, and no inline sentence beside the button: the
+      // thing the user asked for happened. The wallpaper is gone from the
+      // app, there is nothing to retry, and the only news is that the
+      // cleanup did not finish. Blaming the button for that would be the
+      // same mistake the image path made before it was split in two.
+      //
+      // `source` because this is one deliberate press per push. A failed
+      // image import a moment earlier carries the same code with no chat id,
+      // and without an axis to tell the two apart the dedupe would read this
+      // one as a repeat and drop it - back to silence, by a longer road.
+      pushError(err, "warning", { source: "chat-background-remove" });
     }
   };
 

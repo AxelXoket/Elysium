@@ -14,6 +14,9 @@ import pytest
 import config
 from tts import host as tts_host
 from tts import provision, runtimes, stream_hook
+from tts.errors import (TTS_MODEL_NOT_FOUND, TTS_MODEL_UNKNOWN,
+                        TTS_WORKER_FAILED)
+from vault_state import VaultLockedError
 from tests.test_tts_core import make_fish
 
 FAKE = str(Path(__file__).resolve().parent / "fake_worker.py")
@@ -431,6 +434,50 @@ class TestContractStatuses:
         assert client.get("/api/v1/tts/active").json()["state"] == "loaded"
 
 
+class TestAnEmptyModelsFolderHasItsOwnCode:
+    """"Nothing is installed" and "your selection moved" are different states.
+
+    They used to share one answer, 400 tts_model_unknown, which told somebody
+    with an empty folder to rescan for a model that was never there. The
+    contract has carried 404 tts_model_not_found and its own sentence ("Put one
+    in the voice models folder, then rescan") the whole time with nothing on
+    the backend able to produce it.
+    """
+
+    def _empty_the_folder(self) -> Path:
+        root = Path(config.TTS_MODELS_DIR)
+        for child in sorted(root.rglob("*"), reverse=True):
+            child.unlink() if child.is_file() else child.rmdir()
+        return root
+
+    def test_an_empty_models_folder_answers_404_not_found(self, client, voice):
+        """RED before the branch existed: this was 400 tts_model_unknown."""
+        uid = client.get("/api/v1/tts/models").json()["models"][0]["uid"]
+        assert not any(self._empty_the_folder().iterdir()), "folder not emptied"
+
+        r = client.post("/api/v1/tts/load", json={"uid": uid})
+        assert r.status_code == 404
+        assert r.json()["detail"] == TTS_MODEL_NOT_FOUND
+
+    def test_a_uid_that_moved_is_still_the_stale_selection_code(self, client, voice):
+        """The positive control for the branch above.
+
+        A miss with models ON DISK must keep its old answer. Without this, a
+        branch that returned 404 for every miss would pass the test above and
+        take the "your selection moved" diagnosis down with it.
+        """
+        r = client.post("/api/v1/tts/load", json={"uid": "deadbeefdeadbeef"})
+        assert r.status_code == 400
+        assert r.json()["detail"] == TTS_MODEL_UNKNOWN
+
+    def test_a_model_that_is_there_still_resolves(self, client, voice, monkeypatch):
+        """Ground control: the new branch is on the failure path only."""
+        _fake_gpu(monkeypatch)
+        runtimes.register("fish_s2", sys.executable)
+        uid = client.get("/api/v1/tts/models").json()["models"][0]["uid"]
+        assert client.post("/api/v1/tts/load", json={"uid": uid}).status_code == 200
+
+
 # ── the Speak button streams now ─────────────────────────────────────────────
 
 class TestSpeakStream:
@@ -633,3 +680,65 @@ class TestSpeakStream:
         assert closed.wait(5.0), "the worker was never closed"
         assert "cancel" in calls, "the worker was never told to stop"
         assert calls.index("cancel") < calls.index("close")
+
+
+class TestALockedVaultReachesTheLockDoor:
+    """A lock that lands during set-up is not an engine fault.
+
+    `/tts/speak_stream` reads the message out of the vault database before it
+    can speak it, so VaultLockedError arrives in that try. It had no branch of
+    its own and fell to the catch-all, which answers 500 tts_worker_failed -
+    "the voice engine could not start" for a problem whose fix is one click of
+    Unlock. The same file already makes this distinction in `_values_for`.
+    """
+
+    def _lock_during_setup(self, monkeypatch, exc: Exception):
+        import routers.tts_runtime as runtime
+
+        def boom(body):
+            raise exc
+
+        monkeypatch.setattr(runtime, "_prepare_speech_text", boom)
+
+    def test_a_lock_during_setup_answers_423_not_a_worker_failure(
+        self, client, voice, monkeypatch
+    ):
+        """RED before the branch existed: 500 + tts_worker_failed."""
+        _fake_gpu(monkeypatch)
+        runtimes.register("fish_s2", sys.executable)
+        uid = client.get("/api/v1/tts/models").json()["models"][0]["uid"]
+        self._lock_during_setup(monkeypatch, VaultLockedError("vault_locked"))
+
+        r = client.post("/api/v1/tts/speak_stream",
+                        json={"text": "hello there", "uid": uid})
+        assert r.status_code == 423
+        assert r.json()["detail"] == "vault_locked"
+
+    def test_any_other_setup_failure_is_still_the_engine_code(
+        self, client, voice, monkeypatch
+    ):
+        """The positive control.
+
+        A branch that re-raised everything would pass the test above while
+        handing the frontend a bare 500 with no code on it. The catch-all's
+        own contract has to survive the new branch untouched.
+        """
+        _fake_gpu(monkeypatch)
+        runtimes.register("fish_s2", sys.executable)
+        uid = client.get("/api/v1/tts/models").json()["models"][0]["uid"]
+        self._lock_during_setup(monkeypatch, RuntimeError("something else"))
+
+        r = client.post("/api/v1/tts/speak_stream",
+                        json={"text": "hello there", "uid": uid})
+        assert r.status_code == 500
+        assert r.json()["detail"] == TTS_WORKER_FAILED
+
+    def test_an_unlocked_vault_still_speaks(self, client, voice, monkeypatch):
+        """Ground control: the new branch is on the failure path only."""
+        _fake_gpu(monkeypatch)
+        runtimes.register("fish_s2", sys.executable)
+        uid = client.get("/api/v1/tts/models").json()["models"][0]["uid"]
+        r = client.post("/api/v1/tts/speak_stream",
+                        json={"text": "hello there.", "uid": uid})
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/event-stream")

@@ -237,8 +237,9 @@ const PANEL_BANDS = {
 
 /**
  * Frosted-glass side panels - a fog instance per panel under a MILKIER veil
- * than the chat canvas (panels hold solid, readable chrome; the user asked
- * for "more frosted"). Each veil replicates its panel's own surface gradient
+ * than the chat canvas, because the panels hold solid, readable chrome and
+ * can take more frosting than prose can. Each veil replicates its panel's
+ * own surface gradient
  * slightly translucent, so the color theme is preserved and fog-off falls
  * back to today's exact look.
  */

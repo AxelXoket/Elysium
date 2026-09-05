@@ -20,6 +20,7 @@ Neither needs administrator rights to create.
 from __future__ import annotations
 
 import builtins
+import logging
 import os
 from pathlib import Path
 
@@ -256,3 +257,142 @@ class TestItDoesNotLieAboutWhatItDid:
         survivor = target.read_bytes()
         assert len(survivor) == len(original)
         assert survivor != original, "the content was not destroyed"
+
+    def test_a_write_that_fails_midway_is_not_called_untouched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """H-141. The write, the flush and the fsync shared the open's handler.
+
+        A full disk, removed media or a plain I/O error arriving in the middle
+        of the overwrite raises OSError, and every one of those used to land
+        under the handler that says the file could not be opened and was left
+        untouched. The file at that moment is half destroyed: the head is
+        random bytes and the tail is still the user's content. The answer is
+        False either way, so the sentence is the only thing that says which of
+        the two happened, and it said the wrong one.
+
+        The pattern written over the file is fixed rather than random here,
+        and only so this can assert exactly how far the write got. What the
+        bytes are is the subject of test_an_ordinary_file_is_overwritten.
+        """
+        target = tmp_path / "secret"
+        original = b"C" * 4096
+        target.write_bytes(original)
+        reached = 1024
+
+        real_open = builtins.open
+
+        class Failing:
+            """Writes `reached` bytes, then behaves like a full disk."""
+
+            def __init__(self, handle):
+                self._handle = handle
+                self._left = reached
+
+            def write(self, data):
+                if not self._left:
+                    raise OSError(28, "no space left on device")
+                step = self._handle.write(data[:self._left])
+                self._left -= step
+                return step
+
+            def __getattr__(self, name):
+                return getattr(self._handle, name)
+
+            def __enter__(self):
+                self._handle.__enter__()
+                return self
+
+            def __exit__(self, *exc):
+                return self._handle.__exit__(*exc)
+
+        def wrapping_open(file, mode="r", *args, **kwargs):
+            handle = real_open(file, mode, *args, **kwargs)
+            return Failing(handle) if "+" in str(mode) else handle
+
+        monkeypatch.setattr(builtins, "open", wrapping_open)
+        monkeypatch.setattr(os, "urandom", lambda n: b"\x00" * n)
+
+        with caplog.at_level(logging.WARNING, logger="secure_delete"):
+            assert secure_delete.shred(target) is False
+
+        assert target.exists(), "it unlinked a file it had not overwritten"
+        survivor = target.read_bytes()
+        assert survivor == b"\x00" * reached + original[reached:], (
+            "the write did not stop where the failure was injected")
+
+        said = [record.getMessage() for record in caplog.records]
+        assert secure_delete.OVERWRITE_STOPPED_SHORT % (
+            target.name, reached, len(original)) in said
+        assert secure_delete.NOT_OPENED % target.name not in said, (
+            "it called a half-overwritten file untouched")
+
+    def test_a_sync_that_fails_after_the_last_byte_is_not_called_untouched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """H-141, the far end of the same branch.
+
+        When the loop finishes and only the fsync fails, nothing of the file
+        is left: every byte was replaced and the name is all that remains.
+        That is the opposite of untouched, and it is the one case where the
+        content really is beyond recovery through the filesystem while the
+        answer is still False.
+        """
+        target = tmp_path / "secret"
+        original = b"D" * 512
+        target.write_bytes(original)
+
+        def refuse(fd):
+            raise OSError(5, "I/O error")
+
+        monkeypatch.setattr(os, "fsync", refuse)
+        monkeypatch.setattr(os, "urandom", lambda n: b"\x00" * n)
+
+        with caplog.at_level(logging.WARNING, logger="secure_delete"):
+            assert secure_delete.shred(target) is False
+
+        assert target.read_bytes() == b"\x00" * len(original), (
+            "not every byte was replaced before the sync failed")
+
+        said = [record.getMessage() for record in caplog.records]
+        assert secure_delete.OVERWRITTEN_NOT_SYNCED % target.name in said
+        assert secure_delete.NOT_OPENED % target.name not in said
+
+    def test_a_file_that_truly_cannot_be_opened_is_still_untouched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The ground control for the two above, and the sentence they must
+        not borrow.
+
+        A name held open against writes by something else is the refusal this
+        module was already right about, and it has to keep saying so - if it
+        did not, the two tests above would be watching one branch wearing
+        three names. It is also the positive control for their byte
+        comparison: the same read that has to show changed bytes there shows
+        the file untouched here, so an empty comparison cannot pass for a
+        destroyed file.
+        """
+        target = tmp_path / "secret"
+        original = b"E" * 256
+        target.write_bytes(original)
+
+        real_open = builtins.open
+
+        def refusing_open(file, mode="r", *args, **kwargs):
+            if "+" in str(mode):
+                raise PermissionError(13, "used by another process")
+            return real_open(file, mode, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", refusing_open)
+
+        with caplog.at_level(logging.WARNING, logger="secure_delete"):
+            assert secure_delete.shred(target) is False
+
+        assert target.read_bytes() == original
+
+        said = [record.getMessage() for record in caplog.records]
+        assert said == [secure_delete.NOT_OPENED % target.name], (
+            "the untouched branch said something else, or said it twice")

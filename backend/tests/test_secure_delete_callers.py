@@ -522,7 +522,10 @@ class TestNothingWalksThroughAJunction:
 
         removed, stuck, pruned = secure_delete.shred_tree(root)
 
-        assert pruned is True
+        # The third value names the pruned paths rather than answering yes or
+        # no: the caller has to know WHICH entry it is about to remove, and
+        # an empty list is still falsy for every site that only asked whether.
+        assert pruned == [str(root / "trap")]
         assert victim.read_bytes() == content, "walked through the junction"
         assert removed == 1, "the real entry should still have been destroyed"
 

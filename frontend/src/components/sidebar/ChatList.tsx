@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   useChats,
@@ -267,7 +267,6 @@ function ChatListItem({
   // A11y: Escape closes the menu/confirm/rename edit and returns focus to the
   // ⋯ trigger; clicking outside closes without stealing focus from the click
   // target (the rename input additionally cancels itself on blur).
-  // TODO: arrow-key navigation between menu items (out of scope for now).
   useEffect(() => {
     if (!popupOpen) return;
 
@@ -324,6 +323,73 @@ function ChatListItem({
     }
   }, [confirmAction]);
 
+  // Menu keyboard model, in the order the two halves depend on each other.
+  //
+  // First half: focus ENTERS the menu when it opens. Without this the arrow
+  // keys below have nowhere to move from - focus sits on the ⋯ trigger, the
+  // menu is a list nobody is standing in, and every arrow press is a no-op.
+  // Escape already puts focus back on the trigger, so the round trip closes.
+  //
+  // Second half: the open menu is ONE tab stop and the arrows move inside it
+  // (roving tabindex). Disabled items are skipped rather than stepped onto -
+  // a mid-flight stream greys out Clear and Delete, and .focus() on a disabled
+  // button does nothing, which would strand the reader on a dead row.
+  const [menuIndex, setMenuIndex] = useState(0);
+
+  // Read from the live popup rather than a parallel ref array: the items are
+  // portaled and their disabled state changes under the open menu, so the DOM
+  // is the only copy that is never one render behind. useCallback keeps it out
+  // of the effect's dep churn - recreating it every render would re-run the
+  // effect and yank focus back to the first item on every keystroke.
+  const focusableMenuItems = useCallback(
+    () =>
+      Array.from(
+        popupRef.current?.querySelectorAll<HTMLButtonElement>(
+          '[role="menuitem"]:not([disabled])',
+        ) ?? [],
+      ),
+    [],
+  );
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    focusableMenuItems()[0]?.focus();
+  }, [menuOpen, focusableMenuItems]);
+
+  const handleMenuKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const items = focusableMenuItems();
+    if (items.length === 0) return;
+    const current = items.indexOf(document.activeElement as HTMLButtonElement);
+    let next: number;
+    if (event.key === "ArrowDown") {
+      // Wrapping both ways: a menu this short is faster to leave from either
+      // end than to walk back through.
+      next = current < 0 ? 0 : (current + 1) % items.length;
+    } else if (event.key === "ArrowUp") {
+      next =
+        current < 0
+          ? items.length - 1
+          : (current - 1 + items.length) % items.length;
+    } else if (event.key === "Home") {
+      next = 0;
+    } else if (event.key === "End") {
+      next = items.length - 1;
+    } else {
+      return;
+    }
+    // Arrows would otherwise scroll the sidebar out from under the popup,
+    // which is anchored to a one-time trigger rect.
+    event.preventDefault();
+    setMenuIndex(next);
+    items[next].focus();
+  };
+
+  // Streaming disables the last two items, so the roving stop is clamped to
+  // what is actually reachable - otherwise a stream starting mid-menu would
+  // leave every item at -1 and take the menu out of the tab order entirely.
+  const focusableMenuCount = isStreamingThisChat ? 1 : 3;
+  const rovingIndex = Math.min(menuIndex, focusableMenuCount - 1);
+
   // Inline rename: focus the input with its text selected when it appears.
   useEffect(() => {
     if (editing) {
@@ -340,7 +406,14 @@ function ChatListItem({
   const startEditing = () => {
     setMenuOpen(false);
     setConfirmAction(null);
-    setDraftTitle(title);
+    // `chat.title`, NOT `title`. `title` carries the `Chat #12` fallback this
+    // row prints when a chat has none, and putting it in the box turned a
+    // display string into stored data the moment the user pressed Enter -
+    // the one place in the application where a name the app invented became
+    // the user's own without anybody choosing it. Every chat created from
+    // here on has a real title; the fallback is for rows written before that,
+    // and for those the box opens empty and the server names them.
+    setDraftTitle(chat.title ?? "");
     setEditing(true);
   };
 
@@ -353,8 +426,10 @@ function ChatListItem({
     const trimmed = draftTitle.trim();
     setEditing(false);
     triggerRef.current?.focus();
-    // Empty or unchanged → cancel silently (no request)
-    if (trimmed.length === 0 || trimmed === title) return;
+    // Unchanged -> cancel silently (no request). An EMPTY box is not a
+    // cancel: it is a rename to the next default name, and the server picks
+    // it. Escape is the cancel, and it still is - it never reaches here.
+    if (trimmed === (chat.title ?? "")) return;
     renameChat.mutate({ chatId: chat.id, title: trimmed });
   };
 
@@ -487,6 +562,10 @@ function ChatListItem({
           setConfirmAction(null);
           setEditing(false);
           if (!menuOpen) computePopupPos();
+          // The roving stop resets here rather than in the open effect: a
+          // menu always opens through this button, and setting state from
+          // inside the effect would cascade a second render on every open.
+          setMenuIndex(0);
           setMenuOpen((open) => !open);
         }}
         disabled={isBusy}
@@ -499,6 +578,7 @@ function ChatListItem({
           ref={popupRef}
           className="chat-action-menu"
           role="menu"
+          onKeyDown={handleMenuKeyDown}
           style={{
             position: "fixed",
             top: popupPos.top,
@@ -510,6 +590,7 @@ function ChatListItem({
           <button
             type="button"
             role="menuitem"
+            tabIndex={rovingIndex === 0 ? 0 : -1}
             className="chat-action-menu-item"
             onClick={startEditing}
           >
@@ -519,6 +600,7 @@ function ChatListItem({
           <button
             type="button"
             role="menuitem"
+            tabIndex={rovingIndex === 1 ? 0 : -1}
             className="chat-action-menu-item"
             disabled={isStreamingThisChat}
             title={
@@ -537,6 +619,7 @@ function ChatListItem({
           <button
             type="button"
             role="menuitem"
+            tabIndex={rovingIndex === 2 ? 0 : -1}
             className="chat-action-menu-item is-danger"
             disabled={isStreamingThisChat}
             title={

@@ -13,10 +13,14 @@ Silence is the one outcome that is not allowed.
 from __future__ import annotations
 
 # ── discovery / identity ─────────────────────────────────────────────────────
-# Reserved: defined for the contract but not yet raised by a live path.
-# tts_model_not_found waits for a "speak with no models at all" flow (V5) and
-# tts_audio_device_error for frontend playback (V5) - listed here so the
-# vocabulary is complete in all four places before the UI needs them.
+# There is no reserved half of this vocabulary any more. Two codes here used to
+# be marked "defined for the contract but not yet raised by a live path", and
+# that note went stale on both of them while it sat here looking authoritative:
+# tts_audio_device_error gained a producer in the browser player, and
+# tts_model_not_found now names the empty-folder case that _resolve used to
+# report as "that uid is gone". A note about which codes are asleep decays the
+# moment somebody wires one up, so the honest version is not to keep one:
+# every code below is reachable, and a code that is not must not be added.
 TTS_MODEL_NOT_FOUND = "tts_model_not_found"          # 404 nothing in the folder
 TTS_MODEL_UNKNOWN = "tts_model_unknown"              # 400 uid no longer resolves
 TTS_MODEL_UNRECOGNIZED = "tts_model_unrecognized"    # 409 no engine signature matched
@@ -37,6 +41,13 @@ TTS_RUNTIME_INSTALLING = "tts_runtime_installing"    # 409 one install at a time
 TTS_RUNTIME_INSTALL_FAILED = "tts_runtime_install_failed"  # 500 with a real reason
 TTS_PYTHON_NOT_FOUND = "tts_python_not_found"        # 409 nothing to build an env from
 TTS_INSUFFICIENT_DISK = "tts_insufficient_disk"      # 409 multi-GB install will not fit
+# The user made their proxy mandatory and the installer could not get one - the
+# vault is locked, or nothing is set. Its own code rather than
+# tts_runtime_install_failed, which says "setup did not finish" and sends
+# somebody to press Set up again at a machine that will refuse again for the
+# same invisible reason. Nothing is wrong with the install; the door is shut,
+# and the sentence has to name the door.
+TTS_PROXY_UNAVAILABLE = "tts_proxy_unavailable"      # 409 mandatory proxy, none available
 
 # ── settings ────────────────────────────────────────────────────────────────
 TTS_PARAM_INVALID = "tts_param_invalid"              # 400 value out of range/choice
@@ -107,7 +118,7 @@ ALL_CODES: frozenset[str] = frozenset({
     TTS_RUNTIME_BROKEN, TTS_RUNTIME_UNTRUSTED, TTS_GPU_UNAVAILABLE,
     TTS_LANGUAGE_UNSUPPORTED,
     TTS_RUNTIME_INSTALLING, TTS_RUNTIME_INSTALL_FAILED, TTS_PYTHON_NOT_FOUND,
-    TTS_INSUFFICIENT_DISK,
+    TTS_INSUFFICIENT_DISK, TTS_PROXY_UNAVAILABLE,
     TTS_PARAM_INVALID, TTS_SIDECAR_WRITE_FAILED, TTS_VALUES_TOO_LARGE,
     TTS_INSUFFICIENT_VRAM, TTS_MODEL_ALREADY_LOADING, TTS_LOAD_TIMEOUT,
     TTS_WORKER_FAILED, TTS_WORKER_CRASHED, TTS_WORKER_UNAVAILABLE,

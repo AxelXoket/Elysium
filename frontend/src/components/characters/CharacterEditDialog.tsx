@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -50,6 +50,12 @@ export function CharacterEditDialog({
   const [error, setError] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const confirmDeleteRef = useRef<HTMLButtonElement | null>(null);
+  // The confirm step focuses its destructive button, so the cascade warning
+  // has to travel WITH that focus - otherwise the only thing announced is the
+  // button's own label and the chats about to go with the character are never
+  // mentioned. Generated per instance: a card list mounts one of these editors
+  // per character, and a hand-written id would collide across them.
+  const cascadeWarningId = useId();
 
   const [name, setName] = useState(character.name);
   const [description, setDescription] = useState(character.description);
@@ -110,7 +116,9 @@ export function CharacterEditDialog({
   };
 
   const handleSave = async () => {
-    if (!name.trim()) return;
+    // No name guard, for the same reason the Save button no longer has one.
+    // `buildPatch` already sends the emptied box as `name: ""`, which the
+    // server reads as a rename to the next default name.
     setError(null);
     const payload = buildPatch();
     if (Object.keys(payload).length === 0) {
@@ -169,7 +177,7 @@ export function CharacterEditDialog({
           {/* ── Section: Basic ── */}
           <section className="space-y-3">
             <SectionLabel>Basic</SectionLabel>
-            <Field label="Name *">
+            <Field label="Name">
               <Input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -326,7 +334,9 @@ export function CharacterEditDialog({
               >
                 <AlertTriangle size={13} className="mt-0.5 shrink-0" />
                 {/* Handoff mandate: render the cascade warning verbatim */}
-                <span>{CHARACTER_DELETE_CASCADE_WARNING}</span>
+                <span id={cascadeWarningId}>
+                  {CHARACTER_DELETE_CASCADE_WARNING}
+                </span>
               </div>
               <div className="flex justify-end gap-2">
                 <Button
@@ -343,6 +353,7 @@ export function CharacterEditDialog({
                   size="sm"
                   disabled={busy}
                   onClick={handleDelete}
+                  aria-describedby={cascadeWarningId}
                   className="gap-1.5 text-xs"
                   style={{
                     backgroundColor: "var(--color-es-danger)",
@@ -385,7 +396,10 @@ export function CharacterEditDialog({
             </Button>
             <Button
               size="sm"
-              disabled={busy || !name.trim()}
+              // No name guard: an emptied name box is a rename to the next
+              // default name, which the server picks. Blocking Save here
+              // would leave the box the one field a person cannot clear.
+              disabled={busy}
               onClick={handleSave}
               className="sidebar-dialog-action gap-1.5 text-xs"
             >

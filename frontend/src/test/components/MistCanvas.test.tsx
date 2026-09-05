@@ -18,6 +18,7 @@ import {
 import { SidebarFooter } from "@/components/sidebar/SidebarFooter";
 import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
 import { useUiStore } from "@/lib/store/uiStore";
+import { fogRootClassNames } from "../helpers/fogClassNames";
 import { mockFetch } from "../mocks/api";
 import type { ReactNode } from "react";
 
@@ -45,6 +46,32 @@ function stubMatchMedia(matching: string[]) {
     }),
   );
 }
+
+describe("GROUND: the ladder can see a fog layer that IS there", () => {
+  it("mounts a root for every fog layer when no rung is engaged", () => {
+    // Every rung below asserts an ABSENCE, and a component that renders
+    // nothing at all satisfies all of them. Measured: making the three fog
+    // components return null unconditionally, and deleting the fog rules from
+    // the stylesheet, left this file fully green - so on its own it proved
+    // only that jsdom has no WebGL.
+    //
+    // This is the ground those absences are read against. Desktop viewport,
+    // motion allowed, toggle on, and a context for FogGL to build against:
+    // under exactly those conditions each layer really does mount its own
+    // root, which is what makes the four "renders nothing" results mean
+    // something.
+    const roots = fogRootClassNames();
+    expect(roots.map((r) => r.component)).toEqual([
+      "MistCanvas",
+      "CanvasMist",
+      "PanelMist(left)",
+      "PanelMist(right)",
+    ]);
+    for (const { component, classes } of roots) {
+      expect(classes, `${component} mounted no element`).not.toHaveLength(0);
+    }
+  });
+});
 
 describe("MistCanvas gating ladder", () => {
   beforeEach(() => {

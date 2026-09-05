@@ -541,14 +541,29 @@ def build_image_part(row: dict, blobs: dict[str, bytes],
         return None
     b64 = base64.b64encode(raw).decode("ascii")
     return {
-        "type": "image_url",
-        "image_url": {"url": f"data:{row['mime']};base64,{b64}"},
+        "type": IMAGE_PART_KEY,
+        IMAGE_PART_KEY: {IMAGE_PART_URL_KEY: f"data:{row['mime']};base64,{b64}"},
     }
 
 
 # ---------------------------------------------------------------------------
 # Deletion / cleanup
 # ---------------------------------------------------------------------------
+
+#: The two keys an outbound image part is built from.
+#:
+#: Named because a second module has to RECOGNISE one without building one:
+#: the safeword filter leaves a picture's address alone, since base64 is not
+#: prose and a hosted URL is a protocol value rather than something a person
+#: wrote. It must not spell the key itself. P-03 in
+#: tests/test_privacy_source_boundaries.py holds THIS file as the single
+#: construction site for an outbound image part, so that the attachment gate
+#: and the model-capability rule assembled around it cannot be walked around,
+#: and a literal in another module is exactly the second site it watches for.
+#: Importing the name keeps one owner and one spelling.
+IMAGE_PART_KEY = "image_url"
+IMAGE_PART_URL_KEY = "url"
+
 
 def _delete_orphan_blobs(con, shas: set[str]) -> None:
     """Within the caller's transaction: drop blobs in `shas` that no

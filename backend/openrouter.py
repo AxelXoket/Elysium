@@ -13,6 +13,9 @@ Proxy semantics:
 
 Privacy rules:
     - API key read at call time; never stored in a module-level variable.
+    - The safeword is cut out of every outgoing body here, in both payload
+      builders, after the body is complete and before the socket. See
+      safeword_filter for what is cut and what is deliberately left alone.
     - messages array and request body are NEVER logged.
     - Response body content is NEVER logged or forwarded on error.
     - Only model_id, HTTP status, and latency are logged.
@@ -37,6 +40,7 @@ import anyio.to_thread
 import httpx
 
 import network_client
+import safeword_filter
 
 from config import (
     OPENROUTER_BASE_URL,
@@ -534,6 +538,34 @@ def _status_to_reason(status_code: int, payload: object | None = None) -> str:
     return "openrouter_error"
 
 
+def _read_the_gate() -> tuple[str | None, tuple[str, ...]]:
+    """The two things this module needs out of the vault, on ONE trip.
+
+    Fused deliberately, and the reason is a race rather than a saving. Read
+    apart, the safeword read sat a thread hop after the key read, and the idle
+    watchdog runs on the loop in between - so a request that had a key could
+    raise `vault_locked` out of the middle of a body already assembled, after
+    the user's own turn had been stored. Read together, either both are there
+    or neither is, which is the failure the key read has always had and the
+    one the app already answers everywhere.
+
+    The key is read FIRST and short-circuits. Nothing that cannot be sent is
+    worth a second look inside the vault, and a caller with no key configured
+    must go on hearing about the key rather than about a database.
+
+    A locked vault is NOT softened into "no safeword". The word being UNKNOWN
+    and the word being UNSET are different states, and answering the first
+    with the second would make the one control in this app that IS a control
+    fail open at the moment the machine is least trustworthy. The exception
+    travels: nothing has been sent, nothing was billed, and `main.py` turns it
+    into the same 423 every other locked read produces.
+    """
+    api_key = get_secret(SECRET_API_KEY)
+    if not api_key:
+        return None, ()
+    return api_key, safeword_filter.needles()
+
+
 async def complete(
     messages: list[dict],
     model_id: str,
@@ -587,7 +619,7 @@ async def complete(
     # on for real writes elsewhere; see routers/completions.py's
     # `_stream_exchange` (the `finalizing` flag and its comment) for where a
     # bare cancel during a write used to race a duplicate one.
-    api_key = await anyio.to_thread.run_sync(get_secret, SECRET_API_KEY)
+    api_key, safeword = await anyio.to_thread.run_sync(_read_the_gate)
     if not api_key:
         # NOTHING LEFT. Raised before a client exists, let alone a socket.
         raise OpenRouterError("api_key_not_set", reached_provider=False)
@@ -615,6 +647,27 @@ async def complete(
         # endpoint is removed from candidacy and an empty candidate set is a
         # 503 rather than a plausible answer in the wrong shape.
         payload["response_format"] = response_format
+
+    # ── The safeword, on the body rather than on one caller's idea of it ──
+    #
+    # A message being TYPED that carries the safeword is refused whole, one
+    # layer up in routers/completions.py, and nothing here weakens that. This
+    # is the other half: the same word sitting in a line stored last week, in
+    # a note the reader wrote itself, in a character card, or in a stop
+    # sequence, on a turn somebody asked for now. There is nobody who just
+    # typed it to be told anything, so it is cut out and the rest goes.
+    #
+    # HERE, and not in the assembler, because this is the only point all three
+    # senders meet - this route, its streaming twin, and the background note
+    # reader - and the only one that sees the whole body. `stop` never travels
+    # inside `messages`, so a filter fitted to the message list misses it on
+    # every request that carries one.
+    #
+    # Off the loop because the walk itself is measured in milliseconds on a
+    # full context window. No vault read here: the word was read at the top,
+    # on the same trip as the key.
+    payload = await anyio.to_thread.run_sync(
+        safeword_filter.scrub, payload, safeword)
 
     timeout = httpx.Timeout(COMPLETION_TIMEOUT)
     client = get_client()
@@ -881,7 +934,7 @@ async def complete_stream(
     # freeze it caused landed on a path whose whole purpose is to keep other
     # streams flowing. The read sits before the first yield, so an async
     # generator that is never iterated still never pays for it.
-    api_key = await anyio.to_thread.run_sync(get_secret, SECRET_API_KEY)
+    api_key, safeword = await anyio.to_thread.run_sync(_read_the_gate)
     if not api_key:
         # NOTHING LEFT. Raised before a client exists, let alone a socket.
         raise OpenRouterError("api_key_not_set", reached_provider=False)
@@ -895,6 +948,13 @@ async def complete_stream(
     }
     if modalities:
         payload["modalities"] = list(modalities)
+
+    # The streaming twin of the cut in complete(). See there for why it is at
+    # this level rather than in the assembler. Two payload builders means two
+    # call sites, and a filter fitted to one of them is a filter the route a
+    # person actually watches does not have.
+    payload = await anyio.to_thread.run_sync(
+        safeword_filter.scrub, payload, safeword)
 
     timeout = httpx.Timeout(
         connect=STREAM_CONNECT_TIMEOUT,

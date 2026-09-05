@@ -9,6 +9,7 @@ Strategy:
   does not depend on the host OS.
 """
 
+import os
 import sys
 import sqlite3
 from pathlib import Path
@@ -33,6 +34,75 @@ error_wire_recorder.install()
 # path has its own unit tests in test_vault.py) and pre-unlock the vault so
 # the existing API tests run unchanged against an encrypted temp DB.
 TEST_VAULT_KEY = bytes(range(32))
+
+
+#: The switch that decides what a missing precondition MEANS.
+#:
+#: Read by `missing_prerequisite` below and by nothing else. Unset or "0" is
+#: the developer lane; any other value is the lane that must not accept a
+#: silent skip.
+STRICT_SKIPS_ENV = "ELYSIUM_STRICT_SKIPS"
+
+
+def strict_skips() -> bool:
+    """Is this the lane where a missing precondition is a failure?"""
+    return os.environ.get(STRICT_SKIPS_ENV, "").strip() not in ("", "0")
+
+
+def missing_prerequisite(reason: str):
+    """A test cannot find what it needs. Skip here, fail on the way out.
+
+    Some gates in this suite need something the interpreter running them may
+    not have: an interpreter that can import numpy for the DSP maths, ruff for
+    the worker lint. Absent, those tests closed themselves with `pytest.skip`
+    and the run stayed green - which is the right answer on a machine that is
+    not set up for voice work, and the wrong one at the moment the work leaves
+    the machine, because "the gate passed" and "the gate never ran" print the
+    same word.
+
+    So the decision lives in one place instead of at each call site, and one
+    environment variable moves it. Unset, the behaviour is exactly what it was.
+    Set, the same absence is a failure and carries the same reason text, which
+    already says what to install.
+
+    Deliberately NOT a `pytest_runtest_makereport` hook turning every skip red.
+    Plenty of skips in this suite are statements about the checkout rather than
+    about a missing tool, and a blanket rule would sweep those up too. The call
+    sites that mean "a gate did not run" are the ones that route through here.
+
+    Never returns: both branches raise.
+    """
+    if strict_skips():
+        pytest.fail(
+            f"{reason}\n"
+            f"[{STRICT_SKIPS_ENV} is set, so a gate that cannot run is a "
+            f"failure rather than a skip.]"
+        )
+    pytest.skip(reason)
+
+
+def outcome_of(call) -> tuple[str, str]:
+    """What `call` did - "skip", "fail" or "ran" - as a VALUE.
+
+    For the tests that measure `missing_prerequisite`, and the reason it is
+    not `pytest.raises(pytest.fail.Exception)` was found by mutation rather
+    than by argument. `Skipped` is not a subclass of `Failed`, so a skip
+    raised inside that context manager is not caught: it propagates and closes
+    the measuring test as SKIPPED, which is green. Turning the helper's fail
+    branch back into a skip therefore silenced its own three guards instead of
+    reddening them - the exact disease this helper exists to cure, reproduced
+    one level up.
+
+    Returning the outcome instead of wearing it puts the assertion back in the
+    test where it can go red.
+    """
+    try:
+        call()
+    except pytest.skip.Exception as skipped:
+        return "skip", str(skipped)
+    except pytest.fail.Exception as failed:
+        return "fail", str(failed)
+    return "ran", ""
 
 
 @pytest.fixture(autouse=True)
@@ -274,6 +344,12 @@ def _notebook_worker_reset():
     streaming completion in the suite.
 
     Same shape, and the same fix, as `_model_cache_reset` below.
+
+    `chat_breakers` is the same hazard one level down and is the more
+    dangerous of the two, because it is keyed on ids the suite reuses: a
+    chat tripped in one test hands its refusal to whatever runs next, and
+    the tests that assert a chat was READ would pass or fail on FILE ORDER
+    with nothing on screen to say why.
     """
     import notebook_worker
 
@@ -281,8 +357,10 @@ def _notebook_worker_reset():
         w = notebook_worker.worker
         w.breaker.reset()
         w.breaker.total_failures = 0
+        w.chat_breakers.clear()
         w.dropped_offers = 0
         w.refused_by_breaker = 0
+        w.refused_by_chat_breaker = 0
         w.runs = 0
         w.unhandled = 0
         w.last_error = None

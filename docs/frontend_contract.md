@@ -1,7 +1,7 @@
 # Elysium Frontend-Backend Contract
 
-> **Created:** Part A (scaffold)
-> **Last updated:** 2026-08-20, checked route by route against the source.
+> **Last updated:** 2026-09-05, checked route by route and code by code against
+> the source and against `shared/error_catalogue.json`.
 > **Status:** Living contract of record
 
 ---
@@ -13,7 +13,8 @@
 - CORS: only `http://127.0.0.1:5173` accepted (irrelevant same-origin in the
   packaged app)
 - All endpoints return JSON
-- Streaming: SSE on `/complete/stream`, `/regenerate/stream` and `/edit/stream`
+- Streaming: SSE on `/complete/stream`, `/regenerate/stream` and `/edit/stream`.
+  Voice has its own SSE pair, `/tts/speak_stream` and `/tts/speak_live`.
 - Vault gate: the database is passphrase-encrypted (SQLCipher). While locked,
   every data route answers `423 {"detail": "vault_locked"}`; only `/vault/*`
   and root-level `/healthz` respond. The frontend treats any data-route 423
@@ -21,13 +22,13 @@
 
 ---
 
-## Privacy Rules (MANDATORY - Codex must enforce)
+## Privacy rules (mandatory)
 
-1. Frontend MUST NOT send `Authorization` header to backend or any external service.
-2. Frontend MUST NOT send `zdr`, `data_collection`, or `allow_fallbacks` fields in any request.
-3. Frontend MUST NOT store API key, proxy URL, messages, persona descriptions, or drafts in localStorage, sessionStorage, IndexedDB, or cookies.
-4. Frontend MUST NOT call openrouter.ai directly under any circumstances.
-5. Backend hardcodes: `zdr=true`, `data_collection="deny"`, `allow_fallbacks=false` in every OpenRouter request.
+1. The frontend never sends an `Authorization` header, to the backend or to anything else.
+2. The frontend never sends `zdr`, `data_collection` or `allow_fallbacks` in any request.
+3. The frontend never puts the API key, the proxy URL, messages, persona descriptions or drafts in localStorage, sessionStorage, IndexedDB or cookies.
+4. The frontend never calls openrouter.ai directly, under any circumstances.
+5. The backend hardcodes `zdr=true`, `data_collection="deny"`, `allow_fallbacks=false` on every OpenRouter request.
 6. `context_budget_tokens` is **never** forwarded to OpenRouter. It is an app-level history-trimming budget only.
 
 ---
@@ -36,14 +37,14 @@
 
 | Method | Path | Description | Added in |
 |--------|------|-------------|----------|
-| GET | /vault/status | Vault initialized/unlocked state, plus every stray artefact the app already tracks by name so each can carry its own notice and button: `orphaned_copy`/`orphaned_copy_readable`, `plaintext_backups`, `empty_stub`, `rotation_backups`, and `premigrate_backup`/`premigrate_backup_readable` - a stale pre-migration snapshot of the whole vault that an uploads migration can leave behind indefinitely, encrypted under the same key as the live vault, and whether it opens under the key currently held. Every `_readable` field is `null` while locked, because the question needs the key to answer | Part K (vault) |
+| GET | /vault/status | `initialized` and `unlocked`, plus every stray artefact the app tracks by name so each can carry its own notice and button: `orphaned_copy`/`orphaned_copy_readable`, `plaintext_backups`, `empty_stub`, `rotation_backups`, and `premigrate_backup`/`premigrate_backups`/`premigrate_backup_readable` - a stale pre-migration snapshot of the whole vault that an uploads migration can leave behind indefinitely, encrypted under the same key as the live vault, and whether it opens under the key currently held. Every `_readable` field is `null` while locked, because the question needs the key to answer | Part K (vault) |
 | POST | /vault/init | Create the vault (first run; migrates plaintext DB) | Part K (vault) |
 | POST | /vault/unlock | Unlock with the passphrase | Part K (vault) |
 | POST | /vault/lock | Lock (drop the in-RAM key) | Part K (vault) |
 | POST | /vault/change-passphrase | Re-key the database | Part K (vault) |
-| POST | /vault/discard-plaintext-backup | Shred the pre-vault plaintext copies | Part K (vault) |
-| POST | /vault/discard-orphaned-copy | Shred an encrypted copy stranded mid-migration | Part K (vault) |
-| POST | /vault/discard-empty-stub | Remove the 0-byte stub crash recovery moved aside (refuses a non-empty file) | Part K (vault) |
+| POST | /vault/discard-plaintext-backup | Shred the pre-vault plaintext copies. `{removed: [string], left: [string], shared: [string]}`. `left` means try again; `shared` means the file cannot be removed from in here at all and deleting it by hand will not remove the data either. Told as one list the second reads as the first and sends people off closing programs. Needs no unlock: the file is readable without the passphrase | Part K (vault) |
+| POST | /vault/discard-orphaned-copy | Shred an encrypted copy stranded mid-migration. `{removed: bool, reason: string}` | Part K (vault) |
+| POST | /vault/discard-empty-stub | Remove the 0-byte stub crash recovery moved aside; the size is re-checked at removal time, so a non-empty file is refused. `{removed: bool, reason: string}` | Part K (vault) |
 | POST | /vault/discard-premigrate-backup | Shred the stale pre-migration snapshot named by `premigrate_backup`. Requires unlocked (`423 vault_locked` otherwise): the file is encrypted, so only the key can tell a redundant copy from one written under a different passphrase. Response `{removed: bool, reason: string}`; `reason` is `not_present`, `different_key` or `in_use` when `removed` is false, empty on success. Does not touch the separate `.unreadable-<timestamp>` copy an unopenable snapshot is moved aside to - nothing smaller than a full `/vault/reset` removes that one | Part K (vault) |
 | POST | /vault/reset | The "forgot your passphrase" answer: there is no recovery, so starting over is the only honest response to a lost one. Body `{confirm: string}`, checked against a phrase only the backend decides (`"DELETE EVERYTHING"`, trimmed, no case-folding or synonyms), so a frontend bug cannot fire this with an empty or near-miss string. Reachable only while LOCKED: `409 vault_unlocked` if the vault is open, checked before the phrase is even read, because a vault that can be unlocked does not need this door. A mismatched phrase answers `422 reset_confirmation_mismatch` and deletes nothing. Response `{ok: bool, left: [string]}` - `left` names any artefact still on disk afterward (something has it open); an empty list is a complete wipe. TTS engine runtimes and model downloads are deliberately NOT wiped - they are reprovisionable software, not user data. The route answers `404 vault_reset_unavailable` and does nothing unless this is the packaged app AND the launch-token gate is armed, so a development checkout has no reset door at all. | Part K (vault) |
 | GET | /notebook/{chat_id} | Notes for one chat, retired rows included | FAZ 1 (notebook) |
@@ -56,11 +57,11 @@
 | DELETE | /notebook/boundaries/{id} | Remove a limit | FAZ 1 (notebook) |
 | GET | /notebook/{chat_id}/boundaries | Limits actually in force for this chat | FAZ 1 (notebook) |
 | POST | /notebook/{chat_id}/use-global | Whether this chat follows the global limits | FAZ 1 (notebook) |
-| GET | /notebook/safeword | The phrase that stops a turn. Empty means off | Since 1.1.5 (notebook) |
-| POST | /notebook/safeword | Set or clear it. **The only limit in this app enforced in code**: matched before the provider is called, and when it matches nothing is sent and nothing is stored (`400 safeword_triggered` from every completion route) | Since 1.1.5 (notebook) |
-| GET | /notebook/worker | What the background extractor has done: counters (`stats.done`/`failed`/`skipped`/`abandoned`, plus `stats.skip_reasons` naming why each skip happened, keyed by reason string), today's spend, lifetime spend (`spend_lifetime`, same shape as `spend`, summed over every day - never gates anything, `spend` alone governs the daily cap), and the circuit-breaker state. `abandoned` counts calls whose row was still `error_type: abandoned_in_flight`: the process died or the vault locked with the call already on the wire, so the money is gone but the answer never arrived; the row is closed out as `failed` and counted here rather than left to re-send and re-bill the same range forever. `plan_invalidated` and `range_cleared` are the two `skip_reasons` keys for a reply that arrives after the work it answered was invalidated. They are NOT edit versus clear, which is what this row and the panel both used to claim. `commit_extraction` asks exactly one question when its `running` row has gone: does `to_message_id` still name a row in `messages`? It still does after an edit that landed on the range end (the message survives, only its wording changed), and that case alone is `plan_invalidated`. It does not after a deleted message (a delete takes every message after it as well), a cleared chat, an aborted send being cleaned up, or an edit whose swept tail was where the range ended: all four are `range_cleared`, measured against the real routes. This row said "a regenerated reply" until 2026-08-20 and that entry was wrong - regenerating deletes nothing (`_append_variant` deactivates the old variant in place), so it reaches neither key, the extraction is written normally, and a note can be taken from a reply the user discarded. The aborted-send cleanup, which IS a real fourth route, was missing from the same list. Both discard the proposals and both still record the cost, so a skip under either name is a paid call. Deleting the CHAT reaches neither key: the chat row is gone, the foreign key on the insert fires, and the worker counts that under `worker.unhandled` as `write_IntegrityError` rather than as a skip. A refusal nobody can see is the same screen as a notebook that found nothing | FAZ 5 (notebook) |
-| POST | /notebook/worker/reset | Lift a tripped or stopped circuit breaker by hand. Without it, recovering from a provider outage means restarting the whole application | FAZ 5 (notebook) |
-| POST | /notebook/sweep/{chat_id} | Read the part of this chat nobody has read. The extractor's cursor is a maximum and only moves forward, and the first read of a chat that already had a long history starts at the PRESENT on purpose - a notebook describing a conversation four hundred messages ago is worse than an empty one - so everything under that point was unreachable by any route. This is the way back: ONE unit of work per press, through the worker's own door, claimed against the same daily call cap and recorded in the same table as an ordinary turn. Answers `{started: false, reason}` rather than an error for the two ordinary refusals: `nothing_unread` (everything here has been covered) and `already_running` (a sweep is in flight; pressing three times is still one request). Nothing on this path runs by itself - `worker.backlog` on `GET /notebook/worker` reports what is unread and the reader decides, because a background job spending somebody's own credits on a backlog they never asked anyone to read is not a convenience | FAZ 3 (notebook) |
+| GET | /notebook/safeword | The phrase that stops the turn being sent. Empty means off | Since 1.1.5 (notebook) |
+| POST | /notebook/safeword | Set or clear it. **The only limit in this app enforced in code**, and it has two halves. The message BEING SENT is matched before the provider is called, and when it matches nothing is sent and nothing is stored (`400 safeword_triggered` from every completion route). That includes the stored message a regenerate re-sends, so arming a word can refuse regenerates on chats that already contain it. The same word ANYWHERE ELSE in an outgoing body - older history, a note, a character card, a `stop` sequence - does NOT stop the turn: `safeword_filter.scrub` removes it in both payload builders in `openrouter.py`, a message the cut empties is dropped from `messages`, an emptied `stop` entry is dropped, and the rest of the body goes. Model ids, provider policy, response schemas, modality lists and `data:` URIs are scanned and left alone. Neither half rewrites the vault: the word stays in the stored row, in the note, and on screen | Since 1.1.5 (notebook) |
+| GET | /notebook/worker | What the background extractor has done. Optional `?chat_id=` is purely additive: it fills `worker.chat` and changes nothing else, so a panel with no chat selected asks the same question it always did. See "The extraction worker's status" below for the response shape | FAZ 5 (notebook) |
+| POST | /notebook/worker/reset | Lift a tripped or stopped circuit breaker by hand. No body means the global button: the process-wide refusal is lifted AND every per-chat one is dropped. `{"chat_id": N}` unsticks exactly that conversation and leaves the rest refusing. Answers `{ok: true, worker}` with the same `worker` block `GET /notebook/worker` serves. Without this route, recovering from a provider outage means restarting the whole application | FAZ 5 (notebook) |
+| POST | /notebook/sweep/{chat_id} | Read the part of this chat nobody has read. The extractor's cursor only moves forward, and the first read of a chat that already had a long history starts at the PRESENT on purpose - a notebook describing a conversation four hundred messages ago is worse than an empty one - so everything under that point was unreachable by any route. This is the way back: ONE unit of work per press, through the worker's own door, claimed against the same daily call cap and recorded in the same table as an ordinary turn. Ordinary refusals answer `{started: false, reason}` rather than an error; the five reasons are listed below. Nothing on this path runs by itself - `worker.backlog` reports what is unread and the reader decides | FAZ 3 (notebook) |
 | POST | /notebook/{chat_id}/auto-accept | Decide whether THIS chat keeps model-written notes without asking, or hand the decision back to the global switch with `enabled: null`. The column behind it had exactly one writer for most of its life - the chat INSERT, which sets it to 0 for a chat opened from an imported card - so until now a chat that was wrongly trusted stayed trusted for its whole life. It matters most for the case the import signal cannot see: somebody who pastes a downloaded card's fields into the form by hand leaves no record that the text came from outside, and no signal in the application can know that. `GET /notebook/auto-accept?chat_id=` reports the same decision back as `effective`, with `overridden` saying whether the chat or the global switch decided it | FAZ 3 (notebook) |
 | GET | /notebook/auto-accept | Whether proposals are accepted without review. **Unset is ON** - the default, not "off" | FAZ 5 (notebook) |
 | POST | /notebook/auto-accept | Turn review on or off. A chat opened from an imported card overrides this to OFF for itself, whatever the global says | FAZ 5 (notebook) |
@@ -71,16 +72,16 @@
 | GET | /settings | Current config state (no secrets) | Existing |
 | POST | /settings/api-key | Store API key (validates first) | Modified Part B |
 | DELETE | /settings/api-key | Remove API key | Existing |
-| POST | /settings/model-selection | Remember which model the composer is set to, INSIDE the vault. `{selected_model_id: string | null}`, clamped to `SELECTED_MODEL_ID_MAX_CHARS`; `null` clears it. The field name was written here as `model_id` until 2026-08-20 and no request has ever carried that name - the body model rejects unknown fields, so a client written from the old line gets a 422 rather than the silent clear it would once have caused. It lives here rather than in the browser because a model id such as `author/slug` is a NAME a person reads on screen, and the rule is that nothing readable on screen sits outside the vault. The frontend hydrates it once after unlock and pushes every later change; while the vault is locked there is nothing on disk to read. An install that predates this had the id in localStorage, and the store's version 3 migration DELETES it rather than only ceasing to write it. |
+| POST | /settings/model-selection | Remember which model the composer is set to, INSIDE the vault. `{selected_model_id: string | null}`, clamped to `SELECTED_MODEL_ID_MAX_CHARS`; `null` clears it. The body model rejects unknown fields, so a wrong field name is a 422 rather than a silent clear. It lives in the vault rather than in the browser because a model id such as `author/slug` is a NAME a person reads on screen. The frontend hydrates it once after unlock and pushes every later change; while the vault is locked there is nothing on disk to read. |
 | POST | /settings/api-key/check | Ask OpenRouter whether the key ALREADY STORED is still accepted, without it being retyped. No body. `{key_status}` is one of `valid`, `invalid`, `validation_unavailable`, `not_set` - a rejection is a 200, not a 4xx, because the check succeeded; only the key failed. `invalid` and `validation_unavailable` are opposite facts and must never share a sentence in the UI. Passes `enforce_proxy_gate` like every outbound path; the key is never returned or logged. |
 | POST | /settings/proxy | Store proxy config | Existing |
-| POST | /settings/proxy/alias | `{proxy_alias}` - rename the configured proxy without rewriting its URL (the URL is write-only and never displayed). 400 `proxy_url_required` when none is configured. |
+| POST | /settings/proxy/alias | `{proxy_alias}` - rename the configured proxy without rewriting its URL (the URL is write-only and never displayed). An empty, blank, null or absent name is NOT a delete: it stores the default name `Proxy 1`. Max 50 characters, else 400 `proxy_alias_too_long`. 400 `proxy_url_required` when none is configured. |
 | POST | /settings/proxy/required | Arm/disarm the proxy kill-switch alone (400 `proxy_url_required` when no proxy is configured) | Existing |
 | DELETE | /settings/proxy | Remove proxy config | Existing |
 | POST | /settings/image-output | `{image_output_enabled}` - allow a model to answer with a generated picture. Off by default. Stored in the vault, not browser storage, because it changes the outgoing request. No capability check on write: whether the model selected right now can draw is decided per request from the cached catalogue. |
 | POST | /settings/auto-lock | `{auto_lock_minutes}` - lock the vault after this many minutes with nothing happening; 0 disables it. Refuses anything outside 0-1440. Stored in the vault, not browser storage: a protection setting somebody can read and change without the passphrase is not one. A request in flight counts as activity, so a streamed reply is never interrupted. |
 | POST | /settings/screen-privacy | `{screen_privacy_enabled}` - hide this window from screen capture and screen sharing. Off by default; screenshots of this app get taken. Stored in the vault, not browser storage: a protection setting readable without the passphrase is not one. Applied on vault transitions only - the window exists before the vault is open, and a locked screen has nothing to hide. |
-| POST | /settings/stop-sequences | `{stop_sequences}` - up to 4, 100 chars each, clamped rather than rejected so a stale UI cannot 422 a save. |
+| POST | /settings/stop-sequences | `{stop_sequences}` - up to 4, 100 chars each. A list longer than that is clamped rather than rejected, so a stale UI sending a few entries too many cannot 422 a save. The clamp bounds what is KEPT, not what is READ, though, so there is a second ceiling above it: a body past `MAX_STOP_SEQUENCES_READ` (sixteen times the four that are kept) is refused with `validation_failed` before the route walks it. A stale dialog is still clamped; the walk is the part that stops being open-ended. Entries are counted, bytes are not. |
 | GET | /settings/proxy/health | Proxy health status | Existing |
 | GET | /characters | List all characters | Existing |
 | POST | /characters | Create character | Existing |
@@ -128,7 +129,7 @@
 | 404 | character_not_found | Character ID does not exist | Refresh character list |
 | 404 | persona_not_found | Explicit body persona_id does not exist (a stale settings selection is tolerated, not 404) | Refresh persona list |
 | 404 | message_not_found | Message ID does not exist | Refresh messages |
-| 422 | api_key_invalid | API key failed validation | Show invalid key error |
+| 422 | api_key_invalid | OpenRouter rejected the key on `POST /settings/api-key`, so it was not stored. The same code is a 401 when the notebook's model list relays it | Show invalid key error |
 | 422 | not_last_assistant_message | Regenerate target is not the latest assistant message | Disable regenerate or refresh |
 | 422 | no_preceding_user_message | No user message before assistant message | Show error |
 | 422 | invalid_gen_params | Generation params failed validation | Highlight invalid param |
@@ -140,20 +141,24 @@
 | 409 | exchange_stale | Chat cleared/deleted while the reply streamed - finalize refused, no orphan written | Refresh messages |
 | 422 | not_editable | Edit target is not a user message | Hide edit affordance |
 | 500 | internal_error | Unexpected server-side failure (stream) | Show generic error |
-| 400 | context_too_large | System + persona + message + PHI exceed the budget | Reduce budget/message or switch model |
+| 400 | context_too_large | Even with all history dropped the fixed blocks do not fit: character, persona, post-history instruction, voice-delivery block, both notebook blocks, the limits block, and the message being sent | Reduce budget/message or switch model |
 | 502 | invalid_openrouter_completion_response | Malformed provider response | Show generic error |
-| 400 | title_required | Rename with empty/whitespace title | Keep edit open, show hint |
 | 400 | title_too_long | Rename title over 200 chars | Keep edit open, show hint |
 | 400 | model_id_too_long | Create-chat model_id over 300 chars | Choose a model from the list |
-| 400 | attachment_invalid | Upload is not a decodable PNG/JPEG/WebP (incl. decompression bomb) | Show attach error |
+| 400 / 411 | attachment_invalid | 400 when the upload is not a decodable PNG/JPEG/WebP (decompression bombs included) or declares an unreadable `Content-Length`; 411 when it declares none at all, which is the chunked POST that would otherwise slip past the size shield | Show attach error |
 | 400 | attachment_too_large | Upload over 10 MiB | Show size hint |
 | 404 | attachment_not_found | Unknown attachment id | Drop stale id, re-attach |
+| 415 | unsupported_media_type | `GET /uploads/images/{id}` found a stored mime outside PNG/JPEG/WebP and refused to serve it. The row exists and the bytes are there, which is why it is not a 404 | Do not retry; the image cannot be rendered |
 | 400 / 409 | attachment_unavailable | 400 on send (id already sent / duplicate id); 409 on `DELETE /uploads/images/{id}` when the id is already linked to a message | Drop stale id, re-attach |
 | 400 | too_many_attachments | More than 4 attachments on one message | Enforce cap client-side |
 | 400 | model_no_image_input | Attachments sent to a text-only model | Gate attach UI by modality |
 | 422 | not_a_variant_target | Activate target is not an assistant message | Hide the variant control |
 | 409 | variant_group_not_last | Activate/regenerate on an older group (older groups are view-only) | Refresh messages |
+| 400 | boundaries_do_not_fit | The limits block will not fit in the context budget. Generation is refused rather than degraded - a standing rule that is silently trimmed is worse than one that never went | Say which limits are too long for this model's budget |
+| 400 | proxy_url_required | A proxy-only setting was saved with no proxy configured (`/settings/proxy/alias`, `/settings/proxy/required`) | Point at the proxy field |
+| 400 | proxy_alias_too_long | Proxy name over 50 characters | Keep the field open, show the cap |
 | 403 | cross_origin_denied | Cross-origin mutating request rejected by the CSRF shield | (Never reaches the trusted frontend) |
+| 403 | launch_token_invalid | The packaged app's launch-token gate rejected the request | (Never reaches the trusted frontend) |
 
 **Voice / TTS (`/tts/*`).** Voice is fully local: the model runs on this machine and no
 audio or text leaves it. Endpoints: `GET /tts/models`, `POST /tts/rescan`,
@@ -173,7 +178,7 @@ process:
 | GET | /tts/state | `{state, uid, engine_id, vram_mb, error_code, error_detail, idle_seconds}`. `state` is `unloaded` / `loading` / `loaded` / `unloading` / `error`. Polling this is also what notices a worker that died on its own. |
 | POST | /tts/load | Preflight and the runtime check happen BEFORE any process exists, so a refusal costs nothing. |
 | POST | /tts/unload | Gives the VRAM back. |
-| POST | /tts/speak | `{text?, message_id?, uid?}` -> `{audio_id, sample_rate, seconds, truncated}`. Loads first if needed. `message_id` speaks a stored message from its RAW content (delivery tags intact - the client only ever holds the stripped view). `truncated` is true when the text was cut at the 5000-char cap - never silently. |
+| POST | /tts/speak | `{text?, message_id?, chat_id?, uid?}` -> `{audio_id, sample_rate, seconds, truncated}`. Loads first if needed. `message_id` speaks a stored message from its RAW content (delivery tags intact - the client only ever holds the stripped view), and it is only ever read inside `chat_id`: ids run in one sequence across the whole vault, so an id on its own would name a row in any conversation. `message_id` without `chat_id` is refused at the body with 422 `validation_failed`, before the vault is read at all; an id that is not in the named chat gets exactly the answer an id that exists nowhere gets, 404 `message_not_found`, so a refusal never says which of the two it was, and the engine is resolved before the row is read so the answer does not differ by chat when no model is selected either. Both ids are capped at what SQLite can hold; wider is `validation_failed`, not a driver error. The scope is argument consistency rather than an authorization wall (anything that can post here can already list the chats); what it buys is that a stale or wrong id speaks nothing instead of the wrong conversation. `text` names no chat - it reads no row. `truncated` is true when the text was cut at the 5000-char cap - never silently. |
 | GET | /tts/voice-mode | `{enabled, active, prompt_chars}`. `active` = the delivery prompt would actually inject right now (toggle on AND a tag-capable engine selected); `prompt_chars` lets the context gauge charge the injected block to fixed cost exactly like the backend budget does. |
 | POST | /tts/voice-mode | `{enabled}` - the global voice toggle. |
 | POST | /tts/speak_stream | Same body as `/tts/speak`, answered as SSE: `voice_chunk` / `voice_notice` / `voice_error` / `voice_done`. This is what the Speak button calls - `/tts/speak` cannot make a sound until the last sentence is finished. |
@@ -185,7 +190,7 @@ process:
 | GET | /tts/audio/{audio_id} | The wav. Ids are confined to the cache directory. |
 | GET | /tts/runtimes/{engine}/plan | What setup will do and how large the download is - shown BEFORE the user commits. |
 | POST | /tts/runtimes/{engine}/install | Returns immediately; watch with the GET below. |
-| GET | /tts/runtimes/{engine}/install | `{state, log, error_code, error_detail, running}`. States: `idle` / `preparing` / `installing` / `verifying` / `done` / `failed` / `cancelled`. |
+| GET | /tts/runtimes/{engine}/install | `{engine_id, state, log, error_code, error_detail, started_at, finished_at, running}`. `log` is the last 40 lines. States: `idle` / `preparing` / `installing` / `verifying` / `done` / `failed` / `cancelled`. `running` is true for `preparing`, `installing`, `verifying` and `uninstalling` - do not derive it client-side, the last of those four is a state this route never reports. |
 | POST | /tts/runtimes/{engine}/install/cancel | Kills the job and deletes the partial environment. |
 | DELETE | /tts/runtimes/{engine} | Unloads the worker first, then removes the environment. Removing the last engine also reclaims the wheel cache. |
 | GET | /tts/voices | Reference voices (clone sources): `{voices: [{voice_id, label, transcript, transcript_source, seconds, has_transcript, needs_conversion}]}` |
@@ -249,6 +254,7 @@ shield like every other data route.
 | 409 | tts_runtime_installing | A setup job is already running for that engine | Show the running job instead of starting a second |
 | 500 | tts_runtime_install_failed | Setup did not finish; the partial environment was removed | Offer retry; say nothing was left half-installed |
 | 409 | tts_python_not_found | No way to build an isolated environment on this machine | Explain plainly; do NOT tell the user to install things by hand |
+| 409 | tts_proxy_unavailable | A mandatory proxy could not be read or is not configured, so nothing was downloaded at all | Say the proxy is the reason and point at unlocking or at Settings; do NOT offer a bare retry |
 | 409 | tts_insufficient_disk | Not enough free space for a multi-GB engine | Show how much is needed vs free |
 | 500 | tts_sidecar_write_failed | The model's folder would not accept the engine marker (read-only drive/permissions) | Say the folder is not writable; do NOT suggest a rescan |
 | 400 | tts_param_invalid | A setting is out of range | Highlight the field, restore last good value |
@@ -271,40 +277,90 @@ shield like every other data route.
 | 400 | notebook_entry_too_long | Over the per-entry character limit; refused rather than truncated | That note is too long. |
 | 400 | notebook_entry_invalid | A field outside its allowed set (kind, durability, importance) | That note could not be saved. |
 | 400 | notebook_field_not_editable | An edit tried to change provenance, chat or source; refused loudly rather than dropped silently | That part of a note cannot be changed after it is written. |
-| 400/404 | notebook_entry_not_found | No such entry id, or one that has already been retired. **DELETE answers 404; PATCH and accept answer 400** for the same code - the two handlers relay it through different helpers | That note is no longer there. |
+| 404 | notebook_entry_not_found | No such entry id, or one that has already been retired. One status on every handler: the notebook's refusal helper carries a fixed set of missing-thing codes to 404 and everything else to 400 | That note is no longer there. |
 | 400 | notebook_reorder_incomplete | The id list did not cover exactly this chat's notes; refused rather than partially applied | Nothing was moved. |
 | 400 | notebook_language_unknown | Instruction language outside `en`/`tr` | Not one of the two available. |
 | 400 | notebook_model_id_invalid | Not shaped like an OpenRouter model id (`author/slug`) | Pick one from the list. |
 | 400 | notebook_model_id_too_long | Over 128 characters | Pick one from the list. |
-| **429** | notebook_daily_cap_reached | The daily ceiling on extraction calls is spent. Claimed BEFORE the request, so no call was made | It starts again tomorrow; nothing was lost. |
-| 401/502/504 | *relayed provider reasons* | The two notebook routes that reach OpenRouter relay the provider's own reason rather than a literal: `api_key_invalid`, `api_key_not_set`, `openrouter_auth_failed`, `api_key_required_by_openrouter`, `proxy_auth_failed`, `openrouter_timeout`, `openrouter_unreachable`, and the fallback `notebook_extract_failed`. All eight are in `error_catalogue.json` and `errorMessages.ts` | Each has its own sentence; none is a bare 502 |
-| 400 | chat_not_found | The chat is gone. **`POST /notebook/{chat_id}` answers 400, `GET /notebook/{chat_id}/boundaries` answers 404** - the code is one, the statuses are two | That chat is no longer there. |
+| - | notebook_daily_cap_reached | The daily ceiling on extraction calls is spent. Claimed BEFORE the request, so no call was made. **No HTTP status**: the claim happens inside the worker, never on a request the client is waiting on, so it arrives as a `stats.skip_reasons` key on `GET /notebook/worker` rather than as a response code | It starts again tomorrow; nothing was lost. |
+| 400 | imported_chat_always_reviews | `POST /notebook/{chat_id}/auto-accept` tried to raise the review shield on a chat opened from an imported card. `enabled: null` is refused too - it hands the chat back to the global switch, whose default is ON, which lowers the shield just as surely | Do not offer the toggle on an imported chat; say why it is fixed. |
+| 400 | safeword_blank | The safeword was whitespace only. An empty string still means OFF; a space does not, and a field that shows a space while the stop is disarmed is the one silence this control cannot have | Say a space is not a safeword. |
+| 400 | safeword_too_short | Under 3 characters once whitespace is collapsed. A single letter matches inside almost every sentence and makes the app unsendable | Ask for a longer word. |
+| 400 | safeword_too_long | Over 64 characters, measured after collapsing runs of whitespace | Shorten it. |
+| 401/502/504 | *relayed provider reasons* | `GET /notebook/extract/models` is the one notebook route that reaches OpenRouter, and it relays the provider's own reason rather than a literal. **401**: `api_key_invalid`, `api_key_not_set`, `openrouter_auth_failed`, `api_key_required_by_openrouter`. **502**: `proxy_auth_failed`, `openrouter_unreachable`, and the fallback `notebook_extract_failed`. **504**: `openrouter_timeout`. Note that `api_key_invalid` is a 401 here and a 422 on `POST /settings/api-key`; the code is one, the route decides the status | Each has its own sentence; none is a bare 502 |
+| 404 | chat_not_found | The chat is gone. One code, one status, on every notebook route as well as on the chat routes. `POST /notebook/{chat_id}` used to answer 400 for it; that split is closed | That chat is no longer there. |
 | 400 | boundary_empty | label or phrasing blank | A limit needs both a name and the wording the model will see. |
 | 400 | boundary_too_long | `label` or `phrasing` over 160 characters. Checked here and not only in the request schema, because a ceiling in the schema is a ceiling the next caller of `create_boundary` does not have | Shorten it; that one field is over the limit. |
 | 400 | boundary_set_too_long | Adding this limit would push its WHOLE block (global limits, plus this chat's own if the limit is chat-scoped) over 1500 characters - the ceiling the limits system refuses to send rather than silently drop from. Measured against the heaviest chat's own set when the new limit is global, since a global limit lands in every chat's block | Say which limit was too big for the set; shorten or remove one before adding another. |
 | 400 | boundary_invalid | severity, polarity, on_violation or rating_ceiling outside its allowed set. `source: inferred` with `severity: hard` is refused by the DATABASE, not by this check | That limit could not be saved. |
 | 404 | boundary_not_found | No such boundary id | That limit is no longer there. |
-| 500 | tts_cache_outside_data_dir | The generated-audio folder resolves outside the app's data directory | Nothing was written; say the folder has to move back, or the whole data dir with ELYSIUM_DATA_DIR |
+| 409 | tts_cache_outside_data_dir | The generated-audio folder resolves outside the app's data directory | Nothing was written; say the folder has to move back, or the whole data dir with ELYSIUM_DATA_DIR |
 | - | provider_frame_dropped | An SSE frame could not be parsed and its text was lost | Say a piece of the reply is missing; the rest is unaffected |
 | - | stream_ended_without_done | The stream closed with no [DONE] and no finish_reason | Say the reply may be cut short |
 | 400 | tts_transcript_required | This engine clones from the audio AND the words in it; the words are missing | Ask for the words. Do NOT offer to auto-transcribe: no shipped engine can (see below) |
-| 409 | tts_transcribe_unsupported | The loaded engine has no speech recognition, so it cannot draft a clip’s transcript | Do not draw the button at all - gate it on capabilities.transcribes_reference. Never say the engine failed to start |
+| 409 | tts_transcribe_unsupported | The loaded engine has no speech recognition, so it cannot draft a clip's transcript | Do not draw the button at all - gate it on capabilities.transcribes_reference. Never say the engine failed to start |
 | 400 | tts_nothing_to_speak | The message had no words to read out (only markup, tags or symbols) | Say the message had nothing to read; do not offer a retry |
 | 404 | tts_audio_expired | The generated wav is gone - the cache is wiped when the vault locks and never outlives the session | Offer to speak it again. Never report this as a synthesis failure or a missing audio device |
-| 500 | tts_audio_device_error | No usable audio output device | Tell the user; keep text working |
+| - | tts_audio_device_error | No usable audio output device. Raised in the BROWSER, by the player, when the audio context will not open - the backend has no producer for it | Tell the user; keep text working |
 | 404 | tts_nothing_streaming | Speak-live pressed, but that reply is no longer streaming | Point at the per-message speaker button instead |
+
+**Vault codes (`/vault/*`).** These are the only routes that answer while the
+vault is locked, so they are the only ones with an error vocabulary of their
+own. Every one of them is a literal raise site.
+
+| Status | Code | Meaning | Frontend action |
+|--------|------|---------|-----------------|
+| 401 | wrong_passphrase | Unlock was tried with the wrong passphrase. Nothing is counted, nothing is locked out | Keep the field, say the passphrase did not open it |
+| 422 | passphrase_too_short | Below the minimum length | Show the rule, keep what was typed |
+| 422 | passphrase_too_long | Above the maximum length | Show the rule, keep what was typed |
+| 422 | passphrase_too_common | On the refused-list of known passphrases | Ask for one nobody else has used |
+| 422 | passphrase_too_simple | Passes the length rule and nothing else | Say what is missing |
+| 422 | passphrase_invalid | Rejected for a reason none of the four above names | One sentence, no guessing at which rule |
+| 409 | vault_already_initialized | `POST /vault/init` on a vault that exists | Go to the unlock screen |
+| 409 | vault_not_initialized | Unlock or change-passphrase before there is a vault | Go to the first-run screen |
+| 409 | vault_identity_mismatch | The database on disk is not the one this vault's identity file names | Do not offer a retry; this needs the right file back |
+| 409 | encrypted_db_without_identity | An encrypted database is present with no identity file beside it | Same; a retry changes nothing |
+| 500 | vault_init_failed | Creating the vault did not finish | Say nothing was created; offer retry |
+| 500 | vault_unlock_failed | Unlock failed for a reason that is not a wrong passphrase | Distinct sentence from `wrong_passphrase`; never blame the passphrase |
+| 500 | change_passphrase_failed | Re-keying did not finish. The old passphrase still opens the vault | Say the old passphrase still works |
+| 409 | vault_unlocked | `POST /vault/reset` while the vault is open. Checked before the phrase is read | Lock first, or do not offer reset at all |
+| 422 | reset_confirmation_mismatch | The confirmation phrase did not match. Nothing was deleted | Keep the dialog open |
+| 404 | vault_reset_unavailable | This is not the packaged app, or the launch-token gate is not armed | Do not draw the reset door |
+| 423 | vault_locked | Any data route while the vault is locked | Fall back to the lock screen |
 
 **Proxy gate (503, only when `proxy_required` is on and the proxy is unhealthy):** the completion and model-list endpoints return `503` with one of these `detail` reasons: `proxy_missing`, `proxy_unreachable`, `proxy_auth_failed`, `timeout`, `unknown_error`, `proxy_unhealthy`. `proxy_auth_failed` is distinct from the OpenRouter `auth_failed` above - it means the *proxy* rejected the probe, not the API key.
 
-**Model list / settings / import codes** (surface via the generic mapper today; friendly messages recommended): `api_key_required_by_openrouter`, `invalid_openrouter_models_response`, `openrouter_models_error` (models); `proxy_url_required`, `invalid_proxy_scheme`, `proxy_url_invalid` (proxy config); `character_json_too_large`, `invalid_character_json`, `character_name_required` (import).
+**Model list / settings / import codes**: `api_key_required_by_openrouter`,
+`invalid_openrouter_models_response`, `openrouter_models_error` (models);
+`invalid_proxy_scheme`, `proxy_url_invalid` (proxy config);
+`character_json_too_large`, `invalid_character_json` (import).
 
-> Note: `network_error` is synthesized frontend-side for transport failures (it is not returned by the backend). `openrouter_no_provider_meets_privacy` is reserved but not currently emitted - a real ZDR rejection from OpenRouter surfaces as a generic completion error.
+**Where a status comes from.** `shared/error_catalogue.json` records a
+`statuses` array that is machine-derived from LITERAL raise sites only, so `[]`
+there means "no literal site", not "no status". Most codes above reach the
+client through a mapping instead: `_ERROR_MAP` in `completions.py` for provider
+failures, `_refuse` in `notebook.py` (404 for a missing thing, 400 for
+everything else), `_STATUS` plus `_provision_error` in `tts_runtime.py` (409 by
+default, 500 for a code ending in `failed`). Those statuses are as fixed as a
+literal; they are just not visible to the enumerator. The statuses in the
+tables above are the ones the client actually receives.
+
+**Codes the backend never sends.** These are synthesised in the browser and
+carry the same sentences as everything else: `network_error` (transport
+failure), `invalid_response_shape` and `invalid_generation_params` (a body that
+is not the shape the schema expects), `attachment_gate_closed` (a drop refused
+before any upload), `chat_background_unreadable`, `draft_too_large`,
+`draft_budget_exhausted`, `tts_text_truncated`, `tts_lines_dropped`,
+`tts_notice`, `tts_audio_device_error`, and `validation_unavailable` (a
+`key_status` value, not a failure). `openrouter_no_provider_meets_privacy` is
+mapped to 503 and nothing raises it; a real ZDR rejection surfaces as a generic
+completion error.
 
 ---
 
 ## Streaming Completions (Part F)
 
-Both streaming endpoints accept the exact same request body as their
+All three streaming endpoints accept the exact same request body as their
 non-streaming counterparts and return `text/event-stream` of data-only SSE
 events. Every event is one line `data: {json}` followed by a blank line; the
 JSON always carries a `type` field:
@@ -313,8 +369,8 @@ JSON always carries a `type` field:
 |------|---------|---------|
 | user_message | `message`: full message row | First event. For /complete/stream this is the just-persisted user row; for /regenerate/stream the existing preceding user row. |
 | delta | `content`: string | One streamed content fragment. Repeated. |
-| done | `chat_id`, `model_id`, `user_message`, `assistant_message` | Terminal success event. Rows are persisted. |
-| notice | `code`: string, `count`: int? | Something the request has to disclose, sent BEFORE the first delta. Today: `images_omitted` (the model never received one or more attached pictures and answered as if they were not there), `image_output_rejected` (a picture came back but failed validation and was dropped), `image_output_remote_url_refused` (the model answered with a LINK to a picture; fetching it would be a second egress host, so it is refused rather than followed). All three are warnings, not failures; the reply still arrives. |
+| done | `chat_id`, `model_id`, `user_message`, `assistant_message`, plus three context numbers described under "The `done` frame's context report" | Terminal success event. Rows are persisted. |
+| notice | `code`: string, `count`: int? | Something the request has to disclose. Five codes: `images_omitted` (the model never received one or more attached pictures and answered as if they were not there), `image_output_rejected` (a picture came back but failed validation and was dropped), `image_output_remote_url_refused` (the model answered with a LINK to a picture; fetching it would be a second egress host, so it is refused rather than followed) - those three are sent BEFORE the first delta - and `provider_frame_dropped` / `stream_ended_without_done`, which arrive when they happen. All five are warnings, not failures; the reply still arrives. |
 | error | `status`: int, `code`: string, `partial_saved`: bool? | Terminal failure event. Codes match the table above. `partial_saved` means the provider failed AFTER text had arrived and the backend KEPT it - the rows are committed, so the client must not roll its optimistic rows back. |
 | voice_chunk | `audio_id`, `seconds`?, `index` | Spoken audio for one sentence. Arrives AFTER `done` - reading never waits on speaking. Fetch from `GET /tts/audio/{audio_id}`. |
 | voice_notice | `note`: string | The worker telling the person something actionable (a compile that fell back to eager decoding, a cold cache). The speech is fine, just slower or different. |
@@ -367,8 +423,11 @@ stream is active for the selected chat.
 
 `PATCH /chats/{id}` with body `{"title": "New title"}`. The title is trimmed
 server-side; the response is the full chat row (same shape as
-`GET /chats/{id}`) and `updated_at` is bumped. Empty/whitespace titles →
-400 `title_required`; over 200 characters → 400 `title_too_long`. Only
+`GET /chats/{id}`) and `updated_at` is bumped. An empty or whitespace-only
+title is NOT refused: it is a rename to the next default name, `New Chat N`,
+picked server-side from the titles that exist at that moment (smallest free
+number). `title` is still a required KEY - a body without it is a malformed
+rename and answers 422. Over 200 characters -> 400 `title_too_long`. Only
 `title` is patchable - model/character bindings never change through this
 endpoint.
 
@@ -486,7 +545,7 @@ copy.
 | repetition_penalty | float | 0.001-2.0 | Yes, if supported | Filtered |
 | max_tokens | int | 1-131072 | Yes, if supported | Also used for output reservation |
 | seed | int | -(2^31)-(2^31-1) | Yes, if supported | Filtered |
-| stop | str or [str] | non-empty | Always forwarded | Never filtered (backend keeps `stop` regardless of supported_parameters) |
+| stop | str or [str] | List capped at `MAX_STOP_SEQUENCES_READ` entries; a longer body is refused with `validation_failed` before the walk. An empty entry inside the list is `invalid_gen_params`. An empty string, or an empty list, is dropped in silence. The string form has no length cap here. | Always forwarded | Never filtered (backend keeps `stop` regardless of supported_parameters) |
 | context_budget_tokens | int | 512-2000000 | **NO** | App-level budget only |
 
 Note: `context` (bare) is not a generation param and is never accepted.
@@ -506,7 +565,7 @@ Note: `context` (bare) is not a generation param and is never accepted.
 - Validated and model-filtered generation params
 - Hardcoded provider policy: `{zdr: true, data_collection: "deny", allow_fallbacks: false}`
 - `model` string
-- `stream: false` (`true` on the four SSE endpoints)
+- `stream: false` (`true` on the three chat SSE endpoints)
 
 ## What Does NOT Go to OpenRouter (exhaustive)
 
@@ -573,16 +632,32 @@ Note: `context` (bare) is not a generation param and is never accepted.
 
 **Request:** `{ "api_key": "sk-or-v1-..." }`
 
-**Response (200, valid):** `{ "ok": true, "key_status": "valid" }`
-**Response (200, unavailable):** `{ "ok": false, "key_status": "validation_unavailable" }`
-**Response (422, invalid):** `{ "detail": "api_key_invalid" }`
+**Response (200, valid):** `{ "ok": true, "key_status": "valid" }` - stored.
+**Response (200, unavailable):** `{ "ok": false, "key_status": "validation_unavailable" }` - NOT stored; a network, proxy or unexpected failure.
+**Response (422, invalid):** `{ "detail": "api_key_invalid" }` - NOT stored; OpenRouter's `/api/v1/key` answered 401 or 403.
 
-Note: Unexpected validation errors also return `validation_unavailable` (not stored). Raw key is never returned or logged.
+`invalid` and `validation_unavailable` are opposite facts and must never share a
+sentence. An unexpected validation error is logged with the exception type only:
+the raw key and the response body are never returned and never logged.
 
 ### POST /personas
 
 **Request:** `{ "display_name": "Sarcastic", "description": "Always respond sarcastically." }`
 **Response (201):** `{ "id": 1, "display_name": "Sarcastic", "description": "...", "is_active": false, "created_at": "...", "updated_at": "..." }`
+
+`display_name` is OPTIONAL. Empty, whitespace-only, null or absent all mean
+the same thing and none of them is refused: the persona is stored as
+`New Persona N`, where N is the smallest free number among the display names
+that exist at that moment. The same rule applies on `PATCH /personas/{id}` -
+a display name present and blank is a rename to the default, while one left
+out of the body leaves the stored name alone. `POST /characters`,
+`POST /characters/import` and `PATCH /characters/{id}` behave identically with
+`New Character N`, and `POST /chats` with `New Chat N`.
+
+Uniqueness is a courtesy at creation time, not an invariant: no name column in
+the schema carries a UNIQUE constraint, so two rows may hold the same name and
+nothing stops them. What the server declines to do is CREATE a collision it
+can see.
 
 ### GET /personas
 
@@ -664,11 +739,10 @@ Deletes all messages in the chat. The chat shell is preserved with `updated_at` 
 
 12 fields from `_normalise_model()`: `id`, `name`, `description`, `context_length`, `max_completion_tokens`, `supported_parameters`, `input_modalities`, `output_modalities`, `pricing`, `top_provider`, `created`, `canonical_slug`.
 
-Codex uses:
-- `supported_parameters` → disable/blur unsupported param controls
-- `context_length` → display context limit; use as default budget if `context_budget_tokens` not set
-- `input_modalities` → show/hide modality indicators
-- `output_modalities` → show/hide modality indicators
+What the frontend reads them for:
+- `supported_parameters` - enable or blur the generation-param controls
+- `context_length` - the displayed context limit, and the default budget when `context_budget_tokens` is unset
+- `input_modalities` / `output_modalities` - the modality indicators, and the gate on the attach button
 
 ---
 
@@ -687,7 +761,7 @@ Codex uses:
   warning (id only, no PII). `404 persona_not_found` is raised ONLY when the
   request body carries an explicit `persona_id` that does not exist.
 - Missing or null persona is silently omitted - not an error.
-- `GET /personas` includes `is_active: bool` derived from `settings.selected_persona_id`. Not a DB column.
+- `is_active` is described under `GET /personas` above and is not repeated here.
 
 ---
 
@@ -749,35 +823,82 @@ default: a background job spending somebody's credits on a model they never
 chose is not a convenience. A `model_id` is shape-checked (`author/slug`, at
 most 128 characters) - `notebook_model_id_invalid` / `_too_long`.
 
+There is no route that runs an extraction and hands the raw reply back. The
+extraction happens in the worker; what the client sees of it is the counters
+below.
+
+
+### The extraction worker's status
+
 ```
--> { "model_id": ..., "prompt_language": ...,
-     "source": "the exact text it read",
-     "raw": "the model's reply, verbatim" | null,
-     "proposals": [ { "text", "evidence", "kind", "durability",
-                      "importance", "supersedes" } ],
-     "dropped": { "ungrounded": 2, "too_long": 1 },
-     "failure": "truncated" | null,
-     "usage": { "tokens_in", "tokens_out", "cost",
-                "request_id", "finish_reason" } }
+GET /notebook/worker            optional ?chat_id=
+-> { "stats":          { "done", "failed", "skipped", "abandoned",
+                         "skip_reasons": { "<reason>": n } },
+     "spend":          today's calls and cost,
+     "spend_lifetime": the same shape summed over every day,
+     "daily_cap":      NOTEBOOK_DAILY_CALL_CAP,
+     "worker":         { ... } }
 ```
 
-`failure` and an empty `proposals` list are **different answers**. A truncated
-or unusable reply is a failure; `[]` with `failure: null` is the model
-legitimately finding nothing, which for a quiet scene is correct. Collapsing
-the two is the single most expensive wound this design inherits.
+`spend_lifetime` never gates anything; `spend` alone governs the daily cap.
+`abandoned` counts calls whose row was still `error_type: abandoned_in_flight`
+- the process died or the vault locked with the call already on the wire, so
+the money is gone and the answer never arrived. The row is closed out as
+`failed` and counted here rather than left to re-send and re-bill the same
+range forever.
 
-`dropped` (the wire name; earlier drafts of this document called it
-`dropped_by_reason`, which exists nowhere in the code) exists because one
-integer cannot tell "a quote was invented" - the defence working - from "a
-Turkish quote failed a byte comparison" - the defence eating a true fact.
+The `worker` block carries the breaker state (`state`, `failures`,
+`total_failures`, `tripped_chats`, `refused_by_breaker`,
+`refused_by_chat_breaker`), the loop's health (`alive`, `died`, `runs`,
+`settled_empty`, `unhandled`, `last_error`, `abandoned_preambles`), the queue
+(`queued`, `dropped_offers`, `queue_overflows`, `offers_while_down`), the
+sweep's own lock (`sweeping`, `refused_in_flight`), what is unread
+(`backlog`), why suggestions were refused (`dropped`), and the two numbers
+that are one rule: `batch_size` and `trigger_threshold`. Both shrink together
+under the breaker, and a panel showing one without the other is where the
+belief that they were the same number came from.
 
-`ungrounded` is the one key that does NOT keep that promise, and it is worth
-knowing which way it fails. It counts three refusals: a quote that appears
-nowhere, a quote assembled from the end of one message and the start of the
-next, and a quote sitting in a stretch of the transcript that names no
-speaker. The first is the defence working. The other two are structural -
-they say the span is not a quotation of any one thing anybody said - and a
-pile of them reads exactly like fabrication on this screen.
+`chat` is always present and is `null` unless `?chat_id=` was passed AND that
+chat has a breaker record of its own. When it is there it holds `state`,
+`failures`, `total_failures`, `batch_size` and `trigger_threshold` for that
+one conversation. A key that appears and disappears is a key every client has
+to guess at, and zod strips what it was not told about.
+
+`skip_reasons` is keyed by reason string. `plan_invalidated` and
+`range_cleared` are the two keys for a reply that arrives after the work it
+answered was invalidated, and they are NOT edit versus clear.
+`commit_extraction` asks one question when its `running` row has gone: does
+`to_message_id` still name a row in `messages`? It still does after an edit
+that landed on the range end - the message survives, only its wording changed
+- and that case alone is `plan_invalidated`. It does not after a deleted
+message (a delete takes every message after it too), a cleared chat, an
+aborted send being cleaned up, or an edit whose swept tail was where the range
+ended: all four are `range_cleared`. Regenerating reaches neither key - it
+deletes nothing, so the extraction is written normally and a note can be taken
+from a reply somebody discarded. Deleting the CHAT reaches neither either: the
+chat row is gone, the foreign key on the insert fires, and it lands in
+`worker.unhandled` as `write_IntegrityError`. Both named skips discard the
+proposals and both still record the cost, so a skip under either name is a
+paid call.
+
+`worker.dropped` counts refused PROPOSALS by reason, which is a different
+question from a refused call. One integer cannot tell "a quote was invented" -
+the defence working - from "a Turkish quote failed a byte comparison" - the
+defence eating a true fact. `ungrounded` is the one key that does not keep
+that promise: it counts a quote that appears nowhere, a quote assembled from
+the end of one message and the start of the next, and a quote sitting in a
+stretch of transcript that names no speaker. The first is the defence working;
+the other two say the span is not a quotation of any one thing anybody said,
+and a pile of them reads exactly like fabrication on this screen.
+
+`POST /notebook/sweep/{chat_id}` answers `{started: false, reason}` for five
+refusals, none of which is an error: `nothing_unread` (everything here has been
+covered), `already_running` (this button is already busy; pressing three times
+is one request), `already_in_flight` (the background loop is mid-call on this
+same chat, and letting the sweep plan the identical range would bill it twice),
+`chat_paused` (this chat's breaker is open and will retry by itself) and
+`chat_stopped` (it will not retry until the breaker is reset by hand). The last
+two are separate because only one of them asks the reader to do something.
 
 Every note carries **`evidence_role`** on `GET /notebook/{chat_id}`: `"user"`,
 `"assistant"`, or `null` for a note somebody typed themselves. It records
@@ -795,67 +916,55 @@ withhold it - at the measured rate of fabrication a queue of these would be
 almost entirely correct notes, and a queue nobody reads is worse than a label
 somebody can see.
 
-Both routes that reach OpenRouter pass `enforce_proxy_gate()` first and are
-counted against `NOTEBOOK_DAILY_CALL_CAP`, which refuses with **429
-`notebook_daily_cap_reached`** *before* the request rather than after it.
+`GET /notebook/extract/models` passes `enforce_proxy_gate()` first, like every
+outbound path. Extraction calls are claimed against `NOTEBOOK_DAILY_CALL_CAP`
+*before* the request rather than counted after it; see
+`notebook_daily_cap_reached` in the error table for what a spent cap looks like
+to the client.
 
 
 ## Character Rules
 
 - Only the character matching `chat.character_id` is fetched and injected.
 - `raw_json` is never returned by any endpoint and never included in payload.
-- `avatar_path` (if present on character) is a relative path for Codex to construct avatar URL.
+- `avatar_path`, when a character has one, is a relative path the frontend builds the avatar URL from.
 - Avatar image data is **never** sent to OpenRouter.
 - No `image_url` content from CHARACTER data in any message - user-attached
   images are the sole sanctioned source of image parts (see Part H).
 
 ---
 
-## API Key Validation Status
-
-- `POST /settings/api-key` response:
-  - `{ok: true, key_status: "valid"}` - key stored
-  - `{ok: false, key_status: "validation_unavailable"}` - NOT stored; network/proxy/unexpected failure
-  - HTTP 422 + `{detail: "api_key_invalid"}` - NOT stored; 401/403 from OpenRouter `/api/v1/key` endpoint
-- Unexpected validation errors are logged with exception type only (never raw key or response body)
-
----
-
 ## Empty Chat Heuristic
 
-- A chat with `message_count=1` where that single message has `role='assistant'` is considered empty/unstarted.
-- This is the `first_mes` greeting, not user-initiated.
-- Backend does not add a separate flag; Codex derives it from `message_count` and first message role.
+A chat with `message_count=1` whose single message has `role='assistant'` is
+unstarted: that message is the `first_mes` greeting, not something anybody
+typed. The backend adds no flag for it; the frontend derives it from those two
+fields.
 
 ---
 
 ## Selected Persona ID
 
-- `GET /settings` includes `selected_persona_id: int | null`
-- `POST /personas/{id}/select` updates it
-- Deleting selected persona clears it (returns null in settings)
+`GET /settings` carries `selected_persona_id: int | null`.
+`POST /personas/{id}/select` sets it, and deleting the selected persona clears
+it back to null.
 
 ---
 
-## Active Context Preview
+## Frontend implementation notes
 
-Deferred. The `/complete` payload rules above define exactly what would be sent.
-
----
-
-## Codex Implementation Notes
-
-- Use TanStack Query for all API calls (query keys like `["settings"]`, `["chats"]`, `["personas"]`, etc.)
-- Invalidate relevant query keys after mutations (e.g., invalidate `["chats", chatId, "messages"]` after complete/regenerate/delete)
-- Handle all error codes in the table above with appropriate UI feedback
-- Never store secrets in browser storage
-- The `context_budget_tokens` slider should map to model's `context_length` range (512-context_length)
-- Persona selector should show all personas from `GET /personas` and use `is_active` field directly to highlight the selected one
-- `PATCH /personas/{id}` response also includes correct derived `is_active` - safe to use directly
-- Character PATCH form should only send changed fields (partial update)
-- DELETE operations should confirm with user before executing
-- Model selector should use `supported_parameters` to enable/disable generation param controls
-- Regenerate button should only be shown on the **latest** message if it is `role=assistant`
-- Message delete removes target + all following messages - Codex should refresh the message list after delete
-- Clear chat removes all messages - Codex should refresh messages after clear
-- `deleted_count` is the stable response field for both message delete and chat clear
+- TanStack Query for every API call, with query keys like `["settings"]`,
+  `["chats"]`, `["personas"]`. Invalidate the relevant key after a mutation, for
+  example `["chats", chatId, "messages"]` after complete/regenerate/delete.
+- Every error code in the tables above gets its own sentence. The sentences live
+  in `frontend/src/lib/errors/errorMessages.ts`; the machine record of which
+  codes exist lives in `shared/error_catalogue.json`.
+- Nothing secret goes in browser storage.
+- The `context_budget_tokens` slider maps to the model's `context_length`
+  (512 to `context_length`).
+- The regenerate control belongs on the latest message only, and only when it is
+  `role=assistant`.
+- Message delete takes the target and everything after it; clear takes the whole
+  chat. Refresh the message list after either. `deleted_count` is the response
+  field for both.
+- The character PATCH form sends changed fields only.

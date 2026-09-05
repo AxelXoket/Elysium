@@ -42,7 +42,7 @@ from typing import NamedTuple
 import anyio.to_thread
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 import config
 import secure_delete
@@ -53,6 +53,7 @@ from tts import provision, refs, scan_roots, speed, stream_hook
 from tts import host as tts_host
 from tts.errors import (
     TTS_LOAD_TIMEOUT,
+    TTS_MODEL_NOT_FOUND,
     TTS_MODEL_UNKNOWN,
     TTS_OUT_OF_MEMORY,
     TTS_REFERENCE_CLIP_STUCK,
@@ -128,6 +129,13 @@ def _resolve(uid: str | None):
                 set_setting(SETTING_ACTIVE_UID, model.uid)
                 logger.info("tts: migrated the selected model to its new id.")
             return model
+    if not models:
+        # An empty models folder is not a stale selection, and the two have
+        # opposite fixes: the contract's 404 says "put one there and rescan",
+        # while 400 sends somebody hunting a uid that changed under them. This
+        # branch used to answer 400 as well, which described the one state
+        # where there is nothing left to be stale about.
+        raise HTTPException(404, TTS_MODEL_NOT_FOUND)
     raise HTTPException(400, TTS_MODEL_UNKNOWN)
 
 
@@ -257,10 +265,35 @@ def set_voice_mode(body: VoiceModeBody) -> dict:
     return get_voice_mode()
 
 
+#: Both speak ids are bound into a SQL statement, and SQLite cannot hold an
+#: integer wider than this: a 20-digit id reached the driver and came back as
+#: an OverflowError with no contract code on it, which is a 500 on /speak and
+#: "the voice engine could not start" on /speak_stream. Row ids start at 1, so
+#: the floor is free as well.
+_MAX_ROW_ID = 2 ** 63 - 1
+
+
 class SpeakBody(BaseModel):
     text: str | None = None
-    message_id: int | None = None
+    message_id: int | None = Field(None, ge=1, le=_MAX_ROW_ID)
+    chat_id: int | None = Field(None, ge=1, le=_MAX_ROW_ID)
     uid: str | None = None
+
+    @model_validator(mode="after")
+    def _a_stored_message_names_its_chat(self):
+        """`message_id` is global; on its own it addresses the whole vault.
+
+        In the body rather than in the lookup so the refusal costs nothing and
+        proves something: an id with no chat is turned away at parse time, so
+        no vault handle is opened and no model is resolved for it, and the
+        shape is on the endpoint's own schema instead of being a rule only the
+        lookup knows. Words handed over in `text` read no row and cross no
+        conversation, so they still name no chat - the scope is owed by the
+        id, not by the endpoint.
+        """
+        if self.message_id is not None and self.chat_id is None:
+            raise ValueError("message_id must be accompanied by its chat_id")
+        return self
 
 
 def stored_pronunciations() -> dict[str, str]:
@@ -427,16 +460,31 @@ def _stored_rate() -> float | None:
 def _speak_source(body: SpeakBody) -> str:
     """The text to speak: given directly, or the RAW stored content of a
     message - which is the point of storing raw. The frontend only ever holds
-    the stripped view, so per-message speak must come back here for the tags."""
+    the stripped view, so per-message speak must come back here for the tags.
+
+    The row is looked up INSIDE the chat the caller named. Ids run in one
+    global sequence, so the unscoped lookup this replaced would read any row
+    in the vault from a request that never said where it came from, and hand
+    back the fullest copy of it that exists anywhere. `chat_id` is bound into
+    the query as given and is only ever non-None here because SpeakBody
+    refuses the pair without it; the two halves are one guard."""
     if body.message_id is not None:
         from database import get_db
 
         with get_db() as con:
             row = con.execute(
-                "SELECT content FROM messages WHERE id = ?",
-                (body.message_id,),
+                "SELECT content FROM messages WHERE id = ? AND chat_id = ?",
+                (body.message_id, body.chat_id),
             ).fetchone()
         if row is None:
+            # The SAME answer a row that exists nowhere gets, deliberately.
+            # A refusal that said "wrong conversation" would tell a caller
+            # which of the two it was, and walking the ids would then read off
+            # who owns what without a word of it ever being heard. The scope
+            # is argument consistency, not an authorization wall - anything
+            # that can post here can already list the chats - so what it is
+            # actually worth is that a stale or wrong id speaks NOTHING rather
+            # than the wrong conversation.
             raise HTTPException(404, "message_not_found")
         return (row["content"] or "").strip()
     return (body.text or "").strip()
@@ -465,6 +513,14 @@ def _prepare_speech_text(body: SpeakBody) -> PreparedSpeech:
     """
     import voice_tags
 
+    # BEFORE the row is read, and that order is the point. Resolving second
+    # made the endpoint answer differently for the chat a message belongs to
+    # than for every other one whenever no model was selected: that one got
+    # "no model", the rest got "no such message". That is the ownership map
+    # the scope predicate exists to withhold, handed over for free with no
+    # engine, no audio and nothing heard. Same answer for every chat now.
+    model = _resolve(body.uid)
+    adapter = adapter_for(model.engine_id)
     text = _speak_source(body)
     if not text:
         raise HTTPException(400, TTS_NOTHING_TO_SPEAK)
@@ -479,8 +535,6 @@ def _prepare_speech_text(body: SpeakBody) -> PreparedSpeech:
         logger.warning("tts: speak text truncated to %d chars", _MAX_TEXT_CHARS)
         text = text[:_MAX_TEXT_CHARS]
         truncated = True
-    model = _resolve(body.uid)
-    adapter = adapter_for(model.engine_id)
     # V4: tag-capable engines keep well-formed [tags] (capped, deduped,
     # malformed spans dropped so they are never READ ALOUD); the others get
     # fully stripped text - they would speak the brackets.
@@ -630,6 +684,14 @@ async def voice_speak_stream(body: SpeakBody) -> StreamingResponse:
         _fail(exc)
     except HTTPException:
         raise                       # already carries its own contract code
+    except VaultLockedError:
+        # Set-up reads the message out of the vault DB, so a lock that lands
+        # mid-request arrives here - and the catch-all below turned it into
+        # "the voice engine could not start", which sends somebody to the
+        # engine panel for a problem one click of Unlock fixes. The 423
+        # translation belongs to the app-wide handler, the same way
+        # _values_for hands it on rather than answering for it.
+        raise
     except Exception:                                    # noqa: BLE001
         # Anything else escaped as a bare 500 with no `detail` at all, so the
         # frontend had no code to map and showed the generic "Something went

@@ -95,9 +95,15 @@ export function useSetProxyAlias() {
   return useMutation({
     mutationFn: (proxyAlias: string | null) => setProxyAlias(proxyAlias),
     onSuccess: (_data, proxyAlias) => {
-      qc.setQueryData<Settings>(keys.settings(), (prev) =>
-        prev ? { ...prev, proxy_alias: proxyAlias } : prev,
-      );
+      // Only a name we KNOW is written into the cache ahead of the refetch.
+      // An emptied box is no longer a delete - the server stores the default
+      // proxy name - so writing `null` here would show the panel as having no
+      // proxy name at all, which is the exact state this change removed.
+      if (proxyAlias !== null) {
+        qc.setQueryData<Settings>(keys.settings(), (prev) =>
+          prev ? { ...prev, proxy_alias: proxyAlias } : prev,
+        );
+      }
       qc.invalidateQueries({ queryKey: keys.settings() });
     },
   });

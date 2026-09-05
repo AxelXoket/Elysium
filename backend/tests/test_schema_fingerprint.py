@@ -42,6 +42,11 @@ import database
 # missed a second time.
 FINGERPRINTS: dict[int, str] = {
     5: "cfe4b3451cf67feb77d541d70c720a39ee1b7c3f2b7568bcd96fdf792565ef78",
+    # 6 adds `chats.notebook_extracted_ever_reason`. Recorded from what this
+    # gate printed when it went red on the bump, not computed by hand - the
+    # whole value of the row is that it came from the database the build
+    # actually creates. The row for 5 is untouched.
+    6: "9aa437cf4bc57a9b75e89f8aaeccfb9585c413ae8a741f7e6b940a77ab7893b7",
 }
 
 

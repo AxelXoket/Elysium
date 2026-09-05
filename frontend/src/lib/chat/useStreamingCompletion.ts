@@ -73,8 +73,16 @@ interface StreamErrorEvent {
  * A warning, not an error: the reply is on its way. It is the answer that is
  * different from the one the user asked for - a model that never received the
  * picture will write as though there were no picture, and only this says so.
+ *
+ * `chatId` is not decoration. Two chats can stream at once, and a notice
+ * carrying no chat was byte-identical to the same notice from the other one:
+ * the store's dedupe dropped the second, so one conversation's disclosure was
+ * silently spoken for by the other's toast.
  */
-function reportStreamNotice(event: { code: string; count?: number }): void {
+function reportStreamNotice(
+  event: { code: string; count?: number },
+  chatId: number,
+): void {
   // K-36: the singular/plural pair used to be typed here, which left the
   // catalogue holding a sentence for `images_omitted` that no reader ever saw.
   // Both forms now live beside every other sentence, and getCountMessage falls
@@ -87,6 +95,7 @@ function reportStreamNotice(event: { code: string; count?: number }): void {
       event.code,
       getCountMessage(event.code, event.count),
       "warning",
+      { chatId },
     );
 }
 
@@ -573,7 +582,7 @@ export function useStreamingCompletion() {
             flusher.flushNow();
             break;
           case "notice":
-            reportStreamNotice(event);
+            reportStreamNotice(event, chatId);
             break;
         }
       };
@@ -889,7 +898,7 @@ export function useStreamingCompletion() {
             flusher.flushNow();
             break;
           case "notice":
-            reportStreamNotice(event);
+            reportStreamNotice(event, chatId);
             break;
         }
       };
@@ -1099,7 +1108,7 @@ export function useStreamingCompletion() {
             flusher.flushNow();
             break;
           case "notice":
-            reportStreamNotice(event);
+            reportStreamNotice(event, chatId);
             break;
         }
       };

@@ -84,7 +84,7 @@ describe("voice hooks", () => {
       },
     });
     try {
-      await streamMessageSpeech({ messageId: 42 }, { onEvent: () => {} });
+      await streamMessageSpeech(42, 2, { onEvent: () => {} });
       expect.unreachable("speak should have thrown");
     } catch (err) {
       expect(isApiError(err)).toBe(true);
@@ -95,17 +95,22 @@ describe("voice hooks", () => {
     }
   });
 
-  it("speaking a message sends message_id, never the stripped text", async () => {
+  it("speaking a message sends message_id and its chat, never the stripped text", async () => {
     // The delivery tags that make the voice worth hearing live in the RAW row;
     // the client only ever holds the stripped view, so it must send the id.
+    // The chat travels with it because ids are global: an id on its own names
+    // a row anywhere in the vault, including a conversation nobody has open.
     const fetchMock = mockFetch({
       "POST /tts/speak_stream": { body: "" },
     });
-    await streamMessageSpeech({ messageId: 7 }, { onEvent: () => {} });
+    await streamMessageSpeech(7, 3, { onEvent: () => {} });
     const call = fetchMock.mock.calls.find(([url]) =>
       String(url).includes("/tts/speak_stream"),
     )!;
-    expect(JSON.parse(call[1]!.body as string)).toEqual({ message_id: 7 });
+    expect(JSON.parse(call[1]!.body as string)).toEqual({
+      message_id: 7,
+      chat_id: 3,
+    });
   });
 
   it("voice upload posts FormData without a forced JSON content type", async () => {

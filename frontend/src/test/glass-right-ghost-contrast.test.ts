@@ -8,14 +8,17 @@
  * `index.css` beats `@layer utilities` whatever the specificity says. The
  * surface under test is therefore the CSS, not the component.
  *
- * COMPOSITING MODEL, fixed here and not negotiable: the gradient stops are
+ * COMPOSITING MODEL, and it is now the house model: the gradient stops are
  * SEMI-TRANSPARENT and their alpha is honoured, over the app frame
- * (`--color-es-background`). This is `right-panel-readability.test.ts`'s
- * model. `glass-right-danger-contrast.test.ts` drops the fourth channel and
- * treats the stops as opaque, which reads roughly 0.7 MORE generous - the
- * direction that lets a real regression through. Under that model the ghost
- * ink measures 4.9109:1 and passes AA, so a test copied from there would
- * have been born green and reported this defect as already fixed.
+ * (`--color-es-background`). All four files that measure this panel share it
+ * as of 5 September 2026, through `helpers/glassSurfaceCss.ts`.
+ *
+ * `glass-right-danger-contrast.test.ts` used to drop the fourth channel and
+ * treat the stops as opaque, which reads roughly 0.3 to 0.55 MORE generous -
+ * the direction that lets a real regression through. Under that reading the
+ * ghost ink measured 4.9109:1 and passed AA, so a test copied from there
+ * would have been born green and reported this defect as already fixed. That
+ * is why the model lives in one module now instead of in four copies.
  *
  * Everything is parsed from the compiled stylesheet. jsdom applies no
  * Tailwind utility rules at all (helpers/glassSurfaceCss.ts records the
@@ -25,16 +28,19 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import {
   AAA_NORMAL,
+  AA_NON_TEXT,
   AA_NORMAL,
   contrastRatio,
   luminance,
-  parseHex,
   type Rgb,
 } from "@/lib/appearance/contrast";
-import { loadGlassRightCss } from "@/test/helpers/glassSurfaceCss";
-
-/** WCAG's non-text floor. A focus indicator is a graphic, not a letter. */
-const NON_TEXT = 3;
+import {
+  composite,
+  glassRightStops,
+  loadGlassRightCss,
+  over,
+  parseRgbColour,
+} from "@/test/helpers/glassSurfaceCss";
 
 /** How far past AA a fix has to land.
  *
@@ -48,32 +54,6 @@ let css = "";
 beforeAll(async () => {
   css = await loadGlassRightCss();
 }, 60_000);
-
-function parseRgba(raw: string): Rgb {
-  const m = /(\d+)[,\s]+(\d+)[,\s]+(\d+)/.exec(raw);
-  if (!m) throw new Error(`unparseable colour: ${raw}`);
-  return { r: Number(m[1]), g: Number(m[2]), b: Number(m[3]) };
-}
-
-/** The fourth channel of an rgb()/rgba() colour, defaulting to opaque.
- *
- * The inside of the parentheses is taken FIRST. Splitting the whole
- * `rgba(...)` string on commas leaves the closing paren stuck to the alpha,
- * and `Number(" 0.12) ")` is NaN - which then travels silently through every
- * composite and every ratio, because NaN compares false everywhere and
- * `not.toBe(1)` accepts it. That is how the first version of this file
- * reported a passing harness gate sitting on top of four NaNs. */
-function alphaOf(raw: string): number {
-  const inner = /\(([^)]*)\)/.exec(raw);
-  const parts = (inner ? inner[1] : raw).split(",").map((x) => x.trim());
-  return parts.length > 3 ? Number(parts[3]) : 1;
-}
-
-/** src over dst. Same rounding as right-panel-readability.test.ts. */
-function over(src: Rgb, dst: Rgb, alpha: number): Rgb {
-  const mix = (a: number, b: number) => Math.round(a * alpha + b * (1 - alpha));
-  return { r: mix(src.r, dst.r), g: mix(src.g, dst.g), b: mix(src.b, dst.b) };
-}
 
 /** A `--token: value;` as declared anywhere in the compiled text. */
 function token(name: string): string {
@@ -101,31 +81,13 @@ function panelToken(name: string): string {
   return m ? m[1].trim() : token(name);
 }
 
-/** The frame the panel is painted on. Load-bearing: both gradient stops are
- *  translucent, so the frame reaches the eye through them. With a lighter
- *  frame the ink would clear AA on its own. */
-function frame(): Rgb {
-  const hex = parseHex(token("--color-es-background"));
-  expect(hex, "the frame background is no longer a plain hex").not.toBeNull();
-  return hex!;
-}
-
-/** The panel's two gradient stops, composited onto the frame. */
-function panelStops(): [Rgb, Rgb] {
-  const idx = css.indexOf(".glass-right {");
-  expect(idx, "the .glass-right rule moved or was renamed").toBeGreaterThan(-1);
-  const block = css.slice(idx, idx + 400);
-  const m =
-    /background:\s*linear-gradient\([^,]+,\s*rgba\(([^)]+)\),\s*rgba\(([^)]+)\)/
-      .exec(block);
-  expect(m, "the panel gradient did not parse - was it reformatted?")
-    .not.toBeNull();
-  const f = frame();
-  return [
-    over(parseRgba(m![1]), f, alphaOf(m![1])),
-    over(parseRgba(m![2]), f, alphaOf(m![2])),
-  ];
-}
+/** The panel's two gradient stops, composited onto the frame.
+ *
+ * Shared with the other three files that measure this surface as of
+ * 5 September 2026. The frame is load-bearing: both stops are translucent, so
+ * --color-es-background reaches the eye through them, and with a lighter frame
+ * the ink would clear AA on its own. */
+const panelStops = (): [Rgb, Rgb] => glassRightStops(css);
 
 /**
  * A declaration from the rule that governs `.persona-ghost-action`.
@@ -167,21 +129,16 @@ function resolve(raw: string): Rgb {
   // Panel scope first: these declarations live inside .glass-right, and
   // the same names carry the dark shell values globally.
   if (v) return resolve(panelToken(v[1]));
-  if (raw.includes("(")) return parseRgba(raw);
-  const hex = parseHex(raw);
-  expect(hex, `unresolvable colour: ${raw}`).not.toBeNull();
-  return hex!;
+  return parseRgbColour(raw);
 }
 
-/** The button's own fill, over each panel stop. */
+/** The button's own fill, over each panel stop. Two compositing steps, not
+ *  one: the fill is translucent over a panel that is itself translucent. */
 function fillStops(): [Rgb, Rgb] {
   const raw = ghostDeclaration("background");
   expect(raw, "the ghost action declares no background").not.toBeNull();
   const [top, bottom] = panelStops();
-  return [
-    over(parseRgba(raw!), top, alphaOf(raw!)),
-    over(parseRgba(raw!), bottom, alphaOf(raw!)),
-  ];
+  return [composite(raw!, top), composite(raw!, bottom)];
 }
 
 describe("the right panel's ghost buttons", () => {
@@ -239,9 +196,9 @@ describe("the right panel's ghost buttons", () => {
       ? resolve(focusBorder)
       : over(ring, bottom, 0.5);
 
-    expect(contrastRatio(indicatorTop, top)).toBeGreaterThanOrEqual(NON_TEXT);
+    expect(contrastRatio(indicatorTop, top)).toBeGreaterThanOrEqual(AA_NON_TEXT);
     expect(contrastRatio(indicatorBottom, bottom))
-      .toBeGreaterThanOrEqual(NON_TEXT);
+      .toBeGreaterThanOrEqual(AA_NON_TEXT);
   });
 
   it("the ink clears AA at the BOTTOM stop, where the panel is darkest", () => {

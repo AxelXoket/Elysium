@@ -151,15 +151,6 @@
       ]
     },
     {
-      "code": "character_name_required",
-      "statuses": [
-        400
-      ],
-      "channels": [
-        "http"
-      ]
-    },
-    {
       "code": "character_not_found",
       "statuses": [
         404
@@ -629,6 +620,15 @@
       ]
     },
     {
+      "code": "proxy_alias_too_long",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
       "code": "proxy_auth_failed",
       "statuses": [],
       "channels": [
@@ -734,15 +734,6 @@
     {
       "code": "timeout",
       "statuses": [],
-      "channels": [
-        "http"
-      ]
-    },
-    {
-      "code": "title_required",
-      "statuses": [
-        400
-      ],
       "channels": [
         "http"
       ]
@@ -876,7 +867,9 @@
     },
     {
       "code": "tts_model_not_found",
-      "statuses": [],
+      "statuses": [
+        404
+      ],
       "channels": [
         "http",
         "voice_sse"
@@ -939,6 +932,14 @@
       "statuses": [
         400
       ],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_proxy_unavailable",
+      "statuses": [],
       "channels": [
         "http",
         "voice_sse"

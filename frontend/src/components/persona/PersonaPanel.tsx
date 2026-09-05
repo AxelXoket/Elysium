@@ -41,7 +41,6 @@ const PRIVACY_NOTE =
 interface PersonaFormState {
   displayName: string;
   description: string;
-  error: string | null;
 }
 
 /**
@@ -49,10 +48,9 @@ interface PersonaFormState {
  *
  * Shaped as the `useState` pair it replaced so `PersonaForm` below did not
  * have to change at all: it still receives one object and one setter that
- * accepts an updater. Only the validation message stays component-local -
- * it is produced by pressing the button, not typed, so there is nothing in
- * it to lose, and a stale "Display name is required." restored beside a box
- * the user has since filled in would be a lie.
+ * accepts an updater. It used to carry a third, component-local field for a
+ * validation message; the only message it ever held was the one refusing an
+ * empty display name, and an empty display name is no longer a refusal.
  *
  * The fallbacks are what the boxes show before anything is typed, which is
  * how the edit form follows the stored persona until the moment the user
@@ -69,22 +67,19 @@ function usePersonaFormDraft(
     descriptionKey,
     descriptionFallback,
   );
-  const [error, setError] = useState<string | null>(null);
-
-  const form: PersonaFormState = { displayName, description, error };
+  const form: PersonaFormState = { displayName, description };
   const setForm = (
     next: PersonaFormState | ((current: PersonaFormState) => PersonaFormState),
   ) => {
     // An updater is handed what the STORE holds right now, not what this
     // render read. Two writes inside one event - a paste that fires input
-    // twice, a handler that adjusts a field and then clears the error -
-    // would otherwise compute the second one from a value that is already
-    // one write out of date, and the first keystroke would disappear.
+    // twice, a handler that adjusts one field and then another - would
+    // otherwise compute the second one from a value that is already one
+    // write out of date, and the first keystroke would disappear.
     const stored = useDraftStore.getState().panel;
     const current: PersonaFormState = {
       displayName: stored[nameKey]?.text ?? nameFallback,
       description: stored[descriptionKey]?.text ?? descriptionFallback,
-      error,
     };
     const value = typeof next === "function" ? next(current) : next;
     // Only what actually MOVED is written. Writing both fields on every call
@@ -93,15 +88,13 @@ function usePersonaFormDraft(
     // sits outside the vault and survives a lock. It also froze the untouched
     // box to a snapshot, so a row edited elsewhere stopped showing through.
     // The same restraint keeps "a buffer exists" meaning "the user typed
-    // here", which is the fact two open/closed flags are derived from: a
-    // failed validation press sets only `error` and must leave no buffer.
+    // here", which is the fact two open/closed flags are derived from.
     if (value.displayName !== current.displayName) {
       setDisplayName(value.displayName);
     }
     if (value.description !== current.description) {
       setDescription(value.description);
     }
-    setError(value.error);
   };
   return [form, setForm];
 }
@@ -254,13 +247,8 @@ export function PersonaPanel() {
   const handleCreate = async () => {
     const displayName = createForm.displayName.trim();
     const description = createForm.description.trim();
-    if (!displayName) {
-      setCreateForm((form) => ({
-        ...form,
-        error: "Display name is required.",
-      }));
-      return;
-    }
+    // No "Display name is required." any more. It is not required: an empty
+    // one is sent as an empty string and the server names the persona.
 
     try {
       await createPersona.mutateAsync({
@@ -276,13 +264,9 @@ export function PersonaPanel() {
   const handlePatch = async (persona: Persona) => {
     const displayName = editForm.displayName.trim();
     const description = editForm.description.trim();
-    if (!displayName) {
-      setEditForm((form) => ({
-        ...form,
-        error: "Display name is required.",
-      }));
-      return;
-    }
+    // Same as create: an emptied box is a rename to the next default name,
+    // not a refusal. It still has to DIFFER from the stored name to be sent,
+    // which is what the comparison below decides.
 
     const payload: PersonaPatch = {};
     if (displayName !== persona.display_name) payload.display_name = displayName;
@@ -638,7 +622,6 @@ function PersonaForm({
             setForm((current) => ({
               ...current,
               displayName: e.target.value,
-              error: null,
             }))
           }
           placeholder="How should your character know you?"
@@ -654,7 +637,6 @@ function PersonaForm({
             setForm((current) => ({
               ...current,
               description: e.target.value,
-              error: null,
             }))
           }
           placeholder="A short note about your preferences or identity."
@@ -663,11 +645,6 @@ function PersonaForm({
           disabled={pending}
         />
       </label>
-      {form.error && (
-        <p className="persona-local-error" role="alert">
-          {form.error}
-        </p>
-      )}
       <div className="flex justify-end gap-1.5">
         <Button
           type="button"

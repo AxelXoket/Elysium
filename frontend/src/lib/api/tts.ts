@@ -112,6 +112,14 @@ export function unloadVoice(): Promise<TtsState> {
 /**
  * Speak a stored message, receiving each piece AS IT IS MADE.
  *
+ * Names the chat it is speaking from, the same way every note route does.
+ * Message ids run in one sequence across the whole vault, so the backend used
+ * to accept the primary key as the whole identity and a request could reach
+ * a row in a conversation nobody had open - and since the reply is the row's
+ * RAW text read aloud, that was a read of the fullest copy of it in
+ * existence. `chat_id` is required there now; it is required here for the
+ * same reason, rather than optional and forgotten.
+ *
  * The Speak button used to wait for the whole reply: `/tts/speak` joins every
  * sentence into one file and answers at the end, so a four-paragraph message
  * was twenty seconds of silence before anything was heard. The shape of the
@@ -122,14 +130,13 @@ export function unloadVoice(): Promise<TtsState> {
  * sentence would be two things to keep working.
  */
 export function streamMessageSpeech(
-  body: { messageId?: number; text?: string },
+  messageId: number,
+  chatId: number,
   options: { signal?: AbortSignal; onEvent: (event: StreamEvent) => void },
 ): Promise<void> {
   return streamCompletion(
     "/tts/speak_stream",
-    body.messageId !== undefined
-      ? { message_id: body.messageId }
-      : { text: body.text ?? "" },
+    { message_id: messageId, chat_id: chatId },
     options,
   );
 }

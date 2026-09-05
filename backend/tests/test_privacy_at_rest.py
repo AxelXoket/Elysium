@@ -22,11 +22,55 @@ from pathlib import Path
 import pytest
 
 import openrouter
-from tests.conftest import make_chat, make_character
+from tests.conftest import get_messages, make_chat, make_character
+
+
+def _plaintext_db_holding(path: Path, text: str,
+                          encoding: str | None = None) -> bytes:
+    """A database nothing encrypts, carrying `text`, returned as raw bytes.
+
+    The positive control for every "not in raw" assertion below. A byte sweep
+    that finds nothing proves nothing until it has been shown finding
+    something, and the cheapest way to show that is to hand it a file where
+    the phrase is definitely present and definitely in the clear.
+
+    `encoding` is passed straight to PRAGMA encoding, which SQLite only
+    honours before the first table exists - that is what lets one call
+    produce a UTF-8 file and another a UTF-16LE one, so both arms of the
+    sweep get their own control rather than sharing a UTF-8 one.
+    """
+    con = std_sqlite3.connect(str(path))
+    try:
+        if encoding is not None:
+            con.execute(f"PRAGMA encoding = '{encoding}'")
+        con.execute("CREATE TABLE probe (body TEXT NOT NULL)")
+        con.execute("INSERT INTO probe (body) VALUES (?)", (text,))
+        con.commit()
+    finally:
+        con.close()
+    return path.read_bytes()
 
 
 class TestTheDatabaseFileIsCiphertext:
     SENTINEL = "ciphertextsentinelphrasexyzzy"
+
+    def test_the_sweep_finds_the_sentinel_when_nothing_encrypts_it(
+        self, tmp_path
+    ) -> None:
+        """The floor under all three "not in raw" tests in this class.
+
+        Those three read as strong claims and are worth exactly as much as
+        the sweep behind them. If SENTINEL were mistyped, if read_bytes came
+        back empty, if the two encodings were the same encoding, every one of
+        them would stay green against a database written in the clear - the
+        precise failure this file exists to catch.
+        """
+        utf8 = _plaintext_db_holding(tmp_path / "clear-utf8.db", self.SENTINEL)
+        assert self.SENTINEL.encode() in utf8
+
+        utf16 = _plaintext_db_holding(tmp_path / "clear-utf16.db",
+                                      self.SENTINEL, encoding="UTF-16le")
+        assert self.SENTINEL.encode("utf-16-le") in utf16
 
     def test_the_header_is_not_a_sqlite_header(self, client) -> None:
         import config
@@ -54,6 +98,15 @@ class TestTheDatabaseFileIsCiphertext:
                                      "model_id": "test/model-1"})
         assert response.status_code == 200, response.text
 
+        # The phrase has to have REACHED the file before its absence from the
+        # file says anything. A route that answered 200 and persisted nothing
+        # leaves every assertion below true and the cipher untested, so the
+        # message is read back through the application's own read path first.
+        stored = get_messages(client, chat_id)
+        assert any(self.SENTINEL in m["content"] for m in stored), (
+            "the message was never persisted, so its absence from the raw "
+            "bytes says nothing about the cipher")
+
         raw = Path(config.DB_PATH).read_bytes()
         assert self.SENTINEL.encode() not in raw
         assert self.SENTINEL.encode("utf-16-le") not in raw
@@ -64,8 +117,15 @@ class TestTheDatabaseFileIsCiphertext:
         # A card carries the system prompt and the opening line, which is what
         # the WebView2 cache leak turned out to be full of.
         import config
-        make_character(client, name="Cardsentinelzzz",
-                       first_mes="opening-line-sentinel-zzz")
+        character_id = make_character(client, name="Cardsentinelzzz",
+                                      first_mes="opening-line-sentinel-zzz")
+        card = client.get(f"/api/v1/characters/{character_id}")
+        assert card.status_code == 200, card.text
+        assert card.json()["name"] == "Cardsentinelzzz"
+        assert card.json()["first_mes"] == "opening-line-sentinel-zzz", (
+            "the card was never persisted, so its absence from the raw bytes "
+            "says nothing about the cipher")
+
         raw = Path(config.DB_PATH).read_bytes()
         assert b"Cardsentinelzzz" not in raw
         assert b"opening-line-sentinel-zzz" not in raw
@@ -86,10 +146,27 @@ class TestTheDatabaseFileIsCiphertext:
         response = client.post("/api/v1/uploads/images",
                                files={"file": ("probe.png", payload,
                                                "image/png")})
-        if response.status_code not in (200, 201):
-            pytest.skip(f"upload route answered {response.status_code}")
+        # Not a skip. A privacy gate that cannot reach the route it measures
+        # knows nothing about that route, and "knows nothing" is the state
+        # that has to be loud: a skip reports a green suite while the one
+        # claim this file exists to make goes unmeasured.
+        assert response.status_code in (200, 201), response.text
+
+        # Positive control, and it needs the stored bytes rather than the
+        # posted ones: save_upload re-encodes through Pillow, so `payload` on
+        # its own could be absent from the file simply because those exact
+        # bytes were never written. What must not be findable is what the
+        # application will hand back.
+        attachment_id = response.json()["id"]
+        served = client.get(f"/api/v1/uploads/images/{attachment_id}")
+        assert served.status_code == 200, served.text
+        stored = served.content
+        assert stored.startswith(b"\x89PNG\r\n\x1a\n"), (
+            "no image came back, so its absence from the raw bytes says "
+            "nothing about the cipher")
 
         raw = Path(config.DB_PATH).read_bytes()
+        assert stored not in raw
         assert payload not in raw
         assert b"\x89PNG\r\n\x1a\n" not in raw
 

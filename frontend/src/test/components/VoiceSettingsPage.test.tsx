@@ -384,6 +384,77 @@ describe("VoiceSettingsPage", () => {
     });
   });
 
+  // ── the overwrite an invented fallback name used to cause ────────────────
+  //
+  // The panel used to substitute the fixed string "Untitled voice" whenever
+  // neither a typed name nor a usable filename existed. Two unnamed uploads
+  // therefore carried the SAME label, the collision check below matched them,
+  // and the second was sent under the first voice's id - a replace nobody
+  // asked for, which destroyed the first clip and the transcript the user had
+  // corrected by hand. The fallback is gone: an unnamed upload travels with an
+  // empty label and the server numbers it.
+
+  it("an unnamed upload never lands on an existing voice's id", async () => {
+    const fetchMock = mockFetch({
+      ...baseRoutes(),
+      "/tts/voices": {
+        body: {
+          voices: [
+            {
+              voice_id: EXISTING_ANNA_ID, label: "", path: "C:/v/anna",
+              audio_name: "ref.wav", transcript: "hand corrected",
+              transcript_source: "user", seconds: 10, needs_conversion: false,
+            },
+          ],
+        },
+      },
+    });
+    renderWithQueryClient(<VoiceSettingsPage />);
+
+    // No typed name, and a filename that leaves nothing behind once the
+    // extension is stripped - the exact case the invented fallback existed
+    // for.
+    await userEvent.upload(
+      await screen.findByLabelText("Upload a reference clip"),
+      new File(["x"], ".wav", { type: "audio/wav" }),
+    );
+
+    await waitFor(() => expect(voicePostCalls(fetchMock)).toHaveLength(1));
+    const [url, init] = voicePostCalls(fetchMock)[0];
+
+    // Not a replace: a fresh id, so the stored clip and its transcript stay.
+    expect(String(url)).not.toContain(EXISTING_ANNA_ID);
+    expect(String(url).split("/tts/voices/")[1]).toMatch(
+      /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/,
+    );
+    // No invented name rides along; the server picks one. The transport
+    // leaves an empty label OUT of the form rather than sending "", and the
+    // route reads a missing field as "" - so both spellings of "nothing" are
+    // accepted here and any actual string is a failure.
+    const sentLabel = (init!.body as FormData).get("label") ?? "";
+    expect(sentLabel, "the panel invented a name again").toBe("");
+    // And no dialog claimed a collision that was never real.
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("two unnamed uploads are two voices, not one overwritten twice", async () => {
+    const fetchMock = mockFetch(baseRoutes());
+    renderWithQueryClient(<VoiceSettingsPage />);
+
+    const input = await screen.findByLabelText("Upload a reference clip");
+    await userEvent.upload(input, new File(["a"], ".wav", { type: "audio/wav" }));
+    await waitFor(() => expect(voicePostCalls(fetchMock)).toHaveLength(1));
+    await userEvent.upload(input, new File(["b"], ".wav", { type: "audio/wav" }));
+    await waitFor(() => expect(voicePostCalls(fetchMock)).toHaveLength(2));
+
+    const ids = voicePostCalls(fetchMock).map(
+      ([url]) => String(url).split("/tts/voices/")[1],
+    );
+    expect(ids[0], "the second unnamed clip replaced the first").not.toBe(
+      ids[1],
+    );
+  });
+
   it("declining the collision uploads nothing", async () => {
     const fetchMock = mockFetch({
       ...baseRoutes(),

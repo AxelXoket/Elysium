@@ -43,7 +43,7 @@ interface VoicePlayerState {
   /** Advanced by every speak() AND every stop(): any async continuation
    * holding an older seq is abandoned and must do nothing. */
   requestSeq: number;
-  speak: (messageId: number) => Promise<void>;
+  speak: (messageId: number, chatId: number) => Promise<void>;
   stop: () => void;
 }
 
@@ -102,7 +102,7 @@ export const useVoicePlayer = create<VoicePlayerState>((set, get) => ({
     }));
   },
 
-  speak: async (messageId: number) => {
+  speak: async (messageId: number, chatId: number) => {
     const seq = get().requestSeq + 1;
     // Whatever was playing stops NOW - not when the new audio arrives, and
     // not only when it happens to be THIS store's element. dropAudio() alone
@@ -152,8 +152,12 @@ export const useVoicePlayer = create<VoicePlayerState>((set, get) => ({
         },
       });
       streaming = player;
+      // The chat travels with the id: the row is only addressable inside
+      // the conversation it belongs to, and the store is the last place that
+      // still knows which one the press came from.
       await streamMessageSpeech(
-        { messageId },
+        messageId,
+        chatId,
         {
           signal: controller.signal,
           onEvent: (event) => {

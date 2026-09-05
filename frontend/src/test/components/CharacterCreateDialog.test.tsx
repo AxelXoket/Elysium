@@ -141,13 +141,14 @@ describe("Character Create Dialog Tests", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText("RAW_UPSTREAM_DETAIL")).not.toBeInTheDocument();
   });
-  it("will not create a character with no name", async () => {
-    // The only thing standing between an empty name and a POST is the
-    // button's disabled state, and nothing was checking it: dropping
-    // `!name.trim()` from the condition left every test in the repo green.
-    // The handler's own `if (!jsonText.trim()) return`-style guard behind it
-    // is unreachable through the UI, so this is the boundary that matters.
-    mockFetch({ "/characters": { body: characterFixture } });
+  it("creates a character with no name and lets the server name it", async () => {
+    // S-9 rewrite. The button used to be disabled on an empty name, which is
+    // the dead end this whole change removes: the panel refused, the API
+    // refused with 422, and the person who just wanted to start had to invent
+    // a word first. The name is now optional at every layer, so the button is
+    // live and the request goes out with an empty name for the server to
+    // fill in.
+    const mock = mockFetch({ "/characters": { body: characterFixture } });
     const user = userEvent.setup();
     renderWithQueryClient(
       <CharacterCreateDialog trigger={<Button>Create</Button>} />,
@@ -159,18 +160,53 @@ describe("Character Create Dialog Tests", () => {
       expect(screen.getByText("Create Character")).toBeInTheDocument();
     });
 
-    const buttons = screen.getAllByRole("button", { name: /create/i });
-    expect(
-      buttons[buttons.length - 1],
-      "an unnamed character can be created",
-    ).toBeDisabled();
+    const submit = () =>
+      screen.getAllByRole("button", { name: /create/i }).slice(-1)[0];
+    expect(submit(), "an unnamed character cannot be created").toBeEnabled();
 
-    // And it becomes usable the moment there is a name, so the assertion
-    // above is about the empty case and not about the button never working.
-    await user.type(screen.getByPlaceholderText("Character name"), "Named");
-    expect(
+    await user.click(submit());
+
+    await waitFor(() => {
+      const posts = mock.mock.calls.filter(
+        (call) =>
+          typeof call[0] === "string" &&
+          call[0].endsWith("/characters") &&
+          call[1]?.method === "POST",
+      );
+      expect(posts).toHaveLength(1);
+      expect(JSON.parse(posts[0][1]?.body as string).name).toBe("");
+    });
+  });
+
+  it("still sends the name when there is one", async () => {
+    // POSITIVE CONTROL for the test above. "an empty name is sent" would be
+    // satisfied by a dialog that had stopped reading the box at all.
+    const mock = mockFetch({ "/characters": { body: characterFixture } });
+    const user = userEvent.setup();
+    renderWithQueryClient(
+      <CharacterCreateDialog trigger={<Button>Create</Button>} />,
+      { wrapper },
+    );
+
+    await user.click(screen.getByRole("button", { name: /create/i }));
+    await waitFor(() => {
+      expect(screen.getByText("Create Character")).toBeInTheDocument();
+    });
+    await user.type(screen.getByPlaceholderText("Character name"), "  Named  ");
+    await user.click(
       screen.getAllByRole("button", { name: /create/i }).slice(-1)[0],
-    ).toBeEnabled();
+    );
+
+    await waitFor(() => {
+      const posts = mock.mock.calls.filter(
+        (call) =>
+          typeof call[0] === "string" &&
+          call[0].endsWith("/characters") &&
+          call[1]?.method === "POST",
+      );
+      expect(posts).toHaveLength(1);
+      expect(JSON.parse(posts[0][1]?.body as string).name).toBe("Named");
+    });
   });
 
   it("selects the character it just created", async () => {

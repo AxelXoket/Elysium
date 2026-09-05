@@ -57,11 +57,12 @@ from config import (
 import notebook_store
 import voice_tags
 from database import get_db
-from typing import Literal
+from typing import Annotated, Literal
 
 from vault_state import VaultLockedError
 from tts import stream_hook
 from routers import tts_runtime
+from routers.settings import MAX_STOP_SEQUENCES_READ
 from secrets_service import get_secret
 from attachments_service import (
     AttachmentError,
@@ -138,7 +139,46 @@ class GenerationParams(BaseModel):
     repetition_penalty: float | None = None
     max_tokens: int | None = None
     seed: int | None = None
-    stop: str | list[str] | None = None
+    # The only list on this body, and the last one on the live streaming path
+    # whose entries are WALKED: `validate_and_filter_gen_params` visits every
+    # one, and `_prepare_completion` calls it straight on the event loop with
+    # no thread hop, from six routes. So an oversized list does not merely cost
+    # the request that sent it. It holds the loop and stalls every reply
+    # already streaming in this process. Measured through the route, with a
+    # 25 MB body of five million entries, as the longest stretch the loop went
+    # without control: 0.139s, against 0.016s for the same request carrying no
+    # stop list. With this ceiling the body answers 422 and that falls to
+    # 0.086s, all of it reading and JSON-parsing the body before any schema
+    # runs. That remainder is the BYTE dimension, which no entry ceiling
+    # removes and which a body-size limit elsewhere would. (The settings route
+    # quotes a larger figure for a walk of the same length and does not
+    # contradict this: its loop trims and de-duplicates every entry, this one
+    # compares two things per entry.)
+    #
+    # REFUSED here, not clamped, which is the opposite of what the settings
+    # route does with the same list, because the two protect different things.
+    # There the clamp protects a SAVE: a stale dialog sending a few entries too
+    # many must not lose the whole settings write to a 422. Here nothing is
+    # stored, so a refusal costs one retry and no state; there is no clamp on
+    # this path to preserve, the list being forwarded as sent; and dropping
+    # entries quietly would change where the model stops writing, which is a
+    # wrong answer nobody is told about instead of a refusal somebody can see.
+    # The refusal lands before the stream opens, because the body is validated
+    # before the handler runs, so it is a plain 422 and never a broken stream.
+    #
+    # The ceiling is the settings route's own READ ceiling rather than a new
+    # number, because this list IS that list: the panel merges the saved stop
+    # sequences into the request. Nothing any version of it sends comes near.
+    #
+    # `Annotated` on the list arm rather than `Field(max_length=...)` on the
+    # field: a bare max_length would cap the STRING arm too, in CHARACTERS,
+    # and one stop sequence is allowed a hundred of those.
+    #
+    # The walk itself is not moved off the loop, because at this ceiling it is
+    # microseconds and a thread hop would cost more than it saves.
+    stop: str | Annotated[
+        list[str], Field(max_length=MAX_STOP_SEQUENCES_READ)
+    ] | None = None
 
     @field_validator(
         "temperature", "top_p", "top_k", "min_p", "top_a",
@@ -868,6 +908,11 @@ async def _prepare_completion(
     # frontend tests, the error catalogue and the frontend contract all
     # describe. Moving the existing check is the same guarantee with no
     # contract change at all.
+    #
+    # The one `Field` constraint that model does carry, the stop-list ceiling,
+    # is not an exception to that. It refuses a shape no client sends, before
+    # this call runs at all, so there is no `invalid_gen_params` answer of its
+    # own for a validation array to replace.
     try:
         filtered_gen_params = validate_and_filter_gen_params(
             generation_params.model_dump(exclude_none=True)

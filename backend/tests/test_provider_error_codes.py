@@ -106,6 +106,12 @@ class _StreamClient:
 @pytest.fixture()
 def fake_key(monkeypatch):
     monkeypatch.setattr(openrouter, "get_secret", lambda name: "sk-test")
+    # complete()/complete_stream() also read the SAFEWORD out of the
+    # vault before the socket, and this file drives them with no vault
+    # at all. Says the same thing about the safeword that the line
+    # above says about the key: in this scenario there is not one.
+    monkeypatch.setattr(openrouter.safeword_filter, "needles",
+                        lambda: ())
 
 
 def _response(status: int, body: object | bytes = b"") -> httpx.Response:

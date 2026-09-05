@@ -268,6 +268,30 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "tests/test_tts_worker.py::TestAWorkersOwnWordsDoNotReachTheLog"
         "::test_a_reference_clip_name_does_not_survive_a_detail",
     )),
+    # The proxy note was the one prose claim in this section with no proof
+    # registered against it, and it had gone false: the sentence said the
+    # download refuses when the setting cannot be read, and only the 25 MB uv
+    # fetch did. The several-gigabyte half read the same setting through a
+    # wrapper that turns "the vault could not answer" into "no proxy is
+    # configured" and went out bare. Registered now, on both halves of what
+    # the sentence claims - one gate, and nothing out before it speaks.
+    ("both of the installer's ways onto the network ask one gate first", (
+        "tests/test_provision_proxy.py"
+        "::TestM1TheInstallDoesNotStartWhenTheProxyCannotBeGot"
+        "::test_the_subprocess_half_starts_nothing",
+        "tests/test_provision_proxy.py"
+        "::TestM1TheInstallDoesNotStartWhenTheProxyCannotBeGot"
+        "::test_the_download_half_starts_nothing",
+        "tests/test_provision_proxy.py"
+        "::TestM2NothingLeavesWithoutPassingTheGate"
+        "::test_the_gate_speaks_before_the_first_egress",
+    )),
+    # And the other direction, which is the half a fail-closed switch is most
+    # likely to get wrong: refusing everybody.
+    ("nothing starts at all", (
+        "tests/test_provision_proxy.py::TestM5ARefusalIsNotTheNewDefault"
+        "::test_with_no_proxy_required_the_install_finishes",
+    )),
 )
 
 
@@ -278,7 +302,7 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
 #: test would notice. This closes that by refusing ANY change to the section
 #: until somebody comes here, decides what the change claims, and registers a
 #: proof for it. Updating this constant is the deliberate act.
-SECTION_DIGEST = "e0051ce34b5f40fcf642c8d8604bb0a7e7d00b581b3518f3695a519385b8cbfd"
+SECTION_DIGEST = "8de4bab0cfca523d15980d37be26a5fd7e36f9e055c8f58c2bb719b9be0fa309"
 
 
 def _section() -> str:

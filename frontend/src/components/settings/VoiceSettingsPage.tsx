@@ -1044,17 +1044,31 @@ function ReferenceVoicesSection() {
     const fallbackLabel = file.name.replace(/\.[^.]+$/, "").trim();
     // What the user typed, or a name drawn from their own file - that file
     // is already on their machine, so reusing its name here is not a new
-    // leak, unlike writing it into a URL or a folder name would be - or a
-    // fixed placeholder for the rare case neither exists. Never the thing
-    // the id is minted from: see mintVoiceId above.
-    const label = pendingName.trim() || fallbackLabel || "Untitled voice";
+    // leak, unlike writing it into a URL or a folder name would be. Never
+    // the thing the id is minted from: see mintVoiceId above.
+    //
+    // There is no third fallback any more, and its removal is a data-loss
+    // fix rather than a tidy-up. It used to be the fixed string
+    // "Untitled voice", so TWO unnamed uploads produced the same label, the
+    // collision check below matched them, the second one was sent under the
+    // FIRST one's id, and it replaced that clip and the transcript the user
+    // had corrected by hand. Nothing warned, because from here it looked
+    // like a deliberate replace. An empty label now travels empty and the
+    // server numbers it, so the second upload is a second voice.
+    const label = pendingName.trim() || fallbackLabel;
     // The user's question a collision answers is "do I already have a voice
     // called this" - so it is answered against LABELS. Ids are opaque now
     // and share nothing with a typed name, so comparing ids here would never
     // catch a real collision.
-    const match = (voices.data?.voices ?? []).find(
-      (v) => v.label.trim().toLowerCase() === label.toLowerCase(),
-    );
+    //
+    // With no label there is no question to answer: an unnamed upload is not
+    // claiming to be any existing voice, and matching it against one would be
+    // the overwrite this branch exists to prevent.
+    const match = label
+      ? (voices.data?.voices ?? []).find(
+          (v) => v.label.trim().toLowerCase() === label.toLowerCase(),
+        )
+      : undefined;
     if (match) {
       // Reuse the EXISTING voice's id so this lands as a replace - minting a
       // fresh id here would leave the old voice behind under its own id

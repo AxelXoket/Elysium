@@ -1,4 +1,4 @@
-import { Children, useMemo, type ReactNode } from "react";
+import { Children, memo, useMemo, type ReactNode } from "react";
 import { motion as m, type Variants } from "motion/react";
 import { staggerStep } from "@/lib/motion/stagger";
 import { useReducedMotion } from "./ReducedMotion";
@@ -24,7 +24,22 @@ const reducedItemVariants: Variants = {
    per render would make motion re-diff every item every frame. */
 const ITEM_TRANSITION = { duration: 0.18, ease: [0.4, 0, 0.2, 1] } as const;
 
-export function AnimatedList({
+/* Both exports are memoised for the same reason the objects above are
+   hoisted, and the wrapper is the half that was missing: hoisting stops the
+   LITERALS being rebuilt, not the component bodies, and on a streaming flush
+   it is the bodies that run - 200 of them per frame for a long chat,
+   measured.
+
+   The comparison is React's default shallow one, deliberately. A hand-written
+   comparator here would have to know which props may be ignored, and the one
+   prop that decides everything is `children`: a parent that builds a fresh
+   child element inside its own map hands over something that is never
+   shallow-equal, and the memo correctly does nothing. That is the shape of
+   all four call sites today, so this wrapper buys nothing there yet and
+   costs one comparison; it buys the guarantee for any parent that does hold
+   its children still, and it stops the item body being the reason a stable
+   list re-runs. */
+export const AnimatedList = memo(function AnimatedList({
   children,
   className,
   stagger = 0.04,
@@ -61,9 +76,9 @@ export function AnimatedList({
       {children}
     </m.div>
   );
-}
+});
 
-export function AnimatedListItem({
+export const AnimatedListItem = memo(function AnimatedListItem({
   children,
   className,
   animated = true,
@@ -103,4 +118,4 @@ export function AnimatedListItem({
       {children}
     </m.div>
   );
-}
+});

@@ -440,7 +440,55 @@ describe("ChatList", () => {
     expect(patchCalls(mock)).toHaveLength(0);
   });
 
-  it("RENAME: empty or unchanged commit cancels silently without a request", async () => {
+  it("RENAME: an emptied box is SENT, for the server to name", async () => {
+    // Rewritten with the contract. An emptied box used to cancel silently,
+    // which meant the one gesture that says "I do not want this name any
+    // more" was also the one gesture that did nothing. It is now a rename to
+    // the next default name, and only the server can pick that, so the
+    // request has to leave.
+    //
+    // Gated, because the interesting moment is WHILE the request is in
+    // flight: an optimistic "" written into the cache would flash the
+    // sidebar's `Chat #1` fallback - a name nobody chose - for the length of
+    // the round trip.
+    const user = userEvent.setup();
+    let releaseRename!: (response: Response) => void;
+    const renameGate = new Promise<Response>((resolve) => {
+      releaseRename = resolve;
+    });
+    let chatsBody: Chat[] = [chatFixture];
+    const mock = mockFetchWithStreams({
+      "/chats/1": { response: () => renameGate },
+      "/chats": { response: () => jsonResponse(chatsBody) },
+    });
+
+    renderWithQueryClient(<ChatList />);
+
+    const input = await openRenameInput(user);
+    await user.clear(input);
+    await user.keyboard("{Enter}");
+
+    await waitFor(() => {
+      expect(patchCalls(mock)).toHaveLength(1);
+    });
+    expect(JSON.parse(patchCalls(mock)[0][1]?.body as string).title).toBe("");
+
+    // In flight: the old name is still on screen, and the fallback is not.
+    expect(screen.getByText("Test Chat")).toBeInTheDocument();
+    expect(screen.queryByText("Chat #1")).not.toBeInTheDocument();
+
+    chatsBody = [{ ...chatFixture, title: "New Chat 1" }];
+    releaseRename(jsonResponse({ ...chatFixture, title: "New Chat 1" }));
+
+    // And the name the SERVER picked is what lands.
+    expect(await screen.findByText("New Chat 1")).toBeInTheDocument();
+    expect(screen.queryByText("Chat #1")).not.toBeInTheDocument();
+    expect(useErrorStore.getState().errors).toHaveLength(0);
+  });
+
+  it("RENAME: an unchanged commit still cancels silently", async () => {
+    // GROUND CONTROL for the test above: "an emptied box sends" would also be
+    // satisfied by a box that sent on every keystroke.
     const user = userEvent.setup();
     const mock = mockFetch({
       "PATCH /chats/1": { body: { ...chatFixture, title: "x" } },
@@ -449,24 +497,68 @@ describe("ChatList", () => {
 
     renderWithQueryClient(<ChatList />);
 
-    // Empty commit
-    let input = await openRenameInput(user);
-    await user.clear(input);
-    await user.keyboard("{Enter}");
-    expect(
-      screen.queryByRole("textbox", { name: /rename chat/i }),
-    ).not.toBeInTheDocument();
-    expect(patchCalls(mock)).toHaveLength(0);
-
-    // Unchanged commit
-    input = await openRenameInput(user);
+    const input = await openRenameInput(user);
     expect(input.value).toBe("Test Chat");
     await user.keyboard("{Enter}");
+
     expect(
       screen.queryByRole("textbox", { name: /rename chat/i }),
     ).not.toBeInTheDocument();
     expect(patchCalls(mock)).toHaveLength(0);
     expect(screen.getByText("Test Chat")).toBeInTheDocument();
+  });
+
+  it("RENAME: a chat with no stored title opens the box EMPTY", async () => {
+    // The defect: the row prints `Chat #1` when a chat has no title, and the
+    // rename box was seeded from that PRINTED string - so pressing Enter
+    // stored `Chat #1` as the user's own title. It was the one place in the
+    // application where a name the app invented became stored data without
+    // anybody choosing it.
+    const user = userEvent.setup();
+    const untitled = { ...chatFixture, title: null };
+    const mock = mockFetch({
+      "PATCH /chats/1": { body: { ...chatFixture, title: "New Chat 1" } },
+      "/chats": { body: [untitled] },
+    });
+
+    renderWithQueryClient(<ChatList />);
+
+    await screen.findByText("Chat #1");
+    await user.click(
+      screen.getByRole("button", { name: /open chat actions for chat #1/i }),
+    );
+    await user.click(screen.getByRole("menuitem", { name: /rename/i }));
+    const input = screen.getByRole("textbox", {
+      name: /rename chat chat #1/i,
+    }) as HTMLInputElement;
+
+    expect(input.value, "the printed fallback was seeded into the box").toBe(
+      "",
+    );
+
+    // And committing it stores nothing at all, which is the damage the
+    // seeding actually did: an empty box over a chat that already has no
+    // title is a rename to what it already is.
+    await user.keyboard("{Enter}");
+    expect(patchCalls(mock)).toHaveLength(0);
+
+    // GROUND CONTROL: the box still works. Without this, "no request was
+    // sent" would be satisfied by a rename that had stopped working here.
+    await user.click(
+      screen.getByRole("button", { name: /open chat actions for chat #1/i }),
+    );
+    await user.click(screen.getByRole("menuitem", { name: /rename/i }));
+    await user.type(
+      screen.getByRole("textbox", { name: /rename chat chat #1/i }),
+      "A real name",
+    );
+    await user.keyboard("{Enter}");
+    await waitFor(() => {
+      expect(patchCalls(mock)).toHaveLength(1);
+    });
+    expect(JSON.parse(patchCalls(mock)[0][1]?.body as string).title).toBe(
+      "A real name",
+    );
   });
 
   // v1.1 FF11: blur now COMMITS (was: silently cancelled). Escape still

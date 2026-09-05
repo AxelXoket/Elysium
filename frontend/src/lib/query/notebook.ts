@@ -164,10 +164,14 @@ export function useSaveExtractSettings() {
  *  a copy of it that can drift. */
 export const WORKER_POLL_MS = 20_000;
 
-export function useWorkerStatus() {
+/** `chatId` in the KEY as well as in the request. Without it the two chats'
+ *  answers share one cache entry, and selecting a paused chat would show the
+ *  previous chat's breaker until the next poll - a status screen saying
+ *  something true about the wrong conversation. */
+export function useWorkerStatus(chatId?: number | null) {
   return useQuery({
-    queryKey: ["extraction", "worker"] as const,
-    queryFn: getWorkerStatus,
+    queryKey: ["extraction", "worker", chatId ?? null] as const,
+    queryFn: () => getWorkerStatus(chatId),
     // The worker runs on its own clock. A poll is the only way the panel
     // learns that a run happened while the user was reading something else.
     refetchInterval: WORKER_POLL_MS,
@@ -177,7 +181,7 @@ export function useWorkerStatus() {
 export function useResetWorker() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => resetWorker(),
+    mutationFn: (chatId?: number | null) => resetWorker(chatId),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["extraction", "worker"] });
     },

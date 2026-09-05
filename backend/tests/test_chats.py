@@ -1,5 +1,6 @@
 """Tests for chat management endpoints: rename, and the destructive pair."""
 
+import default_names
 from conftest import make_character, make_chat, get_messages
 
 
@@ -30,15 +31,20 @@ def test_rename_chat_happy_path(client):
     assert _get_chat(client, chat_id)["title"] == "Yeni Başlık"
 
 
-def test_rename_chat_empty_title_rejected(client):
+def test_rename_chat_empty_title_gets_a_default_name(client):
+    """S-9 rewrite. The contract changed, not the test's aim: an emptied box
+    used to be refused with `title_required` and now produces the next default
+    name, because a name that is free to fix is better than a dialog.
+    """
     char_id = make_character(client)
     chat_id = make_chat(client, char_id)
-    before_title = _get_chat(client, chat_id)["title"]
+    client.patch(f"/api/v1/chats/{chat_id}", json={"title": "Gece"})
 
     resp = client.patch(f"/api/v1/chats/{chat_id}", json={"title": "   "})
-    assert resp.status_code == 400
-    assert resp.json()["detail"] == "title_required"
-    assert _get_chat(client, chat_id)["title"] == before_title
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["title"] == f"{default_names.CHAT} 1"
+    assert _get_chat(client, chat_id)["title"] == f"{default_names.CHAT} 1"
 
 
 def test_rename_chat_too_long_rejected(client):

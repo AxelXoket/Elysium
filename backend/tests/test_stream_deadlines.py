@@ -116,6 +116,12 @@ async def test_endless_keepalives_do_not_buy_endless_time(monkeypatch, fake_cloc
     keepalives = [": OPENROUTER PROCESSING"] * 500
     monkeypatch.setattr(openrouter, "get_client", lambda: _FakeClient(keepalives))
     monkeypatch.setattr(openrouter, "get_secret", lambda name: "sk-test")
+    # complete()/complete_stream() also read the SAFEWORD out of the
+    # vault before the socket, and this file drives them with no vault
+    # at all. Says the same thing about the safeword that the line
+    # above says about the key: in this scenario there is not one.
+    monkeypatch.setattr(openrouter.safeword_filter, "needles",
+                        lambda: ())
 
     with pytest.raises(OpenRouterError) as exc:
         await _drain(openrouter.complete_stream(
@@ -135,6 +141,12 @@ async def test_a_provider_that_starts_talking_is_not_cut_off(monkeypatch):
     ]
     monkeypatch.setattr(openrouter, "get_client", lambda: _FakeClient(lines))
     monkeypatch.setattr(openrouter, "get_secret", lambda name: "sk-test")
+    # complete()/complete_stream() also read the SAFEWORD out of the
+    # vault before the socket, and this file drives them with no vault
+    # at all. Says the same thing about the safeword that the line
+    # above says about the key: in this scenario there is not one.
+    monkeypatch.setattr(openrouter.safeword_filter, "needles",
+                        lambda: ())
 
     out = await _drain(openrouter.complete_stream(
         [{"role": "user", "content": "hi"}], "test/model", {}, None,
@@ -148,6 +160,12 @@ async def test_a_stream_that_never_ends_still_ends(monkeypatch, fake_clock):
     lines = ['data: {"choices":[{"delta":{"content":"and "}}]}'] * 5000
     monkeypatch.setattr(openrouter, "get_client", lambda: _FakeClient(lines))
     monkeypatch.setattr(openrouter, "get_secret", lambda name: "sk-test")
+    # complete()/complete_stream() also read the SAFEWORD out of the
+    # vault before the socket, and this file drives them with no vault
+    # at all. Says the same thing about the safeword that the line
+    # above says about the key: in this scenario there is not one.
+    monkeypatch.setattr(openrouter.safeword_filter, "needles",
+                        lambda: ())
 
     with pytest.raises(OpenRouterError) as exc:
         await _drain(openrouter.complete_stream(
@@ -196,6 +214,12 @@ async def test_a_long_silence_after_the_first_token_is_not_the_first_token_budge
     ]
     monkeypatch.setattr(openrouter, "get_client", lambda: _FakeClient(lines))
     monkeypatch.setattr(openrouter, "get_secret", lambda name: "sk-test")
+    # complete()/complete_stream() also read the SAFEWORD out of the
+    # vault before the socket, and this file drives them with no vault
+    # at all. Says the same thing about the safeword that the line
+    # above says about the key: in this scenario there is not one.
+    monkeypatch.setattr(openrouter.safeword_filter, "needles",
+                        lambda: ())
 
     out = await _drain(openrouter.complete_stream(
         [{"role": "user", "content": "hi"}], "test/model", {}, None,

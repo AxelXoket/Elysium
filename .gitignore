@@ -74,6 +74,14 @@ frontend/dist/
 .next/
 .vite/
 *.local
+# The vitest JSON report, written by `npm run test:report`. The privacy-contract
+# gate reads it to learn whether a named frontend test actually PASSED, instead
+# of whether its name appears somewhere in a source file - so this is evidence a
+# run produced, not source. It is also stale the instant the tree moves, and a
+# stale copy sitting in a checkout would let the gate answer from a run nobody
+# made. Same rule as everything else here: whatever the tooling writes, git
+# ignores.
+frontend/test-results.json
 
 # PyInstaller work dir + build logs
 build/
@@ -135,9 +143,9 @@ backend/port
 # only, never a model.
 backend/voice/
 
-# Assistant / editor tooling state. .serena/memories holds notes written
-# ABOUT this project - quoted code, decisions, sometimes chat content - and
-# its cache is machine-local. Neither is source.
+# Editor and tooling state. .serena/memories holds notes written ABOUT this
+# project - quoted code, decisions, sometimes chat content - and its cache is
+# machine-local. Neither is source.
 .serena/
 .claude/
 
@@ -152,7 +160,6 @@ backend/voice/
 # excluded, so the negations below are dead against a bare `docs/`.
 docs/*
 !docs/frontend_contract.md
-!docs/AUDIT_2026_07_CLOSURE.md
 
 # Throwaway data directories used when the packaged exe is self-tested
 # (ELYSIUM_DATA_DIR pointed somewhere disposable). An interrupted run leaves

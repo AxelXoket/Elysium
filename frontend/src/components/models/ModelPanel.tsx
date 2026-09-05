@@ -464,7 +464,13 @@ export function ModelPanel() {
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search models…"
               aria-label="Search models"
-              className="min-w-0 flex-1 bg-transparent text-xs outline-none"
+              // No `outline-none` here, deliberately. Tailwind puts its
+              // utilities in @layer utilities and the app's own focus ring
+              // lives in @layer base, so at equal specificity the utility
+              // wins and the class silently deletes the only indicator a
+              // keyboard user has for where they are in a list of hundreds.
+              // Leaving the outline alone is what lets the house ring draw.
+              className="min-w-0 flex-1 bg-transparent text-xs"
               style={{ color: "var(--color-es-text-light)" }}
             />
             {search && (

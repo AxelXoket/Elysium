@@ -1,6 +1,6 @@
 /**
- * The truncation mark (owner's ask, verbatim): when a reply stopped because
- * it hit the token ceiling rather than because the model finished its
+ * The truncation mark: when a reply stopped because it hit the token
+ * ceiling rather than because the model finished its
  * sentence, the bubble must show a mark - not render the half-sentence as if
  * it were whole with nothing to say otherwise.
  *

@@ -10,6 +10,22 @@
  * preset, so the tests proved the constants were consistent with each other
  * and nothing else. The reasoning is kept in `lib/motion/stagger.ts`, next to
  * what survived.
+ *
+ * Two more assertions left on 2026-09-03, and this time they MOVED rather
+ * than went, because both of them were reading source text:
+ *
+ *   - the reduced-motion one looked for `reducedMotion="user"` in the text of
+ *     `app/providers.tsx`, where that string also appears inside the comment
+ *     explaining the prop. Measured: deleting the prop and leaving the comment
+ *     kept it green. It is `test/components/ReducedMotionRoot.test.tsx` now,
+ *     reading the prop off the component that receives it.
+ *   - the two `AnimatedList` cases recomputed the component's own clamp inside
+ *     the assertion and never imported the component. Measured: the file was
+ *     deleted outright and both stayed green. They are
+ *     `test/components/AnimatedListStagger.test.tsx` now, asserting on the
+ *     value that reaches motion.
+ *
+ * What is left here is what genuinely is a contract rather than a render.
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
@@ -41,24 +57,6 @@ describe("stagger budget", () => {
 });
 
 describe("accessibility preferences the app must actually read", () => {
-  it("honours reduced motion at the root, not per component", () => {
-    // `reducedMotion="user"` strips transform/layout while KEEPING opacity and
-    // colour - the split the guidance asks for.
-    //
-    // It is NOT the whole answer, and an earlier version of this comment said
-    // it was. Measured against the installed motion-dom: `shouldReduceMotion`
-    // is consulted for positional keys only (width/height/top/left/right/
-    // bottom plus the transform props) and for layout animations. It never
-    // reaches `staggerChildren`, an opacity duration, whether a canvas effect
-    // runs at all, or a native `scrollIntoView` behaviour. Those are what the
-    // shared `useReducedMotion` hook in components/motion covers, and removing
-    // it in favour of this prop would have been a regression, not a cleanup.
-    const providers = readFileSync(
-      path.join(SRC, "app", "providers.tsx"), "utf-8",
-    );
-    expect(providers).toContain('reducedMotion="user"');
-  });
-
   it("honours reduced transparency across the glass surfaces", () => {
     // Windows exposes this switch (Personalization > Colors > Transparency
     // effects) and this is a Windows app, so somebody can already have it on.
@@ -74,21 +72,5 @@ describe("accessibility preferences the app must actually read", () => {
     expect(css).toContain("prefers-reduced-transparency");
     const block = css.slice(css.indexOf("prefers-reduced-transparency"));
     expect(block).toContain("backdrop-filter: none");
-  });
-});
-
-describe("AnimatedList honours the stagger budget", () => {
-  it("caps the step at 0.04s for a short list", () => {
-    // Short lists were never the problem, so nothing about them changes.
-    expect(Math.min(0.04, staggerStep(4))).toBe(0.04);
-  });
-
-  it("fits a sixteen-row list inside the 0.4s budget by shrinking the step", () => {
-    // Sixteen rows at a flat 40ms is 0.64s before the last one moves - roughly
-    // double the point where a sequence stops reading as considered and starts
-    // reading as waiting.
-    const step = Math.min(0.04, staggerStep(16));
-    expect(step * 16).toBeLessThanOrEqual(0.4);
-    expect(step).toBeLessThan(0.04);
   });
 });

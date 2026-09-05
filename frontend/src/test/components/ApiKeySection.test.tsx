@@ -33,7 +33,10 @@ import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { mockFetch } from "@/test/mocks/api";
 import { delayRoute } from "@/test/helpers/delayRoute";
 import { settingsFixture, proxyHealthFixture } from "@/test/mocks/fixtures";
-import { ApiKeySection } from "@/components/settings/ApiKeySection";
+import {
+  ApiKeySection,
+  API_KEY_COPY_LEFT_TEXT,
+} from "@/components/settings/ApiKeySection";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { getErrorMessage } from "@/lib/errors";
 
@@ -314,5 +317,182 @@ describe("stored-key status indicator - pending must not read as unset", () => {
     });
     renderWithQueryClient(<ApiKeySection />, { wrapper });
     expect(await screen.findByText("API key is set")).toBeInTheDocument();
+  });
+});
+
+/**
+ * Removing the stored key: what the panel SAYS, and where the keyboard is
+ * standing when it says it.
+ *
+ * Two separate defects meet on one handler, so they are measured in one place.
+ *
+ * 1. The server answers both secret deletes with `legacy_copy_left`, which is
+ *    the credential store admitting it would not release its own copy. The
+ *    client's response schema described `{ ok: true }` and nothing else, and
+ *    zod strips what it was not told about - so the one fact that matters to
+ *    somebody deleting a key BECAUSE it leaked was read off the wire and
+ *    dropped one line later, in silence. The panel then said "API key removed"
+ *    over a key that is still sitting on the machine.
+ *
+ * 2. Every step of this flow unmounts the element the keyboard is standing on:
+ *    opening the confirm takes away the trigger, and finishing, refusing or
+ *    cancelling takes away the confirm row. The browser's answer to that is
+ *    document.body, i.e. the top of the page. So a keyboard user destroyed
+ *    their own API key and was then put nowhere, with the sentence describing
+ *    what just happened somewhere below them.
+ *
+ * Nothing here reads source text. Focus is asserted as document.activeElement
+ * against the element that should hold it, and the leftover-copy sentence is
+ * IMPORTED from the component rather than restated, so a test cannot go green
+ * on wording that has drifted away from the branch it belongs to.
+ */
+describe("removing the stored key", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    document.body.innerHTML = "";
+  });
+
+  /** The delete route is registered before "/settings", which contains it as
+   *  a substring; the other way round every DELETE would be answered with the
+   *  settings fixture and every test below would measure the mock. */
+  function mountDelete(del: { status?: number; body: unknown }) {
+    const fetchMock = mockFetch({
+      "DELETE /settings/api-key": del,
+      "/settings/proxy/health": { body: proxyHealthFixture },
+      "/settings": { body: settingsFixture },
+    });
+    renderWithQueryClient(<ApiKeySection />, { wrapper });
+    return fetchMock;
+  }
+
+  /** The trigger, once GET /settings has said a key exists. */
+  function trigger(): Promise<HTMLElement> {
+    return screen.findByRole("button", { name: /remove api key/i });
+  }
+
+  /** Open the inline confirm and hand back the button that runs the delete. */
+  async function openConfirm(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(await trigger());
+    return screen.getByRole("button", { name: /^remove$/i });
+  }
+
+  // -- what it says ----------------------------------------------------------
+
+  it("says only that the key was removed when nothing was left behind", async () => {
+    // THE GROUND. The warning must be absent here, and this is also the run
+    // that proves the fix did not simply staple a permanent alarm to a
+    // successful delete. Its positive control is the next test, which finds
+    // the very same sentence with the very same query.
+    const user = userEvent.setup();
+    mountDelete({ body: { ok: true, legacy_copy_left: false } });
+    await user.click(await openConfirm(user));
+
+    const { kind, text } = await answer();
+    expect(kind).toBe("success");
+    expect(text).not.toBe(API_KEY_COPY_LEFT_TEXT);
+    expect(screen.queryByText(API_KEY_COPY_LEFT_TEXT)).not.toBeInTheDocument();
+  });
+
+  it("names the copy the credential store would not release", async () => {
+    // RED before the delete response got its own schema: the field was
+    // stripped on the way in, so this branch could not be reached at all and
+    // the panel reported a clean removal over a key still on disk.
+    const user = userEvent.setup();
+    mountDelete({ body: { ok: true, legacy_copy_left: true } });
+    await user.click(await openConfirm(user));
+
+    const line = await screen.findByRole("status");
+    expect(line).toHaveTextContent(API_KEY_COPY_LEFT_TEXT);
+    // Not merely a different sentence: a different KIND, published where
+    // anything can read it. "Removed" and "removed, but a copy is still
+    // there" are not the same answer and must not arrive as one.
+    expect(line.getAttribute("data-feedback")).toBe("partial");
+    expect(line.getAttribute("data-feedback")).not.toBe("success");
+  });
+
+  it("treats a server that never mentions a copy as no copy left", async () => {
+    // The regression this schema had to avoid. The field is unconditional on
+    // both delete routes today, but making it REQUIRED would mean an older
+    // backend turns a delete that worked into invalid_response_shape: a
+    // failed request over a successful delete. The fallback is the reading
+    // that raises no alarm, which is what the client did before the field was
+    // read at all.
+    const user = userEvent.setup();
+    mountDelete({ body: { ok: true } });
+    await user.click(await openConfirm(user));
+
+    const { kind, text } = await answer();
+    expect(kind).toBe("success");
+    expect(text).not.toBe(API_KEY_COPY_LEFT_TEXT);
+  });
+
+  // -- where the keyboard is -------------------------------------------------
+
+  it("keeps the trigger focusable before anything is pressed - the ground", async () => {
+    // THE GROUND, and the positive control for every "not document.body"
+    // assertion below: it proves this file's own instrument can see a focused
+    // element that is not the body. Without it, "focus is not on body" would
+    // also pass on a render that never happened.
+    mountDelete({ body: { ok: true, legacy_copy_left: false } });
+    const button = await trigger();
+
+    button.focus();
+    expect(document.activeElement).toBe(button);
+    expect(document.activeElement).not.toBe(document.body);
+    // Nothing has been answered yet, so nothing else could be holding it.
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("hands focus to the confirm row that replaced the trigger", async () => {
+    // The half the ledger did not see. Opening the confirm unmounts the
+    // button that was just pressed, so the keyboard user pressing "Remove API
+    // key" was dropped on document.body BEFORE the destructive step, with the
+    // confirmation they now have to answer somewhere they cannot see.
+    const user = userEvent.setup();
+    mountDelete({ body: { ok: true, legacy_copy_left: false } });
+    const confirm = await openConfirm(user);
+
+    await waitFor(() => expect(document.activeElement).toBe(confirm));
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it("hands focus to the answer after the key is really gone", async () => {
+    const user = userEvent.setup();
+    mountDelete({ body: { ok: true, legacy_copy_left: false } });
+    await user.click(await openConfirm(user));
+
+    const line = await screen.findByRole("status");
+    await waitFor(() => expect(document.activeElement).toBe(line));
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it("hands focus to the answer when the delete is refused too", async () => {
+    // The other branch, and the reason the success run alone would prove
+    // little: a refusal unmounts exactly the same confirm row, and it is the
+    // run where the reader most needs to be standing on the sentence that
+    // says the key is still there.
+    const user = userEvent.setup();
+    mountDelete({ status: 500, body: { detail: "internal_error" } });
+    await user.click(await openConfirm(user));
+
+    const line = await screen.findByRole("status");
+    expect(line.getAttribute("data-feedback")).toBe("error");
+    await waitFor(() => expect(document.activeElement).toBe(line));
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it("gives focus back to the trigger when the delete is called off", async () => {
+    // Cancel unmounts the row the same way the delete does. Re-queried, not
+    // reused: React builds a new button when the trigger comes back, so the
+    // node captured before the confirm opened is a detached one and comparing
+    // against it would measure nothing.
+    const user = userEvent.setup();
+    mountDelete({ body: { ok: true, legacy_copy_left: false } });
+    await openConfirm(user);
+    await user.click(screen.getByRole("button", { name: /^cancel$/i }));
+
+    const back = await trigger();
+    await waitFor(() => expect(document.activeElement).toBe(back));
+    expect(document.activeElement).not.toBe(document.body);
   });
 });

@@ -81,7 +81,12 @@ class ReorderBody(BaseModel):
 
 
 class BoundaryBody(BaseModel):
-    label: str = Field(min_length=1)
+    # `label` is optional; `phrasing` is not, and the asymmetry is the whole
+    # point. The label is what the panel PRINTS, so an unnamed limit can be
+    # given the next default name and still be readable. The phrasing is what
+    # the limit MEANS - there is no default for that, and a limit with no
+    # meaning is not a limit.
+    label: str = ""
     phrasing: str = Field(min_length=1)
     severity: str
     chat_id: int | None = None
@@ -176,12 +181,16 @@ async def delete_boundary(boundary_id: int, chat_id: int | None = None) -> dict:
 # ── FAZ 5: what the background worker did, and whether it may keep going ────
 
 @router.get("/worker")
-async def worker_status() -> dict:
+async def worker_status(chat_id: int | None = None) -> dict:
     """Counters, not silence.
 
     A skipped extraction that leaves no trace makes "the notebook has proposed
     nothing this week" and "the notebook has refused sixty times for a reason
     nobody can see" the same screen. Every refusal carries its reason here.
+
+    `chat_id` is optional and ADDITIVE: it fills the `worker.chat` block for
+    the conversation on screen and changes nothing else, so a panel with no
+    chat selected asks the same question it always did.
     """
     import notebook_worker
 
@@ -199,24 +208,45 @@ async def worker_status() -> dict:
             }
 
     body = await anyio.to_thread.run_sync(_read)
-    body["worker"] = notebook_worker.worker.status()
+    body["worker"] = notebook_worker.worker.status(chat_id=chat_id)
     body["daily_cap"] = config.NOTEBOOK_DAILY_CALL_CAP
     return body
 
 
+class WorkerResetBody(BaseModel):
+    """Which breaker to let go of. Absent means all of them."""
+
+    chat_id: int | None = None
+
+
 @router.post("/worker/reset")
-async def worker_reset() -> dict:
+async def worker_reset(body: WorkerResetBody | None = None) -> dict:
     """The hand on the breaker.
 
     Without it, recovering from a stopped breaker means restarting the whole
     application after fixing whatever broke - which is a breaker plus an
     insult. The counters stay; only the refusal is lifted.
+
+    With no `chat_id` this is the button on the panel, and the button is a
+    GLOBAL one: "try everything again" is what a reader pressing it means, so
+    it lifts the process-wide refusal AND drops every per-chat one. With a
+    `chat_id` it unsticks exactly that conversation and leaves the rest
+    refusing, which is what the per-chat button beside a paused chat asks
+    for.
     """
     import notebook_worker
 
-    notebook_worker.worker.breaker.reset()
+    worker = notebook_worker.worker
+    if body is not None and body.chat_id is not None:
+        worker.forget_chat(body.chat_id)
+        logger.info("Notebook extraction breaker reset for one chat.")
+        return {"ok": True,
+                "worker": worker.status(chat_id=body.chat_id)}
+
+    worker.breaker.reset()
+    worker.chat_breakers.clear()
     logger.info("Notebook extraction breaker reset by the user.")
-    return {"ok": True, "worker": notebook_worker.worker.status()}
+    return {"ok": True, "worker": worker.status()}
 
 
 class SafewordBody(BaseModel):
@@ -263,6 +293,13 @@ async def set_safeword(body: SafewordBody) -> dict:
     is something a model may decline to honour. This is matched in code before
     the provider is called, and when it matches the turn does not happen: no
     request, no storage, no reply. Set it to an empty string to turn it off.
+
+    That is the message BEING SENT, which includes the stored one a regenerate
+    re-sends. The same word found anywhere else in an outgoing body - older
+    history, a note, a character card, a stop sequence - does not stop the
+    turn: `safeword_filter.scrub` takes it out in both payload builders in
+    `openrouter.py` and the rest of the body goes. Neither half rewrites the
+    vault; the word stays in the stored row and on screen.
     """
     try:
         await anyio.to_thread.run_sync(notebook.set_safeword, body.word)

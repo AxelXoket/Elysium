@@ -115,7 +115,7 @@ def test_taking_a_chunk_lets_the_next_one_be_prepared():
 # ── the pre-roll ─────────────────────────────────────────────────────────────
 
 def test_playback_waits_until_the_pre_roll_is_buffered():
-    # The user asked for ~2 s of head start: production runs at 1.6x realtime,
+    # The head start asked for is ~2 s: production runs at 1.6x realtime,
     # so once it is ahead it stays ahead - but it has to get ahead first.
     q, _, _ = make(preroll_seconds=2.0, synth=synth_ok(seconds=0.8))
     q.push("A one. B two.")

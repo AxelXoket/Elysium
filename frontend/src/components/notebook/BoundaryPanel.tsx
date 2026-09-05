@@ -270,6 +270,33 @@ export function BoundaryPanel() {
           not a request to the model; it is checked here. Leave it empty to
           turn it off.
         </p>
+        {/* The second half, and it has to be here rather than left unsaid.
+            The sentence above is true about the message being SENT and only
+            about that. A copy of the word sitting in something older travels
+            on turns the reader asked for now, and stopping those would turn
+            one word into a permanent stop with nothing on screen to explain
+            it - so that copy is cut out instead. Saying only the first half
+            would promise a silence the app does not keep.
+
+            Regenerate is named because it is the one place the two halves
+            meet and the answer is the surprising one: it re-sends the stored
+            user message as the turn being sent, so a word in THAT line takes
+            the stop branch. A reader who armed the word today and reaches for
+            regenerate on a chat from last week hits it, and the paragraph
+            above is what would otherwise have told them it could not
+            happen. */}
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          If the word is already in something older - a line further back, a
+          note, a character - that turn is not stopped. The word is taken out
+          of what the model is sent and the rest of the text goes. If cutting
+          it leaves a line with nothing in it, that line is not sent at all.
+          Regenerating is the exception: it sends that message again, so a
+          word in it stops the turn instead.
+        </p>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          Your own copy is never rewritten. The word stays in the chat, in the
+          note and on screen, exactly as you typed it.
+        </p>
       </div>
 
       <p className="text-xs leading-relaxed text-muted-foreground">

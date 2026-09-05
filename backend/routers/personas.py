@@ -23,6 +23,7 @@ from pydantic import BaseModel, field_validator
 # set_setting and delete_setting are gone from this module on purpose: the two
 # handlers that used them now do their settings write inline, inside the same
 # transaction as their guard read. See _select_persona_sync.
+import default_names
 from database import get_db, get_setting
 
 logger = logging.getLogger(__name__)
@@ -35,15 +36,23 @@ router = APIRouter(prefix="/personas", tags=["personas"])
 # ---------------------------------------------------------------------------
 
 class PersonaCreate(BaseModel):
-    display_name: str
+    #: Optional, and that is the whole change. A blank one used to be a 422,
+    #: so the panel showed "Display name is required." over a form somebody
+    #: had already filled in everywhere else. It is filled in by
+    #: `default_names` at the write instead.
+    #:
+    #: `str | None` for the same reason CharacterCreate.name carries it: one
+    #: answer to all four shapes of nothing, null included.
+    display_name: str | None = None
     description: str = ""
 
     @field_validator("display_name")
     @classmethod
-    def name_must_be_non_empty(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("display_name must not be empty.")
-        return v.strip()
+    def name_is_trimmed(cls, v: str | None) -> str:
+        """Trim, and flatten null to empty. Whether the result is empty is
+        decided at the write, where the other display names are readable and a
+        default can be numbered against them."""
+        return (v or "").strip()
 
 
 class PersonaPatch(BaseModel):
@@ -52,9 +61,10 @@ class PersonaPatch(BaseModel):
 
     @field_validator("display_name")
     @classmethod
-    def name_must_be_non_empty(cls, v: str | None) -> str | None:
-        if v is not None and not v.strip():
-            raise ValueError("display_name must not be empty.")
+    def name_is_trimmed(cls, v: str | None) -> str | None:
+        """Trim only, and the two empties differ. An ABSENT display name
+        leaves the stored one alone; one PRESENT and blank is an emptied box,
+        which is a rename to the default."""
         return v.strip() if v is not None else v
 
 
@@ -121,12 +131,26 @@ async def list_personas() -> list[dict]:
 
 def _create_persona_sync(body: "PersonaCreate") -> dict:
     """Worker-thread body (audit KÖK 8): INSERT plus the re-SELECT of its own
-    new row. No guard of prior state, so no BEGIN IMMEDIATE is needed here -
-    unlike delete and select below, which read before they write."""
+    new row.
+
+    BEGIN IMMEDIATE, and the reason is new. This used to guard no prior state
+    and the docstring said so; naming an unnamed persona turns it into
+    read-then-write, because the number in "New Persona 3" is derived from the
+    display names already stored. Without the writer lock two creations
+    landing together would each scan a set missing the other and both take
+    the same number. It now reads before it writes, like delete and select
+    below.
+    """
     with get_db() as con:
+        con.execute("BEGIN IMMEDIATE")
+        display_name = default_names.name_or_default(
+            body.display_name, default_names.PERSONA,
+            (r["display_name"] for r in
+             con.execute("SELECT display_name FROM personas")),
+        )
         cur = con.execute(
             "INSERT INTO personas (display_name, description) VALUES (?, ?)",
-            (body.display_name, body.description),
+            (display_name, body.description),
         )
         row_id = cur.lastrowid
         row = con.execute(
@@ -169,8 +193,19 @@ def _patch_persona_sync(persona_id: int, body: "PersonaPatch") -> dict:
         updates: list[str] = []
         params: list = []
         if body.display_name is not None:
+            display_name = body.display_name
+            if default_names.is_blank(display_name):
+                # An emptied box is a rename to the default, as on create.
+                # The scan excludes this persona's own row: the name being
+                # replaced must not hold a number against its replacement.
+                display_name = default_names.next_default_name(
+                    default_names.PERSONA,
+                    (r["display_name"] for r in con.execute(
+                        "SELECT display_name FROM personas WHERE id != ?",
+                        (persona_id,))),
+                )
             updates.append("display_name = ?")
-            params.append(body.display_name)
+            params.append(display_name)
         if body.description is not None:
             updates.append("description = ?")
             params.append(body.description)

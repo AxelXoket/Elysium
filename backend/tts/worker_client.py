@@ -58,6 +58,7 @@ from .errors import (
     TTS_WORKER_UNAVAILABLE,
 )
 from .worker import _wire
+from . import stream_hook
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,13 @@ CREATE_NO_WINDOW = 0x08000000
 
 # Keep the tail of stderr so a crash can be explained instead of shrugged at.
 STDERR_KEEP_LINES = 120
+
+#: How long a caller may wait for its turn at the worker before being refused.
+#: Bound to the drain loop's ceiling rather than given a number of its own, so
+#: there is one budget and not two that can drift: anything shorter would start
+#: refusing callers queued behind an utterance the drain loop is still willing
+#: to wait for, which is a healthy engine reported as an unavailable one.
+TURN_TIMEOUT_S = stream_hook.DRAIN_TIMEOUT_S
 
 # How a worker's exit code becomes something a person can act on. Exit 2 is
 # special-cased in _death_reason: it is also CPython's own "bad command line /
@@ -662,9 +670,22 @@ class WorkerClient:
 
         Serialised: the worker answers strictly in order, so the timeout must
         not start ticking while a request is still queued behind another one.
+
+        The wait for that turn is itself budgeted. Unbudgeted, the
+        serialisation undid the thing it was for: one request wedged inside the
+        lock parked every later caller for as long as it took, and "as long as
+        it takes" is precisely what a per-request timeout exists to rule out.
+        A refusal names the worker unavailable, which is what it is from the
+        caller's side, and voice turns off with a sentence instead of holding
+        an HTTP response open on a queue nobody can see.
         """
-        with self._turn:
+        if not self._turn.acquire(timeout=TURN_TIMEOUT_S):
+            raise WorkerFailure(TTS_WORKER_UNAVAILABLE,
+                                "busy for the whole turn budget")
+        try:
             return self._request_locked(op, payload, timeout)
+        finally:
+            self._turn.release()
 
     def _request_locked(self, op, payload, timeout) -> dict:
         if not self.alive:

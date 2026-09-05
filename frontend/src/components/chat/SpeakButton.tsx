@@ -7,7 +7,9 @@
  *
  * Speaking uses message_id, never the visible text: the client only ever holds
  * the STRIPPED view, and the delivery tags that make the voice worth hearing
- * live in the raw row on the backend.
+ * live in the raw row on the backend. The chat goes with it, because ids run
+ * in one sequence across the vault and the row is only meant to be reachable
+ * from the conversation it is in.
  *
  * One button, three faces: speaker (idle), spinner (synthesizing - a real
  * model takes seconds), square (playing - press to stop). The shared player
@@ -19,7 +21,13 @@ import { Loader2, Square, Volume2 } from "lucide-react";
 import { useVoicePlayer } from "@/lib/voice/playerStore";
 import { useVoiceReadiness } from "@/lib/voice/useVoiceReadiness";
 
-export function SpeakButton({ messageId }: { messageId: number }) {
+export function SpeakButton({
+  messageId,
+  chatId,
+}: {
+  messageId: number;
+  chatId: number;
+}) {
   const voice = useVoiceReadiness();
   const playerMessageId = useVoicePlayer((s) => s.messageId);
   const phase = useVoicePlayer((s) => s.phase);
@@ -54,7 +62,7 @@ export function SpeakButton({ messageId }: { messageId: number }) {
       disabled={voice.loading}
       onClick={() => {
         if (playing || busy) stop();
-        else void speak(messageId);
+        else void speak(messageId, chatId);
       }}
     >
       {busy ? (

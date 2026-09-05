@@ -246,6 +246,26 @@ FRESHNESS_TEST = ("tests/test_artifact_gate.py"
                   "::test_the_build_is_not_older_than_what_went_into_it")
 
 
+#: What this lane adds to the environment the backend suite runs in.
+#:
+#: Several gates in the suite need a tool the interpreter may not have - an
+#: interpreter that can import numpy for the DSP maths, ruff for the worker
+#: lint. Without them those tests skip, and on a developer machine that is the
+#: honest answer: the absence is a fact about the machine, not about the code.
+#:
+#: It stops being the honest answer here. This is the last moment before the
+#: work leaves the machine, and at this moment "the gate passed" and "the gate
+#: never ran" must not print the same word - which is the same argument the top
+#: of this file makes about having no CI at all, one level down. Set here and
+#: nowhere else; `backend/tests/conftest.py` is what reads it.
+STRICT_LANE = {"ELYSIUM_STRICT_SKIPS": "1"}
+
+
+def strict_lane_environment() -> dict[str, str]:
+    """The whole environment for a step that may not skip its gates."""
+    return dict(os.environ, **STRICT_LANE)
+
+
 def pre_push() -> int:
     """Everything, and then a verification build made outside the tree."""
     ok = verify_hygiene.main([]) == 0
@@ -257,7 +277,7 @@ def pre_push() -> int:
     ok = _run("pytest (whole backend suite)",
               [PYTHON, "-m", "pytest", "-q", "--no-header", "tests",
                "--deselect", FRESHNESS_TEST],
-              BACKEND) and ok
+              BACKEND, env=strict_lane_environment()) and ok
     ok = _run("tsc (typecheck)", ["npm", "run", "typecheck"], FRONTEND) and ok
     ok = _run("eslint", ["npm", "run", "lint"], FRONTEND) and ok
     ok = _run("vitest (whole frontend suite)",

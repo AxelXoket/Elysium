@@ -331,12 +331,52 @@ class TestNothingAReaderWroteReachesTheLog:
 class TestTheApiKeyIsNeverHandedBack:
     """"never returned by any endpoint" - a claim about ALL of them."""
 
+    #: Never a real one. The value only has to be a string no route has any
+    #: business repeating, and your vault stays shut for it.
     KEY = "sk-or-v1-privacypromisesentinel0000000000000000000000000000000000"
+
+    #: The floor under the walk. A walk that reached nothing reports no leaks
+    #: in exactly the words a clean app uses, so the walk refuses to answer at
+    #: all on a route table it plainly failed to read.
+    MIN_READABLE_ROUTES = 5
 
     def _store(self, client) -> None:
         import secrets_service
         from config import SECRET_API_KEY
         secrets_service.set_secret(SECRET_API_KEY, self.KEY)
+
+    def _sweep(self, client, routes=None) -> list[str]:
+        """Walk every GET route a caller can reach; return the ones that leak.
+
+        The promise is about every endpoint, so the walk covers every one it
+        can call without inventing an id: a new GET route that happened to
+        serialise the secrets table shows up here on the day it is added.
+
+        One copy, called by the absence test below AND by the positive control
+        beside it, and that sharing is the whole point. A second hand-written
+        copy inside the control would keep passing while this walk went blind,
+        which is the failure the control exists to make impossible. The class
+        keeps its own walk rather than borrowing `_readable_get_routes`
+        because it also has to count what it touched.
+        """
+        from main import app
+
+        if routes is None:
+            routes = app.routes
+        checked = 0
+        offenders = []
+        for route in routes:
+            path = getattr(route, "path", "")
+            methods = getattr(route, "methods", set()) or set()
+            if "GET" not in methods or "{" in path:
+                continue
+            response = client.get(path)
+            checked += 1
+            if self.KEY in response.text:
+                offenders.append(path)
+        assert checked > self.MIN_READABLE_ROUTES, (
+            f"the route sweep found almost nothing to check: {checked}")
+        return offenders
 
     def test_settings_reports_presence_and_nothing_else(self, client) -> None:
         self._store(client)
@@ -345,22 +385,60 @@ class TestTheApiKeyIsNeverHandedBack:
         assert self.KEY not in json.dumps(body)
 
     def test_no_readable_endpoint_returns_it(self, client) -> None:
-        # The promise is about every endpoint, so the test walks every one it
-        # can call without inventing an id: a new GET route that happened to
-        # serialise the secrets table fails here on the day it is added.
+        self._store(client)
+        leaked = self._sweep(client)
+        assert leaked == [], f"these routes returned the key: {leaked}"
+
+    def test_the_route_sweep_can_still_see_a_leak(self, client) -> None:
+        """Positive control for the sweep directly above.
+
+        The secret being swept for is the most valuable one the app holds, and
+        until this test existed the sweep's silence was worth nothing: a walk
+        that skipped the interesting routes, a body read off the wrong
+        attribute, a comparison that could never match, all produce the same
+        green as an app that keeps the key properly. Hand the same walk one
+        route that genuinely hands the key back and it has to name it.
+        """
+        self._store(client)
+        probe = "/api/v1/leak-probe-api-key"
+
+        # Ground control, before anything is mounted: with no probe in the
+        # table the sweep is quiet, so the [probe] below is the probe and not
+        # a route that was leaking all along.
+        assert self._sweep(client) == []
+
+        with _with_a_leaking_route(probe, self.KEY):
+            # The probe has to be reachable at all. Mounted the obvious way it
+            # lands behind the SPA mount, whose path matches everything, and
+            # answers 404 - which would read as a blind sweep when the sweep
+            # is fine.
+            assert probe in _readable_get_routes(client)
+            caught = self._sweep(client)
+            assert caught == [probe], (
+                "the sweep did not notice a route that plainly returns the "
+                f"API key, so its silence elsewhere means nothing: {caught}")
+        # And the control cleans up after itself, or every later sweep in this
+        # process would be reading a route this test invented.
+        assert probe not in _readable_get_routes(client)
+
+    def test_the_sweep_refuses_a_route_table_it_could_not_read(
+        self, client
+    ) -> None:
+        """Positive control for the floor inside the sweep.
+
+        The floor is the other half of the apparatus. Catching a leak proves
+        the comparison fires; this proves the walk notices when it has been
+        handed nothing to compare. Give it a table with a single route in it
+        and it has to refuse out loud instead of returning a clean list.
+        """
         self._store(client)
         from main import app
 
-        checked = 0
-        for route in app.routes:
-            path = getattr(route, "path", "")
-            methods = getattr(route, "methods", set()) or set()
-            if "GET" not in methods or "{" in path:
-                continue
-            response = client.get(path)
-            checked += 1
-            assert self.KEY not in response.text, f"{path} returned the key"
-        assert checked > 5, "the route sweep found almost nothing to check"
+        one = [route for route in app.routes
+               if getattr(route, "path", "") == "/api/v1/settings"][:1]
+        assert one, "the settings route went missing"
+        with pytest.raises(AssertionError, match="almost nothing to check"):
+            self._sweep(client, routes=one)
 
     def test_storing_and_reading_it_writes_nothing_to_the_log(
         self, client, caplog: pytest.LogCaptureFixture
@@ -372,6 +450,323 @@ class TestTheApiKeyIsNeverHandedBack:
             secrets_service.get_secret(SECRET_API_KEY)
             client.get("/api/v1/settings")
         assert self.KEY not in caplog.text
+
+
+def _readable_get_routes(client) -> list[str]:
+    """Every GET route a caller can reach without inventing an id.
+
+    The same walk TestTheApiKeyIsNeverHandedBack does inline, factored out so
+    the two secrets below sweep exactly the set the key does. That class keeps
+    its own copy deliberately - it is the pattern this file is read for - but
+    a third and fourth hand-written copy would be four things to widen when
+    the parameterised routes get their turn.
+    """
+    from main import app
+
+    paths = []
+    for route in app.routes:
+        path = getattr(route, "path", "")
+        methods = getattr(route, "methods", set()) or set()
+        if "GET" not in methods or "{" in path:
+            continue
+        paths.append(path)
+    return paths
+
+
+def _with_a_leaking_route(path: str, value: str):
+    """Mount a GET route that DOES return `value`, for the duration of a with.
+
+    The positive control every sweep in this file needs and only these two
+    have. "No route returned the secret" is a statement about a comparison,
+    and a comparison that can never fire produces exactly the same green: a
+    walker that found no routes, a `checked` counter that never incremented,
+    a response body read off the wrong attribute. Handing the walker one
+    route that genuinely leaks proves the whole apparatus can still see a
+    leak on the day there is one.
+    """
+    from contextlib import contextmanager
+
+    from main import app
+
+    @contextmanager
+    def _mounted():
+        async def leaking() -> dict:
+            return {"leaked": value}
+
+        app.add_api_route(path, leaking, methods=["GET"])
+        # To the FRONT of the table, and this is not a detail. The SPA is
+        # served from a mount whose path is "", which matches anything, and
+        # add_api_route appends BEHIND it - so a route added the obvious way
+        # answers 404 and this control would have reported the sweep blind
+        # when the sweep was fine. Starlette matches in list order.
+        app.router.routes.insert(0, app.router.routes.pop())
+        try:
+            yield
+        finally:
+            app.router.routes = [route for route in app.router.routes
+                                 if getattr(route, "path", "") != path]
+
+    return _mounted()
+
+
+class TestTheConfiguredProxyIsNeverHandedBack:
+    """The proxy URL sits on the same table as the key and had no such proof.
+
+    The two classes below already measure something real about the proxy -
+    that an exported one is ignored and a configured one is honoured - but
+    neither of them asks where the configured value ENDS UP. It is stored in
+    `vault_secrets` alongside the API key, it carries a username and a
+    password inside the URL, and the URL is what a user pastes once and never
+    sees again. So it gets the same three parts the key has: the settings
+    body, every readable route, and the log.
+    """
+
+    #: Credentials inside the URL, because that is the form that makes this a
+    #: secret rather than a preference. An unresolvable host, deliberately:
+    #: the route sweep below reaches the proxy health probe, and this way the
+    #: suite's egress guard stops the dial at name resolution - which the
+    #: probe already classifies as unknown_error - instead of the sweep
+    #: waiting on a socket.
+    PASSWORD = "proxypasswordsentinelzorbleflax"
+    PROXY_URL = f"http://proxyuser:{PASSWORD}@proxy-sentinel.invalid:8899"
+
+    def _configure(self, client) -> None:
+        """Store it the way a user does, through the route."""
+        response = client.post("/api/v1/settings/proxy", json={
+            "proxy_url": self.PROXY_URL,
+            "proxy_required": False,
+        })
+        assert response.status_code == 200, response.text
+
+    def test_settings_reports_presence_and_nothing_else(self, client) -> None:
+        self._configure(client)
+        body = client.get("/api/v1/settings").json()
+        # Presence first: "the URL is not in this body" is worth nothing until
+        # the body admits the proxy is configured at all, which is exactly the
+        # empty-set green this file exists to refuse.
+        assert body["proxy_configured"] is True
+        assert self.PROXY_URL not in json.dumps(body)
+        assert self.PASSWORD not in json.dumps(body)
+
+    def test_no_readable_endpoint_returns_it(self, client) -> None:
+        self._configure(client)
+        checked = 0
+        for path in _readable_get_routes(client):
+            response = client.get(path)
+            checked += 1
+            assert self.PASSWORD not in response.text, f"{path} returned it"
+            assert self.PROXY_URL not in response.text, f"{path} returned it"
+        assert checked > 5, "the route sweep found almost nothing to check"
+
+    def test_the_route_sweep_can_still_see_a_leak(self, client) -> None:
+        """Positive control for the sweep directly above."""
+        self._configure(client)
+        probe = "/api/v1/leak-probe-proxy"
+        with _with_a_leaking_route(probe, self.PROXY_URL):
+            assert probe in _readable_get_routes(client)
+            caught = [path for path in _readable_get_routes(client)
+                      if self.PASSWORD in client.get(path).text]
+            assert caught == [probe], (
+                "the sweep did not notice a route that plainly returns the "
+                f"proxy password, so its silence elsewhere means nothing: "
+                f"{caught}")
+        # And the control cleans up after itself, or every later sweep in this
+        # process would be reading a route this test invented.
+        assert probe not in _readable_get_routes(client)
+
+    def test_storing_and_reading_it_writes_nothing_to_the_log(
+        self, client, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import secrets_service
+        from config import SECRET_PROXY_URL
+        with caplog.at_level(logging.DEBUG):
+            self._configure(client)
+            stored = secrets_service.get_secret(SECRET_PROXY_URL)
+            client.get("/api/v1/settings")
+        # The store really holds the whole URL, credentials and all. Without
+        # this line a validator that quietly stripped the userinfo would leave
+        # every assertion in this class true and none of them meaningful.
+        assert stored == self.PROXY_URL
+        assert self.PASSWORD not in caplog.text
+        assert self.PROXY_URL not in caplog.text
+
+    @pytest.mark.anyio
+    async def test_building_the_client_logs_the_fact_and_not_the_value(
+        self, anyio_backend, client, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # The one place in-process where the value is USED rather than stored,
+        # and the place a "which proxy did it pick?" debug line would be added.
+        self._configure(client)
+        with caplog.at_level(logging.DEBUG):
+            built = network_client._build_client()
+            await built.aclose()
+        # Ground control on this arm: the proxy branch is the branch that ran.
+        # The direct branch logs a different sentence and would leave the
+        # absence assertions below true for the wrong reason.
+        assert "configured proxy" in caplog.text
+        assert self.PASSWORD not in caplog.text
+        assert self.PROXY_URL not in caplog.text
+
+    def test_the_log_was_actually_recording(
+        self, client, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The floor under both log assertions above, per class.
+
+        Same reasoning as the copy in TestNothingAReaderWroteReachesTheLog:
+        a disabled logger or a filtered level makes `not in caplog.text` true
+        forever, and a floor that lives in another class is a floor somebody
+        can delete without noticing what it held up.
+        """
+        with caplog.at_level(logging.DEBUG):
+            logging.getLogger("elysium.test").debug("proxy floor check")
+        assert "proxy floor check" in caplog.text
+
+
+class TestTheVaultPassphraseIsNeverHandedBack:
+    """The secret that opens every other secret, and nothing measured it.
+
+    The API key and the proxy URL are rows the passphrase decrypts. It is the
+    one credential the app never stores at all - only a salt, a verifier and
+    a KDF descriptor - so the claim is stronger than for the other two and
+    the evidence was thinner: nothing under tests/ paired `passphrase` with
+    the log or with a response body.
+
+    A real passphrase is required for any of it to mean anything. The `client`
+    fixture opens its vault by handing vault_state a raw key, so no passphrase
+    exists for it, and a sweep for a secret that was never set finds nothing
+    for the most boring possible reason.
+    """
+
+    PASSPHRASE = "vault-passphrase-sentinel-zorbleflax"
+    NEW_PASSPHRASE = "vault-passphrase-sentinel-quenlithe"
+
+    @pytest.fixture()
+    def passphrase_vault(self, client, tmp_path, monkeypatch):
+        """A vault in an empty directory, opened by `/vault/init` for real.
+
+        The directory is empty on purpose: init refuses to mint an identity
+        over an already-encrypted database, which is what the fixture's own
+        vault is. Pointing DB_PATH at a fresh folder is the same move
+        test_vault.py's lifecycle test makes, and the vault directory follows
+        DB_PATH.
+        """
+        import config
+        import database
+        import vault_state
+        from routers import vault as vault_router
+
+        vault_dir = tmp_path / "passphrase-vault"
+        vault_dir.mkdir()
+        db_path = str(vault_dir / "app.db")
+        monkeypatch.setattr(config, "DB_PATH", db_path)
+        monkeypatch.setattr(database, "DB_PATH", db_path)
+        # The refusal delay is a brake on guessing, not part of any claim
+        # here, and two seconds of sleep per wrong attempt has no business in
+        # a lane that runs on every commit.
+        monkeypatch.setattr(vault_router, "WRONG_PASSPHRASE_DELAY_S", 0.0)
+        vault_state.clear_key()
+
+        response = client.post("/api/v1/vault/init",
+                               json={"passphrase": self.PASSPHRASE})
+        assert response.status_code == 200, response.text
+        return client
+
+    def test_no_passphrase_route_repeats_what_it_was_given(
+        self, passphrase_vault
+    ) -> None:
+        client = passphrase_vault
+        bodies = []
+
+        wrong = client.post("/api/v1/vault/unlock",
+                            json={"passphrase": "not-" + self.PASSPHRASE})
+        assert wrong.status_code == 401, wrong.text
+        bodies.append(wrong.text)
+
+        right = client.post("/api/v1/vault/unlock",
+                            json={"passphrase": self.PASSPHRASE})
+        # Positive control, and the load-bearing one: this is the passphrase
+        # the vault was actually built from. If it were not, every "not in"
+        # below would hold against a string the app had never seen.
+        assert right.status_code == 200, right.text
+        assert right.json()["ok"] is True
+        bodies.append(right.text)
+
+        changed = client.post("/api/v1/vault/change-passphrase", json={
+            "old_passphrase": self.PASSPHRASE,
+            "new_passphrase": self.NEW_PASSPHRASE,
+        })
+        assert changed.status_code == 200, changed.text
+        bodies.append(changed.text)
+
+        # And the new one really took, so it too is a live secret rather than
+        # a string that went nowhere.
+        reopened = client.post("/api/v1/vault/unlock",
+                               json={"passphrase": self.NEW_PASSPHRASE})
+        assert reopened.status_code == 200, reopened.text
+        bodies.append(reopened.text)
+
+        for body in bodies:
+            assert self.PASSPHRASE not in body
+            assert self.NEW_PASSPHRASE not in body
+
+    def test_no_readable_endpoint_returns_it(self, passphrase_vault) -> None:
+        client = passphrase_vault
+        checked = 0
+        for path in _readable_get_routes(client):
+            response = client.get(path)
+            checked += 1
+            assert self.PASSPHRASE not in response.text, f"{path} returned it"
+        assert checked > 5, "the route sweep found almost nothing to check"
+
+    def test_the_route_sweep_can_still_see_a_leak(
+        self, passphrase_vault
+    ) -> None:
+        """Positive control for the sweep directly above."""
+        client = passphrase_vault
+        probe = "/api/v1/leak-probe-passphrase"
+        with _with_a_leaking_route(probe, self.PASSPHRASE):
+            assert probe in _readable_get_routes(client)
+            caught = [path for path in _readable_get_routes(client)
+                      if self.PASSPHRASE in client.get(path).text]
+            assert caught == [probe], (
+                "the sweep did not notice a route that plainly returns the "
+                f"passphrase, so its silence elsewhere means nothing: "
+                f"{caught}")
+        assert probe not in _readable_get_routes(client)
+
+    def test_the_whole_lifecycle_writes_nothing_to_the_log(
+        self, passphrase_vault, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Init is already behind us in the fixture, so the wrong attempt, the
+        # right one and the change are what this captures - the three places
+        # the value is held in a frame long enough for somebody to print it.
+        client = passphrase_vault
+        with caplog.at_level(logging.DEBUG):
+            client.post("/api/v1/vault/unlock",
+                        json={"passphrase": "not-" + self.PASSPHRASE})
+            opened = client.post("/api/v1/vault/unlock",
+                                 json={"passphrase": self.PASSPHRASE})
+            changed = client.post("/api/v1/vault/change-passphrase", json={
+                "old_passphrase": self.PASSPHRASE,
+                "new_passphrase": self.NEW_PASSPHRASE,
+            })
+        assert opened.status_code == 200, opened.text
+        assert changed.status_code == 200, changed.text
+        # The log has to have been busy, or "the passphrase is not in it" is a
+        # statement about an empty string. The vault routes are talkative on
+        # this path; requiring some output keeps that honest.
+        assert caplog.text.strip(), "nothing was logged at all"
+        assert self.PASSPHRASE not in caplog.text
+        assert self.NEW_PASSPHRASE not in caplog.text
+
+    def test_the_log_was_actually_recording(
+        self, client, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The floor under the log assertion above. See the copy two classes
+        up for why each class carries its own."""
+        with caplog.at_level(logging.DEBUG):
+            logging.getLogger("elysium.test").debug("passphrase floor check")
+        assert "passphrase floor check" in caplog.text
 
 
 class TestTheHttpClientIgnoresTheAmbientEnvironment:

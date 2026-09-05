@@ -449,19 +449,17 @@ def test_the_uv_download_uses_a_per_call_temp_name(tmp_path, monkeypatch):
     barrier = threading.Barrier(2, timeout=5)
 
     class _FakeResponse:
-        def __init__(self):
-            self._sent = False
+        def raise_for_status(self):
+            return None
 
-        def read(self, n):
-            if not self._sent:
-                self._sent = True
-                # Do not release either thread's first chunk until BOTH
-                # threads have reached this point - guaranteeing their
-                # archive files are open at the same time, not merely in
-                # sequence.
-                barrier.wait()
-                return b"not a real uv archive - just enough to hash"
-            return b""
+        def iter_bytes(self, n=None):
+            # Do not release either thread's first chunk until BOTH threads
+            # have reached this point - guaranteeing their archive files are
+            # open at the same time, not merely in sequence. The archive is
+            # opened by the same `with` statement that entered this response,
+            # so reaching here means both files are already open.
+            barrier.wait()
+            yield b"not a real uv archive - just enough to hash"
 
         def __enter__(self):
             return self
@@ -469,11 +467,17 @@ def test_the_uv_download_uses_a_per_call_temp_name(tmp_path, monkeypatch):
         def __exit__(self, *exc_info):
             return False
 
-    class _FakeOpener:
-        def open(self, url, timeout=None):
+    class _FakeClient:
+        def stream(self, method, url, timeout=None):
             return _FakeResponse()
 
-    monkeypatch.setattr(provision, "_url_opener", lambda: _FakeOpener())
+        def close(self):
+            return None
+
+    # The downloader's seam moved from a urllib opener to a gated httpx
+    # client. Same seam, same claim: this test is about the per-call temp
+    # NAME, not about the transport.
+    monkeypatch.setattr(provision, "_provision_client", lambda: _FakeClient())
 
     opened: list[str] = []
     opened_lock = threading.Lock()

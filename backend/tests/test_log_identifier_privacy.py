@@ -28,10 +28,11 @@ file, with who owns it and why it is still there. The gate fails on:
     ledger has to say so, because a debt that is quietly retired is a debt
     nobody can prove was ever paid.
 
-The ledger counts hits per file rather than naming line numbers on purpose:
-`tts/refs.py` is being rewritten by another agent while this is being
-written, and a gate that fails because a paragraph of comment moved a warning
-down two lines is a gate people learn to ignore.
+The ledger counts hits per file rather than naming line numbers on purpose.
+A line number is the one property of a warning that changes without the
+warning changing: `tts/refs.py` in particular churns, and a gate that fails
+because a paragraph of comment pushed a warning down two lines is a gate
+people learn to ignore.
 """
 from __future__ import annotations
 
@@ -69,7 +70,7 @@ def _swept() -> list[tuple[str, str]]:
 
 
 #: Floors, not targets (same reasoning as test_tree_hygiene._SWEEP_FLOOR):
-#: measured at 76 files on 2026-09-01 (the file count is bound to this
+#: measured at 78 files on 2026-09-05 (the file count is bound to this
 #: comment by test_locked_numbers.py; the LINE count deliberately is
 #: not - it moves on every ordinary edit, so pinning it would be a
 #: chore rather than a guard, and _LINE_FLOOR already catches a sweep

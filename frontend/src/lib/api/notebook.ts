@@ -154,13 +154,22 @@ export function saveExtractSettings(payload: {
 
 // ── FAZ 5: the background extractor ────────────────────────────────────────
 
-export function getWorkerStatus() {
-  return request("/notebook/worker", WorkerStatusSchema);
+/** `chatId` is ADDITIVE: it fills the `worker.chat` block for the chat on
+ *  screen and changes nothing else about the answer, so a panel with no chat
+ *  selected asks exactly the question it always did. */
+export function getWorkerStatus(chatId?: number | null) {
+  const scope = chatId == null ? "" : `?chat_id=${chatId}`;
+  return request(`/notebook/worker${scope}`, WorkerStatusSchema);
 }
 
-export function resetWorker() {
+/** With no `chatId` this is the panel's global button - it lifts the
+ *  process-wide refusal AND every per-chat one, because "try everything
+ *  again" is what pressing it means. With one, it unsticks exactly that
+ *  conversation and leaves the others refusing. */
+export function resetWorker(chatId?: number | null) {
   return request("/notebook/worker/reset", NotebookOkSchema, {
     method: "POST",
+    body: JSON.stringify(chatId == null ? {} : { chat_id: chatId }),
   });
 }
 

@@ -246,6 +246,12 @@ async def test_a_reply_containing_the_separator_arrives_whole(anyio_backend, mon
 
     monkeypatch.setattr(openrouter, "get_client", lambda: _Client(raw))
     monkeypatch.setattr(openrouter, "get_secret", lambda name: "sk-test")
+    # complete()/complete_stream() also read the SAFEWORD out of the
+    # vault before the socket, and this file drives them with no vault
+    # at all. Says the same thing about the safeword that the line
+    # above says about the key: in this scenario there is not one.
+    monkeypatch.setattr(openrouter.safeword_filter, "needles",
+                        lambda: ())
 
     out = [d async for d in openrouter.complete_stream(
         [{"role": "user", "content": "hi"}], "test/model", {}, None,
@@ -273,6 +279,12 @@ async def test_a_frame_that_is_genuinely_not_json_is_reported_not_fatal(
 
     monkeypatch.setattr(openrouter, "get_client", lambda: _Client(raw))
     monkeypatch.setattr(openrouter, "get_secret", lambda name: "sk-test")
+    # complete()/complete_stream() also read the SAFEWORD out of the
+    # vault before the socket, and this file drives them with no vault
+    # at all. Says the same thing about the safeword that the line
+    # above says about the key: in this scenario there is not one.
+    monkeypatch.setattr(openrouter.safeword_filter, "needles",
+                        lambda: ())
 
     with caplog.at_level(logging.ERROR):
         out = [d async for d in openrouter.complete_stream(
@@ -302,6 +314,12 @@ async def test_a_data_line_with_no_value_is_not_reported_as_malformed(
 
     monkeypatch.setattr(openrouter, "get_client", lambda: _Client(raw))
     monkeypatch.setattr(openrouter, "get_secret", lambda name: "sk-test")
+    # complete()/complete_stream() also read the SAFEWORD out of the
+    # vault before the socket, and this file drives them with no vault
+    # at all. Says the same thing about the safeword that the line
+    # above says about the key: in this scenario there is not one.
+    monkeypatch.setattr(openrouter.safeword_filter, "needles",
+                        lambda: ())
 
     with caplog.at_level(logging.ERROR):
         out = [d async for d in openrouter.complete_stream(

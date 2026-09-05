@@ -117,7 +117,10 @@ CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # proofs below cover the ROUTE only, so the screen half - that the tab
     # actually lists the copy and a button actually removes it - now has its
     # own frontend proofs alongside them.
-    ("Settings > Security lists it and deletes it on request", (
+    # "Settings > Security" named a path that does not exist: the Settings
+    # DIALOG has no security page, and the control lives on the right
+    # panel's Security tab. Corrected in the document and here together.
+    ("The Security tab lists it and deletes it on request", (
         "tests/test_plaintext_backup_discard.py::TestTheCopyIsVisible"
         "::test_status_reports_a_plaintext_backup",
         "tests/test_plaintext_backup_discard.py::TestTheCopyCanBeRemoved"
@@ -151,7 +154,7 @@ CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # "Settings > Secrets", a tab that has never existed under that label -
     # the tab is Security - and its two proofs covered the ROUTE only, not
     # the screen the sentence actually claims; both are fixed here together.
-    ("Settings > Security now lists it and a button removes it", (
+    ("The Security tab now lists it and a button removes it", (
         "tests/test_vault_premigrate_discard.py::TestStatusReportsPresence"
         "::test_present_but_unreadable_while_locked",
         "tests/test_vault_premigrate_discard.py::TestDiscardRoute"
@@ -210,11 +213,18 @@ CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "tests/test_vault_reset.py::TestTheFullWipe"
         "::test_every_ground_truth_artefact_is_destroyed",
     )),
-    ("anything older than 30 minutes is cleared as the next reply is spoken", (
+    # Was "...as the next reply is spoken". The trim used to hang off
+    # _next_out_path and now runs on the health poll, so the old sentence
+    # described a trigger the code had moved away from.
+    ("anything older than 30 minutes is cleared as well", (
         "tests/test_bounded_resources.py"
         "::test_generated_audio_older_than_the_window_is_cleared",
     )),
-    ("only cosmetic settings and your wallpaper are kept", (
+    # Was "only cosmetic settings and your wallpaper are kept". The purge
+    # is a denylist of twenty-two names, so plenty else survives; the two
+    # proofs below only ever established that these two DO survive, which
+    # is what the sentence now claims.
+    ("your cosmetic settings and your wallpaper are kept", (
         "tests/test_browser_profile_purge.py::TestPurgeKeepsWhatTheProfileIsFor"
         "::test_settings_and_wallpaper_survive_intact",
         "tests/test_browser_profile_purge.py::TestPurgeKeepsWhatTheProfileIsFor"
@@ -398,8 +408,13 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "tests/test_kdf_upgrade.py::TestTheParametersAreRecorded"
         "::test_the_current_parameters_meet_the_owasp_floor",
     )),
-    ("no keyboard walks, no one idea repeated, "
-     "no single character filling half of it", (
+    # "half" was the wrong comparison: the check is `commonest > len * 0.5`,
+    # so exactly half is accepted. Measured before the sentence was changed.
+    # "keyboard walks" was the wrong description twice over: _ROWS includes
+    # the alphabet, and the check fires only when the WHOLE folded phrase is
+    # the run. The marker follows the corrected sentence.
+    ("no keyboard or alphabet run, and that one fires only when the run is "
+     "the whole phrase or fills it end to end by repeating", (
         "tests/test_passphrase_strength.py::TestLength"
         "::test_the_floor_is_high_enough_to_matter",
         "tests/test_passphrase_strength.py::TestShapesThatAreLongButNotSecret"
@@ -477,7 +492,7 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # sentence true rather than merely present: nothing goes out until the
     # button is pressed, and an unreachable provider is not reported as a
     # rejected key.
-    ("the Security tab's key check asks OpenRouter whether the key you "
+    ("The Security tab's key check asks OpenRouter whether the key you "
      "already stored is still accepted", (
         "tests/test_api_key_check.py"
         "::test_nothing_is_checked_until_the_route_is_called",
@@ -519,7 +534,11 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "tests/test_launch_token.py::TestWhenItIsArmed"
         "::test_a_request_with_the_header_passes",
     )),
-    ("This is only armed in the packaged app", (
+    # Was "This is only armed in the packaged app". False as written:
+    # run_app.issue() is unconditional, so a source checkout started the
+    # ordinary way is armed too. The unarmed case is uvicorn by hand, which
+    # is exactly what the registered proof drives.
+    ("The launcher is what arms it", (
         "tests/test_launch_token.py::TestTheGateIsUnarmedUnlessALaunchIssuedAToken"
         "::test_no_token_means_everything_is_accepted",
     )),
@@ -643,8 +662,12 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # /vault/reset, added when this document first named the route at all.
     # Four claims from its new section, each tied to the test that would
     # fail if the route stopped behaving the way the sentence says.
+    # Was "before the confirmation phrase is even read". FastAPI validates
+    # the body's shape first, so an empty phrase is answered 422 before the
+    # handler runs at all; what the 409 really precedes is the COMPARISON,
+    # which is what the second proof below drives.
     ("refuses outright with HTTP 409 before the confirmation phrase is "
-     "even read", (
+     "compared", (
         "tests/test_vault_reset.py::TestRefusesWhileUnlocked"
         "::test_refuses_and_destroys_nothing",
         "tests/test_vault_reset.py::TestRefusesWhileUnlocked"
@@ -765,8 +788,173 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "tests/test_locked_numbers.py::TestTheContentLedger"
         "::test_a_non_empty_ledger_is_not_described_as_closed",
     )),
+    # The safe word's matching, both halves. The case fold IS tested and is
+    # registered; the misses beside it are an absence, and an absence needs
+    # its own test, so they are counted in UNPROVEN rather than implied here.
+    ("The comparison normalises the text, swaps the two Turkish I forms, "
+     "lowercases, and only then strips the combining dot", (
+        "tests/test_safeword.py::TestItMatchesTheWayPeopleType"
+        "::test_whatever_case_it_was_typed_in[KIRMIZI]",
+        "tests/test_safeword.py::TestItMatchesTheWayPeopleType"
+        "::test_the_word_alone",
+        "tests/test_safeword.py::TestItMatchesTheWayPeopleType"
+        "::test_inside_a_sentence",
+        "tests/test_safeword.py::TestALatinSafewordSurvivesCapitals"
+        "::test_whatever_case_it_was_typed_in[eXiT]",
+        # Ground control: an ordinary message does not trip it, so the fold
+        # is not simply matching everything.
+        "tests/test_safeword.py::TestItMatchesTheWayPeopleType"
+        "::test_an_ordinary_message_does_not_trip_it",
+    )),
+    # ── The browser profile, and the shortcut that used to switch it off ──
+    # A junction planted on a swept name made the whole wipe a no-op, and the
+    # two halves of the fix are registered apart because they are opposite
+    # promises: the entry goes, and the folder behind it does not.
+    ("nothing at the far end is destroyed for having been walked into", (
+        "tests/test_browser_profile_purge.py"
+        "::TestTheLinkGoesAndWhatItPointsAtStays"
+        "::test_the_junction_target_is_never_touched",
+        "tests/test_browser_profile_purge.py"
+        "::TestPurgeRefusesToFollowRedirectedNames"
+        "::test_files_behind_a_junction_are_left_alone[webview/EBWebView/Default/Cache]",
+    )),
+    ("What is removed is the shortcut's own entry", (
+        "tests/test_browser_profile_purge.py"
+        "::TestTheLinkGoesAndWhatItPointsAtStays"
+        "::test_the_junction_entry_under_a_swept_folder_is_removed",
+        "tests/test_browser_profile_purge.py"
+        "::TestTheLinkGoesAndWhatItPointsAtStays"
+        "::test_a_profile_folder_that_is_a_link_is_removed_and_named_out_loud",
+        "tests/test_browser_profile_purge.py"
+        "::TestPurgeRefusesToFollowRedirectedNames"
+        "::test_a_junction_does_not_stop_the_real_purge",
+        # Ground control: with no junction anywhere the sweep still empties
+        # the tree, so none of the above passes by refusing to work at all.
+        "tests/test_browser_profile_purge.py"
+        "::TestTheLinkGoesAndWhatItPointsAtStays"
+        "::test_a_junction_free_tree_is_still_swept_to_nothing",
+    )),
+    # The reconciliation the document owed a reader: the crash-reporter block
+    # is a file inside the profile, so a shortcut moves it, and that is why
+    # dumps can exist on the far side at all.
+    ("That block is a file Elysium puts where Crashpad needs to write", (
+        "tests/test_browser_profile_purge.py::TestCrashReportingIsBlocked"
+        "::test_the_path_crashpad_needs_is_taken",
+        "tests/test_browser_profile_purge.py::TestCrashReportingIsBlocked"
+        "::test_a_redirected_crashpad_path_is_replaced_by_the_blocker",
+        "tests/test_junction_discipline.py"
+        "::TestTheCrashBlockerLooksAtItsParent"
+        "::test_a_redirected_ebwebview_parent_is_replaced_not_obeyed",
+    )),
+    # ── The voice installer's proxy gate ──────────────────────────────────
+    ("stops the install with `tts_proxy_unavailable` rather than starting "
+     "anyway", (
+        "tests/test_tts_provision.py::TestProvisioningHonoursTheProxy"
+        "::test_a_mandatory_proxy_with_none_configured_refuses_the_install",
+        # Ground control: armed AND configured still installs, so the gate is
+        # a gate rather than a wall.
+        "tests/test_tts_provision.py::TestProvisioningHonoursTheProxy"
+        "::test_a_mandatory_proxy_that_IS_configured_proceeds",
+        "tests/test_tts_provision.py::TestProvisioningHonoursTheProxy"
+        "::test_the_downloader_goes_through_the_proxy",
+    )),
+    # ── The safe word ─────────────────────────────────────────────────────
+    # The only limit in this app that is enforced in code rather than asked
+    # of a model, and the document said nothing about it at all until now.
+    # Two layers, registered apart because they are two behaviours: the
+    # typed message that never becomes a turn, and the cut that walks the
+    # whole outgoing body. A marker taken from one would have vouched for
+    # the other, and the second layer is the new one.
+    ("the request is refused with `400 safeword_triggered` before the "
+     "key check", (
+        "tests/test_safeword.py::TestTheTurnDoesNotHAPPEN"
+        "::test_the_plain_route_sends_nothing",
+        "tests/test_safeword.py::TestTheTurnDoesNotHAPPEN"
+        "::test_the_streaming_route_sends_nothing",
+        "tests/test_safeword.py::TestTheTurnDoesNotHAPPEN"
+        "::test_nothing_is_stored",
+        "tests/test_safeword.py::TestTheTurnDoesNotHAPPEN"
+        "::test_it_is_checked_before_the_API_KEY",
+        # Ground control: an ordinary message still goes, so the refusal is
+        # a refusal and not a route that stopped working.
+        "tests/test_safeword.py::TestTheTurnDoesNotHAPPEN"
+        "::test_an_ordinary_message_still_goes",
+    )),
+    # "every string" was too wide: a dict KEY is structure, not prose, and is
+    # never cut. The marker follows the sentence rather than the other way
+    # round.
+    ("The whole body is now walked before it leaves and the word is cut out "
+     "of the string values in it", (
+        "tests/test_safeword.py::TestTheWordIsCutOutOfWhatGoesOut"
+        "::test_a_card_and_an_old_reply_are_cut_the_same_as_a_line_typed",
+        "tests/test_safeword.py::TestTheWordIsCutOutOfWhatGoesOut"
+        "::test_a_stop_sequence_carrying_the_word_is_cut_too",
+        "tests/test_safeword.py::TestTheWordIsCutOutOfWhatGoesOut"
+        "::test_the_word_is_cut_and_the_rest_of_the_line_stays",
+        # Ground control on the other side: an ordinary body is untouched,
+        # and a filter that emptied everything would fail here.
+        "tests/test_safeword.py::TestTheWordIsCutOutOfWhatGoesOut"
+        "::test_an_ordinary_body_goes_out_unchanged",
+        "tests/test_safeword.py::TestTheWordIsCutOutOfWhatGoesOut"
+        "::test_nothing_is_touched_when_the_safeword_is_off",
+    )),
+    ("on the streaming path and the plain one alike", (
+        "tests/test_safeword.py::TestTheWordIsCutOutOfWhatGoesOut"
+        "::test_the_streaming_twin_cuts_it_too",
+        "tests/test_safeword.py::TestTheWordIsCutOutOfWhatGoesOut"
+        "::test_nothing_travels_outside_the_json_body",
+    )),
+    ("A message the cut empties is dropped rather", (
+        "tests/test_safeword.py::TestTheWordIsCutOutOfWhatGoesOut"
+        "::test_a_message_the_cut_empties_is_dropped",
+    )),
+    # The note reader is the sender with no typed message to refuse, so the
+    # cut is the ONLY thing standing between a stored line and the wire.
+    ("Both senders pass it", (
+        "tests/test_safeword.py::TestTheOtherPathThatCanSend"
+        "::test_a_stored_line_carrying_the_safeword_is_cut_out_of_what_is_sent",
+        "tests/test_safeword.py::TestTheOtherPathThatCanSend"
+        "::test_the_leak_sweep_sees_the_word_in_any_part_of_the_payload",
+        "tests/test_safeword.py::TestTheOtherPathThatCanSend"
+        "::test_an_ordinary_stored_chat_is_read_and_sent",
+    )),
+    ("A locked vault does not fail open here", (
+        "tests/test_safeword.py::TestTheWordIsCutOutOfWhatGoesOut"
+        "::test_a_vault_that_will_not_open_stops_the_request",
+        "tests/test_safeword.py::TestTheWordIsCutOutOfWhatGoesOut"
+        "::test_a_missing_api_key_is_still_answered_as_a_missing_api_key",
+    )),
+    ("the model id, the provider policy block, the response schema, the "
+     "modality list, whether the reply streams, and a picture you attached, "
+     "both its address and its bytes", (
+        "tests/test_safeword.py::TestTheWordIsCutOutOfWhatGoesOut"
+        "::test_the_model_id_is_never_cut",
+        "tests/test_safeword.py::TestTheWordIsCutOutOfWhatGoesOut"
+        "::test_the_provider_policy_is_never_cut",
+        "tests/test_safeword.py::TestTheWordIsCutOutOfWhatGoesOut"
+        "::test_the_response_schema_is_never_cut",
+        "tests/test_safeword.py::TestTheWordIsCutOutOfWhatGoesOut"
+        "::test_the_modality_list_is_never_cut",
+        "tests/test_safeword.py::TestTheWordIsCutOutOfWhatGoesOut"
+        "::test_an_attached_image_is_not_touched",
+        "tests/test_safeword.py::TestTheWordIsCutOutOfWhatGoesOut"
+        "::test_a_picture_that_is_a_link_rather_than_bytes_is_left_alone",
+        # The exemption is keyed on the bytes, not on the slot the picture
+        # arrived in, which is the half a reader would assume wrongly.
+        "tests/test_safeword.py::TestTheWordIsCutOutOfWhatGoesOut"
+        "::test_a_picture_is_known_by_its_bytes_and_not_only_by_its_slot",
+        "tests/test_safeword.py::TestTheWordIsCutOutOfWhatGoesOut"
+        "::test_a_line_that_merely_starts_with_data_is_still_cut",
+    )),
+    ("It is never written to the log", (
+        "tests/test_safeword.py::TestTheRoute::test_the_word_never_reaches_the_log",
+        "tests/test_safeword.py::TestARefusedSafewordDoesNotComeBack"
+        "::test_the_refusal_carries_a_code_and_not_the_word",
+        "tests/test_safeword.py::TestARefusedSafewordDoesNotComeBack"
+        "::test_an_accepted_safeword_is_not_echoed_either",
+    )),
     # And the file count in the same paragraph, for the same reason.
-    ("shipped tree - 76 files", (
+    ("shipped tree - 78 files", (
         "tests/test_locked_numbers.py::TestTheSweptTree"
         "::test_the_file_count_in_the_prose_is_the_one_the_gate_reads",
         "tests/test_locked_numbers.py::TestTheSweptTree"
@@ -906,8 +1094,8 @@ ACKNOWLEDGED_UNTESTABLE: tuple[
      "read. Nothing here can observe a clipboard entry surviving, because "
      "nothing here can observe a clipboard entry.",
      None, None),
-    # A reading taken off this machine, recorded HERE because the agent that
-    # took it owns this file and SECURITY.md and nothing else, so there is no
+    # A reading taken off this machine, recorded HERE because the claim it
+    # backs lives in this file and in SECURITY.md, and neither of those has a
     # module docstring of its own to point at. The reading, in full, on
     # 2026-08-20: HKCU\Software\Microsoft\Clipboard, value
     # EnableClipboardHistory = 1, with CloudClipboardAutomaticUpload unset.
@@ -1121,6 +1309,45 @@ UNPROVEN: tuple[tuple[str, str], ...] = (
      "frozen creates no file at all - and the negative is what this sentence "
      "actually promises. Testable by calling the same function without "
      "sys.frozen and asserting nothing appears, not written."),
+    ("The file then has to carry three marks at once",
+     "the three-marks rule and the bounded walk that finds a minidump on the "
+     "far side of a shortcut are read out of _shred_our_minidumps rather than "
+     "driven: no test plants a junction, drops a file that satisfies two of "
+     "the three marks, and asserts it survives. The neighbouring claims - the "
+     "entry goes, the target does not - ARE proven, and are registered above. "
+     "Counted here deliberately rather than left to the digest, because the "
+     "sentence is the one that says what the app is allowed to delete outside "
+     "its own folder."),
+    ("refused up front, with HTTP 409",
+     "the refusal itself is proven (see 'stops the install with "
+     "`tts_proxy_unavailable`' above); nothing asserts the STATUS CODE the "
+     "route answers with, which is the half a caller depends on. Testable by "
+     "posting the install route with the switch armed and no proxy and "
+     "reading response.status_code, not written."),
+    ("will not be found in a message typed in plain ASCII",
+     "measured by hand against notebook_store._fold_tr. It emits TWO "
+     "spellings for a word saved in capitals, so that one is found either "
+     "way; a word saved in lower case with a dotless i is emitted once and "
+     "is not, and no other Turkish letter is folded in any case. The "
+     "POSITIVE half is proven (see 'The comparison folds case' above); this "
+     "is the negative, and no test asserts a miss. Testable by arming an "
+     "accented word and sending its ASCII spelling, not written - and worth "
+     "writing, because a safe word that silently does not fire is the worst "
+     "failure this feature has."),
+    ("a double space or a line break inside a two-word phrase is enough to "
+     "miss",
+     "set_safeword collapses whitespace on the STORED side (notebook_store.py "
+     "set_safeword) and nothing collapses it on the outgoing side, so the two "
+     "cannot meet for a multi-word phrase typed with irregular spacing. Read "
+     "out of the two code paths rather than driven; testable in one short "
+     "test, not written."),
+    ("Nothing inside the vault is rewritten",
+     "the safe word's outgoing half is proven line by line, and the cut is "
+     "measured on the body that leaves; nothing reads the stored row or the "
+     "stored note BACK afterwards and asserts the word is still in it. The "
+     "sentence is a claim about what the filter does not touch, and an "
+     "absence needs its own test. Testable by arming a word, sending a turn "
+     "and re-reading the chat, not written."),
     ("What that gate cannot see, because it reads shapes and not values",
      "every blind spot listed after that phrase is testable the same way the "
      "scanner's positive controls are - feed it a source with a cross-module "
@@ -1333,7 +1560,7 @@ def _acknowledged_problems(
 #: sample - so this covers all of it. Updating this constant is the
 #: deliberate act that means a human decided what a change claims and
 #: registered a proof for it.
-DOCUMENT_DIGEST = "cdfd7705048e6625bd98c1e21ae6f1d78bd2e3c576b2d2b20de7dd683d59d2e2"
+DOCUMENT_DIGEST = "7be2cb9705db8b18f5aee8592c58437ee352fb13a8bf8cd84cb75c7f419f2580"
 
 
 class TestEveryProvenClaimHasAProof:

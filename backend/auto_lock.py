@@ -29,6 +29,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
+import anyio.to_thread
+
 import vault_state
 
 logger = logging.getLogger(__name__)
@@ -113,13 +115,30 @@ async def watch(tick: float = TICK_S) -> None:
     Never dies on an exception. This task is created once for the process
     lifetime, so an unhandled error would silently disable auto-lock for the
     whole session and the user would go on believing it was on.
+
+    The two checks are handed to a worker thread, and that is the only reason
+    this coroutine is not three lines shorter. `should_lock` opens SQLCipher
+    through `get_setting`, which queues on a held write lock for the whole of
+    `get_db`'s default busy_timeout before it gives up. Called straight from
+    here, that queue is the event loop's queue: every SSE stream in the
+    process stops for as long as it lasts. Measured against a database held
+    in an exclusive lock, the loop's longest freeze went from 13.4s to 0.017s
+    once the call moved off it. Lowering the timeout instead would have been
+    smaller and wrong - a watchdog that cannot read its setting falls into
+    the "off" branch below, so a shorter wait buys responsiveness by quietly
+    not locking the vault.
+
+    The names stay module-level and are looked up per tick on purpose: they
+    are what the tests replace, and a thread hop does not change where the
+    lookup lands.
     """
     while True:
         try:
             await asyncio.sleep(tick)
-            if should_lock():
+            if await anyio.to_thread.run_sync(should_lock):
+                minutes = await anyio.to_thread.run_sync(configured_minutes)
                 logger.info("Auto-lock: idle for %d minute(s), locking",
-                            configured_minutes())
+                            minutes)
                 await lock_now()
         except asyncio.CancelledError:
             raise

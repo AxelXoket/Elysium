@@ -29,7 +29,18 @@ const CHOICES: { minutes: number; label: string }[] = [
 export function AutoLockControl() {
   const settings = useSettings();
   const setAutoLock = useSetAutoLock();
-  const current = settings.data?.auto_lock_minutes ?? 0;
+  // One `?? 0` used to answer three questions with the same number: the vault
+  // has auto-lock off, the settings have not arrived yet, and the settings
+  // could not be read. Only the first of those is "off", and only the first
+  // may draw a chip as chosen or print the sentence below promising what the
+  // vault will do. The other two are states of this panel, not values of the
+  // setting, so they get their own line and no chosen chip.
+  //
+  // The fallback itself stays, narrowed to the one case it was written for: a
+  // response that arrived but predates the field. That is a value we have,
+  // and the schema already reads it as off, so the panel says off too.
+  const known = !settings.isPending && !settings.isError;
+  const current = known ? (settings.data?.auto_lock_minutes ?? 0) : null;
 
   return (
     <div className="space-y-2" data-testid="auto-lock-control">
@@ -59,6 +70,7 @@ export function AutoLockControl() {
       <div
         role="radiogroup"
         aria-label="Lock the vault after this long idle"
+        aria-busy={settings.isPending}
         className="flex flex-wrap gap-1.5"
       >
         {CHOICES.map(({ minutes, label }) => {
@@ -99,6 +111,23 @@ export function AutoLockControl() {
           );
         })}
       </div>
+      {/* Same shape and the same muted token as the off line it replaces
+          while the value is unknown, and the same wording idiom the proxy
+          indicators already use for these two states on this surface. Plain
+          text rather than a role=alert: a settings read that has not landed
+          is not a refusal, and the panel's one alert belongs to a save that
+          failed. */}
+      {!known && (
+        <p
+          data-testid="auto-lock-state"
+          data-state={settings.isPending ? "pending" : "error"}
+          className="text-xs leading-relaxed text-muted-foreground"
+        >
+          {settings.isPending
+            ? "Checking what this is set to…"
+            : "Could not read what this is set to."}
+        </p>
+      )}
       {current === 0 && (
         <p data-testid="auto-lock-off-hint" className="text-xs leading-relaxed text-muted-foreground">
           Off: the vault stays open until you lock it or close Elysium.

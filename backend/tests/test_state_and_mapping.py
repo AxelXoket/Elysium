@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 
+import default_names
 from test_notice_channel import voice  # noqa: F401
 
 from tts import preflight, readiness, registry
@@ -197,14 +198,19 @@ def test_the_proxy_can_be_renamed_without_retyping_its_url(client):
     assert client.get("/api/v1/settings").json()["proxy_configured"] is True
 
 
-def test_the_alias_can_be_cleared(client):
+def test_the_emptied_alias_box_names_the_proxy_rather_than_erasing_it(client):
+    """S-9 rewrite. An emptied box used to leave the proxy with no name at
+    all, which is the one outcome a person who opened that box never asked
+    for; it now falls back to the default name.
+    """
     client.post("/api/v1/settings/proxy", json={
         "proxy_url": "http://127.0.0.1:8888",
         "proxy_required": False,
         "proxy_alias": "Home",
     })
     client.post("/api/v1/settings/proxy/alias", json={"proxy_alias": ""})
-    assert client.get("/api/v1/settings").json()["proxy_alias"] is None
+    assert (client.get("/api/v1/settings").json()["proxy_alias"]
+            == f"{default_names.PROXY} 1")
 
 
 def test_a_misspelt_alias_field_is_refused_not_treated_as_a_clear(client):

@@ -224,6 +224,12 @@ def test_completion_proxy_error_is_not_blamed_on_the_provider(monkeypatch):
 
     monkeypatch.setattr(openrouter, "get_client", lambda: FakeClient())
     monkeypatch.setattr(openrouter, "get_secret", lambda name: "sk-test")
+    # complete()/complete_stream() also read the SAFEWORD out of the
+    # vault before the socket, and this file drives them with no vault
+    # at all. Says the same thing about the safeword that the line
+    # above says about the key: in this scenario there is not one.
+    monkeypatch.setattr(openrouter.safeword_filter, "needles",
+                        lambda: ())
 
     async def drain():
         async for _ in openrouter.complete_stream(

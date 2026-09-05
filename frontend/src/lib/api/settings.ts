@@ -3,6 +3,7 @@ import {
   SettingsSchema,
   ProxyHealthSchema,
   OkResponseSchema,
+  SecretDeletedResponseSchema,
   ApiKeySaveResponseSchema,
   StopSequencesResponseSchema,
   AutoLockResponseSchema,
@@ -13,6 +14,7 @@ import type {
   Settings,
   ProxyHealth,
   OkResponse,
+  SecretDeletedResponse,
   ApiKeySaveResponse,
   StopSequencesResponse,
   AutoLockResponse,
@@ -31,8 +33,13 @@ export function setApiKey(apiKey: string): Promise<ApiKeySaveResponse> {
   });
 }
 
-export function deleteApiKey(): Promise<OkResponse> {
-  return request("/settings/api-key", OkResponseSchema, {
+/** Delete the stored key, and report whether a copy survived it.
+ *
+ *  Not OkResponseSchema: that one strips `legacy_copy_left`, so the one fact
+ *  the caller of a delete-because-it-leaked needs never reached the panel.
+ *  See SecretDeletedResponseSchema. */
+export function deleteApiKey(): Promise<SecretDeletedResponse> {
+  return request("/settings/api-key", SecretDeletedResponseSchema, {
     method: "DELETE",
   });
 }
@@ -151,8 +158,11 @@ export function setProxyAlias(
   });
 }
 
-export function deleteProxy(): Promise<OkResponse> {
-  return request("/settings/proxy", OkResponseSchema, {
+/** Delete the stored proxy, and report whether a copy survived it.
+ *  Same field, same reason, same schema as deleteApiKey: the proxy URL is a
+ *  secret too, and it can carry credentials in its own userinfo. */
+export function deleteProxy(): Promise<SecretDeletedResponse> {
+  return request("/settings/proxy", SecretDeletedResponseSchema, {
     method: "DELETE",
   });
 }

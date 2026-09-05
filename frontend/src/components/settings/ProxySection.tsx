@@ -19,6 +19,39 @@ import {
 import { parseApiError } from "@/lib/errors";
 import { Shield, Trash2, RefreshCw, Check, AlertCircle, Loader2 } from "lucide-react";
 
+/** How a feedback line is coloured, and the sibling section's table verbatim.
+ *  ApiKeySection carries the same three-way split for the same reason: this
+ *  panel's answers are not all "it worked" or "it failed", and `partial` means
+ *  the delete ran while a copy of the secret outlived it. Same red as `error`
+ *  on purpose, because both say the secret is still reachable; the sentence
+ *  and the kind published on the box are what tell them apart.
+ *
+ *  Not exported: the react-refresh gate refuses a non-primitive export from a
+ *  file that exports a component. The kind reaches the DOM on `data-feedback`
+ *  instead, which is the better contract anyway. */
+const FEEDBACK_COLOR = {
+  success: "var(--color-es-success)",
+  error: "var(--color-es-danger)",
+  partial: "var(--color-es-danger)",
+} as const;
+
+type Feedback = { type: keyof typeof FEEDBACK_COLOR; text: string };
+
+/**
+ * What the panel says when removing the proxy left a copy behind.
+ *
+ * Exported as a string so the test proving it reaches the screen imports it
+ * rather than restating it; a primitive is the one export the react-refresh
+ * gate allows out of a component file. The URL is a secret in its own right,
+ * and it is the shape most likely to carry credentials inside it, so a copy
+ * the credential store would not release is the same class of problem as a
+ * leftover API key.
+ */
+export const PROXY_COPY_LEFT_TEXT =
+  "Proxy removed from the vault, but the OS credential store would not " +
+  "release its copy of the URL. That copy is still readable on this machine; " +
+  "delete it there by hand.";
+
 export function ProxySection() {
   const {
     data: settings,
@@ -64,7 +97,7 @@ export function ProxySection() {
   // dirty, the toggle mirrors the server value - this prevents a save that only
   // changes the URL from silently flipping proxy_required back to false.
   const [requiredDirty, setRequiredDirty] = useState(false);
-  const [feedback, setFeedback] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [feedback, setFeedback] = useState<Feedback | null>(null);
 
   // Render-time state adjustment (react.dev "you might not need an effect"):
   // whenever the server value changes and the toggle is not dirty, mirror it.
@@ -114,7 +147,11 @@ export function ProxySection() {
           // are write-only, and a box still showing text the server has
           // already taken invites a second, pointless save.
           clearAliasDraft();
-          done.push(aliasInput.trim() ? "Name saved" : "Name cleared");
+          // Not "Name cleared" - an emptied box no longer deletes the
+          // stored name, it asks for the default one back.
+          done.push(
+            aliasInput.trim() ? "Name saved" : "Name reset to the default",
+          );
         }
         if (requiredDirty) {
           await setRequired.mutateAsync(requiredToggle);
@@ -150,10 +187,18 @@ export function ProxySection() {
   const handleDelete = async () => {
     setFeedback(null);
     try {
-      await deleteProxy.mutateAsync();
+      const result = await deleteProxy.mutateAsync();
       setRequiredDirty(false);
       clearAliasDraft();
-      setFeedback({ type: "success", text: "Proxy removed" });
+      // The vault row is gone either way. `legacy_copy_left` is the server
+      // saying the credential store kept its own copy of the URL, and until
+      // the delete response got its own schema that answer was stripped on
+      // the way in and this branch could not exist.
+      setFeedback(
+        result.legacy_copy_left
+          ? { type: "partial", text: PROXY_COPY_LEFT_TEXT }
+          : { type: "success", text: "Proxy removed" },
+      );
     } catch (err) {
       setFeedback({ type: "error", text: parseApiError(err).message });
     }
@@ -422,15 +467,29 @@ export function ProxySection() {
       {feedback && (
         <div
           className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs"
+          // Announced, the same way and for the same reason as the sibling
+          // ApiKeySection's line: this box is the entire answer to arming a
+          // kill-switch, and a switch whose result is silent leaves somebody
+          // believing the block went on when it did not. `status` and not
+          // `alert`, because one node cannot be both and the sibling already
+          // settled which one this family uses.
+          role="status"
+          // The KIND of answer, in one machine-readable word. Without it the
+          // only thing separating "saved" from "refused" here was the colour
+          // of the text, which is the one signal a colour-blind reader loses
+          // and no assistive technology reads at all. Same shape as
+          // data-state on the indicators above.
+          data-feedback={feedback.type}
           style={{
             backgroundColor: "var(--color-es-surface-elevated)",
-            color:
-              feedback.type === "success"
-                ? "var(--color-es-success)"
-                : "var(--color-es-danger)",
+            color: FEEDBACK_COLOR[feedback.type],
           }}
         >
-          {feedback.type === "error" && <AlertCircle size={12} />}
+          {/* A mark per kind, not a hue per kind. The error glyph was already
+              here; success gets the same tick this panel's Save button uses,
+              so the two outcomes differ by shape as well as colour. */}
+          {feedback.type === "success" && <Check size={12} />}
+          {feedback.type !== "success" && <AlertCircle size={12} />}
           {feedback.text}
         </div>
       )}

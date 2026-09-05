@@ -23,6 +23,7 @@ from tts.errors import (
     TTS_WORKER_CRASHED,
     TTS_WORKER_UNAVAILABLE,
 )
+from tts import stream_hook, worker_client
 from tts.worker import _wire
 from tts.worker_client import WorkerClient, WorkerFailure
 
@@ -211,6 +212,86 @@ class TestFailuresBecomeAdvice:
             t.join(timeout=15)
         assert len(results) == 4, "callers were left hanging after the worker died"
         assert time.time() - started < 15
+
+
+class TestWaitingForATurnIsBudgeted:
+    """Serialising the worker is right; waiting forever for the turn is not.
+
+    The per-request timeout is a budget for WORK. With no budget on the lock
+    itself, a request that wedged inside it spent every later caller's patience
+    on the queue instead, which is the exact outcome the serialisation comment
+    says it exists to prevent.
+    """
+
+    @staticmethod
+    def _occupy(worker, seconds: float, done: list) -> threading.Thread:
+        """Hold the turn for real, from a real request the worker is serving."""
+        def run():
+            try:
+                worker.request(_wire.OP_LOAD,
+                               {"mode": "slow", "secs": seconds}, timeout=30)
+                done.append("ok")
+            except WorkerFailure as exc:                    # pragma: no cover
+                done.append(exc.code)
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        return t
+
+    def test_a_caller_past_the_budget_is_refused_instead_of_queued(
+        self, worker, monkeypatch
+    ):
+        """RED before the budget existed: the second call simply waited."""
+        monkeypatch.setattr(worker_client, "TURN_TIMEOUT_S", 0.2)
+        done: list = []
+        holder = self._occupy(worker, 2.0, done)
+        time.sleep(0.4)                       # the turn is genuinely taken now
+
+        started = time.time()
+        with pytest.raises(WorkerFailure) as exc:
+            worker.request(_wire.OP_PING)
+        waited = time.time() - started
+
+        assert exc.value.code == TTS_WORKER_UNAVAILABLE
+        assert waited < 1.5, (
+            "refused, but only after waiting out the request in front of it - "
+            "that is the queue being measured again, not the budget"
+        )
+        holder.join(timeout=20)
+        assert done == ["ok"], "the request holding the turn was disturbed"
+
+    def test_a_caller_inside_the_budget_still_gets_its_answer(
+        self, worker, monkeypatch
+    ):
+        """The positive control.
+
+        A budget that refused everything would pass the test above. Here the
+        wait is shorter than the budget, so the right answer is the ordinary
+        one - queueing briefly is what the lock is FOR.
+        """
+        monkeypatch.setattr(worker_client, "TURN_TIMEOUT_S", 10.0)
+        done: list = []
+        holder = self._occupy(worker, 1.0, done)
+        time.sleep(0.4)
+
+        assert worker.request(_wire.OP_PING)["pong"] is True
+        holder.join(timeout=20)
+        assert done == ["ok"]
+
+    def test_a_free_turn_is_never_refused(self, worker, monkeypatch):
+        """Ground control: a small budget alone refuses nobody."""
+        monkeypatch.setattr(worker_client, "TURN_TIMEOUT_S", 0.2)
+        assert worker.request(_wire.OP_PING)["pong"] is True
+        assert worker.request(_wire.OP_PING)["pong"] is True
+
+    def test_the_budget_is_not_shorter_than_the_drain_it_sits_under(self):
+        """One number, not two.
+
+        A turn budget below the drain ceiling would refuse a caller queued
+        behind an utterance the drain loop is still willing to wait for - a
+        healthy engine reported as an unavailable one.
+        """
+        assert worker_client.TURN_TIMEOUT_S >= stream_hook.DRAIN_TIMEOUT_S
 
 
 class TestNothingIsLeftBehind:

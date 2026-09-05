@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 import config
+from conftest import STRICT_SKIPS_ENV, missing_prerequisite, outcome_of
 from tts import speed
 from tts.base import ParamSpec
 
@@ -232,8 +233,14 @@ def _has_numpy(exe: str) -> bool:
 def test_dsp_numeric_checks_pass():
     exe = _numpy_interpreter()
     if exe is None:
-        pytest.skip("no numpy-capable interpreter: set up a voice engine to "
-                    "cover the DSP maths (tests/dsp_numeric_check.py)")
+        # Silent here, loud on the way out: see conftest.missing_prerequisite.
+        # An honest skip on a machine with no voice engine is the point of the
+        # helper above; a skip on the machine that is about to publish means
+        # the DSP maths shipped unmeasured, and those two must not print the
+        # same colour.
+        missing_prerequisite(
+            "no numpy-capable interpreter: set up a voice engine to "
+            "cover the DSP maths (tests/dsp_numeric_check.py)")
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
     proc = subprocess.run([exe, str(NUMERIC)], capture_output=True,
                           text=True, timeout=600, env=env)
@@ -271,7 +278,7 @@ def test_the_numeric_check_would_notice_a_broken_stretch(tmp_path):
     """
     exe = _numpy_interpreter()
     if exe is None:
-        pytest.skip("no numpy-capable interpreter; see the test above")
+        missing_prerequisite("no numpy-capable interpreter; see the test above")
 
     pkg = tmp_path / "tts" / "worker"
     pkg.mkdir(parents=True)
@@ -294,3 +301,46 @@ def test_the_numeric_check_would_notice_a_broken_stretch(tmp_path):
         "checking anything:\n" + proc.stdout)
     assert "the output is the length the rate implies" in proc.stdout
     assert "all dsp numeric checks passed" not in proc.stdout
+
+
+# ── what "no interpreter" is allowed to mean ─────────────────────────────────
+#
+# Both maths tests above close themselves when no interpreter here can import
+# numpy. On a machine with no voice engine that is honest; on the machine that
+# is about to publish it means the DSP shipped unmeasured while the run printed
+# green. The two are separated by one switch, and this drives it rather than
+# waiting for a machine without numpy to come along.
+
+
+@pytest.mark.parametrize("gate", ["numeric_checks", "broken_stretch"])
+def test_a_missing_interpreter_skips_here_and_fails_on_the_way_out(
+        gate, monkeypatch, tmp_path):
+    """Both call sites, both lanes, in one place.
+
+    The discovery is forced to "nothing found" rather than hidden, because the
+    question is what the test DOES with that answer. `_numpy_interpreter`
+    itself is measured by the two tests above on any machine that has one.
+    """
+    monkeypatch.setattr(sys.modules[__name__], "_numpy_interpreter",
+                        lambda: None)
+    run = (test_dsp_numeric_checks_pass if gate == "numeric_checks"
+           else functools.partial(test_the_numeric_check_would_notice_a_broken_stretch,
+                                  tmp_path))
+
+    # GROUND: the developer lane keeps the behaviour it always had.
+    monkeypatch.delenv(STRICT_SKIPS_ENV, raising=False)
+    kind, message = outcome_of(run)
+    assert kind == "skip", f"the developer lane answered {kind!r}"
+    assert "numpy-capable interpreter" in message
+
+    # And the lane that must not accept it. The outcome is read as a value
+    # rather than caught with `pytest.raises`, because a skip escaping that
+    # context manager would close this test as skipped - green - which is the
+    # same silence being measured.
+    monkeypatch.setenv(STRICT_SKIPS_ENV, "1")
+    kind, message = outcome_of(run)
+    assert kind == "fail", (
+        f"the publishing lane answered {kind!r} for the DSP maths, so it "
+        "would ship unmeasured behind a green run")
+    assert "numpy-capable interpreter" in message
+    assert STRICT_SKIPS_ENV in message

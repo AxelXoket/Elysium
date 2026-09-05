@@ -1,68 +1,60 @@
 # Elysium Frontend
 
-React 19 + TypeScript (strict) + Vite client for [Elysium](../README.md), a privacy-first AI character chat app. The frontend talks **only** to the local FastAPI backend at `http://127.0.0.1:8787` - it never contacts OpenRouter directly, never emits an `Authorization` header, and keeps secrets out of browser storage. Completions stream token-by-token over SSE, relayed through the backend.
+The React SPA. Setup, architecture and the privacy contract live in the
+[root README](../README.md); this file covers only what is specific to this
+directory.
+
+React 19, TypeScript in strict mode, Vite. This client never talks to
+OpenRouter. Every request goes to the local FastAPI backend, which holds the
+key and relays completions back token by token over SSE. In development Vite
+serves the page on `127.0.0.1:5173` and the backend answers on
+`127.0.0.1:8787`. A production build is served by the backend process itself,
+so it calls whatever origin it was loaded from.
 
 ## Commands
 
 | Command | What it does |
 |---------|--------------|
-| `npm run dev` | Start the Vite dev server at `http://127.0.0.1:5173` |
-| `npm test` | Run the vitest suite once (`vitest --run`) |
-| `npm run typecheck` | `tsc --noEmit` against both `tsconfig.app.json` and `tsconfig.test.json` |
-| `npm run build` | Typecheck the app config, then `vite build` |
-| `npx eslint .` | Lint (also available as `npm run lint`) |
+| `npm run dev` | Vite dev server on `http://127.0.0.1:5173` |
+| `npm test` | The suite once (`vitest --run`) |
+| `npm run test:watch` | The suite in watch mode |
+| `npm run typecheck` | `tsc --noEmit` over `tsconfig.app.json` and `tsconfig.test.json` |
+| `npm run lint` | `eslint .` |
+| `npm run build` | Typecheck the app config, then `vite build` into `dist/` |
 
-Open the app at exactly `http://127.0.0.1:5173` - backend CORS intentionally rejects `http://localhost:5173`.
+`package.json` carries the rest: `test:report` and `preview`.
+
+Open the app at exactly `http://127.0.0.1:5173`. `http://localhost:5173` is
+refused on purpose, because the backend's CORS allowlist holds that one origin
+and nothing else.
 
 ## Configuration
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `VITE_API_BASE_URL` | `http://127.0.0.1:8787/api/v1` | Backend API base URL override (see `.env.example`) |
+`VITE_API_BASE_URL` overrides the API base. Left unset it resolves to
+`http://127.0.0.1:8787/api/v1` in development and to the relative `/api/v1` in
+a production build. See `.env.example` and `src/lib/api/base.ts`.
 
-## Layout
+## Two orderings that are load-bearing
 
-```
-src/
-├── app/              App entry, providers, stale-selection reconciliation
-├── components/
-│   ├── chat/         ChatCanvas, Composer, MessageList, MessageBubble
-│   ├── characters/   Character list + create/import/edit dialogs
-│   ├── chats/        Chat create dialog
-│   ├── errors/       ErrorToastStack (global safe-error toasts)
-│   ├── generation/   Generation settings dialog + settings context
-│   ├── models/       Model panel (catalogue, search, selection)
-│   ├── persona/      Persona panel
-│   ├── preview/      Active context preview card
-│   ├── settings/     API key + proxy sections, auto-lock, at-rest notices
-│   ├── sidebar/      Sidebar layout
-│   ├── vault/        VaultGate - the lock screen that fronts the whole app
-│   └── backdrop/, brand/, layout/, motion/, ui/   Shell, wallpaper, wordmark,
-│                     animation, and base UI primitives
-├── lib/
-│   ├── api/          REST client + SSE stream client (stream.ts)
-│   ├── query/        TanStack Query hooks (all resources)
-│   ├── schemas/      Zod schemas + inferred types (the wire contract)
-│   ├── generation/   Param filtering, clamping, payload builders
-│   ├── errors/       Safe error parser, code→message mapper, error store
-│   ├── store/        Zustand UI store
-│   ├── voice/        Narration playback, chunk scheduling, voice tag handling
-│   ├── zodJitless.ts Zod without eval - imported first in main.tsx, before CSP
-│   ├── navigationGuard.ts   Blocks top-level navigation away from the app
-│   └── appearance/, chat/, characters/, context/, models/, motion/, personas/,
-│       preview/, theme/, utils.ts, vaultLockUi.ts
-└── test/
-    ├── components/   Focused suites per feature slice
-    ├── helpers/      streamMocks.ts - SSE-aware fetch stub for streaming tests
-    ├── mocks/        API mocks + shared fixtures
-    ├── lib/          Suites for the lib/ modules above
-    ├── setup.ts      Vitest environment setup, loaded before every suite
-    ├── static-safety.test.ts   Static privacy checks (no direct provider calls, no secret storage)
-    ├── fe0-contract.test.ts    API contract shape tests
-    └── css-contract, palette-guard, settings-copy, settings-persistence,
-        narrationMigration, navigationGuard   Cross-cutting suites
-```
+- `main.tsx` imports `./lib/zodJitless` before anything else. The flag it sets
+  is read while the schema modules are still being evaluated, so a later
+  import is a late import.
+- `vite.config.ts` loads `src/test/sentinels.ts` ahead of `src/test/setup.ts`.
+  The sentinels install the runtime traps for egress, storage, console,
+  headers and payloads; a module that writes at import time walks past all of
+  them if it is imported first.
+
+Both read like tidy-up candidates. Neither is.
+
+## Where things are
+
+`src/components/` is grouped by feature slice, `src/lib/` by concern, and
+`src/test/` mirrors both. There is no file tree here on purpose: the one in
+the root README was wrong within weeks, and the one that used to sit in this
+file went the same way. `git ls-files frontend/src` is accurate.
 
 ## Contract of record
 
-The backend API surface, streaming frames, and privacy rules this client must follow are specified in [`../docs/frontend_contract.md`](../docs/frontend_contract.md). Project-wide setup, architecture, and the privacy contract live in the [root README](../README.md).
+The API surface, the streaming frames and the privacy rules this client has to
+follow are specified in
+[`../docs/frontend_contract.md`](../docs/frontend_contract.md).

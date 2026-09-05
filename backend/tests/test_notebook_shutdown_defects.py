@@ -418,17 +418,21 @@ class TestDefect2AttemptOwnership:
 
         monkeypatch.setattr(openrouter, "complete", good)
 
-        # THE SAME QUESTION THE WORKER WILL ASK. `_handle` plans with
-        # `config.NOTEBOOK_EXTRACT_EVERY_TURNS` as the threshold, and the
-        # threshold decides whether an unread chat is read from its oldest
-        # message or from the present - so a different one here names a
-        # different range, and a different range is a different work key.
-        # This used to pass on a coincidence: the branch was keyed on `limit`
-        # rather than on the threshold, so the two calls agreed by accident.
+        # THE SAME QUESTION THE WORKER WILL ASK, and asked THROUGH the worker
+        # rather than by retyping its arguments. The threshold decides
+        # whether an unread chat is read from its oldest message or from the
+        # present, so a different one here names a different range, and a
+        # different range is a different work key. This used to pass on a
+        # coincidence: the branch was keyed on `limit` rather than on the
+        # threshold, so the two calls agreed by accident. Then the threshold
+        # itself started shrinking under the breaker while the first-read
+        # edge deliberately did not, and a hard-coded pair here would have
+        # gone on agreeing with a worker that had stopped asking it.
+        w = worker()
         plan = notebook_worker._plan_work(
             chat_id, "vendor/cheap", "en",
-            config.NOTEBOOK_EXTRACT_EVERY_TURNS, 20)
-        w = worker()
+            w.trigger_threshold_for(chat_id), w.batch_size_for(chat_id),
+            first_read_edge=config.NOTEBOOK_EXTRACT_EVERY_TURNS * 2)
         await w._handle(chat_id)
 
         with get_db() as con:

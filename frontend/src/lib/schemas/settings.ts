@@ -46,9 +46,36 @@ export const ProxyHealthSchema = z.object({
 });
 
 // Used for endpoints returning { ok: true }:
-// POST /settings/api-key, DELETE /settings/api-key,
-// POST /settings/proxy, DELETE /settings/proxy
+// POST /settings/api-key, POST /settings/proxy, and the deletes that carry
+// nothing else (characters, chats, personas). The two SECRET deletes answer
+// with a second field and parse SecretDeletedResponseSchema below.
 export const OkResponseSchema = z.object({ ok: z.literal(true) });
+
+/**
+ * The answer both secret deletes give: DELETE /settings/api-key and
+ * DELETE /settings/proxy.
+ *
+ * Derived from OkResponseSchema rather than replacing or widening it. Three
+ * other routes parse a flat `{ ok: true }` and have to keep doing so, and this
+ * is the shape zod is strict about in the quiet direction: an object schema
+ * STRIPS a key it was not told about, so the field below used to be read off
+ * the wire and thrown away one line later, with nothing raised anywhere.
+ *
+ * What was being thrown away: the vault row goes either way, but the OS
+ * credential store answers False instead of raising when it will not release
+ * its own copy, so a secret somebody deleted BECAUSE it leaked can still be
+ * sitting on this machine while the panel says "removed". Same shape and same
+ * reason as /vault/lock's audio_left.
+ *
+ * `.catch(false)` rather than a bare boolean: this field must never be the
+ * thing that turns a delete that WORKED into a failed request. An older server
+ * that does not send it, or a value that is not a boolean, falls back to the
+ * reading that raises no alarm, which is exactly what the client did before
+ * this schema existed. The warning is shown only when the server says so.
+ */
+export const SecretDeletedResponseSchema = OkResponseSchema.extend({
+  legacy_copy_left: z.boolean().catch(false),
+});
 export const ApiKeySaveResponseSchema = z.discriminatedUnion("ok", [
   z.object({
     ok: z.literal(true),
@@ -60,6 +87,7 @@ export const ApiKeySaveResponseSchema = z.discriminatedUnion("ok", [
   }),
 ]);
 export type OkResponse = z.infer<typeof OkResponseSchema>;
+export type SecretDeletedResponse = z.infer<typeof SecretDeletedResponseSchema>;
 export type ApiKeySaveResponse = z.infer<typeof ApiKeySaveResponseSchema>;
 
 export const StopSequencesResponseSchema = z.object({

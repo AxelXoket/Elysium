@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field, field_validator
 
 import anyio.to_thread
 
+import default_names
 import notebook_store as notebook
 from database import get_db, iter_chunks
 from attachments_service import delete_for_messages
@@ -40,7 +41,17 @@ MAX_IMPORT_BYTES = 1_048_576  # 1 MiB
 # ---------------------------------------------------------------------------
 
 class CharacterCreate(BaseModel):
-    name: str
+    #: Optional, and that is the whole change. It used to be required and a
+    #: blank one was a 422 - so the dialog kept its Create button disabled and
+    #: a person who only wanted to paste a description first had to invent a
+    #: word. The name is filled in by `default_names` at the write instead.
+    #:
+    #: `str | None` rather than `str`, matching ChatCreate.title: four shapes
+    #: of "nothing" reach these routes - "", "   ", null, and the key left
+    #: out - and they used to take four different paths. One answer to all
+    #: four is the point of the change, so a null is an empty box here too
+    #: rather than a type error about a field the caller did fill in.
+    name: str | None = None
     description: str = ""
     personality: str = ""
     scenario: str = ""
@@ -52,10 +63,11 @@ class CharacterCreate(BaseModel):
 
     @field_validator("name")
     @classmethod
-    def name_must_be_non_empty(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("name must not be empty.")
-        return v.strip()
+    def name_is_trimmed(cls, v: str | None) -> str:
+        """Trim, and flatten null to empty. Whether the result is empty is
+        decided at the write, where the other names in the vault are readable
+        and a default can be numbered against them."""
+        return (v or "").strip()
 
     @field_validator("tags")
     @classmethod
@@ -124,13 +136,26 @@ async def list_characters() -> list[dict]:
 
 def _create_character_sync(body: "CharacterCreate") -> dict:
     """Worker-thread body (audit KÖK 8): INSERT plus the re-SELECT of its own
-    new row. No guard of prior state, so no BEGIN IMMEDIATE needed."""
+    new row.
+
+    BEGIN IMMEDIATE, and the reason is new. This used to read nothing before
+    it wrote, and the docstring said so; naming an unnamed character turns it
+    into read-then-write, because the number in "New Character 3" is derived
+    from the names already stored. Without the writer lock two creations
+    landing together would each scan a set that does not contain the other and
+    both take the same number - the one race a generated name can lose.
+    """
     with get_db() as con:
+        con.execute("BEGIN IMMEDIATE")
+        name = default_names.name_or_default(
+            body.name, default_names.CHARACTER,
+            (r["name"] for r in con.execute("SELECT name FROM characters")),
+        )
         cur = con.execute(
             "INSERT INTO characters (name, description, personality, scenario, "
             "first_mes, mes_example, system_prompt, post_history_instruction, "
             "tags, raw_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (body.name, body.description, body.personality, body.scenario,
+            (name, body.description, body.personality, body.scenario,
              body.first_mes, body.mes_example, body.system_prompt,
              body.post_history_instruction,
              json.dumps(body.tags), "{}"),
@@ -207,10 +232,15 @@ def _import_character_sync(raw: bytes) -> dict:
     # Unwrap Character Card V2 wrapper
     data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
 
-    # Name: required, stripped
+    # Name: optional now, stripped here and defaulted at the write below.
+    #
+    # A card with no name used to be refused outright with
+    # `character_name_required` - the whole import thrown away over one
+    # missing field, with a description, a greeting and example dialogue in
+    # the same file that were perfectly good. That code is gone from the
+    # catalogue because this was the only place that raised it. What is still
+    # refused is a body that is not a card at all.
     name = _text(data, "name").strip()
-    if not name:
-        raise HTTPException(400, "character_name_required")
 
     # post_history_instruction: singular wins over plural
     post_history = (
@@ -230,6 +260,15 @@ def _import_character_sync(raw: bytes) -> dict:
     raw_json_str = raw.decode("utf-8", errors="replace")
 
     with get_db() as con:
+        # BEGIN IMMEDIATE for the same reason _create_character_sync now takes
+        # it: an unnamed card reads the names already stored before it writes
+        # its own, and two imports landing together would otherwise both take
+        # the same number.
+        con.execute("BEGIN IMMEDIATE")
+        name = default_names.name_or_default(
+            name, default_names.CHARACTER,
+            (r["name"] for r in con.execute("SELECT name FROM characters")),
+        )
         cur = con.execute(
             "INSERT INTO characters (name, description, personality, scenario, "
             "first_mes, mes_example, system_prompt, post_history_instruction, "
@@ -293,9 +332,11 @@ class CharacterPatch(BaseModel):
 
     @field_validator("name")
     @classmethod
-    def name_must_be_non_empty(cls, v: str | None) -> str | None:
-        if v is not None and not v.strip():
-            raise ValueError("name must not be empty.")
+    def name_is_trimmed(cls, v: str | None) -> str | None:
+        """Trim only, and note what the two empties mean here. An ABSENT name
+        leaves the stored one alone, which is what every other field in this
+        model does. A name PRESENT and blank is an emptied box, and that is a
+        rename to the default, decided at the write below."""
         return v.strip() if v is not None else v
 
     @field_validator("tags")
@@ -331,9 +372,21 @@ def _patch_character_sync(character_id: int, body: "CharacterPatch") -> dict:
                            "first_mes", "mes_example", "system_prompt",
                            "post_history_instruction"):
             val = getattr(body, field_name)
-            if val is not None:
-                updates.append(f"{field_name} = ?")
-                params.append(val)
+            if val is None:
+                continue
+            if field_name == "name" and default_names.is_blank(val):
+                # An emptied name box is a rename to the default, the same as
+                # it is on create. The scan excludes this character's own row:
+                # the name being replaced is on its way out, so it must not
+                # hold a number against its own replacement.
+                val = default_names.next_default_name(
+                    default_names.CHARACTER,
+                    (r["name"] for r in con.execute(
+                        "SELECT name FROM characters WHERE id != ?",
+                        (character_id,))),
+                )
+            updates.append(f"{field_name} = ?")
+            params.append(val)
 
         if body.tags is not None:
             updates.append("tags = ?")
@@ -369,11 +422,17 @@ async def patch_character(character_id: int, body: CharacterPatch) -> dict:
 # DELETE /characters/{character_id}
 # ---------------------------------------------------------------------------
 
-def _delete_character_sync(character_id: int) -> int:
+def _delete_character_sync(character_id: int) -> list[int]:
     """Worker-thread body (v1.1 FB2/I7): opens its own connection here, not on
     the event loop - an image-heavy cascade holds the writer for a while and
     would otherwise stall every live SSE stream. Returns the cascaded chat
-    count. Raises HTTPException (propagates cleanly through run_sync)."""
+    IDS. Raises HTTPException (propagates cleanly through run_sync).
+
+    The ids rather than their count, because the caller has one more thing to
+    forget with them: the notebook worker keeps a per-chat circuit breaker in
+    memory, and a refusal that outlives the conversation it was about would
+    refuse a chat id that has since been handed to somebody else.
+    """
     with get_db() as con:
         # Write lock up front (parity with delete_chat/clear_chat): without
         # it the msg_ids SELECT runs in autocommit, and a concurrent send
@@ -426,14 +485,22 @@ def _delete_character_sync(character_id: int) -> int:
     # delete follows: the database is the source of truth and lands whether or
     # not a file on disk lets go.
     audio_sweep.forget_spoken_audio(spoken)
-    return len(chat_ids)
+    return chat_ids
 
 
 @router.delete("/{character_id}")
 async def delete_character(character_id: int) -> dict:
     """Delete a character and cascade-delete all associated chats + messages."""
-    cascaded = await anyio.to_thread.run_sync(_delete_character_sync, character_id)
+    chat_ids = await anyio.to_thread.run_sync(
+        _delete_character_sync, character_id)
+    # Same rule as `delete_chat`, at the scale that made this path the one
+    # that orphans: deleting a character takes every chat it ever had, and
+    # every per-chat refusal those chats were holding.
+    import notebook_worker
+    for chat_id in chat_ids:
+        notebook_worker.worker.forget_chat(chat_id)
     logger.info(
-        "Character deleted: id=%d (cascaded %d chats)", character_id, cascaded,
+        "Character deleted: id=%d (cascaded %d chats)",
+        character_id, len(chat_ids),
     )
     return {"ok": True}

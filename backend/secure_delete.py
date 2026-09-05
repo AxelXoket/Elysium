@@ -24,6 +24,77 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
+#: What an I/O failure during the overwrite leaves behind, in the three
+#: shapes it really has. shred() answers False for all three, so the return
+#: value cannot tell them apart and the sentence is the entire report: the
+#: first means every byte is still readable, the second means some of them
+#: are, the third means none of them are and only the name is left. They are
+#: named here rather than typed at the log call because a reader of that log
+#: is deciding whether to go on looking for those bytes, and a test that has
+#: to retype the sentence to check it is checking its own typing.
+NOT_OPENED = "secure_delete: %s could not be opened - left untouched"
+OVERWRITE_STOPPED_SHORT = (
+    "secure_delete: %s was overwritten as far as %d of %d bytes before the "
+    "write failed - the rest of the content may still be recoverable"
+)
+OVERWRITTEN_NOT_SYNCED = (
+    "secure_delete: %s was fully overwritten but the write could not be "
+    "flushed to disk - the content is replaced, the name remains"
+)
+
+
+def _reparse_attribute(path: Path) -> bool | None:
+    """Does this NAME carry the reparse-point attribute? None if unknowable.
+
+    Split out because the two callers want opposite answers to "I cannot
+    tell": is_redirected() has to fail CLOSED and refuse, while a caller that
+    is about to REMOVE the entry has to fail OPEN and leave it alone. Writing
+    that as one boolean is how a guard ends up deleting on an error.
+
+    The second attempt is the fix for a measured lie. Win32 path
+    normalisation trims trailing spaces and dots from the LAST component, so
+    `os.lstat(r"C:\\...\\reports ")` looks for `reports`, does not find it,
+    and raises ENOENT - and an ordinary directory with an awkward name came
+    back as "redirected". That was not only a wrong log line: shred_tree
+    pruned the folder, so the plaintext inside it was never overwritten and
+    never counted, and the sweep reported success. The extended-length prefix
+    turns normalisation off and answers honestly. `os.path.abspath` cannot
+    stand in for it - measured, it trims the space as well - so the raw
+    fspath string is what gets prefixed.
+    """
+    raw = os.fspath(path)
+    attempts = [raw]
+    if os.name == "nt" and isinstance(raw, str) and not raw.startswith("\\\\?\\"):
+        # Only meaningful for an absolute path; a relative one simply fails
+        # this second lstat too and the caller keeps its old answer.
+        attempts.append("\\\\?\\" + raw)
+    for candidate in attempts:
+        try:
+            info = os.lstat(candidate)
+        except (OSError, ValueError):
+            continue
+        attributes = getattr(info, "st_file_attributes", None)
+        if attributes is None:
+            return Path(path).is_symlink()  # non-Windows
+        return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+    return None
+
+
+def confirmed_reparse(path: Path) -> bool:
+    """True only when this name IS demonstrably a junction, symlink or mount.
+
+    The mirror image of is_redirected(), and the difference is the whole
+    reason it exists. is_redirected() answers "is it safe to delete THROUGH
+    this name" and fails closed, so an unreadable name, a missing one and a
+    junction all answer True. That is the right default for walking into
+    something, and exactly the wrong one for removing the entry: acting on a
+    fail-closed True would unlink names on any I/O error at all.
+
+    So this one fails OPEN. Unknown means False means do nothing, and the
+    caller reports instead of deleting.
+    """
+    return _reparse_attribute(path) is True
+
 
 def is_redirected(path: Path) -> bool:
     """Whether this name leads somewhere else - junction, symlink, mount point.
@@ -42,14 +113,17 @@ def is_redirected(path: Path) -> bool:
     The reparse-point attribute is the one answer that covers junctions,
     symlinks and mount points alike. A name that fails this check is left
     alone entirely: refusing to delete is always the safe direction.
+
+    Still fails CLOSED, and every caller's `is_dir()` or `lexists()` gate is
+    written against that: a path that does not exist answers True. What it no
+    longer does is fail closed on a name that is merely awkward to spell -
+    see _reparse_attribute for the trailing-space case that was leaving
+    plaintext un-shredded and calling it a refused junction.
     """
-    try:
-        return bool(os.lstat(path).st_file_attributes
-                    & stat.FILE_ATTRIBUTE_REPARSE_POINT)
-    except AttributeError:
-        return Path(path).is_symlink()  # non-Windows: no st_file_attributes
-    except OSError:
+    answer = _reparse_attribute(path)
+    if answer is None:
         return True  # cannot tell what it is, so do not delete through it
+    return answer
 
 
 def is_shared(path: Path) -> bool:
@@ -148,17 +222,42 @@ def shred(path: Path) -> bool:
                 # rather than spinning.
                 noise = os.urandom(info.st_size)
                 written = 0
-                while written < len(noise):
-                    step = handle.write(noise[written:])
-                    if not step:
-                        log.warning(
-                            "secure_delete: %s could not be fully overwritten "
-                            "- left in place rather than unlinked",
-                            target.name)
-                        return False
-                    written += step
-                handle.flush()
-                os.fsync(handle.fileno())
+                # The write, the flush and the fsync used to sit under the
+                # outer handler with the open, and that handler says the file
+                # was left untouched. A full disk, removed media or an I/O
+                # error arriving mid-loop therefore told the user nothing had
+                # happened to a file that had just been half destroyed - the
+                # one direction this module must never be wrong in. The three
+                # of them answer for themselves here. The contract does not
+                # move: False still means "not destroyed". Only the sentence
+                # changes, and it now depends on how far the loop got.
+                try:
+                    while written < len(noise):
+                        step = handle.write(noise[written:])
+                        if not step:
+                            log.warning(
+                                "secure_delete: %s could not be fully "
+                                "overwritten - left in place rather than "
+                                "unlinked",
+                                target.name)
+                            return False
+                        written += step
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                    # Closed HERE rather than by the `with` on the way out,
+                    # and only because of where the two closes land: a close
+                    # that fails after a finished overwrite is the same event
+                    # as a flush that fails, and outside this block it would
+                    # be reported as "left untouched" again. Closing twice is
+                    # harmless; being wrong about it is not.
+                    handle.close()
+                except OSError:
+                    if written == len(noise):
+                        log.warning(OVERWRITTEN_NOT_SYNCED, target.name)
+                    else:
+                        log.warning(OVERWRITE_STOPPED_SHORT,
+                                    target.name, written, len(noise))
+                    return False
         try:
             target.unlink()
         except OSError:
@@ -174,10 +273,12 @@ def shred(path: Path) -> bool:
             return False
         return True
     except OSError:
-        # Nothing was destroyed on this path: every guard above returns
-        # early, and the only remaining raiser is the open itself.
-        log.warning("secure_delete: %s could not be opened - left untouched",
-                    target.name)
+        # Nothing was destroyed on this path, and that is true again rather
+        # than merely written down: every guard above returns early, the
+        # overwrite answers for itself now, and what is left able to raise
+        # here is the open, the fstat beside it, and the close of a file that
+        # had no bytes to overwrite.
+        log.warning(NOT_OPENED, target.name)
         return False
 
 
@@ -213,12 +314,22 @@ def _still_the_same_file(info: os.stat_result, expected: os.stat_result) -> bool
     return (info.st_dev, info.st_ino) == (expected.st_dev, expected.st_ino)
 
 
-def shred_tree(root: Path) -> tuple[int, list[str], bool]:
+def shred_tree(root: Path) -> tuple[int, list[str], list[str]]:
     """Shred every file under a directory, refusing to leave it.
 
     Returns (removed, stuck, pruned): how many files were destroyed, the names
-    of those that could not be, and whether any redirected folder was found
-    and skipped.
+    of those that could not be, and the FULL PATHS of the redirected names
+    that were found and skipped.
+
+    That third value used to be a bare bool, and the bool was the reason the
+    sweep could never finish. Every caller wanted to know whether to run
+    `shutil.rmtree` afterwards, and answering only yes-or-no left them with
+    one option: stop. Naming the paths lets a caller that is entitled to -
+    browser_profile, over names this app created - remove the ENTRY and try
+    again. Nothing here does that; this function still only refuses.
+
+    The shape is deliberately falsy-compatible: an empty list reads the same
+    as the old False at the four call sites that only ask `if pruned:`.
 
     The pruning is the whole point and it cannot be delegated. os.walk has a
     followlinks flag, and it does not help: a junction is not reported as a
@@ -234,15 +345,48 @@ def shred_tree(root: Path) -> tuple[int, list[str], bool]:
     """
     removed = 0
     stuck: list[str] = []
-    pruned = False
+    pruned: list[str] = []
     target = Path(root)
-    if not target.is_dir() or is_redirected(target):
-        return 0, [], is_redirected(target)
-    for current, subdirs, files in os.walk(target):
-        keep = [name for name in subdirs
-                if not is_redirected(Path(current) / name)]
+    redirected = is_redirected(target)
+    if not target.is_dir() or redirected:
+        # The root ITSELF being redirected is reported as a pruned path too,
+        # and it has to be: that is the one position `shutil.rmtree` cannot
+        # clear on its own - it raises "Cannot call rmtree on a symbolic
+        # link" and `ignore_errors=True` swallows it, so a caller told only
+        # "nothing removed" would leave the name standing for ever.
+        return 0, [], [str(target)] if redirected else []
+    def unlistable(error: OSError) -> None:
+        """A folder the walk could not open is a REFUSAL, not an absence.
+
+        `os.walk` swallows these by default, and the silence is the bug.
+        MEASURED: a directory named `reports.` - one trailing dot, no
+        privilege needed to create through the extended path - cannot be
+        opened through the ordinary Win32 path, so `scandir` raises ENOENT,
+        the walk yields nothing for it, and the plaintext inside is neither
+        shredded nor counted. The sweep then reported a clean tree.
+
+        Recording it in `stuck` is what makes that honest, and it is
+        load-bearing for the caller: browser_profile only lets `shutil.rmtree`
+        near a tree that came back with nothing stuck, so an unwalkable
+        subtree now stops the plain unlink instead of hiding under it.
+        """
+        name = getattr(error, "filename", None) or str(target)
+        try:
+            stuck.append(os.path.relpath(name, target))
+        except ValueError:
+            stuck.append(os.path.basename(str(name)) or str(name))
+        log.warning("secure_delete: %s could not be listed - anything under "
+                    "it is still on disk", name)
+
+    for current, subdirs, files in os.walk(target, onerror=unlistable):
+        keep = []
+        for name in subdirs:
+            child = Path(current) / name
+            if is_redirected(child):
+                pruned.append(str(child))
+            else:
+                keep.append(name)
         if len(keep) != len(subdirs):
-            pruned = True
             log.warning("secure_delete: redirected folder under %s - "
                         "not followed", current)
         subdirs[:] = keep
@@ -266,8 +410,15 @@ def discard(path: Path) -> bool:
 
     lexists, not exists: a broken junction is a name that IS there, and it is
     exactly the name shred() must refuse rather than follow.
+
+    The absence has to be checked the same way _reparse_attribute checks the
+    name, and for the same measured reason: `os.path.lexists` goes through
+    Win32 normalisation, which trims a trailing space or dot from the last
+    component. A file actually called `backup.` therefore reports absent, and
+    this would answer "gone" about a file still sitting on disk in the clear.
     """
     target = Path(path)
-    if not os.path.lexists(target):
+    if _reparse_attribute(target) is None and not os.path.lexists(target):
+        # Neither spelling of the name could be stat'ed: it really is absent.
         return True
     return shred(target)

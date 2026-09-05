@@ -250,31 +250,23 @@ describe("VaultGate lock hygiene", () => {
     // local profile all say the same thing. The reason they persist
     // is that unlocking should put you back where you were.
     //
-    // The error store is left standing too: its entries are already
-    // sanitised sentences from the catalogue, never message text. A
-    // toast queued just before a lock can still appear after the
-    // next unlock, which is untidy rather than a leak.
+    // The error store used to stand beside them, and the title's "and
+    // nothing else" was a lie by exactly one store. Its entries are
+    // sanitised catalogue sentences rather than message text, so what it
+    // cost was never content - it was the shape of the promise. A notice
+    // raised in the session that just ended came back in the next one,
+    // because ErrorToastStack remounts on unlock and reads the same
+    // module-scope queue it read before the lock. "Locked" has to mean the
+    // session is over for everything that is not a preference, so the
+    // notice queue is swept with the caches now and this test says so.
     //
     // What did NOT survive the decision is the mutation cache - see
     // the test below. It held the API key verbatim.
     //
-    // The purge above is a predicate over the QUERY cache. Zustand stores are
-    // not in it, so nothing here reaches them, and two of them are still
-    // holding things after the vault has closed:
-    //
-    //   useErrorStore  - a toast raised just before the lock is still queued,
-    //                    and ErrorToastStack remounts on unlock, so it can
-    //                    pop up moments after the passphrase is accepted,
-    //                    belonging to a session that ended.
-    //   useUiStore     - selectedChatId and selectedCharacterId survive, and
-    //                    are additionally persisted to localStorage, so they
-    //                    outlive the lock, the app, and the machine restart.
-    //
-    // Neither holds message text. They hold numeric ids and an already
-    // sanitised sentence, which is why this is recorded rather than treated
-    // as a leak of content. What it costs is the promise's shape: "locked"
-    // should mean the session is over, and for these two it does not.
-    const { useErrorStore } = await import("@/lib/errors");
+    // The purge above is a predicate over the QUERY cache. Zustand stores
+    // are not in it, so nothing there reaches them; each store that has to
+    // go at lock time is named at the sweep in VaultGate itself.
+    const { useErrorStore, getErrorMessage } = await import("@/lib/errors");
     const { useUiStore } = await import("@/lib/store/uiStore");
 
     const sim: VaultSim = { initialized: true, unlocked: true, passphrase: "x" };
@@ -284,20 +276,177 @@ describe("VaultGate lock hygiene", () => {
     await screen.findByTestId("app-root");
 
     useErrorStore.getState().clearAll();
-    useErrorStore.getState().pushErrorDirect("chat_not_found", "Chat not found.");
+    useErrorStore
+      .getState()
+      .pushErrorDirect("chat_not_found", getErrorMessage("chat_not_found"));
     useUiStore.setState({ selectedChatId: 41, selectedCharacterId: 7 });
+
+    // Positive control: the notice really is in the queue before the lock,
+    // so the assertion after it cannot pass on a store that was empty all
+    // along.
+    expect(useErrorStore.getState().errors).toHaveLength(1);
 
     sim.unlocked = false;
     await qc.invalidateQueries({ queryKey: ["vault"] });
     await screen.findByText("Elysium is locked");
 
-    // The query cache emptied; these did not.
-    expect(useErrorStore.getState().errors).toHaveLength(1);
+    // The query cache emptied, and so did the notice queue; the ids did not.
+    expect(
+      useErrorStore.getState().errors,
+      "a notice from the session that just ended outlived the lock",
+    ).toHaveLength(0);
     expect(useUiStore.getState().selectedChatId).toBe(41);
     expect(useUiStore.getState().selectedCharacterId).toBe(7);
 
     useErrorStore.getState().clearAll();
     useUiStore.setState({ selectedChatId: null, selectedCharacterId: null });
+  });
+
+  it("takes the WAITING notices too, not just the visible five", async () => {
+    // The queue is the half that would have survived a sweep of the visible
+    // list alone, and it is the worse half: a waiting notice has never been
+    // seen, so it does not expire on its own and the stack promotes it the
+    // moment a slot opens. Clearing only what is on screen would move the
+    // reappearance from "right after unlock" to "right after unlock, once
+    // one toast closes" - later, and harder to connect to the lock.
+    const { useErrorStore, getErrorMessage } = await import("@/lib/errors");
+    const message = getErrorMessage("chat_not_found");
+
+    const sim: VaultSim = { initialized: true, unlocked: true, passphrase: "x" };
+    stubVaultFetch(sim);
+    const qc = createTestQueryClient();
+    renderWithQueryClient(<VaultGate>{APP_MARKER}</VaultGate>, { client: qc });
+    await screen.findByTestId("app-root");
+
+    useErrorStore.getState().clearAll();
+    // Six of one code. `source` is what makes them six events rather than one
+    // repeated - the dedupe key would otherwise collapse them and there would
+    // be no queue to test.
+    for (let i = 0; i < 6; i += 1) {
+      useErrorStore
+        .getState()
+        .pushErrorDirect("chat_not_found", message, "error", {
+          source: `waiting-${i}`,
+        });
+    }
+
+    // Positive control: five visible and one genuinely WAITING, so the
+    // assertions after the lock have something to be about.
+    expect(useErrorStore.getState().errors).toHaveLength(5);
+    expect(useErrorStore.getState().queuedErrors).toHaveLength(1);
+
+    sim.unlocked = false;
+    await qc.invalidateQueries({ queryKey: ["vault"] });
+    await screen.findByText("Elysium is locked");
+
+    expect(useErrorStore.getState().errors).toHaveLength(0);
+    expect(
+      useErrorStore.getState().queuedErrors,
+      "a notice was still waiting its turn to be shown after the lock",
+    ).toHaveLength(0);
+
+    useErrorStore.getState().clearAll();
+  });
+
+  it("does not pop a notice from the closed session after the next unlock", async () => {
+    // The same sweep, seen the way somebody actually meets it. The stack is
+    // mounted inside the gate's children, so a lock unmounts it and an unlock
+    // builds it again from the store - which is why the store outliving the
+    // lock is not an abstract untidiness: it is a sentence about a chat from
+    // the session before, arriving over the app a beat after the passphrase
+    // was accepted.
+    const { useErrorStore, getErrorMessage } = await import("@/lib/errors");
+    const message = getErrorMessage("chat_not_found");
+    const { ErrorToastStack } = await import(
+      "@/components/errors/ErrorToastStack"
+    );
+
+    const sim: VaultSim = { initialized: true, unlocked: true, passphrase: "x" };
+    stubVaultFetch(sim);
+    const qc = createTestQueryClient();
+    renderWithQueryClient(
+      <VaultGate>
+        {APP_MARKER}
+        <ErrorToastStack />
+      </VaultGate>,
+      { client: qc },
+    );
+    await screen.findByTestId("app-root");
+
+    useErrorStore.getState().clearAll();
+    useErrorStore
+      .getState()
+      .pushErrorDirect("chat_not_found", message, "error", {
+        source: "before-the-lock",
+      });
+
+    // Positive control: it is on screen while the vault is open. Without
+    // this, the absence below would also hold for a stack that never renders
+    // anything at all.
+    expect(await screen.findByText(message)).toBeInTheDocument();
+
+    sim.unlocked = false;
+    await qc.invalidateQueries({ queryKey: ["vault"] });
+    await screen.findByText("Elysium is locked");
+
+    sim.unlocked = true;
+    await qc.invalidateQueries({ queryKey: ["vault"] });
+    await screen.findByTestId("app-root");
+
+    expect(
+      screen.queryByText(message),
+      "the closed session's notice came back with the app",
+    ).not.toBeInTheDocument();
+
+    // Ground control: the stack is swept, not broken. A notice raised in the
+    // NEW session still shows, so the sweep is a one-shot at the lock rather
+    // than a store that stopped working.
+    useErrorStore
+      .getState()
+      .pushErrorDirect("character_not_found", getErrorMessage("character_not_found"), "error", {
+        source: "after-the-unlock",
+      });
+    expect(
+      await screen.findByText(getErrorMessage("character_not_found")),
+    ).toBeInTheDocument();
+
+    useErrorStore.getState().clearAll();
+  });
+
+  it("leaves the notices alone while the vault stays unlocked", async () => {
+    // Ground control for the sweep's TRIGGER. The gate refetches its status
+    // whenever a data call answers 423, and most of those refetches answer
+    // "still unlocked". If the sweep ran on the refetch rather than on the
+    // unlocked -> locked edge, every one of them would wipe the notice the
+    // user is in the middle of reading, and the unit would be a bigger bug
+    // than the one it fixes.
+    const { useErrorStore, getErrorMessage } = await import("@/lib/errors");
+
+    const sim: VaultSim = { initialized: true, unlocked: true, passphrase: "x" };
+    stubVaultFetch(sim);
+    const qc = createTestQueryClient();
+    renderWithQueryClient(<VaultGate>{APP_MARKER}</VaultGate>, { client: qc });
+    await screen.findByTestId("app-root");
+
+    useErrorStore.getState().clearAll();
+    useErrorStore
+      .getState()
+      .pushErrorDirect("chat_not_found", getErrorMessage("chat_not_found"));
+    expect(useErrorStore.getState().errors).toHaveLength(1);
+
+    // The vault never closes; the status simply comes round again.
+    await qc.invalidateQueries({ queryKey: ["vault"] });
+    await waitFor(() =>
+      expect(qc.isFetching({ queryKey: ["vault"] })).toBe(0),
+    );
+    expect(await screen.findByTestId("app-root")).toBeInTheDocument();
+
+    expect(
+      useErrorStore.getState().errors,
+      "a refetch that never locked anything wiped the notice queue",
+    ).toHaveLength(1);
+
+    useErrorStore.getState().clearAll();
   });
 
   it("does not leave the API key in the mutation cache when the vault locks", async () => {

@@ -55,27 +55,27 @@ export function safeCharacterId(
  *  - Requires a valid character ID (positive integer)
  *  - Returns `undefined` if ID is invalid
  *  - Only includes `character_id` - no description, personality, raw_json, avatar
- *  - Optional `title` for user-provided chat name
+ *  - Sends the trimmed `title`, empty or not
+ *
+ * The title used to be DROPPED when it was blank, so the server could not
+ * tell "left empty" from "not sent". That distinction never mattered while
+ * both meant the same thing, and it stopped being harmless the moment an
+ * empty title became a request for a default name: the key is sent as an
+ * empty string now and the server decides, which is the one place that can
+ * see the other titles it has to be numbered against.
  */
 export function buildStartChatInput(
   characterId: number | null | undefined,
   title?: string,
-): { character_id: number; title?: string } | undefined {
+): { character_id: number; title: string } | undefined {
   const safe = safeCharacterId(characterId);
   if (safe === undefined) return undefined;
 
-  const input: { character_id: number; title?: string } = {
-    character_id: safe,
-  };
-  if (title != null && title.trim().length > 0) {
-    input.title = title.trim();
-  }
-  return input;
+  return { character_id: safe, title: (title ?? "").trim() };
 }
 
 /**
- * Warning text for character delete cascade.
- * Future Codex UI will display this in a confirmation dialog.
+ * Warning text for character delete cascade, for a confirmation dialog.
  */
 export const CHARACTER_DELETE_CASCADE_WARNING =
   "Deleting this character will also remove all of its chats and messages. This action cannot be undone.";

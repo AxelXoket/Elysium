@@ -1555,7 +1555,7 @@ def _reset_runtime_files(vault_dir: Path) -> list[str]:
     So the handlers are detached and closed first. Logging survives it: the
     root logger keeps whatever other handlers it has, and a frozen build
     that wants a log again gets a fresh file on the next write, which is
-    correct - the old trail is exactly what the user asked to erase.
+    correct - the old trail is exactly what you asked to erase.
     """
     _close_log_handlers(vault_dir / "elysium.log")
     left: list[str] = []

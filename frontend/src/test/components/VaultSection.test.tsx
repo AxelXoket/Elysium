@@ -269,6 +269,146 @@ describe("VaultSection - what a rotation did not revoke", () => {
   });
 });
 
+/**
+ * VaultSection - what the form says out loud.
+ *
+ * Everything in this panel is visible. Somebody reading it with a screen
+ * reader gets told only what a live region hands over, and this form had one:
+ * the refusal. The two things it did NOT say are the two that follow a button
+ * press - that the database was re-encrypted, and that a full copy of it
+ * survived the rotation under the passphrase they just tried to revoke.
+ *
+ * The boundary is the whole point and it is drawn twice. A region wide enough
+ * to cover the panel would re-read the disclosure paragraph, the three
+ * captions and the four leftover notices on every render, so what is
+ * announced is the outcome and only the outcome. And an alert is atomic: it
+ * is read name-then-content, so the region must not carry a name that repeats
+ * a sentence it already prints.
+ *
+ * Asserted through the role queries rather than the attributes, because what
+ * is at stake is the announcement, not the spelling that produces it.
+ */
+describe("VaultSection - what it says to a screen reader", () => {
+  beforeEach(() => vi.unstubAllGlobals());
+  afterEach(() => vi.unstubAllGlobals());
+
+  /** The words a screen reader is handed, from every live region on screen. */
+  function announced(): string[] {
+    return [
+      ...screen.queryAllByRole("status"),
+      ...screen.queryAllByRole("alert"),
+    ].map((el) => (el.textContent ?? "").replace(/\s+/g, " ").trim());
+  }
+
+  /** The heading the warning prints, as the reader sees it. */
+  const HEADLINE = "A copy still opens with the old passphrase";
+  const LEFTOVER = "app.db.premigrate.bak";
+
+  async function rotate(unrevoked?: string[]) {
+    const user = userEvent.setup();
+    fetchStub(() => new Response(
+      JSON.stringify(unrevoked ? { ok: true, unrevoked } : { ok: true }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ));
+    renderWithQueryClient(<VaultSection />);
+    await fill(user, {
+      current: "old passphrase here",
+      next: LONG_ENOUGH,
+      repeat: LONG_ENOUGH,
+    });
+  }
+
+  it("says the passphrase changed, and says nothing else with it", async () => {
+    await rotate();
+
+    expect(
+      await screen.findByRole("status"),
+      "a rotation of the whole database finished in silence",
+    ).toHaveTextContent("Passphrase changed.");
+    // The boundary. Everything else on this screen is furniture that was
+    // already there, and a region drawn round it would read the panel out
+    // again on every render.
+    expect(announced()).toEqual(["Passphrase changed."]);
+    // POSITIVE CONTROL for the line above: the copy it must NOT announce is
+    // genuinely on screen. Without this, an empty panel would pass too.
+    expect(
+      screen.getByTestId("vault-disclosure-hint").textContent,
+    ).toMatch(/Everything on disk is encrypted/i);
+  });
+
+  it("interrupts with the whole warning when a copy survived the rotation", async () => {
+    await rotate([LEFTOVER]);
+
+    const alert = await screen.findByRole("alert");
+    // Whole, not a headline. A reader told only that something survived, with
+    // no name and nowhere to go, is worse off than one told nothing.
+    expect(alert).toHaveTextContent(HEADLINE);
+    expect(alert, "the alarm was raised without naming the file")
+      .toHaveTextContent(LEFTOVER);
+    expect(alert, "the reader is not told what to do about it")
+      .toHaveTextContent(/Delete it yourself/i);
+  });
+
+  it("keeps the two announcements apart, so neither is read twice", async () => {
+    await rotate([LEFTOVER]);
+
+    const alert = await screen.findByRole("alert");
+    const status = screen.getByRole("status");
+    expect(status.textContent?.trim()).toBe("Passphrase changed.");
+    expect(
+      alert.contains(status) || status.contains(alert),
+      "one live region encloses the other, so its words are announced twice",
+    ).toBe(false);
+    expect(announced()).toHaveLength(2);
+  });
+
+  it("does not name the warning with the sentence the warning prints", async () => {
+    await rotate([LEFTOVER]);
+    await screen.findByRole("alert");
+
+    // The heading is on screen and is part of the announcement already.
+    expect(screen.getByText(HEADLINE)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("alert", { name: HEADLINE }),
+      "the region names itself with a sentence it also prints, so an atomic reader hears it twice",
+    ).toBeNull();
+
+    // GROUND: the query above can see a named alert when there is one to see.
+    // Without this it would report the same null against any alert at all.
+    const probe = document.createElement("div");
+    probe.setAttribute("role", "alert");
+    probe.setAttribute("aria-label", HEADLINE);
+    document.body.appendChild(probe);
+    expect(screen.getByRole("alert", { name: HEADLINE })).toBe(probe);
+    probe.remove();
+  });
+
+  it("announces a refusal without announcing a success beside it", async () => {
+    const user = userEvent.setup();
+    fetchStub(() =>
+      new Response(JSON.stringify({ detail: "wrong_passphrase" }), { status: 403 }),
+    );
+    renderWithQueryClient(<VaultSection />);
+
+    await fill(user, {
+      current: "not the passphrase",
+      next: LONG_ENOUGH,
+      repeat: LONG_ENOUGH,
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Current passphrase is wrong.",
+    );
+    // The other half of the boundary: nothing claims the rotation landed.
+    // The success run above is this line's positive control - the sweep
+    // finds a status region when there is one.
+    expect(
+      screen.queryByRole("status"),
+      "a refused change still announced a passphrase change",
+    ).toBeNull();
+  });
+});
+
 describe("VaultSection - the leftovers it has to show", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.restoreAllMocks());

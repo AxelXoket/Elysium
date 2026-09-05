@@ -28,8 +28,9 @@ import { useLockAudioWarningStore } from "@/lib/query/vault";
 /* The commit (real lock API -> gate flip) must land INSIDE the full-ink
  * window, or the app->lock-screen swap shows through the half-drawn veil:
  * ink ramps 540-760ms (right after the 500ms snap), commit at 820ms, ink
- * holds SOLID until 1600ms (a proper beat of darkness - the user asked for
- * breathing room here), then a 400ms reveal. Timer lateness only pushes the
+ * holds SOLID until 1600ms (a proper beat of darkness, so the transition
+ * reads as deliberate rather than as a stutter), then a 400ms reveal. Timer
+ * lateness only pushes the
  * commit deeper into the covered window - never earlier. */
 const TOTAL_MS = 2000;
 const COMMIT_MS = 820;

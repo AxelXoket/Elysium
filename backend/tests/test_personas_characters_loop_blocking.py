@@ -34,6 +34,7 @@ import time
 import pytest
 from starlette.requests import Request
 
+import default_names
 import routers.characters as characters
 import routers.personas as personas
 from database import get_db
@@ -208,8 +209,12 @@ def test_selecting_a_missing_persona_is_still_404(client):
 def test_importing_still_validates(client):
     assert client.post("/api/v1/characters/import",
                        content=b"not json").status_code == 400
-    assert client.post("/api/v1/characters/import",
-                       json={"name": "   "}).status_code == 400
+    # S-9 rewrite: a card with a blank name used to be 400
+    # `character_name_required`; a card is still a card without one, so it is
+    # imported and named. What is still refused is a body that is not a card.
+    named = client.post("/api/v1/characters/import", json={"name": "   "})
+    assert named.status_code == 201, named.text
+    assert named.json()["name"] == f"{default_names.CHARACTER} 1"
     r = client.post("/api/v1/characters/import",
                     json={"data": {"name": "V2 Card", "tags": ["a", 3]}})
     assert r.status_code == 201

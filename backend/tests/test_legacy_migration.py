@@ -595,3 +595,113 @@ class TestTheSafetySwitchCoversEveryDoor:
         """Two spellings of one environment variable is a switch that is on in
         one module and off in the other."""
         assert legacy_migration.SKIP_ENV == keyring_service.SKIP_ENV
+
+
+# ---------------------------------------------------------------------------
+# K-17 - the window between the vault commit and the credential store
+# ---------------------------------------------------------------------------
+
+#: Never a real key. The value is deliberately not the one the fixture seeds
+#: into the vault, so an assertion about where a secret came from cannot be
+#: satisfied by the vault's own copy.
+_LEFTOVER = "sk-not-a-real-key-left-in-the-store"
+
+
+def _dies_mid_revoke(name: str) -> bool:
+    """The crash itself: the vault row is already gone and committed, and the
+    credential store never gets its answer back to the caller."""
+    raise RuntimeError("power loss between the vault and the credential store")
+
+
+class TestTheWindowBetweenTheVaultAndTheCredentialStore:
+    """K-17. Two stores, one user action, and no transaction across them.
+
+    Deleting the API key drops the vault row and commits, and only then asks
+    the credential store to let go of its copy. A process that dies between
+    those two steps leaves exactly the shape the unlock migration reads as
+    "never imported": vault empty, credential store full. So the next unlock
+    copies the revoked key back in and the next request uses it.
+
+    The tombstone is what tells "never imported" apart from "deliberately
+    removed", and it is written after the delete has answered - inside the
+    window rather than before it. A delete that answers False is covered, and
+    the last test here holds that half down. A delete that never answers at
+    all is not covered.
+
+    These four measure what happens today; they do not approve it. The
+    obvious reordering is worse and was rejected on the record: asking the
+    credential store first turns a stale copy into a key that exists nowhere
+    when it is the commit that fails, and a lost key is worse than a stale
+    one. So the shape of the answer is a design question about the secret
+    lifecycle, not a typo, and it belongs to the unit that comes next on this
+    function. The day it lands, the third test below turns red and is
+    rewritten to assert the absence - which is the only reason it is here.
+    """
+
+    def _the_user_revokes_the_key(self, client) -> None:
+        response = client.delete("/api/v1/settings/api-key")
+        assert response.status_code == 200
+
+    def test_a_revoke_that_finishes_stays_revoked(self, client, monkeypatch):
+        """Ground control: with no crash, nothing comes back."""
+        store = _fake_keyring(monkeypatch, {config.SECRET_API_KEY: _LEFTOVER})
+
+        self._the_user_revokes_the_key(client)
+        assert config.SECRET_API_KEY not in store
+
+        legacy_migration.migrate_legacy_secrets()   # the next unlock
+        assert secrets_service.get_secret(config.SECRET_API_KEY) is None
+
+    def test_the_crash_really_does_leave_a_copy_behind(self, client,
+                                                       monkeypatch):
+        """Positive control: without this, "it came back" could be measuring
+        an empty credential store and a vault that was never emptied."""
+        store = _fake_keyring(monkeypatch, {config.SECRET_API_KEY: _LEFTOVER})
+        monkeypatch.setattr(keyring_service, "delete_legacy", _dies_mid_revoke)
+
+        with pytest.raises(RuntimeError):
+            client.delete("/api/v1/settings/api-key")
+
+        assert secrets_service.get_secret(config.SECRET_API_KEY) is None
+        assert store[config.SECRET_API_KEY] == _LEFTOVER
+        assert database.get_setting(
+            keyring_service.revoked_key(config.SECRET_API_KEY)) is None
+
+    def test_today_the_next_unlock_hands_the_revoked_key_back(self, client,
+                                                              monkeypatch):
+        """CHARACTERISATION, not approval. See the class docstring."""
+        store = _fake_keyring(monkeypatch, {config.SECRET_API_KEY: _LEFTOVER})
+        monkeypatch.setattr(keyring_service, "delete_legacy", _dies_mid_revoke)
+        with pytest.raises(RuntimeError):
+            client.delete("/api/v1/settings/api-key")
+
+        # The restart: the credential store answers again, and unlock runs
+        # the migration exactly as _bootstrap_unlocked does.
+        _fake_keyring(monkeypatch, store)
+        legacy_migration.migrate_legacy_secrets()
+
+        assert secrets_service.get_secret(config.SECRET_API_KEY) == _LEFTOVER
+
+    def test_a_revoke_the_store_refuses_is_not_handed_back(self, client,
+                                                           monkeypatch):
+        """The half that IS closed, and the reason the test above is about a
+        crash rather than about credential stores in general.
+
+        When the delete answers - even to say no - the tombstone is written
+        inside the same request, and the migration reads it and refuses to
+        import. This is the ground control for the window: it fails only if
+        the tombstone stops working, which would make the test above
+        measure a hole that was never plugged rather than a hole in the
+        plug.
+        """
+        store = _fake_keyring(monkeypatch, {config.SECRET_API_KEY: _LEFTOVER},
+                              fail_delete={config.SECRET_API_KEY})
+
+        response = client.delete("/api/v1/settings/api-key")
+        assert response.json()["legacy_copy_left"] is True
+        assert database.get_setting(
+            keyring_service.revoked_key(config.SECRET_API_KEY)) == "1"
+
+        legacy_migration.migrate_legacy_secrets()
+        assert secrets_service.get_secret(config.SECRET_API_KEY) is None
+        assert store[config.SECRET_API_KEY] == _LEFTOVER

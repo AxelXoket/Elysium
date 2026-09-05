@@ -47,6 +47,7 @@ WHAT THIS GATE CANNOT DO:
 
 from __future__ import annotations
 
+import functools
 import re
 import subprocess
 import sys
@@ -54,6 +55,9 @@ import textwrap
 from pathlib import Path
 
 import pytest
+
+from conftest import (STRICT_SKIPS_ENV, missing_prerequisite, outcome_of,
+                      strict_skips)
 
 BACKEND = Path(__file__).resolve().parent.parent
 WORKER = BACKEND / "tts" / "worker"
@@ -82,12 +86,37 @@ def _have_ruff() -> bool:
         return False
 
 
-needs_ruff = pytest.mark.skipif(
-    not _have_ruff(),
-    reason="ruff is not installed in this interpreter - it is in "
-           "requirements-dev.txt: .venv/Scripts/python.exe -m pip install "
-           "-r requirements-dev.txt",
-)
+#: Asked once, at import, exactly as the `skipif` mark this replaced asked it:
+#: one subprocess per run rather than one per decorated test.
+_HAVE_RUFF = _have_ruff()
+
+_NO_RUFF = ("ruff is not installed in this interpreter - it is in "
+            "requirements-dev.txt: .venv/Scripts/python.exe -m pip install "
+            "-r requirements-dev.txt")
+
+
+def needs_ruff(func):
+    """The precondition for every gate below, and it now has two answers.
+
+    This was `pytest.mark.skipif`, which can only ever give one: skip. That
+    left nine gates in this file able to close themselves and report the same
+    colour as nine gates that ran - on the very machine where the linter is
+    missing, which is the machine most likely to need them. The distinction
+    between "the config we ship is clean" and "nobody asked" is the whole
+    subject of this file's first paragraph, and the mark erased it.
+
+    A decorator rather than a mark because the choice happens at call time:
+    `missing_prerequisite` skips in the developer lane and fails in the lane
+    that is about to publish. The discovery itself is unchanged - `_have_ruff`
+    still answers the same question, still once per run.
+    """
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        if not _HAVE_RUFF:
+            missing_prerequisite(_NO_RUFF)
+        return func(*args, **kwargs)
+
+    return wrapper
 
 
 def resolved_settings() -> tuple[list[str], set[str], list[str]]:
@@ -360,3 +389,159 @@ def test_the_adapters_are_covered_by_this_suite_instead(tmp_path):
     assert getattr(mod, "ADAPTERS", ()), (
         "tts.adapters imports but declares no adapters, so 'this suite would "
         "notice a broken adapter' no longer holds")
+
+
+# ── and the precondition, which decides whether any of the above runs ────────
+#
+# Everything before this point is a gate on ruff's configuration. This is a
+# gate on the gates: nine of them stand behind `needs_ruff`, and until it grew
+# a second answer a machine without ruff ran none of them and said so in a
+# colour indistinguishable from nine passes. The tests below drive the absence
+# rather than describing it, on both lanes, with the discovery result forced
+# so no ruff subprocess is involved either way.
+
+
+def _pretend_ruff_is(present: bool, monkeypatch) -> None:
+    """Force the answer `_have_ruff()` gave at import.
+
+    Patched on the module rather than by uninstalling anything: the discovery
+    is not what is under test here, the decision that follows it is.
+    """
+    monkeypatch.setattr(sys.modules[__name__], "_HAVE_RUFF", present)
+
+
+@pytest.mark.parametrize("setting", [None, "", "0"])
+def test_an_absent_linter_still_only_skips_on_a_developer_machine(
+        setting, monkeypatch):
+    """GROUND CONTROL: the default path is the one that was already there.
+
+    A change that made every unset machine red would be a worse gate than the
+    silent one, because it would be turned off. Unset, empty and "0" all have
+    to mean what they meant before.
+    """
+    if setting is None:
+        monkeypatch.delenv(STRICT_SKIPS_ENV, raising=False)
+    else:
+        monkeypatch.setenv(STRICT_SKIPS_ENV, setting)
+    _pretend_ruff_is(False, monkeypatch)
+
+    kind, message = outcome_of(test_every_worker_file_is_clean)
+    assert kind == "skip", (
+        f"an absent linter produced {kind!r} on a developer machine; a gate "
+        "that goes red for a tool nobody has here is a gate that gets turned "
+        "off")
+    assert "requirements-dev.txt" in message, (
+        "the skip lost the reason that says how to fix it")
+
+
+def test_the_same_absent_linter_is_a_failure_in_the_publishing_lane(monkeypatch):
+    """The half that did not exist: nine gates that cannot run, said out loud.
+
+    Same interpreter, same missing tool, same call. Only the lane differs, and
+    the answer has to differ with it or the switch is decoration.
+    """
+    monkeypatch.setenv(STRICT_SKIPS_ENV, "1")
+    _pretend_ruff_is(False, monkeypatch)
+
+    kind, message = outcome_of(test_every_worker_file_is_clean)
+    assert kind == "fail", (
+        f"the publishing lane answered {kind!r} for nine gates that cannot "
+        "run, which is the silence this switch exists to break")
+    assert "requirements-dev.txt" in message, (
+        "the failure dropped the reason, so it says a gate did not run without "
+        "saying what would make it run")
+    assert STRICT_SKIPS_ENV in message, (
+        "the failure does not name the switch that caused it, so somebody "
+        "reading a red run cannot tell it apart from a real lint failure")
+
+
+def test_a_present_linter_is_handed_straight_through_on_both_lanes(monkeypatch):
+    """POSITIVE CONTROL for the two above, and it is not optional.
+
+    A decorator that raised whatever the lane said would satisfy both of them
+    and would have turned nine working gates into nine unconditional failures.
+    So: with ruff present, the wrapped body runs, and it runs in the strict
+    lane too.
+    """
+    monkeypatch.setenv(STRICT_SKIPS_ENV, "1")
+    _pretend_ruff_is(True, monkeypatch)
+
+    ran: list[int] = []
+
+    @needs_ruff
+    def sample_gate():
+        ran.append(1)
+
+    # Through the same reader the two tests above use, so a run that neither
+    # skipped nor failed is a value it can actually report. Without this the
+    # reader could answer "skip" or "fail" to everything and both of them
+    # would still pass.
+    kind, message = outcome_of(sample_gate)
+    assert kind == "ran", f"a gate whose linter is present answered {kind!r}: {message}"
+    assert ran == [1], "the decorator swallowed a gate whose linter is present"
+
+
+def _run_gates():
+    """The pre-push runner, imported the way the lane's own tests import it."""
+    sys.path.insert(0, str(BACKEND / "verify"))
+    import run_gates
+
+    return run_gates
+
+
+def test_the_publishing_lane_switches_the_strictness_conftest_reads(monkeypatch):
+    """The two ends of the switch, joined without either being retyped.
+
+    A flag nothing sets is worse than no flag: it reads like coverage and is
+    dead code. So the environment overlay comes from the runner and the answer
+    comes from the reader, and this asserts they meet. Neither string is
+    written out here - that is the whole point, since a copy of the name in a
+    third place is exactly how the two ends drift apart.
+    """
+    run_gates = _run_gates()
+
+    # GROUND: without the lane's overlay the reader says "developer machine".
+    monkeypatch.delenv(STRICT_SKIPS_ENV, raising=False)
+    assert not strict_skips(), (
+        "the reader reports the strict lane with nothing set, so the "
+        "assertion below would pass whatever the runner does")
+
+    for key, value in run_gates.STRICT_LANE.items():
+        monkeypatch.setenv(key, value)
+    assert strict_skips(), (
+        "the pre-push lane's environment does not switch on the strictness "
+        "conftest reads, so every gate that cannot run still skips silently "
+        "at the last moment before the work leaves this machine")
+
+
+def test_the_backend_suite_step_is_the_one_that_gets_it(monkeypatch):
+    """Building the environment and handing it over are two different things.
+
+    The step list is driven for real with every subprocess replaced by a
+    recorder, because "the argument is passed" is not readable from the
+    constant above. The frontend steps are the control: they must NOT be
+    handed the overlay, or a green result here would only mean the whole lane
+    got it by accident.
+    """
+    run_gates = _run_gates()
+    seen: list[tuple[str, dict | None]] = []
+
+    monkeypatch.setattr(run_gates, "_run",
+                        lambda label, argv, cwd, env=None: (
+                            seen.append((label, env)) or True))
+    monkeypatch.setattr(run_gates.verify_hygiene, "main", lambda argv: 0)
+    monkeypatch.setattr(run_gates, "verification_build", lambda ok: ok)
+
+    assert run_gates.pre_push() == 0
+    labels = [label for label, _env in seen]
+    assert len(labels) > 1, (
+        "the lane ran a single step, so 'only the backend step got it' is "
+        "not a claim this can make")
+
+    key = next(iter(run_gates.STRICT_LANE))
+    for label, env in seen:
+        got = key in (env or {})
+        wanted = label.startswith("pytest")
+        assert got == wanted, (
+            f"{label!r} was handed the strict-skip overlay: {got}, "
+            f"expected {wanted}")

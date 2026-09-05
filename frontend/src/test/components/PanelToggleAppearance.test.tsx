@@ -17,42 +17,39 @@ import { readFileSync } from "fs";
 import path from "path";
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { PanelToggleButton } from "@/components/layout/PanelToggleButton";
-import { contrastRatio, parseHex, type Rgb } from "@/lib/appearance/contrast";
+import {
+  AA_NON_TEXT,
+  AA_NORMAL,
+  contrastRatio,
+  parseHex,
+} from "@/lib/appearance/contrast";
+import { composite } from "@/test/helpers/glassSurfaceCss";
 
 const CSS = readFileSync(path.resolve(__dirname, "../../index.css"), "utf-8");
 
 /** The composited canvas behind the handle at the two ends of the living
- *  fog's range, measured off the shader ramp and the milk veil above it. */
+ *  fog's range, measured off the shader ramp and the milk veil above it.
+ *
+ *  NOTE, because it is easy to misread this file as measuring the right
+ *  panel: it does not. `.glass-right`'s gradient is a different surface, and
+ *  the three files that measure THAT one share their stops through
+ *  helpers/glassSurfaceCss.ts. What is shared here is only the blend itself,
+ *  so all four files composite the same way. */
 const DARKEST_CANVAS = "#D4DBE2";
 const LIGHTEST_CANVAS = "#F5F9FD";
 
-/** WCAG SC 1.4.11: a non-text UI component needs 3:1 against its backdrop. */
-const UI_COMPONENT_FLOOR = 3;
-
-function parseRgba(value: string): [number, number, number, number] {
-  const m = value.match(/rgba?\(([^)]+)\)/);
-  if (!m) throw new Error(`not an rgb(a) colour: "${value}"`);
-  const parts = m[1].split(",").map((p) => Number(p.trim()));
-  return [parts[0], parts[1], parts[2], parts[3] ?? 1];
-}
-
 /** The ink as it actually lands: alpha composited onto the backdrop. A bare
  *  rgba() is not a colour anyone can measure - the glyph is drawn AT that
- *  alpha over the canvas, so the ratio has to be taken on the composite. */
-function flatten(colour: string, backdrop: Rgb): Rgb {
-  const [r, g, b, a] = parseRgba(colour);
-  const mix = (ink: number, back: number) => ink * a + back * (1 - a);
-  return {
-    r: mix(r, backdrop.r),
-    g: mix(g, backdrop.g),
-    b: mix(b, backdrop.b),
-  };
-}
-
+ *  alpha over the canvas, so the ratio has to be taken on the composite.
+ *
+ *  `composite()` is the shared one. This file used to carry a private,
+ *  UNROUNDED copy; the difference never exceeded 0.035 of a ratio point here,
+ *  but a fourth private copy of the blend is how the four files that measure
+ *  alpha in this app drifted into disagreeing about it in the first place. */
 function ratioOn(colour: string, backdropHex: string): number {
   const backdrop = parseHex(backdropHex);
   if (!backdrop) throw new Error(`bad backdrop "${backdropHex}"`);
-  return contrastRatio(flatten(colour, backdrop), backdrop);
+  return contrastRatio(composite(colour, backdrop), backdrop);
 }
 
 describe("panel toggle is a bare arrow", () => {
@@ -75,6 +72,31 @@ describe("panel toggle is a bare arrow", () => {
     );
     return screen.getByRole("button");
   }
+
+  it("the stylesheet was actually read (guards the guard)", () => {
+    // GROUND CONTROL, and the only one of the four contrast files that was
+    // missing it. Every measurement below is taken with this text injected as
+    // a stylesheet; if the read ever returned an empty string, jsdom would
+    // hand back browser defaults and the ratios would be computed on a colour
+    // no rule ever set. The `opacity` sweep at the bottom would go green on
+    // zero blocks for the same reason.
+    expect(CSS.length).toBeGreaterThan(1000);
+    expect(CSS).toContain(".panel-toggle");
+  });
+
+  it("the harness produced finite ratios, not NaN", () => {
+    // `parseRgba(" 0.55) ")` is the shape of mistake that yields NaN, and NaN
+    // compares false against a floor AND against a ceiling - so a file that
+    // brackets a value from both sides is exactly the file that never notices.
+    // `not.toBe(1)` on its own accepts NaN, which is why finiteness is checked
+    // first and separately.
+    const rest = getComputedStyle(handle(false)).color;
+    for (const canvas of [DARKEST_CANVAS, LIGHTEST_CANVAS]) {
+      const r = ratioOn(rest, canvas);
+      expect(Number.isFinite(r), `the ratio came out ${r}`).toBe(true);
+      expect(r).not.toBe(1);
+    }
+  });
 
   it("draws no container of its own", () => {
     // The complaint this closes: the arrow had been put in a box. Both halves
@@ -105,10 +127,11 @@ describe("panel toggle is a bare arrow", () => {
     const worst = ratioOn(rest, DARKEST_CANVAS);
     const best = ratioOn(rest, LIGHTEST_CANVAS);
 
-    expect(worst, `rest ink is below the ${UI_COMPONENT_FLOOR}:1 floor`).toBeGreaterThanOrEqual(
-      UI_COMPONENT_FLOOR,
+    expect(worst, `rest ink is below the ${AA_NON_TEXT}:1 floor`).toBeGreaterThanOrEqual(
+      AA_NON_TEXT,
     );
-    expect(best, "rest ink reads as foreground, not as a quiet affordance").toBeLessThan(4.5);
+    expect(best, "rest ink reads as foreground, not as a quiet affordance")
+      .toBeLessThan(AA_NORMAL);
   });
 
   it("gives the closed handle real weight", () => {
@@ -124,7 +147,7 @@ describe("panel toggle is a bare arrow", () => {
     expect(closedRatio, "the only way back is as faint as an idle affordance").toBeGreaterThan(
       openRatio,
     );
-    expect(closedRatio).toBeGreaterThanOrEqual(4.5);
+    expect(closedRatio).toBeGreaterThanOrEqual(AA_NORMAL);
   });
 
   it("keeps a press area larger than the glyph", () => {

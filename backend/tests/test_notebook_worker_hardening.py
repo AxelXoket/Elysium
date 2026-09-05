@@ -654,8 +654,16 @@ class TestAFailedWriteIsCountedAndVisible:
         w = worker()
         await w._handle(chat_id)
 
-        assert w.breaker.failures == 1, (
+        # THIS CHAT'S breaker, and that is the contract now rather than an
+        # accident of where the counter lives. A commit that cannot land is
+        # a fault in these rows - a chat deleted mid-call so the foreign key
+        # fires, a row this conversation's own content broke - and counting
+        # it globally is what used to take every other chat down with it.
+        # The global one is asserted UNMOVED for the same reason.
+        assert w.chat_breakers[chat_id].failures == 1, (
             "a billed call whose work was lost did not move the breaker")
+        assert w.breaker.failures == 0, (
+            "a fault in one chat was counted against every other chat")
         assert w.unhandled == 1
         assert w.status()["last_error"] == "write_RuntimeError"
 
@@ -674,6 +682,12 @@ class TestAFailedWriteIsCountedAndVisible:
         await w._handle(chat_id)
 
         assert w.breaker.failures == 0
+        # AND the per-chat side, or this ground control stopped covering the
+        # counter the test above actually reads: with the write failure now
+        # landing in `chat_breakers`, a global-only assertion here would
+        # pass without measuring anything at all.
+        assert w.chat_breakers == {}, (
+            "a healthy run left a per-chat refusal behind")
         assert w.unhandled == 0 and w.status()["last_error"] is None
         assert w.runs == 1
 
@@ -699,8 +713,17 @@ class TestAFailedWriteIsCountedAndVisible:
         for _ in range(notebook_worker.TRIP_AFTER + 3):
             await w._handle(chat_id)
 
-        assert w.breaker.state == "open"
-        assert w.refused_by_breaker == 3, "the extra attempts were not refused"
+        # The MONEY is the assertion and the number has not moved: five
+        # billed calls, then refusals. Which breaker holds the refusal is
+        # the thing that changed - a write that cannot land for this chat's
+        # rows stops this chat and leaves the rest of the notebook running -
+        # and the ceiling this test exists for is identical either way.
+        assert w.chat_breakers[chat_id].state == "open"
+        assert w.breaker.state == "closed", (
+            "one chat that cannot commit paused the whole feature")
+        assert w.refused_by_chat_breaker == 3, (
+            "the extra attempts were not refused")
+        assert w.refused_by_breaker == 0
         with get_db() as con:
             paid = notebook.spend_today(con)["calls"]
         assert paid == notebook_worker.TRIP_AFTER, (

@@ -9,8 +9,8 @@ This cache is the conversation in audible form, in the clear, beside a
 database that went to the trouble of being encrypted.
 
 THE ENCRYPTION HALF IS NOT TOUCHED. Whether the cache should be encrypted at
-all is an open owner decision (ESK-6); this file measures the age window and
-nothing else.
+all is still open (ESK-6); this file measures the age window and nothing
+else.
 """
 from __future__ import annotations
 

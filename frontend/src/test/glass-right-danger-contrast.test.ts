@@ -29,15 +29,23 @@ import {
   injectCss,
   wrapInGlassRight,
   surfaceToken,
+  alphaOf,
+  composite,
+  discriminatingInk,
+  glassRightStops,
+  parseRgbColour,
+  rawGlassRightStops,
 } from "@/test/helpers/glassSurfaceCss";
 
 import {
+  AA_NON_TEXT,
   AA_NORMAL,
+  AAA_NORMAL,
   contrastRatio,
   luminance,
   parseHex,
+  type Rgb,
 } from "@/lib/appearance/contrast";
-import type { Rgb } from "@/lib/appearance/contrast";
 
 /**
  * The maths is IMPORTED, not restated.
@@ -50,18 +58,16 @@ import type { Rgb } from "@/lib/appearance/contrast";
  * comfortable numbers. It proved the stylesheet, never the comparator.
  * InkPicker.test.ts already imports these; so does this now.
  *
- * `parseColor` stays local because contrast.ts only parses hex, and the
- * stylesheet writes some of these colours as `rgb(...)`. It delegates the
- * hex half rather than reimplementing it.
+ * The COLOUR reading is imported too, as of 5 September 2026. This file used
+ * to keep a private `parseColor` that dropped the fourth channel, and a
+ * private `tint()` that composited without rounding, and it was the one file
+ * of the four measuring this panel that treated the gradient stops as OPAQUE.
+ * That read the surface roughly 0.3 to 0.55 more generous than it paints -
+ * the direction that lets a real regression through - and it disagreed with
+ * three of index.css's own four rationale comments, which already quote
+ * composited figures. helpers/glassSurfaceCss.ts now owns the model for all
+ * four files; see its comment for why the alpha is honoured.
  */
-function parseColor(raw: string): Rgb {
-  const hex = parseHex(raw.trim());
-  if (hex) return hex;
-  const rgb = /rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/.exec(raw);
-  if (rgb) return { r: Number(rgb[1]), g: Number(rgb[2]), b: Number(rgb[3]) };
-  throw new Error(`parseColor could not read "${raw}" - format changed?`);
-}
-
 const AA_TEXT_THRESHOLD = AA_NORMAL;
 
 describe("glass-right danger token - contrast", () => {
@@ -82,20 +88,13 @@ describe("glass-right danger token - contrast", () => {
    *  gradient, which is not something the custom-property technique in
    *  glassSurfaceCss.ts can resolve through jsdom (that technique reads
    *  inherited custom properties, and `background` is neither inherited
-   *  nor a custom property) - so this is read from source text, the nearest
-   *  honest measurement available, matching how the defect was originally
-   *  measured (near-opaque paint at 0.94-0.97 alpha, treated as the surface
-   *  colour itself). */
-  function glassRightBackgroundStops(): [Rgb, Rgb] {
-    const idx = compiledCss.indexOf(".glass-right {");
-    expect(idx, "the .glass-right rule moved or was renamed").toBeGreaterThan(-1);
-    const block = compiledCss.slice(idx, idx + 400);
-    const m = /background:\s*linear-gradient\([^,]+,\s*rgba\(([^)]+)\),\s*rgba\(([^)]+)\)/.exec(
-      block,
-    );
-    expect(m, "glass-right's background gradient did not parse - format changed?").not.toBeNull();
-    return [parseColor(`rgba(${m![1]})`), parseColor(`rgba(${m![2]})`)];
-  }
+   *  nor a custom property) - so the stops are read from the compiled text.
+   *
+   *  Both stops are translucent and their ALPHA IS HONOURED, over the frame
+   *  colour parsed out of --color-es-background. Dropping the fourth channel,
+   *  which is what this file did until 5 September 2026, measures a surface
+   *  that is never painted. */
+  const stops = (): [Rgb, Rgb] => glassRightStops(compiledCss);
 
   /** The value :root declares for --color-es-danger, read from source text
    *  rather than the DOM: jsdom does not resolve :root-only custom
@@ -119,19 +118,132 @@ describe("glass-right danger token - contrast", () => {
     expect(compiledCss.length).toBeGreaterThan(1000);
   });
 
+  it("the harness resolved real colours, not empty strings or NaN", () => {
+    // Every measurement in this file is a search over a string followed by a
+    // division. Without this, a renamed class or a reformatted gradient turns
+    // the whole file into comparisons between two identical defaults - and a
+    // mis-parsed alpha turns them into comparisons involving NaN, which
+    // compares false against every threshold below without ever failing.
+    // `not.toBe(1)` on its own ACCEPTS NaN, so the finiteness half is the
+    // load-bearing one and both halves are needed.
+    const danger = parseRgbColour(rootDangerToken());
+    for (const stop of stops()) {
+      const r = contrastRatio(danger, stop);
+      expect(Number.isFinite(r), `the ratio came out ${r}`).toBe(true);
+      expect(r).not.toBe(1);
+    }
+  });
+
+  it("the panel is measured as a COMPOSITE, not as opaque paint", () => {
+    // MUTATION CATCHER. The gradient stops are translucent; the surface is
+    // what they make over --color-es-background. This ink is DERIVED, never
+    // typed: it is the middle of the band of greys the two readings disagree
+    // about - clearing AA against the stops as written, failing AA against
+    // the stops as painted. Both stops and the frame are parsed out of the
+    // compiled sheet and the threshold is imported, so nothing here is a hex
+    // that can quietly stop matching the stylesheet.
+    //
+    // It goes red two different ways, which is the point. Take the `over()`
+    // out of the shared helper and the two readings collapse into one, so no
+    // grey disagrees and the fallback ink lands at or above AA. Lighten
+    // --color-es-background towards white and the stops converge on the same
+    // place, with the same result. Either way the ink stops being
+    // discriminating and this fails.
+    const [, rawBottom] = rawGlassRightStops(compiledCss);
+    const [, bottom] = stops();
+    const ink = discriminatingInk(rawBottom, bottom);
+
+    expect(
+      contrastRatio(ink, rawBottom),
+      "the discriminating ink no longer clears AA on the stops AS WRITTEN",
+    ).toBeGreaterThanOrEqual(AA_TEXT_THRESHOLD);
+    expect(
+      contrastRatio(ink, bottom),
+      "the same ink cleared AA on the composited stop too - " +
+        "the two readings have collapsed into one, so compositing is not happening",
+    ).toBeLessThan(AA_TEXT_THRESHOLD);
+  });
+
+  it("POSITIVE CONTROL: the compositing step actually darkened the panel", () => {
+    // The frame is near-black, so laying a translucent stop over it can only
+    // move the result DOWN in luminance. Strict inequality, both stops: if
+    // compositing is ever turned into a no-op the two are equal, not merely
+    // close, and equality fails this.
+    const raw = rawGlassRightStops(compiledCss);
+    const painted = stops();
+    for (const i of [0, 1] as const) {
+      expect(
+        luminance(painted[i]),
+        `stop ${i} is no darker painted than it is written`,
+      ).toBeLessThan(luminance(raw[i]));
+    }
+  });
+
+  it("POSITIVE CONTROL: the meter can still see a low-contrast ink", () => {
+    // Near-white ink on a near-white panel. If the measurement ever goes
+    // blind - a NaN, an empty parse, a constant - this is the assertion that
+    // notices, because it is the only one here that expects a FAILURE and so
+    // the only one a broken comparator cannot accidentally satisfy. It reads
+    // about 1.05:1, which does not clear the floor for a graphic, let alone
+    // for letters.
+    const [, bottom] = stops();
+    expect(contrastRatio(parseHex("#F0F2F4")!, bottom)).toBeLessThan(AA_NON_TEXT);
+  });
+
+  it("POSITIVE CONTROL: the comparator itself, and the order of its thresholds", () => {
+    // Black on white is 21:1 by definition. Everything above divides two
+    // luminances; if that arithmetic is wrong every number in this file is
+    // wrong in the same direction and no ratio assertion would show it.
+    expect(contrastRatio(parseHex("#000")!, parseHex("#fff")!)).toBeCloseTo(21, 3);
+    // And the thresholds are ordered, which is what makes them thresholds:
+    // a graphic needs less than a letter, and AAA asks for more than AA.
+    expect(AA_NON_TEXT).toBeLessThan(AA_NORMAL);
+    expect(AA_NORMAL).toBeLessThan(AAA_NORMAL);
+  });
+
   it("GROUND: :root's danger colour fails AA text contrast on .glass-right", () => {
-    const danger = parseColor(rootDangerToken());
-    const [top, bottom] = glassRightBackgroundStops();
+    const danger = parseRgbColour(rootDangerToken());
+    const [top, bottom] = stops();
     const cTop = contrastRatio(danger, top);
     const cBottom = contrastRatio(danger, bottom);
-    // Measured: 3.67:1 against the lighter (top) stop, 3.37:1 against the
-    // darker (bottom) stop - both short of the 4.5:1 AA floor. This is the
-    // defect as originally reported (3.4-3.7:1), reproduced here from the
-    // real source values rather than restated as a hand-picked number.
+    // On the composited panel: 3.51:1 at the lighter (top) stop, 3.17:1 at
+    // the darker (bottom) one - both short of the 4.5:1 AA floor. This is
+    // the defect as originally reported, reproduced from the real source
+    // values rather than restated as a hand-picked number.
     expect(cTop, "top-stop contrast").toBeLessThan(AA_TEXT_THRESHOLD);
     expect(cBottom, "bottom-stop contrast").toBeLessThan(AA_TEXT_THRESHOLD);
-    expect(cTop).toBeGreaterThan(3.0);
-    expect(cBottom).toBeGreaterThan(3.0);
+  });
+
+  it("GROUND: and the override is what closes the gap, by a whole ratio point", () => {
+    // This replaced a pair of bare `> 3.0` floors, and the reason is worth
+    // writing down. Those floors existed to say "the defect was a near miss,
+    // not a blank screen" - a real thing to pin - but 3.0 was a number
+    // nobody derived: under the opaque reading the bottom stop measured
+    // 3.37, under the composited one it measures 2.996 at the old gradient
+    // alpha and 3.17 at the current one. A threshold that flips sign when
+    // the MEASUREMENT MODEL changes, without the colour moving at all, is
+    // measuring the harness rather than the panel. Nudging it down to 2.9 to
+    // keep it green would have been worse still: that is loosening a gate to
+    // fit the number underneath it.
+    //
+    // The claim underneath was never really "3.0". It was that the scoped
+    // override does real work - that #AF4650 is meaningfully darker on this
+    // surface than the :root rose it shadows, at BOTH ends of the gradient.
+    // A whole ratio point of separation says that in a way no measurement
+    // model can flip: it holds at the opaque reading (1.74/1.60), at the
+    // composited one (1.67/1.50), and on the shipped fog-lit surface too.
+    const root = parseRgbColour(rootDangerToken());
+    const glassRight = wrapInGlassRight();
+    const fixed = parseRgbColour(surfaceToken(glassRight, "--color-es-danger"));
+    glassRight.remove();
+
+    for (const [name, stop] of [
+      ["top", stops()[0]],
+      ["bottom", stops()[1]],
+    ] as const) {
+      const gain = contrastRatio(fixed, stop) - contrastRatio(root, stop);
+      expect(gain, `${name}-stop gain from the override`).toBeGreaterThan(1.0);
+    }
   });
 
   it("POSITIVE CONTROL: :root still declares the original rose, and only .glass-right overrides it", () => {
@@ -153,13 +265,13 @@ describe("glass-right danger token - contrast", () => {
     const resolved = surfaceToken(glassRight, "--color-es-danger");
     expect(resolved, "the override did not resolve through the real cascade").not.toBe("");
 
-    const darkened = parseColor(resolved);
-    const [top, bottom] = glassRightBackgroundStops();
+    const darkened = parseRgbColour(resolved);
+    const [top, bottom] = stops();
     const cTop = contrastRatio(darkened, top);
     const cBottom = contrastRatio(darkened, bottom);
 
-    // Measured: 5.41:1 against the top stop, 4.97:1 against the bottom -
-    // comfortably over the 4.5:1 floor on both ends of the gradient, without
+    // On the composited panel: 5.18:1 against the top stop, 4.67:1 against
+    // the bottom - over the 4.5:1 floor at both ends of the gradient, without
     // dropping so far that it reads as body text rather than danger.
     expect(cTop, "top-stop contrast after the fix").toBeGreaterThanOrEqual(AA_TEXT_THRESHOLD);
     expect(cBottom, "bottom-stop contrast after the fix").toBeGreaterThanOrEqual(AA_TEXT_THRESHOLD);
@@ -229,30 +341,31 @@ describe("glass-right danger token - contrast", () => {
     }
     expect(hex, "persona-danger-action no longer paints a literal colour").not.toBeNull();
 
-    const ink = parseColor(hex!);
-    const [top, bottom] = glassRightBackgroundStops();
+    const ink = parseRgbColour(hex!);
+    const [top, bottom] = stops();
     // The class paints a white wash over the panel, so the ink sits on that
-    // rather than on the panel directly. The ALPHA IS READ, not retyped: a
-    // hardcoded 0.12 would go on printing a comfortable ratio for a composite
-    // that no longer exists the moment somebody changes the stylesheet.
-    const washed = blocks.map((b) => b[1]).join(" ").match(/background:\s*rgba\(\s*255\s*,\s*255\s*,\s*255\s*,\s*([0-9.]+)\s*\)/);
+    // rather than on the panel directly - and the panel underneath is itself
+    // a composite, so this is two compositing steps, not one. The WASH IS
+    // READ WHOLE, colour and alpha together, through the same `composite()`
+    // the panel uses: a hardcoded 0.12 would go on printing a comfortable
+    // ratio for a paint that no longer exists the moment somebody edits the
+    // stylesheet, and a private copy of the blend is how this file drifted
+    // away from the other three in the first place.
+    const washed = blocks.map((b) => b[1]).join(" ").match(/background:\s*(rgba\(\s*255\s*,\s*255\s*,\s*255\s*,\s*[0-9.]+\s*\))/);
     expect(washed, "persona-danger-action no longer paints a white wash").not.toBeNull();
-    const alpha = Number(washed![1]);
-    expect(alpha).toBeGreaterThan(0);
-    expect(alpha).toBeLessThan(1);
-    const tint = (bg: Rgb): Rgb => ({
-      r: 255 * alpha + bg.r * (1 - alpha),
-      g: 255 * alpha + bg.g * (1 - alpha),
-      b: 255 * alpha + bg.b * (1 - alpha),
-    });
-    expect(contrastRatio(ink, tint(top)), "top-stop")
+    const wash = washed![1];
+    const alpha = alphaOf(wash);
+    expect(alpha, "the wash stopped being a wash").toBeGreaterThan(0);
+    expect(alpha, "the wash went opaque and the panel no longer shows through")
+      .toBeLessThan(1);
+    expect(contrastRatio(ink, composite(wash, top)), "top-stop")
       .toBeGreaterThanOrEqual(AA_TEXT_THRESHOLD);
-    expect(contrastRatio(ink, tint(bottom)), "bottom-stop")
+    expect(contrastRatio(ink, composite(wash, bottom)), "bottom-stop")
       .toBeGreaterThanOrEqual(AA_TEXT_THRESHOLD);
     // GROUND, and the discriminating half: the rose this replaced must FAIL
     // the same measurement, or the assertion above proves nothing about the
     // value actually chosen.
-    expect(contrastRatio(parseColor("#C36A72"), tint(top)))
+    expect(contrastRatio(parseRgbColour("#C36A72"), composite(wash, top)))
       .toBeLessThan(AA_TEXT_THRESHOLD);
   });
 

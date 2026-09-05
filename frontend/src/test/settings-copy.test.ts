@@ -155,43 +155,22 @@ describe("Settings copy conventions", () => {
   // - so it was deleted deliberately rather than left to be ignored.
 });
 
-describe("a control says the same thing to everybody", () => {
-  it("a toggle row's aria-label matches the label it displays", () => {
-    // These drifted once: the row read "Performed replies" on screen while a
-    // screen reader was told "Voice replies", so the two users of one control
-    // were given different names for it. Renaming visible copy is easy to do
-    // and easy to half-do.
-    //
-    // Scoped to `settings-toggle-row` on purpose. A section landmark and a
-    // slider legitimately carry names that differ from the nearest
-    // settings-label, and a looser rule reports those as faults - a test that
-    // cries wolf is a test that gets deleted.
-    const offences: string[] = [];
-    let compared = 0;
-    for (const file of FILES) {
-      const src = copyOf(file);
-      // Bounded to the row's OWN body: split alone lets the last segment run
-      // to the end of the file and pick up an unrelated control's label.
-      const rows = src
-        .split("settings-toggle-row")
-        .slice(1)
-        .map((seg) => seg.slice(0, 400));
-      for (const row of rows) {
-        const aria = /aria-label="([^"]+)"/.exec(row);
-        const visible = /className="settings-label">([^<{]+)</.exec(row);
-        if (!aria || !visible) continue;
-        compared += 1;
-        if (aria[1].trim() !== visible[1].trim()) {
-          offences.push(`${file}: aria "${aria[1]}" vs visible "${visible[1]}"`);
-        }
-      }
-    }
-    // Three rows carry both names today, and `continue` above skips silently:
-    // rename the class or move the aria-label out of the row and this compares
-    // nothing while still reporting no offences. The floor is what tells the
-    // difference between "they all agree" and "none were looked at".
-    expect(compared, "no toggle row carried both names to compare")
-      .toBeGreaterThanOrEqual(3);
-    expect(offences).toEqual([]);
-  });
-});
+// "a control says the same thing to everybody" lives in
+// components/SettingsToggleNames.test.tsx now, and the rule it carries is the
+// same one: a toggle row's accessible name is the name it displays.
+//
+// It could not stay here. It was the one rule in this file that is NOT a
+// property of the source - it is a property of the accessibility tree, and
+// imitating that tree with two double-quote regexes gave it three ways to
+// read nothing and pass. An `aria-label={expression}` missed the quote regex,
+// a second class name beside `settings-label` missed the exact-match regex,
+// and a row longer than a four-hundred character window was never in view.
+// Each miss was a `continue`. Two of the five toggle rows written in this
+// directory fall into those shapes, and they are the two REUSABLE ones: they
+// draw four of the seven rows on screen today, and every row anybody adds
+// next. The rule was reading three hand-written rows and stepping over the
+// rest without saying so.
+//
+// The floor that guarded it is not gone, it is stricter: the replacement
+// renders the panel, sweeps every row actually on screen, and treats a row it
+// cannot compare as a finding rather than a skip.

@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { Attachment, Message } from "@/lib/schemas/chats";
 import { FadeIn } from "@/components/motion/FadeIn";
 import { VariantCarousel } from "@/components/motion/VariantCarousel";
@@ -40,6 +40,54 @@ import {
  * screen reader gets the text, never colour or a glyph alone.
  */
 export const TRUNCATED_MARK_TEXT = "Truncated";
+
+/**
+ * Who a bubble belongs to, in words, exported for the reason
+ * TRUNCATED_MARK_TEXT is: a test that retyped these would pass with both
+ * copies wrong together.
+ *
+ * Alignment and bubble colour carried this on their own, and a screen reader
+ * gets neither. Keyed on the row's own role rather than on a boolean, so the
+ * two labels cannot be swapped at the call site without swapping the roles
+ * with them.
+ *
+ * A table rather than two loose strings, so it takes the same waiver
+ * deleteConfirmQuestion below already takes: fast refresh only recognises a
+ * plain literal as a constant export, and a lookup that cannot be indexed by
+ * the role is worth more here than a boundary nobody edits at runtime.
+ */
+// eslint-disable-next-line react-refresh/only-export-components -- co-located with the component on purpose (see above); fast-refresh boundary accepted, in the idiom button.tsx and badge.tsx already use
+export const MESSAGE_AUTHOR_LABELS = {
+  user: "You",
+  assistant: "Assistant",
+} as const;
+
+/**
+ * The question the delete confirmation asks, exported for the same reason
+ * TRUNCATED_MARK_TEXT is: a test proves the sentence by importing it, never
+ * by retyping it.
+ *
+ * "everything after it" made the reader guess how much everything was, and
+ * the guess is furthest off exactly when the answer matters - a long tail
+ * below the fold. The count is the fact the decision turns on, so it belongs
+ * in the sentence, in the same shape the edit confirmation already uses.
+ *
+ * Zero takes a different sentence rather than a zero in this one: "the 0
+ * messages after it" is not English, and naming rows nobody is deleting reads
+ * as a defect in the count.
+ *
+ * It has to be a function rather than a primitive, because the sentence is a
+ * function of the count - so it takes the same waiver WorkerPanel's exported
+ * tables already take, for the same reason: a test that retyped the wording
+ * would pass with both copies wrong together.
+ */
+// eslint-disable-next-line react-refresh/only-export-components -- co-located with the component on purpose (see above); fast-refresh boundary accepted, in the idiom button.tsx and badge.tsx already use
+export function deleteConfirmQuestion(followingRowCount: number): string {
+  if (followingRowCount === 0) return "Delete this message?";
+  return `Delete this message and the ${followingRowCount} message${
+    followingRowCount === 1 ? "" : "s"
+  } after it?`;
+}
 
 interface MessageBubbleProps {
   chatId: number;
@@ -136,7 +184,22 @@ export const MessageBubble = memo(function MessageBubble({
   const deleteMessage = useDeleteMessageAndFollowing();
   const isUser = message.role === "user";
   const isPersisted = message.id > 0;
-  const canRegenerate = canRegenerateMessage(messages, message);
+  // Who is speaking was carried by alignment and bubble colour alone, and a
+  // screen reader hears neither. The label below is the single source of that
+  // fact: the bubble is named BY it rather than repeating it in an aria-label,
+  // so there is one string to keep true instead of two that can drift apart.
+  const authorLabelId = useId();
+  // Memoised because this sweeps the WHOLE message array, and the renders
+  // that reach it are not driven by the array at all: every bubble subscribes
+  // to the reader's appearance settings, so one drag of the opacity slider
+  // used to re-run an O(n) scan in each of n bubbles. Keyed on `messages`
+  // and `message` rather than on `message.id`: eligibility reads the row's
+  // role and variant anchor too, and an id-only key would hold a stale answer
+  // if either ever moved under the same id.
+  const canRegenerate = useMemo(
+    () => canRegenerateMessage(messages, message),
+    [messages, message],
+  );
   const isBusy = deleteMessage.isPending || Boolean(pendingForChat);
   const siblings = group ?? [message];
   const displayIndex = Math.max(
@@ -158,12 +221,21 @@ export const MessageBubble = memo(function MessageBubble({
     : displayIndex;
   const shownMessage = siblings[shownIndex] ?? message;
 
-  /** A persisted user message with nothing after it - so nobody answered it. */
-  const awaitingReply =
-    isUser &&
-    isPersisted &&
-    !pendingForChat &&
-    messages.every((m) => m.id <= message.id || !isMessageActive(m));
+  /**
+   * A persisted user message with nothing after it - so nobody answered it.
+   *
+   * The cheap guards stay INSIDE the memo, in their original order. Hoisting
+   * only the sweep out would have made assistant rows pay for a scan they
+   * currently short-circuit past, which is the opposite of the point.
+   */
+  const awaitingReply = useMemo(
+    () =>
+      isUser &&
+      isPersisted &&
+      !pendingForChat &&
+      messages.every((m) => m.id <= message.id || !isMessageActive(m)),
+    [isUser, isPersisted, pendingForChat, messages, message.id],
+  );
 
   // From shownMessage, NOT from message. `message` is the group's ACTIVE row
   // while shownMessage is the row the reader has actually paged to, and every
@@ -293,8 +365,18 @@ export const MessageBubble = memo(function MessageBubble({
    *
    * Optimistic ids are negative and therefore below `message.id`, and the
    * pencil is disabled while the chat is busy, so nothing in flight is counted.
+   *
+   * Memoised for the same reason as the two sweeps above: the number can only
+   * change when the array does, and most re-renders here come from somewhere
+   * else entirely (appearance settings, a keystroke in this bubble's own edit
+   * buffer). The dependency list must keep `messages` - keyed on `message.id`
+   * alone it would still read the count the chat had when this bubble mounted,
+   * and a destructive confirmation would name the wrong number.
    */
-  const followingRowCount = messages.filter((m) => m.id > message.id).length;
+  const followingRowCount = useMemo(
+    () => messages.filter((m) => m.id > message.id).length,
+    [messages, message.id],
+  );
 
   // True only for the box THIS mounted bubble opened by pencil press. A box
   // that is on screen because a buffer survived a remount is a restore, and
@@ -581,6 +663,11 @@ export const MessageBubble = memo(function MessageBubble({
           className={`message-bubble-shell max-w-[75%] rounded-xl px-5 py-3 text-sm leading-relaxed ${
             isUser ? "is-user" : "is-assistant"
           } ${isPersisted ? "has-actions" : ""} ${editing ? "is-editing" : ""}`}
+          // One message, one unit. `article` and not `listitem`: nothing above
+          // this carries `role="list"`, and a listitem without that parent
+          // breaks the accessibility tree rather than describing it.
+          role="article"
+          aria-labelledby={authorLabelId}
           // How much room the absolutely positioned action row needs. An
           // UPPER BOUND on purpose: SpeakButton decides internally whether to
           // render, so an exact count is not visible from here, and guessing
@@ -630,6 +717,16 @@ export const MessageBubble = memo(function MessageBubble({
                 }
           }
         >
+          {/* Deliberately the first child, so the author is heard before the
+              message rather than after it, and deliberately WITHOUT
+              `aria-live`: one bubble already owns the polite region for the
+              copy result, and a second one in the same subtree makes the
+              first ambiguous to every query that looks for it. `sr-only` is
+              the same visually-hidden utility the close button and the model
+              caveat already use, so nothing new is drawn on screen. */}
+          <span id={authorLabelId} className="sr-only">
+            {MESSAGE_AUTHOR_LABELS[message.role]}
+          </span>
           {isPersisted && (
             <div className="message-actions" aria-label="Message actions">
               {/* V5: hear this reply. Renders only when a voice model is
@@ -647,7 +744,7 @@ export const MessageBubble = memo(function MessageBubble({
                 (isStreamingTarget ? (
                   <SpeakLiveButton chatId={chatId} />
                 ) : (
-                  <SpeakButton messageId={shownMessage.id} />
+                  <SpeakButton messageId={shownMessage.id} chatId={chatId} />
                 ))}
               {/* Copy sits before the writers and well away from Delete: it
                   is the only read-only action here, and putting it beside a
@@ -908,8 +1005,8 @@ export const MessageBubble = memo(function MessageBubble({
                 minute: "2-digit",
               })}
             </time>
-            {/* Owner's ask, verbatim: a mark bottom-left, not colliding with
-                anything already there. This row IS the bubble's bottom-left
+            {/* A mark bottom-left, not colliding with anything already
+                there. This row IS the bubble's bottom-left
                 corner - the timestamp already lives here alone, so a sibling
                 flex item extends the row instead of overlapping it. Checked
                 against every other thing that can render on an assistant
@@ -958,7 +1055,11 @@ export const MessageBubble = memo(function MessageBubble({
               role="dialog"
               aria-label="Confirm delete message"
             >
-              <p>Delete this message and everything after it?</p>
+              {/* The count comes from the memoised `followingRowCount` above,
+                  which is the same number the edit confirmation and the pencil
+                  tooltip quote - one derivation, so the three can never
+                  disagree about what a delete takes. */}
+              <p>{deleteConfirmQuestion(followingRowCount)}</p>
               <div className="mt-2 flex justify-end gap-1.5">
                 <button
                   type="button"

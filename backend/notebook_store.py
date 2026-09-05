@@ -29,6 +29,7 @@ from collections import Counter
 from typing import Any
 
 import config
+import default_names
 # The DRIVER's exception, not the stdlib's. SQLCipher raises its own
 # IntegrityError, and catching sqlite3.IntegrityError here caught nothing at
 # all - the duplicate-key path that makes this idempotent never ran.
@@ -311,7 +312,7 @@ def _in_chat(con, entry_id: int, chat_id: int) -> bool:
 
 
 def delete_entry(entry_id: int, chat_id: int | None = None) -> bool:
-    """Remove a note the USER asked to remove.
+    """Remove a note you asked to remove.
 
     A hard delete, unlike supersession. The distinction matters: retirement is
     the app deciding a fact stopped being true, so the row stays visible and
@@ -594,7 +595,10 @@ def create_boundary(label: str, phrasing: str, severity: str, *,
     that check, because repeating it here would suggest the check lives here.
     """
     label, phrasing = _flat(label), _flat(phrasing)
-    if not label or not phrasing:
+    # Only the PHRASING can be empty here. An unnamed limit is named below,
+    # inside the transaction, where the labels already stored are readable;
+    # a limit with nothing in its phrasing has nothing to enforce.
+    if not phrasing:
         raise NotebookError("boundary_empty")
     # Here, not in BoundaryBody. A ceiling in the schema is a ceiling the next
     # route that calls this function does not have, and the UI cap is not
@@ -628,6 +632,13 @@ def create_boundary(label: str, phrasing: str, severity: str, *,
         # that produces that pair.
         con.execute("BEGIN IMMEDIATE")
         _refuse_if_the_set_will_not_fit(con, chat_id, phrasing)
+        # Inside the lock the count is taken under, for the same reason the
+        # count is: two limits added together would otherwise read a set
+        # missing the other and take the same number.
+        label = default_names.name_or_default(
+            label, default_names.BOUNDARY,
+            (r["label"] for r in con.execute("SELECT label FROM boundaries")),
+        )
         cur = con.execute(
             "INSERT INTO boundaries (scope, chat_id, label, phrasing, severity,"
             " polarity, on_violation, source, rating_ceiling) "
@@ -1844,10 +1855,31 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
     # written between the claim and the request, before any reply exists.
     # `done` is the only status that means a range was answered, and it is
     # the only one that may say so.
+    #
+    # AND IT RECORDS WHY, which is what lets a later build tell this flag
+    # apart from one a migration guessed at. `'extraction'` is the only
+    # label written outside `database._label_ever_flag_reasons`, and the
+    # column's CHECK refuses any other spelling of it - a typo here fails
+    # the first completed extraction loudly rather than inventing a sixth
+    # category quietly.
+    #
+    # THE GUARD IS `reason`, NOT ONLY THE FLAG, and that is the whole reason
+    # the column can heal itself. `AND notebook_extracted_ever = 0` alone
+    # matched nothing on a chat whose flag a migration had already lit, so a
+    # chat labelled `legacy_unknown` would go on being unvouched-for forever
+    # even as real extractions landed in it one after another - the set of
+    # chats nobody can account for would freeze at its migration-day size
+    # and never shrink. With this condition the FIRST genuine extraction
+    # upgrades the label to first-hand evidence, and the unknown set melts
+    # by itself. The old guard's purpose is kept: once the label reads
+    # `extraction`, this matches zero rows again on every later settle.
     if status == "done":
         con.execute(
-            "UPDATE chats SET notebook_extracted_ever = 1 WHERE id = ? "
-            "AND notebook_extracted_ever = 0", (chat_id,))
+            "UPDATE chats SET notebook_extracted_ever = 1, "
+            "notebook_extracted_ever_reason = 'extraction' WHERE id = ? "
+            "AND (notebook_extracted_ever = 0 "
+            "     OR COALESCE(notebook_extracted_ever_reason, '') "
+            "        <> 'extraction')", (chat_id,))
 
     # Looked up rather than caught. `except IntegrityError` treated EVERY
     # constraint failure as "already done" - including the foreign key that

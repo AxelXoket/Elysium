@@ -104,6 +104,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import config
+import default_names
 import secure_delete
 
 from .errors import (
@@ -121,6 +122,23 @@ VOICE_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 AUDIO_SUFFIXES = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".opus"}
 META_NAME = "voice.json"
 TRANSCRIPT_NAME = "transcript.txt"
+#: The longest transcript this module will put on disk.
+#:
+#: There was no ceiling at all, and "no ceiling" is not an abstract worry
+#: here: five million characters went into a voice folder in one call,
+#: because whatever the caller sent was written straight through. The words
+#: arrive on a route the user reaches, the folder they land in is one this
+#: app promises to keep small and shreddable, and neither of those survives
+#: an unbounded write.
+#:
+#: The value is deliberately far wider than any real recording. A reference
+#: clip is refused past TTS_REF_MAX_S * 4 seconds by validate() below, and
+#: even read at an auctioneer's pace that is a few thousand characters, so
+#: nothing a person can actually say into a clip comes near this. Wide is the
+#: safe direction: a transcript ALREADY on disk has to stay editable, and a
+#: tight ceiling would refuse the correction and leave someone stuck with
+#: words they cannot fix.
+TRANSCRIPT_MAX_CHARS = 20_000
 #: The per-refs-folder salt that makes a directory name unrecoverable without
 #: it. A dot-prefixed name is enough to keep it out of anyone's way; it is
 #: not itself a secret the app relies on to be hidden, only to be RANDOM -
@@ -595,6 +613,88 @@ def _read_meta(folder: Path) -> dict:
         return {}
 
 
+#: What _replace_user_text writes under while the new bytes are on their way
+#: to disk. A constant rather than an inline f-string, for the same reason
+#: INDEX_KEY_TMP_INFIX is one: a test has to assert that NO such file
+#: survives, and an absence checked against a retyped literal stops being an
+#: absence the moment the scheme changes.
+_REPLACE_TMP_INFIX = ".new-"
+
+
+def _replace_user_text(path: Path, text: str) -> None:
+    """Put `text` at `path` without leaving the previous text on the platter.
+
+    Both files that go through here are the user's own words. transcript.txt
+    is what they said out loud, and voice.json carries the name they typed -
+    the one thing the opaque folder names under refs/ exist to keep off the
+    disk in readable form. Replacing either one is therefore a DELETION of
+    user content, and this app has exactly one way to delete user content.
+
+    It did not use one. `write_text` and `open(..., "w")` truncate: the old
+    blocks go back to the filesystem with the old words still in them, and a
+    correction made precisely BECAUSE the first version said something that
+    should not be kept left both versions recoverable. Nothing on either
+    write path called secure_delete at all.
+
+    The order is write-new, sync, destroy-old, rename, and each step answers
+    a different failure:
+
+      * the new bytes land under a temporary name and are fsynced BEFORE the
+        old file is touched, so the destruction can never be the only thing
+        that happened;
+      * the destruction runs BEFORE the rename, because os.replace unlinks
+        whatever it lands on and an unlinked file keeps every byte it had;
+      * the rename is atomic, so a reader arriving mid-write sees the whole
+        old file or the whole new one and never a half of either. That is
+        what _write_meta's crash-safety promise below actually needs: the
+        "w" mode it used could leave a voice folder holding an empty
+        voice.json, which is a voice the app cannot find while every one of
+        its files is still sitting there.
+
+    The temporary name carries pid and thread id for the reason _index_key's
+    does: two writers on one voice must not meet on one name.
+
+    It RAISES rather than writing anyway when the old file will not die, and
+    that is the point rather than a rough edge. secure_delete fails CLOSED -
+    a redirected name, a second hardlink, or a handle that denies writes all
+    come back False with the bytes still in place - and writing on top of a
+    refusal is exactly the defect this function exists to remove: the old
+    words would be truncated away unshredded and nobody would hear about it.
+    Reaching past a refusal is the one thing this module must never learn to
+    do. It is also the answer save_upload already gives for a clip that will
+    not die, so the code raised is one every caller already handles, and each
+    route that reaches here is wrapped in a RefError handler.
+
+    A hard crash between the sync and the rename can leave the temporary file
+    behind. It holds the same words as the file beside it, in the same
+    already-opaque folder, so it is no wider a secret than that folder; every
+    ordinary failure is caught below and takes it out the same door.
+    """
+    target = Path(path)
+    tmp = target.with_name(
+        f"{target.name}{_REPLACE_TMP_INFIX}"
+        f"{os.getpid()}-{threading.get_ident()}")
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        if not secure_delete.discard(target):
+            # discard() has already logged WHICH refusal fired. Raising is
+            # what keeps it from being silent to the person who asked for the
+            # change: they are told nothing was replaced, instead of being
+            # told it worked while the old copy is still readable.
+            raise RefError(
+                TTS_REFERENCE_CLIP_STUCK,
+                "%s is still in use and could not be replaced" % target.name)
+        os.replace(str(tmp), str(target))
+    except BaseException:
+        # The temporary file is a COMPLETE second copy of the same words.
+        # It goes out the same door as everything else in this folder.
+        secure_delete.discard(tmp)
+        raise
+
+
 def _write_meta(folder: Path, data: dict) -> None:
     """Write voice.json, and make sure it is ON DISK before returning.
 
@@ -608,12 +708,25 @@ def _write_meta(folder: Path, data: dict) -> None:
     stale voice.json. list_voices() then skips it and _voice_dir() cannot find
     it: the voice is gone from the app while every one of its files is still
     sitting there.
+
+    The flush and the fsync still happen, and still before anything is
+    renamed into place; they live in _replace_user_text now, which syncs the
+    NEW bytes under a temporary name, destroys the old file and only then
+    renames. The promise above is untouched: what the rename publishes is
+    already on the platter, and it is ordered after the sync by the same
+    filesystem that orders the folder rename after this call. What changed is
+    that the label the user typed no longer survives the write as freed
+    blocks, and that a reader arriving mid-write can no longer see half a
+    document.
     """
     folder.mkdir(parents=True, exist_ok=True)
-    with open(folder / META_NAME, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, ensure_ascii=False, indent=2)
-        fh.flush()
-        os.fsync(fh.fileno())
+    # Serialised BEFORE the file is touched. json.dump streamed straight into
+    # the truncated handle, so a value it could not encode left voice.json
+    # holding half an object: not the old one, not the new one, not parseable
+    # at all, and the voice missing from the app. dumps() either produces the
+    # whole document or raises with the file on disk untouched.
+    _replace_user_text(folder / META_NAME,
+                       json.dumps(data, ensure_ascii=False, indent=2))
 
 
 def _audio_in(folder: Path) -> Path | None:
@@ -719,7 +832,40 @@ def save_upload(voice_id: str, filename: str, data: bytes, *,
         raise RefError(TTS_REFERENCE_INVALID, "the file is empty")
     if len(data) > int(config.TTS_REF_MAX_BYTES):
         raise RefError(TTS_REFERENCE_INVALID, "that file is too large for a voice sample")
+    if len(transcript.strip()) > TRANSCRIPT_MAX_CHARS:
+        # Up here with the other refusals, before the folder exists and
+        # before anything is staged: the ceiling has to be answered while the
+        # answer still costs nothing. The words arrive on the same request as
+        # the clip, so this is the same door the edit route guards, and a
+        # ceiling with one side left open is decoration.
+        raise RefError(TTS_REFERENCE_INVALID,
+                       "that transcript is far longer than a voice sample needs")
 
+    # The name, decided HERE and used by both writes below.
+    #
+    # It used to be `label or voice_id`, so an upload with no name was listed
+    # under an opaque hash - and the panel in front of this, trying to spare
+    # the reader that, made up "Untitled voice" for the same case. That
+    # constant is what made this route destructive: the panel decides a
+    # collision by comparing LABELS case-insensitively and reuses the matched
+    # voice's id, so a SECOND unnamed upload matched the first, arrived here
+    # under the first one's id, and replaced its clip and its hand-corrected
+    # transcript. Two files, one voice, no warning, and the words the user
+    # had fixed by hand were gone.
+    #
+    # A numbered name cannot collide with the one before it, so the second
+    # upload is a second voice. Numbered against the labels already on disk,
+    # which is a directory read - cheap next to the clip write happening
+    # around it, and this whole call already runs on a worker thread. Read
+    # BEFORE anything is staged, so a refusal below still costs no disk.
+    #
+    # The voice being REPLACED is left out of the scan, the same way a rename
+    # elsewhere leaves out its own row: its label is on its way out, so it
+    # must not push its own replacement to the next number.
+    label = default_names.name_or_default(
+        label, default_names.VOICE,
+        (v.label for v in list_voices() if v.voice_id != voice_id),
+    )
     folder = _voice_dir(voice_id)
     # delete() forty lines below refuses a redirected folder. This did not,
     # and it deletes as well: every audio file already in the folder goes so
@@ -761,10 +907,11 @@ def save_upload(voice_id: str, filename: str, data: bytes, *,
     staged = refs_dir() / (_STAGING_PREFIX + _hash_name(voice_id) + suffix)
     staged.parent.mkdir(parents=True, exist_ok=True)
     staged.write_bytes(data)
+
     try:
         candidate = ReferenceVoice(
             voice_id=voice_id,
-            label=label or voice_id,
+            label=label,
             path=str(folder),
             audio_name="ref" + suffix,
             transcript=transcript.strip(),
@@ -814,15 +961,24 @@ def save_upload(voice_id: str, filename: str, data: bytes, *,
     # alongside a non-empty transcript), so the UI could not even flag it.
     tpath = folder / TRANSCRIPT_NAME
     if transcript.strip():
-        tpath.write_text(transcript.strip(), encoding="utf-8")
-    else:
         # The words that were said, which belong to the user exactly like the
-        # audio shredded a few lines above.
-        secure_delete.discard(tpath)
+        # audio shredded a few lines above - so they are REPLACED the way it
+        # is removed, rather than truncated on top of take 1's.
+        _replace_user_text(tpath, transcript.strip())
+    else:
+        if not secure_delete.discard(tpath):
+            # Too late to refuse the upload, the clip is already installed;
+            # what is left is take 1's words beside take 2's audio, which is
+            # the contradiction this block exists to prevent. Say so rather
+            # than letting describe() report a pairing nobody chose. The name
+            # logged is a constant, never content.
+            logger.warning(
+                "tts: %s could not be removed - the previous words are still "
+                "in this voice folder", TRANSCRIPT_NAME)
 
     _write_meta(folder, {
         "voice_id": voice_id,
-        "label": label or voice_id,
+        "label": label,
         "added_at": time.time(),
         "transcript_source": "user" if transcript.strip() else "none",
     })
@@ -831,13 +987,39 @@ def save_upload(voice_id: str, filename: str, data: bytes, *,
 
 def set_transcript(voice_id: str, text: str, source: str = "user") -> ReferenceVoice:
     """Write the words. Always allowed to overwrite - an auto transcript is a
-    first draft, and correcting it is the expected next step."""
+    first draft, and correcting it is the expected next step.
+
+    Always allowed, but not at any length and not in place, and the two are
+    one decision rather than two: this function is the whole write, so the
+    ceiling and the shred meet in it and there is only one order that
+    satisfies both. Measure first, because a refusal must not have touched
+    the disk. Destroy second, because the correction that arrives here is
+    routinely a correction of what was SAID, and truncating on top of it left
+    the first version recoverable. Write last, onto ground that is already
+    clear.
+    """
     folder = _voice_dir(voice_id)
     if not folder.is_dir():
         raise RefError(TTS_REFERENCE_INVALID, "no such voice")
-    (folder / TRANSCRIPT_NAME).write_text((text or "").strip(), encoding="utf-8")
+    words = (text or "").strip()
+    if len(words) > TRANSCRIPT_MAX_CHARS:
+        raise RefError(TTS_REFERENCE_INVALID,
+                       "that transcript is far longer than a voice sample needs")
+    tpath = folder / TRANSCRIPT_NAME
+    if words:
+        _replace_user_text(tpath, words)
+    elif not secure_delete.discard(tpath):
+        # Clearing the words is a deletion and nothing else, so there is no
+        # replacement to withhold and refusing the call would leave the user
+        # with no way to try again. What must not happen is that it reports
+        # success while the words are still on disk, and describe() below
+        # reads the file rather than this branch, so the payload will say so
+        # too. The name logged is a constant, never content.
+        logger.warning(
+            "tts: %s could not be removed - the previous words are still "
+            "in this voice folder", TRANSCRIPT_NAME)
     meta = _read_meta(folder)
-    meta["transcript_source"] = source if (text or "").strip() else "none"
+    meta["transcript_source"] = source if words else "none"
     _write_meta(folder, meta)
     return describe(voice_id)
 

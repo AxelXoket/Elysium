@@ -149,9 +149,10 @@ describe("errorMessages", () => {
     expect(getErrorMessage("regenerate_conflict")).toBe(
       "The chat changed while regenerating. Please refresh and try again.",
     );
-    expect(getErrorMessage("title_required")).toBe(
-      "Chat title cannot be empty.",
-    );
+    // S-9 rewrite: `title_required` is gone from the catalogue and from the
+    // message map. An emptied title box is answered with a default name now,
+    // so no backend path can emit that code and a sentence for it would be
+    // one the reader can never see.
     expect(getErrorMessage("title_too_long")).toBe(
       "Chat title is too long. Please use at most 200 characters.",
     );
@@ -226,9 +227,9 @@ describe("errorMessages", () => {
     expect(getErrorMessage("invalid_character_json")).toBe(
       "This character file is not valid JSON. Please check the file and try again.",
     );
-    expect(getErrorMessage("character_name_required")).toBe(
-      "This character needs a name. Please add one and try again.",
-    );
+    // S-9 rewrite: `character_name_required` is gone for the same reason as
+    // `title_required`. A card with no name is imported and named, so the
+    // import route has no way left to raise it.
   });
 
   // A hand-listed "recognizes newly added codes as known (not generic

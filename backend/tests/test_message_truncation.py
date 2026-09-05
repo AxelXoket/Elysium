@@ -237,6 +237,12 @@ async def _drain_with_finish(monkeypatch, lines):
     """Run complete_stream to exhaustion; return (text, [on_finish calls])."""
     monkeypatch.setattr(openrouter, "get_client", lambda: _FakeClient(lines))
     monkeypatch.setattr(openrouter, "get_secret", lambda name: "sk-test")
+    # complete()/complete_stream() also read the SAFEWORD out of the
+    # vault before the socket, and this file drives them with no vault
+    # at all. Says the same thing about the safeword that the line
+    # above says about the key: in this scenario there is not one.
+    monkeypatch.setattr(openrouter.safeword_filter, "needles",
+                        lambda: ())
     calls = []
     out = []
     async for delta in openrouter.complete_stream(
@@ -315,6 +321,12 @@ async def test_on_finish_is_not_called_when_the_stream_raises(monkeypatch):
     ]
     monkeypatch.setattr(openrouter, "get_client", lambda: _FakeClient(lines))
     monkeypatch.setattr(openrouter, "get_secret", lambda name: "sk-test")
+    # complete()/complete_stream() also read the SAFEWORD out of the
+    # vault before the socket, and this file drives them with no vault
+    # at all. Says the same thing about the safeword that the line
+    # above says about the key: in this scenario there is not one.
+    monkeypatch.setattr(openrouter.safeword_filter, "needles",
+                        lambda: ())
     calls = []
     with pytest.raises(openrouter.OpenRouterError):
         async for _ in openrouter.complete_stream(

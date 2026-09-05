@@ -57,7 +57,7 @@ describe("voice controls while the model loads", () => {
 
   it("the per-message Speak button marks itself loading and refuses presses", async () => {
     stubActive("loading");
-    renderWithQueryClient(<SpeakButton messageId={7} />);
+    renderWithQueryClient(<SpeakButton messageId={7} chatId={2} />);
 
     const button = await screen.findByRole("button", { name: "Speak message" });
     await waitFor(() => {
@@ -97,7 +97,7 @@ describe("voice controls while the model loads", () => {
 
   it("once loaded, the controls are ordinary again", async () => {
     stubActive("loaded");
-    renderWithQueryClient(<SpeakButton messageId={7} />);
+    renderWithQueryClient(<SpeakButton messageId={7} chatId={2} />);
 
     const button = await screen.findByRole("button", { name: "Speak message" });
     await waitFor(() => expect(button).toBeEnabled());
@@ -123,7 +123,7 @@ describe("voice controls while the model loads", () => {
     const fetchMock = stubActive("unloaded", {
       readiness: { ...READINESS, runnable: false },
     });
-    const { container } = renderWithQueryClient(<SpeakButton messageId={7} />);
+    const { container } = renderWithQueryClient(<SpeakButton messageId={7} chatId={2} />);
     await waitFor(() =>
       expect(
         fetchMock.mock.calls.some(([url]) => String(url).includes("/tts/active")),
@@ -135,7 +135,7 @@ describe("voice controls while the model loads", () => {
 
   it("no model chosen still renders nothing at all", async () => {
     const fetchMock = stubActive("unloaded", { uid: null, readiness: null });
-    const { container } = renderWithQueryClient(<SpeakButton messageId={7} />);
+    const { container } = renderWithQueryClient(<SpeakButton messageId={7} chatId={2} />);
     await waitFor(() =>
       expect(
         fetchMock.mock.calls.some(([url]) => String(url).includes("/tts/active")),

@@ -68,13 +68,42 @@ function reducedBlocks(): string {
 describe("reduced-transparency block", () => {
   const block = reducedBlocks();
 
-  it("names the fog classes MistCanvas actually renders", () => {
+  it("names the fog classes MistCanvas actually renders", async () => {
     // .ambient-fog-canvas / .ambient-mist / .chat-fog appeared exactly once in
     // the whole repo - inside this selector list - so the animated WebGL fog
     // kept running for users who had turned transparency effects off.
-    for (const real of [".mist-canvas", ".canvas-mist", ".panel-mist"]) {
-      expect(block).toContain(real);
+    //
+    // The live half of that list used to be typed out here, which is the same
+    // hole one step removed: a hand-typed name survives a rename in the
+    // component, so the block would go on hiding a class nothing renders and
+    // this test would stay green. The names come from rendering the fog
+    // layers now. The import is deferred so only this one rule pays for React
+    // and jsdom and the rest of the file stays fs-only.
+    const { fogRootClassNames } = await import("./helpers/fogClassNames");
+    const roots = fogRootClassNames();
+
+    // Positive control, and the reason this rule was rewritten: an empty
+    // render is covered by any selector list at all, including an empty one.
+    expect(roots, "no fog layer rendered").toHaveLength(4);
+
+    /** The block NAMES a class, rather than merely containing its text -
+     *  `.mist` must not pass because `.mist-canvas` is written here. */
+    const names = (block: string, cls: string) =>
+      new RegExp(`\\.${cls.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`)
+        .test(block);
+
+    for (const { component, classes } of roots) {
+      expect(classes, `${component} rendered no element to hide`)
+        .not.toHaveLength(0);
+      // display:none on the root takes the layer's whole subtree with it, so
+      // one named class per layer is the requirement - not every descendant.
+      expect(
+        classes.some((cls) => names(block, cls)),
+        `${component} renders "${classes.join(" ")}" and the ` +
+          "reduced-transparency block names none of those classes",
+      ).toBe(true);
     }
+
     for (const dead of [".ambient-fog-canvas", ".ambient-mist", ".chat-fog"]) {
       expect(block).not.toContain(dead);
     }

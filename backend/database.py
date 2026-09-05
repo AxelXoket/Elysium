@@ -164,25 +164,32 @@ CREATE TABLE IF NOT EXISTS vault_secrets (
 # Public functions
 # ---------------------------------------------------------------------------
 
-def _migrate(con: sqlite3.Connection) -> None:
-    """Idempotent column/index additions on top of the CREATE-only schema.
+def _refuse_a_future_database(con: sqlite3.Connection) -> None:
+    """DOWNGRADE GUARD: refuse a file this build does not understand, before
+    anything at all has been written to it.
 
-    _SCHEMA can only CREATE IF NOT EXISTS; existing databases need ALTERs
-    guarded by PRAGMA table_info (an unconditional ALTER crashes the second
-    boot). ADD COLUMN ... DEFAULT backfills existing rows, so every
-    pre-migration message becomes its own active singleton.
+    SQLite has no protection of its own: an older build opening a newer file
+    will happily write rows that the newer schema's constraints would have
+    refused, and nothing notices until the newer build comes back to a
+    database it can no longer trust. Refusing is louder than repairing, and
+    this is the only moment where refusing is still free.
+
+    It fails the unlock, deliberately. `init_db` has no error path, so this
+    propagates out of _bootstrap_unlocked and the vault does not open - which
+    is the correct direction: a database written by a future build is not
+    something this build should be quietly editing.
+
+    Why it is its own function now. It used to sit at the top of _migrate,
+    where the comment on it said "it runs before a single DDL statement" -
+    true of _migrate, false of the boot. init_db runs executescript(_SCHEMA)
+    FIRST, and executescript commits implicitly before each statement it
+    runs, so by the time the guard spoke the whole schema was already on
+    disk: every table the future build had dropped or renamed was recreated,
+    the file on disk changed, and the message still promised "Nothing was
+    changed". A guard that writes before it refuses is not a guard. It is one
+    PRAGMA read with no side effect of its own, so calling it from both
+    entry points costs nothing and leaves neither one unprotected.
     """
-    # DOWNGRADE GUARD, and it runs before a single DDL statement. SQLite has no
-    # protection of its own: an older build opening a newer file will happily
-    # write rows that the newer schema's constraints would have refused, and
-    # nothing notices until the newer build comes back to a database it can no
-    # longer trust. Refusing is louder than repairing, and this is the only
-    # moment where refusing is still free.
-    #
-    # It fails the unlock, deliberately. `init_db` has no error path, so this
-    # propagates out of _bootstrap_unlocked and the vault does not open - which
-    # is the correct direction: a database written by a future build is not
-    # something this build should be quietly editing.
     on_disk = con.execute("PRAGMA user_version").fetchone()[0]
     if on_disk > _SCHEMA_VERSION:
         raise RuntimeError(
@@ -191,6 +198,21 @@ def _migrate(con: sqlite3.Connection) -> None:
             f"Nothing was changed. Use the newer version, or restore a backup "
             f"taken with this one."
         )
+
+
+def _migrate(con: sqlite3.Connection) -> None:
+    """Idempotent column/index additions on top of the CREATE-only schema.
+
+    _SCHEMA can only CREATE IF NOT EXISTS; existing databases need ALTERs
+    guarded by PRAGMA table_info (an unconditional ALTER crashes the second
+    boot). ADD COLUMN ... DEFAULT backfills existing rows, so every
+    pre-migration message becomes its own active singleton.
+    """
+    # The guard is checked in init_db before a single byte is written, and it
+    # is checked again here: _migrate is also driven directly, against a
+    # connection the caller opened itself, and that path would otherwise lose
+    # the refusal altogether.
+    _refuse_a_future_database(con)
 
     cols = {r[1] for r in con.execute("PRAGMA table_info(messages)").fetchall()}
     if "variant_group" not in cols:
@@ -296,11 +318,120 @@ def _migrate(con: sqlite3.Connection) -> None:
 #: gate records one hash per version going FORWARD and cannot reconstruct
 #: what came before. Version 4, measured from its bump to HEAD, was
 #: accurate throughout.
-_SCHEMA_VERSION = 5
+#:
+#: 6 carries `chats.notebook_extracted_ever_reason`. Bumping was not a
+#: preference: `_fingerprint` in test_schema_fingerprint.py hashes
+#: `sqlite_master.sql`, which for a table is every column, so a guarded
+#: `ADD COLUMN` moves the recorded hash exactly as a new table would. Leaving
+#: the constant at 5 would have made the gate red with no honest way to
+#: silence it, and would have handed a v1.1.6 build a file it could open and
+#: write unlabeled rows into - the same hole this constant exists to close,
+#: for the third time.
+_SCHEMA_VERSION = 6
 
 
 #: Marks the one-time backfill below as done.
 _AUTO_ACCEPT_BACKFILL_KEY = "notebook_auto_accept_backfilled"
+
+
+#: WHY `notebook_extracted_ever` is lit. The flag on its own is a bare 1 with
+#: two irreconcilable histories behind it, and the app had no way to tell them
+#: apart:
+#:
+#:   (X) the chat really was read many times and
+#:       `forget_proposals_from_messages` later deleted the extraction rows
+#:       that proved it - the flag is CORRECT and clearing it would send a
+#:       long chat back to its oldest message, twenty at a time.
+#:   (Y) nothing was ever read: the shipped writer was unconditional and the
+#:       shipped backfill lit the flag from any extraction row at all, so a
+#:       `skipped`, a `failed` or a `running` row was enough - the flag is
+#:       WRONG and it costs a billed call per twenty messages, forever.
+#:
+#: Recording the reason at the moment it is known is the only thing that can
+#: separate them later. NULLABLE on purpose: flag 0 has nothing to say, and
+#: NOT NULL would force a constant default that would itself be a claim.
+_EVER_REASON_EXTRACTION = "extraction"
+_EVER_REASON_BACKFILL_DONE = "backfill_done"
+_EVER_REASON_BACKFILL_NOTES = "backfill_notes"
+_EVER_REASON_BACKFILL_WIDE = "backfill_wide"
+_EVER_REASON_LEGACY_UNKNOWN = "legacy_unknown"
+
+#: The CHECK, written once so the column, the writers and the tests cannot
+#: drift apart. Measured on a scratch database: SQLite accepts a CHECK on
+#: `ADD COLUMN`, does not apply it to the rows already there (which is what
+#: lets the column arrive NULL), and refuses the next wrong write with
+#: IntegrityError.
+_EVER_REASONS = (
+    _EVER_REASON_EXTRACTION,
+    _EVER_REASON_BACKFILL_DONE,
+    _EVER_REASON_BACKFILL_NOTES,
+    #: NEVER WRITTEN BY THIS BUILD, and kept anyway. Nothing on disk says
+    #: "the wide backfill lit this", so labelling anything with it would be a
+    #: guess wearing a measurement's clothes - and the whole point of the
+    #: column is to stop guessing. It stays in the set because it is the
+    #: amnesty's only target: the mechanism, its predicate and its tests ship
+    #: complete and match zero rows, rather than shipping a predicate that
+    #: has never been run. Should the shipped installs ever need cleaning,
+    #: the machinery is already in place and already reviewed.
+    _EVER_REASON_BACKFILL_WIDE,
+    _EVER_REASON_LEGACY_UNKNOWN,
+)
+
+#: Marks the one-time amnesty below as done. Its own key, not the schema
+#: version: this is a one-off pardon for a historical defect, not a policy,
+#: and re-running it on every launch would be a standing licence to clear
+#: flags that later builds had lit correctly.
+#:
+#: SCOPED TO THE LABEL SET, not to the function, and that is not tidiness.
+#: The shipped pardon matches zero rows by design, so on a fresh vault it
+#: does nothing at all - and a single flat key would still be spent by that
+#: first launch. Every install would then carry "already pardoned" for a
+#: pardon that had nothing to pardon, and the aggressive variant, if it
+#: is ever turned on, would return at the guard without ever running: dead
+#: on arrival, on every machine that had booted this build once. One key per
+#: label set means each distinct pardon gets exactly one chance of its own.
+_EVER_FLAG_AMNESTY_KEY = "notebook_ever_flag_amnesty"
+
+
+def _amnesty_key(labels: tuple[str, ...]) -> str:
+    """The settings key that spends ONE pardon, named by what it pardons.
+
+    Sorted, so the same set written in a different order is the same key and
+    cannot buy a second pass.
+    """
+    return f"{_EVER_FLAG_AMNESTY_KEY}:{','.join(sorted(labels))}"
+
+#: WHAT THE AMNESTY IS ALLOWED TO CLEAR.
+#:
+#: Safe: only rows this build can prove it never had evidence for. Zero rows
+#: match today, deliberately - see `_EVER_REASON_BACKFILL_WIDE`.
+_AMNESTY_SAFE_LABELS = (_EVER_REASON_BACKFILL_WIDE,)
+#: Aggressive: adds the chats we simply cannot vouch for. NO CALLER PASSES
+#: THIS, and none may be added without that being written down first.
+#: It is the only variant that would actually clean a shipped v1.1.5/v1.1.6
+#: install, and its blast radius is chats that were genuinely read and whose
+#: extraction rows AND model notes were both deleted by later edits.
+#:
+#: THE TRADE, MEASURED, and the first version of this comment got it wrong in
+#: the direction that flattered the aggressive option:
+#:
+#:   * clearing a flag that was RIGHT: the planner jumps to the present once
+#:     and steps over the backlog under the cursor. No row is deleted and
+#:     nothing is billed at that moment. Reaching those messages again costs
+#:     one sweep press per batch of twenty - about nine presses and NINE
+#:     BILLED CALLS on a two hundred message chat, not a free undo, and only
+#:     if the reader finds the sweep control and knows to keep pressing.
+#:   * leaving a flag that was WRONG: about one billed call per twenty
+#:     messages, from the oldest end, with no way back at all.
+#:
+#: So the two directions cost about the same money. What actually separates
+#: them is consent and visibility: the wrong flag spends quietly and cannot
+#: be undone by anyone, while over-clearing spends only if a person decides
+#: it is worth it. That is a real argument for the aggressive pass, and a
+#: weaker one than "it is free", which is what this said before it was
+#: measured.
+_AMNESTY_AGGRESSIVE_LABELS = (_EVER_REASON_BACKFILL_WIDE,
+                              _EVER_REASON_LEGACY_UNKNOWN)
 
 
 def _migrate_notebook_backfill(con: sqlite3.Connection) -> None:
@@ -365,6 +496,260 @@ def _run_auto_accept_backfill(con: sqlite3.Connection) -> None:
         "INSERT INTO settings (key, value) VALUES (?, '1') "
         "ON CONFLICT(key) DO UPDATE SET value = '1'",
         (_AUTO_ACCEPT_BACKFILL_KEY,))
+
+
+def _label_ever_flag_reasons(con: sqlite3.Connection) -> None:
+    """Say why every lit flag is lit, from what is still on disk. LABEL ONLY.
+
+    THREE STATEMENTS, IN THIS ORDER, AND EACH ONE ONLY SPEAKS WHERE NOBODY
+    HAS SPOKEN YET. `... IS NULL` on all three is what makes that true: an
+    earlier, better-evidenced label is never overwritten by a later, weaker
+    one, and a label the WRITER put there survives every future launch.
+
+      1. a `done` row is still on disk -> `backfill_done`. This is the exact
+         predicate the flag's own migration trusts eleven lines below, so it
+         is not a new claim, it is the existing one written down.
+      2. no `done` row, but a note the MODEL wrote is still there ->
+         `backfill_notes`. `provenance='model'` is set in exactly one place,
+         `commit_extraction`'s proposal INSERT, and the only production
+         caller that arrives there with proposals settles with
+         `status="done"`. So a model note is proof a completed extraction
+         once landed in this chat. One-way proof: its presence proves, its
+         absence proves nothing.
+
+         AND IT MATCHES ZERO CHATS ON EVERY SHIPPED BUILD. Say it plainly,
+         because the first version of this work reported it as the repair's
+         main win and the number was wrong. Measured over every delete point
+         of a two hundred message chat, built entirely through the
+         production writer: `backfill_notes` labelled nothing.
+
+         The reason is that the two signals are destroyed by one predicate.
+         `commit_extraction` stamps every note of a range with
+         `source_message_id = to_id`, and `forget_proposals_from_messages`
+         deletes extraction rows with `to_message_id >= min(ids)` and notes
+         with `source_message_id IN ids`. All three production callers pass
+         a SUFFIX of the chat, and for a suffix those two conditions are the
+         same condition: a range loses its `done` row exactly when it loses
+         its notes. The one shape that would decouple them - a note written
+         with a NULL source, which happens when `to_id` is already gone at
+         settle time - cannot be written either, because that same delete
+         takes the `running` trace with it and `require_trace=True` turns
+         the settle into a `skipped` with `proposals = []`.
+
+         IT STAYS ANYWAY, for the same reason `backfill_wide` does. The
+         inference is correct; it is the world that is currently empty. If
+         that state ever does arise - a non-suffix delete, a caller that
+         settles proposals under another status, a relaxed `require_trace` -
+         the alternative is filing a chat that WAS read as one nobody can
+         account for, and then clearing its flag. A label that costs one
+         UPDATE and is right when it fires is cheaper than that.
+
+         AND IT IS AN INFERENCE, NOT AN INVARIANT. The INSERT itself writes
+         `PROV_MODEL` whatever the status; what makes the claim true is that
+         the failing and skipping caller passes no proposals. If a future
+         caller ever settles a non-`done` status WITH proposals, this label
+         starts describing something it does not mean, and nothing in the
+         schema would notice.
+      3. anything left -> `legacy_unknown`. Not `backfill_wide`: we do not
+         know that, and a column whose first act is a guess is worthless.
+
+    `backfill_done` DELIBERATELY CONFLATES TWO HISTORIES and it is worth
+    saying so. A chat whose flag the shipped writer lit, and whose `done` row
+    is still there, is indistinguishable here from one this migration found
+    cold. Both are true statements about disk, neither is a claim about who
+    lit the flag, and the distinction changes no decision: both are outside
+    every amnesty and both count in neither audit number.
+
+    NOT `retired_at IS NULL`, NOT `status = 'accepted'`. A note the reader
+    retired, superseded or never reviewed is still evidence that a reading
+    happened. The two filters are not equally load-bearing, and pretending
+    they were would be the sloppy version of this comment:
+
+      * `status = 'accepted'` WOULD LOSE EVIDENCE TODAY. Measured on a
+        synthetic fixture: on a vault with auto-accept off every model note
+        sits at `proposed`, and an accepted-only filter finds nothing at all
+        in a chat that was demonstrably read.
+      * `retired_at IS NULL` cannot bite today, and the reason is a property
+        of two other functions rather than of this one: a retired note never
+        outlives its superseder, because `forget_proposals_from_messages`
+        and `delete_entry` both clear `retired_at` and `superseded_by` on
+        the rows pointing at whatever they remove. Its absence here is
+        defence against that stopping being true, not a fix for a live
+        defect, and no test can honestly show it losing a chat.
+
+    UNCONDITIONAL, outside the column's own `if`, for the reason its
+    neighbours are: the ALTER fires once and a crash between it and these
+    three would leave rows nobody could ever label again. Idempotent, and a
+    pure no-op on a healthy database.
+
+    AND IT NEVER TOUCHES THE FLAG. Only `notebook_extracted_ever_reason`
+    appears left of an `=` here, and only where it is NULL. R3.2 of the
+    roadmap - "a repair that runs on every launch re-opens Defect 3" - is
+    about a repair that WRITES the flag; this one has no opinion about it and
+    cannot re-light or extinguish a single chat.
+    """
+    con.execute(
+        f"UPDATE chats SET notebook_extracted_ever_reason = "
+        f"'{_EVER_REASON_BACKFILL_DONE}' "
+        f"WHERE notebook_extracted_ever = 1 "
+        f"  AND notebook_extracted_ever_reason IS NULL "
+        f"  AND id IN (SELECT DISTINCT chat_id FROM notebook_extractions "
+        f"             WHERE status = 'done')")
+    con.execute(
+        f"UPDATE chats SET notebook_extracted_ever_reason = "
+        f"'{_EVER_REASON_BACKFILL_NOTES}' "
+        f"WHERE notebook_extracted_ever = 1 "
+        f"  AND notebook_extracted_ever_reason IS NULL "
+        f"  AND id IN (SELECT DISTINCT chat_id FROM notebook_entries "
+        f"             WHERE provenance = 'model')")
+    con.execute(
+        f"UPDATE chats SET notebook_extracted_ever_reason = "
+        f"'{_EVER_REASON_LEGACY_UNKNOWN}' "
+        f"WHERE notebook_extracted_ever = 1 "
+        f"  AND notebook_extracted_ever_reason IS NULL")
+
+
+def _run_ever_flag_amnesty(con: sqlite3.Connection,
+                           labels: tuple[str, ...] = _AMNESTY_SAFE_LABELS,
+                           ) -> int:
+    """Put out the flags this build can prove were lit by mistake.
+
+    Returns how many were cleared. The predicate is belt AND braces: the
+    label says where the flag came from, and the two NOT EXISTS clauses
+    re-check the evidence at the moment of clearing rather than trusting a
+    label that may have been written launches ago and gone stale since.
+
+    The reason goes back to NULL with the flag, because the column describes
+    a lit flag and has nothing to say about a dark one. A later real
+    extraction re-lights both, correctly, through `commit_extraction`.
+    """
+    marks = ",".join("?" * len(labels))
+    return con.execute(
+        f"UPDATE chats "
+        f"   SET notebook_extracted_ever = 0, "
+        f"       notebook_extracted_ever_reason = NULL "
+        f" WHERE notebook_extracted_ever = 1 "
+        f"   AND notebook_extracted_ever_reason IN ({marks}) "
+        f"   AND NOT EXISTS (SELECT 1 FROM notebook_extractions e "
+        f"                    WHERE e.chat_id = chats.id "
+        f"                      AND e.status = 'done') "
+        f"   AND NOT EXISTS (SELECT 1 FROM notebook_entries n "
+        f"                    WHERE n.chat_id = chats.id "
+        f"                      AND n.provenance = 'model')",
+        labels).rowcount
+
+
+def _migrate_ever_flag_amnesty(
+        con: sqlite3.Connection,
+        labels: tuple[str, ...] = _AMNESTY_SAFE_LABELS) -> None:
+    """The amnesty, ONCE PER LABEL SET, guarded by its own settings row.
+
+    Not by the column's absence and not by the schema version: both of those
+    fire on the launch that installs the column, and this has to be able to
+    ship later than the column does. `_AUTO_ACCEPT_BACKFILL_KEY` is the
+    idiom this copies, down to the exception handling.
+
+    GUARDED THE SAME WAY, and for the same measured reason: this runs from
+    `_migrate`, and `_migrate` runs against databases that have no `settings`
+    table at all - the phase-2 migration tests build one. A migration step
+    that raises on a shape it was not written for takes the unlock with it.
+    """
+    key = _amnesty_key(labels)
+    try:
+        done = con.execute("SELECT value FROM settings WHERE key = ?",
+                           (key,)).fetchone()
+    except Exception:                                         # noqa: BLE001
+        # `Exception`, not `sqlite3.OperationalError`: this module's
+        # `sqlite3` IS `sqlcipher3.dbapi2` and a caller can hand in a
+        # connection built by the STDLIB module. Two classes, same name.
+        return
+    if done is not None and done[0] == "1":
+        return
+    # THE MARKER FIRST, THE CLEARING SECOND, and the order is the whole
+    # safety of it. Both statements ride the transaction `init_db` commits,
+    # and the `except` below swallows rather than re-raises - so writing the
+    # marker last meant an exception between the two left the cleared flags
+    # COMMITTED with no marker, and the pardon then fired again on the next
+    # launch, and the one after that. That is the standing licence this
+    # function's guard exists to refuse, arrived at by the failure path.
+    #
+    # Marker first fails the other way: a clearing that raises costs one
+    # unspent pardon and changes nothing. Losing a pardon is recoverable by a
+    # person; a pardon that repeats forever is not.
+    try:
+        con.execute(
+            "INSERT INTO settings (key, value) VALUES (?, '1') "
+            "ON CONFLICT(key) DO UPDATE SET value = '1'", (key,))
+        cleared = _run_ever_flag_amnesty(con, labels)
+    except Exception as exc:                                   # noqa: BLE001
+        # SAID OUT LOUD, unlike its neighbour. A database with no `chats` is
+        # a shape this step has nothing to say about, but it is also the
+        # only place a real failure could hide, and the older version left
+        # no trace of one at all.
+        logger.info("Notebook: the one-time flag amnesty could not run on "
+                    "this database and was skipped. (%s)",
+                    type(exc).__name__)
+        return
+    if cleared:
+        logger.info(
+            "Notebook: cleared %d chat(s) whose 'already read' flag was "
+            "lit by a migration that had no reading to point at.", cleared)
+
+
+def notebook_ever_flag_audit(con: sqlite3.Connection) -> dict[str, int]:
+    """The acceptance measure, split in two - and the split is the point.
+
+    The roadmap fixed one query for this repair: chats with the flag lit and
+    no `done` row on disk, target zero. That target cannot be reached
+    honestly. Driving it to zero means clearing every such flag, and that set
+    is exactly the one the defect note says cannot be decided from the data -
+    it holds genuinely-read chats whose reading record an edit deleted.
+
+    So the measure is two numbers rather than one loosened number:
+
+      `proven_wrong` - lit, no `done` row, no model note, AND labelled as
+        having come from a migration that had no reading behind it. Nothing
+        vouches for these. MUST BE ZERO after the amnesty has run.
+      `unknown` - lit, LABELLED `legacy_unknown`, and with nothing left on
+        disk to settle it either way. REPORTED, and watched for smallness.
+        Never cleared automatically: this set shrinks on its own, because
+        the next real extraction in any of these chats relabels it
+        `extraction`.
+
+    THE LABEL IS PART OF `unknown`'s DEFINITION, not an implementation
+    detail, and stating it loosely was wrong. A chat labelled `backfill_done`
+    whose `done` row and notes an edit later deleted is, in plain English,
+    now undecidable - and it is counted in NEITHER number. That is
+    deliberate: the label records what was on disk at the moment it was
+    written, and a chat this build once saw evidence for is not re-opened as
+    a doubt every time a reader tidies up. The consequence is worth knowing
+    rather than discovering: `unknown` tracks how many chats arrived
+    undecidable, not how many are undecidable today.
+
+    Nothing is loosened: `proven_wrong` is a strictly harder target than the
+    original query on the rows it covers, and `unknown` stops the number
+    being met by deleting evidence.
+    """
+    counts = {}
+    for name, labels in (("proven_wrong", _AMNESTY_SAFE_LABELS),
+                         ("unknown", (_EVER_REASON_LEGACY_UNKNOWN,))):
+        marks = ",".join("?" * len(labels))
+        # THE SAME EVIDENCE CLAUSES THE AMNESTY USES, and that is what makes
+        # `proven_wrong` a target the amnesty can actually reach. Counting a
+        # wider set than the repair clears would leave a metric that can
+        # never be zero and would eventually be edited into agreeing.
+        counts[name] = con.execute(
+            f"SELECT COUNT(*) FROM chats "
+            f" WHERE notebook_extracted_ever = 1 "
+            f"   AND notebook_extracted_ever_reason IN ({marks}) "
+            f"   AND NOT EXISTS (SELECT 1 FROM notebook_extractions e "
+            f"                    WHERE e.chat_id = chats.id "
+            f"                      AND e.status = 'done') "
+            f"   AND NOT EXISTS (SELECT 1 FROM notebook_entries n "
+            f"                    WHERE n.chat_id = chats.id "
+            f"                      AND n.provenance = 'model')",
+            labels).fetchone()[0]
+    return counts
 
 
 def _migrate_notebook(con: sqlite3.Connection) -> None:
@@ -657,6 +1042,85 @@ CREATE TABLE IF NOT EXISTS notebook_spend_calls (
         con.execute(
             "ALTER TABLE chats ADD COLUMN notebook_auto_accept_override INTEGER"
         )
+    if "notebook_extracted_ever_reason" not in chat_cols:
+        # ITS OWN `if`, NOT NESTED IN THE FLAG'S.
+        #
+        # Put inside `if "notebook_extracted_ever" not in chat_cols` this
+        # would never run anywhere it matters: every install that has the
+        # flag at all - which is every install that could be carrying a
+        # wrong one - took that branch launches ago and will not take it
+        # again. The column would ship to nobody, and the repair with it.
+        # `chat_cols` is read once above precisely so a fourth block can
+        # reuse it.
+        #
+        # The CHECK is on the ALTER on purpose. Measured on a scratch
+        # database: SQLite accepts it there, does NOT test it against the
+        # rows already present (so the column arrives NULL everywhere, which
+        # is the honest starting state), and refuses the first wrong write
+        # afterwards with IntegrityError. A typo in a label becomes a loud
+        # failure instead of a silent fifth category.
+        #
+        # NULLABLE, no DEFAULT: a dark flag has no reason, and a default
+        # would be this build asserting something about every row it has
+        # never looked at.
+        #
+        # AND THE SET IS FROZEN PER INSTALL, which is the price of putting it
+        # here. This ALTER fires on exactly one launch, so the CHECK text
+        # baked into `sqlite_master` that day is the one that install keeps.
+        # A later build that adds a sixth reason will NOT widen it: the
+        # guard sees the column, skips the ALTER, and the first write of the
+        # new label raises IntegrityError - from inside `_label_ever_flag_
+        # reasons`, which runs on every launch inside `init_db`, so the vault
+        # would refuse to open. Adding a value later means rebuilding the
+        # `chats` table, not editing this tuple. `_EVER_REASON_BACKFILL_WIDE`
+        # is in the set today for exactly that reason.
+        values = ",".join(f"'{v}'" for v in _EVER_REASONS)
+        con.execute(
+            f"ALTER TABLE chats ADD COLUMN notebook_extracted_ever_reason "
+            f"TEXT CHECK (notebook_extracted_ever_reason IN ({values}))"
+        )
+    # OUTSIDE the `if`, same reasoning as the backfill below, and it is why
+    # the ALTER above sets no labels of its own: everything that decides a
+    # label lives in one function that is safe to run again.
+    #
+    # It also carries the label the flag's own backfill twenty lines up
+    # cannot write for itself. That UPDATE runs while this column may still
+    # be missing - the two guards are independent - so naming the reason
+    # there would be a statement about a column that does not exist yet.
+    # `_label_ever_flag_reasons`' first statement is that UPDATE's own
+    # predicate, so on every path a shipped build can reach, a chat that
+    # UPDATE lights is labelled `backfill_done` on the same launch, inside
+    # the same transaction. "Every chat, always" would be too strong: a
+    # database with the reason column present and the flag column absent -
+    # only reachable by a hand-written `DROP COLUMN`, which this repo's own
+    # tests do - lights a chat here that the labeller has already passed.
+    # Harmless, because both audit clauses re-check the evidence rather than
+    # trusting the label, so such a chat is neither cleared nor miscounted.
+    _label_ever_flag_reasons(con)
+    # And the pardon, once, for the flags nothing vouches for.
+    _migrate_ever_flag_amnesty(con)
+    # THE MEASURE, WHERE A PERSON CAN SEE IT.
+    #
+    # The acceptance criterion is two numbers rather than one, and
+    # the second of them - the chats nothing can settle either way - is only
+    # useful if its size can be WATCHED shrinking. A number computed by a
+    # function nothing calls is not a measure, it is a comment. So it is
+    # taken on every launch and written to the log when it is not zero.
+    #
+    # `logger.info` rather than a warning: `unknown` is not a fault, it is
+    # the honest residue of a defect that shipped, and it falls on its own as
+    # those chats are read again. Silent at zero, so a healthy vault says
+    # nothing.
+    audit = notebook_ever_flag_audit(con)
+    if audit["proven_wrong"] or audit["unknown"]:
+        logger.info(
+            "Notebook: %d chat(s) marked as already read with nothing on "
+            "disk to vouch for it, and %d more this build cannot decide "
+            "either way. A wrongly lit flag makes that chat read from its "
+            "oldest message, about one billed call per twenty, so the "
+            "second number is the one to watch; it falls on its own as "
+            "those chats are read again.",
+            audit["proven_wrong"], audit["unknown"])
     # OUTSIDE the `if`. A vault that already ran the ALTER but never got a
     # backfill is exactly the state this exists for, and it is the common
     # one - the column has been shipping for a while. Idempotent by its own
@@ -759,6 +1223,11 @@ def init_db() -> None:
     con = sqlite3.connect(DB_PATH)
     try:
         _key_pragma(con, key)
+        # Before executescript, not after, and this is the whole point of the
+        # guard living in its own function. executescript commits implicitly
+        # before every statement, so a refusal raised downstream of it would
+        # already have written _SCHEMA to a file it was refusing to touch.
+        _refuse_a_future_database(con)
         con.executescript(_SCHEMA)
         _migrate(con)
         con.commit()

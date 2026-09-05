@@ -5,6 +5,7 @@ import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { useEffect } from "react";
 import { MessageList } from "@/components/chat/MessageList";
 import { ChatCanvas } from "@/components/chat/ChatCanvas";
+import { deleteConfirmQuestion } from "@/components/chat/MessageBubble";
 import {
   GenerationSettingsProvider,
   useGenerationSettings,
@@ -200,7 +201,7 @@ describe("ChatMessageControls", () => {
     await user.click(within(bubble).getByRole("button", { name: "Delete message" }));
 
     expect(
-      screen.getByText("Delete this message and everything after it?"),
+      screen.getByText(deleteConfirmQuestion(0)),
     ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Cancel" }));
 
@@ -791,7 +792,7 @@ describe("ChatMessageControls", () => {
       expect(screen.queryByText("Ghost row")).not.toBeInTheDocument();
     });
     expect(
-      screen.queryByText("Delete this message and everything after it?"),
+      screen.queryByText(deleteConfirmQuestion(0)),
     ).not.toBeInTheDocument();
     // The toast still explains what happened.
     expect(useErrorStore.getState().errors.length).toBeGreaterThanOrEqual(1);
@@ -823,7 +824,7 @@ describe("ChatMessageControls", () => {
 
     await user.keyboard("{Escape}");
     expect(
-      screen.queryByText("Delete this message and everything after it?"),
+      screen.queryByText(deleteConfirmQuestion(0)),
     ).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
   });
@@ -862,7 +863,7 @@ describe("ChatMessageControls", () => {
     }
 
     expect(
-      screen.queryByText("Delete this message and everything after it?"),
+      screen.queryByText(deleteConfirmQuestion(0)),
     ).not.toBeInTheDocument();
     expect(onWindowEscape).not.toHaveBeenCalled();
   });
@@ -886,14 +887,14 @@ describe("ChatMessageControls", () => {
       within(bubble).getByRole("button", { name: "Delete message" }),
     );
     expect(
-      screen.getByText("Delete this message and everything after it?"),
+      screen.getByText(deleteConfirmQuestion(0)),
     ).toBeInTheDocument();
 
     // Click a different bubble's text - outside the panel.
     await user.click(screen.getByText("Question to keep"));
 
     expect(
-      screen.queryByText("Delete this message and everything after it?"),
+      screen.queryByText(deleteConfirmQuestion(0)),
     ).not.toBeInTheDocument();
     expect(
       mock.mock.calls.some(

@@ -12,10 +12,13 @@ import userEvent from "@testing-library/user-event";
 
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import {
+  CHAT_STATE_PROSE,
   DROP_PROSE,
   EMPTY_PROSE,
   FAILURE_PROSE,
   SKIP_PROSE,
+  STATE_PROSE,
+  SWEEP_PROSE,
   WorkerPanel,
   echoable,
 } from "@/components/notebook/WorkerPanel";
@@ -992,5 +995,207 @@ describe("a reply that was paid for and landed nothing", () => {
                       last_error: "RuntimeError" } });
     const line = await screen.findByTestId("worker-unhandled");
     expect(line.textContent).toMatch(/\(RuntimeError\)/);
+  });
+});
+
+/**
+ * H-17 - the breaker was split, and the reader has to be able to see which
+ * half stopped.
+ *
+ * A chat whose own material breaks every call used to walk the ONE
+ * process-wide breaker to "stopped" and take every other conversation with
+ * it. Now only that chat stops - which is the right behaviour and the worse
+ * screen, because the panel's global sentence goes on saying "Running." over
+ * a conversation nothing will ever read. Every test here mounts the panel
+ * and reads the line a person would read.
+ */
+describe("a chat that stopped on its own", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({ selectedChatId: 7 });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({ selectedChatId: null });
+  });
+
+  it("says so, without saying the whole feature stopped", async () => {
+    mount({ worker: { state: "closed",
+                      chat: { state: "stopped", failures: 20 } } });
+    const box = await screen.findByTestId("worker-status");
+
+    expect(box.textContent).toContain(STATE_PROSE.closed);
+    const line = await screen.findByTestId("worker-chat-state");
+    expect(line.textContent).toContain(CHAT_STATE_PROSE.stopped);
+    expect(line.textContent).toMatch(/other chats keep running/i);
+  });
+
+  it("GROUND: a healthy chat gets no second line at all", async () => {
+    // Without this the assertion above is satisfied by a panel that prints
+    // the chat line unconditionally, which would tell every reader their
+    // conversation was broken.
+    mount({ worker: { state: "closed", chat: null } });
+    await screen.findByTestId("worker-status");
+    expect(screen.queryByTestId("worker-chat-state")).toBeNull();
+    expect(screen.queryByRole("button", { name: /try this chat again/i }))
+      .not.toBeInTheDocument();
+  });
+
+  it("every per-chat state the backend can report reads as words",
+     async () => {
+    expect(Object.keys(CHAT_STATE_PROSE).length).toBeGreaterThanOrEqual(3);
+    for (const state of Object.keys(CHAT_STATE_PROSE)) {
+      mount({ worker: { state: "closed", chat: { state, failures: 5 } } });
+      const line = await screen.findByTestId("worker-chat-state");
+      expect(CHAT_STATE_PROSE[state], state).toBeTruthy();
+      expect(line.textContent, state).toContain(CHAT_STATE_PROSE[state]);
+      // Every one of them has to say the other chats are fine, or a reader
+      // reads it as the feature being down and goes hunting for a fault
+      // that is not there.
+      expect(line.textContent, state).toMatch(/other chats/i);
+      // And none of them may reach the screen as the raw token.
+      expect(line.textContent, state).not.toEqual(state);
+      cleanup();
+    }
+  });
+
+  it("offers a button that unsticks only this chat", async () => {
+    const user = userEvent.setup();
+    mount({ worker: { state: "closed", chat: { state: "open", failures: 5 } } });
+    await user.click(
+      await screen.findByRole("button", { name: /try this chat again/i }));
+
+    await waitFor(() => {
+      const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+        .find((c: unknown[]) =>
+          String(c[0]).includes("/worker/reset")
+          && (c[1] as RequestInit | undefined)?.method === "POST");
+      expect(call).toBeTruthy();
+      expect(String((call?.[1] as RequestInit).body)).toContain("chat_id");
+      expect(String((call?.[1] as RequestInit).body)).toContain("7");
+    });
+  });
+
+  it("counts the per-chat refusals apart from the global ones", async () => {
+    mount({ worker: { refused_by_breaker: 0, refused_by_chat_breaker: 4,
+                      tripped_chats: 2 } });
+    const box = await screen.findByTestId("worker-status");
+    expect(box.textContent).toMatch(/4 turns were passed over/i);
+    expect(box.textContent).toMatch(/2 of them right now/i);
+    expect(box.textContent).toMatch(/every other chat kept running/i);
+    // GROUND for the line above: the global sentence is a different one and
+    // is not printed when its own counter is zero.
+    expect(box.textContent).not.toMatch(/while it was cooling down/i);
+  });
+
+  it("asks the backend about the chat that is on screen", async () => {
+    mount();
+    await screen.findByTestId("worker-status");
+    await waitFor(() => {
+      const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+        .find((c: unknown[]) => String(c[0]).includes("/notebook/worker?"));
+      expect(String(call?.[0])).toContain("chat_id=7");
+    });
+  });
+});
+
+/**
+ * The sweep's refusals were translated by an inline ternary whose last arm
+ * was a catch-all reading "It is already reading." The worker now refuses a
+ * paused chat, and that arm would have told the reader the exact opposite of
+ * what was happening.
+ */
+describe("why the sweep refused", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({ selectedChatId: 7 });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({ selectedChatId: null });
+  });
+
+  it("a paused chat is not told it is already reading", async () => {
+    mount({}, true, {
+      "POST /notebook/sweep/7": {
+        body: { started: false, reason: "chat_paused" },
+      },
+    });
+    await userEvent.click(await screen.findByTestId("worker-sweep"));
+    const said = (await screen.findByTestId("worker-sweep-said")).textContent;
+    expect(said).toContain(SWEEP_PROSE.chat_paused);
+    expect(said).not.toMatch(/already reading/i);
+    expect(said).not.toMatch(/chat_paused/);
+  });
+
+  it("a stopped chat is told what to press", async () => {
+    mount({}, true, {
+      "POST /notebook/sweep/7": {
+        body: { started: false, reason: "chat_stopped" },
+      },
+    });
+    await userEvent.click(await screen.findByTestId("worker-sweep"));
+    const said = (await screen.findByTestId("worker-sweep-said")).textContent;
+    expect(said).toContain(SWEEP_PROSE.chat_stopped);
+    expect(said).not.toMatch(/already reading/i);
+  });
+
+  it("every refusal in the table reaches the screen as words", async () => {
+    expect(Object.keys(SWEEP_PROSE).length).toBeGreaterThanOrEqual(5);
+    for (const reason of Object.keys(SWEEP_PROSE)) {
+      mount({}, true, {
+        "POST /notebook/sweep/7": { body: { started: false, reason } },
+      });
+      await userEvent.click(await screen.findByTestId("worker-sweep"));
+      const said =
+        (await screen.findByTestId("worker-sweep-said")).textContent ?? "";
+      expect(SWEEP_PROSE[reason], reason).toBeTruthy();
+      expect(said, reason).toContain(SWEEP_PROSE[reason]);
+      expect(said, reason).not.toMatch(new RegExp(reason));
+      cleanup();
+    }
+  });
+
+  it("a refusal nobody wrote words for is named, not printed raw",
+     async () => {
+    // The fallback. It is the right answer for a reason from a newer
+    // backend; what it may not be is the catch-all sentence about a chat
+    // that is already reading.
+    mount({}, true, {
+      "POST /notebook/sweep/7": {
+        body: { started: false, reason: "some_future_reason" },
+      },
+    });
+    await userEvent.click(await screen.findByTestId("worker-sweep"));
+    const said = (await screen.findByTestId("worker-sweep-said")).textContent;
+    expect(said).toMatch(/did not start/i);
+    expect(said).not.toMatch(/already reading/i);
+  });
+});
+
+/**
+ * The button appeared for "open" and "stopped" and not for "half_open" - the
+ * one state whose sentence tells the reader a BILLED trial call is about to
+ * go out. The state that asks for a decision was the state with no way to
+ * make one.
+ */
+describe("the reset button covers every state that is stuck", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("is offered while the cooldown has elapsed and a billed call is next",
+     async () => {
+    mount({ worker: { state: "half_open" } });
+    const box = await screen.findByTestId("worker-status");
+    expect(box.textContent).toMatch(/one trial call/i);
+    expect(await screen.findByRole("button", { name: /try again now/i }))
+      .toBeEnabled();
+  });
+
+  it("GROUND: it is still absent while nothing is stuck", async () => {
+    mount({ worker: { state: "closed" } });
+    await screen.findByTestId("worker-status");
+    expect(screen.queryByRole("button", { name: /try again now/i }))
+      .not.toBeInTheDocument();
   });
 });

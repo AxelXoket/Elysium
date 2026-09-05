@@ -342,6 +342,12 @@ class TestTheProviderSaysWhichHalfItWas:
 
         monkeypatch.setattr(openrouter, "get_client", lambda: _Client())
         monkeypatch.setattr(openrouter, "get_secret", lambda *_: "sk-test")
+        # complete()/complete_stream() also read the SAFEWORD out of the
+        # vault before the socket, and this file drives them with no vault
+        # at all. Says the same thing about the safeword that the line
+        # above says about the key: in this scenario there is not one.
+        monkeypatch.setattr(openrouter.safeword_filter, "needles",
+                            lambda: ())
 
     @pytest.mark.anyio
     @pytest.mark.parametrize("exc_name,reached", [

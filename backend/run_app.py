@@ -400,7 +400,7 @@ def enforce_single_instance() -> None:
             "leave the other one wide open.\n\n"
             "Switch to the Elysium window that is already open."
         )
-    # 0, not 1. Nothing failed here: the user asked for Elysium and Elysium is
+    # 0, not 1. Nothing failed here: you asked for Elysium and Elysium is
     # on screen. A non zero code would make the shell, and any script that
     # launches this, report an error for a launch that did what was wanted.
     raise SystemExit(0)

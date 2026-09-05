@@ -23,9 +23,19 @@ import {
 const setAutoLock = vi.fn();
 const settingsData = { current: { auto_lock_minutes: 0 } as { auto_lock_minutes: number } | undefined };
 const mutationState = { isPending: false, isError: false };
+// The read has states of its own, and the panel now reads them: a response
+// that has not landed is not the same fact as a response that says off. Every
+// test in this file is about a settled read, so the default says so out loud
+// rather than leaving it to an undefined field. The states themselves are
+// measured against the real hook in AutoLockControlSettingsState.test.tsx.
+const settingsQuery = { isPending: false, isError: false };
 
 vi.mock("@/lib/query/settings", () => ({
-  useSettings: () => ({ data: settingsData.current }),
+  useSettings: () => ({
+    data: settingsData.current,
+    isPending: settingsQuery.isPending,
+    isError: settingsQuery.isError,
+  }),
   useSetAutoLock: () => ({
     mutate: setAutoLock,
     isPending: mutationState.isPending,
@@ -43,6 +53,8 @@ describe("AutoLockControl", () => {
     settingsData.current = { auto_lock_minutes: 0 };
     mutationState.isPending = false;
     mutationState.isError = false;
+    settingsQuery.isPending = false;
+    settingsQuery.isError = false;
   });
 
   it("shows which timeout is actually in force", () => {
@@ -133,6 +145,9 @@ describe("AutoLockControl", () => {
   it("survives a settings response that predates this field", () => {
     // An older server does not send auto_lock_minutes at all. The schema
     // defaults it, and the control must read that as off rather than crash.
+    // This is a response that ARRIVED and lacks the field, which is a value
+    // we have; it is not the same case as a read still in flight or a read
+    // that failed, and those two are covered in their own file.
     settingsData.current = {} as { auto_lock_minutes: number };
     renderIt();
     expect(screen.getByRole("radio", { name: "Never" })).toHaveAttribute(
@@ -208,6 +223,34 @@ describe("AutoLockControl - light surface contrast", () => {
       getComputedStyle(oldHint).color,
       "settings-hint's colour drifted - re-measure the defect before trusting this ground",
     ).toBe("rgba(202, 212, 224, 0.72)");
+  });
+
+  it("the line shown while the setting is unknown reads the same muted token", () => {
+    // The off line and this one swap places, so a token that resolved for one
+    // and not the other would make the panel legible only when it happened to
+    // know the answer.
+    settingsQuery.isPending = true;
+    const glassRight = wrapInGlassRight();
+    renderWithQueryClient(<AutoLockControl />, {
+      container: glassRight,
+      baseElement: document.body,
+    });
+
+    const stateLine = screen.getByTestId("auto-lock-state");
+    const mutedText = surfaceToken(glassRight, "--muted-foreground");
+    expect(mutedText, "the surface never resolved a muted token").not.toBe("");
+    expect(surfaceToken(stateLine, "--muted-foreground")).toBe(mutedText);
+    expect(stateLine.className).not.toMatch(/settings-/);
+
+    // Negative control, same as above: an element still wearing the old class
+    // resolves the hardcoded rgba that measured 1.24-1.31:1 here, which is
+    // what the assertions above are distinguishing themselves from.
+    const oldHint = document.createElement("p");
+    oldHint.className = "settings-hint";
+    glassRight.appendChild(oldHint);
+    expect(getComputedStyle(oldHint).color).toBe("rgba(202, 212, 224, 0.72)");
+
+    settingsQuery.isPending = false;
   });
 
   it("the save-failed alert uses the sibling panels' local-error idiom, not settings-error", async () => {

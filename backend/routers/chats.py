@@ -19,13 +19,13 @@ Privacy invariants:
 import logging
 
 import audio_sweep
-from datetime import datetime, timezone
 
 import anyio.to_thread
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlcipher3 import dbapi2 as sqlite3
 
+import default_names
 import notebook_store as notebook
 from database import get_db, iter_chunks
 from attachments_service import (
@@ -145,16 +145,25 @@ def _create_chat_sync(character_id: int, title_in: str | None,
         if char_row is None:
             raise HTTPException(404, "character_not_found")
 
-        char_name = char_row["name"]
         first_mes = char_row["first_mes"].strip() if char_row["first_mes"] else ""
 
         # 2. Normalize + cap title (parity with rename's title_too_long)
+        #
+        # The generated title used to be `<character> - <UTC minute>`, which
+        # gave three chats opened inside one minute the SAME name, character
+        # by character, and left the sidebar with three rows nobody could tell
+        # apart. `default_names` numbers instead, over the titles that exist
+        # right now - which is why the read belongs inside this transaction:
+        # BEGIN IMMEDIATE is already held for the character guard, so the scan
+        # and the INSERT cannot be split by another creation.
         title = title_in.strip() if title_in and title_in.strip() else None
         if title is not None and len(title) > _MAX_TITLE_LEN:
             raise HTTPException(400, "title_too_long")
         if title is None:
-            now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-            title = f"{char_name} - {now_str}"
+            title = default_names.next_default_name(
+                default_names.CHAT,
+                (r["title"] for r in con.execute("SELECT title FROM chats")),
+            )
 
         # 3. Normalize + cap model_id
         model_id = model_id_in.strip() if model_id_in and model_id_in.strip() else None
@@ -259,7 +268,14 @@ class ChatPatch(BaseModel):
 
 
 def _rename_chat_sync(chat_id: int, title: str) -> dict:
-    """Worker-thread body (KÖK 8): see _create_chat_sync for why."""
+    """Worker-thread body (KÖK 8): see _create_chat_sync for why.
+
+    `title` arrives trimmed and may be empty, which is a rename to the default
+    name rather than an error. The scan that picks that name EXCLUDES this
+    chat's own row: the title being replaced is on its way out, so letting it
+    hold a number would push the replacement one further along for no reason a
+    reader could see.
+    """
     with get_db() as con:
         # Guard + UPDATE + re-SELECT in one write txn (v1.1 FB3): the bare
         # SELECT ran in autocommit, so a racing delete made the re-SELECT
@@ -271,6 +287,13 @@ def _rename_chat_sync(chat_id: int, title: str) -> dict:
         ).fetchone()
         if existing is None:
             raise HTTPException(404, "chat_not_found")
+
+        if default_names.is_blank(title):
+            title = default_names.next_default_name(
+                default_names.CHAT,
+                (r["title"] for r in con.execute(
+                    "SELECT title FROM chats WHERE id != ?", (chat_id,))),
+            )
 
         con.execute(
             "UPDATE chats SET title = ?, updated_at = datetime('now') WHERE id = ?",
@@ -288,15 +311,22 @@ def _rename_chat_sync(chat_id: int, title: str) -> dict:
 
 @router.patch("/{chat_id}")
 async def rename_chat(chat_id: int, body: ChatPatch) -> dict:
-    """Rename a chat. Title is trimmed; empty titles are rejected.
+    """Rename a chat. Title is trimmed; an empty one gets the default name.
 
-    Plain HTTPExceptions (not pydantic validators) so the client receives the
-    stable string codes title_required / title_too_long instead of a 422
-    validation array.
+    It used to be refused with `title_required`, and that code is gone from
+    the catalogue because this line was the only place that raised it. A box
+    emptied by hand is a person saying they no longer want the name they had,
+    and the cheapest honest answer to that is a name they can change again in
+    one gesture rather than a dialog telling them they may not.
+
+    `title` is still a REQUIRED key. A PATCH that carries no title at all is
+    not a rename with nothing in it, it is a malformed rename, and pydantic
+    answers that as it always has.
+
+    Plain HTTPException (not a pydantic validator) so the client receives the
+    stable string code title_too_long instead of a 422 validation array.
     """
     title = body.title.strip()
-    if not title:
-        raise HTTPException(400, "title_required")
     if len(title) > _MAX_TITLE_LEN:
         raise HTTPException(400, "title_too_long")
 
@@ -433,6 +463,13 @@ def _delete_chat_sync(chat_id: int) -> None:
 async def delete_chat(chat_id: int) -> dict:
     """Delete a chat and all its messages."""
     await anyio.to_thread.run_sync(_delete_chat_sync, chat_id)
+    # The messages that produced any extraction failure are gone, so a
+    # per-chat refusal that outlived them would be refusing a conversation
+    # that no longer exists. In the ROUTE rather than in `_delete_chat_sync`:
+    # that body runs on a worker thread and the worker's state is not its to
+    # touch. Silent about a chat the worker has never heard of.
+    import notebook_worker
+    notebook_worker.worker.forget_chat(chat_id)
     logger.info("Chat deleted: id=%d", chat_id)
     return {"ok": True}
 
@@ -476,6 +513,10 @@ def _clear_chat_sync(chat_id: int) -> int:
 async def clear_chat(chat_id: int) -> dict:
     """Delete all messages in a chat. The chat itself is preserved."""
     deleted = await anyio.to_thread.run_sync(_clear_chat_sync, chat_id)
+    # Same reason as `delete_chat`: every message is gone, including the
+    # range that could not be read.
+    import notebook_worker
+    notebook_worker.worker.forget_chat(chat_id)
     logger.info("Chat cleared: id=%d deleted_count=%d", chat_id, deleted)
     return {"ok": True, "deleted_count": deleted}
 

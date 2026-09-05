@@ -30,6 +30,8 @@ const ERROR_MESSAGES: Record<string, string> = {
     "Proxy authentication failed. Please check your proxy credentials.",
   proxy_unhealthy:
     "The configured proxy is not responding. Please check your proxy configuration.",
+  proxy_alias_too_long:
+    "That proxy name is too long. Please use at most 50 characters.",
   proxy_url_required:
     "A proxy URL is required. Please enter one in Settings.",
   invalid_proxy_scheme:
@@ -220,9 +222,9 @@ const ERROR_MESSAGES: Record<string, string> = {
   not_editable:
     "Only your own messages can be edited.",
 
-  // Chat rename / create
-  title_required:
-    "Chat title cannot be empty.",
+  // Chat rename / create. There is no `title_required`: an emptied title box
+  // is answered with a default name, so the backend has no way to raise it and
+  // a sentence here would be one nobody can reach.
   title_too_long:
     "Chat title is too long. Please use at most 200 characters.",
   model_id_too_long:
@@ -272,8 +274,8 @@ const ERROR_MESSAGES: Record<string, string> = {
     "This character file is too large. Please use a smaller file.",
   invalid_character_json:
     "This character file is not valid JSON. Please check the file and try again.",
-  character_name_required:
-    "This character needs a name. Please add one and try again.",
+  // No `character_name_required` either: a card with no name is imported and
+  // named, so nothing raises it.
 
   // Catch-all
   // ── Voice / TTS (V0) ───────────────────────────────────────────────────────
@@ -319,6 +321,11 @@ const ERROR_MESSAGES: Record<string, string> = {
     "Voice engine setup did not finish. Nothing was left half-installed - you can try again.",
   tts_python_not_found:
     "Elysium could not find a way to build the voice engine environment on this computer.",
+  // Deliberately not tts_runtime_install_failed's "you can try again": trying
+  // again changes nothing until the proxy can be read, so the sentence has to
+  // name the door that is shut rather than invite another press of the button.
+  tts_proxy_unavailable:
+    "Elysium is set to send everything through your proxy and could not get one, so the voice engine download was not started. Unlock Elysium, check the proxy in Settings, then press Set up again.",
   tts_insufficient_disk:
     "There is not enough free disk space to install the voice engine.",
   tts_param_invalid:
@@ -540,8 +547,17 @@ const ERROR_MESSAGES: Record<string, string> = {
   // The only limit in this app that is enforced rather than requested. The
   // sentence says so, because a user who reaches for it deserves to know it
   // worked rather than hoping the model listened.
+  // The last sentence is the half that used not to be true, and it is kept
+  // short on purpose: this arrives as a toast, at the worst moment somebody
+  // expects to have, and a sentence that outruns its own dismiss timer is a
+  // sentence nobody finishes. The panel carries the whole story. Left out
+  // altogether, though, this one promises a silence the app does not keep -
+  // a copy of the word in older text rides on turns you asked for now.
+  //
+  // "That message" rather than "what you typed": regenerate re-sends a stored
+  // message as the turn, and this is the sentence it shows.
   safeword_triggered:
-    "Stopped. Your safeword was in that message, so nothing was sent - not the message, not your notes, not your limits. Nothing was saved either.",
+    "Stopped. Your safeword was in that message, so nothing was sent - not the message, not your notes, not your limits. Nothing was saved either. The same word in older text is cut out instead, and that turn still goes.",
   safeword_blank:
     "A space is not a safeword - it would have turned the stop off while the box still looked filled in. Clear the box completely to turn it off, or type a word.",
   safeword_too_short:
