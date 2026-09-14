@@ -104,7 +104,8 @@ section per release and never losing one.
 │  (trust_env=False) · 423 vault gate while locked         │
 │                                                          │
 │  PROVIDER_POLICY (hardcoded, immutable):                 │
-│    zdr=true · data_collection=deny · allow_fallbacks=false│
+│    zdr=true · data_collection=deny · allow_fallbacks=true│
+│    failover: same model, only endpoints both filters pass│
 └──────────────────────────────┬──────────────────────────┘
                                │ HTTPS · Authorization only
                                │ TWO senders, one host: the chat you
@@ -130,7 +131,9 @@ Elysium enforces strict privacy routing on every OpenRouter request:
 |-------|-------|--------------|
 | `provider.zdr` | `true` | ❌ Never |
 | `provider.data_collection` | `"deny"` | ❌ Never |
-| `provider.allow_fallbacks` | `false` | ❌ Never |
+| `provider.allow_fallbacks` | `true` | ❌ Never |
+
+Every completion request body carries all three side by side, from the chat routes and the notebook's reader alike. OpenRouter documents `zdr` and `data_collection` as filters: it routes only to endpoints with a zero data retention policy, and only to providers that do not collect data. It documents `allow_fallbacks` as permission to use a backup provider when the one it picked is unavailable, taken from the candidates that remain. That means a backup still has to pass both filters, and failover relaxes neither. Model fallback is a separate `models` parameter, and no request Elysium builds carries one, so failover does not swap the model.
 
 Additional guarantees:
 

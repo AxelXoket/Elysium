@@ -720,7 +720,8 @@ async def get_extract_settings() -> dict:
 #: An OpenRouter model id is `author/slug`, optionally `:variant`. The check
 #: is a SHAPE check, not a membership check: membership would need a network
 #: call on every save, and the wire guarantee does not depend on it anyway -
-#: PROVIDER_POLICY pins zdr/deny/no-fallbacks on the request itself, so a
+#: PROVIDER_POLICY pins zdr and data_collection=deny on the request itself, and
+#: failover only moves between endpoints both filters already passed, so a
 #: model whose endpoint policy changed gets no qualifying endpoint rather than
 #: a downgraded one. What this stops is an unbounded string reaching the
 #: settings table and, from there, the payload.

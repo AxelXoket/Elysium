@@ -68,6 +68,32 @@ def _send(client, monkeypatch, **extra) -> list[dict]:
     return bodies
 
 
+#: The policy the README's Privacy Contract prints, written out rather than
+#: imported, because this IS the promise: an edit to config.PROVIDER_POLICY
+#: that changes what leaves has to fail here, and a test that read the value
+#: back out of config would agree with any edit at all.
+DOCUMENTED_POLICY = {
+    "zdr": True,
+    "data_collection": "deny",
+    "allow_fallbacks": True,
+    "require_parameters": True,
+}
+
+#: What a hostile or stale frontend might put in the body. The three locked
+#: fields carry the opposite of the documented value, and the rest are the
+#: routing knobs the app never sends: `only`, `order` and `ignore` would each
+#: narrow or reorder the candidate set by hand.
+HOSTILE_PROVIDER = {
+    "zdr": False, "data_collection": "allow", "allow_fallbacks": False,
+    "only": ["someprovider"], "order": ["someprovider"],
+    "ignore": ["anotherprovider"], "sort": "throughput",
+}
+
+#: A model list at the top of the body. OpenRouter reads one as "try these
+#: other models", which is the cross-model failover the app never asks for.
+HOSTILE_MODELS = ["other/model", "third/model"]
+
+
 class TestTheLockedProviderPolicy:
     """"Never overridable" - stated three times in the README, tested nowhere.
 
@@ -88,35 +114,333 @@ class TestTheLockedProviderPolicy:
                        provider={"data_collection": "allow"})
         assert bodies[0]["provider"]["data_collection"] == "deny"
 
-    def test_a_client_cannot_re_enable_fallbacks(
+    def test_a_client_cannot_turn_provider_failover_off(
         self, client, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # The one with teeth. A fallback sends the conversation to a provider
-        # the locked policy was never applied to.
+        # Failover moves a request between providers of the SAME model, and
+        # only among the ones zdr and data_collection already let through. The
+        # one thing it adds: when the first provider fails after receiving the
+        # prompt, a second zero-retention provider may receive it too. Turning
+        # it off made one busy provider fail the send. Not the window's field
+        # either way.
         bodies = _send(client, monkeypatch,
-                       provider={"allow_fallbacks": True})
-        assert bodies[0]["provider"]["allow_fallbacks"] is False
+                       provider={"allow_fallbacks": False})
+        assert bodies[0]["provider"]["allow_fallbacks"] is True
 
     def test_all_three_survive_being_overridden_at_once(
         self, client, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        bodies = _send(client, monkeypatch, provider={
-            "zdr": False, "data_collection": "allow", "allow_fallbacks": True,
-        })
-        assert bodies[0]["provider"] == {
-            **bodies[0]["provider"],
-            "zdr": True, "data_collection": "deny", "allow_fallbacks": False,
-        }
+        bodies = _send(client, monkeypatch, provider=HOSTILE_PROVIDER)
+        assert bodies[0]["provider"] == DOCUMENTED_POLICY
 
     def test_the_one_field_that_may_be_set_still_is(
         self, client, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Without this the whole class would pass on a router that ignored the
         # provider block entirely, which is a different bug wearing the same
-        # green tick.
+        # green tick. False, because True is the default and a router that
+        # ignored the field would send True as well.
         bodies = _send(client, monkeypatch,
-                       provider={"require_parameters": True})
-        assert bodies[0]["provider"]["require_parameters"] is True
+                       provider={"require_parameters": False})
+        assert bodies[0]["provider"]["require_parameters"] is False
+        assert bodies[0]["provider"]["zdr"] is True
+        assert bodies[0]["provider"]["data_collection"] == "deny"
+
+    def test_the_documented_policy_is_the_one_in_config(self) -> None:
+        # The routes copy config.PROVIDER_POLICY. If the two disagree, every
+        # test above is measuring a value nobody ships.
+        import config
+        assert config.PROVIDER_POLICY == DOCUMENTED_POLICY
+
+
+class _Captured(list):
+    """The parsed bodies that left, and beside them the raw bytes httpx
+    serialised, so an absence can be checked on what was really sent and
+    not only on what json.loads kept."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.raw: list[bytes] = []
+
+
+@pytest.fixture
+def wire(monkeypatch: pytest.MonkeyPatch):
+    """Every body that reaches httpx, plain or streamed, answered in the shape
+    each caller can finish reading.
+
+    A MockTransport under the real AsyncClient, so both client.post and
+    client.stream run their own code and what is recorded is the JSON httpx
+    serialised. The reply content is an empty extraction because the note
+    reader decodes it as JSON; a chat stores it as ordinary text.
+    """
+    import asyncio
+
+    import httpx
+
+    bodies = _Captured()
+    reply = {"id": "gen-1",
+             "choices": [{"finish_reason": "stop",
+                          "message": {"content": json.dumps({"facts": []})}}],
+             "usage": {}}
+    reply_sse = (b'data: {"choices":[{"delta":{"content":"ok"},'
+                 b'"finish_reason":"stop"}]}\n\n'
+                 b'data: [DONE]\n\n')
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        bodies.append(body)
+        bodies.raw.append(request.content)
+        if body.get("stream"):
+            return httpx.Response(200, content=reply_sse,
+                                  headers={"content-type": "text/event-stream"})
+        return httpx.Response(200, json=reply)
+
+    transport_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(openrouter, "get_client", lambda: transport_client)
+    monkeypatch.setattr(openrouter, "get_secret", lambda name: "sk-test")
+    yield bodies
+    asyncio.run(transport_client.aclose())
+
+
+def _exchange(client) -> tuple[int, int, int]:
+    """A chat holding one finished exchange: (chat_id, user_id, assistant_id)."""
+    from database import get_db
+
+    chat_id = make_chat(client, make_character(client))
+    with get_db() as con:
+        user_id = con.execute(
+            "INSERT INTO messages (chat_id, role, content) VALUES (?, 'user', ?)",
+            (chat_id, "the question"),
+        ).lastrowid
+        asst_id = con.execute(
+            "INSERT INTO messages (chat_id, role, content) "
+            "VALUES (?, 'assistant', ?)",
+            (chat_id, "the answer"),
+        ).lastrowid
+    return chat_id, user_id, asst_id
+
+
+#: (label, streams?, url builder, body). One entry per route that sends a
+#: conversation to OpenRouter on the user's behalf.
+CHAT_ROUTES = [
+    ("complete", False,
+     lambda c, u, a: f"/api/v1/chats/{c}/complete", {"message": "hello"}),
+    ("complete/stream", True,
+     lambda c, u, a: f"/api/v1/chats/{c}/complete/stream", {"message": "hello"}),
+    ("regenerate", False,
+     lambda c, u, a: f"/api/v1/chats/{c}/messages/{a}/regenerate", {}),
+    ("regenerate/stream", True,
+     lambda c, u, a: f"/api/v1/chats/{c}/messages/{a}/regenerate/stream", {}),
+    ("edit", False,
+     lambda c, u, a: f"/api/v1/chats/{c}/messages/{u}/edit",
+     {"message": "rewritten"}),
+    ("edit/stream", True,
+     lambda c, u, a: f"/api/v1/chats/{c}/messages/{u}/edit/stream",
+     {"message": "rewritten"}),
+]
+
+
+class TestEverySenderCarriesTheSamePolicy:
+    """Six chat routes and one background reader build a request each. One
+    shared helper is how they agree today. This checks each of them on the
+    wire. The inventory test below checks that the six are every mounted
+    route whose body takes a provider block, so a seventh route of that shape
+    lands in a red test. A sender that builds a request without taking a
+    provider block at all is outside what the inventory can see.
+    """
+
+    #: Distinct on purpose. A route that sent a fixed model whatever the body
+    #: said would still pass with the id every other test uses.
+    SELECTED_MODEL = "vendor/chosen-model-7"
+
+    @pytest.mark.parametrize(
+        "label, streams, url, extra", CHAT_ROUTES,
+        ids=[r[0] for r in CHAT_ROUTES])
+    def test_every_chat_route_sends_the_policy_and_the_chosen_model_alone(
+        self, client, wire, label, streams, url, extra,
+    ) -> None:
+        bodies = wire
+        chat_id, user_id, asst_id = _exchange(client)
+        # Everywhere a hostile field could hide: the provider block, the top
+        # of the body, and inside generation_params, which is spread into the
+        # payload after `provider` and so is the one place a key could
+        # overwrite it.
+        body = {"model_id": self.SELECTED_MODEL, "provider": HOSTILE_PROVIDER,
+                "models": HOSTILE_MODELS,
+                "generation_params": {"temperature": 0.5,
+                                      "models": HOSTILE_MODELS,
+                                      "provider": HOSTILE_PROVIDER,
+                                      **HOSTILE_PROVIDER},
+                **extra}
+
+        response = client.post(url(chat_id, user_id, asst_id), json=body)
+
+        assert response.status_code == 200, response.text
+        if streams:
+            assert '"type": "error"' not in response.text, response.text
+        # GROUND: exactly one request left, and it went the way the route
+        # says it goes. A route that stopped calling the provider would pass
+        # every assertion below on an empty list.
+        assert len(bodies) == 1, f"{label}: {len(bodies)} requests left"
+        sent = bodies[0]
+        assert bool(sent.get("stream")) is streams
+        assert sent["provider"] == DOCUMENTED_POLICY
+        # Same-model failover only. OpenRouter moves to another MODEL only
+        # when the body carries a `models` list, so its absence is the whole
+        # guarantee, and the model that is there is the one that was chosen.
+        assert sent["model"] == self.SELECTED_MODEL
+        assert "models" not in sent
+        assert b'"models"' not in bodies.raw[0]
+        # The whole top level, not a few keys of it. A hostile routing knob
+        # that slipped out of generation_params would land here as a key of
+        # its own (`only`, `order`, a second `zdr`) while the provider block
+        # above still looked right. Measured on every route: these five.
+        assert set(sent) == {"model", "messages", "provider", "stream",
+                             "temperature"}
+        for knob in ("only", "order", "ignore", "sort", "models"):
+            assert f'"{knob}"'.encode() not in bodies.raw[0], knob
+        # POSITIVE CONTROL for the nested half: generation_params was read,
+        # so the hostile keys beside the temperature were dropped, not missed.
+        assert sent["temperature"] == 0.5
+
+    def test_the_route_list_is_every_route_that_takes_a_provider_block(
+        self,
+    ) -> None:
+        """CHAT_ROUTES is written by hand. Asked of the running app instead:
+        every mounted route whose request body has a ProviderPolicy field is
+        one of the six above, and all six are mounted."""
+        from typing import get_args
+
+        from fastapi.routing import APIRoute
+
+        import main
+        from routers.completions import ProviderPolicy
+
+        def carries(annotation, seen=()) -> bool:
+            # Through Optional and unions, and into nested request models, so
+            # a provider block one model down is still found.
+            if annotation is ProviderPolicy:
+                return True
+            if annotation in seen:
+                return False
+            nested = getattr(annotation, "model_fields", None)
+            if isinstance(nested, dict) and any(
+                    carries(f.annotation, seen + (annotation,))
+                    for f in nested.values()):
+                return True
+            return any(carries(a, seen) for a in get_args(annotation))
+
+        taking_a_body, carrying = set(), set()
+        for route in main.app.routes:
+            if not isinstance(route, APIRoute) or route.body_field is None:
+                continue
+            taking_a_body.add(route.path)
+            model = getattr(route.body_field.field_info, "annotation", None)
+            fields = getattr(model, "model_fields", {})
+            if carries(model):
+                carrying.add(route.path)
+
+        # The instrument, then the ground: it has to see the optional shape
+        # and refuse an unrelated one, and the sweep has to have found routes
+        # with bodies that carry no provider block at all.
+        assert carries(ProviderPolicy) and carries(ProviderPolicy | None)
+        assert not carries(str)
+
+        from pydantic import BaseModel
+
+        class _Wrapper(BaseModel):
+            inner: ProviderPolicy | None = None
+
+        class _Unrelated(BaseModel):
+            name: str = ""
+
+        assert carries(_Wrapper) and not carries(_Unrelated)
+        assert taking_a_body - carrying, "the sweep found no other body routes"
+        expected = {
+            url("{chat_id}", "{message_id}", "{message_id}")
+            .replace("/api/v1/chats", "")
+            for _, _, url, _ in CHAT_ROUTES
+        }
+        assert {p.split("/chats", 1)[-1] for p in carrying} == expected
+
+    @pytest.mark.anyio
+    async def test_the_capture_sees_a_models_list_when_one_is_sent(
+        self, anyio_backend, wire,
+    ) -> None:
+        """POSITIVE CONTROL for every absence in this class: the capture keeps
+        a top-level `models` list and every top-level routing knob when a body
+        really carries them, in the parsed body and in the raw bytes, so their
+        absence above is measured."""
+        knobs = {k: v for k, v in HOSTILE_PROVIDER.items()
+                 if k in ("only", "order", "ignore", "sort")}
+        await openrouter.get_client().post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            json={"model": self.SELECTED_MODEL, "models": HOSTILE_MODELS,
+                  **knobs})
+
+        assert wire[0]["models"] == HOSTILE_MODELS
+        assert b'"models"' in wire.raw[0]
+        for knob in knobs:
+            assert wire[0][knob] == HOSTILE_PROVIDER[knob]
+            assert f'"{knob}"'.encode() in wire.raw[0]
+
+    @pytest.mark.parametrize(
+        "label, streams, url, extra", CHAT_ROUTES,
+        ids=[r[0] for r in CHAT_ROUTES])
+    def test_every_chat_route_reads_the_one_field_it_may_set(
+        self, client, wire, label, streams, url, extra,
+    ) -> None:
+        """POSITIVE CONTROL for the test above, route by route. Equality with
+        the documented policy is also what a route that never read the
+        request's provider block would send, so this proves each route reads
+        it and keeps only the field it is allowed to keep."""
+        bodies = wire
+        chat_id, user_id, asst_id = _exchange(client)
+        body = {"model_id": self.SELECTED_MODEL,
+                "provider": {**HOSTILE_PROVIDER, "require_parameters": False},
+                **extra}
+
+        response = client.post(url(chat_id, user_id, asst_id), json=body)
+
+        assert response.status_code == 200, response.text
+        assert len(bodies) == 1, f"{label}: {len(bodies)} requests left"
+        assert bodies[0]["provider"] == {**DOCUMENTED_POLICY,
+                                         "require_parameters": False}
+
+    @pytest.mark.anyio
+    async def test_the_note_reader_sends_the_policy_and_its_model_alone(
+        self, anyio_backend, client, wire,
+    ) -> None:
+        """The reader sends stored conversation on a timer, with nobody
+        watching, so it is the sender this guarantee matters most for."""
+        import config
+        import notebook_worker
+        from database import get_db, set_setting
+
+        bodies = wire
+        chat_id = make_chat(client, make_character(client))
+        with get_db() as con:
+            for i in range(config.NOTEBOOK_EXTRACT_EVERY_TURNS + 2):
+                con.execute(
+                    "INSERT INTO messages (chat_id, role, content, active) "
+                    "VALUES (?,?,?,1)",
+                    (chat_id, "user" if i % 2 == 0 else "assistant",
+                     f"line {i}: her brother owns the mill"))
+        reader_model = "vendor/cheap"
+        set_setting(config.SETTING_NOTEBOOK_MODEL, reader_model)
+
+        await notebook_worker.Worker()._handle(chat_id)
+
+        assert len(bodies) == 1, f"the reader sent {len(bodies)} requests"
+        sent = bodies[0]
+        # GROUND: this is the reader's own body and not a chat that happened
+        # to run, because only the reader asks for a response schema.
+        assert "response_format" in sent
+        assert "her brother owns the mill" in json.dumps(sent)
+        assert sent["provider"] == DOCUMENTED_POLICY
+        assert sent["model"] == reader_model
+        assert "models" not in sent
+        assert b'"models"' not in bodies.raw[0]
 
 
 class TestWhatIsNeverSent:

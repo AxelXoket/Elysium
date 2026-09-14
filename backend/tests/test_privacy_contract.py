@@ -56,7 +56,11 @@ CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
     )),
     ("`provider.allow_fallbacks`", (
         "tests/test_privacy_promises.py::TestTheLockedProviderPolicy"
-        "::test_a_client_cannot_re_enable_fallbacks",
+        "::test_a_client_cannot_turn_provider_failover_off",
+        "tests/test_privacy_promises.py::TestEverySenderCarriesTheSamePolicy"
+        "::test_every_chat_route_sends_the_policy_and_the_chosen_model_alone",
+        "tests/test_privacy_promises.py::TestEverySenderCarriesTheSamePolicy"
+        "::test_the_note_reader_sends_the_policy_and_its_model_alone",
     )),
     ("`context_budget_tokens` is **never** forwarded", (
         "tests/test_privacy_promises.py::TestWhatIsNeverSent"
@@ -218,6 +222,23 @@ CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
 #: honest cost of not trying to parse English, and it is why the guarantees
 #: that matter live in the bulleted list.
 PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    # The paragraph under the provider table. Its sentences about this app
+    # are proven here; its sentences about what OpenRouter does with the
+    # fields are in ACKNOWLEDGED_UNTESTABLE below, because only OpenRouter's
+    # servers can show them and no test here can go red if they stop being
+    # true.
+    ("carries all three side by side, from the chat routes and the notebook's reader alike", (
+        "tests/test_privacy_promises.py::TestEverySenderCarriesTheSamePolicy"
+        "::test_every_chat_route_sends_the_policy_and_the_chosen_model_alone",
+        "tests/test_privacy_promises.py::TestEverySenderCarriesTheSamePolicy"
+        "::test_the_note_reader_sends_the_policy_and_its_model_alone",
+    )),
+    ("no request Elysium builds carries one", (
+        "tests/test_privacy_promises.py::TestEverySenderCarriesTheSamePolicy"
+        "::test_every_chat_route_sends_the_policy_and_the_chosen_model_alone",
+        "tests/test_privacy_promises.py::TestEverySenderCarriesTheSamePolicy"
+        "::test_the_note_reader_sends_the_policy_and_its_model_alone",
+    )),
     ("it does not open as SQLite at all", (
         "tests/test_privacy_at_rest.py::TestTheDatabaseFileIsCiphertext"
         "::test_stdlib_sqlite_cannot_read_it",
@@ -302,7 +323,7 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
 #: test would notice. This closes that by refusing ANY change to the section
 #: until somebody comes here, decides what the change claims, and registers a
 #: proof for it. Updating this constant is the deliberate act.
-SECTION_DIGEST = "8de4bab0cfca523d15980d37be26a5fd7e36f9e055c8f58c2bb719b9be0fa309"
+SECTION_DIGEST = "7163501156f63df25f37d7c77925d2b5d59068a64987bec7573e48ff46155e22"
 
 
 def _section() -> str:
@@ -379,6 +400,54 @@ def _all_claims() -> tuple[tuple[str, tuple[str, ...]], ...]:
     return CLAIMS + PROSE_CLAIMS
 
 
+#: (marker, reason). Phrases in the section that describe another party's
+#: system, which nothing runnable here can observe. Kept apart from
+#: PROSE_CLAIMS on purpose: a proof registered under one of these could only
+#: ever check this app's half, and would read as coverage of the other half.
+#: A sentence may carry one of these and a proven marker side by side when its
+#: two halves are about different parties.
+ACKNOWLEDGED_UNTESTABLE: tuple[tuple[str, str], ...] = (
+    ("OpenRouter documents `zdr` and `data_collection` as filters",
+     "What each filter removes is OpenRouter's routing, run on its servers "
+     "and described in its provider routing documentation. The app's half, "
+     "that both fields ride on every completion body at these values, is "
+     "the proven sentence before this one."),
+    ("It documents `allow_fallbacks` as permission to use a backup provider",
+     "Which backup OpenRouter picks, and that it comes from the candidates "
+     "the filters left, is its load balancer's behaviour; seeing it would "
+     "take a billed request to a real provider that is down. The app's half, "
+     "that the flag rides beside both filters, is the proven sentence before "
+     "the previous one."),
+    ("Model fallback is a separate `models` parameter",
+     "What OpenRouter does with a top-level `models` list is its own API, and "
+     "that failover without one stays on the named model is how its router "
+     "behaves. The app's half of the same sentence, that no body carries a "
+     "`models` list, is registered as a proven claim under its own marker."),
+)
+
+
+def _acknowledged_problems(section: str, entries, proven) -> list[str]:
+    """Every way the acknowledged list has stopped being honest: a marker no
+    longer in the section, a reason too thin to say why, or a marker that
+    overlaps a proven marker, one containing the other.
+
+    It does not split the section into sentences. One README sentence holds
+    an acknowledged marker and a proven one on purpose ("Model fallback is a
+    separate `models` parameter, and no request Elysium builds carries one"):
+    the first half is OpenRouter's API and the second is this app's body, and
+    each half is registered on its own."""
+    haystack = re.sub(r"\s+", " ", section)
+    problems = []
+    for marker, reason in entries:
+        if re.sub(r"\s+", " ", marker) not in haystack:
+            problems.append(f"not in the README: {marker!r}")
+        if len(reason.split()) < 20:
+            problems.append(f"reason too thin: {marker!r}")
+        if any(marker in p or p in marker for p in proven):
+            problems.append(f"both proven and acknowledged: {marker!r}")
+    return problems
+
+
 class TestEveryPromiseHasAProof:
     def test_no_promise_is_unregistered(self) -> None:
         # The case this file exists for: somebody adds a line to the Privacy
@@ -436,6 +505,33 @@ class TestNothingInTheSectionChangesUnnoticed:
             "Register a proof for it in CLAIMS or PROSE_CLAIMS, then update "
             f"SECTION_DIGEST to: {current}"
         )
+
+
+class TestAcknowledgedUntestableStaysHonest:
+    def test_every_entry_is_still_honest(self) -> None:
+        assert ACKNOWLEDGED_UNTESTABLE, "nothing acknowledged, nothing checked"
+        assert _acknowledged_problems(
+            _section(), ACKNOWLEDGED_UNTESTABLE,
+            [marker for marker, _ in _all_claims()]) == []
+
+    def test_each_kind_of_dishonesty_is_reported(self) -> None:
+        # GROUND for the test above: the same function, fed one entry per
+        # failure, names every one. An empty answer above therefore means
+        # nothing was wrong, not that nothing was looked at.
+        section = "## Privacy Contract\nOpenRouter does a documented thing here."
+        long_reason = " ".join(["word"] * 25)
+        problems = _acknowledged_problems(
+            section,
+            (("a sentence nobody wrote", long_reason),
+             ("OpenRouter does a documented thing", "too short"),
+             ("documented thing here", long_reason)),
+            ["documented thing"])
+        assert problems == [
+            "not in the README: 'a sentence nobody wrote'",
+            "reason too thin: 'OpenRouter does a documented thing'",
+            "both proven and acknowledged: 'OpenRouter does a documented thing'",
+            "both proven and acknowledged: 'documented thing here'",
+        ]
 
 
 class TestTheRegistryCanActuallyFail:

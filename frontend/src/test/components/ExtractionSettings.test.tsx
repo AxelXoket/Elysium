@@ -47,8 +47,8 @@ describe("ExtractionSettings", () => {
   });
 
   it("warns which models are pinned to one provider", async () => {
-    // With provider fallback disabled a single-endpoint model stops working
-    // when that one machine does - and the user is the one who has to know.
+    // A single-endpoint model most likely has no backup to fail over to, so
+    // it stops working when that one machine does - and the user has to know.
     mockFetch({
       "/notebook/extract/models": { body: MODELS },
       "/notebook/extract/settings": { body: { model_id: null,

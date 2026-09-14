@@ -1301,9 +1301,12 @@ async def fetch_extraction_models(refresh: bool = False) -> list[dict]:
             "provider": endpoint.get("provider_name"),
             "prompt_price": price,   # USD per million prompt tokens
             "context_length": endpoint.get("context_length"),
-            # How many independent providers can serve it. With
-            # allow_fallbacks disabled a single-endpoint model is pinned to one
-            # machine, and when that machine is down extraction simply stops.
+            # How many rows on the zero-retention endpoint list advertise
+            # structured outputs for it; two endpoints of one provider count
+            # as two. The reader's policy keeps zdr and require_parameters and
+            # its strict schema needs structured output support, so a backup
+            # is expected to be another row here. At 1 there is none: when
+            # that machine is down, extraction most likely stops.
             "endpoints": 1,
         }
         seen = best.get(model_id)

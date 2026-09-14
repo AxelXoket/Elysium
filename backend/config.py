@@ -123,13 +123,22 @@ def warn_if_base_url_overridden() -> None:
         "this host.", OPENROUTER_BASE_URL,
     )
 
-# Injected under the "provider" key in every chat completion request body.
-# zdr, data_collection, and allow_fallbacks are locked and cannot be
-# overridden by the frontend. Only require_parameters may be overridden.
+# Injected under the "provider" key in every completion request body, the
+# chat routes and the notebook's reader alike. zdr, data_collection and
+# allow_fallbacks are locked and the frontend cannot set them; only
+# require_parameters may be overridden, and only by a chat route.
+#
+# zdr and data_collection are FILTERS: OpenRouter routes only to endpoints with
+# a zero data retention policy, and only to providers that do not collect
+# data. allow_fallbacks is not a filter and loosens neither of them. When the
+# provider OpenRouter picked is unavailable, it lets OpenRouter use a backup
+# from that already filtered set instead of failing the send. Model fallback
+# is a separate `models` parameter, and no request this app builds carries
+# one, so failover does not swap the model.
 PROVIDER_POLICY: dict = {
     "zdr": True,
     "data_collection": "deny",
-    "allow_fallbacks": False,
+    "allow_fallbacks": True,
     "require_parameters": True,
 }
 

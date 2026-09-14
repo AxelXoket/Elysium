@@ -46,6 +46,20 @@ no exe you can download yet.
 
 ### Changed
 
+- **Provider failover is on, inside the privacy filters.** Every completion
+  request asked OpenRouter for `allow_fallbacks: false`, so when the one
+  provider it picked was unavailable, the send failed with it, even for a
+  model that other zero-retention providers serve; a server error from that
+  provider reached the window as "The provider returned an error". The policy
+  now says `true`, on the chat routes and the notebook's reader alike, and
+  OpenRouter may use a backup instead. It relaxes neither privacy filter:
+  `zdr: true` and `data_collection: deny` still decide which providers are
+  candidates, and a backup comes only from them. Model fallback is a separate
+  `models` parameter that no request carries, so failover does not swap the
+  model. One thing is new: when the first provider fails after receiving the
+  prompt, a second zero-retention provider may receive it too, and that
+  provider may price the call differently. The window
+  still cannot set any of the three.
 - **The quote under a note is cut at 240 characters.** It was stored at
   whatever length arrived. The schema asked the model for 240 and a model that
   ignored the request was obeyed, so a note could carry an unbounded stretch of

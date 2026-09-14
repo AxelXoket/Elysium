@@ -346,6 +346,14 @@ CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
 #: asymmetry as the README's PROSE_CLAIMS: a reworded or deleted sentence
 #: fails, a brand new one does not, and that is why DOCUMENT_DIGEST exists.
 PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    # The half of the failover paragraph that is about this app rather than
+    # about OpenRouter: the body never names a second model.
+    ("no request carries a\n`models` list", (
+        "tests/test_privacy_promises.py::TestEverySenderCarriesTheSamePolicy"
+        "::test_every_chat_route_sends_the_policy_and_the_chosen_model_alone",
+        "tests/test_privacy_promises.py::TestEverySenderCarriesTheSamePolicy"
+        "::test_the_note_reader_sends_the_policy_and_its_model_alone",
+    )),
     # Added 2026-08-20. The page used to say the lock "cancels whatever it was
     # doing and empties its queue", which is true of the planning loop and
     # false of a call that has already been paid for: quiesce() WAITS for that
@@ -570,7 +578,11 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "tests/test_privacy_promises.py::TestTheLockedProviderPolicy"
         "::test_a_client_cannot_opt_into_data_collection",
         "tests/test_privacy_promises.py::TestTheLockedProviderPolicy"
-        "::test_a_client_cannot_re_enable_fallbacks",
+        "::test_a_client_cannot_turn_provider_failover_off",
+        "tests/test_privacy_promises.py::TestEverySenderCarriesTheSamePolicy"
+        "::test_every_chat_route_sends_the_policy_and_the_chosen_model_alone",
+        "tests/test_privacy_promises.py::TestEverySenderCarriesTheSamePolicy"
+        "::test_the_note_reader_sends_the_policy_and_its_model_alone",
     )),
     ("HF_HUB_OFFLINE=1", (
         "tests/test_privacy_promises.py::TestTheVoiceEngineGetsNoCredentialsAndNoWayHome"
@@ -973,6 +985,34 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
 ACKNOWLEDGED_UNTESTABLE: tuple[
     tuple[str, ReasonCategory, str, str | None, str | None], ...
 ] = (
+    ("The first two are filters: OpenRouter routes only to endpoints with a zero",
+     ReasonCategory.THIRD_PARTY,
+     "What zdr and data_collection do once a request arrives is OpenRouter's "
+     "routing, described in its provider routing documentation and run on "
+     "its servers. The half that is ours, that every body carries both "
+     "fields at those values and the window cannot change them, is proven by "
+     "the policy tests registered under the sentence before this one.",
+     None, None),
+    ("third relaxes neither", ReasonCategory.THIRD_PARTY,
+     "That a failover candidate still has to pass zdr and data_collection is "
+     "how OpenRouter's load balancer builds its list: the backups are the "
+     "remaining candidates after the filters. Ours is that the filters ride "
+     "on the same body as the failover flag, proven under the first sentence "
+     "of this paragraph.",
+     None, None),
+    ("Model fallback is a separate `models` parameter", ReasonCategory.THIRD_PARTY,
+     "What OpenRouter does with a `models` list is its own API. That no body "
+     "carries one is ours and is proven under the next marker, on every "
+     "chat route and on the note reader.",
+     None, None),
+    ("it may use a backup from that filtered list, for the same model",
+     ReasonCategory.THIRD_PARTY,
+     "Which backup OpenRouter picks, and that it picks from the filtered "
+     "candidates, is its load balancer's behaviour and cannot be observed "
+     "without a billed request to a real provider going down. What the app "
+     "controls is the body: one model and no `models` list, proven by the "
+     "entry for the next sentence.",
+     None, None),
     ("Deleted is not shredded on an SSD", ReasonCategory.HARDWARE,
      "what a controller does with a block after TRIM is firmware behaviour "
      "on hardware this suite does not run on; BitLocker is the actual "
@@ -1560,7 +1600,7 @@ def _acknowledged_problems(
 #: sample - so this covers all of it. Updating this constant is the
 #: deliberate act that means a human decided what a change claims and
 #: registered a proof for it.
-DOCUMENT_DIGEST = "d878ae6619503817e436b44978c7c74901f5aa595a959bc57afe8fd5f410f540"
+DOCUMENT_DIGEST = "016dee86c93350a6ec3d17783440785a7c936c606727df2f90dc2011f642c80b"
 
 
 class TestEveryProvenClaimHasAProof:

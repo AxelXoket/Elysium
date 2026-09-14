@@ -28,7 +28,7 @@
 2. The frontend never sends `zdr`, `data_collection` or `allow_fallbacks` in any request.
 3. The frontend never puts the API key, the proxy URL, messages, persona descriptions or drafts in localStorage, sessionStorage, IndexedDB or cookies.
 4. The frontend never calls openrouter.ai directly, under any circumstances.
-5. The backend hardcodes `zdr=true`, `data_collection="deny"`, `allow_fallbacks=false` on every OpenRouter request.
+5. The backend hardcodes `zdr=true`, `data_collection="deny"`, `allow_fallbacks=true` on every OpenRouter completion request, and `require_parameters=true` unless a chat request body sets it. `zdr` limits OpenRouter to endpoints with a zero data retention policy and `data_collection` to providers that do not collect data. `allow_fallbacks` lets OpenRouter use a backup provider from that filtered list, for the same model, when the one it picked is unavailable; it relaxes neither filter. Model fallback is a separate `models` parameter and no request carries one, so failover does not swap the model.
 6. `context_budget_tokens` is **never** forwarded to OpenRouter. It is an app-level history-trimming budget only.
 
 ---
@@ -412,7 +412,16 @@ before any upload), `chat_background_unreadable`, `draft_too_large`,
 `tts_notice`, `tts_audio_device_error`, and `validation_unavailable` (a
 `key_status` value, not a failure). `openrouter_no_provider_meets_privacy` is
 mapped to 503 and nothing raises it; a real ZDR rejection surfaces as a generic
-completion error.
+completion error. OpenRouter's error table describes 503 as "There is no
+available model provider that meets your routing requirements", and the typed
+`error.metadata.error_type` it documents for provider errors gives 503 to
+`provider_overloaded` as well, so the status alone does not separate the two.
+Its router metadata guide shows a "No Providers Available" example as a 404
+with the reason in `error.message`. Opt-in router metadata
+(`X-OpenRouter-Metadata: enabled`) reports `openrouter_metadata.attempt: 0` when the request never
+reached a provider, typically because every candidate was filtered out. This
+app requests no metadata and reads neither the message nor any substring of
+it, so the case stays generic.
 
 ---
 
@@ -621,7 +630,7 @@ Note: `context` (bare) is not a generation param and is never accepted.
   request, charged to the context budget like the others. It asks the model
   to mark *how* lines are performed; the marks are stripped before display.
 - Validated and model-filtered generation params
-- Hardcoded provider policy: `{zdr: true, data_collection: "deny", allow_fallbacks: false}`
+- Hardcoded provider policy: `{zdr: true, data_collection: "deny", allow_fallbacks: true, require_parameters: true}`. A chat request body may set `require_parameters`; nothing sets the other three. The notebook reader sends the same policy with no override.
 - `model` string
 - `stream: false` (`true` on the three chat SSE endpoints)
 
@@ -638,6 +647,7 @@ Note: `context` (bare) is not a generation param and is never accepted.
 - UI preferences (tab state, sidebar state, model search text)
 - Unsent drafts
 - Frontend-sent `zdr`, `data_collection`, `allow_fallbacks`
+- A `models` list: OpenRouter is never asked to try a model other than the one selected
 - `tools`, `tool_choice`
 - Three `system` blocks the backend adds that the frontend never sends and
   cannot influence: the **limits** block (standing rules, counted into the
@@ -861,11 +871,15 @@ GET /notebook/extract/models
                    "provider": "Name" | null,
                    "prompt_price": 0.06,          // USD per 1M prompt tokens
                    "context_length": 131072 | null,
-                   "endpoints": 3 } ] }           // how many providers serve it
+                   "endpoints": 3 } ] }           // zero-retention structured-output endpoints
 ```
 
-`endpoints: 1` means the model is pinned to one machine: provider fallback is
-off for this call, so when that machine is down extraction simply stops.
+`endpoints` counts the rows on OpenRouter's zero-retention endpoint list that
+advertise structured outputs for the model; two endpoints of one provider
+count as two. The reader's policy keeps `zdr` and `require_parameters`, and
+its strict schema needs structured output support, so a backup is expected to
+be another row on this list. `endpoints: 1` means no such row exists: when
+that machine is down, extraction most likely stops.
 
 ```
 GET  /notebook/extract/settings

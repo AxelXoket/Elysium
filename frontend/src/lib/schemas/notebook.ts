@@ -99,9 +99,10 @@ export const UseGlobalSchema = z.object({
  *  here needs to be re-checked on screen - a model that cannot do the job has
  *  no business being pickable and then failing at request time.
  *
- *  `endpoints` is how many independent providers can serve it. With provider
- *  fallback disabled a single-endpoint model is pinned to one machine, and
- *  when that machine is down extraction simply stops. */
+ *  `endpoints` counts the rows on the zero-retention endpoint list that
+ *  advertise structured outputs for it. A backup for the reader's request is
+ *  expected to be another such row, so at 1 there is none, and when that
+ *  machine is down extraction most likely stops. */
 export const ExtractionModelSchema = z.object({
   id: z.string(),
   provider: z.string().nullish(),

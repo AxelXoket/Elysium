@@ -435,7 +435,13 @@ never written to the log.
 One provider host, enforced by refusing any other destination before the
 connection opens. System proxy environment variables are ignored on purpose.
 Every completion request forces `zdr: true`, `data_collection: deny`,
-`allow_fallbacks: false`, and the app window **cannot** override those three.
+`allow_fallbacks: true`, and the app window **cannot** override those three.
+The first two are filters: OpenRouter routes only to endpoints with a zero
+data retention policy, and only to providers that do not collect data. The
+third relaxes neither. When the provider OpenRouter picked is unavailable,
+it may use a backup from that filtered list, for the same model.
+Model fallback is a separate `models` parameter, and no request carries a
+`models` list, so failover does not swap the model.
 The other requests below are GETs with no body, so they carry no policy block
 and have nothing to force.
 

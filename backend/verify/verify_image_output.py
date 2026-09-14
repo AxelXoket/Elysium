@@ -8,14 +8,16 @@ your vault. Nothing else in the app calls it and no test imports it.
 
 Everything about generated image output is built and tested against a fake
 provider. What cannot be faked is whether Elysium's privacy routing leaves any
-provider ABLE to answer with a picture. The policy is hardcoded and immutable:
+provider ABLE to answer with a picture. The policy is hardcoded and the
+frontend cannot change it:
 
-    zdr=true, data_collection="deny", allow_fallbacks=false,
+    zdr=true, data_collection="deny", allow_fallbacks=true,
     require_parameters=true
 
 `require_parameters` narrows to providers that honour every parameter sent -
-including `modalities` - and `allow_fallbacks=false` forbids a second attempt.
-The intersection
+including `modalities`. `allow_fallbacks=true` lets a backup provider answer
+when the first is unavailable, but only one from inside the same filtered set,
+so it cannot make an empty set non-empty. The intersection
 
     {returns images} n {zero data retention} n {denies collection}
                      n {honours every parameter}

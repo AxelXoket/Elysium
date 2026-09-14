@@ -148,19 +148,29 @@ class TestWhatThePickerNeedsToShow:
         assert got[0]["prompt_price"] == 0.0
 
     @pytest.mark.anyio
-    async def test_providers_are_counted_so_a_pinned_model_is_visible(
+    async def test_endpoints_are_counted_so_a_pinned_model_is_visible(
             self, monkeypatch):
-        """Fallbacks are disabled for this call, so a single-endpoint model is
-        pinned to one machine: when that machine is down extraction simply
-        stops. The user is the one who has to know that before choosing."""
+        """A backup for the reader's request is expected to be another row on
+        this same list, so a model listed once most likely has none: when
+        that machine is down extraction stops. The user is the one who has
+        to know that before choosing.
+
+        ENDPOINTS, not providers: two rows from one provider count as two,
+        which is what the contract says the number means. A count of distinct
+        providers would read 2 for `vendor/cheap` below and 1 for
+        `vendor/twin`."""
         _serve(monkeypatch, {"data": [
             endpoint(provider_name="P"),
             endpoint(provider_name="Q", pricing={"prompt": "0.00000009"}),
             endpoint(model_id="vendor/lonely", provider_name="R"),
+            endpoint(model_id="vendor/twin", provider_name="S"),
+            endpoint(model_id="vendor/twin", provider_name="S",
+                     pricing={"prompt": "0.00000009"}),
         ]})
         got = {m["id"]: m for m in await openrouter.fetch_extraction_models()}
         assert got["vendor/cheap"]["endpoints"] == 2
         assert got["vendor/lonely"]["endpoints"] == 1
+        assert got["vendor/twin"]["endpoints"] == 2
 
     @pytest.mark.anyio
     async def test_the_cheapest_endpoint_represents_the_model(self, monkeypatch):
@@ -305,8 +315,9 @@ class TestWhatMayBeSavedAsTheModel:
 
     `set_setting(SETTING_NOTEBOOK_MODEL, body.model_id)` took any string of any
     length. The wire guarantee does not depend on this - PROVIDER_POLICY pins
-    zdr/deny/no-fallbacks on the request itself, so a model whose endpoint
-    policy changed gets no qualifying endpoint rather than a downgraded one -
+    zdr and deny on the request itself, and failover stays inside what they
+    let through, so a model whose endpoint policy changed gets no qualifying
+    endpoint rather than a downgraded one -
     but an unbounded string reaching the settings table and, from there, the
     outbound payload is not something to leave to the UI's good manners.
     """

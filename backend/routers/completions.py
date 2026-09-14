@@ -211,7 +211,9 @@ class ProviderPolicy(BaseModel):
 
     require_parameters: bool | None = None
     # zdr, data_collection, allow_fallbacks are locked in PROVIDER_POLICY.
-    # They are NOT accepted from the frontend (extra="ignore" drops them).
+    # They are NOT accepted from the frontend (extra="ignore" drops them), in
+    # either direction: a body that asks for less privacy and a body that asks
+    # for no failover are both ignored.
 
 
 class SpeakOptions(BaseModel):

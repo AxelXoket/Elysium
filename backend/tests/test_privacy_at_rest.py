@@ -269,6 +269,166 @@ class TestUpstreamErrorBodiesAreNotForwarded:
                                      "model_id": "test/model-1"})
         assert self.LEAK not in response.text
 
+    #: A model id no other request in these tests uses, so the log line that
+    #: names it can only have come from this request.
+    PROBE_MODEL = "vendor/leak-probe-9"
+
+    #: A 200 is not a success on this API. OpenRouter commits the status as
+    #: soon as a provider accepts the request, so a provider that fails after
+    #: that answers 200 with the error in the body. Each shape carries the
+    #: leak marker where OpenRouter puts provider text: the envelope's message
+    #: and its raw metadata.
+    PLAIN_200_ERRORS = {
+        "error_and_no_choices": lambda leak: {
+            "error": {"code": 502, "message": leak,
+                      "metadata": {"provider_name": leak, "raw": leak}}},
+        "error_inside_the_choice": lambda leak: {
+            "choices": [{"message": {"role": "assistant",
+                                     "content": "partial answer"},
+                         "finish_reason": "error",
+                         "error": {"code": 502, "message": leak,
+                                   "metadata": {"raw": leak}}}]},
+    }
+
+    def _ok_status_error_body(self, monkeypatch, plain: dict,
+                              frames: list[bytes]) -> list[str]:
+        """Answer 200 with `plain` or the SSE `frames`, and return the list
+        each call is recorded in, so a test can prove it was reached."""
+        calls: list[str] = []
+
+        class _Response:
+            status_code = 200
+            is_success = True
+
+            def json(self) -> dict:
+                return plain
+
+            @property
+            def content(self) -> bytes:
+                return json.dumps(plain).encode()
+
+        class _Client:
+            async def post(self, url, headers=None, json=None, timeout=None):
+                calls.append("post")
+                return _Response()
+
+            def stream(self, method, url, headers=None, json=None,
+                       timeout=None):
+                calls.append("stream")
+
+                class _Ctx:
+                    async def __aenter__(self):
+                        class _Stream:
+                            status_code = 200
+
+                            async def aiter_bytes(self):
+                                for frame in frames:
+                                    yield frame
+
+                        return _Stream()
+
+                    async def __aexit__(self, *exc):
+                        return False
+
+                return _Ctx()
+
+        monkeypatch.setattr(openrouter, "get_client", lambda: _Client())
+        monkeypatch.setattr(openrouter, "get_secret", lambda name: "sk-test")
+        return calls
+
+    def _provider_logged(self, caplog: pytest.LogCaptureFixture) -> bool:
+        """True when openrouter.py's own logger wrote a line naming the probe
+        model. The router logs the model too, so matching the text alone
+        would pass with the provider module's records missing."""
+        return any(record.name == openrouter.logger.name
+                   and self.PROBE_MODEL in record.getMessage()
+                   for record in caplog.records)
+
+    @pytest.mark.parametrize("shape", sorted(PLAIN_200_ERRORS))
+    def test_a_200_carrying_an_error_relays_nothing_of_it(
+        self, client, monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture, shape: str,
+    ) -> None:
+        calls = self._ok_status_error_body(
+            monkeypatch, self.PLAIN_200_ERRORS[shape](self.LEAK), [])
+        chat_id = make_chat(client, make_character(client))
+        before = get_messages(client, chat_id)
+        with caplog.at_level(logging.DEBUG):
+            response = client.post(f"/api/v1/chats/{chat_id}/complete",
+                                   json={"message": "hi",
+                                         "model_id": self.PROBE_MODEL})
+        stored = json.dumps(get_messages(client, chat_id))
+        # GROUND: the request left and this body is the one that came back.
+        # A key gate, a validation error or a route that never called out
+        # would all leave `calls` empty.
+        assert calls == ["post"], (calls, response.text)
+        # POSITIVE CONTROL for the log check: the provider module's own line
+        # for this request was captured, so the marker's absence is measured
+        # on the logger that holds the body, not only on the router's.
+        assert self._provider_logged(caplog), caplog.text
+        if shape == "error_and_no_choices":
+            assert response.status_code == 502
+            assert response.json() == {
+                "detail": "invalid_openrouter_completion_response"}
+            # Nothing from this exchange is kept, so there is no row for the
+            # marker to land in; the stored check below would be decoration.
+            assert get_messages(client, chat_id) == before
+        else:
+            # The choice still carried content, and today that is kept as a
+            # reply. Pinned rather than left open, so a route that starts
+            # refusing it changes this line on purpose. The stored row is
+            # where the marker would land, and it has to hold the words the
+            # route took, or it is not this reply.
+            assert response.status_code == 200, response.text
+            assert "partial answer" in response.text
+            assert "partial answer" in stored
+        assert self.LEAK not in response.text
+        assert self.LEAK not in caplog.text
+        assert self.LEAK not in stored
+
+    @pytest.mark.parametrize("after_text", [False, True],
+                             ids=["before_any_text", "after_some_text"])
+    def test_a_streamed_error_frame_relays_nothing_of_it(
+        self, client, monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture, after_text: bool,
+    ) -> None:
+        frame = {"error": {"code": 502, "message": self.LEAK,
+                           "metadata": {"provider_name": self.LEAK,
+                                        "raw": self.LEAK}},
+                 "choices": [{"index": 0, "delta": {"content": ""},
+                              "finish_reason": "error"}]}
+        frames = []
+        if after_text:
+            frames.append(b'data: {"choices":[{"delta":{"content":"Once "}}]}'
+                          b'\n\n')
+        frames.append(b"data: " + json.dumps(frame).encode() + b"\n\n")
+        calls = self._ok_status_error_body(monkeypatch, {}, frames)
+        chat_id = make_chat(client, make_character(client))
+        before = get_messages(client, chat_id)
+        with caplog.at_level(logging.DEBUG):
+            response = client.post(f"/api/v1/chats/{chat_id}/complete/stream",
+                                   json={"message": "hi",
+                                         "model_id": self.PROBE_MODEL})
+        stored = json.dumps(get_messages(client, chat_id))
+        # GROUND: the stream was opened and ended on its error event, so the
+        # frame carrying the marker was read.
+        assert calls == ["stream"], (calls, response.text)
+        assert '"type": "error"' in response.text, response.text
+        # POSITIVE CONTROL for the log check, as in the plain test.
+        assert self._provider_logged(caplog), caplog.text
+        if after_text:
+            # The text before the error is kept as a partial reply, so the
+            # stored row exists and is where the marker would land.
+            assert "Once " in response.text
+            assert "Once " in stored
+        else:
+            # Nothing reached the reader before the error, so nothing from
+            # this exchange is kept and the stored check has no row to read.
+            assert get_messages(client, chat_id) == before
+        assert self.LEAK not in response.text
+        assert self.LEAK not in caplog.text
+        assert self.LEAK not in stored
+
     @pytest.mark.parametrize("route", ["complete", "complete/stream"])
     def test_a_moderation_refusal_does_not_relay_what_was_flagged(
         self, client, monkeypatch: pytest.MonkeyPatch, route: str,

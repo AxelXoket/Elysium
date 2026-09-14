@@ -105,7 +105,7 @@ def test_a_text_only_model_is_never_asked_to_draw(client, monkeypatch):
 
 def test_the_privacy_policy_rides_along_unchanged(client, monkeypatch):
     """The assertion that must never be allowed to rot: asking for a picture
-    does not touch the three fields that are hardcoded and immutable."""
+    does not touch the three fields the window cannot set."""
     calls: list[dict] = []
     _fake_complete(monkeypatch, calls=calls)
     _enable(client)
@@ -114,7 +114,7 @@ def test_the_privacy_policy_rides_along_unchanged(client, monkeypatch):
     prov = calls[0]["provider"]
     assert prov["zdr"] is True
     assert prov["data_collection"] == "deny"
-    assert prov["allow_fallbacks"] is False
+    assert prov["allow_fallbacks"] is True
 
 
 def test_modalities_cannot_arrive_through_generation_params():
