@@ -102,6 +102,14 @@ import config
 import notebook_extract
 import voice_tags
 import notebook_store as notebook
+# MODULE LEVEL, and it has to be. Two `except vault_state.VaultLockedError:`
+# clauses sit on abandon paths that promise never to raise, and an `except`
+# clause is evaluated only once something has been caught - so a name bound
+# nowhere but inside `run()` cost nothing until the moment those blocks had
+# work to do, then raised `NameError` mid-unwind and left the `except
+# Exception:` beneath them unreachable. Safe to hoist: `vault_state` imports
+# threading and time and nothing of ours, so there is no cycle to open.
+import vault_state
 
 logger = logging.getLogger(__name__)
 
@@ -595,7 +603,6 @@ class Worker:
                 # stepped away from their desk.
                 raise
             except Exception as exc:
-                import vault_state
                 if isinstance(exc, vault_state.VaultLockedError):
                     # The vault closed under us. Not a failure of the model,
                     # of this code, or of anything the user should read about:
@@ -1342,6 +1349,18 @@ class Worker:
         reason for landing here IS the vault locking, and by now the key may
         be gone. What it must never do is raise out of a done-callback,
         where asyncio would log it as an unretrieved exception.
+
+        `_undo` below carries the same dependency `_release_one` does: its
+        vault clause names `vault_state`, and the name is only resolvable
+        because the module imports it at the top. While it was imported
+        inside `run()` instead, both handlers here were dead, and the harm
+        was the exact thing the capitalised comment inside `_undo` forbids.
+        On the dominant path - a locked vault, which is the reason this
+        callback exists at all - the `NameError` fired inside `_release_one`,
+        one line ABOVE the try, so the refund ate the deletion and the row
+        removal never ran at all. Measured on that path: one database
+        attempt inside `_undo` while the import sat in `run()`, two once it
+        moved to module level.
         """
         if task.cancelled():
             return
@@ -1871,7 +1890,16 @@ def _claim_one() -> str:
 
 
 def _release_one(day: str | None = None) -> None:
-    """Hand the claimed slot back. Never raises into the caller.
+    """Hand the claimed slot back. No `Exception` reaches the caller.
+
+    NOT `BaseException`, and the gap is deliberate rather than an oversight
+    to be tidied up. `CancelledError`, `KeyboardInterrupt` and `SystemExit`
+    travel straight through this function, and they have to: both callers
+    are unwinding a turn that a cancellation started, and a refund that
+    swallowed the cancellation would hold the stand-down open past the
+    moment the vault route clears the key. Widening the handlers below to
+    `except BaseException` would trade one lost slot for a vault that
+    cannot finish locking, which is the more expensive of the two.
 
     Both callers are already on an abandon path, and the whole point of the
     slot is that the day's budget stays honest - failing to give it back is
@@ -1886,9 +1914,18 @@ def _release_one(day: str | None = None) -> None:
     needed at all is that the vault locked, and at that moment `get_db`
     raises `VaultLockedError` before a statement runs. So the commonest
     failure of the repair was the one nothing recorded - no counter, no log,
-    the slot simply gone out of sixty. Still never raises, because both
-    callers are unwinding an abandoned turn and neither can act on it; but
-    a reader looking for where their day went now has a line to find.
+    the slot simply gone out of sixty. Still lets no `Exception` out,
+    because neither caller can act on one; but a reader looking for where
+    their day went now has a line to find.
+
+    AND THAT PROMISE RESTS ON ONE IMPORT. `vault_state` has to be bound at
+    module level for the clause below to be evaluable, because an `except`
+    clause is only evaluated once something is in flight. Bound only inside
+    another function, the lookup raised `NameError` at exactly the moment
+    this block was doing its job, the `except Exception:` under it never
+    ran, and the promise in the first line was false for every failure this
+    path saw. If that import moves back inside a function, this docstring
+    is a lie again.
     """
     from database import get_db
 

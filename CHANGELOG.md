@@ -139,6 +139,17 @@ no exe you can download yet.
 - **A daily call reserved before midnight was refunded out of the next day's
   allowance**, so the ceiling let one extra billed call through per stale
   reservation, and the cost landed on a day whose call count was zero.
+- **Handing a call back on a locked vault raised instead of logging.** The
+  two blocks that clean up after an abandoned turn, the refund of the day's
+  call slot and the removal of the `running` row the turn left behind, catch
+  the vault's lock error by a name that was imported only inside the worker's
+  `run()`. An `except` clause is evaluated once something is caught, so on
+  the one path both blocks exist for, the vault locking, the lookup raised
+  `NameError` mid-unwind, the `except Exception` beneath it never ran, and
+  the refund's failure ate the row removal. Measured on that path: one
+  database attempt inside the undo, two once the import moved to module
+  level. Each block is now driven through a locked vault and through an
+  ordinary failure, with a working database as the ground control.
 - **A worker's own words could reach the log.** The voice engine's progress
   frames were written to `elysium.log` verbatim, and those carry the sentence
   being spoken, a Windows path and therefore the account name, and the name of
