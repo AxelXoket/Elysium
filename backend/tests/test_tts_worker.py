@@ -16,6 +16,7 @@ import pytest
 
 from tts.errors import (
     TTS_LOAD_TIMEOUT,
+    TTS_MODEL_VARIANT_UNSUPPORTED,
     TTS_OUT_OF_MEMORY,
     TTS_REFERENCE_INVALID,
     TTS_RUNTIME_BROKEN,
@@ -904,6 +905,11 @@ def test_the_codec_is_warmed_during_load(tmp_path, monkeypatch):
     model_dir.mkdir()
     (model_dir / "config.json").write_text("{}", encoding="utf-8")
     (model_dir / "codec.pth").write_bytes(b"stand-in for 1.7 GB of DAC")
+    # The load now refuses a folder without weights or the tokenizer pair
+    # before it touches the codec; this test is about the codec warm-up.
+    (model_dir / "model.safetensors").write_bytes(b"")
+    (model_dir / "tokenizer.json").write_bytes(b"")
+    (model_dir / "tokenizer_config.json").write_bytes(b"")
 
     mod = _fish()
     codec = _Codec()
@@ -1665,3 +1671,25 @@ class TestAWorkersOwnWordsDoNotReachTheLog:
         assert offenders == [], (
             "a worker sends a note the host will not print: " + ", ".join(
                 offenders))
+
+
+class TestARefusedBuildIsAFrameNotAnExit:
+    """tts/worker/chatterbox.py refuses a build it has no loader for with an
+    error frame carrying _wire.CODE_MODEL_VARIANT_UNSUPPORTED. The frame is
+    only worth sending if this side lets the code through: _failure_from
+    rewrites any code tts/errors.py does not declare to tts_worker_failed,
+    whose sentence sends the reader to reinstall an engine that is fine."""
+
+    def test_the_refusal_code_passes_through_the_frame_gate(self):
+        frame = {"id": 1, "ok": False,
+                 "code": _wire.CODE_MODEL_VARIANT_UNSUPPORTED,
+                 "detail": "this is the turbo build of chatterbox"}
+        failure = worker_client._failure_from(frame)
+        assert failure.code == TTS_MODEL_VARIANT_UNSUPPORTED
+        assert failure.code != TTS_WORKER_FAILED
+
+    def test_positive_control_a_code_the_app_does_not_declare_is_rewritten(self):
+        # The gate is real: a near miss on the same name is not let through.
+        frame = {"id": 1, "ok": False,
+                 "code": "tts_model_variant_banana", "detail": "x"}
+        assert worker_client._failure_from(frame).code == TTS_WORKER_FAILED

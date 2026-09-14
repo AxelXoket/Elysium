@@ -169,6 +169,63 @@ audio or text leaves it. Endpoints: `GET /tts/models`, `POST /tts/rescan`,
 GPU, never allocates), and `GET /tts/runtimes` (per-engine runtime state; the
 registry is app-owned, the user never edits it by hand).
 
+**`GET /tts/models` and `POST /tts/rescan` answer with the same payload:**
+`{models, unrecognized, roots, truncated, truncated_roots, unreadable_roots}`.
+`models` are the folders an engine claimed, each row carrying its `readiness`
+(below); one real folder is one row, whichever spelling or junction reached
+it, listed under the nearest configured root above the real folder whichever
+root's walk got there first. `unrecognized` are folders that
+hold files and matched no engine, each `{path, reason, code}` with `code`
+always `tts_model_unrecognized`; a folder under a listed folder of the same
+walk is not a second row, and HuggingFace cache bookkeeping (`blobs`, `refs`,
+`trees`, `.no_exist`, `.locks`, `xet`, `.cache`) is never listed or entered. `roots` are the
+folders the scan set out to walk, in order, after normalisation: `~` and
+`%VAR%` in `extra_roots` are expanded, a relative root is anchored to the data
+folder (not the working directory, which differs between development and the
+exe), and the same folder spelled twice is one root. Two roots that nest are
+both walked, each with its own depth and directory budget, and the wider walk
+steps around the inner root, so a model is listed once, under the nearest
+root above it, and carries that root's uid. With more than one root
+configured, a folder reached through a junction that lands in another root,
+or below one, is left to that root's walk as well, so for a folder under
+some configured root the uid depends neither on the root order nor on a
+junction in an unrelated root. A folder outside every configured root that
+two roots reach through junctions is listed by whichever walk arrives first,
+and its uid follows that walk's root. Nesting is not symmetric for the
+uids: adding a root above an existing one changes nothing under the inner
+root, while adding a root inside one moves the folders under the new root
+onto its uid. When the new root is itself the model, the backend remembers
+the uid it had under the wider root and rewrites a saved selection to the
+new uid once, on the first read that resolves the saved selection (`GET
+/tts/active`, or a speak or load sent without a uid in its body), carrying
+the model's saved values with it, so
+the client never sees the old uid resolve to nothing; a settings route
+called with the old uid still answers for the model and saves under its
+current uid. A folder reached through a junction that points outside every
+root is identified by the path the scan reached it by, so two such folders
+of one name are two rows with two uids; the uid such a folder had in 1.1.6
+(by its bare folder name) is remembered the same way, so a selection saved
+then is rewritten once rather than lost, and two folders of one name share
+that remembered uid, which resolves to the first row, the one 1.1.6 loaded.
+A junction that is itself a root inside a wider root remembers the uid it had
+under that root by its configured spelling. A root that is itself a model
+folder is listed as that model, and a root that holds files no engine
+claims is listed under `unrecognized` only when nothing under it is a model
+or a row of its own, by any walk: a hub with a `version.txt` at its top
+lists the snapshot below it, not itself, also when the snapshot belongs to
+an inner root or sits behind a junction into another root; the default drop
+folder is the one exception, always walked as a container and never judged
+itself.
+`truncated` is true when at least one root's
+walk hit the per-root directory cap, and `truncated_roots` names those roots
+in the same spelling as `roots`: the list may be missing models under them
+and must not be shown as complete. `unreadable_roots` names every configured
+root the scan could not open (does not exist, is a file, sits on a drive that
+is gone, or exists but cannot be listed), in the normalised spelling it
+tried; the default drop folder not existing yet is the normal fresh state and
+is not reported. The settings page renders each as one sentence that names
+the folders.
+
 **Voice lifecycle (V3).** `routers/tts.py` stays the pure host half - it never
 spawns anything. `routers/tts_runtime.py` shares the `/tts` prefix and owns the
 process:
@@ -247,6 +304,7 @@ shield like every other data route.
 | 400 | tts_model_unknown | Referenced model uid is gone (folder changed) | Rescan, clear selection |
 | 409 | tts_model_unrecognized | Folder present but no engine signature matched | Show as unrecognized, offer manual engine override |
 | 422 | tts_model_incomplete | Engine matched but the folder is incomplete: a required file is absent, or a file the download manifest recorded is not the size it recorded (a half-finished download) | Say both cases in one sentence, do not offer load. `detail` names the files but is diagnostic English, not user-facing text |
+| 409 | tts_model_variant_unsupported | Engine matched, but the T3 backbone names a build the bundled engine has no loader for (Chatterbox Turbo, Multilingual v3, or a name it does not know). Its files are not checked: there is no list to check them against. Raised by readiness and by the worker at load | Say the engine cannot load this build yet and name the ones it can; do NOT offer redownload, nothing is known to be missing. `detail` names the build but is diagnostic English, not user-facing text |
 | 400 | tts_engine_unknown | Engine id not registered | Show as unsupported |
 | 409 | tts_runtime_missing | The engine runtime was never set up | Offer "Set up voice" (the app installs it; the user never edits runtimes.json) |
 | 409 | tts_runtime_broken | Runtime was recorded once, its interpreter is gone now | Offer "Set up voice" again, worded as a repair |

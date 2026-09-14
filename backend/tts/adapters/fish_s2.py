@@ -23,10 +23,112 @@ from ..base import (
     TtsAdapter,
     VramEstimate,
 )
-from ..util import has_any, read_json, size_of
+from ..util import read_json, size_of
 
-_REQUIRED = ("config.json", "codec.pth")
-_WEIGHT_PATTERNS = ("model*.safetensors", "model.safetensors.index.json", "*.pth")
+# The files fish_speech opens at load, by the names the download uses.
+#
+# `config.json` and `codec.pth` are the engine's own. The tokenizer pair is
+# there because `FishTokenizer` is `transformers.AutoTokenizer` pointed at the
+# model folder: without `tokenizer_config.json` transformers falls through to
+# `config.json`, meets a `model_type` it has never heard of and refuses;
+# without `tokenizer.json` the fast tokenizer has no vocabulary to build from.
+# Measured against transformers 4.56.1 offline, one synthetic layout per
+# missing file. fish_speech SWALLOWS that failure at load (a warning and
+# `model.tokenizer = None`, llama.py `from_pretrained`) and then dereferences
+# the tokenizer on the first sentence (inference.py `generate_long`), so a
+# folder without the pair loads "fine" and cannot speak. Naming the pair here
+# is what turns that into a download verdict instead of a crash at synthesis.
+# `special_tokens_map.json` and `chat_template.jinja` ship in the real download
+# but are optional: transformers tolerates their absence and nothing in
+# fish_speech reads them.
+REQUIRED_FILES = ("config.json", "codec.pth", "tokenizer.json",
+                  "tokenizer_config.json")
+WEIGHT_INDEX = "model.safetensors.index.json"
+#: The single-file forms fish_speech falls back to when there is no index, in
+#: the order it tries them. `codec.pth` is deliberately NOT in this list and
+#: no glob stands in for it: the old `*.pth` pattern was satisfied by the DAC
+#: codec, which is already required above, so a folder with no text2semantic
+#: weights at all read as complete.
+SINGLE_WEIGHT_FILES = ("model.safetensors", "model.pth")
+#: The `missing` entry for a folder with neither an index nor a single file.
+#: Names what the S2 Pro download contains, so the fix reads as "finish the
+#: download" and not as a hunt for a file that was never part of it.
+MISSING_WEIGHTS = ("model weights (model.safetensors.index.json with its "
+                   "shards, or model.safetensors)")
+# Two places where `shard_names` is stricter than the loader on purpose, kept
+# here so nobody "fixes" them back toward it:
+# 1. An empty `weight_map` is "not an index" here, although the loader would
+#    accept it: `from_pretrained` ends in `load_state_dict(weights,
+#    strict=False)` (fish_speech llama.py), so an index that maps nothing
+#    loads a model with random weights. A download that produced it is
+#    broken, and "index missing" is the verdict that makes the fix a
+#    re-download.
+# 2. A `weight_map` value with a subfolder in it (`sub/model.safetensors`) is
+#    refused, although the loader would open it (`path_obj / shard`),
+#    because no download the app targets ships that layout, and a value that
+#    can name a path outside the folder is not worth the exception.
+# The index itself comes through `read_json` (tts/util.py), which gives up
+# above MAX_METADATA_BYTES (4 MiB). The worker's copy retypes that cap, so an
+# oversized index is "not an index" on both sides. The real one is 32 KB.
+
+
+def shard_names(index: object) -> list[str] | None:
+    """The shard files an index maps its tensors onto, sorted and unique.
+
+    None when the document is not a shard index: not a dict, no `weight_map`,
+    an empty one, or a value that is not a bare file name. A model folder is
+    untrusted input the user dropped in, and a `weight_map` entry with a path
+    separator in it would send the check (and fish_speech) outside the folder.
+    """
+    if not isinstance(index, dict):
+        return None
+    weight_map = index.get("weight_map")
+    if not isinstance(weight_map, dict) or not weight_map:
+        return None
+    names: set[str] = set()
+    for value in weight_map.values():
+        if (not isinstance(value, str) or not value
+                or Path(value).name != value or value in (".", "..")):
+            return None
+        names.add(value)
+    return sorted(names)
+
+
+def missing_weights(model_dir: Path) -> list[str]:
+    """Which text2semantic weight files are absent, by the engine's own rules.
+
+    Mirrors `DualARTransformer.from_pretrained` (fish_speech llama.py): when
+    `model.safetensors.index.json` exists every shard its `weight_map` names is
+    opened, otherwise `model.safetensors`, otherwise `model.pth`, otherwise
+    FileNotFoundError. So with an index the answer is the shards that are not
+    there, by name; an index that is present but not a shard index (a download
+    cut mid-file, or a foreign file under the name) is reported under its own
+    name, because the engine crashes on it and "missing" is the verdict that
+    makes the fix a re-download.
+    """
+    index = model_dir / WEIGHT_INDEX
+    if index.is_file():
+        shards = shard_names(read_json(index))
+        if shards is None:
+            return [WEIGHT_INDEX]
+        return [s for s in shards if not (model_dir / s).is_file()]
+    if any((model_dir / n).is_file() for n in SINGLE_WEIGHT_FILES):
+        return []
+    return [MISSING_WEIGHTS]
+
+
+def missing_files(model_dir: Path) -> tuple[str, ...]:
+    """Every file the engine will fail without, in a fixed order.
+
+    The worker's `_missing_files` (tts/worker/fish_s2.py) is this function
+    written out again for an interpreter that cannot import the app; the test
+    suite holds the two to the same answer on every layout, which is what lets
+    the app's "download did not finish" verdict and the worker's refusal name
+    the same files.
+    """
+    missing = [n for n in REQUIRED_FILES if not (model_dir / n).is_file()]
+    missing.extend(missing_weights(model_dir))
+    return tuple(missing)
 
 
 class FishS2Adapter(TtsAdapter):
@@ -53,10 +155,8 @@ class FishS2Adapter(TtsAdapter):
         model_type = str(cfg.get("model_type") or "")
         if not model_type.startswith("fish_"):
             return None
-        missing = [n for n in _REQUIRED if not (model_dir / n).is_file()]
-        if not has_any(model_dir, _WEIGHT_PATTERNS):
-            missing.append("model weights (*.safetensors)")
-        return IdentifyResult(cls.engine_id, "signature", None, tuple(missing))
+        return IdentifyResult(cls.engine_id, "signature", None,
+                              missing_files(model_dir))
 
     @classmethod
     def signature_files(cls, model_dir: Path) -> list[tuple[str, int]]:

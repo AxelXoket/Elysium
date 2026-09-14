@@ -49,7 +49,7 @@ import secure_delete
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from database import get_db, get_setting
+from database import get_db, get_setting, set_setting
 from tts import adapter_for, check_fit, scan_roots
 from tts import readiness as tts_readiness
 from tts import runtimes as tts_runtimes
@@ -78,12 +78,51 @@ def _settings_key(uid: str) -> str:
     return f"tts_model:{uid}"
 
 
-def _find(uid: str) -> DetectedModel:
-    """Resolve a uid against a fresh scan, or fail with the contract code."""
-    for model in scan_roots().models:
+def model_for_uid(
+    uid: str, models: list[DetectedModel], *, saved: bool = False,
+) -> DetectedModel | None:
+    """The model a uid names: by its uid, then by the uid it had before.
+
+    Uids gained their scan root (KÖK 15: two roots could hold a folder of
+    the same name and collide onto one id), and a root added inside another
+    moves the folders under it onto the new root's id. A selection or a
+    page saved under the old id must not turn into "no model selected" or
+    a 400, so every lookup follows the legacy uid, not only the one a speak
+    runs (routers/tts_runtime._resolve). Until GET /tts/active did, the chat
+    was told the old uid with state "error" and no readiness after a root
+    was added, and drew Speak as ready, while the settings page found no
+    row to mark selected.
+
+    `saved` says the uid came from the tts_active_uid setting. A legacy
+    match then rewrites the setting ONCE, so the next read matches by uid
+    and writes nothing, and carries the model's saved values row to the new
+    uid on the same rewrite: a copy, the old row stays for a client still
+    holding the old uid. Values already saved under the new uid are newer
+    and are kept, since the settings page may have saved against the new
+    uid (the list shows it after a rescan) before the chat next read the
+    selection. A uid from a URL is not the selection and rewrites nothing.
+    """
+    for model in models:
         if model.uid == uid:
             return model
-    raise HTTPException(400, TTS_MODEL_UNKNOWN)
+    for model in models:
+        if model.legacy_uid and model.legacy_uid == uid:
+            if saved:
+                set_setting(SETTING_ACTIVE_UID, model.uid)
+                old_values = get_setting(_settings_key(uid))
+                if old_values is not None and get_setting(_settings_key(model.uid)) is None:
+                    set_setting(_settings_key(model.uid), old_values)
+                logger.info("tts: migrated the selected model to its new id.")
+            return model
+    return None
+
+
+def _find(uid: str) -> DetectedModel:
+    """Resolve a uid against a fresh scan, or fail with the contract code."""
+    model = model_for_uid(uid, scan_roots().models)
+    if model is None:
+        raise HTTPException(400, TTS_MODEL_UNKNOWN)
+    return model
 
 
 def _adapter(model: DetectedModel):
@@ -159,6 +198,13 @@ def _scan_payload(language: str | None = None) -> dict:
         # A short list that stopped at the cap must not look like a complete
         # one. See ScanResult.truncated.
         "truncated": result.truncated,
+        # And which roots were cut, so the page can name the folder rather
+        # than tell the user to narrow a scan they have no control for.
+        # See ScanResult.truncated_roots.
+        "truncated_roots": list(result.truncated_roots),
+        # A root the scan could not open must not look like an empty one.
+        # See ScanResult.unreadable_roots.
+        "unreadable_roots": list(result.unreadable_roots),
     }
 
 
@@ -263,12 +309,15 @@ def save_model_settings(uid: str, body: ValuesBody) -> dict:
     except ParamError:
         raise HTTPException(400, TTS_PARAM_INVALID)
 
-    merged = {**_saved_values(uid), **cleaned}
+    # Keyed by the model's uid, not the URL's: _find follows a legacy uid
+    # and _effective reads under model.uid, so a save through an old uid
+    # must land where the read is.
+    merged = {**_saved_values(model.uid), **cleaned}
     with get_db() as con:
         con.execute(
             "INSERT INTO settings (key, value) VALUES (?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (_settings_key(uid), json.dumps(merged)),
+            (_settings_key(model.uid), json.dumps(merged)),
         )
     values, source = _effective(model)
     return {"uid": uid, "values": values, "source_map": source}
@@ -278,7 +327,7 @@ def save_model_settings(uid: str, body: ValuesBody) -> dict:
 def reset_model_settings(uid: str) -> dict:
     model = _find(uid)
     with get_db() as con:
-        con.execute("DELETE FROM settings WHERE key = ?", (_settings_key(uid),))
+        con.execute("DELETE FROM settings WHERE key = ?", (_settings_key(model.uid),))
     values, source = _effective(model)
     return {"uid": uid, "values": values, "source_map": source}
 
@@ -304,12 +353,18 @@ def override_engine(uid: str, body: EngineBody) -> dict:
 
     path = Path(model.path) / SIDECAR_NAME
     # This is the ONE place voice writes into a user-supplied folder, so it is
-    # confined twice: the resolved target must stay inside a configured models
-    # root, and an existing symlink there is refused rather than followed (a
-    # link planted in a downloaded archive must not redirect our write).
+    # confined twice: the model folder must sit inside a configured models
+    # root, and an existing link at the sidecar's name is refused rather than
+    # followed (a link planted in a downloaded archive must not redirect our
+    # write). The folder is compared as the scan spelled it, not resolved:
+    # the scan lists a model behind a junction the user made inside a root
+    # (models\hf -> D:\hf), and resolving the folder here refused the engine
+    # override for every such model with the same error as a uid nobody has,
+    # while the sidecar is exactly the file that folder was scanned for. The
+    # link check on the file itself is what guards the write.
     try:
-        roots = [Path(r).resolve() for r in scan_roots().roots]
-        target_dir = path.parent.resolve()
+        roots = [Path(r) for r in scan_roots().roots]
+        target_dir = path.parent
         if not any(target_dir == r or r in target_dir.parents for r in roots):
             raise HTTPException(400, TTS_MODEL_UNKNOWN)
         # is_symlink() was the whole guard here, and it is the wrong question.
@@ -423,13 +478,16 @@ def get_active(language: str | None = None) -> dict:
         return {"uid": None, "state": "unloaded", "engine_id": None,
                 "vram_mb": None, "error_code": None, "readiness": None,
                 "voice_installed": _any_engine_installed()}
-    model = next((m for m in scan_roots().models if m.uid == uid), None)
+    model = model_for_uid(uid, scan_roots().models, saved=True)
     if model is None:
         # The folder was renamed or deleted while selected. Report it; a silent
         # empty state would look like the setting simply did not stick.
         return {"uid": uid, "state": "error", "engine_id": None,
                 "vram_mb": None, "error_code": TTS_MODEL_UNKNOWN,
                 "readiness": None, "voice_installed": True}
+    # The id the model has now. After a legacy match the setting already
+    # holds it, and it is the one the chat and the settings page must see.
+    uid = model.uid
     # The SELECTED model is where an unusable state matters most - this is the
     # one the user expects to hear. `error_code` carries the first blocker so a
     # caller that only reads that field still learns voice will not work.

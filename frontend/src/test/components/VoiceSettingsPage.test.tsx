@@ -14,6 +14,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { VoiceSettingsPage } from "@/components/settings/VoiceSettingsPage";
 import { getErrorMessage } from "@/lib/errors";
+import { TtsScanSchema } from "@/lib/schemas/tts";
 import { useErrorStore } from "@/lib/errors/errorStore";
 import { mockFetch } from "../mocks/api";
 import { delayRoute } from "../helpers/delayRoute";
@@ -543,6 +544,29 @@ describe("VoiceSettingsPage", () => {
     expect(screen.getByRole("button", { name: "Set up again" })).toBeInTheDocument();
   });
 
+  it("an engine that failed its trust check says so, and its button is the one the sentence names", async () => {
+    mockFetch({
+      ...baseRoutes(),
+      "/tts/runtimes": {
+        body: {
+          ...RUNTIMES,
+          runtimes: [{
+            engine_id: "fish_s2", state: "untrusted",
+            python: "C:/elsewhere/python.exe", error_code: "tts_runtime_untrusted",
+          }],
+        },
+      },
+    });
+    renderWithQueryClient(<VoiceSettingsPage />);
+
+    const row = await screen.findByTestId("engine-fish_s2");
+    expect(row).toHaveTextContent(getErrorMessage("tts_runtime_untrusted"));
+    // That sentence ends "Press Set up again in Settings". Until this test the
+    // button under it read "Set up", a control the sentence does not name.
+    expect(screen.getByRole("button", { name: "Set up again" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Set up" })).not.toBeInTheDocument();
+  });
+
   it("an auto transcript is labelled as a draft and stays editable", async () => {
     mockFetch({
       ...baseRoutes(),
@@ -987,5 +1011,206 @@ describe("Performed replies caption - pending must not read as Off", () => {
     expect(
       await screen.findByText("On - select a voice model below to hear them performed"),
     ).toBeInTheDocument();
+  });
+});
+
+describe("Voice models - the scan says when it could not look everywhere", () => {
+  // The backend computed `truncated` and named the roots it could not open,
+  // and the schema dropped the first and had no field for the second, so a
+  // walk cut at the cap and a mistyped extra root both rendered as a complete,
+  // healthy list. Detection with no carrier, the KÖK 1 shape.
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useErrorStore.getState().clearAll();
+  });
+
+  const CUT = /may be missing models/;
+  const COULD_NOT_LOOK = /Could not look in/;
+
+  it("the schema carries truncated and unreadable_roots, and defaults them when absent", () => {
+    const full = TtsScanSchema.parse({
+      models: [], unrecognized: [], roots: ["C:/m"],
+      truncated: true, unreadable_roots: ["D:/gone"],
+    });
+    expect(full.truncated).toBe(true);
+    expect(full.unreadable_roots).toEqual(["D:/gone"]);
+    // An older backend that sends neither must still parse as a complete,
+    // fully readable scan rather than fail the whole page.
+    const bare = TtsScanSchema.parse({ models: [], unrecognized: [], roots: [] });
+    expect(bare.truncated).toBe(false);
+    expect(bare.unreadable_roots).toEqual([]);
+  });
+
+  it("a walk cut at the directory cap says the list may be incomplete, even from a backend that names no root", async () => {
+    mockFetch({
+      ...baseRoutes(),
+      "/tts/models": {
+        body: { models: [BLOCKED_MODEL], unrecognized: [], roots: [], truncated: true },
+      },
+    });
+    renderWithQueryClient(<VoiceSettingsPage />);
+    expect(await screen.findByText("s2-pro")).toBeInTheDocument();
+    expect(screen.getByText(CUT)).toBeInTheDocument();
+  });
+
+  it("the schema carries truncated_roots and defaults it when absent", () => {
+    const full = TtsScanSchema.parse({
+      models: [], unrecognized: [], roots: [], truncated: true, truncated_roots: ["D:/hf"],
+    });
+    expect(full.truncated_roots).toEqual(["D:/hf"]);
+    const bare = TtsScanSchema.parse({ models: [], unrecognized: [], roots: [], truncated: true });
+    expect(bare.truncated_roots).toEqual([]);
+  });
+
+  it("the cut roots are named, so the sentence says where the list may be short", async () => {
+    // The first sentence told the user to point the scan at a smaller folder,
+    // a control this page does not have. Naming the folder is what it CAN say.
+    mockFetch({
+      ...baseRoutes(),
+      "/tts/models": {
+        body: {
+          models: [BLOCKED_MODEL], unrecognized: [], roots: [],
+          truncated: true, truncated_roots: ["D:\\hf-cache", "E:\\more-models"],
+        },
+      },
+    });
+    renderWithQueryClient(<VoiceSettingsPage />);
+    expect(await screen.findByText(CUT)).toBeInTheDocument();
+    expect(screen.getByText("D:\\hf-cache")).toBeInTheDocument();
+    expect(screen.getByText("E:\\more-models")).toBeInTheDocument();
+    expect(screen.getByText(/those folders/)).toBeInTheDocument();
+  });
+
+  it("one cut root reads in the singular", async () => {
+    mockFetch({
+      ...baseRoutes(),
+      "/tts/models": {
+        body: {
+          models: [BLOCKED_MODEL], unrecognized: [], roots: [],
+          truncated: true, truncated_roots: ["D:\\hf-cache"],
+        },
+      },
+    });
+    renderWithQueryClient(<VoiceSettingsPage />);
+    expect(await screen.findByText(CUT)).toBeInTheDocument();
+    expect(screen.getByText("D:\\hf-cache")).toBeInTheDocument();
+    expect(screen.getByText(/that folder/)).toBeInTheDocument();
+    expect(screen.queryByText(/those folders/)).not.toBeInTheDocument();
+  });
+
+  it("a complete walk does not say so - the ground for the line above", async () => {
+    mockFetch({
+      ...baseRoutes(),
+      "/tts/models": {
+        body: { models: [BLOCKED_MODEL], unrecognized: [], roots: [], truncated: false },
+      },
+    });
+    renderWithQueryClient(<VoiceSettingsPage />);
+    expect(await screen.findByText("s2-pro")).toBeInTheDocument();
+    expect(screen.queryByText(CUT)).not.toBeInTheDocument();
+  });
+
+  it("a root the scan could not open is named, path and all", async () => {
+    mockFetch({
+      ...baseRoutes(),
+      "/tts/models": {
+        body: {
+          models: [BLOCKED_MODEL], unrecognized: [], roots: [],
+          unreadable_roots: ["D:\\voice-models", "E:\\hf-cache\\typo"],
+        },
+      },
+    });
+    renderWithQueryClient(<VoiceSettingsPage />);
+    expect(await screen.findByText(COULD_NOT_LOOK)).toBeInTheDocument();
+    expect(screen.getByText("D:\\voice-models")).toBeInTheDocument();
+    expect(screen.getByText("E:\\hf-cache\\typo")).toBeInTheDocument();
+    // Naming a bad root is not a scan failure: the models it did find stay.
+    expect(screen.getByText("s2-pro")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Could not scan for voice models. Rescan to retry."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("readable roots are not named - the ground for the line above", async () => {
+    mockFetch({
+      ...baseRoutes(),
+      "/tts/models": {
+        body: { models: [BLOCKED_MODEL], unrecognized: [], roots: [], unreadable_roots: [] },
+      },
+    });
+    renderWithQueryClient(<VoiceSettingsPage />);
+    expect(await screen.findByText("s2-pro")).toBeInTheDocument();
+    expect(screen.queryByText(COULD_NOT_LOOK)).not.toBeInTheDocument();
+  });
+
+  it("an empty scan with an unreadable root says both: nothing found, and where it could not look", async () => {
+    mockFetch({
+      ...baseRoutes(),
+      "/tts/models": {
+        body: { models: [], unrecognized: [], roots: [], unreadable_roots: ["D:\\voice-models"] },
+      },
+    });
+    renderWithQueryClient(<VoiceSettingsPage />);
+    expect(await screen.findByText(COULD_NOT_LOOK)).toBeInTheDocument();
+    expect(screen.getByText(/No voice models found/)).toBeInTheDocument();
+  });
+
+  it("a typo root and a wide cache in one payload are two sentences, each naming only its own folder", async () => {
+    // The two warnings are independent fields and independent sentences.
+    // Rendering them from one payload is the shape a real machine has: an
+    // extra root mistyped AND a cache too wide for the cap, at the same time.
+    mockFetch({
+      ...baseRoutes(),
+      "/tts/models": {
+        body: {
+          models: [BLOCKED_MODEL], unrecognized: [], roots: [],
+          truncated: true, truncated_roots: ["D:\\hf-cache"],
+          unreadable_roots: ["D:\\voice-modles"],
+        },
+      },
+    });
+    renderWithQueryClient(<VoiceSettingsPage />);
+    const cut = await screen.findByText(CUT);
+    const couldNotLook = screen.getByText(COULD_NOT_LOOK);
+    expect(cut).not.toBe(couldNotLook);
+    expect(cut).toHaveTextContent("D:\\hf-cache");
+    expect(cut).not.toHaveTextContent("D:\\voice-modles");
+    expect(couldNotLook).toHaveTextContent("D:\\voice-modles");
+    expect(couldNotLook).not.toHaveTextContent("D:\\hf-cache");
+    // Neither warning is a scan failure: the model that was found stays.
+    expect(screen.getByText("s2-pro")).toBeInTheDocument();
+  });
+
+  it("one unreadable root reads in the singular", async () => {
+    mockFetch({
+      ...baseRoutes(),
+      "/tts/models": {
+        body: {
+          models: [BLOCKED_MODEL], unrecognized: [], roots: [],
+          unreadable_roots: ["D:\\voice-models"],
+        },
+      },
+    });
+    renderWithQueryClient(<VoiceSettingsPage />);
+    const sentence = await screen.findByText(COULD_NOT_LOOK);
+    expect(sentence).toHaveTextContent("Could not look in this folder:");
+    expect(sentence).toHaveTextContent("D:\\voice-models");
+    expect(sentence).not.toHaveTextContent("these folders");
+  });
+
+  it("two unreadable roots read in the plural - the ground for the line above", async () => {
+    mockFetch({
+      ...baseRoutes(),
+      "/tts/models": {
+        body: {
+          models: [BLOCKED_MODEL], unrecognized: [], roots: [],
+          unreadable_roots: ["D:\\voice-models", "E:\\hf-cache\\typo"],
+        },
+      },
+    });
+    renderWithQueryClient(<VoiceSettingsPage />);
+    const sentence = await screen.findByText(COULD_NOT_LOOK);
+    expect(sentence).toHaveTextContent("Could not look in these folders:");
+    expect(sentence).not.toHaveTextContent("this folder");
   });
 });

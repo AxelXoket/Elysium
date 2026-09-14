@@ -275,9 +275,14 @@ TTS_REFS_DIR: str = str(TTS_DIR / "refs")        # reference clips + transcripts
 TTS_CACHE_DIR: str = str(TTS_DIR / "cache")      # conditioning caches, PCM handoff
 TTS_RUNTIMES_PATH: str = str(TTS_DIR / "runtimes.json")  # engine_id -> interpreter
 
-# Scan bounds. HF snapshot layouts nest as models--X--Y/snapshots/<rev>/, hence
-# depth 3; the dir cap stops a mis-pointed root (e.g. C:\) from hanging a scan.
-TTS_SCAN_MAX_DEPTH: int = 3
+# Scan bounds, applied to EACH root. Depth 4 reaches an HF cache through its
+# parent (HF_HOME/hub/models--X/snapshots/<rev>) and a ModelScope cache through
+# its parent (~/.cache/modelscope/hub/models/<org>/<name>, the files flat, no
+# snapshots folder); depth 3 stopped one level short of both and said
+# nothing. The dir cap is what bounds the cost, and it
+# counts per root, so a mis-pointed root (e.g. C:\) cannot hang a scan and
+# cannot starve the roots listed after it either.
+TTS_SCAN_MAX_DEPTH: int = 4
 TTS_SCAN_MAX_DIRS: int = 2000
 
 # VRAM policy. A pre-load check refuses to load when the estimate plus this

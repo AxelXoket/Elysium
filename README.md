@@ -400,10 +400,14 @@ replaces the shipped exe. The hooks themselves are versioned at
 `backend/verify/hooks/`, because `.git/hooks` is neither tracked nor cloned;
 install each with `cp backend/verify/hooks/<name> .git/hooks/<name>`, and
 `verify_hygiene.py` reports when what is installed differs from what is
-tracked. Three tools are run by hand, each doing something no test can:
+tracked. Five tools are run by hand, each doing something no test can:
 `verify_hygiene.py` (the source scanner, which is also the pre-commit lane),
-`verify_image_output.py` (a live request with your own key) and
-`verify_tts_latency.py` (measures real hardware).
+`verify_image_output.py` (a live request with your own key),
+`verify_tts_latency.py` (measures real hardware), `verify_tts_resolve.py`
+(asks the package index whether the three voice engine freezes still
+install, with the exact command the installer runs) and
+`verify_tts_install.py` (builds every voice engine through the app's own
+installer into a throwaway folder, then loads a model and speaks with each).
 
 ### Frontend
 

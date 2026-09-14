@@ -252,6 +252,13 @@
       ]
     },
     {
+      "code": "imported_chat_always_reviews",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
       "code": "internal_error",
       "statuses": [],
       "channels": [
@@ -412,13 +419,6 @@
       "statuses": [
         400
       ],
-      "channels": [
-        "http"
-      ]
-    },
-    {
-      "code": "imported_chat_always_reviews",
-      "statuses": [],
       "channels": [
         "http"
       ]
@@ -887,6 +887,14 @@
     },
     {
       "code": "tts_model_unrecognized",
+      "statuses": [],
+      "channels": [
+        "http",
+        "voice_sse"
+      ]
+    },
+    {
+      "code": "tts_model_variant_unsupported",
       "statuses": [],
       "channels": [
         "http",

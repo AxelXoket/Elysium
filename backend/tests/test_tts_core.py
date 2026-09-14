@@ -37,8 +37,16 @@ def make_fish(root, name="s2-pro"):
     _touch(d / "codec.pth")
     _touch(d / "model-00001-of-00002.safetensors")
     _touch(d / "model-00002-of-00002.safetensors")
-    _touch(d / "model.safetensors.index.json", b"{}")
+    # The index the real download ships maps tensors onto shard names, and
+    # the adapter reads that map to know which shards must exist. An empty
+    # index is what a download cut mid-file looks like, and reads as broken.
+    _touch(d / "model.safetensors.index.json", json.dumps({
+        "metadata": {"total_size": 2},
+        "weight_map": {"layers.0.weight": "model-00001-of-00002.safetensors",
+                       "layers.1.weight": "model-00002-of-00002.safetensors"},
+    }).encode("utf-8"))
     _touch(d / "tokenizer.json", b"{}")
+    _touch(d / "tokenizer_config.json", b"{}")
     return d
 
 
@@ -58,15 +66,23 @@ def make_xtts(root, name="xtts_v2"):
 
 
 def make_chatterbox(root, name="chatterbox-mtl", multilingual=True):
+    """A COMPLETE checkpoint of either build, with the files chatterbox_tts
+    0.1.7 opens for it. The english build used to be laid out with the
+    multilingual build's .pt weights, which the worker never opened for
+    english; test_tts_chatterbox_variants.py is where that mismatch lives."""
     d = root / name
     d.mkdir(parents=True, exist_ok=True)
-    _touch(d / ("t3_mtl23ls_v2.safetensors" if multilingual else "t3_cfg.safetensors"))
-    _touch(d / "s3gen.pt")
-    _touch(d / "ve.pt")
+    if multilingual:
+        _touch(d / "t3_mtl23ls_v2.safetensors")
+        _touch(d / "s3gen.pt")
+        _touch(d / "ve.pt")
+        _touch(d / "grapheme_mtl_merged_expanded_v1.json", b"{}")
+    else:
+        _touch(d / "t3_cfg.safetensors")
+        _touch(d / "s3gen.safetensors")
+        _touch(d / "ve.safetensors")
     _touch(d / "conds.pt")
     _touch(d / "tokenizer.json", b"{}")
-    if multilingual:
-        _touch(d / "grapheme_mtl_merged_expanded_v1.json", b"{}")
     return d
 
 
@@ -125,6 +141,17 @@ class TestIdentify:
         assert mtl.variant == "multilingual"
         mono = identify_dir(make_chatterbox(tmp_path, "cb-en", multilingual=False))
         assert mono.variant != "multilingual"
+
+    def test_chatterbox_fixtures_are_complete_for_their_build(self, tmp_path):
+        """Both fixtures hold what the worker opens, so a test built on one
+        is testing a model that would load. The ground control is the same
+        folder minus one of those files, which must read as incomplete."""
+        for multilingual in (True, False):
+            d = make_chatterbox(tmp_path, f"cb-{multilingual}", multilingual=multilingual)
+            assert identify_dir(d).missing == ()
+        d = make_chatterbox(tmp_path, "cb-short", multilingual=False)
+        (d / "tokenizer.json").unlink()
+        assert identify_dir(d).missing == ("tokenizer.json",)
 
     def test_unrelated_folder_is_not_identified(self, tmp_path):
         d = tmp_path / "vacation-photos"
@@ -305,14 +332,30 @@ class TestAuditRegressions:
 
     def test_scan_depth_limit_is_a_known_boundary(self, tmp_path):
         """Documents the limit rather than leaving it to surprise someone: a
-        model deeper than TTS_SCAN_MAX_DEPTH is not found."""
+        model AT TTS_SCAN_MAX_DEPTH is found, one level deeper is not.
+
+        Both halves, because the first version of this test only planted a
+        model past the limit, two levels past it in fact, so a walk that
+        stopped anywhere short of the limit passed it just the same. The
+        positive half is what makes the negative half a boundary and not a
+        blind spot. Depth counts children of the root as 1, so a model at
+        depth N sits under N-1 container folders."""
         import config
-        root = tmp_path / "models"
-        deep = root
-        for i in range(config.TTS_SCAN_MAX_DEPTH + 1):
-            deep = deep / f"lvl{i}"
-        make_fish(deep, "too-deep")
-        assert scan_roots([root]).models == []
+        limit = config.TTS_SCAN_MAX_DEPTH
+
+        at_limit = tmp_path / "at"
+        d = at_limit
+        for i in range(limit - 1):
+            d = d / f"lvl{i}"
+        make_fish(d, "just-in")
+        assert [m.name for m in scan_roots([at_limit]).models] == ["just-in"]
+
+        past = tmp_path / "past"
+        d = past
+        for i in range(limit):
+            d = d / f"lvl{i}"
+        make_fish(d, "too-deep")
+        assert scan_roots([past]).models == []
 
     def test_xtts_default_language_is_always_a_valid_choice(self, tmp_path):
         """When a model's own config.json omits English, a hardcoded "en"

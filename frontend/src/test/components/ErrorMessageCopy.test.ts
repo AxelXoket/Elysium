@@ -167,6 +167,49 @@ describe("no sentence is a dead end", () => {
 });
 
 /**
+ * A build the engine cannot load is not a broken download.
+ *
+ * readiness.py reports tts_model_variant_unsupported when every file is
+ * present and the T3 backbone names a Chatterbox build (Turbo, Multilingual
+ * v3) the bundled engine has no loader for. Its neighbour's sentence says a
+ * file "did not finish downloading", and a reader sent by that sentence
+ * fetches the same files again and lands back here.
+ */
+describe("tts_model_variant_unsupported is not the incomplete sentence", () => {
+  it("does not send the reader to download again", () => {
+    const msg = getErrorMessage("tts_model_variant_unsupported");
+    // Positive control: the fallback would pass the two absences below.
+    expect(msg).not.toBe(getErrorMessage("__no_such_code__"));
+    expect(msg).not.toMatch(/download/i);
+    expect(msg).not.toMatch(/missing/i);
+  });
+
+  it("POSITIVE CONTROL: the incomplete sentence is the one about downloading", () => {
+    expect(getErrorMessage("tts_model_incomplete")).toMatch(/download/i);
+  });
+
+  it("does not send the reader to reinstall the engine either", () => {
+    // Before the worker carried this code its refusal arrived as
+    // tts_worker_failed, whose sentence ends in "press Set up again": the
+    // wrong errand about an engine that is fine. This sentence must not
+    // repeat it.
+    expect(getErrorMessage("tts_model_variant_unsupported")).not.toMatch(/set up/i);
+  });
+
+  it("POSITIVE CONTROL: tts_worker_failed is the sentence that says Set up", () => {
+    expect(getErrorMessage("tts_worker_failed")).toMatch(/set up/i);
+  });
+
+  it("names a build the engine does load, so the reader knows what to fetch", () => {
+    // adapters/chatterbox.py REQUIRED_FILES has exactly two loadable builds,
+    // english and multilingual v2; the sentence names both.
+    const msg = getErrorMessage("tts_model_variant_unsupported");
+    expect(msg).toMatch(/English/);
+    expect(msg).toMatch(/Multilingual v2/);
+  });
+});
+
+/**
  * The duplicates.
  *
  * Two pairs of codes carried byte-identical sentences, which makes them

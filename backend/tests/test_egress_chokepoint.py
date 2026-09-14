@@ -545,11 +545,16 @@ class TestTheInstallersDownloadHasADoorToo:
         assert not (network_client.PROVISION_HOSTS
                     & network_client.allowed_hosts())
 
-    def test_the_release_host_and_its_redirect_are_both_admitted(self) -> None:
-        # One download, two hosts: github.com answers with a 302 to
-        # objects.githubusercontent.com, and a redirect arrives at the hook as
-        # a fresh request carrying the new host.
-        for host in ("github.com", "objects.githubusercontent.com"):
+    def test_the_release_host_and_its_redirects_are_all_admitted(self) -> None:
+        # One download, several hosts: github.com answers with a 302, and a
+        # redirect arrives at the hook as a fresh request carrying the new
+        # host. release-assets.githubusercontent.com is where a release asset
+        # lands today (measured 8 September 2026: with the older
+        # objects.githubusercontent.com name alone the uv download was
+        # refused, so a machine without uv could not set voice up at all);
+        # codeload.github.com is where a source archive URL lands.
+        for host in ("github.com", "objects.githubusercontent.com",
+                     "release-assets.githubusercontent.com", "codeload.github.com"):
             network_client._provision_hosts_only(
                 httpx.Request("GET", f"https://{host}/astral-sh/uv/x.zip"))
 

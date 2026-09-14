@@ -515,9 +515,9 @@ for the CUDA builds. Three footnotes, so the list can be checked rather than
 taken. Those are the names you would recognise, not the hosts a packet capture
 would show: PyPI serves its metadata and `files.pythonhosted.org` serves the
 actual wheels, and a GitHub archive URL redirects to `codeload.github.com`.
-GitHub is a package host here as well as a release one, because one engine's
-requirements pin an archive there, and the installer can also fetch a Python
-build from a GitHub release. And PyPI is the package manager's own default
+GitHub is a source host here as well as a release one, because one engine's
+source tree is fetched as an archive there by the installer's own client, and
+the package manager can also fetch a Python build from a GitHub release. And PyPI is the package manager's own default
 index rather than an address written down anywhere in this repository.
 
 That setup reaches the network two ways. It fetches a package manager from
@@ -540,8 +540,10 @@ here, with the same kind of host check in front of it, rather than through the
 hand-rolled `urllib` opener it used before. It is still its own client:
 synchronous, and handed the proxy the gate already decided on instead of
 reading that setting a second time and risking a different answer. Its list is
-its own - `github.com` and the `objects.githubusercontent.com` address its
-release URL redirects to, `https` only - and it is deliberately kept apart
+its own - `github.com`, the `release-assets.githubusercontent.com` and
+`objects.githubusercontent.com` addresses a release download lands on, and
+`codeload.github.com`, where a source archive URL lands, `https` only - and it
+is deliberately kept apart
 from the provider list rather than added to it, because the client that
 carries your API key must not be able to reach a release CDN. What the package
 manager then does is a child process: it is bounded by the index and proxy
@@ -744,7 +746,7 @@ file, and only the warnings among them reach the console.
 Both kinds have been found here. The name kind is closed, and the end of this
 section says how. The other kind, a value out of your text reaching a log
 line, is open and measured, and is the next paragraph. What keeps the rest
-closed is a gate that reads every logging call in the shipped tree - 78 files,
+closed is a gate that reads every logging call in the shipped tree - 80 files,
 and that number is checked rather than remembered - and fails the build on a
 value that can carry content or a name: an exception's own message, which
 nothing stops from being built out of your text; anything derived from one; a

@@ -1,0 +1,10 @@
+# Overrides for chatterbox.txt. Each line repeats a pin from the freeze and
+# tells the resolver to believe it where a package's own metadata disagrees.
+# Read by tts/provision.py as `--overrides`; see install_argv for the reasoning.
+#
+# chatterbox-tts 0.1.7 declares torch==2.6.0 and torchaudio==2.6.0. The
+# environment that was measured working runs 2.8.0+cu128 for both, which is
+# also what its own .safetensors loaders were exercised on. Measured
+# 8 September 2026.
+torch==2.8.0+cu128
+torchaudio==2.8.0+cu128

@@ -287,10 +287,39 @@ def all_status(engine_ids: list[str]) -> list[RuntimeStatus]:
 
 
 def extra_roots() -> list[str]:
-    """Additional model roots. Read on EVERY call on purpose: parsing this once
-    at boot (ComfyUI's extra_model_paths.yaml behaviour) means adding a folder
-    needs an app restart, which is a documented usability trap."""
+    """Additional model roots, one canonical spelling each. Read on EVERY call
+    on purpose: parsing this once at boot (ComfyUI's extra_model_paths.yaml
+    behaviour) means adding a folder needs an app restart, which is a
+    documented usability trap.
+
+    Normalised here rather than handed on raw, because raw is how each of
+    these went wrong: `~\\models` and `%LOCALAPPDATA%\\models` were looked up
+    literally and found nothing; a relative path resolved against the process
+    working directory, which is the backend folder in development and wherever
+    the exe was launched from in the shipped app; and the same folder spelled
+    twice listed its models twice under one uid. Relative paths anchor to
+    config.DATA_DIR, the one folder that is the same in both. Overlap BETWEEN
+    roots (one inside another) is the scan's to resolve, because only the scan
+    also knows the default drop folder; see registry._plan_roots.
+    """
     roots = _load().get("extra_roots")
     if not isinstance(roots, list):
         return []
-    return [str(r) for r in roots if isinstance(r, str)]
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in roots:
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        p = os.path.expanduser(os.path.expandvars(raw.strip()))
+        if not os.path.isabs(p):
+            p = os.path.join(str(config.DATA_DIR), p)
+        try:
+            p = os.path.realpath(p)
+        except OSError:
+            p = os.path.abspath(p)
+        key = os.path.normcase(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    return out

@@ -1,0 +1,10 @@
+# Build constraints for the few pins that ship as source archives and are
+# built on the user's machine (antlr4-python3-runtime, argbind, docopt,
+# julius, randomname). Without this uv fetches whatever setuptools and wheel
+# are current that day to build them: an unpinned, unhashed step inside an
+# install whose every other artefact is pinned. Handed to uv as
+# --build-constraints by tts/provision.py install_argv; every line an exact
+# pin, held by test_tts_provision. setuptools is the version the fish freeze
+# itself runs; wheel is the last release before setuptools stopped needing it.
+setuptools==80.9.0
+wheel==0.45.1

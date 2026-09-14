@@ -18,6 +18,12 @@ WHAT IS PINNED AND WHY
     requirements/<engine>.txt is a full freeze of the environment where the
     engine was actually measured working. Nothing here resolves "latest".
 
+    Where a package's own metadata contradicts the freeze it was measured
+    in, a short overrides file beside the freeze says so and the resolver is
+    told to believe the freeze. install_argv carries the measurement
+    behind that. One engine, Fish, is not a package at all but a source tree;
+    _install_source_tree says why and how it is pinned.
+
 THE RULE THAT MAKES IT SAFE
     An environment is registered as ready ONLY after its imports are proven to
     work. A successful install command is not evidence: a resolver can serve a
@@ -36,9 +42,11 @@ import hashlib
 import logging
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import threading
 import time
 import zipfile
@@ -99,28 +107,75 @@ IS_WINDOWS = sys.platform == "win32"
 CREATE_NO_WINDOW = 0x08000000
 LOG_KEEP_LINES = 400
 
-PYTHON_VERSION = "3.12"
+# The full patch, and uv is told to use its own managed build of it (see the
+# venv command in _install_worker). "3.12" alone took whatever 3.12.x the
+# machine had or uv knew, which left the interpreter the one component of the
+# environment with no pin; the measured installs of 8 September 2026 ran on
+# CPython 3.12.10.
+PYTHON_VERSION = "3.12.10"
 
 # What each engine must be able to import before we call it ready, and roughly
 # how much it will pull down (shown before the user commits to the wait).
-# The verify lists cover what the WORKER SCRIPTS actually import at load time,
-# not just the engine package - torchaudio in particular is its own wheel, and
-# an environment without it would pass a narrower check and then die on load.
+#
+# The verify lists name what the WORKER SCRIPTS actually import at load time,
+# module for module, not the engine's top-level package. The difference is
+# not pedantry: `import fish_speech` passes on a directory that has no
+# __init__.py at all, because Python treats it as a namespace package, so it
+# proved nothing in the very environment where the worker's real imports
+# (fish_speech.models.dac.inference and its sibling) would have failed. Each
+# worker names what it binds in its own ENGINE_IMPORTS tuple, and
+# test_tts_verify_contract holds every list below to a superset of it. The
+# lists carry a few names beyond the tuples: chatterbox and TTS by their
+# package names, torchaudio and torchao, which the workers reach through
+# what they bind, and fish's speed path, torchao.quantization (the fp8
+# quantiser, imported at load) and
+# triton (what torch.compile needs on Windows); without those two the engine
+# runs, slowly, and the proof would rather know at install time.
 ENGINES: dict[str, dict] = {
     "fish_s2": {
-        "verify": ["torch", "torchaudio", "torchao", "numpy", "soundfile",
-                   "fish_speech"],
+        "verify": ["torch", "torchaudio", "torchao", "torchao.quantization",
+                   "triton", "numpy", "soundfile",
+                   "fish_speech.models.dac.inference",
+                   "fish_speech.models.text2semantic.inference"],
         "download_mb": 4200,
         "torch_backend": "cu128",
+        # fish_speech is not on PyPI, and it is not installable as a wheel
+        # either: its pyproject names two top-level packages and no
+        # subpackages, so the wheel uv builds from the archive has none of
+        # fish_speech/models, no configs/ and no .project-root, all three of
+        # which the worker's imports need. The environment that was measured
+        # working ran an EDITABLE install, which is a source tree on sys.path.
+        # This reproduces that: the pinned archive is fetched, its extracted
+        # tree is checked against a content digest, placed under the
+        # environment, and reached through one .pth line: the tree root on
+        # sys.path, which is what the editable install amounted to at run
+        # time. The archive's other top-level folders (tools, docs) become
+        # importable too, after site-packages, so nothing is shadowed. See
+        # _install_source_tree.
+        "source_tree": {
+            "url": ("https://github.com/fishaudio/fish-speech/archive/"
+                    "e5e292632cb11e7a27b2b7487f58f612bc101e13.tar.gz"),
+            # Digest of the extracted TREE (paths and bytes), not of the
+            # archive: GitHub builds commit archives on the fly and has
+            # changed the compression once before, which would fail a
+            # byte pin on an archive whose contents had not moved.
+            "tree_sha256": "4ad6357dfcd936354d289d6f74e597dd7f96152b8e31ed7d632085182d3c140c",
+            "dir": "fish-speech",
+            "pth": "elysium-fish-speech.pth",
+            # The archive is 6.8 MB and extracts to 8.7 MB. A cap far above
+            # that and far below "fill the disk".
+            "max_bytes": 64 * 1024 * 1024,
+        },
     },
     "xtts_v2": {
-        "verify": ["torch", "torchaudio", "numpy", "TTS"],
+        "verify": ["torch", "torchaudio", "numpy", "TTS",
+                   "TTS.tts.configs.xtts_config", "TTS.tts.models.xtts"],
         "download_mb": 3400,
         "torch_backend": "cu128",
     },
     "chatterbox": {
         "verify": ["torch", "torchaudio", "numpy", "librosa", "perth",
-                   "chatterbox"],
+                   "chatterbox", "chatterbox.tts", "chatterbox.mtl_tts"],
         "download_mb": 3600,
         "torch_backend": "cu128",
     },
@@ -239,14 +294,193 @@ def plan_payload(engine_id: str) -> dict:
     return body
 
 
+_EXACT_PIN = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9._,-]+\])?==[A-Za-z0-9.+!]+$")
+_DIRECT_URL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]* @ https://\S+$")
+_IMMUTABLE_REF = re.compile(r"#sha256=[0-9a-f]{64}$")
+
+
+def build_constraints_path() -> Path:
+    """One file for all engines: the build backends the source-archive pins
+    are built with. See the file's own header."""
+    return Path(__file__).resolve().parent / "requirements" / "build-constraints.txt"
+
+
+def build_constraint_lines() -> list[str]:
+    return _lines_of(build_constraints_path())
+
+
+def overrides_path(engine_id: str) -> Path:
+    """Beside the freeze, same stem, `.overrides.txt`. Present only for an
+    engine whose freeze a resolver would refuse; see install_argv."""
+    return Path(__file__).resolve().parent / "requirements" / f"{engine_id}.overrides.txt"
+
+
+def _lines_of(path: Path) -> list[str]:
+    out: list[str] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        out.append(line)
+    return out
+
+
+def requirement_lines(engine_id: str) -> list[str]:
+    """The lines the installer hands uv: comments and blanks removed, nothing
+    else touched. A direct-URL line keeps its `#sha256=` fragment, which is
+    why this does not strip from the first `#` it sees."""
+    return _lines_of(requirements_path(engine_id))
+
+
+def override_lines(engine_id: str) -> list[str]:
+    """The overrides for an engine, or [] when it has no overrides file."""
+    path = overrides_path(engine_id)
+    return _lines_of(path) if path.is_file() else []
+
+
+def is_exact_pin(line: str) -> bool:
+    """Whether one requirement line names exactly one artefact.
+
+    A freeze is only a freeze while nothing in it can float: either an exact
+    `==` pin, or a direct URL that ends in a content hash. A commit id in a
+    URL is not enough: GitHub builds commit archives on the fly and has
+    changed their bytes before. A range, a bare name, a branch name or a tag
+    is refused here, and test_tts_provision holds every shipped file to this.
+    """
+    if _EXACT_PIN.match(line):
+        return True
+    if _DIRECT_URL.match(line):
+        url = line.split(" @ ", 1)[1]
+        return bool(_IMMUTABLE_REF.search(url))
+    return False
+
+
+def venv_argv(uv: str, target, python_version: str) -> list[str]:
+    """The command that creates an engine's interpreter. One builder, used by
+    the install worker and by verify/verify_tts_resolve.py.
+
+    --managed-python: uv's own build of the pinned patch version, downloaded
+    into TTS_PY_DIR when absent, never the machine's Python. --no-config for
+    the same reason install_argv gives. No --seed: it installed pip from the
+    index at whatever version was current that day, unpinned and unhashed,
+    and nothing here ever runs pip.
+    """
+    return [str(uv), "venv", str(target), "--python", python_version,
+            "--no-project", "--managed-python", "--no-config"]
+
+
+def child_env_base() -> dict:
+    """What every uv child is handed before the proxy overlay: our cache and
+    interpreter folders, a read timeout that survives a 2.6 GB wheel, UTF-8."""
+    return {
+        # Same drive as the environment, or uv falls back from hardlinks to
+        # full copies and the install costs roughly twice the disk.
+        "UV_CACHE_DIR": str(config.TTS_UV_CACHE_DIR),
+        "UV_PYTHON_INSTALL_DIR": str(config.TTS_PY_DIR),
+        # The default 30 s read timeout is not enough for a 2.6 GB wheel on a
+        # slow connection - it fails the whole install near the end.
+        "UV_HTTP_TIMEOUT": "600",
+        "PYTHONUTF8": "1",
+    }
+
+
+def install_argv(uv: str, python, p: InstallPlan) -> list[str]:
+    """The exact command that turns a freeze file into an environment.
+
+    One builder, used by the install worker and by verify/verify_tts_resolve.py,
+    so what the periodic check resolves is what the user's machine runs.
+
+    WHY AN OVERRIDES FILE. Each requirements file is a complete `uv pip
+    freeze` of an environment that was measured working. Handed back to the
+    resolver as a request, two of the three were refused, because a package's
+    own metadata contradicts the versions it was measured beside:
+    chatterbox-tts 0.1.7 declares torch 2.6.0 where the measured environment
+    runs 2.8.0, descript-audiotools 0.7.2 declares protobuf below 3.20 where
+    5.29 is what works. Measured 8 September 2026 with uv 0.11.7: fish_s2 and
+    chatterbox unsatisfiable, only xtts_v2 resolved, which means the one-click
+    install had never been able to finish for two of the three engines. An
+    overrides file names exactly those contradicted requirements and tells the
+    resolver to take the freeze's word for them. Everything else is still
+    resolved and checked, which is why this and not `--no-deps`: a freeze
+    line that went stale or a pin that lost its +cu128 suffix still fails at
+    install time, where it is loud, instead of at the first load, where it is
+    a user's afternoon. The suite holds every override to an exact pin that
+    also appears verbatim in the freeze, so an override can only ever repeat
+    the freeze, never introduce a version.
+
+    WHY --torch-backend. Left alone, the resolver takes torch from PyPI, which
+    is the CPU build: a voice engine that cannot see the GPU. The flag sends
+    the torch family to the CUDA index. It also sends torchao there, and that
+    index carries no Windows wheel for torchao, so fish_s2.txt pins torchao by
+    direct URL and hash to the PyPI file the measured environment runs.
+
+    WHY --no-config. uv reads uv.toml from the working directory chain and
+    from the user's config directory, and either can name another index. The
+    child is handed a curated environment (_proxy_env); a config file is the
+    same redirect through a different door.
+
+    There is no fallback for a uv that does not know --torch-backend: find_uv
+    refuses a uv older than the pin and the installer fetches its own.
+    """
+    argv = [str(uv), "pip", "install", "--no-config", "--python", str(python),
+            "-r", p.requirements,
+            # The build backend for the pins that arrive as source archives;
+            # otherwise it is fetched unpinned at install time.
+            "--build-constraints", str(build_constraints_path())]
+    overrides = overrides_path(p.engine_id)
+    if overrides.is_file():
+        argv += ["--overrides", str(overrides)]
+    backend = (ENGINES.get(p.engine_id) or {}).get("torch_backend")
+    if backend:
+        argv += [f"--torch-backend={backend}"]
+    return argv
+
+
 # ── uv ───────────────────────────────────────────────────────────────────────
 
+_UV_VERSION_RE = re.compile(r"\buv (\d+)\.(\d+)\.(\d+)")
+
+
+def _version_tuple(text: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in text.split("."))
+
+
+def _uv_version(path: str) -> tuple[int, ...] | None:
+    """What `uv --version` says, or None when it cannot be asked.
+
+    Through _run, never a bare subprocess call: _run strips the launch token
+    from the child (a uv found on PATH is not this app's code), hides the
+    window, and kills the whole process tree at the deadline, which a shim
+    that hands the real work to a grandchild would otherwise hold open past
+    any timeout. Still on the request thread, so the deadline is short.
+    """
+    lines: list[str] = []
+    code, _ = _run([path, "--version"], on_line=lines.append,
+                   cancel=threading.Event(), timeout=15)
+    if code != 0:
+        return None
+    for line in lines:
+        match = _UV_VERSION_RE.search(line)
+        if match:
+            return tuple(int(g) for g in match.groups())
+    return None
+
+
 def find_uv() -> str | None:
-    """Our own copy first, then whatever the machine already has.
+    """Our own copy first, then a machine uv of exactly the pinned version.
 
     Never `sys._MEIPASS`: in a onefile build that is a fresh temp directory
     extracted per launch and deleted on exit, so anything installed from there
     would point at a path that stops existing.
+
+    The version gate replaces a fallback. A uv older than the pin does not
+    know --torch-backend, and the retry that used to cover it pointed the
+    resolver at the PyTorch index with --extra-index-url, which in uv ranks
+    ABOVE PyPI for every name that index serves: the same name==version could
+    then arrive from a different origin than the one the freeze was measured
+    against, with nothing to notice. Fetching the pinned uv instead costs a
+    25 MB download once and runs the one command every measured install ran.
     """
     name = "uv.exe" if IS_WINDOWS else "uv"
     own = Path(config.TTS_BIN_DIR) / name
@@ -257,10 +491,20 @@ def find_uv() -> str | None:
     # was launched from would be run with our full environment - skipping the
     # SHA-256 pin this module enforces on its OWN copy two lines above.
     found = which_trusted(name)
-    if found:
-        return found
-    home = Path.home() / ".local" / "bin" / name
-    return str(home) if home.is_file() else None
+    if not found:
+        home = Path.home() / ".local" / "bin" / name
+        found = str(home) if home.is_file() else None
+    if not found:
+        return None
+    version = _uv_version(found)
+    # Exactly the pin, not "at least": the interpreter manifest that
+    # --managed-python resolves "3.12.10" against is embedded in uv, and so is
+    # the list of packages --torch-backend re-routes, so a newer uv can build
+    # a different environment from the same command. The pinned copy is a
+    # 25 MB download once.
+    if version is None or version != _version_tuple(UV_VERSION):
+        return None
+    return found
 
 
 class ProxyUnreadable(Exception):
@@ -374,6 +618,52 @@ _ENV_NETWORK_STRIP = (
     # the way pip does. Stripping them anyway means a future switch back to
     # pip cannot quietly reintroduce the redirect.
     "PIP_TRUSTED_HOST", "PIP_FIND_LINKS", "PIP_CONFIG_FILE",
+    # The rest of uv's resolver surface. Each of these changes what a pin
+    # means or where a download comes from without touching the command
+    # line: an override file replaces versions, a constraint or exclude
+    # narrows them, the index strategy decides which index wins a name, the
+    # torch backend re-routes the torch family, the config file can name an
+    # index, and the two mirrors redirect where the interpreter itself is
+    # fetched from. Measured 8 September 2026: none were stripped, and
+    # UV_OVERRIDE in particular replaces a pin under every flag this
+    # installer passes.
+    "UV_OVERRIDE", "UV_CONSTRAINT", "UV_BUILD_CONSTRAINT", "UV_EXCLUDE",
+    "UV_INDEX_STRATEGY", "UV_TORCH_BACKEND", "UV_NO_BUILD_ISOLATION",
+    "UV_NO_INDEX", "UV_CONFIG_FILE", "UV_PYTHON_INSTALL_MIRROR",
+    "UV_PYPY_INSTALL_MIRROR",
+    # TLS trust. UV_INSECURE_HOST makes uv accept any certificate from the
+    # hosts it names, SSL_CERT_FILE and SSL_CLIENT_CERT replace the bundle
+    # and the client identity, UV_NATIVE_TLS swaps the trust store. Any of
+    # them in a login script and an on-path attacker can hand the resolver a
+    # wheel that satisfies an exact pin; the one hash in the freezes is
+    # torchao's, and UV_NO_VERIFY_HASHES turns even that off. Measured
+    # 8 September 2026 against uv 0.11.7's own --help.
+    "UV_INSECURE_HOST", "SSL_CERT_FILE", "SSL_CLIENT_CERT", "UV_NATIVE_TLS",
+    "UV_NO_VERIFY_HASHES", "UV_KEYRING_PROVIDER",
+    # Which interpreter. The venv command asks for uv's managed build of the
+    # pinned version; these could point it at a system Python or forbid the
+    # download that makes the pin mean something.
+    "UV_PYTHON", "UV_MANAGED_PYTHON", "UV_NO_MANAGED_PYTHON",
+    "UV_PYTHON_DOWNLOADS", "UV_PYTHON_PREFERENCE",
+    # The interpreter download itself: a manifest that names the URL and
+    # the hash of every build uv will install outranks the mirrors above,
+    # and the build tag picks a different python-build-standalone release of
+    # the same "3.12.10".
+    "UV_PYTHON_DOWNLOADS_JSON_URL", "UV_PYTHON_CPYTHON_BUILD", "UV_PYTHON_CACHE_DIR",
+    # The native trust store switch by its current name (UV_NATIVE_TLS above
+    # is the old alias), the CA directory, and the two that rebuild a pin
+    # from source with an unpinned build backend.
+    "UV_SYSTEM_CERTS", "SSL_CERT_DIR", "UV_NO_BINARY", "UV_NO_BINARY_PACKAGE",
+    # The venv command's own switches: a seed puts pip from the index into
+    # every environment, which removing --seed closed.
+    "UV_VENV_SEED", "UV_VENV_CLEAR", "UV_VENV_RELOCATABLE",
+    # Resolution and trust knobs read from the environment: a cutoff date
+    # that turns a wheel into a source build, the resolution and prerelease
+    # strategies, two checks on downloaded archives, and two that move the
+    # cache or link into it.
+    "UV_EXCLUDE_NEWER", "UV_RESOLUTION", "UV_PRERELEASE", "UV_FORK_STRATEGY",
+    "UV_INSECURE_NO_ZIP_VALIDATION", "UV_SKIP_WHEEL_FILENAME_CHECK",
+    "UV_NO_CACHE", "UV_LINK_MODE",
 )
 
 
@@ -547,6 +837,184 @@ def _download_uv(on_line, cancel=None) -> str | None:
             pass
 
 
+#: More members than any engine tree this app pins could have (fish's is
+#: 192 files in 44 folders). The size cap does not bound a tar of empty
+#: files; this does.
+MAX_TREE_MEMBERS = 5000
+
+
+def _tree_digest(root: Path) -> str:
+    """SHA-256 over a directory's CONTENT: every regular file, in sorted
+    relative path order, as path, size and bytes. Timestamps, permissions and
+    the archive's own compression are outside it on purpose, which is what
+    makes a pin on this survive GitHub re-packing an unchanged commit."""
+    digest = hashlib.sha256()
+    # Ordered by the posix relative path as a string, so the digest is the
+    # same on every platform: sorting Path objects folds case on Windows and
+    # puts fish_speech before LICENSE there and after it elsewhere.
+    files = sorted((f for f in root.rglob("*") if f.is_file()),
+                   key=lambda f: f.relative_to(root).as_posix())
+    for f in files:
+        rel = f.relative_to(root).as_posix().encode("utf-8")
+        digest.update(rel + b"\0" + str(f.stat().st_size).encode() + b"\0")
+        with open(f, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                digest.update(chunk)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _site_packages(python: Path, on_line, cancel) -> Path:
+    """Where the new interpreter reads .pth files from, asked of the
+    interpreter itself rather than guessed from the platform."""
+    lines: list[str] = []
+    # -X utf8 as well as -I: under -I the interpreter ignores PYTHONUTF8 and
+    # prints in the ANSI code page, _run decodes UTF-8, and a profile name
+    # with a non-ASCII letter came back with a replacement character in it,
+    # a folder that does not exist. Measured 8 September 2026.
+    code, detail = _run(
+        [str(python), "-I", "-X", "utf8", "-c",
+         "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+        on_line=lines.append, cancel=cancel, timeout=120,
+    )
+    answer = next((ln.strip() for ln in reversed(lines) if ln.strip()), "")
+    if code != 0 and cancel.is_set():
+        raise _Cancelled()
+    if code != 0 or not answer:
+        raise ProvisionError(TTS_RUNTIME_INSTALL_FAILED,
+                             f"the new environment could not say where its "
+                             f"site-packages is: {detail}"[:300])
+    return Path(answer)
+
+
+def _install_source_tree(spec: dict, staging: Path, python: Path, on_line,
+                         cancel: threading.Event) -> None:
+    """Fetch a pinned source archive, verify its content, put it on the new
+    interpreter's path. The editable install, done by hand and pinned.
+
+    Fish is the reason this exists (see ENGINES["fish_s2"]["source_tree"]).
+    Building the archive into a wheel loses the subpackages and data files
+    the worker imports, and an editable install through uv would pull an
+    unpinned build backend from PyPI at install time. Neither is the
+    environment that was measured. This is: the tree the archive holds,
+    reachable through one .pth path line, the plain `develop` mechanism,
+    without the build step.
+
+    Every step is bounded. The download stops at `max_bytes`; the archive is
+    extracted with tarfile's data filter, which refuses absolute paths, parent
+    references, links that point outside the tree, and device nodes; the
+    member count and the unpacked size are capped; the extracted tree is digested and
+    compared to the pin BEFORE it is moved into place, and a mismatch removes
+    it and fails the install. Nothing here is imported or executed; the first
+    code from the tree runs in _verify_env, in the new interpreter.
+    """
+    url = spec["url"]
+    dest = staging / "src" / spec["dir"]
+    scratch = staging / "src" / f".extract.{os.getpid()}.{threading.get_ident()}"
+    archive = staging / "src" / f".archive.{os.getpid()}.{threading.get_ident()}.tar.gz"
+    max_bytes = int(spec["max_bytes"])
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        on_line(f"fetching the engine's source tree ({url.rsplit('/', 1)[-1]})")
+        client = _provision_client()
+        try:
+            with client.stream("GET", url, timeout=120) as resp, \
+                    open(archive, "wb") as out:
+                resp.raise_for_status()
+                total = 0
+                if cancel.is_set():
+                    raise _Cancelled()
+                for chunk in resp.iter_bytes(1024 * 256):
+                    if cancel.is_set():
+                        raise _Cancelled()
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise ProvisionError(
+                            TTS_RUNTIME_INSTALL_FAILED,
+                            "the engine's source archive is larger than the "
+                            "pinned one could be - refused")
+                    out.write(chunk)
+        finally:
+            client.close()
+
+        on_line("unpacking and checking the source tree")
+        if scratch.exists():
+            _rmtree(scratch)
+        scratch.mkdir(parents=True)
+        try:
+            with tarfile.open(archive, "r:gz") as tar:
+                # The cap on the download bounds the archive; this bounds what
+                # it unpacks to, header by header, so a few kilobytes of gzip
+                # standing for gigabytes of zeros or for millions of empty
+                # members is refused at the first header past the cap rather
+                # than after every header has been read into memory. The
+                # pinned tree is 192 files in 44 folders, under nine megabytes.
+                unpacked = 0
+                members = 0
+                for member in tar:
+                    members += 1
+                    if member.isfile():
+                        unpacked += member.size
+                    if unpacked > max_bytes or members > MAX_TREE_MEMBERS:
+                        raise ProvisionError(
+                            TTS_RUNTIME_INSTALL_FAILED,
+                            "the engine's source archive unpacks to more than "
+                            "the pinned tree could be - refused")
+                tar.extractall(scratch, filter="data")
+        except (tarfile.TarError, OSError, ValueError) as exc:
+            raise ProvisionError(TTS_RUNTIME_INSTALL_FAILED,
+                                 f"the engine's source archive could not be "
+                                 f"unpacked: {type(exc).__name__}") from exc
+        if cancel.is_set():
+            raise _Cancelled()
+        tops = [d for d in scratch.iterdir()]
+        if len(tops) != 1 or not tops[0].is_dir():
+            raise ProvisionError(TTS_RUNTIME_INSTALL_FAILED,
+                                 "the engine's source archive did not hold "
+                                 "exactly one directory")
+        digest = _tree_digest(tops[0])
+        if digest != str(spec["tree_sha256"]).lower():
+            raise ProvisionError(TTS_RUNTIME_INSTALL_FAILED,
+                                 "the engine's source tree did not match its "
+                                 "pinned checksum - refused")
+        if dest.exists():
+            _rmtree(dest)
+        os.replace(str(tops[0]), str(dest))
+
+        site = _site_packages(python, on_line, cancel)
+        # A .pth is a list of directories site adds to sys.path at startup,
+        # read from site-packages only. One line, the tree's location, is the
+        # whole mechanism the editable install used. RELATIVE to the
+        # site-packages directory, never absolute: site.py joins a relative
+        # line onto the directory the .pth sits in, and this environment is
+        # built under a staging name that is renamed into place only after
+        # the proof. Measured 8 September 2026: an absolute line named the
+        # staging directory, the proof passed there, and the first load after
+        # the rename found no tree and exited 3, which the app reported as
+        # "its files are gone now, set up again". A relative line moves with
+        # the environment.
+        (site / spec["pth"]).write_text(
+            os.path.relpath(dest, site) + "\n", encoding="utf-8")
+        on_line("source tree in place")
+    except ProxyUnreadable as exc:
+        raise ProvisionError(TTS_PROXY_UNAVAILABLE, str(exc)) from exc
+    except (ProvisionError, _Cancelled):
+        raise
+    except Exception as exc:                    # noqa: BLE001
+        raise ProvisionError(TTS_RUNTIME_INSTALL_FAILED,
+                             f"could not fetch the engine's source tree: "
+                             f"{type(exc).__name__}") from exc
+    finally:
+        for leftover in (archive, scratch):
+            try:
+                if leftover.is_dir():
+                    _rmtree(leftover)
+                else:
+                    leftover.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 def _free_gb(path: Path) -> float:
     try:
         target = path
@@ -663,7 +1131,7 @@ def _verify_env(engine_id: str, python: Path, on_line, cancel) -> None:
     for module in spec.get("verify", []):
         on_line(f"checking {module}")
         code, detail = _run(
-            [str(python), "-I", "-c", f"import {module}"],
+            [str(python), "-I", "-X", "utf8", "-c", f"import {module}"],
             on_line=lambda ln: None, cancel=cancel, timeout=300,
         )
         if code != 0:
@@ -771,6 +1239,7 @@ def _install_worker(job: _Job, p: InstallPlan, uv: str | None) -> None:
 
     if uv is None:
         job.state = "preparing"
+        log(f"no uv {UV_VERSION} or newer on this machine; fetching the pinned copy")
         try:
             uv = _download_uv(log, cancel=job.cancel)
         except ProxyUnreadable as exc:
@@ -799,16 +1268,7 @@ def _install_worker(job: _Job, p: InstallPlan, uv: str | None) -> None:
     # meant to fix, and leave the user worse off than before they clicked.
     staging = target.with_name(target.name + ".staging")
     python = staging / ("Scripts/python.exe" if IS_WINDOWS else "bin/python")
-    env = {
-        # Same drive as the environment, or uv falls back from hardlinks to
-        # full copies and the install costs roughly twice the disk.
-        "UV_CACHE_DIR": str(config.TTS_UV_CACHE_DIR),
-        "UV_PYTHON_INSTALL_DIR": str(config.TTS_PY_DIR),
-        # The default 30 s read timeout is not enough for a 2.6 GB wheel on a
-        # slow connection - it fails the whole install near the end.
-        "UV_HTTP_TIMEOUT": "600",
-        "PYTHONUTF8": "1",
-    }
+    env = child_env_base()
     # uv resolves and downloads from PyPI and download.pytorch.org; without
     # these it went direct even for a user who had configured a proxy. This is
     # the OTHER egress path, the one worth several gigabytes, and it reaches
@@ -822,7 +1282,6 @@ def _install_worker(job: _Job, p: InstallPlan, uv: str | None) -> None:
         _fail(job, TTS_PROXY_UNAVAILABLE, str(exc), None, p.engine_id)
         job.finished_at = time.time()
         return
-    spec = ENGINES.get(p.engine_id) or {}
     try:
         if staging.exists():
             log("clearing a leftover staging directory")
@@ -832,35 +1291,22 @@ def _install_worker(job: _Job, p: InstallPlan, uv: str | None) -> None:
         job.state = "installing"
         log(f"creating an isolated Python {p.python_version} environment")
         code, detail = _run(
-            [uv, "venv", str(staging), "--python", p.python_version,
-             "--no-project", "--seed"],
+            venv_argv(uv, staging, p.python_version),
             on_line=log, cancel=job.cancel,
             timeout=float(config.TTS_INSTALL_TIMEOUT_S), env=env,
         )
         _check(job, code, detail)
 
         log("installing the engine and its dependencies")
-        argv = [uv, "pip", "install", "--python", str(python),
-                "-r", p.requirements]
-        backend = spec.get("torch_backend")
-        if backend:
-            # Without this the resolver is free to take torch from PyPI, which
-            # is the CPU build - a voice engine that cannot see the GPU.
-            argv += [f"--torch-backend={backend}"]
+        # The freeze, with its overrides; install_argv says why at length.
+        argv = install_argv(uv, python, p)
         code, detail = _run(argv, on_line=log, cancel=job.cancel,
                             timeout=float(config.TTS_INSTALL_TIMEOUT_S), env=env)
-        if code != 0 and not job.cancel.is_set() and "torch-backend" in detail:
-            # An older uv rejects the flag outright. The pins carry explicit
-            # +cu128 local versions, so pointing the resolver at the PyTorch
-            # index is an equivalent (if slower to fail) way to say the same
-            # thing - and PyPI cannot satisfy a +cu128 pin by accident.
-            log("this uv does not know --torch-backend; retrying with the index")
-            argv = [uv, "pip", "install", "--python", str(python),
-                    "-r", p.requirements,
-                    "--extra-index-url", "https://download.pytorch.org/whl/cu128"]
-            code, detail = _run(argv, on_line=log, cancel=job.cancel,
-                                timeout=float(config.TTS_INSTALL_TIMEOUT_S), env=env)
         _check(job, code, detail)
+
+        tree = (ENGINES.get(p.engine_id) or {}).get("source_tree")
+        if tree:
+            _install_source_tree(tree, staging, python, log, job.cancel)
 
         job.state = "verifying"
         log("checking that the new environment actually works")
@@ -1037,7 +1483,9 @@ def uninstall(engine_id: str) -> dict:
             if _JOBS.get(engine_id) is marker:
                 _JOBS.pop(engine_id, None)
     # When the LAST environment goes, the uv wheel cache - by far the largest
-    # leftover - goes with it. "Give the disk back" has to mean all of it.
+    # leftover - goes with it. "Give the disk back" has to mean all of it,
+    # for THIS engine: the uv under bin/ and the interpreter under python/
+    # serve every engine and stay.
     try:
         envs = Path(config.TTS_ENVS_DIR)
         if not envs.exists() or not any(envs.iterdir()):

@@ -155,8 +155,9 @@ class DetectedModel:
     variant: str | None = None
     source: str = "signature"
     missing: tuple[str, ...] = ()
-    #: The uid this folder had before roots were mixed in. Carried only so a
-    #: stored selection made under the old scheme can be recognised once and
+    #: The uid this folder had before roots were mixed in, or, for a root
+    #: that is itself a model, the uid it had under the wider root above it.
+    #: Carried only so a stored selection can be recognised once and
     #: rewritten, instead of resolving to nothing. Never sent to the client.
     legacy_uid: str = ""
 
@@ -208,7 +209,24 @@ class ScanResult:
     #: everything": a model past the limit was simply absent from the UI, and
     #: the next Speak on it failed with tts_model_unknown - an error about a
     #: model the user could see on disk and the app had never looked at.
+    #: Since 8 September 2026 the cap is per root, so this is "at least one
+    #: root was cut", never "the whole scan gave up".
     truncated: bool = False
+    #: The roots whose walk was cut, in scan order, in the same normalised
+    #: spelling as `roots`. The bool above cannot tell two roots apart, and
+    #: the settings page has no control for narrowing the scan, so the one
+    #: honest sentence it can show is which folder the list may be short
+    #: from. Empty whenever `truncated` is false.
+    truncated_roots: list[str] = field(default_factory=list)
+    #: Configured roots the scan could not open: a folder that does not
+    #: exist, a path that is a file, a drive that is no longer plugged in.
+    #: Skipping these in silence made a mistyped extra root look exactly
+    #: like an empty one. The default drop folder is exempt while it does
+    #: not exist yet, because that is what a fresh install looks like and
+    #: the empty-list copy already says what to do about it. Paths are the
+    #: normalised spelling the scan actually tried, so an unexpanded or
+    #: mistyped variable shows up as what it became.
+    unreadable_roots: list[str] = field(default_factory=list)
 
 
 class TtsAdapter(ABC):

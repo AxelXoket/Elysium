@@ -124,6 +124,108 @@ no exe you can download yet.
 
 ### Fixed
 
+- **Voice engine setup can finish, for every engine, on a machine that has
+  nothing.** Several things stood in the way, each measured on 8 September
+  2026.
+  Pressing Set up for Fish or Chatterbox could never complete: each pinned
+  list is a freeze of an environment that was measured working, and handed to
+  the resolver as a request it was refused, because a package's own metadata
+  contradicts the versions it was measured beside (chatterbox-tts asks for
+  torch 2.6.0 where the measured set runs 2.8.0; a Fish dependency asks for
+  protobuf below 3.20 where 5.29 is what works). A short overrides file
+  beside each of those two freezes now tells the resolver to believe the
+  freeze there, and everything else is still resolved and checked. Fish itself
+  was pinned as a source archive to be built into a wheel, and that wheel
+  would have carried none of the modules the engine loads, so the install
+  would have passed and the first load would have failed; the installer now
+  fetches that archive itself, checks the extracted tree against a content
+  digest, and puts the tree on the engine's path the way the measured
+  environment had it. On a machine without the package manager, the download
+  of the pinned one was refused by the app's own host list, because GitHub
+  now sends release downloads through a host the list did not have; the list
+  has it. And a package manager older than the pinned one is no longer used,
+  the pinned one is fetched instead, which retires a retry path that could
+  have taken packages from a different index than the one they were measured
+  from. The few pins that ship as source archives are built with a pinned
+  setuptools and wheel rather than whatever the index offers that day. The
+  readiness proof after an install now imports, module for module,
+  what each engine's worker imports, so a wheel that lacks them cannot be
+  called ready. The suite holds every freeze line to an exact pin and every
+  override to a line of its freeze, and a hand-run check
+  (`backend/verify/verify_tts_resolve.py`) dry-runs all three freezes against
+  the index so a stale pin is found before you find it. This is also the way
+  back for a voice set up by hand before 1.1.5: the trust check refuses an
+  interpreter Elysium did not install, and Set up again now installs one.
+- **An engine that failed its trust check offers "Set up again".** The row
+  already said the engine on this machine was not the one Elysium installed
+  and told you to press Set up again; the button under it read "Set up".
+- **A Chatterbox checkpoint is judged by the files the engine actually
+  opens.** The settings page accepted the multilingual build's .pt weights for
+  the english build and named s3gen.pt as missing whatever the build, while the
+  worker demanded the .safetensors names plus tokenizer.json, so an english
+  folder read as complete and then failed at load as "incomplete". Both sides
+  now read one table per build, and a folder holding a build the bundled
+  engine has no loader for (Chatterbox Turbo, Multilingual v3) is reported as
+  exactly that, without a redownload button for files that are all there.
+- **A Fish S2 checkpoint is judged by the files the engine actually
+  opens.** A folder with `config.json` and `codec.pth` but no text2semantic
+  weights, or shard 1 of 2, read as complete, because a `*.pth` pattern was
+  satisfied by the codec. The verdict now follows the engine's own loader: the
+  shards named in `model.safetensors.index.json` must exist and missing ones
+  are listed by name, else `model.safetensors`; `codec.pth` never counts as a
+  weight. `tokenizer.json` and `tokenizer_config.json` are required, because
+  the engine loads without them and crashes on the first sentence. The worker
+  refuses an incomplete folder with the same names before importing torch, so
+  the app's "download did not finish" and the worker agree.
+- **The voice model scan finds a model wherever you put it, and says when it
+  could not look.** Pointing `extra_roots` at the model folder itself found
+  nothing, because the walk only ever looked at children; `~`, `%LOCALAPPDATA%`
+  and relative paths were taken literally, and a relative one resolved against
+  wherever the app happened to be started from; the same folder listed twice,
+  or once inside a wider root, appeared twice; one directory budget was shared
+  by every root, so a large first root left the second unscanned; a root that
+  did not exist or sat on a removed drive was skipped in silence; and a
+  HuggingFace cache showed its `trees` folders and `.no_exist` markers as
+  "not recognised" rows. Now the root itself is identified first (the app's
+  own drop folder excepted, which stays a container), paths are expanded and
+  anchored to the data folder (a relative root that a 1.1.6 exe read against
+  its own folder now reads against the data folder, and has to be respelled
+  as an absolute path), two roots that nest are both walked, each with
+  its own budget, and the wider walk steps around the inner one, so a model is
+  listed once, under the nearest root above it, and carries that root's id.
+  Adding a root above an existing one changes nothing under it; adding a root
+  inside one moves the folders under the new root onto its id, and when the
+  new root is itself the model, the id it had under the wider root is
+  remembered, so a saved selection and its saved settings follow it to the
+  new id on the first read, whether by the chat, the settings page or a
+  speak; the old settings row is left in place. One real folder reached
+  through a junction and through its own name is one row, under the nearest
+  configured root, whichever root's walk reaches it first. A model behind a
+  junction that leaves its root (`models\hf` pointing at `D:\hf`) is
+  identified by the path the scan reached it by, so two such folders of one
+  name are two rows, and the id it had in 1.1.6, by its bare folder name, is
+  remembered: a selection saved then follows it to the new id on the first
+  read, and two folders that shared that id resolve to the first row, the one
+  1.1.6 loaded. A junction that is itself a root inside a wider root
+  remembers the id it had under that root as well. A root that holds files no
+  engine claims is a "not recognised" row only when nothing under it is a
+  model or a row of its own, by any walk, so adding a root never makes the
+  folder above it appear as a row. The manual engine override reaches a model
+  behind a junction: the folder is confined as the scan spelled it and the
+  link check on the sidecar's own name is the guard. The cap is per
+  root, the walk goes one level deeper so `HF_HOME` and the ModelScope cache
+  are reached, none of `blobs`, `refs`, `trees`, `.no_exist`, `.locks`, `xet`
+  or `.cache` is listed or entered, and the voice settings page says in two
+  sentences when a walk was cut, naming the folder, and which folders it
+  could not open.
+- **XTTS speaks a long sentence instead of failing it.** With "Split long
+  text" on, the engine's own splitter asked for spacy past 250 characters,
+  spacy is not part of the engine's environment, and any single sentence of
+  that length came back as a synthesis failure. Measured on a 299-character
+  sentence through the real installer and model. The worker now cuts the
+  text itself, at sentence ends first, then clause marks, then spaces, hands
+  the engine one piece at a time with its own splitter off, and joins the
+  audio.
 - **Two unnamed voice uploads no longer overwrite each other.** The panel fell
   back to one fixed label for both, so the second upload replaced the first
   clip and its hand-corrected words.

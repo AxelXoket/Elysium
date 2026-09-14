@@ -47,7 +47,7 @@ from pydantic import BaseModel, Field, model_validator
 import config
 import secure_delete
 import speech_prep
-from database import get_setting, set_setting
+from database import get_setting
 from vault_state import VaultLockedError
 from tts import provision, refs, scan_roots, speed, stream_hook
 from tts import host as tts_host
@@ -110,25 +110,21 @@ def _host():
 
 
 def _resolve(uid: str | None):
+    # The one lookup every route shares: by uid, then by the uid the folder
+    # had before its root changed, rewriting a saved selection once and
+    # carrying its values row with it. It lives beside the settings routes
+    # in routers/tts, which own the settings keys; the import is local the
+    # way _values_for's is, so this module never loads that one at import.
+    from routers.tts import model_for_uid
+
     from_setting = not uid
     uid = uid or get_setting(SETTING_ACTIVE_UID)
     if not uid:
         raise HTTPException(400, TTS_MODEL_UNKNOWN)
     models = scan_roots().models
-    for model in models:
-        if model.uid == uid:
-            return model
-    # Uids gained their scan root (KÖK 15: two roots could hold a folder of the
-    # same name and collide onto one id). A selection saved under the old
-    # scheme is recognised here and rewritten ONCE, so the migration costs the
-    # user nothing - the alternative was their chosen voice silently becoming
-    # "no model selected" on the first launch after the change.
-    for model in models:
-        if model.legacy_uid and model.legacy_uid == uid:
-            if from_setting:
-                set_setting(SETTING_ACTIVE_UID, model.uid)
-                logger.info("tts: migrated the selected model to its new id.")
-            return model
+    model = model_for_uid(uid, models, saved=from_setting)
+    if model is not None:
+        return model
     if not models:
         # An empty models folder is not a stale selection, and the two have
         # opposite fixes: the contract's 404 says "put one there and rescan",

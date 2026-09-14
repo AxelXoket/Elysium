@@ -223,7 +223,17 @@ async def _one_host_only(request: httpx.Request) -> None:
 #: request that arrives at the hook with the new host on it.
 PROVISION_HOSTS: frozenset[str] = frozenset({
     "github.com",
+    # Where a release asset download lands. GitHub moved this from
+    # objects.githubusercontent.com to release-assets.githubusercontent.com;
+    # measured 8 September 2026, the uv download was refused by this very
+    # list with the old name alone, so a machine without uv could not set
+    # voice up at all. Both names stay: the old one is still served for
+    # some assets.
     "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+    # Where a source archive URL (github.com/<org>/<repo>/archive/<sha>.tar.gz)
+    # lands. Fish's engine tree is fetched this way, see provision.
+    "codeload.github.com",
 })
 
 
@@ -243,11 +253,11 @@ def _provision_hosts_only(request: httpx.Request) -> None:
     if host not in PROVISION_HOSTS:
         logger.warning(
             "egress: refused a voice-engine download redirected to %s; the "
-            "installer fetches from exactly two hosts and that is not one",
+            "installer fetches from a short fixed list of hosts and that is not one",
             host)
         raise EgressRefused(
             f"refused an outbound request to {host!r}: the voice engine "
-            f"installer fetches from exactly two hosts and that is not one"
+            f"installer fetches from a short fixed list of hosts and that is not one"
         )
     if request.url.scheme != "https" and host not in _PLAINTEXT_OK:
         raise EgressRefused(

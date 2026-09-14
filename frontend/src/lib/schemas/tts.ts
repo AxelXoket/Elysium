@@ -75,6 +75,27 @@ export const TtsScanSchema = z.object({
     )
     .default([]),
   roots: z.array(z.string()).default([]),
+  /**
+   * At least one root's walk stopped at the backend's per-root directory
+   * cap. The backend has sent this since the cap existed and this schema
+   * dropped it, so a cut list rendered as a complete one. Defaults false so
+   * an older backend still parses.
+   */
+  truncated: z.boolean().default(false),
+  /**
+   * The roots whose walk was cut, so the page can name the folder the list
+   * may be short from. The bool alone cannot tell two roots apart, and there
+   * is no control for narrowing the scan, so naming the folder is the one
+   * honest sentence. Defaults empty so a backend that sends only the bool
+   * still parses.
+   */
+  truncated_roots: z.array(z.string()).default([]),
+  /**
+   * Configured roots the scan could not open: missing, a file, a drive that
+   * is gone, a folder that refuses to be listed. Named so a mistyped extra
+   * root does not look like an empty one.
+   */
+  unreadable_roots: z.array(z.string()).default([]),
 });
 
 // ── per-model settings ───────────────────────────────────────────────────────

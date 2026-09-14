@@ -1,17 +1,28 @@
-# HASH PINNING: measured 2026-08-09, NOT applied. Unlike its two siblings this
-# file DOES compile: `uv pip compile --generate-hashes --torch-backend=cu128`
-# produced 2161 hashes cleanly. It is left alone anyway, for a different reason.
+# A FREEZE, INSTALLED WITH THE RESOLVER ON AND ITS OBJECTIONS OVERRIDDEN.
 #
-# A compile RE-RESOLVES, so the lockfile it produces pins whatever is newest
-# today rather than the versions this engine was tested against - and there is
-# no installed environment to constrain it to, because engines are only built
-# when the user asks for one. Shipping one hash-pinned engine whose versions
-# nobody has run, beside two that could not be pinned at all, buys asymmetry
-# rather than safety.
+# This file is a `uv pip freeze` of an environment that was measured working.
+# tts/provision.py hands it to uv as is, plus `--torch-backend=cu128` so the
+# torch family comes from the CUDA index, plus `--overrides <this stem>.overrides.txt`
+# where such a file exists. The overrides file names the few places a
+# package's own metadata contradicts the versions it was measured beside, and
+# tells the resolver to believe the freeze there; everything else is still
+# resolved and checked, so a pin that goes stale on the index fails at
+# install time, loudly, not at the first load.
+# Measured 8 September 2026 with uv 0.11.7: this file resolves as it stands (87
+# packages) and has no overrides file. It is installed through the same
+# command as its two siblings, so one mechanism covers all three engines.
 #
-# When this is picked up: pin to the versions already in this file and attach
-# hashes to them, then install one engine end to end on a GPU machine before
-# trusting it. backend/requirements.lock.txt is the worked example.
+# Every line here is an exact pin (provision.is_exact_pin) and every override
+# repeats a line from this file verbatim; test_tts_provision.py holds both.
+# provision._verify_env then imports, module for module, what the worker
+# script imports before the environment is called ready.
+# verify/verify_tts_resolve.py dry-runs this file with the pinned uv so a pin
+# that has gone stale on the index is found before a user finds it.
+#
+# HASH PINNING is not applied here yet. The way there is plain: attach the
+# hash of each pinned artefact and pass --require-hashes, then run one
+# end-to-end install on a GPU machine. backend/requirements.txt and its
+# requirements.lock.txt are the worked example.
 #
 # Coqui XTTS-v2 - captured with `uv pip freeze` from the bake-off env.
 # Self-contained: coqui-tts is a real package, so nothing else is needed.

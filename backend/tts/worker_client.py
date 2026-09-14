@@ -101,7 +101,14 @@ EXIT_CODE_MAP = {
 # asked the local API for everything, with the vault unlocked by definition.
 _ENV_STRIP = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_TOKEN",
               "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "WANDB_API_KEY",
-              launch_token.ENV_VAR)
+              launch_token.ENV_VAR,
+              # What the interpreter itself reads. The install proved the
+              # environment under `-I`, which ignores all four; the worker
+              # runs without `-I` because its script directory has to stay
+              # on the path, so a PYTHONPATH pointing at another numpy would
+              # pass the proof and fail the first load. Measured
+              # 8 September 2026: none of these were stripped.
+              "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE")
 _ENV_FORCE = {
     # Forced, not setdefault: an inherited HF_HUB_OFFLINE=0 from the user's
     # shell would silently re-enable Hub access inside the worker.
@@ -470,6 +477,12 @@ class WorkerClient:
         # credentials and no way to phone home - stripping here means every
         # engine inherits the guarantee instead of each remembering to.
         for key in _ENV_STRIP:
+            env.pop(key, None)
+        # And every other PYTHON* name. The install proved the interpreter
+        # under -I, which ignores all of them; PYTHONWARNINGS=error alone
+        # turned a deprecation inside chatterbox's import into exit 3 at every
+        # load after a green install. Measured 8 September 2026.
+        for key in [k for k in env if k.upper().startswith("PYTHON")]:
             env.pop(key, None)
         env.update(self._env)
         # LAST, on purpose. These went in before the per-worker overrides once,

@@ -35,6 +35,7 @@ from .errors import (
     TTS_INSUFFICIENT_VRAM,
     TTS_LANGUAGE_UNSUPPORTED,
     TTS_MODEL_INCOMPLETE,
+    TTS_MODEL_VARIANT_UNSUPPORTED,
     TTS_RUNTIME_BROKEN,
     TTS_RUNTIME_MISSING,
     TTS_WORKER_FAILED,
@@ -220,8 +221,37 @@ def evaluate(
             f"{model.engine_id}",
         ))
 
-    # 2. An interrupted download looks exactly like a working model until it is
-    #    loaded, so name the files rather than failing later with a stack trace.
+    # 2. A build the bundled worker has no loader for. Every file may be
+    #    present and the engine still cannot open them: the T3 backbone names
+    #    chatterbox turbo or multilingual v3, and chatterbox_tts 0.1.7 loads
+    #    neither. Its own code, with no action: nothing is known to be
+    #    missing, nothing was cut short, and ACTION_REDOWNLOAD would fetch the
+    #    same files again. The fix is an engine that loads it, and there is
+    #    no button for that. Only chatterbox has builds, so the hook is
+    #    optional: base.py declares no default, and an adapter without one
+    #    has nothing to refuse.
+    #
+    #    Decided BEFORE the incomplete check below, because the two overlap:
+    #    a download manifest that recorded a short file sits in the same
+    #    folder as a refused build, and reporting both offered a redownload
+    #    for a folder that will never load however many times it is fetched.
+    #    The refusal wins and the manifest half is not consulted for it.
+    refusal = ""
+    refuse = getattr(adapter, "variant_refusal", None)
+    if refuse is not None:
+        try:
+            refusal = str(refuse(model) or "")
+        except Exception:
+            # Same rule as the descriptor above: an adapter that cannot answer
+            # is reported, never read as a yes.
+            refusal = ("this model's build could not be checked against the "
+                       "bundled engine")
+        if refusal:
+            issues.append(Issue(TTS_MODEL_VARIANT_UNSUPPORTED, BLOCKER, refusal))
+
+    # 2b. An interrupted download looks exactly like a working model until it
+    #    is loaded, so name the files rather than failing later with a stack
+    #    trace.
     #
     #    TWO WAYS TO BE INCOMPLETE, ONE ISSUE. `missing` asks is_file(), and a
     #    zero-byte or half-written model.pth answers yes - so the interrupted
@@ -243,11 +273,16 @@ def evaluate(
     #    clause called a deleted file "present", which is the exact wrong
     #    errand this wording exists to avoid - sending someone to look at a
     #    file that is not there.
+    #
+    #    `missing` needs no guard against the refusal above: identify() has
+    #    no file list for a refused build, so it names nothing for one. The
+    #    manifest half does, and gets it.
     if model.missing:
         trouble.append("missing from the model folder: "
                        + _name_list(model.missing))
-    short = tuple(f for f in manifest.short_files(Path(model.path))
-                  if f not in model.missing)
+    short = () if refusal else tuple(
+        f for f in manifest.short_files(Path(model.path))
+        if f not in model.missing)
     if short:
         trouble.append("present but not the size the download recorded: "
                        + _name_list(short))

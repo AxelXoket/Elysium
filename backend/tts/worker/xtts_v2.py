@@ -32,8 +32,10 @@ synthesising Mandarin text with an English tokenizer.
 """
 from __future__ import annotations
 
+import importlib
 import inspect
 import os
+import re
 import struct
 import sys
 import traceback
@@ -95,6 +97,15 @@ STATE = {
 
 # ── engine import ────────────────────────────────────────────────────────────
 
+#: Every module the engine path binds or calls, by name, in one place the
+#: host can read. The readiness proof after an install (tts/provision.py,
+#: ENGINES verify list) must name each of these, and the suite holds the two
+#: lists to that. numpy is imported later, at synthesis, and belongs here for
+#: the same reason: missing, it should fail the install, not the first reply.
+ENGINE_IMPORTS = ("numpy", "torch", "TTS.tts.configs.xtts_config",
+                  "TTS.tts.models.xtts")
+
+
 def _import_engine():
     """Import torch + TTS, or exit 3.
 
@@ -106,6 +117,10 @@ def _import_engine():
     if STATE["torch"] is not None:
         return
     try:
+        # By name first, so ENGINE_IMPORTS is what actually runs and cannot
+        # drift from the binds below.
+        for name in ENGINE_IMPORTS:
+            importlib.import_module(name)
         import torch
         from TTS.tts.configs.xtts_config import XttsConfig
         from TTS.tts.models.xtts import Xtts
@@ -117,6 +132,76 @@ def _import_engine():
     STATE["torch"] = torch
     STATE["XttsConfig"] = XttsConfig
     STATE["Xtts"] = Xtts
+
+
+# ── text splitting, done here and not by the engine ─────────────────────────
+
+#: Coqui's own splitter (TTS/tts/layers/xtts/tokenizer.py, split_sentence)
+#: passes text shorter than this straight through and, at or past it, asks
+#: spacy for a sentence pipeline. spacy is not in the freeze and never was in
+#: the environment that was measured, so with `enable_text_splitting` on the
+#: engine raised ImportError on any single sentence of 250 characters or
+#: more, and the app reported tts_synthesis_failed. Measured 8 September 2026
+#: on a 299-character sentence. The limit is the engine's, kept as the piece
+#: size here; the splitting is ours.
+SPLIT_CHAR_LIMIT = 250
+
+_SENTENCE_END = re.compile(r"(?<=[.!?\u2026])\s+")
+_CLAUSE_END = re.compile(r"(?<=[,;:])\s+")
+
+
+def _pack(units: list[str], limit: int) -> list[str]:
+    """Greedy: consecutive units joined by one space while they fit."""
+    pieces: list[str] = []
+    current = ""
+    for unit in units:
+        if not current:
+            current = unit
+        elif len(current) + 1 + len(unit) <= limit:
+            current = f"{current} {unit}"
+        else:
+            pieces.append(current)
+            current = unit
+    if current:
+        pieces.append(current)
+    return pieces
+
+
+def _wrap_words(text: str, limit: int) -> list[str]:
+    """Word wrap; a single word longer than the limit is cut hard."""
+    words: list[str] = []
+    for word in text.split(" "):
+        while len(word) > limit:
+            words.append(word[:limit])
+            word = word[limit:]
+        if word:
+            words.append(word)
+    return _pack(words, limit)
+
+
+def split_text(text: str, limit: int = SPLIT_CHAR_LIMIT) -> list[str]:
+    """Pieces of at most `limit` characters that read back as the text.
+
+    Whitespace runs collapse to one space first. A piece ends at a sentence
+    end where one fits, otherwise at a clause mark, otherwise at a space,
+    otherwise mid-word. Nothing is dropped and nothing is added: joining the
+    pieces with single spaces gives the normalised text back, which the
+    suite holds.
+    """
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return [text] if text else []
+    pieces: list[str] = []
+    for sentence in _pack(_SENTENCE_END.split(text), limit):
+        if len(sentence) <= limit:
+            pieces.append(sentence)
+            continue
+        for clause in _pack(_CLAUSE_END.split(sentence), limit):
+            if len(clause) <= limit:
+                pieces.append(clause)
+            else:
+                pieces.extend(_wrap_words(clause, limit))
+    return pieces
 
 
 # ── small helpers ────────────────────────────────────────────────────────────
@@ -265,9 +350,12 @@ def _pcm16(samples) -> bytes:
 
 
 def _write_wav(path: str, samples, rate: int) -> float:
+    return _write_pcm(path, _pcm16(samples), rate)
+
+
+def _write_pcm(path: str, pcm: bytes, rate: int) -> float:
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)    # the host may not have
-    pcm = _pcm16(samples)
     if not pcm:
         raise _wire.WorkerError(_wire.CODE_SYNTHESIS_FAILED,
                                 "the engine returned no audio")
@@ -636,36 +724,45 @@ def _op_synthesize(req: dict, send) -> dict:
         "enable_text_splitting": _as_bool(values.get("enable_text_splitting"),
                                           DEFAULTS["enable_text_splitting"]),
     }
+    # The splitting is done HERE (split_text): the engine's own splitter
+    # needs spacy past 250 characters and the freeze does not carry it. The
+    # engine is always handed one piece with its splitter off.
+    pieces = split_text(text) if kwargs["enable_text_splitting"] else [text]
+    kwargs["enable_text_splitting"] = False
     # A library version that dropped a kwarg degrades to "that knob did
     # nothing" instead of crashing - the bake-off drivers' own convention.
     kwargs, ignored = _split_supported(model.inference, kwargs)
 
-    send(_wire.event("progress", stage="synthesizing", pct=0.35))
-    try:
-        result = model.inference(text, language, gpt_cond_latent,
-                                 speaker_embedding, **kwargs)
-    except TypeError as exc:
-        # Last-resort retry with the minimal call, so a signature change is a
-        # quality regression rather than an outage.
-        sys.stderr.write(f"xtts_v2: inference kwargs rejected ({exc}); "
-                         f"retrying minimal\n")
+    pcm = b""
+    for index, piece in enumerate(pieces):
+        send(_wire.event("progress", stage="synthesizing",
+                         pct=round(0.35 + 0.55 * index / len(pieces), 3)))
         try:
-            result = model.inference(text, language, gpt_cond_latent,
-                                     speaker_embedding)
-            ignored = sorted(set(ignored) | set(kwargs))
-        except Exception as inner:                  # noqa: BLE001
-            raise _guard(inner, _wire.CODE_SYNTHESIS_FAILED, "synthesis failed")
-    except Exception as exc:                        # noqa: BLE001
-        raise _guard(exc, _wire.CODE_SYNTHESIS_FAILED, "synthesis failed")
+            result = model.inference(piece, language, gpt_cond_latent,
+                                     speaker_embedding, **kwargs)
+        except TypeError as exc:
+            # Last-resort retry with the minimal call, so a signature change
+            # is a quality regression rather than an outage.
+            sys.stderr.write(f"xtts_v2: inference kwargs rejected ({exc}); "
+                             f"retrying minimal\n")
+            try:
+                result = model.inference(piece, language, gpt_cond_latent,
+                                         speaker_embedding)
+                ignored = sorted(set(ignored) | set(kwargs))
+            except Exception as inner:              # noqa: BLE001
+                raise _guard(inner, _wire.CODE_SYNTHESIS_FAILED, "synthesis failed")
+        except Exception as exc:                    # noqa: BLE001
+            raise _guard(exc, _wire.CODE_SYNTHESIS_FAILED, "synthesis failed")
 
-    wav = result.get("wav") if isinstance(result, dict) else result
-    if wav is None:
-        raise _wire.WorkerError(_wire.CODE_SYNTHESIS_FAILED,
-                                "the engine returned no waveform")
+        wav = result.get("wav") if isinstance(result, dict) else result
+        if wav is None:
+            raise _wire.WorkerError(_wire.CODE_SYNTHESIS_FAILED,
+                                    "the engine returned no waveform")
+        pcm += _pcm16(wav)
 
     rate = int(STATE["sample_rate"] or SAMPLE_RATE)
     send(_wire.event("progress", stage="writing", pct=0.92))
-    seconds = _write_wav(out, wav, rate)
+    seconds = _write_pcm(out, pcm, rate)
 
     return {
         "path": out,

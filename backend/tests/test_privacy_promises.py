@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 import logging
-import subprocess
 import sys
 from pathlib import Path
 
@@ -160,7 +159,11 @@ class TestWhatIsNeverSent:
         root = pathlib.Path(__file__).resolve().parent.parent
         senders = []
         for path in root.rglob("*.py"):
-            if ".venv" in path.parts or path.parts[-2:][0] == "tests":
+            # `voice` is the data folder in a development checkout: a voice
+            # engine installed through the app lands a whole interpreter
+            # there, tcl demos with Python 2 syntax included.
+            if ".venv" in path.parts or "voice" in path.parts \
+                    or path.parts[-2:][0] == "tests":
                 continue
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
@@ -853,6 +856,23 @@ class TestTheVoiceEngineGetsNoCredentialsAndNoWayHome:
     ) -> None:
         monkeypatch.setenv(secret, "leaked-token-value")
         assert secret not in self._spawn_env(monkeypatch)
+
+    @pytest.mark.parametrize("name", ["PYTHONPATH", "PYTHONHOME",
+                                      "PYTHONSTARTUP", "PYTHONUSERBASE",
+                                      "PYTHONWARNINGS", "PYTHONOPTIMIZE",
+                                      "PYTHONSAFEPATH"])
+    def test_the_parents_python_settings_do_not_reach_the_engine(
+        self, monkeypatch: pytest.MonkeyPatch, name: str
+    ) -> None:
+        """The install proves the new interpreter under -I, which ignores
+        these; the worker runs without -I. A PYTHONPATH naming another
+        numpy would pass the proof and fail the first load."""
+        monkeypatch.setenv(name, r"C:\somewhere\else")
+        env = self._spawn_env(monkeypatch)
+        assert name not in env
+        # positive control: a harmless variable does come through
+        monkeypatch.setenv("ELYSIUM_PROBE_HARMLESS", "1")
+        assert self._spawn_env(monkeypatch)["ELYSIUM_PROBE_HARMLESS"] == "1"
 
     @pytest.mark.parametrize("proxy", ["HTTP_PROXY", "HTTPS_PROXY",
                                        "ALL_PROXY"])

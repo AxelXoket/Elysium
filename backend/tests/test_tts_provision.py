@@ -112,9 +112,16 @@ class TestThePlan:
             body = req.read_text(encoding="utf-8")
             assert "torch==" in body, f"{engine_id} does not pin torch"
 
-    def test_fish_pulls_in_its_own_source_because_it_is_not_on_pypi(self):
-        body = provision.requirements_path("fish_s2").read_text(encoding="utf-8")
-        assert "fish-speech @" in body, "fish_speech would be missing at import time"
+    def test_fish_pulls_in_its_own_source_tree_because_it_is_not_on_pypi(self):
+        """It used to be pinned as an archive REQUIREMENT, to be built into a
+        wheel. Measured 8 September 2026: that wheel carries none of the
+        modules the worker imports (the project's pyproject lists two
+        top-level packages and no subpackages), so the freeze must not name
+        it and the engine must declare the tree instead. TestEveryShipped
+        FreezeIsExact holds the details; this keeps the plan's own claim."""
+        assert "source_tree" in provision.ENGINES["fish_s2"]
+        assert not any(line.startswith("fish-speech")
+                       for line in provision.requirement_lines("fish_s2"))
 
     def test_the_plan_says_where_it_will_put_things(self, voice_dir):
         plan = provision.plan("fish_s2")
@@ -913,3 +920,905 @@ class TestUvDownloader:
         self._fake_release(monkeypatch, tmp_path, correct_hash=False)
         assert provision._download_uv(lambda ln: None) is None
         assert not (tmp_path / "bin" / "uv.exe").exists()
+
+
+# ── the freeze goes in with its overrides ───────────────────────────────────
+#
+# Measured 8 September 2026 with uv 0.11.7: handed to the resolver as a
+# request, fish_s2.txt and chatterbox.txt were unsatisfiable (chatterbox-tts
+# declares torch 2.6.0 where the file pins 2.8.0, descript-audiotools declares
+# protobuf below 3.20 where the file pins 5.29.6), so the one-click install
+# had never been able to finish for two of the three engines. The installer
+# now passes an overrides file that repeats the freeze's own pins for exactly
+# those names, and the resolver checks everything else.
+
+_ALL_ENGINES = sorted(provision.ENGINES)
+
+#: The real fetch, bound before the fixture below replaces the module
+#: attribute. TestTheSourceTree exercises it through a fake HTTP client.
+_REAL_INSTALL_SOURCE_TREE = provision._install_source_tree
+#: Same for the site-packages question, which TestTheSourceTree's staging
+#: helper answers for the fake interpreter; one test asks the real one.
+_REAL_SITE_PACKAGES = provision._site_packages
+
+
+@pytest.fixture(autouse=True)
+def _no_source_tree_fetch(monkeypatch):
+    """Fish installs fetch a source archive after the packages. Every install
+    test in this module replaces the subprocess and must not reach the
+    network through that step either; the step is stubbed out for all of
+    them and tested on its own below."""
+    monkeypatch.setattr(provision, "_install_source_tree", lambda *a, **k: None)
+
+
+def _install_calls(rec: _Recorder) -> list[list[str]]:
+    return [c for c in rec.calls if "install" in c]
+
+
+class TestTheInstallCommand:
+    @pytest.mark.parametrize("engine_id", _ALL_ENGINES)
+    def test_the_resolver_stays_on_and_the_freeze_is_the_request(
+            self, voice_dir, monkeypatch, tmp_path, engine_id):
+        _fake_uv(monkeypatch, tmp_path)
+        rec = _Recorder()
+        monkeypatch.setattr(provision, "_run", rec)
+        monkeypatch.setattr(provision, "_verify_env", lambda *a, **k: None)
+        monkeypatch.setattr(provision, "_install_source_tree", lambda *a, **k: None)
+
+        provision.start_install(engine_id)
+        job = _await(voice_dir, engine_id)
+
+        assert job["state"] == "done", job
+        (install,) = _install_calls(rec)
+        assert "--no-deps" not in install, "the resolver is the only check on " \
+            "a stale pin; switching it off moves that failure to the first load"
+        assert install[install.index("-r") + 1].endswith(f"{engine_id}.txt")
+        assert "--torch-backend=cu128" in install, "torch would come from PyPI, CPU-only"
+        assert "--no-config" in install, "a uv.toml on the machine could name another index"
+
+    @pytest.mark.parametrize("engine_id", _ALL_ENGINES)
+    def test_an_engine_with_an_overrides_file_hands_it_over_and_one_without_does_not(
+            self, voice_dir, monkeypatch, tmp_path, engine_id):
+        _fake_uv(monkeypatch, tmp_path)
+        rec = _Recorder()
+        monkeypatch.setattr(provision, "_run", rec)
+        monkeypatch.setattr(provision, "_verify_env", lambda *a, **k: None)
+        monkeypatch.setattr(provision, "_install_source_tree", lambda *a, **k: None)
+
+        provision.start_install(engine_id)
+        _await(voice_dir, engine_id)
+
+        (install,) = _install_calls(rec)
+        expected = provision.overrides_path(engine_id)
+        if expected.is_file():
+            assert install[install.index("--overrides") + 1] == str(expected)
+        else:
+            assert "--overrides" not in install
+
+    @pytest.mark.parametrize("engine_id", _ALL_ENGINES)
+    def test_the_source_archive_pins_are_built_with_a_pinned_backend(
+            self, voice_dir, monkeypatch, tmp_path, engine_id):
+        """Five pins ship as source archives and are built on the machine;
+        without this the build backend is fetched at whatever version is
+        current that day, the one unpinned step in a pinned install."""
+        _fake_uv(monkeypatch, tmp_path)
+        rec = _Recorder()
+        monkeypatch.setattr(provision, "_run", rec)
+        monkeypatch.setattr(provision, "_verify_env", lambda *a, **k: None)
+        provision.start_install(engine_id)
+        _await(voice_dir, engine_id)
+        (install,) = _install_calls(rec)
+        assert install[install.index("--build-constraints") + 1] == \
+            str(provision.build_constraints_path())
+        lines = provision.build_constraint_lines()
+        assert lines and all(provision.is_exact_pin(line) for line in lines), lines
+        assert any(line.startswith("setuptools==") for line in lines)
+
+    def test_the_shipped_overrides_are_exactly_where_the_resolver_objected(self):
+        """Ground for the test above: the files exist for the two engines the
+        measurement named, and not for the one that resolved on its own."""
+        assert provision.overrides_path("fish_s2").is_file()
+        assert provision.overrides_path("chatterbox").is_file()
+        assert not provision.overrides_path("xtts_v2").is_file()
+
+    @pytest.mark.parametrize("engine_id", _ALL_ENGINES)
+    def test_the_worker_runs_exactly_what_the_verify_script_resolves(
+            self, voice_dir, monkeypatch, tmp_path, engine_id):
+        """verify_tts_resolve.py dry-runs provision.install_argv. If the
+        worker ever composed its own command, the periodic check would be
+        checking a command nobody runs."""
+        uv = _fake_uv(monkeypatch, tmp_path)
+        rec = _Recorder()
+        monkeypatch.setattr(provision, "_run", rec)
+        monkeypatch.setattr(provision, "_verify_env", lambda *a, **k: None)
+        monkeypatch.setattr(provision, "_install_source_tree", lambda *a, **k: None)
+
+        provision.start_install(engine_id)
+        _await(voice_dir, engine_id)
+
+        (install,) = _install_calls(rec)
+        python = install[install.index("--python") + 1]
+        assert install == provision.install_argv(str(uv), python,
+                                                 provision.plan(engine_id))
+
+    def test_the_environment_is_created_without_reading_a_config_file(
+            self, voice_dir, monkeypatch, tmp_path):
+        _fake_uv(monkeypatch, tmp_path)
+        rec = _Recorder()
+        monkeypatch.setattr(provision, "_run", rec)
+        monkeypatch.setattr(provision, "_verify_env", lambda *a, **k: None)
+        provision.start_install("xtts_v2")
+        _await(voice_dir, "xtts_v2")
+        (venv,) = [c for c in rec.calls if "venv" in c]
+        assert venv == provision.venv_argv(venv[0], venv[2], provision.PYTHON_VERSION), \
+            "the worker composed its own venv command; the verify script uses venv_argv"
+        assert "--no-config" in venv
+        assert "--managed-python" in venv, "the machine's own Python is not the pin"
+        assert "--seed" not in venv, "--seed installs an unpinned pip from the index"
+        assert venv[venv.index("--python") + 1] == provision.PYTHON_VERSION
+        assert provision.PYTHON_VERSION.count(".") == 2, "a full patch, not a minor"
+
+
+class TestTheUvVersionGate:
+    """A uv older than the pin does not know --torch-backend. The retry that
+    used to cover it pointed the resolver at the PyTorch index with
+    --extra-index-url, which uv ranks above PyPI for every name that index
+    serves, so the same pin could arrive from a different origin than the one
+    the freeze was measured against. The gate makes the installer fetch its
+    own uv instead."""
+
+    def _machine_uv(self, monkeypatch, tmp_path, version):
+        found = tmp_path / "machine-uv.exe"
+        found.write_bytes(b"")
+        monkeypatch.setattr(config, "TTS_BIN_DIR", str(tmp_path / "bin"), raising=False)
+        monkeypatch.setattr(provision, "which_trusted", lambda name: str(found))
+        monkeypatch.setattr(provision, "_uv_version", lambda path: version)
+        return str(found)
+
+    def test_a_machine_uv_at_the_pin_is_used(self, monkeypatch, tmp_path):
+        found = self._machine_uv(monkeypatch, tmp_path,
+                                 provision._version_tuple(provision.UV_VERSION))
+        assert provision.find_uv() == found
+
+    def test_a_newer_machine_uv_is_passed_over_too(self, monkeypatch, tmp_path):
+        """The interpreter manifest and the torch-backend package list live
+        inside uv; a newer one can build a different environment from the
+        same command. Exactly the pin, or the pinned copy is fetched."""
+        major, minor, patch = provision._version_tuple(provision.UV_VERSION)
+        self._machine_uv(monkeypatch, tmp_path, (major, minor + 1, 0))
+        assert provision.find_uv() is None
+
+    def test_an_older_machine_uv_is_passed_over(self, monkeypatch, tmp_path):
+        self._machine_uv(monkeypatch, tmp_path, (0, 4, 30))
+        assert provision.find_uv() is None
+
+    def test_a_uv_that_cannot_say_its_version_is_passed_over(self, monkeypatch, tmp_path):
+        self._machine_uv(monkeypatch, tmp_path, None)
+        assert provision.find_uv() is None
+
+    def test_our_own_copy_is_taken_on_trust_of_its_pin_not_its_version(
+            self, monkeypatch, tmp_path):
+        """The own copy is the one this module downloaded and checked
+        against UV_SHA256; asking it for a version would only re-run it."""
+        own_dir = tmp_path / "bin"
+        own_dir.mkdir()
+        own = own_dir / "uv.exe"
+        own.write_bytes(b"")
+        monkeypatch.setattr(config, "TTS_BIN_DIR", str(own_dir), raising=False)
+        monkeypatch.setattr(provision, "_uv_version",
+                            lambda path: pytest.fail("the own copy was version-checked"))
+        assert provision.find_uv() == str(own)
+
+    def test_the_version_is_read_from_uv_s_own_answer(self, monkeypatch):
+        """Ground for the fakes above: the parser reads the real format, and
+        it asks through _run, the runner that strips the launch token, hides
+        the window and kills the tree at the deadline."""
+        asked = []
+
+        def _fake_run(argv, *, on_line, cancel, timeout, env=None):
+            asked.append(list(argv))
+            on_line("uv 0.11.7 (9d177269e 2026-04-15 x86_64-pc-windows-msvc)")
+            return 0, ""
+        monkeypatch.setattr(provision, "_run", _fake_run)
+        assert provision._uv_version("anything") == (0, 11, 7)
+        assert asked == [["anything", "--version"]]
+
+        def _odd_run(argv, *, on_line, cancel, timeout, env=None):
+            on_line("not uv at all")
+            return 0, ""
+        monkeypatch.setattr(provision, "_run", _odd_run)
+        assert provision._uv_version("anything") is None
+        monkeypatch.setattr(provision, "_run", lambda *a, **k: (1, "timed out"))
+        assert provision._uv_version("anything") is None
+
+    def test_the_gate_reaches_the_worker_as_a_download(self, voice_dir, monkeypatch,
+                                                       tmp_path):
+        """The whole point, end to end: an old machine uv means the pinned
+        copy is fetched, and the job log says so before it starts."""
+        self._machine_uv(monkeypatch, tmp_path, (0, 4, 30))
+        fetched = []
+
+        def _fake_download(on_line, cancel=None):
+            fetched.append(True)
+            on_line("uv ready")
+            return str(tmp_path / "bin" / "uv.exe")
+        monkeypatch.setattr(provision, "_download_uv", _fake_download)
+        monkeypatch.setattr(provision, "_run", _Recorder())
+        monkeypatch.setattr(provision, "_verify_env", lambda *a, **k: None)
+        provision.start_install("xtts_v2")
+        job = _await(voice_dir, "xtts_v2")
+        assert fetched == [True]
+        assert any("fetching the pinned copy" in line for line in job["log"])
+
+
+class TestEveryShippedFreezeIsExact:
+    """The overrides make the resolver believe the freeze. That is only
+    honest while nothing in a freeze can float and every override repeats a
+    line the freeze already has."""
+
+    @pytest.mark.parametrize("engine_id", _ALL_ENGINES)
+    def test_every_line_is_an_exact_pin(self, engine_id):
+        lines = provision.requirement_lines(engine_id)
+        assert len(lines) > 50, "a freeze this short is not a freeze"
+        loose = [line for line in lines if not provision.is_exact_pin(line)]
+        assert loose == [], f"{engine_id}: these can float: {loose}"
+
+    @pytest.mark.parametrize("engine_id", _ALL_ENGINES)
+    def test_every_override_repeats_the_freeze_verbatim(self, engine_id):
+        freeze = set(provision.requirement_lines(engine_id))
+        for line in provision.override_lines(engine_id):
+            assert provision.is_exact_pin(line), line
+            assert line in freeze, (
+                f"{engine_id}: override {line!r} is not a line of the freeze, "
+                f"so it would introduce a version nothing measured")
+
+    def test_an_override_that_is_not_in_the_freeze_is_caught(self, tmp_path, monkeypatch):
+        """Positive control for the test above."""
+        req = tmp_path / "x.txt"
+        req.write_text("numpy==1.26.4\n", encoding="utf-8")
+        ov = tmp_path / "x.overrides.txt"
+        ov.write_text("numpy==1.26.5\n", encoding="utf-8")
+        monkeypatch.setattr(provision, "requirements_path", lambda e: req)
+        monkeypatch.setattr(provision, "overrides_path", lambda e: ov)
+        freeze = set(provision.requirement_lines("x"))
+        assert [line for line in provision.override_lines("x") if line not in freeze] \
+            == ["numpy==1.26.5"]
+
+    def test_the_classifier_refuses_what_can_float(self):
+        """Ground for the pin test: the classifier must be able to say no,
+        or holding every file to it proves nothing."""
+        commit = "e5e292632cb11e7a27b2b7487f58f612bc101e13"
+        sha = "0" * 64
+        accepted = [
+            "torch==2.11.0+cu128",
+            "python-dateutil==2.9.0.post0",
+            "einx[torch]==0.2.2",
+            f"torchao @ https://files.pythonhosted.org/p/torchao-0.17.0-py3-none-any.whl#sha256={sha}",
+        ]
+        refused = [
+            # a commit id is not a content pin: GitHub has re-packed commit
+            # archives before, and any host can put forty hex digits in a URL
+            f"fish-speech @ https://github.com/fishaudio/fish-speech/archive/{commit}.tar.gz",
+            f"evil @ https://evil.example/dl/{commit}.tar.gz",
+            "torch",
+            "torch>=2.0",
+            "torch==2.*",
+            "torch==2.8.0,<3",
+            'torch==2.11.0+cu128 ; sys_platform == "win32"',
+            "fish-speech @ https://github.com/fishaudio/fish-speech/archive/refs/heads/main.tar.gz",
+            "fish-speech @ https://github.com/fishaudio/fish-speech/archive/v2.0.0.tar.gz",
+            "torchao @ https://files.pythonhosted.org/p/torchao-0.17.0-py3-none-any.whl",
+            f"torchao @ http://files.pythonhosted.org/p/t.whl#sha256={sha}",
+            "-e .",
+        ]
+        assert [line for line in accepted if not provision.is_exact_pin(line)] == []
+        assert [line for line in refused if provision.is_exact_pin(line)] == []
+
+    def test_requirement_lines_keep_a_hash_fragment_intact(self, tmp_path, monkeypatch):
+        """A `#sha256=` fragment is not a comment. Stripping from the first
+        `#` would turn a hash-pinned line into a bare URL and the classifier
+        above would then refuse a line that is in fact the strictest kind."""
+        sha = "1" * 64
+        body = (
+            "# a comment\n"
+            "\n"
+            "   # an indented comment\n"
+            "numpy==1.26.4\n"
+            f"torchao @ https://files.pythonhosted.org/p/t.whl#sha256={sha}\n"
+        )
+        req = tmp_path / "x.txt"
+        req.write_text(body, encoding="utf-8")
+        monkeypatch.setattr(provision, "requirements_path", lambda engine_id: req)
+
+        assert provision.requirement_lines("x") == [
+            "numpy==1.26.4",
+            f"torchao @ https://files.pythonhosted.org/p/t.whl#sha256={sha}",
+        ]
+
+    def test_fish_takes_torchao_from_pypi_by_hash_not_from_the_cuda_index(self):
+        """--torch-backend=cu128 routes torchao to the CUDA index, which has no
+        Windows wheel for 0.17.0. The measured environment runs the pure
+        wheel from PyPI, and only a direct URL keeps the flag from redirecting
+        it. Measured: as a plain `torchao==0.17.0` pin the install is
+        unsatisfiable."""
+        lines = provision.requirement_lines("fish_s2")
+        torchao = [line for line in lines if line.startswith("torchao")]
+        assert len(torchao) == 1, torchao
+        (line,) = torchao
+        assert line.startswith("torchao @ https://files.pythonhosted.org/")
+        assert "torchao-0.17.0-py3-none-any.whl#sha256=" in line
+
+    def test_fish_speech_is_a_source_tree_not_a_requirement(self):
+        """A wheel built from the archive has no subpackages (the project's
+        pyproject lists two top-level packages and nothing under them), so
+        the freeze must not name it and the engine must declare the tree."""
+        assert not any(line.startswith("fish-speech")
+                       for line in provision.requirement_lines("fish_s2"))
+        tree = provision.ENGINES["fish_s2"]["source_tree"]
+        assert tree["url"].startswith("https://github.com/fishaudio/fish-speech/archive/")
+        assert len(tree["tree_sha256"]) == 64
+        assert tree["dir"] and tree["pth"].endswith(".pth")
+
+
+# ── the source tree ─────────────────────────────────────────────────────────
+
+def _archive_bytes(files: dict[str, bytes], top: str = "fish-speech-abc") -> bytes:
+    import io
+    import tarfile as tf
+
+    buf = io.BytesIO()
+    with tf.open(fileobj=buf, mode="w:gz") as tar:
+        for name, data in files.items():
+            info = tf.TarInfo(f"{top}/{name}")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _fake_archive_client(monkeypatch, payload: bytes):
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def iter_bytes(self, n=None):
+            for i in range(0, len(payload), 1024):
+                yield payload[i:i + 1024]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _Client:
+        def stream(self, method, url, timeout=0):
+            return _Resp()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(provision, "_provision_client", lambda: _Client())
+
+
+def _digest_of(files: dict[str, bytes], tmp_path) -> str:
+    root = tmp_path / "digest-me"
+    for name, data in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    return provision._tree_digest(root)
+
+
+_TREE = {
+    ".project-root": b"",
+    "fish_speech/models/dac/inference.py": b"x = 1\n",
+    "configs/modded_dac_vq.yaml": b"sample_rate: 44100\n",
+}
+
+
+class TestTheSourceTree:
+    def _staging(self, tmp_path, monkeypatch):
+        staging = tmp_path / "envs" / "fish_s2.staging"
+        site = staging / "Lib" / "site-packages"
+        site.mkdir(parents=True)
+        python = staging / "Scripts" / "python.exe"
+        python.parent.mkdir(parents=True)
+        python.write_bytes(b"")
+        # The interpreter is asked where its site-packages is; answer for it.
+        monkeypatch.setattr(provision, "_site_packages", lambda *a, **k: site)
+        return staging, python, site
+
+    def _spec(self, digest, **extra):
+        return {"url": "https://github.com/x/y/archive/abc.tar.gz", "dir": "fish-speech",
+                "pth": "elysium-fish-speech.pth", "max_bytes": 1024 * 1024,
+                "tree_sha256": digest, **extra}
+
+    def test_a_verified_tree_lands_under_the_environment_with_one_pth_line(
+            self, tmp_path, monkeypatch):
+        staging, python, site = self._staging(tmp_path, monkeypatch)
+        _fake_archive_client(monkeypatch, _archive_bytes(_TREE))
+        lines = []
+        _REAL_INSTALL_SOURCE_TREE(self._spec(_digest_of(_TREE, tmp_path)),
+                                       staging, python, lines.append, threading.Event())
+        dest = staging / "src" / "fish-speech"
+        assert (dest / "fish_speech" / "models" / "dac" / "inference.py").read_bytes() == b"x = 1\n"
+        assert (dest / ".project-root").is_file()
+        # What the .pth DOES, through site itself, AFTER the environment is
+        # renamed into place the way staging is: processed from the moved
+        # site-packages, it puts the moved tree on the path. An absolute line
+        # would still name the staging folder here, which is the measured
+        # failure of 8 September 2026.
+        final = staging.with_name("fish_s2")
+        os.replace(str(staging), str(final))
+        final_site = final / site.relative_to(staging)
+        final_dest = final / "src" / "fish-speech"
+        monkeypatch.setattr(sys, "path", list(sys.path))
+        import site as site_mod
+        site_mod.addsitedir(str(final_site))
+        on_path = {os.path.normcase(p) for p in sys.path}
+        assert os.path.normcase(str(final_dest)) in on_path
+        assert os.path.normcase(str(dest)) not in on_path, "the staging name is gone"
+        # nothing left behind but the tree
+        assert sorted(p.name for p in (final / "src").iterdir()) == ["fish-speech"]
+
+    def test_a_tree_that_does_not_match_its_pin_is_removed_and_refused(
+            self, tmp_path, monkeypatch):
+        staging, python, site = self._staging(tmp_path, monkeypatch)
+        tampered = {**_TREE, "fish_speech/models/dac/inference.py": b"import os; os.system('x')\n"}
+        _fake_archive_client(monkeypatch, _archive_bytes(tampered))
+        with pytest.raises(provision.ProvisionError) as info:
+            _REAL_INSTALL_SOURCE_TREE(self._spec(_digest_of(_TREE, tmp_path)),
+                                           staging, python, lambda ln: None, threading.Event())
+        assert info.value.code == TTS_RUNTIME_INSTALL_FAILED
+        assert "checksum" in info.value.detail
+        assert not (staging / "src" / "fish-speech").exists()
+        assert not (site / "elysium-fish-speech.pth").exists()
+        assert list((staging / "src").iterdir()) == []
+
+    def test_the_pin_is_over_content_not_over_the_archive_bytes(self, tmp_path, monkeypatch):
+        """The same files packed twice, differently, must pass the same pin.
+        GitHub has re-packed unchanged commits before."""
+        staging, python, site = self._staging(tmp_path, monkeypatch)
+        import gzip
+        import io
+        import tarfile as tf
+        buf = io.BytesIO()
+        raw = io.BytesIO()
+        with tf.open(fileobj=raw, mode="w") as tar:
+            for name, data in reversed(list(_TREE.items())):
+                info = tf.TarInfo(f"fish-speech-abc/{name}")
+                info.size = len(data)
+                info.mtime = 1234567890
+                tar.addfile(info, io.BytesIO(data))
+        with gzip.GzipFile(fileobj=buf, mode="wb", compresslevel=1, mtime=0) as gz:
+            gz.write(raw.getvalue())
+        repacked = buf.getvalue()
+        assert repacked != _archive_bytes(_TREE)
+        _fake_archive_client(monkeypatch, repacked)
+        _REAL_INSTALL_SOURCE_TREE(self._spec(_digest_of(_TREE, tmp_path)),
+                                       staging, python, lambda ln: None, threading.Event())
+        assert (staging / "src" / "fish-speech" / ".project-root").is_file()
+
+    def test_an_archive_over_the_cap_is_cut_off_and_refused(self, tmp_path, monkeypatch):
+        staging, python, site = self._staging(tmp_path, monkeypatch)
+        # Random bytes: gzip cannot shrink them, so the archive really is
+        # over the cap (the next test is the compressible case).
+        big = {**_TREE, "big.bin": os.urandom(2 * 1024 * 1024)}
+        _fake_archive_client(monkeypatch, _archive_bytes(big))
+        with pytest.raises(provision.ProvisionError) as info:
+            _REAL_INSTALL_SOURCE_TREE(self._spec(_digest_of(big, tmp_path)),
+                                      staging, python, lambda ln: None, threading.Event())
+        assert "larger" in info.value.detail
+        assert not (staging / "src" / "fish-speech").exists()
+        assert list((staging / "src").iterdir()) == []
+
+    def test_a_small_archive_that_unpacks_past_the_cap_is_refused_before_unpacking(
+            self, tmp_path, monkeypatch):
+        staging, python, site = self._staging(tmp_path, monkeypatch)
+        zeros = {**_TREE, "big.bin": b"\0" * (2 * 1024 * 1024)}
+        payload = _archive_bytes(zeros)
+        assert len(payload) < 64 * 1024, "ground: the archive itself is tiny"
+        _fake_archive_client(monkeypatch, payload)
+        with pytest.raises(provision.ProvisionError) as info:
+            _REAL_INSTALL_SOURCE_TREE(self._spec(_digest_of(zeros, tmp_path)),
+                                      staging, python, lambda ln: None, threading.Event())
+        assert "unpacks" in info.value.detail
+        assert not (staging / "src" / "fish-speech").exists()
+        assert list((staging / "src").iterdir()) == []
+
+    def test_an_archive_with_a_parent_reference_is_refused_and_writes_nothing_outside(
+            self, tmp_path, monkeypatch):
+        staging, python, site = self._staging(tmp_path, monkeypatch)
+        import io
+        import tarfile as tf
+        buf = io.BytesIO()
+        with tf.open(fileobj=buf, mode="w:gz") as tar:
+            info = tf.TarInfo("fish-speech-abc/../../escaped.txt")
+            data = b"out"
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+        _fake_archive_client(monkeypatch, buf.getvalue())
+        with pytest.raises(provision.ProvisionError) as info:
+            _REAL_INSTALL_SOURCE_TREE(self._spec("0" * 64), staging, python,
+                                      lambda ln: None, threading.Event())
+        # The filter's refusal, not a later complaint about the tree's shape.
+        assert "could not be unpacked" in info.value.detail
+        # Where `fish-speech-abc/../../escaped.txt` lands from the extract
+        # folder under staging/src: two levels up is staging/src itself.
+        assert not (staging / "src" / "escaped.txt").exists()
+        assert not (staging / "escaped.txt").exists()
+        assert not (tmp_path / "escaped.txt").exists()
+        assert list((staging / "src").iterdir()) == []
+
+    def test_an_archive_with_too_many_members_is_refused_before_unpacking(
+            self, tmp_path, monkeypatch):
+        staging, python, site = self._staging(tmp_path, monkeypatch)
+        many = {f"f/{i}.txt": b"" for i in range(provision.MAX_TREE_MEMBERS + 1)}
+        _fake_archive_client(monkeypatch, _archive_bytes(many))
+        with pytest.raises(provision.ProvisionError) as info:
+            _REAL_INSTALL_SOURCE_TREE(self._spec("0" * 64), staging, python,
+                                      lambda ln: None, threading.Event())
+        assert "unpacks to more" in info.value.detail
+        assert list((staging / "src").iterdir()) == []
+
+    def test_site_packages_is_read_back_intact_under_a_non_ascii_profile_name(
+            self, tmp_path):
+        """Under -I the interpreter ignores PYTHONUTF8 and prints in the ANSI
+        code page while _run decodes UTF-8, so a profile name like Ömer came
+        back with a replacement character and named a folder that does not
+        exist. Measured 8 September 2026. A real interpreter, a real path."""
+        import subprocess
+        import venv as venv_mod
+        root = tmp_path / "Ömer" / "env"
+        venv_mod.EnvBuilder(with_pip=False, symlinks=False).create(str(root))
+        python = root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        expected = Path(subprocess.run(
+            [str(python), "-X", "utf8", "-c",
+             "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+            capture_output=True, text=True, encoding="utf-8").stdout.strip())
+        assert "Ömer" in str(expected), "ground: the name is in the path"
+        got = _REAL_SITE_PACKAGES(python, lambda ln: None, threading.Event())
+        assert got == expected
+        assert got.is_dir()
+
+    def test_a_cancel_while_asking_for_site_packages_is_a_cancel_not_a_failure(
+            self, tmp_path, monkeypatch):
+        staging, python, site = self._staging(tmp_path, monkeypatch)
+        cancel = threading.Event()
+
+        def _run_then_cancel(argv, *, on_line, cancel, timeout, env=None):
+            cancel.set()
+            return 1, "cancelled"
+        monkeypatch.setattr(provision, "_run", _run_then_cancel)
+        with pytest.raises(provision._Cancelled):
+            _REAL_SITE_PACKAGES(python, lambda ln: None, cancel)
+        # ground: the same refusal without a cancel is the install failure
+        monkeypatch.setattr(provision, "_run", lambda *a, **k: (1, "broken"))
+        with pytest.raises(provision.ProvisionError):
+            _REAL_SITE_PACKAGES(python, lambda ln: None, threading.Event())
+
+    def test_cancel_stops_the_download_and_leaves_nothing(self, tmp_path, monkeypatch):
+        staging, python, site = self._staging(tmp_path, monkeypatch)
+        _fake_archive_client(monkeypatch, _archive_bytes(_TREE))
+        cancel = threading.Event()
+        cancel.set()
+        with pytest.raises(provision._Cancelled):
+            _REAL_INSTALL_SOURCE_TREE(self._spec(_digest_of(_TREE, tmp_path)),
+                                           staging, python, lambda ln: None, cancel)
+        assert list((staging / "src").iterdir()) == []
+
+    def test_a_refused_proxy_is_reported_as_the_proxy_not_the_machine(
+            self, tmp_path, monkeypatch):
+        staging, python, site = self._staging(tmp_path, monkeypatch)
+
+        def _refuse():
+            raise provision.ProxyUnreadable("a proxy is required but none is available")
+        monkeypatch.setattr(provision, "_provision_client", _refuse)
+        with pytest.raises(provision.ProvisionError) as info:
+            _REAL_INSTALL_SOURCE_TREE(self._spec("0" * 64), staging, python,
+                                      lambda ln: None, threading.Event())
+        assert info.value.code == TTS_PROXY_UNAVAILABLE
+
+    def test_the_worker_fetches_the_tree_after_the_packages_and_before_the_proof(
+            self, voice_dir, monkeypatch, tmp_path):
+        _fake_uv(monkeypatch, tmp_path)
+        order = []
+        rec = _Recorder()
+
+        def _run(argv, **kw):
+            if "install" in argv:
+                order.append("packages")
+            return rec(argv, **kw)
+        monkeypatch.setattr(provision, "_run", _run)
+        monkeypatch.setattr(provision, "_install_source_tree",
+                            lambda *a, **k: order.append("tree"))
+        monkeypatch.setattr(provision, "_verify_env",
+                            lambda *a, **k: order.append("verify"))
+        provision.start_install("fish_s2")
+        job = _await(voice_dir, "fish_s2")
+        assert job["state"] == "done", job
+        assert order == ["packages", "tree", "verify"]
+
+    def test_an_engine_without_a_tree_never_fetches_one(self, voice_dir, monkeypatch,
+                                                       tmp_path):
+        _fake_uv(monkeypatch, tmp_path)
+        monkeypatch.setattr(provision, "_run", _Recorder())
+        monkeypatch.setattr(provision, "_verify_env", lambda *a, **k: None)
+        monkeypatch.setattr(provision, "_install_source_tree",
+                            lambda *a, **k: pytest.fail("xtts has no source tree"))
+        provision.start_install("xtts_v2")
+        assert _await(voice_dir, "xtts_v2")["state"] == "done"
+
+
+class TestTheVerifyScriptRunsTheInstallersCommands:
+    """verify_tts_resolve.py is the periodic check on the freezes. It has to
+    run the installer's own two commands, or it checks something nobody
+    runs. Loaded by path: verify/ is a folder of scripts, not a package."""
+
+    def _script(self):
+        import importlib.util
+        path = Path(provision.__file__).resolve().parents[1] / "verify" / "verify_tts_resolve.py"
+        spec = importlib.util.spec_from_file_location("verify_tts_resolve_probe", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_the_dry_run_is_venv_argv_then_install_argv_plus_dry_run(self, monkeypatch,
+                                                                     tmp_path):
+        script = self._script()
+        ran: list[list[str]] = []
+
+        class _Done:
+            returncode = 0
+            stdout = f"Would install {len(provision.requirement_lines('xtts_v2'))} packages\n"
+            stderr = ""
+
+        def _fake_run(argv, **kw):
+            ran.append(list(argv))
+            return _Done()
+        monkeypatch.setattr(script.subprocess, "run", _fake_run)
+        ok, summary = script.resolve_one("uv.exe", "xtts_v2", tmp_path, {})
+        assert ok, summary
+        plan = provision.plan("xtts_v2")
+        venv = tmp_path / "xtts_v2"
+        python = venv / ("Scripts/python.exe" if provision.IS_WINDOWS else "bin/python")
+        assert ran == [
+            provision.venv_argv("uv.exe", venv, plan.python_version),
+            provision.install_argv("uv.exe", python, plan) + ["--dry-run"],
+        ]
+
+    def test_a_count_that_does_not_match_the_freeze_is_a_failure(self, monkeypatch,
+                                                                 tmp_path):
+        """A transitive dependency missing from the freeze would resolve to
+        the newest of the day and the install would still pass."""
+        script = self._script()
+
+        class _Done:
+            returncode = 0
+            stdout = f"Would install {len(provision.requirement_lines('xtts_v2')) + 1} packages\n"
+            stderr = ""
+        monkeypatch.setattr(script.subprocess, "run", lambda argv, **kw: _Done())
+        ok, summary = script.resolve_one("uv.exe", "xtts_v2", tmp_path, {})
+        assert not ok
+        listed = len(provision.requirement_lines("xtts_v2"))
+        assert str(listed + 1) in summary and str(listed) in summary
+
+    def test_the_script_strips_what_the_installer_strips(self, monkeypatch, tmp_path):
+        script = self._script()
+        monkeypatch.setenv("UV_INDEX_URL", "https://evil.example/simple")
+        monkeypatch.setattr(script.provision, "find_uv", lambda: "uv.exe")
+
+        class _Scratch:                      # the real one writes under %TEMP%
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return str(tmp_path)
+
+            def __exit__(self, *a):
+                return False
+        monkeypatch.setattr(script.tempfile, "TemporaryDirectory", _Scratch)
+        seen = {}
+
+        def _fake_resolve(uv, engine_id, workdir, env):
+            seen.update(env)
+            return True, "ok"
+        monkeypatch.setattr(script, "resolve_one", _fake_resolve)
+        assert script.main(["xtts_v2"]) == 0
+        assert "UV_INDEX_URL" not in seen
+        assert seen["UV_HTTP_TIMEOUT"] == "600"     # positive control
+
+
+class TestTheTreeDigest:
+    def test_timestamps_and_order_do_not_change_it_but_one_byte_does(self, tmp_path):
+        a = _digest_of(_TREE, tmp_path / "a")
+        b = _digest_of(dict(reversed(list(_TREE.items()))), tmp_path / "b")
+        assert a == b
+        import os
+        for f in (tmp_path / "a" / "digest-me").rglob("*"):
+            if f.is_file():
+                os.utime(f, (1, 1))
+        assert provision._tree_digest(tmp_path / "a" / "digest-me") == a
+        c = _digest_of({**_TREE, "configs/modded_dac_vq.yaml": b"sample_rate: 44101\n"},
+                       tmp_path / "c")
+        assert c != a
+
+    def test_a_renamed_file_changes_it(self, tmp_path):
+        a = _digest_of(_TREE, tmp_path / "a")
+        moved = dict(_TREE)
+        moved["fish_speech/models/dac/inferences.py"] = moved.pop(
+            "fish_speech/models/dac/inference.py")
+        assert _digest_of(moved, tmp_path / "b") != a
+
+    def test_the_order_is_the_posix_path_as_bytes_on_every_platform(self, tmp_path):
+        """The recipe, written out: path, NUL, size, NUL, bytes, NUL, in
+        posix path string order. Sorting Path objects would fold case on
+        Windows and give this machine a digest no other platform reproduces:
+        here `LICENSE` sorts before `fish_speech`, as bytes do."""
+        import hashlib
+        files = {"fish_speech/x.py": b"1", "LICENSE": b"2", "README.md": b"3"}
+        digest = hashlib.sha256()
+        for rel in sorted(files):                      # str order == byte order here
+            digest.update(rel.encode() + b"\0" + str(len(files[rel])).encode() + b"\0")
+            digest.update(files[rel] + b"\0")
+        assert _digest_of(files, tmp_path) == digest.hexdigest()
+        assert sorted(files) == ["LICENSE", "README.md", "fish_speech/x.py"]
+
+
+class TestNothingInTheEnvironmentRedirectsTheChild:
+    """The child uv reads its whole configuration from the environment as
+    well as the command line. Every name that can change what a pin means,
+    where a download comes from, or whether a certificate is checked is
+    taken away before the child starts. Measured 8 September 2026: the TLS
+    names were not on the list."""
+
+    #: The test's own reference list, not an import of the constant: a name
+    #: deleted from the constant must go red here, which an import could not.
+    NAMES = (
+        "NO_PROXY", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+        "http_proxy", "https_proxy", "all_proxy",
+        "UV_INDEX", "UV_INDEX_URL", "UV_EXTRA_INDEX_URL", "UV_DEFAULT_INDEX",
+        "UV_FIND_LINKS", "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL",
+        "PIP_TRUSTED_HOST", "PIP_FIND_LINKS", "PIP_CONFIG_FILE",
+        "UV_OVERRIDE", "UV_CONSTRAINT", "UV_BUILD_CONSTRAINT", "UV_EXCLUDE",
+        "UV_INDEX_STRATEGY", "UV_TORCH_BACKEND", "UV_NO_BUILD_ISOLATION",
+        "UV_NO_INDEX", "UV_CONFIG_FILE", "UV_PYTHON_INSTALL_MIRROR",
+        "UV_PYPY_INSTALL_MIRROR",
+        "UV_INSECURE_HOST", "SSL_CERT_FILE", "SSL_CLIENT_CERT", "UV_NATIVE_TLS",
+        "UV_NO_VERIFY_HASHES", "UV_KEYRING_PROVIDER",
+        "UV_PYTHON", "UV_MANAGED_PYTHON", "UV_NO_MANAGED_PYTHON",
+        "UV_PYTHON_DOWNLOADS", "UV_PYTHON_PREFERENCE",
+        "UV_PYTHON_DOWNLOADS_JSON_URL", "UV_PYTHON_CPYTHON_BUILD", "UV_PYTHON_CACHE_DIR",
+        "UV_SYSTEM_CERTS", "SSL_CERT_DIR", "UV_NO_BINARY", "UV_NO_BINARY_PACKAGE",
+        "UV_VENV_SEED", "UV_VENV_CLEAR", "UV_VENV_RELOCATABLE",
+        "UV_EXCLUDE_NEWER", "UV_RESOLUTION", "UV_PRERELEASE", "UV_FORK_STRATEGY",
+        "UV_INSECURE_NO_ZIP_VALIDATION", "UV_SKIP_WHEEL_FILENAME_CHECK",
+        "UV_NO_CACHE", "UV_LINK_MODE",
+    )
+
+    def test_every_redirect_the_child_would_read_is_taken_away(
+            self, voice_dir, monkeypatch, tmp_path):
+        for name in self.NAMES:
+            monkeypatch.setenv(name, "planted")
+        monkeypatch.setenv("UV_HTTP_TIMEOUT", "1")     # positive control below
+        _fake_uv(monkeypatch, tmp_path)
+        seen: list[dict] = []
+
+        class _EnvRecorder(_Recorder):
+            def __call__(self, argv, *, on_line, cancel, timeout, env=None):
+                seen.append(dict(env or {}))
+                return super().__call__(argv, on_line=on_line, cancel=cancel,
+                                        timeout=timeout, env=env)
+        monkeypatch.setattr(provision, "_run", _EnvRecorder())
+        monkeypatch.setattr(provision, "_verify_env", lambda *a, **k: None)
+        monkeypatch.setattr(provision, "_proxy_required", lambda: False)
+        monkeypatch.setattr(provision, "_read_proxy", lambda: None)
+        provision.start_install("xtts_v2")
+        assert _await(voice_dir, "xtts_v2")["state"] == "done"
+        children = [e for e in seen if "UV_CACHE_DIR" in e]
+        assert children, "no uv child was started"
+        for env in children:
+            for name in self.NAMES:
+                assert name in env and env[name] is None, f"{name} would reach the child"
+            # positive control: the value the installer sets itself survives
+            assert env["UV_HTTP_TIMEOUT"] == "600"
+
+
+# ── the proof names what the workers import ─────────────────────────────────
+
+class TestTheVerifyListsAreTheWorkersImports:
+    """`import fish_speech` passes on a bare directory (a namespace package),
+    which is how a wheel with none of the worker's modules would have been
+    called ready. The lists have to name the modules the workers bind."""
+
+    def test_fish_names_the_two_modules_the_worker_binds_and_the_quantiser(self):
+        verify = provision.ENGINES["fish_s2"]["verify"]
+        assert "fish_speech.models.dac.inference" in verify
+        assert "fish_speech.models.text2semantic.inference" in verify
+        assert "torchao.quantization" in verify
+        assert "triton" in verify, "torch.compile on Windows needs it; without it fish runs eager"
+        assert "fish_speech" not in verify, "the bare name proves nothing, see above"
+
+    def test_each_list_is_asked_of_the_new_interpreter_module_by_module(
+            self, voice_dir, monkeypatch, tmp_path):
+        _fake_uv(monkeypatch, tmp_path)
+        rec = _Recorder()
+        monkeypatch.setattr(provision, "_run", rec)
+        monkeypatch.setattr(provision, "_install_source_tree", lambda *a, **k: None)
+        provision.start_install("fish_s2")
+        assert _await(voice_dir, "fish_s2")["state"] == "done"
+        asked = [c[-1] for c in rec.calls if len(c) >= 3 and c[1] == "-I" and "-c" in c]
+        for module in provision.ENGINES["fish_s2"]["verify"]:
+            assert f"import {module}" in asked, module
+
+    @pytest.fixture(scope="class")
+    def bare_interpreter(self, tmp_path_factory):
+        """A real, empty interpreter of the same version, built once for the
+        class: the only honest way to show what `-I -c "import x"` does with
+        a namespace package."""
+        import subprocess
+        import venv as venv_mod
+        root = tmp_path_factory.mktemp("bare")
+        venv_mod.EnvBuilder(with_pip=False, symlinks=False).create(str(root))
+        python = root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        done = subprocess.run([str(python), "-I", "-c",
+                               "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+                              capture_output=True, text=True)
+        return python, Path(done.stdout.strip())
+
+    def test_the_bare_name_passes_on_an_empty_directory_and_the_real_import_fails(
+            self, bare_interpreter, monkeypatch):
+        python, site = bare_interpreter
+        (site / "fish_speech" / "models" / "dac").mkdir(parents=True)
+        monkeypatch.setitem(provision.ENGINES, "probe_bare", {"verify": ["fish_speech"]})
+        monkeypatch.setitem(provision.ENGINES, "probe_real",
+                            {"verify": ["fish_speech.models.dac.inference"]})
+        # ground: the bare name is blind
+        provision._verify_env("probe_bare", python, lambda ln: None, threading.Event())
+        # the real import sees the missing module
+        with pytest.raises(provision.ProvisionError) as info:
+            provision._verify_env("probe_real", python, lambda ln: None, threading.Event())
+        assert "fish_speech.models.dac.inference" in info.value.detail
+        # positive control: once the module exists, the real import passes
+        (site / "fish_speech" / "models" / "dac" / "inference.py").write_text(
+            "x = 1\n", encoding="utf-8")
+        provision._verify_env("probe_real", python, lambda ln: None, threading.Event())
+
+    def test_a_relative_pth_line_survives_the_environment_being_renamed(self, tmp_path):
+        """The mechanism _install_source_tree relies on, shown on a real
+        interpreter under `-I`: one .pth line in site-packages, relative to
+        it, and a module under that directory imports. Then the environment
+        is renamed the way staging is renamed into place, and it still
+        imports. An absolute line is the ground control: it dies with the
+        old name, which is what the measurement of 8 September 2026 found."""
+        import subprocess
+        import venv as venv_mod
+        root = tmp_path / "engine.staging"
+        venv_mod.EnvBuilder(with_pip=False, symlinks=False).create(str(root))
+        python_rel = "Scripts/python.exe" if os.name == "nt" else "bin/python"
+        python = root / python_rel
+        site = Path(subprocess.run(
+            [str(python), "-I", "-c",
+             "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+            capture_output=True, text=True).stdout.strip())
+        tree = root / "src" / "tree"
+        (tree / "fish_speech" / "models").mkdir(parents=True)
+        (tree / "fish_speech" / "models" / "probe.py").write_text("ANSWER = 42\n",
+                                                                  encoding="utf-8")
+        code = "from fish_speech.models.probe import ANSWER; print(ANSWER)"
+
+        def imports(py) -> bool:
+            done = subprocess.run([str(py), "-I", "-c", code], capture_output=True, text=True)
+            return done.returncode == 0 and done.stdout.strip() == "42"
+
+        assert not imports(python), "ground: not importable before the .pth"
+        (site / "elysium-probe.pth").write_text(os.path.relpath(tree, site) + "\n",
+                                                encoding="utf-8")
+        assert imports(python)
+        final = tmp_path / "engine"
+        os.replace(str(root), str(final))
+        assert imports(final / python_rel), "the relative line moved with the environment"
+        # ground control: the absolute form is exactly what broke
+        final_site = final / site.relative_to(root)
+        (final_site / "elysium-probe.pth").write_text(str(tree) + "\n", encoding="utf-8")
+        assert not imports(final / python_rel)

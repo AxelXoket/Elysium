@@ -954,7 +954,7 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "::test_an_accepted_safeword_is_not_echoed_either",
     )),
     # And the file count in the same paragraph, for the same reason.
-    ("shipped tree - 78 files", (
+    ("shipped tree - 80 files", (
         "tests/test_locked_numbers.py::TestTheSweptTree"
         "::test_the_file_count_in_the_prose_is_the_one_the_gate_reads",
         "tests/test_locked_numbers.py::TestTheSweptTree"
@@ -1560,7 +1560,7 @@ def _acknowledged_problems(
 #: sample - so this covers all of it. Updating this constant is the
 #: deliberate act that means a human decided what a change claims and
 #: registered a proof for it.
-DOCUMENT_DIGEST = "7be2cb9705db8b18f5aee8592c58437ee352fb13a8bf8cd84cb75c7f419f2580"
+DOCUMENT_DIGEST = "d878ae6619503817e436b44978c7c74901f5aa595a959bc57afe8fd5f410f540"
 
 
 class TestEveryProvenClaimHasAProof:

@@ -296,6 +296,15 @@ const ERROR_MESSAGES: Record<string, string> = {
   // looking straight at it sends them after the wrong thing.
   tts_model_incomplete:
     "This voice model folder is incomplete. A file it needs is missing or did not finish downloading.",
+  // Nothing is known to be missing: the T3 backbone in the folder names a
+  // Chatterbox build (Turbo, Multilingual v3) that the engine Elysium bundles
+  // has no loader for yet, so there is no file list to check it against and
+  // the sentence above would send the reader to fetch the same files again.
+  // Neither is it tts_worker_failed's "press Set up again": the engine is
+  // fine. The builds it does load are named so the reader knows what to
+  // fetch instead of guessing.
+  tts_model_variant_unsupported:
+    "The voice engine Elysium bundles cannot load this build of the model yet. For Chatterbox, pick the English or Multilingual v2 checkpoint.",
   tts_engine_unknown:
     "This voice engine is not supported yet.",
   // Setting the runtime up is Elysium's job, not the user's - so this says what

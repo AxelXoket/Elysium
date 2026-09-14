@@ -25,6 +25,17 @@ TTS_MODEL_NOT_FOUND = "tts_model_not_found"          # 404 nothing in the folder
 TTS_MODEL_UNKNOWN = "tts_model_unknown"              # 400 uid no longer resolves
 TTS_MODEL_UNRECOGNIZED = "tts_model_unrecognized"    # 409 no engine signature matched
 TTS_MODEL_INCOMPLETE = "tts_model_incomplete"        # 422 engine known, files missing
+# The T3 backbone names a build (chatterbox turbo, multilingual v3, or a name
+# the tables do not know) the bundled engine has no loader for. Its files are
+# not checked: there is no list to check them against, because the loader
+# that would open them does not exist here. Its own code rather than
+# tts_model_incomplete, whose sentence says "did not finish downloading" and
+# whose action is a redownload that fetches the same files again. Nothing is
+# known to be missing; the engine is behind the checkpoint, and the sentence
+# has to say so. Raised by the worker as a frame (tts/worker/_wire.py
+# CODE_MODEL_VARIANT_UNSUPPORTED) and by readiness.evaluate; the route
+# answers 409.
+TTS_MODEL_VARIANT_UNSUPPORTED = "tts_model_variant_unsupported"  # 409 engine known, build not loadable
 TTS_ENGINE_UNKNOWN = "tts_engine_unknown"            # 400 engine id not registered
 TTS_RUNTIME_MISSING = "tts_runtime_missing"          # 409 never set up
 TTS_RUNTIME_BROKEN = "tts_runtime_broken"            # 409 set up once, gone now
@@ -114,7 +125,8 @@ TTS_NOTHING_STREAMING = "tts_nothing_streaming"      # 404 that reply is over
 
 ALL_CODES: frozenset[str] = frozenset({
     TTS_MODEL_NOT_FOUND, TTS_MODEL_UNKNOWN, TTS_MODEL_UNRECOGNIZED,
-    TTS_MODEL_INCOMPLETE, TTS_ENGINE_UNKNOWN, TTS_RUNTIME_MISSING,
+    TTS_MODEL_INCOMPLETE, TTS_MODEL_VARIANT_UNSUPPORTED, TTS_ENGINE_UNKNOWN,
+    TTS_RUNTIME_MISSING,
     TTS_RUNTIME_BROKEN, TTS_RUNTIME_UNTRUSTED, TTS_GPU_UNAVAILABLE,
     TTS_LANGUAGE_UNSUPPORTED,
     TTS_RUNTIME_INSTALLING, TTS_RUNTIME_INSTALL_FAILED, TTS_PYTHON_NOT_FOUND,

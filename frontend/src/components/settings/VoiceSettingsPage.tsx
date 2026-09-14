@@ -315,7 +315,12 @@ function EngineRow({
           ) : (
             <Download size={12} />
           )}
-          {state === "broken" || failed ? "Set up again" : "Set up"}
+          {/* "untrusted" is in this list because the sentence above it
+              already tells the reader to press Set up again; the control
+              named by an error message has to exist. */}
+          {state === "broken" || state === "untrusted" || failed
+            ? "Set up again"
+            : "Set up"}
         </button>
       )}
     </div>
@@ -323,6 +328,20 @@ function EngineRow({
 }
 
 // ── 3. models ───────────────────────────────────────────────────────────────
+
+/** The folders a scan sentence names: each in code, comma separated. */
+function FolderList({ roots }: { roots: string[] }) {
+  return (
+    <>
+      {roots.map((root, i) => (
+        <span key={root}>
+          {i > 0 ? ", " : ""}
+          <code>{root}</code>
+        </span>
+      ))}
+    </>
+  );
+}
 
 function ModelsSection() {
   const models = useTtsModels();
@@ -347,6 +366,9 @@ function ModelsSection() {
 
   const list = models.data?.models ?? [];
   const unrecognized = models.data?.unrecognized ?? [];
+  const truncated = models.data?.truncated ?? false;
+  const truncatedRoots = models.data?.truncated_roots ?? [];
+  const unreadableRoots = models.data?.unreadable_roots ?? [];
   const scanFailed = models.isError;
   return (
     <section aria-label="Voice models" className="settings-voice-section space-y-2">
@@ -378,6 +400,37 @@ function ModelsSection() {
         <p className="settings-category-desc">
           No voice models found. Drop a model folder into the voice models
           directory and rescan.
+        </p>
+      )}
+      {/* Both of these came off the wire for as long as the backend has
+          computed them and neither reached the screen: `truncated` was
+          stripped by the schema and the unreadable roots had no field at
+          all. A walk cut at the cap and a mistyped extra root therefore
+          both looked like a complete, healthy list. One sentence each, in
+          the warning register the unrecognised list already uses. Both
+          name the folders: there is no control on this page for narrowing
+          the scan, so a sentence that asked for one would send the user
+          looking for something that does not exist. The cut sentence keeps
+          a nameless form for a backend that sends the bool alone. */}
+      {!scanFailed && truncated && (
+        <p className="settings-voice-warning">
+          {truncatedRoots.length > 0 ? (
+            <>
+              The scan hit its directory limit inside{" "}
+              <FolderList roots={truncatedRoots} />, so this list may be
+              missing models from{" "}
+              {truncatedRoots.length === 1 ? "that folder" : "those folders"}.
+            </>
+          ) : (
+            "The scan hit its directory limit before it had looked everywhere, so this list may be missing models."
+          )}
+        </p>
+      )}
+      {!scanFailed && unreadableRoots.length > 0 && (
+        <p className="settings-voice-warning">
+          Could not look in{" "}
+          {unreadableRoots.length === 1 ? "this folder" : "these folders"}:{" "}
+          <FolderList roots={unreadableRoots} />.
         </p>
       )}
       {/* The backend has produced this list all along and the schema has

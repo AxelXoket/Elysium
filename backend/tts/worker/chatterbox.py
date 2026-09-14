@@ -51,6 +51,7 @@ STATEFULNESS - DO NOT MAKE THIS CONCURRENT
 """
 from __future__ import annotations
 
+import importlib
 import os
 import sys
 import traceback
@@ -121,18 +122,47 @@ DEFAULTS = {
 GEN_FLOAT_PARAMS = tuple(DEFAULTS)      # exactly the kwargs generate() accepts
 DEFAULT_LANGUAGE = "en"
 
-# What from_local() opens, per variant. Checked before we call it so an
-# incomplete download names the missing file instead of raising a bare
-# FileNotFoundError out of library code.
+# What from_local() opens, per build, in the order the library opens them.
+# Read off chatterbox_tts 0.1.7 itself (tts.py from_local: ve.safetensors,
+# t3_cfg.safetensors, s3gen.safetensors, tokenizer.json; mtl_tts.py
+# from_local: ve.pt, t3_mtl23ls_v2.safetensors, s3gen.pt,
+# grapheme_mtl_merged_expanded_v1.json), not guessed. Checked before we call
+# it so an incomplete download names the missing file instead of raising a
+# bare FileNotFoundError out of library code.
+#
+# THIS IS THE ORIGINAL. adapters/chatterbox.py on the host carries a copy of
+# this table and of VARIANT_T3 below, because that side cannot import this
+# file (engine venv, torch on the path) and this side may not import the app.
+# tests/test_tts_chatterbox_variants.py loads this file by path and holds the
+# copies equal; edit both or that test goes red. Before the copy existed the
+# host called an english folder complete on s3gen.pt and this check then
+# refused it for s3gen.safetensors: "download did not finish" about a
+# download that had.
 REQUIRED_FILES = {
     "multilingual": ("ve.pt", "t3_mtl23ls_v2.safetensors", "s3gen.pt",
                      "grapheme_mtl_merged_expanded_v1.json"),
     "english": ("ve.safetensors", "t3_cfg.safetensors", "s3gen.safetensors",
                 "tokenizer.json"),
 }
-# Same markers the host adapter fingerprints with, so a request that forgot to
-# carry `variant` reaches the same verdict the app already showed the user.
-MTL_MARKERS = ("grapheme_mtl_merged_expanded_v1.json", "t3_mtl23ls_v2.safetensors")
+
+# The T3 backbone's file name is the build. Tried in this order: the snapshot
+# Resemble publishes holds both loadable builds side by side and has always
+# read as multilingual, which stays. The last two rows have no REQUIRED_FILES
+# entry on purpose: turbo is a different T3 architecture and multilingual v3
+# opens different files, and this library loads neither. They are named so
+# _op_load can refuse them by name instead of demanding english's files from
+# a folder that was never english.
+VARIANT_T3 = (
+    ("multilingual", ("t3_mtl23ls_v2.safetensors",)),
+    ("english", ("t3_cfg.safetensors", "t3_cfg.pt")),
+    ("turbo", ("t3_turbo*.safetensors", "t3_turbo*.pt")),
+    ("multilingual_v3", ("t3_mtl23ls_v3.safetensors", "t3_mtl23ls_v3.pt")),
+)
+# A T3 file that matches no row above. Still chatterbox by its other files,
+# still refused, and the refusal says so rather than echoing the file name.
+UNKNOWN_VARIANT = "unknown"
+# Every name the host can say, loadable or not.
+VARIANTS = tuple(v for v, _ in VARIANT_T3) + (UNKNOWN_VARIANT,)
 
 MIN_REF_SECONDS = 0.5
 MAX_REF_SECONDS = 30.0       # the model reads 10 s (decoder) / 6 s (encoder)
@@ -151,6 +181,15 @@ ENGINE: dict = {}            # torch / numpy / classes, filled by _ensure_engine
 
 # ── engine import ────────────────────────────────────────────────────────────
 
+#: Every module the model path binds or calls, by name, in one place the host
+#: can read. The readiness proof after an install (tts/provision.py, ENGINES
+#: verify list) must name each of these, and the suite holds the two lists
+#: to that. librosa is here because synthesis imports it later and a missing
+#: librosa would otherwise be found on the first sentence, not at install.
+ENGINE_IMPORTS = ("numpy", "torch", "perth", "librosa",
+                  "chatterbox.tts", "chatterbox.mtl_tts")
+
+
 def _ensure_engine(variant: str | None = None) -> None:
     """Import torch + chatterbox, or exit 3 = "the install is damaged".
 
@@ -163,18 +202,23 @@ def _ensure_engine(variant: str | None = None) -> None:
     if ENGINE.get("torch") is not None and (need is None or ENGINE.get(need)):
         return
     try:
+        if need is not None:
+            # perth is stubbed BEFORE chatterbox imports it (see _patch_perth),
+            # then everything on the model path by name, so the tuple above is
+            # what actually runs; the binds below take their classes.
+            _patch_perth()
+            for name in ENGINE_IMPORTS:
+                importlib.import_module(name)
         import numpy
         import torch
 
         ENGINE["torch"] = torch
         ENGINE["numpy"] = numpy
         if need == "mtl" and ENGINE.get("mtl") is None:
-            _patch_perth()
             from chatterbox.mtl_tts import SUPPORTED_LANGUAGES, ChatterboxMultilingualTTS
             ENGINE["mtl"] = ChatterboxMultilingualTTS
             ENGINE["languages"] = dict(SUPPORTED_LANGUAGES)
         elif need == "en" and ENGINE.get("en") is None:
-            _patch_perth()
             from chatterbox.tts import ChatterboxTTS
             ENGINE["en"] = ChatterboxTTS
     except Exception:                           # noqa: BLE001 - then leave
@@ -241,16 +285,42 @@ def _float(values: dict, name: str) -> float:
     return out
 
 
+def detect_variant(model_dir: Path) -> str:
+    """The build in this folder, read off the T3 backbone's file name.
+
+    Same table, same order as the host adapter's detect_variant, so the app
+    and the process that opens the files reach one verdict about one folder.
+    """
+    for variant, patterns in VARIANT_T3:
+        for pattern in patterns:
+            if any(model_dir.glob(pattern)):
+                return variant
+    return UNKNOWN_VARIANT
+
+
 def _variant_of(req: dict, model_dir: Path) -> str:
-    """multilingual | english. The host normally says; the directory decides
-    when it does not, using the adapter's own markers."""
+    """The host normally says; the directory decides when it does not.
+
+    Any name in VARIANTS is accepted from the host, loadable or not. A request
+    that says "turbo" has to reach the refusal in _op_load under that name;
+    re-reading the disk and calling it english would fail it for english's
+    files, which is the misreport this table exists to end.
+    """
     said = (req.get("variant") or "").strip().lower()
-    if said in ("multilingual", "english"):
+    if said in VARIANTS:
         return said
-    for marker in MTL_MARKERS:
-        if (model_dir / marker).is_file():
-            return "multilingual"
-    return "english"
+    return detect_variant(model_dir)
+
+
+def _refusal(variant: str) -> str:
+    """The sentence for a build this library has no loader for. It names the
+    build, or says the T3 file matched nothing, and names what does load."""
+    loadable = " and ".join(sorted(REQUIRED_FILES))
+    if variant == UNKNOWN_VARIANT:
+        return (f"the T3 file in this folder names no chatterbox build this "
+                f"engine loads ({loadable})")
+    return (f"this is the {variant} build of chatterbox; this engine loads "
+            f"{loadable} only")
 
 
 def _device(req: dict) -> str:
@@ -353,6 +423,16 @@ def _write_wav(wav, out_path: Path) -> float:
 def _op_load(req: dict, send) -> dict:
     model_dir = _model_dir(req)
     variant = _variant_of(req, model_dir)
+    if variant not in REQUIRED_FILES:
+        # Before _ensure_engine, on purpose: there is no class to import for
+        # this build, and torch takes seconds to load for an answer that is
+        # already no. A frame, not exit 4: the host maps that exit to
+        # tts_worker_failed, the route answered 500, and the sentence said
+        # "press Set up again to reinstall the engine" about an environment
+        # that is fine. The frame carries the app's own code, so the route
+        # answers 409 and the sentence names the build. The process stays up
+        # to answer the next request; the host drops it anyway.
+        raise _fail(_wire.CODE_MODEL_VARIANT_UNSUPPORTED, _refusal(variant))
     _ensure_engine(variant)
     device = _device(req)
     key = (str(model_dir), variant, device)

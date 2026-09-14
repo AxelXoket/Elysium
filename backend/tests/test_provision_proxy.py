@@ -416,6 +416,11 @@ class _WorkerHarness:
         monkeypatch.setattr(provision, "_egress_gate", watched_gate)
         monkeypatch.setattr(provision, "_run", fake_run)
         monkeypatch.setattr(provision, "_verify_env", lambda *a, **k: None)
+        # Fish also fetches its source tree after the packages, through the
+        # same _provision_client seam as the uv download, so its gate order
+        # is the download half's and is proven there and in test_tts_provision
+        # (TestTheSourceTree). Here it would reach the network for real.
+        monkeypatch.setattr(provision, "_install_source_tree", lambda *a, **k: None)
 
     def drive(self, uv=None):
         job = provision._Job(engine_id="fish_s2", state="preparing")

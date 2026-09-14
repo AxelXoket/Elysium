@@ -283,9 +283,14 @@ class TestWorkerScriptHygiene:
         # The smallest folder every engine's load accepts before it reaches
         # its own import. Not a real checkpoint: the point is to get PAST the
         # file checks, because a worker that refuses the request never asks
-        # its environment anything.
-        (ckpt / "config.json").write_text("{}", encoding="utf-8")
-        (ckpt / "codec.pth").write_bytes(b"")
+        # its environment anything. Fish opens config, codec, a weight file
+        # and the tokenizer pair; chatterbox reads its english build's four
+        # files and refuses a build it has no loader for BEFORE the import;
+        # xtts checks its files only after the import.
+        for name in ("config.json", "codec.pth", "model.safetensors",
+                     "tokenizer.json", "tokenizer_config.json",
+                     "ve.safetensors", "t3_cfg.safetensors", "s3gen.safetensors"):
+            (ckpt / name).write_bytes(b"{}" if name.endswith(".json") else b"")
 
         entrypoints = self._entrypoints()
         assert entrypoints, "no worker entrypoints found - the loop is vacuous"

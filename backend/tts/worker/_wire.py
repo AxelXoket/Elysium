@@ -60,6 +60,12 @@ CODE_SYNTHESIS_FAILED = "tts_synthesis_failed"
 CODE_REFERENCE_INVALID = "tts_reference_invalid"
 CODE_TRANSCRIPT_REQUIRED = "tts_transcript_required"
 CODE_WORKER_FAILED = "tts_worker_failed"
+# A checkpoint build the engine has no loader for (chatterbox turbo,
+# multilingual v3). A frame, not EXIT_MODEL_LOAD: the host maps that exit to
+# tts_worker_failed, whose sentence sends the reader to reinstall an engine
+# that is fine. The host passes this one through because tts/errors.py
+# declares it, and the route answers 409 as the contract records.
+CODE_MODEL_VARIANT_UNSUPPORTED = "tts_model_variant_unsupported"
 
 # -- what a worker is allowed to say in its own words ------------------------
 #

@@ -1,0 +1,7 @@
+# Overrides for fish_s2.txt. Each line repeats a pin from the freeze and tells
+# the resolver to believe it where a package's own metadata disagrees.
+# Read by tts/provision.py as `--overrides`; see install_argv for the reasoning.
+#
+# descript-audiotools 0.7.2 declares protobuf>=3.9.2,<3.20. The environment
+# that was measured working runs 5.29.6 beside it. Measured 8 September 2026.
+protobuf==5.29.6

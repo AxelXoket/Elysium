@@ -22,6 +22,7 @@ from tts.errors import (
     TTS_INSUFFICIENT_VRAM,
     TTS_LANGUAGE_UNSUPPORTED,
     TTS_MODEL_INCOMPLETE,
+    TTS_MODEL_VARIANT_UNSUPPORTED,
     TTS_RUNTIME_BROKEN,
     TTS_RUNTIME_MISSING,
 )
@@ -217,6 +218,111 @@ class TestLanguageCompatibility:
         assert r.languages == ("en",)
 
 
+class TestABuildTheEngineCannotLoad:
+    """Every file present, and the bundled worker still has no loader for it:
+    Chatterbox Turbo is a different T3 architecture and multilingual v3 opens
+    different files. Before this code existed such a folder either read as
+    complete and then failed at load, or was called a broken download and
+    handed a redownload button that fetches the same files again."""
+
+    def test_turbo_is_its_own_code_and_not_a_broken_download(
+        self, monkeypatch, tmp_path
+    ):
+        _fake_smi(monkeypatch)
+        _runtime_ready(monkeypatch, tmp_path, engine="chatterbox")
+        r = readiness.evaluate(_model(engine_id="chatterbox", variant="turbo"))
+        assert TTS_MODEL_VARIANT_UNSUPPORTED in _blockers(r)
+        assert TTS_MODEL_INCOMPLETE not in _codes(r)
+        assert r.runnable is False
+        assert r.settings_available is True
+
+    def test_it_never_carries_the_redownload_action(self, monkeypatch, tmp_path):
+        _fake_smi(monkeypatch)
+        _runtime_ready(monkeypatch, tmp_path, engine="chatterbox")
+        r = readiness.evaluate(_model(engine_id="chatterbox", variant="multilingual_v3"))
+        issue = next(i for i in r.issues if i.code == TTS_MODEL_VARIANT_UNSUPPORTED)
+        assert issue.action is None
+        assert issue.action != readiness.ACTION_REDOWNLOAD
+
+    def test_the_detail_names_the_build(self, monkeypatch, tmp_path):
+        _fake_smi(monkeypatch)
+        _runtime_ready(monkeypatch, tmp_path, engine="chatterbox")
+        for build in ("turbo", "multilingual_v3"):
+            r = readiness.evaluate(_model(engine_id="chatterbox", variant=build))
+            issue = next(i for i in r.issues if i.code == TTS_MODEL_VARIANT_UNSUPPORTED)
+            assert build in issue.detail
+
+    def test_a_build_the_engine_loads_is_not_refused(self, monkeypatch, tmp_path):
+        # The absence half of the test above, with its positive control in the
+        # same breath: same machine, same runtime, only the build differs.
+        _fake_smi(monkeypatch)
+        _runtime_ready(monkeypatch, tmp_path, engine="chatterbox")
+        for build in ("english", "multilingual"):
+            r = readiness.evaluate(_model(engine_id="chatterbox", variant=build))
+            assert TTS_MODEL_VARIANT_UNSUPPORTED not in _codes(r), build
+            assert r.runnable is True, build
+        refused = readiness.evaluate(_model(engine_id="chatterbox", variant="turbo"))
+        assert TTS_MODEL_VARIANT_UNSUPPORTED in _codes(refused)
+
+    def test_an_engine_with_no_builds_is_never_asked(self, monkeypatch, tmp_path):
+        # fish_s2 has no variant_refusal hook and nothing to refuse; the
+        # verdict must not invent one.
+        _fake_smi(monkeypatch)
+        _runtime_ready(monkeypatch, tmp_path)
+        r = readiness.evaluate(_model(variant="turbo"))
+        assert TTS_MODEL_VARIANT_UNSUPPORTED not in _codes(r)
+        assert r.runnable is True
+
+    def test_a_short_manifest_file_adds_no_redownload_to_a_refused_build(
+        self, monkeypatch, tmp_path
+    ):
+        """One folder can carry both: a download manifest that recorded a
+        short file, and a build the engine cannot load. Reporting both
+        offered a redownload for a folder that will never load however many
+        times it is fetched, so the refusal wins and the manifest half is
+        not consulted for it."""
+        _fake_smi(monkeypatch)
+        _runtime_ready(monkeypatch, tmp_path, engine="chatterbox")
+        monkeypatch.setattr(readiness.manifest, "short_files",
+                            lambda model_dir: ("t3_turbo_v1.safetensors",))
+        r = readiness.evaluate(_model(engine_id="chatterbox", variant="turbo"))
+        assert TTS_MODEL_VARIANT_UNSUPPORTED in _blockers(r)
+        assert TTS_MODEL_INCOMPLETE not in _codes(r)
+        assert all(i.action != readiness.ACTION_REDOWNLOAD for i in r.issues)
+        assert r.runnable is False
+
+    def test_positive_control_the_same_short_file_is_reported_for_a_build_it_loads(
+        self, monkeypatch, tmp_path
+    ):
+        # Same machine, same manifest, only the build differs: english loads,
+        # so its short file is a broken download and gets the button.
+        _fake_smi(monkeypatch)
+        _runtime_ready(monkeypatch, tmp_path, engine="chatterbox")
+        monkeypatch.setattr(readiness.manifest, "short_files",
+                            lambda model_dir: ("t3_cfg.safetensors",))
+        r = readiness.evaluate(_model(engine_id="chatterbox", variant="english"))
+        issue = next(i for i in r.issues if i.code == TTS_MODEL_INCOMPLETE)
+        assert issue.action == readiness.ACTION_REDOWNLOAD
+        assert "t3_cfg.safetensors" in issue.detail
+        assert TTS_MODEL_VARIANT_UNSUPPORTED not in _codes(r)
+
+    def test_a_refusal_hook_that_explodes_is_reported_not_read_as_yes(
+        self, monkeypatch, tmp_path
+    ):
+        _fake_smi(monkeypatch)
+        _runtime_ready(monkeypatch, tmp_path, engine="chatterbox")
+
+        def boom(cls, model):
+            raise RuntimeError("refusal blew up")
+
+        monkeypatch.setattr(
+            ChatterboxAdapter, "variant_refusal", classmethod(boom), raising=False
+        )
+        r = readiness.evaluate(_model(engine_id="chatterbox", variant="english"))
+        assert TTS_MODEL_VARIANT_UNSUPPORTED in _blockers(r)
+        assert r.runnable is False
+
+
 class TestItNeverMakesThingsWorse:
     def test_every_code_it_can_emit_is_in_the_shared_vocabulary(
         self, monkeypatch, tmp_path
@@ -229,6 +335,7 @@ class TestItNeverMakesThingsWorse:
             _model(missing=("x.pth",)),
             _model(engine_id="nope"),
             _model(engine_id="chatterbox", variant="english"),
+            _model(engine_id="chatterbox", variant="turbo"),
         ]
         seen = set()
         for m in cases:

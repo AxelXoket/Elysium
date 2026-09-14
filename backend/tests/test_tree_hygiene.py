@@ -215,7 +215,7 @@ def test_the_waiver_list_itself_parses(sweep):
         + [f"  {e}" for e in sweep["errors"]])
 
 
-#: The three tools that survived 2026-08-17, each because it does something no
+#: The tools that survived 2026-08-17, each because it does something no
 #: test can: the hygiene gate the commit hook runs, the one that makes a live
 #: request with a real key, and the one that measures real hardware.
 LIVE_VERIFY_TOOLS = {
@@ -227,6 +227,14 @@ LIVE_VERIFY_TOOLS = {
     # the entry point both installed git hooks run. Its own module docstring
     # argues why the work is split into a cheap lane and a slow one.
     "run_gates.py",
+    # Added 2026-09-08. Neither is a retired script coming back. One asks
+    # the package index whether the three voice engine freezes still
+    # resolve, with the installer's own command; the other runs the
+    # installer for real into a throwaway folder and makes every engine
+    # speak. Both measure what the suite, which replaces the subprocess,
+    # cannot see, and that gap is where four installer defects sat unseen.
+    "verify_tts_resolve.py",
+    "verify_tts_install.py",
 }
 
 

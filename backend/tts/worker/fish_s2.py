@@ -61,6 +61,8 @@ from __future__ import annotations
 
 import contextlib
 import gc
+import importlib
+import json
 import os
 import re
 import sys
@@ -198,6 +200,19 @@ _OOM_TYPE = type(_wire.oom(""))
 
 
 # ── engine import: a damaged install must exit 3, not 1 ──────────────────────
+#: Every module `_engine()` binds, by name, in one place the host can read.
+#: The readiness proof after an install (tts/provision.py, ENGINES verify
+#: list) must name each of these, and the suite holds the two lists to that.
+#: The bare package name is deliberately absent: `import fish_speech` passes
+#: on a directory with no __init__.py at all, so it proved nothing about the
+#: two modules below, which are the ones that were missing from a wheel.
+ENGINE_IMPORTS = (
+    "numpy", "soundfile", "torch", "torchaudio",
+    "fish_speech.models.dac.inference",
+    "fish_speech.models.text2semantic.inference",
+)
+
+
 def _engine() -> dict:
     """Import torch and fish_speech exactly once.
 
@@ -207,6 +222,10 @@ def _engine() -> dict:
     if _ENGINE:
         return _ENGINE
     try:
+        # By name first, so the tuple above is what actually runs and cannot
+        # drift from the binds below; the binds then take their attributes.
+        for name in ENGINE_IMPORTS:
+            importlib.import_module(name)
         import numpy as np
         import soundfile as sf
         import torch
@@ -729,6 +748,75 @@ def _warmup(send) -> float:
     return time.perf_counter() - t0
 
 
+# ── the model folder, checked before the engine is asked to open it ──────────
+# Same names, same order, same rules as `tts/adapters/fish_s2.py` on the host,
+# written out again because this file may import nothing from the app (see the
+# header). The test suite holds the two copies to identical answers on every
+# layout, which is what lets the app's "download did not finish" verdict and
+# the refusal below name the same files. The reasons behind each name live
+# with the host copy; here is only what the engine does with them:
+# `DualARTransformer.from_pretrained` opens every shard the index's
+# `weight_map` names, else `model.safetensors`, else `model.pth`, and raises a
+# bare FileNotFoundError otherwise. The tokenizer pair is what
+# `transformers.AutoTokenizer` needs offline; fish_speech turns its absence
+# into a warning at load and an AttributeError on the first sentence. Where
+# the rule is stricter than the engine (an empty `weight_map`, a shard named
+# in a subfolder) the reasons live with the host copy too.
+_REQUIRED_FILES = ("config.json", "codec.pth", "tokenizer.json",
+                   "tokenizer_config.json")
+_WEIGHT_INDEX = "model.safetensors.index.json"
+_SINGLE_WEIGHT_FILES = ("model.safetensors", "model.pth")
+_MISSING_WEIGHTS = ("model weights (model.safetensors.index.json with its "
+                    "shards, or model.safetensors)")
+#: The host reads the index through `read_json` (tts/util.py), which gives up
+#: above MAX_METADATA_BYTES; this is that number retyped, because this file
+#: cannot import it, and the suite holds the two equal. Above it the index is
+#: "not an index" on both sides instead of a verdict that depends on which
+#: half looked. The real one is 32 KB.
+_MAX_INDEX_BYTES = 4 * 1024 * 1024
+
+
+def _shard_names(index_path: Path) -> list[str] | None:
+    """The shard files the index maps its tensors onto, or None if it is not
+    a shard index (oversized, unreadable, no `weight_map`, empty, or a value
+    that is not a bare file name: the folder is untrusted input, and a path
+    separator in a `weight_map` entry would send the check outside it)."""
+    try:
+        if index_path.stat().st_size > _MAX_INDEX_BYTES:
+            return None
+        with open(index_path, encoding="utf-8") as handle:
+            index = json.load(handle)
+    except Exception:  # noqa: BLE001 - a half-written file is "not an index"
+        return None
+    if not isinstance(index, dict):
+        return None
+    weight_map = index.get("weight_map")
+    if not isinstance(weight_map, dict) or not weight_map:
+        return None
+    names: set[str] = set()
+    for value in weight_map.values():
+        if (not isinstance(value, str) or not value
+                or Path(value).name != value or value in (".", "..")):
+            return None
+        names.add(value)
+    return sorted(names)
+
+
+def _missing_files(ckpt: Path) -> list[str]:
+    """Every file the engine will fail without, in the host adapter's order."""
+    missing = [name for name in _REQUIRED_FILES if not (ckpt / name).is_file()]
+    index = ckpt / _WEIGHT_INDEX
+    if index.is_file():
+        shards = _shard_names(index)
+        if shards is None:
+            missing.append(_WEIGHT_INDEX)
+        else:
+            missing.extend(s for s in shards if not (ckpt / s).is_file())
+    elif not any((ckpt / n).is_file() for n in _SINGLE_WEIGHT_FILES):
+        missing.append(_MISSING_WEIGHTS)
+    return missing
+
+
 def _op_load(req: dict, send) -> dict:
     values = req.get("values") or {}
     knobs = _knobs(values)
@@ -742,11 +830,13 @@ def _op_load(req: dict, send) -> dict:
     if STATE["model"] is not None and STATE["model_path"] == str(ckpt):
         return _load_result(reused=True, compile_seconds=0.0)
 
-    missing = [name for name in ("config.json", "codec.pth")
-               if not (ckpt / name).is_file()]
     if not ckpt.is_dir():
         raise _wire.WorkerError(_wire.CODE_WORKER_FAILED,
                                 f"no such model directory: {ckpt}")
+    # Before `_engine()`: a folder the engine cannot open is a download
+    # verdict, not a runtime one, and it should not cost the torch import to
+    # find out. The names are the ones the host lists, so the two agree.
+    missing = _missing_files(ckpt)
     if missing:
         raise _wire.WorkerError(
             _wire.CODE_WORKER_FAILED,
