@@ -58,6 +58,35 @@ class TestTheSettingIsReadSafely:
         for raw in (None, "", "0", "15", "nonsense"):
             assert _read_auto_lock(raw) == auto_lock.minutes_from_raw(raw), raw
 
+    def test_the_shared_contract_and_the_served_default_are_the_same_number(
+        self, client
+    ) -> None:
+        """The auto-lock hint on screen says "on by default, N minutes". N
+        comes to the screen from GET /settings, which serves DEFAULT_MINUTES
+        as auto_lock_default_minutes; the frontend test that checks the
+        sentence cannot call this backend, so it reads the same number from
+        shared/auto_lock_contract.json. This is the pin that keeps the three
+        one number: change the constant without the file and this goes red.
+        """
+        import json
+        from pathlib import Path
+
+        contract_path = (
+            Path(__file__).resolve().parents[2] / "shared" / "auto_lock_contract.json"
+        )
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+        assert contract["default_minutes"] == auto_lock.DEFAULT_MINUTES
+        # "On by default" is what the sentence claims, so the default has to
+        # be a timeout the watchdog obeys rather than one it reads as off.
+        assert auto_lock.DEFAULT_MINUTES >= auto_lock.MIN_MINUTES
+
+        body = client.get("/api/v1/settings").json()
+        assert body["auto_lock_default_minutes"] == auto_lock.DEFAULT_MINUTES
+        # A vault nobody configured (this fixture's) is served the default as
+        # its effective value too, so the two fields agree here and only
+        # here; a configured vault would carry its own number in the first.
+        assert body["auto_lock_minutes"] == body["auto_lock_default_minutes"]
+
     def test_a_configured_value_is_read(self, client) -> None:
         from database import set_setting
         set_setting(auto_lock.SETTING, "15")
@@ -606,3 +635,26 @@ class TestAPollIsNotAPerson:
         patterns = [compile_path(p)[0] for p in served if p]
         for path in main._IDLE_EXEMPT:
             assert path in served or any(rx.match(path) for rx in patterns), path
+
+        # And the set is exactly what main.py says it builds it from: the
+        # four routes the frontend asks for on a timer, plus one install poll
+        # per engine the registry knows. An equality rather than a subset
+        # check, so a path that has no business being exempt - the activity
+        # ping is the one that must never be, since its whole job is to move
+        # the clock - fails here by name as well as behaviourally in
+        # test_activity_ping.py. The count is computed from the registry,
+        # never typed: a fourth engine adapter grows it by itself.
+        from tts.registry import all_adapters
+
+        polled_on_a_timer = {
+            "/api/v1/vault/status",
+            "/api/v1/notebook/worker",
+            "/api/v1/tts/state",
+            "/api/v1/tts/active",
+        }
+        install_polls = {
+            f"/api/v1/tts/runtimes/{a.engine_id}/install" for a in all_adapters()
+        }
+        assert set(main._IDLE_EXEMPT) == polled_on_a_timer | install_polls
+        assert len(main._IDLE_EXEMPT) == len(polled_on_a_timer) + len(all_adapters())
+        assert "/api/v1/activity" not in main._IDLE_EXEMPT

@@ -10,6 +10,7 @@ import { App } from "./app/App";
 import "./index.css";
 import { readLaunchToken } from "./lib/api/launchToken";
 import { installNavigationGuard } from "./lib/navigationGuard";
+import { installActivityTracker } from "./lib/activity/installActivityTracker";
 
 // FIRST, before anything can make a request. The desktop app opens this page
 // at #elysium-token=<secret>; without it every API call is refused, and the
@@ -21,6 +22,13 @@ readLaunchToken();
 // Installed before the first render, in the capture phase, so it does not
 // depend on any component remembering to ask for it.
 installNavigationGuard();
+
+// The idle lock only ever saw HTTP requests, so reading, scrolling and typing
+// without pressing Send looked like an empty room. This watches real input on
+// the window - in the capture phase, for the same reason as the guard above -
+// and tells the backend a person is here. It stays silent until VaultGate
+// switches it on for an unlocked vault.
+installActivityTracker();
 
 // ErrorBoundary sits OUTSIDE Providers so a crash anywhere - including a
 // provider itself - swaps to the branded fallback instead of a white window

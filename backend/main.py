@@ -188,6 +188,13 @@ app = FastAPI(
 #: exists on that day, the same way they had to remember it for the notebook.
 from tts.registry import all_adapters as _tts_engines
 
+#: NOT in this set, deliberately: /api/v1/activity (routers/activity.py). Its
+#: whole job is to move the idle clock on the frontend's behalf when a real
+#: input event happened, so exempting it would turn the feature off while it
+#: reported itself as on. It is not a poll either: the frontend sends it only
+#: after a real event, at most once every PING_MIN_GAP_S seconds, and never
+#: from a timer alone. tests/test_activity_ping.py asserts the absence
+#: behaviourally (the ping resets idle_seconds()) and by membership.
 _IDLE_EXEMPT: frozenset[str] = frozenset({
     "/api/v1/vault/status",
     "/api/v1/notebook/worker",
@@ -713,6 +720,12 @@ app.include_router(tts_router.router, prefix="/api/v1")
 # host half. This process still never imports torch - it only spawns.
 from routers import tts_runtime as tts_runtime_router
 app.include_router(tts_runtime_router.router, prefix="/api/v1")
+#
+# IP-07 - Activity ping (active). Outside /vault on purpose: the gate above
+# answers a locked vault with 423 before the idle stamp, so a ping while
+# locked moves nothing. Not in _IDLE_EXEMPT, for the reason written there.
+from routers import activity as activity_router
+app.include_router(activity_router.router, prefix="/api/v1")
 
 
 # ── Phase 1 liveness probe ────────────────────────────────────────────────────

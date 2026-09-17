@@ -11,6 +11,9 @@ const HTTP_METHODS = [
   "OPTIONS",
 ] as const;
 
+/** Statuses the Fetch standard defines as body-less. */
+const NULL_BODY_STATUSES = new Set([204, 205, 304]);
+
 /**
  * Configures a global fetch mock that routes responses based on URL - and,
  * optionally, HTTP method. The first matching entry in insertion order wins.
@@ -60,8 +63,15 @@ export function mockFetch(
       }
 
       if (url.includes(urlPattern)) {
+        const status = response.status ?? 200;
+        // A 204 (or 205, 304) may not carry a body - Response() throws on
+        // one - so for those the route's body is ignored and the answer is
+        // empty, which is what the real backend sends for POST /activity.
+        if (NULL_BODY_STATUSES.has(status)) {
+          return new Response(null, { status });
+        }
         return new Response(JSON.stringify(response.body), {
-          status: response.status ?? 200,
+          status,
           headers: { "Content-Type": "application/json" },
         });
       }

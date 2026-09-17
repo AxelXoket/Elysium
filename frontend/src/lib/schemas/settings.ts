@@ -22,6 +22,11 @@ export const SettingsSchema = z.object({
    *  default is the one that does not lock a session the server never
    *  promised to keep track of. */
   auto_lock_minutes: z.number().default(0),
+  /** What a vault nobody configured gets, as the server's own constant, so
+   *  the auto-lock hint can say "on by default, N minutes" without this side
+   *  keeping a copy of N. Optional so an older server still parses; the hint
+   *  then says nothing about the default rather than guessing. */
+  auto_lock_default_minutes: z.number().optional(),
   /** Hide the window from screen capture and screen sharing. Defaulted so a
    *  newer client against an older server parses, and the default is OFF -
    *  screenshots of this app get taken, and a protection that silently

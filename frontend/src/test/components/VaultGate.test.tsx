@@ -5,7 +5,7 @@
  * successful init/unlock, so the invalidation → refetch → children flow is
  * exercised end to end (the same path the real app takes).
  */
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
@@ -13,6 +13,11 @@ import {
   createTestQueryClient,
 } from "@/test/helpers/renderWithQueryClient";
 import { VaultGate } from "@/components/vault/VaultGate";
+import {
+  installActivityTracker,
+  lastActivityAt,
+} from "@/lib/activity/installActivityTracker";
+import { fireTrusted } from "@/test/helpers/trustedEvents";
 
 interface VaultSim {
   initialized: boolean;
@@ -785,5 +790,55 @@ describe("VaultGate - the reset confirmation screen", () => {
     // TTS_REFS_DIR is swept, so the user's own recorded voice is NOT a
     // survivor - the one place "voice" could be misread on this screen.
     expect(said).toMatch(/your own recorded voice is not/i);
+  });
+});
+
+/**
+ * The activity tracker is installed by main.tsx and switched by this gate:
+ * on for an unlocked vault, off otherwise. Measured through the tracker's
+ * public stamp with a genuinely trusted keydown (helpers/trustedEvents.ts),
+ * because a tracker that listened while the lock screen was up would be
+ * sending 423s into the lock signal from the very screen it produced.
+ */
+describe("VaultGate feeds the activity tracker", () => {
+  let uninstall: (() => void) | null = null;
+
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    uninstall = installActivityTracker();
+  });
+
+  afterEach(() => {
+    uninstall?.();
+    uninstall = null;
+  });
+
+  it("switches it on once the vault is unlocked", async () => {
+    stubVaultFetch({ initialized: true, unlocked: true, passphrase: "x" });
+    renderWithQueryClient(<VaultGate>{APP_MARKER}</VaultGate>);
+    await screen.findByTestId("app-root");
+
+    expect(lastActivityAt()).toBeNull();
+    fireTrusted("keydown", document.body, { key: "a" });
+    expect(lastActivityAt()).not.toBeNull();
+  });
+
+  it("GROUND: leaves it off while the vault is locked", async () => {
+    stubVaultFetch({ initialized: true, unlocked: false, passphrase: "x" });
+    renderWithQueryClient(<VaultGate>{APP_MARKER}</VaultGate>);
+    await screen.findByLabelText("Passphrase");
+
+    fireTrusted("keydown", document.body, { key: "a" });
+    expect(lastActivityAt()).toBeNull();
+  });
+
+  it("switches it off again when the gate unmounts", async () => {
+    stubVaultFetch({ initialized: true, unlocked: true, passphrase: "x" });
+    const view = renderWithQueryClient(<VaultGate>{APP_MARKER}</VaultGate>);
+    await screen.findByTestId("app-root");
+    view.unmount();
+
+    fireTrusted("keydown", document.body, { key: "a" });
+    expect(lastActivityAt()).toBeNull();
   });
 });

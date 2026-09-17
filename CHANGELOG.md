@@ -11,6 +11,21 @@ no exe you can download yet.
 
 ### Added
 
+- **Reading, scrolling, hovering and typing keep the vault open.** The idle lock
+  only ever saw HTTP requests, so twenty minutes spent reading a long reply
+  without pressing Send locked the vault on the fifth minute. The window now
+  watches real input: a click, a key, a wheel, a touch, focus arriving, and the
+  pointer moving or hovering over the focused, visible window at least ten
+  pixels from the last point that counted. It tells the backend through
+  `POST /activity`, at most once every thirty seconds and only after such an
+  event. Programmatic scrolling does not count, nothing counts while the vault
+  is locked, and the ping carries nothing: a 204 with no body, recorded by the
+  same gate every request passes, so there is still one definition of activity.
+- **The auto-lock hint says the default out loud.** It read "off by default"
+  for a lock that has been on at five minutes since August; it now says on,
+  with the number the server itself reports, and lists what counts as being
+  here.
+
 - **An empty name box gets a name instead of an error.** Chats, characters,
   personas, limits and voices all answered the empty box differently and every
   answer was wrong: a chat was stamped with the character and the UTC minute,
@@ -113,6 +128,20 @@ no exe you can download yet.
   0.016s for the same request carrying no list.
 
 ### Security
+
+- **Activity is a looser word than it was, and this is a relaxation.** Until
+  now activity meant a request you sent. It now includes the mouse moving or
+  hovering over the focused window. A hand resting on the mouse while the
+  window is focused, or software that moves the cursor over it by more than ten
+  pixels, keeps the vault open; no web signal separates that from a person, and
+  the only one that would, the operating system's injected-input flag, needs a
+  global input hook this app will not install. Movement over another
+  application's window never reaches this one, and nothing counts while the
+  window is unfocused. A `focus()` call from script also produces the trusted
+  focus event that counts; every such call in the app today runs on a user
+  action or when the request that action started settles, at which instant the
+  clock was already reset by that request. There is no server-side limit on the
+  ping this turn; the client's thirty-second gap is the only limit.
 
 - **The safeword is cut out of the whole outgoing body**, not just the message
   being typed. A message you type carrying the safeword is still refused whole

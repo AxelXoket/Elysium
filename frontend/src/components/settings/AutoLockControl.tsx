@@ -6,9 +6,13 @@
  * open for days: on a desk, on a shared machine, on a laptop somebody walked
  * away from. This is the only control that shortens that window.
  *
- * Off by default, and said plainly rather than buried, because a lock that
- * interrupts somebody mid-conversation is a lock they turn off and never turn
- * back on. The copy therefore explains what it costs as well as what it buys.
+ * On by default, at the number of minutes the server reports, and said
+ * plainly rather than buried, because a lock that interrupts somebody
+ * mid-conversation is a lock they turn off and never turn back on. The copy
+ * therefore explains what it costs, what it buys, and what counts as being
+ * here: since the activity tracker, that is clicking, typing, scrolling,
+ * hovering, moving the mouse and touching the screen, as well as a reply
+ * still being written.
  *
  * A fixed set of choices rather than a number field: the value that matters is
  * "did you think about this", and a free-form box invites a 1 that locks the
@@ -41,6 +45,10 @@ export function AutoLockControl() {
   // and the schema already reads it as off, so the panel says off too.
   const known = !settings.isPending && !settings.isError;
   const current = known ? (settings.data?.auto_lock_minutes ?? 0) : null;
+  // The server's own default, served beside the setting so this side never
+  // keeps a copy of the number. Null while unknown or on an older server,
+  // and then the hint says nothing about the default rather than guessing.
+  const defaultMinutes = settings.data?.auto_lock_default_minutes ?? null;
 
   return (
     <div className="space-y-2" data-testid="auto-lock-control">
@@ -64,8 +72,18 @@ export function AutoLockControl() {
       <p data-testid="auto-lock-hint" className="text-xs leading-relaxed text-muted-foreground">
         While Elysium is unlocked, your chats are decrypted. This closes the
         vault again after a period with nothing happening, so a window left
-        open does not leave them readable. A reply that is still being written
-        counts as something happening and will not be interrupted.
+        open does not leave them readable.
+        {defaultMinutes !== null && (
+          <>
+            {" "}
+            {defaultMinutes > 0
+              ? `It is on by default, at ${defaultMinutes} minutes.`
+              : "It is off by default."}
+          </>
+        )}{" "}
+        Clicking, typing, scrolling, hovering, moving the mouse and touching
+        the screen all count as something happening, and so does a reply that
+        is still being written, which will not be interrupted.
       </p>
       <div
         role="radiogroup"

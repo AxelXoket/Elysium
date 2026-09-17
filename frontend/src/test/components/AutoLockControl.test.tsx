@@ -19,9 +19,15 @@ import {
   wrapInGlassRight,
   surfaceToken,
 } from "@/test/helpers/glassSurfaceCss";
+// The one number the hint prints, pinned on the backend side to
+// auto_lock.DEFAULT_MINUTES (backend/tests/test_auto_lock.py), so the
+// expectation below is derived from the server's constant rather than typed.
+import autoLockContract from "../../../../shared/auto_lock_contract.json";
+
+type SettingsData = { auto_lock_minutes: number; auto_lock_default_minutes?: number };
 
 const setAutoLock = vi.fn();
-const settingsData = { current: { auto_lock_minutes: 0 } as { auto_lock_minutes: number } | undefined };
+const settingsData = { current: { auto_lock_minutes: 0 } as SettingsData | undefined };
 const mutationState = { isPending: false, isError: false };
 // The read has states of its own, and the panel now reads them: a response
 // that has not landed is not the same fact as a response that says off. Every
@@ -50,7 +56,10 @@ function renderIt() {
 describe("AutoLockControl", () => {
   beforeEach(() => {
     setAutoLock.mockClear();
-    settingsData.current = { auto_lock_minutes: 0 };
+    settingsData.current = {
+      auto_lock_minutes: 0,
+      auto_lock_default_minutes: autoLockContract.default_minutes,
+    };
     mutationState.isPending = false;
     mutationState.isError = false;
     settingsQuery.isPending = false;
@@ -110,13 +119,63 @@ describe("AutoLockControl", () => {
     expect(screen.queryByText(/stays open until you lock it/i)).toBeNull();
   });
 
-  it("promises not to interrupt a reply being written", () => {
+  it("says the default out loud, with the server's number, and what counts as being here", () => {
+    // The stale sentence said "off by default" for a lock that has been on
+    // at five minutes since August 2026, and "activity" used to mean an HTTP
+    // request. The number is not typed here: it comes from the shared
+    // contract the backend pins to its own constant.
+    renderIt();
+    const hint = screen.getByTestId("auto-lock-hint");
+    const n = autoLockContract.default_minutes;
+    expect(n).toBeGreaterThan(0);
+    expect(hint).toHaveTextContent(`It is on by default, at ${n} minutes.`);
+    for (const action of [
+      /clicking/i,
+      /typing/i,
+      /scrolling/i,
+      /hovering/i,
+      /moving the mouse/i,
+      /touching the screen/i,
+    ]) {
+      expect(hint).toHaveTextContent(action);
+    }
+    // Not claimed: a bare window focus is not one of the seven events
+    // (focusin needs an element to take focus), so the sentence must not
+    // promise "coming back to the window".
+    expect(hint).not.toHaveTextContent(/coming back/i);
     // The reason people turn this kind of thing off. Saying it is the
     // difference between a feature that gets used and one that gets disabled.
+    expect(hint).toHaveTextContent(/still being written/i);
+    expect(hint).toHaveTextContent(/will not be interrupted/i);
+  });
+
+  it("prints the default the server serves, not a number of its own", () => {
+    // The binding, measured: shift what the server reports and the sentence
+    // has to follow. A component that printed a literal would still pass
+    // the test above and fails this one.
+    const shifted = autoLockContract.default_minutes + 10;
+    settingsData.current = { auto_lock_minutes: 0, auto_lock_default_minutes: shifted };
     renderIt();
-    expect(
-      screen.getByText(/still being written counts as something happening/i),
-    ).toBeInTheDocument();
+    const hint = screen.getByTestId("auto-lock-hint");
+    expect(hint).toHaveTextContent(`at ${shifted} minutes`);
+    expect(hint).not.toHaveTextContent(`at ${autoLockContract.default_minutes} minutes`);
+  });
+
+  it("says nothing about the default when the server does not report one", () => {
+    // An older server, or a read that has not landed: the sentence must not
+    // guess a number and must not print a hole where one would go.
+    settingsData.current = { auto_lock_minutes: 0 };
+    renderIt();
+    const hint = screen.getByTestId("auto-lock-hint");
+    expect(hint).not.toHaveTextContent(/by default/i);
+    expect(hint).not.toHaveTextContent(/undefined|null|NaN/);
+    // Positive control: the same sentence appears the moment it is known.
+    settingsData.current = {
+      auto_lock_minutes: 0,
+      auto_lock_default_minutes: autoLockContract.default_minutes,
+    };
+    renderIt();
+    expect(screen.getAllByTestId("auto-lock-hint").at(-1)).toHaveTextContent(/on by default/i);
   });
 
   it("says the setting did not save rather than showing it as saved", async () => {
@@ -148,7 +207,7 @@ describe("AutoLockControl", () => {
     // This is a response that ARRIVED and lacks the field, which is a value
     // we have; it is not the same case as a read still in flight or a read
     // that failed, and those two are covered in their own file.
-    settingsData.current = {} as { auto_lock_minutes: number };
+    settingsData.current = {} as SettingsData;
     renderIt();
     expect(screen.getByRole("radio", { name: "Never" })).toHaveAttribute(
       "aria-checked",

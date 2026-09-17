@@ -23,6 +23,7 @@ import { LockOverlay } from "@/components/vault/LockOverlay";
 import { useReducedMotion } from "@/components/motion/ReducedMotion";
 import { easeValues } from "@/lib/theme/tokens";
 import { setVaultLockedHandler, isApiError, request } from "@/lib/api/client";
+import { setActivityTrackerEnabled } from "@/lib/activity/installActivityTracker";
 import { getErrorMessage } from "@/lib/errors/errorMessages";
 import { useErrorStore } from "@/lib/errors";
 import { stopVoicePlayback } from "@/lib/voice/playerStore";
@@ -200,6 +201,15 @@ export function VaultGate({ children }: { children: ReactNode }) {
     });
     return () => setVaultLockedHandler(null);
   }, [qc]);
+
+  // The activity tracker speaks only for an unlocked vault: a ping while
+  // locked answers 423 and moves nothing, and a tracker that kept sending
+  // them would be noise on the lock screen. Same shape as the handler above:
+  // the gate feeds a module-scope switch that main.tsx installed.
+  useEffect(() => {
+    setActivityTrackerEnabled(status?.unlocked === true);
+    return () => setActivityTrackerEnabled(false);
+  }, [status?.unlocked]);
 
   // The sidebar's lock button hands its API call over as `commit`; the
   // overlay fires it at the choreography's click moment, so the lock snaps

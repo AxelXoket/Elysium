@@ -87,6 +87,10 @@ def test_get_settings_shape_unchanged(client):
         # passphrase - a lock timeout somebody else can read and change is not
         # a lock timeout. 0 (never) unless the row says otherwise.
         "auto_lock_minutes",
+        # IP-07: the watchdog's default, served so the auto-lock hint can say
+        # "on by default, N minutes" without the frontend keeping its own
+        # copy of N. A fact about the backend, not a stored setting.
+        "auto_lock_default_minutes",
         # FAZ 3: the capture-exclusion switch. Lives in the vault, not in
         # browser storage - a protection setting readable without the
         # passphrase is not one.

@@ -1,0 +1,4 @@
+{
+  "_why": "One number, read from both sides, for the sentence the auto-lock control prints: 'on by default, N minutes'. The backend's auto_lock.DEFAULT_MINUTES is the authority and GET /settings serves it as auto_lock_default_minutes; backend/tests/test_auto_lock.py asserts this file, the constant and the served field agree, so the file cannot drift from the code it describes. The frontend reads this file only in tests (frontend/src/test/components/AutoLockControl.test.tsx): the expectation for the rendered hint is derived from default_minutes here, never retyped, and a second test feeds a shifted value through the settings query to prove the hint is bound to what the server says rather than to a literal.",
+  "default_minutes": 5
+}

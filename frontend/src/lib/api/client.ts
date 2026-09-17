@@ -64,15 +64,18 @@ export function notifyVaultLocked(): void {
  * - Non-OK responses are normalized into ApiError with the backend detail code.
  * - Schema parse failures keep the REAL response status (never a fake 200)
  *   with detail "invalid_response_shape".
- * - Note: the backend currently never returns 204/no-body responses; every
- *   endpoint returns JSON, so an unconditional res.json() here is safe.
+ * - A 204 has no body by definition, and POST /activity answers exactly
+ *   that. It is parsed as `undefined` through the caller's schema rather
+ *   than as `{}`: a caller expecting a body then gets invalid_response_shape
+ *   instead of an empty object dressed as data, and a caller declaring
+ *   z.undefined() gets the same complaint if a body ever appears.
  */
 async function handleResponse<T>(
   res: Response,
   schema: ZodType<T>,
   path?: string,
 ): Promise<T> {
-  const json = await res.json().catch(() => ({}));
+  const json = res.status === 204 ? undefined : await res.json().catch(() => ({}));
   if (!res.ok) {
     // Never fire the lock signal for a 423 from a vault route itself - that
     // would invalidate vault-status → refetch → 423 → loop. (The backend
@@ -82,6 +85,13 @@ async function handleResponse<T>(
     // otherwise a backend restart under a busy screen fires one invalidation
     // per in-flight query, each cancelling the previous vault-status refetch.
     // (v1.1 FF4.)
+    //
+    // /activity is not a vault route, so its 423 DOES reach this signal. That
+    // is correct and harmless: the activity tracker is switched off while the
+    // gate shows the lock screen, so the only 423 it can see is the vault
+    // locking under a ping already in flight - exactly the moment the gate
+    // should hear about - and the latch above folds it into whatever burst
+    // of 423s that same lock produced.
     if (res.status === 423 && !path?.startsWith("/vault/")) notifyVaultLocked();
     const detail =
       res.status === 422 && Array.isArray((json as Record<string, unknown>)?.detail)

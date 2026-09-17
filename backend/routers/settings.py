@@ -318,6 +318,13 @@ def _get_settings_sync() -> dict:
         # An unlocked vault is a decrypted vault for as long as the window is
         # open, and windows stay open for days.
         "auto_lock_minutes": _read_auto_lock(rows.get("auto_lock_minutes")),
+        # What a vault nobody configured gets, served so the screen can say
+        # "on by default, N minutes" from the same constant the watchdog
+        # obeys rather than from a copy of the number kept on the frontend.
+        # Not a setting: it is a fact about this backend, and it never
+        # changes at runtime. shared/auto_lock_contract.json pins the same
+        # number for the frontend tests (tests/test_auto_lock.py).
+        "auto_lock_default_minutes": auto_lock.DEFAULT_MINUTES,
         # Off unless explicitly on, matching the reader in routers/vault.py.
         # Two places parse the same row, so both fail closed the same way.
         "screen_privacy_enabled":
