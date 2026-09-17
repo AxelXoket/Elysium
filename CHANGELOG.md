@@ -186,6 +186,16 @@ no exe you can download yet.
 
 ### Fixed
 
+- **A vault check that fails no longer reads as "nothing to worry about".** The
+  five leftover notices on the Security screen, an unencrypted pre-vault copy, a
+  second copy of the vault, a copy from before a passphrase change, a stale
+  migration snapshot and an empty recovery stub, used to render nothing when the
+  status query failed, the same nothing they render for a clean disk. Each now
+  says it could not run the check while the query is failing, and a quiet
+  checking line while the first answer is on its way. The warnings themselves
+  are unchanged, and their tests assert absence only after the query has
+  answered, which the earlier shape did not.
+
 - **The proxy kill-switch is not written down while the server's answer is not
   in hand.** While the settings fetch was still out, or after it had failed, the
   "Require proxy" switch sat live at off, and a save that only changed the URL

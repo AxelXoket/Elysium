@@ -17,6 +17,9 @@ import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { PlaintextBackupNotice } from "@/components/settings/PlaintextBackupNotice";
 import { useErrorStore } from "@/lib/errors";
 import { mockFetch } from "@/test/mocks/api";
+import { delayRoute } from "@/test/helpers/delayRoute";
+import { mockFetchUnreachable } from "@/test/helpers/fetchUnreachable";
+import { expectNothingOnceAnswered } from "@/test/helpers/vaultStatusSettled";
 
 const BACKUP = "app.db.plain.bak-20260101120000";
 const SECOND = "app.db.plain.bak-20260202130000";
@@ -61,11 +64,9 @@ describe("the unencrypted copy is a state, not a banner", () => {
 
   it("stays out of the way when there is nothing to warn about", async () => {
     withStatus([]);
-    renderWithQueryClient(<PlaintextBackupNotice />);
-
-    await waitFor(() => {
-      expect(screen.queryByTestId("plaintext-backup-notice")).toBeNull();
-    });
+    // Asserted only once the status query has ANSWERED: an absence checked
+    // on the first render passes before the answer exists (IP-11b).
+    await expectNothingOnceAnswered(renderWithQueryClient(<PlaintextBackupNotice />));
   });
 
   it("names every copy, not just the first", async () => {
@@ -84,11 +85,9 @@ describe("the unencrypted copy is a state, not a banner", () => {
         body: { initialized: true, unlocked: true, orphaned_copy: false },
       },
     });
-    renderWithQueryClient(<PlaintextBackupNotice />);
-
-    await waitFor(() => {
-      expect(screen.queryByTestId("plaintext-backup-notice")).toBeNull();
-    });
+    // Asserted only once the status query has ANSWERED: an absence checked
+    // on the first render passes before the answer exists (IP-11b).
+    await expectNothingOnceAnswered(renderWithQueryClient(<PlaintextBackupNotice />));
   });
 });
 
@@ -373,5 +372,178 @@ describe("answering the delete question from the keyboard", () => {
           String(url).includes("/vault/discard-plaintext-backup"))).toBe(true));
       expect(errorCount()).toBe(0);
     });
+  });
+});
+
+/**
+ * IP-11b. The gate on this notice used to be `status.data?.plaintext_backups`, so a
+ * status query that FAILED rendered the same nothing as a clean disk, and no
+ * console call exists in this app to leave a trace of it. These tests drive
+ * /vault/status itself, at the fetch boundary, into every state the real
+ * useVaultStatus hook can be in, and read what the DOM shows for each.
+ */
+describe("PlaintextBackupNotice - when the check itself cannot run", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  const NOTICE = "plaintext-backup-notice";
+  const CHECK = "plaintext-backup-check";
+  const PRESENT = {
+    initialized: true,
+    unlocked: true,
+    orphaned_copy: false,
+    plaintext_backups: [BACKUP],
+  };
+  const ABSENT = {
+    initialized: true,
+    unlocked: true,
+    orphaned_copy: false,
+    plaintext_backups: [],
+  };
+  /** An older backend that does not know the field at all. */
+  const OLDER = { initialized: true, unlocked: true };
+  /** The warning's own sentences. None of them may leak into the check line. */
+  const WARNING_WORDING = /without your passphrase|anyone who can read|unencrypted copy deleted|delete the unencrypted/i;
+
+  it("T-57: a failed status query is said out loud, and does not read as all clear", async () => {
+    mockFetch({ "/vault/status": { status: 500, body: { detail: "boom" } } });
+    const { container } = renderWithQueryClient(<PlaintextBackupNotice />);
+
+    const line = await screen.findByText(/could not check for an unencrypted copy of the database/i);
+    expect(line).toBe(screen.getByTestId(CHECK));
+    expect(line).toHaveAttribute("data-state", "error");
+    // Not silence: the whole defect was that this container stayed empty.
+    expect(container).not.toBeEmptyDOMElement();
+    // Not the warning either: none of its furniture and none of its wording.
+    expect(screen.queryByTestId(NOTICE)).not.toBeInTheDocument();
+    expect(screen.queryByRole("region")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(container.querySelector("svg")).toBeNull();
+    expect(line.textContent).not.toMatch(WARNING_WORDING);
+    // And not the one sentence the absent branch can say, which would
+    // claim a deletion on an answer that never arrived.
+    expect(screen.queryByText(/unencrypted copy deleted/i)).not.toBeInTheDocument();
+  });
+
+  it("T-57: the same line when the backend cannot be reached at all", async () => {
+    // fetch itself rejects before any status code exists. request() turns
+    // that into NETWORK_ERROR, a different path through the client than a
+    // 500 takes and the likelier one in practice.
+    mockFetchUnreachable();
+    renderWithQueryClient(<PlaintextBackupNotice />);
+
+    // findByText, not findByTestId: the pending line carries the same
+    // testid and is on screen before the rejection lands.
+    const line = await screen.findByText(/could not check for an unencrypted copy of the database/i);
+    expect(line).toBe(screen.getByTestId(CHECK));
+    expect(line).toHaveAttribute("data-state", "error");
+    expect(line.textContent).not.toMatch(WARNING_WORDING);
+    expect(screen.queryByTestId(NOTICE)).not.toBeInTheDocument();
+  });
+
+  it("holds a quiet placeholder until the answer lands, then shows the truth", async () => {
+    const fetchMock = mockFetch({ "/vault/status": { body: PRESENT } });
+    const release = delayRoute(fetchMock, "GET", "/vault/status", { body: PRESENT });
+    const { container } = renderWithQueryClient(<PlaintextBackupNotice />);
+
+    const line = screen.getByTestId(CHECK);
+    expect(line).toHaveAttribute("data-state", "pending");
+    expect(line.textContent).toMatch(/checking for an unencrypted copy of the database/i);
+    // Quiet: no bordered section, no icon, no alert, and no verdict in
+    // either direction while the answer is still on its way.
+    expect(screen.queryByRole("region")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(container.querySelector("svg")).toBeNull();
+    expect(line.textContent).not.toMatch(/could not/i);
+    expect(line.textContent).not.toMatch(WARNING_WORDING);
+    expect(screen.queryByTestId(NOTICE)).not.toBeInTheDocument();
+
+    release();
+    expect(await screen.findByTestId(NOTICE)).toBeInTheDocument();
+    expect(screen.queryByTestId(CHECK)).not.toBeInTheDocument();
+  });
+
+  it("T-57z GROUND: a status query that answered with nothing to report renders nothing at all", async () => {
+    // The settled signal comes from the real query cache, not from the DOM:
+    // an empty container before the answer would pass this on a component
+    // that never renders anything. See helpers/vaultStatusSettled.ts.
+    mockFetch({ "/vault/status": { body: ABSENT } });
+    await expectNothingOnceAnswered(renderWithQueryClient(<PlaintextBackupNotice />));
+  });
+
+  it("T-57z GROUND: an older backend that does not know the field renders nothing at all", async () => {
+    mockFetch({ "/vault/status": { body: OLDER } });
+    await expectNothingOnceAnswered(renderWithQueryClient(<PlaintextBackupNotice />));
+  });
+
+  it("T-57p POSITIVE: with the file there, the warning renders as before and no check line", async () => {
+    mockFetch({ "/vault/status": { body: PRESENT } });
+    renderWithQueryClient(<PlaintextBackupNotice />);
+
+    expect(await screen.findByTestId(NOTICE)).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Unencrypted database backup" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Unencrypted copy on disk" })).toBeInTheDocument();
+    expect(screen.getByText(BACKUP)).toBeInTheDocument();
+    expect(screen.getByText(/without your passphrase/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /delete the unencrypted/i })).toBeInTheDocument();
+
+    expect(screen.queryByTestId(CHECK)).not.toBeInTheDocument();
+  });
+
+  /** A 200 with this body, for the one call the fetch mock answers differently. */
+  function jsonResponse(body: unknown): Response {
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  it("T-57: a deletion whose confirming re-check fails says so, not 'deleted' and not the stale warning", async () => {
+    // A successful delete invalidates /vault/status. If THAT refetch fails,
+    // TanStack keeps the old list in `data` (naming the file that was just
+    // shredded) while the query sits in error. The old gate re-painted that
+    // stale warning; the absent branch would have said "deleted" on an
+    // answer it never received. The first status read succeeds and lists
+    // the file; every later one fails.
+    const fetchMock = mockFetch({
+      "/vault/status": { status: 500, body: { detail: "boom" } },
+      "/vault/discard-plaintext-backup": { body: { removed: 1, left: [] } },
+    });
+    fetchMock.mockImplementationOnce(async () => jsonResponse(PRESENT));
+    renderWithQueryClient(<PlaintextBackupNotice />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: /delete the unencrypted/i }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+
+    const line = await screen.findByText(/could not check for an unencrypted copy of the database/i);
+    expect(line).toBe(screen.getByTestId(CHECK));
+    expect(line).toHaveAttribute("data-state", "error");
+    expect(screen.queryByText(/unencrypted copy deleted/i)).not.toBeInTheDocument();
+    expect(screen.queryByTestId(NOTICE)).not.toBeInTheDocument();
+    expect(screen.queryByText(BACKUP)).not.toBeInTheDocument();
+  });
+
+  it("keeps its one confirmation: a deletion the re-check confirms says 'deleted' and nothing else", async () => {
+    // POSITIVE CONTROL for the absent branch only this notice has, so the
+    // four-way split is shown not to have swallowed it. Same first-call
+    // trick: the file is there, the delete succeeds, the re-check finds
+    // nothing.
+    const fetchMock = mockFetch({
+      "/vault/status": { body: ABSENT },
+      "/vault/discard-plaintext-backup": { body: { removed: 1, left: [] } },
+    });
+    fetchMock.mockImplementationOnce(async () => jsonResponse(PRESENT));
+    renderWithQueryClient(<PlaintextBackupNotice />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: /delete the unencrypted/i }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+
+    expect(await screen.findByText("Unencrypted copy deleted.")).toBeInTheDocument();
+    expect(screen.queryByTestId(NOTICE)).not.toBeInTheDocument();
+    expect(screen.queryByTestId(CHECK)).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });

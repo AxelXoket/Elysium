@@ -13,6 +13,9 @@ import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { EmptyStubNotice } from "@/components/settings/EmptyStubNotice";
 import { useErrorStore } from "@/lib/errors";
 import { mockFetch } from "../mocks/api";
+import { delayRoute } from "@/test/helpers/delayRoute";
+import { mockFetchUnreachable } from "@/test/helpers/fetchUnreachable";
+import { expectNothingOnceAnswered } from "@/test/helpers/vaultStatusSettled";
 import {
   loadGlassRightCss,
   injectCss,
@@ -29,11 +32,9 @@ describe("EmptyStubNotice", () => {
 
   it("says nothing when there is no leftover file", async () => {
     mockFetch({ "/vault/status": { body: { ...BASE, empty_stub: false } } });
-    renderWithQueryClient(<EmptyStubNotice />);
-
-    await waitFor(() => {
-      expect(screen.queryByTestId("empty-stub-notice")).not.toBeInTheDocument();
-    });
+    // Asserted only once the status query has ANSWERED: an absence checked
+    // on the first render passes before the answer exists (IP-11b).
+    await expectNothingOnceAnswered(renderWithQueryClient(<EmptyStubNotice />));
   });
 
   it("names the file when one is there", async () => {
@@ -214,5 +215,108 @@ describe("EmptyStubNotice - light surface contrast", () => {
           String(url).includes("/vault/discard-empty-stub"))).toBe(true));
       expect(errorCount()).toBe(0);
     });
+  });
+});
+
+/**
+ * IP-11b. The gate on this notice used to be `status.data?.empty_stub`, so a
+ * status query that FAILED rendered the same nothing as a clean disk, and no
+ * console call exists in this app to leave a trace of it. These tests drive
+ * /vault/status itself, at the fetch boundary, into every state the real
+ * useVaultStatus hook can be in, and read what the DOM shows for each.
+ */
+describe("EmptyStubNotice - when the check itself cannot run", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  const NOTICE = "empty-stub-notice";
+  const CHECK = "empty-stub-check";
+  const PRESENT = { ...BASE, empty_stub: true };
+  const ABSENT = { ...BASE, empty_stub: false };
+  /** An older backend that does not know the field at all. */
+  const OLDER = { ...BASE };
+  /** The warning's own sentences. None of them may leak into the check line. */
+  const WARNING_WORDING = /nothing uses it|remove it|empty file it replaced/i;
+
+  it("T-57: a failed status query is said out loud, and does not read as all clear", async () => {
+    mockFetch({ "/vault/status": { status: 500, body: { detail: "boom" } } });
+    const { container } = renderWithQueryClient(<EmptyStubNotice />);
+
+    const line = await screen.findByText(/could not check for a leftover recovery file/i);
+    expect(line).toBe(screen.getByTestId(CHECK));
+    expect(line).toHaveAttribute("data-state", "error");
+    // Not silence: the whole defect was that this container stayed empty.
+    expect(container).not.toBeEmptyDOMElement();
+    // Not the warning either: none of its furniture and none of its wording.
+    expect(screen.queryByTestId(NOTICE)).not.toBeInTheDocument();
+    expect(screen.queryByRole("region")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(container.querySelector("svg")).toBeNull();
+    expect(line.textContent).not.toMatch(WARNING_WORDING);
+  });
+
+  it("T-57: the same line when the backend cannot be reached at all", async () => {
+    // fetch itself rejects before any status code exists. request() turns
+    // that into NETWORK_ERROR, a different path through the client than a
+    // 500 takes and the likelier one in practice.
+    mockFetchUnreachable();
+    renderWithQueryClient(<EmptyStubNotice />);
+
+    // findByText, not findByTestId: the pending line carries the same
+    // testid and is on screen before the rejection lands.
+    const line = await screen.findByText(/could not check for a leftover recovery file/i);
+    expect(line).toBe(screen.getByTestId(CHECK));
+    expect(line).toHaveAttribute("data-state", "error");
+    expect(line.textContent).not.toMatch(WARNING_WORDING);
+    expect(screen.queryByTestId(NOTICE)).not.toBeInTheDocument();
+  });
+
+  it("holds a quiet placeholder until the answer lands, then shows the truth", async () => {
+    const fetchMock = mockFetch({ "/vault/status": { body: PRESENT } });
+    const release = delayRoute(fetchMock, "GET", "/vault/status", { body: PRESENT });
+    const { container } = renderWithQueryClient(<EmptyStubNotice />);
+
+    const line = screen.getByTestId(CHECK);
+    expect(line).toHaveAttribute("data-state", "pending");
+    expect(line.textContent).toMatch(/checking for a leftover recovery file/i);
+    // Quiet: no bordered section, no icon, no alert, and no verdict in
+    // either direction while the answer is still on its way.
+    expect(screen.queryByRole("region")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(container.querySelector("svg")).toBeNull();
+    expect(line.textContent).not.toMatch(/could not/i);
+    expect(line.textContent).not.toMatch(WARNING_WORDING);
+    expect(screen.queryByTestId(NOTICE)).not.toBeInTheDocument();
+
+    release();
+    expect(await screen.findByTestId(NOTICE)).toBeInTheDocument();
+    expect(screen.queryByTestId(CHECK)).not.toBeInTheDocument();
+  });
+
+  it("T-57z GROUND: a status query that answered with nothing to report renders nothing at all", async () => {
+    // The settled signal comes from the real query cache, not from the DOM:
+    // an empty container before the answer would pass this on a component
+    // that never renders anything. See helpers/vaultStatusSettled.ts.
+    mockFetch({ "/vault/status": { body: ABSENT } });
+    await expectNothingOnceAnswered(renderWithQueryClient(<EmptyStubNotice />));
+  });
+
+  it("T-57z GROUND: an older backend that does not know the field renders nothing at all", async () => {
+    mockFetch({ "/vault/status": { body: OLDER } });
+    await expectNothingOnceAnswered(renderWithQueryClient(<EmptyStubNotice />));
+  });
+
+  it("T-57p POSITIVE: with the file there, the warning renders as before and no check line", async () => {
+    mockFetch({ "/vault/status": { body: PRESENT } });
+    renderWithQueryClient(<EmptyStubNotice />);
+
+    expect(await screen.findByTestId(NOTICE)).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Leftover recovery file" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "A leftover file from a recovery" })).toBeInTheDocument();
+    expect(screen.getByText("app.db.empty-stub-bak")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /remove it/i })).toBeInTheDocument();
+
+    expect(screen.queryByTestId(CHECK)).not.toBeInTheDocument();
   });
 });

@@ -27,6 +27,9 @@ import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { PremigrateBackupNotice } from "@/components/settings/PremigrateBackupNotice";
 import { useErrorStore } from "@/lib/errors";
 import { mockFetch } from "@/test/mocks/api";
+import { delayRoute } from "@/test/helpers/delayRoute";
+import { mockFetchUnreachable } from "@/test/helpers/fetchUnreachable";
+import { expectNothingOnceAnswered } from "@/test/helpers/vaultStatusSettled";
 
 function withStatus(
   present: boolean,
@@ -64,10 +67,9 @@ describe("the snapshot is visible at all", () => {
 
   it("stays out of the way when there is none - the ground for every test above it", async () => {
     withStatus(false, null);
-    renderWithQueryClient(<PremigrateBackupNotice />);
-    await waitFor(() => {
-      expect(screen.queryByTestId("premigrate-backup-notice")).toBeNull();
-    });
+    // Asserted only once the status query has ANSWERED: an absence checked
+    // on the first render passes before the answer exists (IP-11b).
+    await expectNothingOnceAnswered(renderWithQueryClient(<PremigrateBackupNotice />));
   });
 
   it("survives a backend that does not know either field yet", async () => {
@@ -77,10 +79,9 @@ describe("the snapshot is visible at all", () => {
     mockFetch({
       "/vault/status": { body: { initialized: true, unlocked: true } },
     });
-    renderWithQueryClient(<PremigrateBackupNotice />);
-    await waitFor(() => {
-      expect(screen.queryByTestId("premigrate-backup-notice")).toBeNull();
-    });
+    // Asserted only once the status query has ANSWERED: an absence checked
+    // on the first render passes before the answer exists (IP-11b).
+    await expectNothingOnceAnswered(renderWithQueryClient(<PremigrateBackupNotice />));
   });
 });
 
@@ -422,5 +423,118 @@ describe("answering the delete question from the keyboard", () => {
           String(url).includes("/vault/discard-premigrate-backup"))).toBe(true));
       expect(errorCount()).toBe(0);
     });
+  });
+});
+
+/**
+ * IP-11b. The gate on this notice used to be `status.data?.premigrate_backup`, so a
+ * status query that FAILED rendered the same nothing as a clean disk, and no
+ * console call exists in this app to leave a trace of it. These tests drive
+ * /vault/status itself, at the fetch boundary, into every state the real
+ * useVaultStatus hook can be in, and read what the DOM shows for each.
+ */
+describe("PremigrateBackupNotice - when the check itself cannot run", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  const NOTICE = "premigrate-backup-notice";
+  const CHECK = "premigrate-backup-check";
+  const PRESENT = {
+    initialized: true,
+    unlocked: true,
+    premigrate_backup: true,
+    premigrate_backup_readable: true,
+  };
+  const ABSENT = {
+    initialized: true,
+    unlocked: true,
+    premigrate_backup: false,
+    premigrate_backup_readable: null,
+  };
+  /** An older backend that does not know the field at all. */
+  const OLDER = { initialized: true, unlocked: true };
+  /** The warning's own sentences. None of them may leak into the check line. */
+  const WARNING_WORDING = /keeps living inside|only copy of chats|unlock the vault|delete the snapshot/i;
+
+  it("T-57: a failed status query is said out loud, and does not read as all clear", async () => {
+    mockFetch({ "/vault/status": { status: 500, body: { detail: "boom" } } });
+    const { container } = renderWithQueryClient(<PremigrateBackupNotice />);
+
+    const line = await screen.findByText(/could not check for a snapshot from an old migration/i);
+    expect(line).toBe(screen.getByTestId(CHECK));
+    expect(line).toHaveAttribute("data-state", "error");
+    // Not silence: the whole defect was that this container stayed empty.
+    expect(container).not.toBeEmptyDOMElement();
+    // Not the warning either: none of its furniture and none of its wording.
+    expect(screen.queryByTestId(NOTICE)).not.toBeInTheDocument();
+    expect(screen.queryByRole("region")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(container.querySelector("svg")).toBeNull();
+    expect(line.textContent).not.toMatch(WARNING_WORDING);
+  });
+
+  it("T-57: the same line when the backend cannot be reached at all", async () => {
+    // fetch itself rejects before any status code exists. request() turns
+    // that into NETWORK_ERROR, a different path through the client than a
+    // 500 takes and the likelier one in practice.
+    mockFetchUnreachable();
+    renderWithQueryClient(<PremigrateBackupNotice />);
+
+    // findByText, not findByTestId: the pending line carries the same
+    // testid and is on screen before the rejection lands.
+    const line = await screen.findByText(/could not check for a snapshot from an old migration/i);
+    expect(line).toBe(screen.getByTestId(CHECK));
+    expect(line).toHaveAttribute("data-state", "error");
+    expect(line.textContent).not.toMatch(WARNING_WORDING);
+    expect(screen.queryByTestId(NOTICE)).not.toBeInTheDocument();
+  });
+
+  it("holds a quiet placeholder until the answer lands, then shows the truth", async () => {
+    const fetchMock = mockFetch({ "/vault/status": { body: PRESENT } });
+    const release = delayRoute(fetchMock, "GET", "/vault/status", { body: PRESENT });
+    const { container } = renderWithQueryClient(<PremigrateBackupNotice />);
+
+    const line = screen.getByTestId(CHECK);
+    expect(line).toHaveAttribute("data-state", "pending");
+    expect(line.textContent).toMatch(/checking for a snapshot from an old migration/i);
+    // Quiet: no bordered section, no icon, no alert, and no verdict in
+    // either direction while the answer is still on its way.
+    expect(screen.queryByRole("region")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(container.querySelector("svg")).toBeNull();
+    expect(line.textContent).not.toMatch(/could not/i);
+    expect(line.textContent).not.toMatch(WARNING_WORDING);
+    expect(screen.queryByTestId(NOTICE)).not.toBeInTheDocument();
+
+    release();
+    expect(await screen.findByTestId(NOTICE)).toBeInTheDocument();
+    expect(screen.queryByTestId(CHECK)).not.toBeInTheDocument();
+  });
+
+  it("T-57z GROUND: a status query that answered with nothing to report renders nothing at all", async () => {
+    // The settled signal comes from the real query cache, not from the DOM:
+    // an empty container before the answer would pass this on a component
+    // that never renders anything. See helpers/vaultStatusSettled.ts.
+    mockFetch({ "/vault/status": { body: ABSENT } });
+    await expectNothingOnceAnswered(renderWithQueryClient(<PremigrateBackupNotice />));
+  });
+
+  it("T-57z GROUND: an older backend that does not know the field renders nothing at all", async () => {
+    mockFetch({ "/vault/status": { body: OLDER } });
+    await expectNothingOnceAnswered(renderWithQueryClient(<PremigrateBackupNotice />));
+  });
+
+  it("T-57p POSITIVE: with the file there, the warning renders as before and no check line", async () => {
+    mockFetch({ "/vault/status": { body: PRESENT } });
+    renderWithQueryClient(<PremigrateBackupNotice />);
+
+    expect(await screen.findByTestId(NOTICE)).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Stale migration snapshot" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "A snapshot from an old migration" })).toBeInTheDocument();
+    expect(screen.getByText(/keeps living inside this copy/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /delete the snapshot/i })).toBeInTheDocument();
+
+    expect(screen.queryByTestId(CHECK)).not.toBeInTheDocument();
   });
 });

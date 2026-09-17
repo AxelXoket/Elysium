@@ -21,6 +21,7 @@ import { AlertCircle, Loader2, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useVaultStatus, useDiscardOrphanedCopy } from "@/lib/query/vault";
+import { noticeGate } from "./NoticeGate";
 
 export function OrphanedCopyNotice() {
   const status = useVaultStatus();
@@ -58,8 +59,14 @@ export function OrphanedCopyNotice() {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [confirming]);
 
-  if (!status.data?.orphaned_copy) return null;
-  const readable = status.data.orphaned_copy_readable;
+  // Four states, not two: see NoticeGate. A status query that FAILED used to
+  // render the same nothing as a disk with no duplicate on it.
+  const gate = noticeGate(status, (s) => s.orphaned_copy === true, {
+    id: "orphaned-copy",
+    subject: "a second copy of the vault",
+  });
+  if (gate.state !== "present") return gate.fallback;
+  const readable = gate.data.orphaned_copy_readable;
 
   return (
     <section

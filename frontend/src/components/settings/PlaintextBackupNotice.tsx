@@ -29,6 +29,7 @@ import { AlertCircle, Loader2, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useVaultStatus, useDiscardPlaintextBackup } from "@/lib/query/vault";
+import { noticeGate } from "./NoticeGate";
 
 export function PlaintextBackupNotice() {
   const status = useVaultStatus();
@@ -76,25 +77,29 @@ export function PlaintextBackupNotice() {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [confirming]);
 
-  const backups = status.data?.plaintext_backups ?? [];
   const stuck = discard.data?.left ?? [];
   const shared = discard.data?.shared ?? [];
   const removed = discard.data?.removed ?? 0;
-  if (backups.length === 0) {
+  // Four states, not two: see NoticeGate. A status query that FAILED used to
+  // render the same nothing as a disk with no unencrypted copy on it, on
+  // the one screen whose job is to say when there is one.
+  const gate = noticeGate(status, (s) => (s.plaintext_backups ?? []).length > 0, {
+    id: "plaintext-backup",
+    subject: "an unencrypted copy of the database",
     // Nothing left on disk. Say so once, so pressing delete does not simply
     // make the whole section vanish with no confirmation that it worked.
-    if (removed > 0) {
-      return (
+    absent:
+      removed > 0 ? (
         <p
           className="text-xs font-semibold"
           style={{ color: "var(--color-es-primary-sage-deep)" }}
         >
           Unencrypted copy deleted.
         </p>
-      );
-    }
-    return null;
-  }
+      ) : null,
+  });
+  if (gate.state !== "present") return gate.fallback;
+  const backups = gate.data.plaintext_backups ?? [];
 
   const one = backups.length === 1;
 

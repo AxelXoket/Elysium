@@ -50,6 +50,7 @@ import { request } from "@/lib/api/client";
 import { keys } from "@/lib/query/keys";
 import { useVaultStatus } from "@/lib/query/vault";
 import { useErrorStore } from "@/lib/errors";
+import { noticeGate } from "./NoticeGate";
 
 /** POST /vault/discard-premigrate-backup. See the file header for why this
  *  schema lives here instead of lib/api/vault.ts: that file is shared ground
@@ -138,8 +139,14 @@ export function PremigrateBackupNotice() {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [confirming]);
 
-  if (!status.data?.premigrate_backup) return null;
-  const readable = status.data.premigrate_backup_readable;
+  // Four states, not two: see NoticeGate. A status query that FAILED used to
+  // render the same nothing as a disk with no snapshot on it.
+  const gate = noticeGate(status, (s) => s.premigrate_backup === true, {
+    id: "premigrate-backup",
+    subject: "a snapshot from an old migration",
+  });
+  if (gate.state !== "present") return gate.fallback;
+  const readable = gate.data.premigrate_backup_readable;
 
   return (
     <section

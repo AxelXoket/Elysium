@@ -21,12 +21,18 @@
 import { AlertCircle } from "lucide-react";
 
 import { useVaultStatus } from "@/lib/query/vault";
+import { noticeGate } from "./NoticeGate";
 
 export function RotationBackupNotice() {
   const status = useVaultStatus();
-  const names = status.data?.rotation_backups ?? [];
-
-  if (names.length === 0) return null;
+  // Four states, not two: see NoticeGate. A status query that FAILED used to
+  // render the same nothing as a disk with no such copy on it.
+  const gate = noticeGate(status, (s) => (s.rotation_backups ?? []).length > 0, {
+    id: "rotation-backup",
+    subject: "a copy from before a passphrase change",
+  });
+  if (gate.state !== "present") return gate.fallback;
+  const names = gate.data.rotation_backups ?? [];
 
   return (
     <section

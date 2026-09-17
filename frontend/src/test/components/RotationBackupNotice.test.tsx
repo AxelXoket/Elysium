@@ -10,10 +10,13 @@
  * made for a whole release.
  */
 import { afterAll, beforeAll, describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { RotationBackupNotice } from "@/components/settings/RotationBackupNotice";
 import { mockFetch } from "../mocks/api";
+import { delayRoute } from "@/test/helpers/delayRoute";
+import { mockFetchUnreachable } from "@/test/helpers/fetchUnreachable";
+import { expectNothingOnceAnswered } from "@/test/helpers/vaultStatusSettled";
 import {
   loadGlassRightCss,
   injectCss,
@@ -29,13 +32,9 @@ describe("RotationBackupNotice", () => {
 
   it("says nothing on the normal path", async () => {
     mockFetch({ "/vault/status": { body: { ...BASE, rotation_backups: [] } } });
-    renderWithQueryClient(<RotationBackupNotice />);
-
-    await waitFor(() => {
-      expect(
-        screen.queryByTestId("rotation-backup-notice"),
-      ).not.toBeInTheDocument();
-    });
+    // Asserted only once the status query has ANSWERED: an absence checked
+    // on the first render passes before the answer exists (IP-11b).
+    await expectNothingOnceAnswered(renderWithQueryClient(<RotationBackupNotice />));
   });
 
   it("names every file, because the user has to find them in the folder", async () => {
@@ -140,5 +139,110 @@ describe("RotationBackupNotice - light surface contrast", () => {
       getComputedStyle(oldHint).color,
       "settings-hint's colour drifted - re-measure before trusting this ground",
     ).toBe("rgba(202, 212, 224, 0.72)");
+  });
+});
+
+/**
+ * IP-11b. The gate on this notice used to be `status.data?.rotation_backups`, so a
+ * status query that FAILED rendered the same nothing as a clean disk, and no
+ * console call exists in this app to leave a trace of it. These tests drive
+ * /vault/status itself, at the fetch boundary, into every state the real
+ * useVaultStatus hook can be in, and read what the DOM shows for each.
+ */
+describe("RotationBackupNotice - when the check itself cannot run", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  const NOTICE = "rotation-backup-notice";
+  const CHECK = "rotation-backup-check";
+  const PRESENT = { ...BASE, rotation_backups: ["app.db.rekey.bak-1700000000"] };
+  const ABSENT = { ...BASE, rotation_backups: [] };
+  /** An older backend that does not know the field at all. */
+  const OLDER = { ...BASE };
+  /** The warning's own sentences. None of them may leak into the check line. */
+  const WARNING_WORDING = /previous|will not close that|cannot read it/i;
+
+  it("T-57: a failed status query is said out loud, and does not read as all clear", async () => {
+    mockFetch({ "/vault/status": { status: 500, body: { detail: "boom" } } });
+    const { container } = renderWithQueryClient(<RotationBackupNotice />);
+
+    const line = await screen.findByText(/could not check for a copy from before a passphrase change/i);
+    expect(line).toBe(screen.getByTestId(CHECK));
+    expect(line).toHaveAttribute("data-state", "error");
+    // Not silence: the whole defect was that this container stayed empty.
+    expect(container).not.toBeEmptyDOMElement();
+    // Not the warning either: none of its furniture and none of its wording.
+    expect(screen.queryByTestId(NOTICE)).not.toBeInTheDocument();
+    expect(screen.queryByRole("region")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(container.querySelector("svg")).toBeNull();
+    expect(line.textContent).not.toMatch(WARNING_WORDING);
+  });
+
+  it("T-57: the same line when the backend cannot be reached at all", async () => {
+    // fetch itself rejects before any status code exists. request() turns
+    // that into NETWORK_ERROR, a different path through the client than a
+    // 500 takes and the likelier one in practice.
+    mockFetchUnreachable();
+    renderWithQueryClient(<RotationBackupNotice />);
+
+    // findByText, not findByTestId: the pending line carries the same
+    // testid and is on screen before the rejection lands.
+    const line = await screen.findByText(/could not check for a copy from before a passphrase change/i);
+    expect(line).toBe(screen.getByTestId(CHECK));
+    expect(line).toHaveAttribute("data-state", "error");
+    expect(line.textContent).not.toMatch(WARNING_WORDING);
+    expect(screen.queryByTestId(NOTICE)).not.toBeInTheDocument();
+  });
+
+  it("holds a quiet placeholder until the answer lands, then shows the truth", async () => {
+    const fetchMock = mockFetch({ "/vault/status": { body: PRESENT } });
+    const release = delayRoute(fetchMock, "GET", "/vault/status", { body: PRESENT });
+    const { container } = renderWithQueryClient(<RotationBackupNotice />);
+
+    const line = screen.getByTestId(CHECK);
+    expect(line).toHaveAttribute("data-state", "pending");
+    expect(line.textContent).toMatch(/checking for a copy from before a passphrase change/i);
+    // Quiet: no bordered section, no icon, no alert, and no verdict in
+    // either direction while the answer is still on its way.
+    expect(screen.queryByRole("region")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(container.querySelector("svg")).toBeNull();
+    expect(line.textContent).not.toMatch(/could not/i);
+    expect(line.textContent).not.toMatch(WARNING_WORDING);
+    expect(screen.queryByTestId(NOTICE)).not.toBeInTheDocument();
+
+    release();
+    expect(await screen.findByTestId(NOTICE)).toBeInTheDocument();
+    expect(screen.queryByTestId(CHECK)).not.toBeInTheDocument();
+  });
+
+  it("T-57z GROUND: a status query that answered with nothing to report renders nothing at all", async () => {
+    // The settled signal comes from the real query cache, not from the DOM:
+    // an empty container before the answer would pass this on a component
+    // that never renders anything. See helpers/vaultStatusSettled.ts.
+    mockFetch({ "/vault/status": { body: ABSENT } });
+    await expectNothingOnceAnswered(renderWithQueryClient(<RotationBackupNotice />));
+  });
+
+  it("T-57z GROUND: an older backend that does not know the field renders nothing at all", async () => {
+    mockFetch({ "/vault/status": { body: OLDER } });
+    await expectNothingOnceAnswered(renderWithQueryClient(<RotationBackupNotice />));
+  });
+
+  it("T-57p POSITIVE: with the file there, the warning renders as before and no check line", async () => {
+    mockFetch({ "/vault/status": { body: PRESENT } });
+    renderWithQueryClient(<RotationBackupNotice />);
+
+    expect(await screen.findByTestId(NOTICE)).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Copy left by an interrupted passphrase change" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "A copy from before a passphrase change" })).toBeInTheDocument();
+    expect(screen.getByText("app.db.rekey.bak-1700000000")).toBeInTheDocument();
+    expect(screen.getByText(/will not close that/i)).toBeInTheDocument();
+    // No delete button, and that is the design (see the test above).
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+
+    expect(screen.queryByTestId(CHECK)).not.toBeInTheDocument();
   });
 });

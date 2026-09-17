@@ -21,12 +21,19 @@ import { Info, Loader2, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useVaultStatus, useDiscardEmptyStub } from "@/lib/query/vault";
+import { noticeGate } from "./NoticeGate";
 
 export function EmptyStubNotice() {
   const status = useVaultStatus();
   const discard = useDiscardEmptyStub();
 
-  if (!status.data?.empty_stub) return null;
+  // Four states, not two: see NoticeGate. A status query that FAILED used to
+  // render the same nothing as a clean disk.
+  const gate = noticeGate(status, (s) => s.empty_stub === true, {
+    id: "empty-stub",
+    subject: "a leftover recovery file",
+  });
+  if (gate.state !== "present") return gate.fallback;
 
   return (
     <section
