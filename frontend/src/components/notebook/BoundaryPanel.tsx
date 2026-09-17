@@ -12,6 +12,8 @@
  * camera turned away. The third level is the soft preference between them.
  */
 import { SlideIn } from "@/components/motion/SlideIn";
+import { Collapse } from "@/components/motion/Collapse";
+import { FadeIn } from "@/components/motion/FadeIn";
 import { useEffect, useRef, useState } from "react";
 import { Plus, Trash2, Check, X, Loader2 } from "lucide-react";
 
@@ -304,7 +306,7 @@ export function BoundaryPanel() {
         fit, nothing is sent at all.
       </p>
 
-      {chatId != null && (
+      <Collapse open={chatId != null}>
         <label className="flex items-center gap-2">
           <Switch
             checked={useGlobal}
@@ -313,7 +315,7 @@ export function BoundaryPanel() {
           />
           <span className="text-xs leading-relaxed text-muted-foreground">Use my global limits here</span>
         </label>
-      )}
+      </Collapse>
 
       <div className="flex items-center gap-2">
         <Input
@@ -403,7 +405,7 @@ export function BoundaryPanel() {
         </Button>
       </div>
 
-      {failed && (
+      <Collapse open={failed}>
         <p
           className="text-xs leading-relaxed text-muted-foreground"
           role="status"
@@ -411,9 +413,11 @@ export function BoundaryPanel() {
           Limits could not be loaded. They are still saved - this panel just
           could not read them. Try again in a moment.
         </p>
-      )}
+      </Collapse>
 
-      {!failed && rows.length === 0 && <p className="text-xs leading-relaxed text-muted-foreground">No limits set.</p>}
+      <Collapse open={!failed && rows.length === 0}>
+        <p className="text-xs leading-relaxed text-muted-foreground">No limits set.</p>
+      </Collapse>
 
       <div className="space-y-1">
         {rows.map((row) => (
@@ -518,45 +522,49 @@ function BoundaryRow({
         </p>
       </div>
       {!confirming && (
-        <Button
-          ref={deleteTriggerRef}
-          type="button"
-          size="sm"
-          variant="ghost"
-          disabled={busy}
-          onClick={onAskDelete}
-          aria-label="Delete limit"
-          className="persona-danger-action h-7 w-7 p-0"
-        >
-          <Trash2 size={12} className="size-3" />
-        </Button>
+        <FadeIn>
+          <Button
+            ref={deleteTriggerRef}
+            type="button"
+            size="sm"
+            variant="ghost"
+            disabled={busy}
+            onClick={onAskDelete}
+            aria-label="Delete limit"
+            className="persona-danger-action h-7 w-7 p-0"
+          >
+            <Trash2 size={12} className="size-3" />
+          </Button>
+        </FadeIn>
       )}
       {confirming && (
-        <>
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            disabled={busy}
-            aria-label="Confirm delete limit"
-            className="persona-danger-action h-7 w-7 p-0"
-            onClick={onDelete}
-          >
-            <Check size={12} className="size-3" />
-          </Button>
-          <Button
-            ref={keepButtonRef}
-            type="button"
-            size="sm"
-            variant="ghost"
-            disabled={busy}
-            onClick={onCancelDelete}
-            aria-label="Keep limit"
-            className="persona-ghost-action h-7 w-7 p-0"
-          >
-            <X size={12} className="size-3" />
-          </Button>
-        </>
+        <FadeIn className="flex items-start gap-2">
+          <>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={busy}
+              aria-label="Confirm delete limit"
+              className="persona-danger-action h-7 w-7 p-0"
+              onClick={onDelete}
+            >
+              <Check size={12} className="size-3" />
+            </Button>
+            <Button
+              ref={keepButtonRef}
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={busy}
+              onClick={onCancelDelete}
+              aria-label="Keep limit"
+              className="persona-ghost-action h-7 w-7 p-0"
+            >
+              <X size={12} className="size-3" />
+            </Button>
+          </>
+        </FadeIn>
       )}
     </div>
   );

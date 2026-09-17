@@ -315,65 +315,60 @@ describe("motion guard", () => {
 
   /* The settings surface shipped for three versions with hover lifts, press
      scales, a sliding switch thumb and two rotating chevrons, and not one
-     .settings-* class named in any reduced-motion block. docs/V1_1_PLAN.md
-     requires the opposite of every new animation, so the promise is checked
-     here rather than remembered. */
-  it("answers prefers-reduced-motion for the settings surface", () => {
-    // Brace-balanced, not a fixed slice. This used to cut 2200 characters
-    // from each match; the longest of these blocks is 1899, so the window
-    // ALWAYS ran past the closing brace and read whatever rule came next.
-    // Measured: delete .settings-tint-chip from the block and put a live
-    // `transition: transform` rule after it, and the class is still "covered"
-    // because the window reached the neighbour. blockAt counts depth and is
-    // already what the two rules above read with; the file re-read that used
-    // to sit here is gone too, since the match indices have to come from the
-    // same string blockAt slices.
-    const blocks = [
-      ...css.matchAll(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{/g),
-    ].map((m) => blockAt(m.index!));
-    expect(blocks.length, "no reduced-motion blocks found at all").toBeGreaterThan(0);
-    const covered = blocks.join(" | ");
+     .settings-* class named in any reduced-motion block. The house style
+     promises reduced-motion coverage for every animation, and the promise is
+     checked against the COMPILED sheet: the set of settings rules that move
+     is derived from the sheet itself rather than typed here, so a control
+     added tomorrow is held to the same answer. This used to be a hand-typed
+     list of eleven classes checked against the text of the reduced-motion
+     blocks, which is the method that let the gap exist in the first place.
+     test/lib/motionTokens.test.ts holds the whole-sheet claim; this is its
+     settings slice. */
+  it("answers prefers-reduced-motion for the settings surface", async () => {
+    const { loadGlassRightCss } = await import("./helpers/glassSurfaceCss");
+    const {
+      allNamedExceptions, isNeutralised, isReopened, movingRules,
+      normalizeSelector, parseSheet, reducedMotionModel, rootTokens,
+    } = await import("./helpers/compiledSheet");
+    const root = parseSheet(await loadGlassRightCss());
+    const table = rootTokens(root);
+    const settings = movingRules(root, table).filter((e) =>
+      /(^|[\s>+~])\.settings-/.test(e.selector));
 
-    // The interactive classes, not the decorative ones. Each of these carries
-    // a transform in a hover or an active state somewhere in this file.
-    for (const cls of [
-      ".settings-category-row",
-      ".settings-toggle-row",
-      ".settings-back-button",
-      ".settings-segment-option",
-      ".settings-segment-button",
-      ".settings-tint-chip",
-      ".settings-inline-reset",
-      ".settings-switch-thumb",
-      ".settings-voice-pick",
-      ".settings-voice-disclosure",
-      ".settings-voice-button",
-    ]) {
-      expect(covered, `${cls} keeps moving under reduced motion`).toContain(cls);
-    }
+    // GROUND: derived, and not empty. The switch thumb and the disclosure
+    // chevron (animated by a rule on the svg, which naming the button never
+    // reached) are among what the sheet moves.
+    expect(settings.length, "no settings rule moves at all").toBeGreaterThan(5);
+    expect(settings.some((e) => e.selector === ".settings-switch-thumb")).toBe(true);
+    expect(settings.some((e) => e.selector === ".settings-voice-disclosure svg")).toBe(true);
 
-    // transition does not inherit, so naming the BUTTON never reaches the
-    // chevron inside it. Both disclosure arrows need their own selector.
-    expect(
-      covered,
-      "the disclosure chevrons rotate from a rule on the svg, not the button",
-    ).toContain(".settings-voice-disclosure svg");
-    expect(covered).toContain(".settings-param-group-toggle svg");
-  });
+    const model = reducedMotionModel(root, table);
+    const named = allNamedExceptions();
+    const stillMoving = settings
+      .filter((e) =>
+        !isNeutralised(e, model) ||
+        (isReopened(e, model) && !named.has(normalizeSelector(e.selector))))
+      .map((e) => `${e.kind}: ${e.selector}`);
+    expect(stillMoving, "keeps moving under reduced motion").toEqual([]);
+  }, 60_000);
 
-  it("GROUND: a class nothing reduces would be caught", () => {
-    // Without this the assertions above pass on any string long enough.
-    const blocks = [
-      ...css.matchAll(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{/g),
-    ].map((m) => blockAt(m.index!));
-    const covered = blocks.join(" | ");
-    // The ground needs its own ground: an empty sweep contains nothing at
-    // all, so the absence below would pass on a broken read. Anchor on a
-    // class that IS in a block first.
-    expect(
-      covered,
-      "the sweep read no reduced-motion block content at all",
-    ).toContain(".settings-switch-thumb");
-    expect(covered).not.toContain(".settings-no-such-class");
+  it("GROUND: a settings rule the reset did not reach would be caught", async () => {
+    // Without this the case above passes on a checker that answers "covered"
+    // for everything. A synthetic sheet with a toothless reset is reported;
+    // the same sheet with !important is not.
+    const { isNeutralised, movingRules, parseSheet, reducedMotionModel, rootTokens } =
+      await import("./helpers/compiledSheet");
+    const check = (reset: string) => {
+      const root = parseSheet(
+        `.settings-probe { transition: transform 180ms; }
+         @media (prefers-reduced-motion: reduce) { *, *::before, *::after { ${reset} } }`,
+      );
+      const table = rootTokens(root);
+      const probe = movingRules(root, table).find((e) => e.selector === ".settings-probe");
+      expect(probe, "the probe did not register as moving").toBeDefined();
+      return isNeutralised(probe!, reducedMotionModel(root, table));
+    };
+    expect(check("transition-duration: 1ms;")).toBe(false);
+    expect(check("transition-duration: 1ms !important;")).toBe(true);
   });
 });

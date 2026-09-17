@@ -31,6 +31,7 @@ export function Collapse({ open, children, className }: CollapseProps) {
   return (
     <div
       className="es-collapse"
+      data-slot="collapse"
       data-open={open}
       inert={!open ? true : undefined}
       aria-hidden={!open || undefined}

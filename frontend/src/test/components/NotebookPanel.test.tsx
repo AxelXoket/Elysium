@@ -12,6 +12,7 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
+import { hiddenFromReaders } from "@/test/helpers/accessibility";
 import { NotebookPanel } from "@/components/notebook/NotebookPanel";
 import { mockFetch } from "../mocks/api";
 import { useUiStore } from "@/lib/store/uiStore";
@@ -264,8 +265,11 @@ describe("what the model wrote, and taking it back", () => {
     mockFetch({ "/notebook/7": { body: { entries: [modelNote()],
                                          notebook_chars: 10 } } });
     renderWithQueryClient(<NotebookPanel />);
+    // The strip is a Collapse: mounted closed until the note arrives, so
+    // its words are awaited rather than read on first sight.
     const strip = await screen.findByTestId("just-saved");
-    expect(strip.textContent).toMatch(/saved a note the model wrote/i);
+    await waitFor(() =>
+      expect(strip.textContent).toMatch(/saved a note the model wrote/i));
     expect(strip.textContent).toContain("Her brother owns the mill.");
   });
 
@@ -275,7 +279,7 @@ describe("what the model wrote, and taking it back", () => {
                                          notebook_chars: 10 } } });
     renderWithQueryClient(<NotebookPanel />);
     await screen.findByTestId("note-1");
-    expect(screen.queryByTestId("just-saved")).not.toBeInTheDocument();
+    expect(hiddenFromReaders(screen.queryByTestId("just-saved"))).toBe(true);
   });
 
   it("does not announce a proposal - it is already visibly waiting", async () => {
@@ -284,7 +288,7 @@ describe("what the model wrote, and taking it back", () => {
               notebook_chars: 10 } } });
     renderWithQueryClient(<NotebookPanel />);
     await screen.findByTestId("note-5");
-    expect(screen.queryByTestId("just-saved")).not.toBeInTheDocument();
+    expect(hiddenFromReaders(screen.queryByTestId("just-saved"))).toBe(true);
   });
 
   it("Undo actually deletes it, once it has been confirmed", async () => {
@@ -302,7 +306,9 @@ describe("what the model wrote, and taking it back", () => {
     // GROUND: still nothing deleted at this point.
     expect(deleteCalls()).toHaveLength(0);
 
-    await user.click(screen.getByLabelText("Confirm delete"));
+    // The confirm pane mounts once the Undo pane has faded out
+    // (AnimatePresence, mode="wait"), so it is awaited.
+    await user.click(await screen.findByLabelText("Confirm delete"));
 
     await waitFor(() => {
       expect(deleteCalls().some((c) =>
@@ -327,7 +333,7 @@ describe("what the model wrote, and taking it back", () => {
     await user.click(await screen.findByRole("button", { name: /^undo$/i }));
     expect(deleteCalls()).toHaveLength(0);
 
-    await user.click(screen.getByLabelText(/confirm deleting 2 notes/i));
+    await user.click(await screen.findByLabelText(/confirm deleting 2 notes/i));
 
     await waitFor(() => expect(deleteCalls()).toHaveLength(2));
   });
@@ -343,7 +349,7 @@ describe("what the model wrote, and taking it back", () => {
     renderWithQueryClient(<NotebookPanel />);
 
     await user.click(await screen.findByRole("button", { name: /^undo$/i }));
-    await user.click(screen.getByLabelText("Keep note"));
+    await user.click(await screen.findByLabelText("Keep note"));
 
     expect(deleteCalls()).toHaveLength(0);
     expect(await screen.findByRole("button", { name: /^undo$/i }))
@@ -370,7 +376,7 @@ describe("what the model wrote, and taking it back", () => {
       renderWithQueryClient(<NotebookPanel />);
 
       await user.click(await screen.findByRole("button", { name: /^undo$/i }));
-      await user.click(screen.getByLabelText(/confirm deleting 2 notes/i));
+      await user.click(await screen.findByLabelText(/confirm deleting 2 notes/i));
 
       // The strip is still there, because nothing was actually removed.
       expect(await screen.findByRole("button", { name: /^undo$/i }))
@@ -385,7 +391,7 @@ describe("what the model wrote, and taking it back", () => {
     renderWithQueryClient(<NotebookPanel />);
     await user.click(await screen.findByRole("button", { name: /keep it/i }));
     await waitFor(() =>
-      expect(screen.queryByTestId("just-saved")).not.toBeInTheDocument());
+      expect(hiddenFromReaders(screen.queryByTestId("just-saved"))).toBe(true));
   });
 
   it("shows the Turkish original under an English note", async () => {
@@ -450,7 +456,7 @@ describe("finding a note again", () => {
                                          notebook_chars: 10 } } });
     renderWithQueryClient(<NotebookPanel />);
     await screen.findByTestId("note-1");
-    expect(screen.queryByLabelText(/search notes/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: /search notes/i })).toBeNull();
   });
 
   it("filters by what the note says", async () => {
@@ -577,7 +583,10 @@ describe("finding a note again", () => {
     mockFetch({ "/notebook/7": { body: many() } });
     renderWithQueryClient(<NotebookPanel />);
     await user.type(await screen.findByLabelText(/search notes/i), "zzzz");
-    expect(await screen.findByText(/no note matches that/i)).toBeInTheDocument();
+    await waitFor(() =>
+      // The line is mounted closed before it opens (Collapse), so
+      // "says so" is asked of the accessibility tree.
+      expect(hiddenFromReaders(screen.getByText(/no note matches that/i))).toBe(false));
     expect(screen.getByText(/6 are still here/i)).toBeInTheDocument();
   });
 
@@ -648,7 +657,7 @@ describe("carrying a filter into the next chat", () => {
     expect(await screen.findByTestId("note-300")).toBeInTheDocument();
     // And this is why it is not cosmetic: the short chat has no search box,
     // so a filter that survived the switch would be unclearable.
-    expect(screen.queryByLabelText(/search notes/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: /search notes/i })).toBeNull();
   });
 
   it("does not answer the delete question for the next chat's note",
@@ -699,9 +708,11 @@ describe("one empty state at a time", () => {
       renderWithQueryClient(<NotebookPanel />);
       await user.type(await screen.findByLabelText(/search notes/i), "zzzz");
 
-      expect(await screen.findByText(/no note matches that/i))
-        .toBeInTheDocument();
-      expect(screen.queryByText(/nothing yet/i)).not.toBeInTheDocument();
+      await waitFor(() =>
+      // The line is mounted closed before it opens (Collapse), so
+      // "says so" is asked of the accessibility tree.
+      expect(hiddenFromReaders(screen.getByText(/no note matches that/i))).toBe(false));
+      expect(hiddenFromReaders(screen.queryByText(/nothing yet/i))).toBe(true);
     });
 
   it("an empty notebook still says so", async () => {
@@ -709,8 +720,11 @@ describe("one empty state at a time", () => {
     // only thing on screen when a chat has never had a note.
     mockFetch({ "/notebook/7": { body: { entries: [], notebook_chars: 0 } } });
     renderWithQueryClient(<NotebookPanel />);
-    expect(await screen.findByText(/nothing yet/i)).toBeInTheDocument();
-    expect(screen.queryByText(/no note matches that/i)).not.toBeInTheDocument();
+    await waitFor(() =>
+      // The line is mounted closed before it opens (Collapse), so
+      // "says so" is asked of the accessibility tree.
+      expect(hiddenFromReaders(screen.getByText(/nothing yet/i))).toBe(false));
+    expect(hiddenFromReaders(screen.queryByText(/no note matches that/i))).toBe(true);
   });
 });
 
@@ -856,7 +870,7 @@ describe("what a screen reader is told", () => {
                         provenance: "model" })],
       notebook_chars: 10 } } });
     renderWithQueryClient(<NotebookPanel />);
-    await screen.findByTestId("just-saved");
+    await screen.findByText(/saved a note the model wrote/i);
 
     const live = announced();
     expect(live.some((t) => /saved a note the model wrote/i.test(t))).toBe(true);
@@ -928,8 +942,11 @@ describe("when the notes cannot be loaded", () => {
     mockFetch({ "/notebook/7": { status: 500, body: { detail: "boom" } } });
     renderWithQueryClient(<NotebookPanel />);
 
-    expect(await screen.findByText(/could not be loaded/i)).toBeInTheDocument();
-    expect(screen.queryByText(/nothing yet/i)).not.toBeInTheDocument();
+    await waitFor(() =>
+      // The line is mounted closed before it opens (Collapse), so
+      // "says so" is asked of the accessibility tree.
+      expect(hiddenFromReaders(screen.getByText(/could not be loaded/i))).toBe(false));
+    expect(hiddenFromReaders(screen.queryByText(/nothing yet/i))).toBe(true);
   });
 
   it("still says Nothing yet when the notebook really is empty", async () => {
@@ -938,8 +955,11 @@ describe("when the notes cannot be loaded", () => {
     mockFetch({ "/notebook/7": { body: { entries: [] } } });
     renderWithQueryClient(<NotebookPanel />);
 
-    expect(await screen.findByText(/nothing yet/i)).toBeInTheDocument();
-    expect(screen.queryByText(/could not be loaded/i)).not.toBeInTheDocument();
+    await waitFor(() =>
+      // The line is mounted closed before it opens (Collapse), so
+      // "says so" is asked of the accessibility tree.
+      expect(hiddenFromReaders(screen.getByText(/nothing yet/i))).toBe(false));
+    expect(hiddenFromReaders(screen.queryByText(/could not be loaded/i))).toBe(true);
   });
 
   it("says neither when there are notes to show", async () => {
@@ -947,8 +967,8 @@ describe("when the notes cannot be loaded", () => {
     renderWithQueryClient(<NotebookPanel />);
 
     expect(await screen.findByText(/mira is her sister/i)).toBeInTheDocument();
-    expect(screen.queryByText(/nothing yet/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/could not be loaded/i)).not.toBeInTheDocument();
+    expect(hiddenFromReaders(screen.queryByText(/nothing yet/i))).toBe(true);
+    expect(hiddenFromReaders(screen.queryByText(/could not be loaded/i))).toBe(true);
   });
 });
 
@@ -983,7 +1003,7 @@ describe("the confirm question does not follow the reader", () => {
 
     await user.click(await screen.findByRole("button", { name: /^undo$/i }));
     // GROUND: it really is armed in this chat.
-    expect(screen.getByLabelText(/confirm deleting/i)).toBeInTheDocument();
+    expect(await screen.findByLabelText(/confirm deleting/i)).toBeInTheDocument();
 
     act(() => useUiStore.setState({ selectedChatId: 8 }));
 

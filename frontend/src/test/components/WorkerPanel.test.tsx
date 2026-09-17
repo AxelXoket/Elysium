@@ -11,6 +11,7 @@ import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
+import { hiddenFromReaders, readableText } from "@/test/helpers/accessibility";
 import {
   CHAT_STATE_PROSE,
   DROP_PROSE,
@@ -151,7 +152,7 @@ describe("WorkerPanel", () => {
                cost_unknown: 0 },
     });
     await screen.findByTestId("worker-status");
-    expect(screen.queryByTestId("worker-cost-unknown")).toBeNull();
+    expect(hiddenFromReaders(screen.queryByTestId("worker-cost-unknown"))).toBe(true);
   });
 
   it("says WHY runs were skipped, in words", async () => {
@@ -264,7 +265,9 @@ describe("runs that were paid for and lost", () => {
     expect(line.textContent).toMatch(/paid for/i);
     // Ground: with every failure abandoned, the reassuring line must not
     // appear at all - that is the sentence that was untrue.
-    expect(screen.getByTestId("worker-status").textContent)
+    // The failed-runs line is a Collapse and keeps its words in the DOM
+    // while closed; the card's REACHABLE text is what this is about.
+    expect(readableText(screen.getByTestId("worker-status")))
       .not.toMatch(/Nothing was lost/i);
   });
 
@@ -281,7 +284,7 @@ describe("runs that were paid for and lost", () => {
     const box = await screen.findByTestId("worker-status");
     expect(box.textContent).toMatch(/2 runs failed/);
     expect(box.textContent).toMatch(/Nothing was lost/i);
-    expect(screen.queryByTestId("worker-abandoned")).not.toBeInTheDocument();
+    expect(hiddenFromReaders(screen.queryByTestId("worker-abandoned"))).toBe(true);
   });
 
   it("counts the two apart when both happened", async () => {
@@ -303,7 +306,7 @@ describe("runs that were paid for and lost", () => {
       mount({ stats: { done: 1, failed: 2, skipped: 0, abandoned: 0,
                        paid_and_lost: 2, skip_reasons: {} } });
       const box = await screen.findByTestId("worker-status");
-      expect(box.textContent).not.toMatch(/Nothing was lost/i);
+      expect(readableText(box)).not.toMatch(/Nothing was lost/i);
     });
 
   it("the two counts can differ, and the sum uses the wider one", async () => {
@@ -510,7 +513,7 @@ describe("reading a chat's earlier messages", () => {
     useUiStore.setState({ selectedChatId: null });
     mount();
     await screen.findByTestId("worker-status");
-    expect(screen.queryByTestId("worker-sweep")).toBeNull();
+    expect(hiddenFromReaders(screen.queryByTestId("worker-sweep"))).toBe(true);
   });
 
   it("says it started when there was something unread", async () => {
@@ -518,8 +521,11 @@ describe("reading a chat's earlier messages", () => {
       "POST /notebook/sweep/7": { body: { started: true, after_id: 0 } },
     });
     await userEvent.click(await screen.findByTestId("worker-sweep"));
-    expect((await screen.findByTestId("worker-sweep-said")).textContent)
-      .toMatch(/reading the earlier part/i);
+    // The answer line is a Collapse: mounted before it has anything to
+    // say, so the words are awaited rather than read on first sight.
+    await waitFor(() =>
+      expect(screen.getByTestId("worker-sweep-said").textContent)
+        .toMatch(/reading the earlier part/i));
   });
 
   it("says nothing is unread, and does not read as a failure", async () => {
@@ -529,8 +535,9 @@ describe("reading a chat's earlier messages", () => {
       },
     });
     await userEvent.click(await screen.findByTestId("worker-sweep"));
-    expect((await screen.findByTestId("worker-sweep-said")).textContent)
-      .toMatch(/nothing here is unread/i);
+    await waitFor(() =>
+      expect(screen.getByTestId("worker-sweep-said").textContent)
+        .toMatch(/nothing here is unread/i));
   });
 
   it("offers the backlog rather than reading it", async () => {
@@ -545,7 +552,7 @@ describe("reading a chat's earlier messages", () => {
     // GROUND CONTROL: a line that is always there is not an offer.
     mount({ worker: { backlog: { chats: 0, messages: 0 } } });
     await screen.findByTestId("worker-status");
-    expect(screen.queryByTestId("worker-backlog")).toBeNull();
+    expect(hiddenFromReaders(screen.queryByTestId("worker-backlog"))).toBe(true);
   });
 
   it("is disabled while a sweep is already running", async () => {
@@ -647,7 +654,7 @@ describe("what this chat does with suggestions", () => {
     useUiStore.setState({ selectedChatId: null });
     mountWithAuto({ enabled: true, effective: true, overridden: false });
     await screen.findByTestId("worker-status");
-    expect(screen.queryByTestId("chat-auto-accept")).toBeNull();
+    expect(hiddenFromReaders(screen.queryByTestId("chat-auto-accept"))).toBe(true);
   });
 });
 
@@ -898,7 +905,7 @@ describe("what the reader paid for and did not get", () => {
   it("GROUND: says nothing when every reply landed something", async () => {
     mount({ worker: { settled_empty: 0 } });
     await screen.findByTestId("worker-status");
-    expect(screen.queryByTestId("worker-settled-empty")).toBeNull();
+    expect(hiddenFromReaders(screen.queryByTestId("worker-settled-empty"))).toBe(true);
   });
 });
 
@@ -1036,7 +1043,7 @@ describe("a chat that stopped on its own", () => {
     // conversation was broken.
     mount({ worker: { state: "closed", chat: null } });
     await screen.findByTestId("worker-status");
-    expect(screen.queryByTestId("worker-chat-state")).toBeNull();
+    expect(hiddenFromReaders(screen.queryByTestId("worker-chat-state"))).toBe(true);
     expect(screen.queryByRole("button", { name: /try this chat again/i }))
       .not.toBeInTheDocument();
   });
@@ -1085,7 +1092,7 @@ describe("a chat that stopped on its own", () => {
     expect(box.textContent).toMatch(/every other chat kept running/i);
     // GROUND for the line above: the global sentence is a different one and
     // is not printed when its own counter is zero.
-    expect(box.textContent).not.toMatch(/while it was cooling down/i);
+    expect(readableText(box)).not.toMatch(/while it was cooling down/i);
   });
 
   it("asks the backend about the chat that is on screen", async () => {

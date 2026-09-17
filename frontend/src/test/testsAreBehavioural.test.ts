@@ -421,8 +421,6 @@ const READ_CSS_BESIDE_ME =
   'const CSS = readFileSync(path.resolve(__dirname, "../../index' +
   CSS +
   '"), "utf-8");';
-const READ_CSS_FROM_SRC =
-  'const css = readFileSync(path.join(SRC, "index' + CSS + '"), "utf-8");';
 
 export const KNOWN_PENDING: Record<
   string,
@@ -438,15 +436,15 @@ export const KNOWN_PENDING: Record<
   ["lib/contrast.test" + TS]: [
     ['const css = readFileSync(CSS_PATH, "utf-8");', 1],
   ],
-  ["lib/motionTokens.test" + TS]: [
-    // PAID, 3 September 2026. This was the line that read `app/providers.tsx`
-    // and looked for `reducedMotion="user"` in it. That string is in that
-    // file twice - once as the prop, once inside the comment above it - so
-    // the assertion passed on the comment alone, measured. The prop is read
-    // off the component that receives it now, in
-    // components/ReducedMotionRoot.test.tsx.
-    [READ_CSS_FROM_SRC, 1],
-  ],
+  // lib/motionTokens.test.ts: PAID in full, 17 September 2026. Its last raw
+  // read of index.css (the reduced-transparency switch) went when the file
+  // became the motion guard over the COMPILED sheet, parsed with postcss.
+  // The entry before it (PAID, 3 September 2026) was the line that read
+  // `app/providers.tsx` and looked for `reducedMotion="user"` in it; that
+  // string is in that file twice, once as the prop and once inside the
+  // comment above it, so the assertion passed on the comment alone,
+  // measured. The prop is read off the component that receives it now, in
+  // components/ReducedMotionRoot.test.tsx.
   ["palette-guard.test" + TS]: [
     ['const colors = parseColors(readFileSync(CSS, "utf-8"));', 1],
     ['const css = readFileSync(CSS, "utf-8");', 3],
@@ -1027,7 +1025,13 @@ describe("the registries stay honest", () => {
       "settings-copy.test" + TS,
       "static-safety.test" + TS,
     ];
+    // Paid in full since the queue was recorded; a paid file leaves the
+    // ledger and stays here as the record that it was in the queue.
+    const paid = new Set(["lib/motionTokens.test" + TS]);
     const pinned = new Set(Object.keys(KNOWN_PENDING));
-    expect(fromTheQueue.filter((f) => !pinned.has(f))).toEqual([]);
+    expect(fromTheQueue.filter((f) => !pinned.has(f) && !paid.has(f))).toEqual([]);
+    // GROUND: a paid file really is out of the ledger, and the rest are in.
+    expect([...paid].filter((f) => pinned.has(f))).toEqual([]);
+    expect(fromTheQueue.filter((f) => pinned.has(f)).length).toBe(fromTheQueue.length - paid.size);
   });
 });

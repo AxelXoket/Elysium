@@ -23,6 +23,7 @@
 import { useEffect, useRef, useState } from "react";
 import { motion as m } from "motion/react";
 import { useReducedMotion } from "@/components/motion/ReducedMotion";
+import { easeValues } from "@/lib/theme/tokens";
 import { useLockAudioWarningStore } from "@/lib/query/vault";
 
 /* The commit (real lock API -> gate flip) must land INSIDE the full-ink
@@ -41,7 +42,7 @@ const REDUCED_COMMIT_MS = 240;
 // silent choreography, this only ever runs for the rare partial lock.
 const WARNING_FADE_MS = 350;
 
-const EASE_SMOOTH: [number, number, number, number] = [0.4, 0, 0.2, 1];
+const EASE_SMOOTH = easeValues.smooth;
 const STROKE = "#DEE9F5";
 
 export function LockOverlay({

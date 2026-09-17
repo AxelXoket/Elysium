@@ -19,9 +19,10 @@
  */
 import { type ReactNode } from "react";
 import { motion as m } from "motion/react";
+import { durationSeconds, easeValues } from "@/lib/theme/tokens";
 import { useReducedMotion } from "./ReducedMotion";
 
-const EASE = [0.4, 0, 0.2, 1] as const;
+const EASE = easeValues.smooth;
 
 interface VariantCarouselProps {
   /** Key of the displayed pane - changing it drives the flip. */
@@ -48,7 +49,7 @@ export function VariantCarousel({
         key={paneKey}
         initial={still ? false : { x: direction * 24, opacity: 0 }}
         animate={{ x: 0, opacity: 1 }}
-        transition={{ duration: still ? 0 : 0.18, ease: EASE }}
+        transition={{ duration: still ? 0 : durationSeconds.fast, ease: EASE }}
         style={{ width: "100%" }}
       >
         {children}

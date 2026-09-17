@@ -46,6 +46,25 @@ no exe you can download yet.
 
 ### Changed
 
+- **One motion language, and a watchman that can see it.** Durations and
+  easings lived in three places, fifteen hand-written `prefers-reduced-motion`
+  blocks between them missed twenty-five rules including every Base UI dialog,
+  and the popup cap overrode every component with a blanket 90ms `!important`.
+  There is now one token set with `--duration-exit` and `--ease-exit` in it,
+  popups open at `--duration-fast` and close at `--duration-exit`, and a single
+  universal reduced-motion block covers everything, with only the slowed
+  loading spinners and the 120ms opacity fades still moving under it, by name.
+  `lib/theme/tokens.ts` carries the curves and durations as numbers, the seven
+  motion call sites read them, and tests hold the token file equal to the
+  stylesheet in both directions and the reduced-motion set difference at zero.
+- **Panels open and close instead of blinking.** Every conditional block in the
+  notebook panels now arrives and leaves through `Collapse`, `FadeIn` or an
+  `AnimatePresence` crossfade, and a closed section is out of the
+  accessibility tree rather than merely invisible. The chat action menu joins
+  the reduced-transparency list it had been missing, and the blur guard reads
+  the compiled sheet through a parser so a name behind a comma is no longer
+  skipped.
+
 - **Provider failover is on, inside the privacy filters.** Every completion
   request asked OpenRouter for `allow_fallbacks: false`, so when the one
   provider it picked was unavailable, the send failed with it, even for a

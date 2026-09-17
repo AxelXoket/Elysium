@@ -21,6 +21,8 @@ import { Button } from "@/components/ui/button";
 import { useUiStore } from "@/lib/store/uiStore";
 import { Switch } from "@/components/ui/switch";
 import { SlideIn } from "@/components/motion/SlideIn";
+import { Collapse } from "@/components/motion/Collapse";
+import { FadeIn } from "@/components/motion/FadeIn";
 import { useErrorStore } from "@/lib/errors/errorStore";
 // The sentences for this app's own reason codes, borrowed rather than
 // rewritten: a failed call's error_type carries one of those codes after a
@@ -588,304 +590,308 @@ export function WorkerPanel() {
             signal cannot see somebody pasting a downloaded card's fields
             into the form by hand. Nothing in the application can. The reader
             can, so this is where they say so. */}
-        {chatId != null && auto.isSuccess && (
-          <div className="space-y-1" data-testid="chat-auto-accept">
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              In this chat, suggestions are{" "}
-              {auto.data.effective ?? auto.data.enabled
-                ? "kept without asking"
-                : "held for review"}
-              {auto.data.overridden
-                ? " - this chat decides, not the switch above."
-                : "."}
-            </p>
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              disabled={setChatAuto.isPending}
-              data-testid="chat-auto-accept-toggle"
-              onClick={() => void overrideForThisChat(
-                auto.data.overridden
-                  ? null
-                  : !(auto.data.effective ?? auto.data.enabled))}
-              className="persona-ghost-action h-7 px-2 text-xs"
-            >
-              {auto.data.overridden
-                ? "Follow the setting above"
-                : ((auto.data.effective ?? auto.data.enabled)
-                    ? "Hold this chat's suggestions for review"
-                    : "Keep this chat's suggestions without asking")}
-            </Button>
-          </div>
-        )}
-
-        {body && (
-          <div className="persona-card space-y-1" data-testid="worker-status">
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              {STATE_PROSE[state] ?? state}
-            </p>
-            {/* A SECOND line, never a replacement for the first. The
-                sentence above is about the whole feature and must not
-                change because one conversation broke; this one is about the
-                chat in front of the reader, and it exists because a chat
-                stopped on its own is otherwise a panel reading "Running."
-                over a conversation nothing will ever read. */}
-            {chatState && chatState !== "closed" && (
-              <p
-                className="text-xs leading-relaxed text-muted-foreground"
-                data-testid="worker-chat-state"
-              >
-                {CHAT_STATE_PROSE[chatState] ?? chatState}
-              </p>
-            )}
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              {body.stats.done} runs · {body.spend.calls} of {body.daily_cap}{" "}
-              calls today · {body.spend.cost.toFixed(5)} credits{" "}
-              {/* Same line as today's count - "beside", not below - but
-                  dimmed with the app's existing secondary-text idiom
-                  (opacity-70, as ModelPanel's "Selected:" label and
-                  ImageOutputSetting's hint text already use) and named
-                  "lifetime" rather than positioned next to "today" with no
-                  label of its own. Today's number is the one that governs
-                  the cap, so it keeps full weight; this one does not.
-
-                  The docstring on spend_lifetime (notebook_store.py) argues
-                  that filtering the lifetime SUM would hide "real spend that
-                  happened" from "the one screen that is supposed to be
-                  honest about every credit spent" - an argument about MONEY,
-                  not about calls. A parenthetical that named only
-                  `.calls` made that argument and then answered a different
-                  question: today's money sat beside a lifetime call count,
-                  so the one figure the docstring is about never reached the
-                  screen. Both numbers now use the same "N unit" words the
-                  line above already uses for today ("calls" / "credits"),
-                  not a bare number - the units are what mark this as a
-                  different KIND of figure, not just its dimmer position. */}
-              <span className="opacity-70">
-                ({body.spend_lifetime.calls} calls,{" "}
-                {body.spend_lifetime.cost.toFixed(5)} credits lifetime)
-              </span>
-            </p>
-
-            {/* "We do not know" is not "it was free".
-
-                The credit figure above is a sum over a NOT NULL column, so a
-                call the provider declined to price landed in it as zero - and
-                the line then reads as a call that cost nothing. It is the
-                one number on this card the reader might act on, so the card
-                has to say when part of it is missing rather than quietly
-                rounding an unknown down to the cheapest possible answer.
-
-                Only when there is something to say: a provider that prices
-                everything never sees this line. */}
-            {body.spend.cost_unknown > 0 && (
-              <p
-                className="text-xs leading-relaxed text-muted-foreground"
-                data-testid="worker-cost-unknown"
-              >
-                {body.spend.cost_unknown} of the calls made today came back with
-                no price - the credit figure above leaves them out rather than
-                counting them as free.
-              </p>
-            )}
-
-            {/* Failures and refusals are separate lines because they call for
-                different things: one is the provider's problem, the other is
-                a limit doing its job. */}
-            {/* Rows that cost money carry status 'failed' too, so they are
-                a SUBSET of this count. Reporting the whole of it under
-                "nothing was lost" was the lie: for those the money was spent
-                and those messages are never read. Split, so each line is
-                true of the runs it describes.
-
-                The subset is `paid_and_lost`, not `abandoned`. `abandoned`
-                is only the calls the app was killed in the middle of; a
-                `write_*` failure happens AFTER the reply has been sent,
-                generated and billed, and it was landing on the "nothing was
-                lost" side of this subtraction. */}
-            {body.stats.failed - body.stats.paid_and_lost > 0 && (
+        <Collapse open={chatId != null && auto.isSuccess}>
+          {auto.data && (
+            <div className="space-y-1" data-testid="chat-auto-accept">
               <p className="text-xs leading-relaxed text-muted-foreground">
-                {body.stats.failed - body.stats.paid_and_lost} runs failed.
-                Nothing was lost - the messages they could not read stay
-                unread, not skipped.
+                In this chat, suggestions are{" "}
+                {auto.data.effective ?? auto.data.enabled
+                  ? "kept without asking"
+                  : "held for review"}
+                {auto.data.overridden
+                  ? " - this chat decides, not the switch above."
+                  : "."}
               </p>
-            )}
-
-            {body.stats.abandoned > 0 && (
-              <p
-                className="text-xs leading-relaxed text-muted-foreground"
-                data-testid="worker-abandoned"
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                disabled={setChatAuto.isPending}
+                data-testid="chat-auto-accept-toggle"
+                onClick={() => void overrideForThisChat(
+                  auto.data.overridden
+                    ? null
+                    : !(auto.data.effective ?? auto.data.enabled))}
+                className="persona-ghost-action h-7 px-2 text-xs"
               >
-                {body.stats.abandoned} runs were cut off after the request had
-                already been sent, so they were paid for. Elysium does not
-                send those stretches again, which is why the notes for them
-                are missing rather than duplicated.
-              </p>
-            )}
+                {auto.data.overridden
+                  ? "Follow the setting above"
+                  : ((auto.data.effective ?? auto.data.enabled)
+                      ? "Hold this chat's suggestions for review"
+                      : "Keep this chat's suggestions without asking")}
+              </Button>
+            </div>
+          )}
+        </Collapse>
 
-            {/* WHY they failed, which the two lines above do not say.
-                Those two answer "how many" and "did it cost money"; a reader
-                looking at a notebook that wrote nothing needs the third
-                question, and the answer to it was stored on every failed row
-                from the start and read by nothing.
-
-                Subordinate wording on purpose - "of the failures", not "runs
-                failed" - because these numbers add up to `failed`, which is
-                already on screen above. Two lines that each look like a total
-                are how a reader ends up adding them.
-
-                It carries the abandoned rows too, and that is not the same
-                as folding the abandoned COUNTER into this dict: the counter
-                stays its own number above precisely because it is nested
-                inside `failed` and must never be summed with it. Here every
-                key is nested in the same way, so nothing is misread by
-                sitting beside its neighbour. */}
-            {Object.entries(failures).map(([why, n]) => (
-              <p
-                key={why}
-                className="text-xs leading-relaxed text-muted-foreground"
-                data-testid="worker-failure-reason"
-              >
-                {/* THE DENOMINATOR IS PART OF THE SENTENCE.
-                    Read cold, "2 of the failures" beside "3 runs failed"
-                    invites the one sum that must not be made: the two lines
-                    above are SUBSETS of `failed` (`failed` minus the paid
-                    ones, and the abandoned ones), so the census adds up to a
-                    total that appears nowhere else on the card. A reader
-                    checking the arithmetic found six against three and had
-                    no way to tell which number was wrong. Naming the total
-                    here makes the lines reconcile in front of them, and it
-                    is the only place `failed` itself is legible. */}
-                {n} of {body.stats.failed} failures: {failureProse(why)}
-              </p>
-            ))}
-
-            {Object.entries(skips).map(([why, n]) => (
-              <p
-                key={why}
-                className="text-xs leading-relaxed text-muted-foreground"
-              >
-                {n} skipped: {skipProse(why)}.
-              </p>
-            ))}
-
-            {/* The worker died. Everything else on this card describes a
-                worker that is running; without this line the card describes
-                one that is not, in the same words. */}
-            {!body.worker.alive && (
-              <p className="persona-local-error" role="alert">
-                The background reader has stopped
-                {body.worker.died ? ` (${body.worker.died})` : ""}. Restart
-                Elysium to bring it back. Nothing was lost - unread messages
-                stay unread.
-              </p>
-            )}
-
-            {body.worker.unhandled > 0 && (
-              <p
-                className="text-xs leading-relaxed text-muted-foreground"
-                data-testid="worker-unhandled"
-              >
-                {body.worker.unhandled} runs ended in an unexpected error
-                {/* The value is shared with the empty-settle line above, and
-                    it holds whichever event happened LAST. Printed here
-                    unconditionally it put that line's token in this line's
-                    parentheses, so "an unexpected error (settled_chat_gone)"
-                    named the wrong event with a word for the other one. The
-                    counter still speaks for itself; only the attribution is
-                    withheld. */}
-                {body.worker.last_error && !emptyWhy
-                  ? ` (${body.worker.last_error})`
-                  : ""}.
-                Those messages stay unread.
-              </p>
-            )}
-
-            {/* PAID FOR AND EMPTY. Not a failure and not a refusal: the call
-                went out, came back and was billed, and nothing could be
-                landed from it. It was reported by a counter and a code that
-                reach no screen, so on the panel it looked exactly like a
-                quiet week - which is the one thing this card exists not to
-                do. The three ways in are named because they call for
-                different things: two of them are races that fix themselves,
-                the third is the reader's own edit. */}
-            {body.worker.settled_empty > 0 && (
-              <p
-                className="text-xs leading-relaxed text-muted-foreground"
-                data-testid="worker-settled-empty"
-              >
-                {body.worker.settled_empty}{" "}
-                {body.worker.settled_empty === 1
-                  ? "reply was"
-                  : "replies were"}{" "}
-                paid for and produced no notes
-                {/* The reason, when the panel is entitled to it. `last_error`
-                    is one value describing the most recent event of any
-                    kind, so it is named as the most recent rather than as
-                    the reason all of them landed nothing - which it is not,
-                    and a count per reason is not on the wire. Without a
-                    reason the line keeps the three ways in, which is still
-                    more than the number alone said. */}
-                {emptyWhy
-                  ? <>. The most recent: {emptyProse(emptyWhy)}.</>
-                  : <>
-                      {" "}- those messages had already been read, a retry
-                      arrived first, or they changed while the reply was out.
-                    </>}
-              </p>
-            )}
-
-            {/* WHAT THE MODEL OFFERED AND THE PARSER REFUSED.
-                A note thrown away here was paid for and never shown, and the
-                counters were declared on the wire and rendered nowhere - so
-                a gate quietly discarding good notes and a model with nothing
-                to say produced the same empty list. */}
-            {Object.entries(drops).map(([why, n]) => (
-              <p
-                key={why}
-                className="text-xs leading-relaxed text-muted-foreground"
-                data-testid="worker-dropped-note"
-              >
-                {/* Counted in words, in the idiom the backlog line above
-                    already uses: these are small numbers and "1 suggestions"
-                    is the reading a reader trips over. */}
-                {n} suggestion{n === 1 ? " was" : "s were"} thrown away:{" "}
-                {dropProse(why)}.
-              </p>
-            ))}
-
-            {body.worker.refused_by_breaker > 0 && (
+        <Collapse open={body != null}>
+          {body && (
+            <div className="persona-card space-y-1" data-testid="worker-status">
               <p className="text-xs leading-relaxed text-muted-foreground">
-                {body.worker.refused_by_breaker} turns were passed over while
-                it was cooling down. Their messages are still unread.
+                {STATE_PROSE[state] ?? state}
               </p>
-            )}
-
-            {/* Counted apart from the line above, and said apart. Folded
-                together, "the provider is down" and "these conversations are
-                broken" read as one number, and only one of them means the
-                rest of the notebook is working. */}
-            {body.worker.refused_by_chat_breaker > 0 && (
+              {/* A SECOND line, never a replacement for the first. The
+                  sentence above is about the whole feature and must not
+                  change because one conversation broke; this one is about the
+                  chat in front of the reader, and it exists because a chat
+                  stopped on its own is otherwise a panel reading "Running."
+                  over a conversation nothing will ever read. */}
+              <Collapse open={!!chatState && chatState !== "closed"}>
+                <p
+                  className="text-xs leading-relaxed text-muted-foreground"
+                  data-testid="worker-chat-state"
+                >
+                  {CHAT_STATE_PROSE[chatState ?? ""] ?? chatState}
+                </p>
+              </Collapse>
               <p className="text-xs leading-relaxed text-muted-foreground">
-                {body.worker.refused_by_chat_breaker} turns were passed over
-                in chats that keep failing on their own
-                {body.worker.tripped_chats > 0
-                  ? ` (${body.worker.tripped_chats} of them right now)`
-                  : ""}
-                . Every other chat kept running.
-              </p>
-            )}
+                {body.stats.done} runs · {body.spend.calls} of {body.daily_cap}{" "}
+                calls today · {body.spend.cost.toFixed(5)} credits{" "}
+                {/* Same line as today's count - "beside", not below - but
+                    dimmed with the app's existing secondary-text idiom
+                    (opacity-70, as ModelPanel's "Selected:" label and
+                    ImageOutputSetting's hint text already use) and named
+                    "lifetime" rather than positioned next to "today" with no
+                    label of its own. Today's number is the one that governs
+                    the cap, so it keeps full weight; this one does not.
 
-            {body.worker.dropped_offers > 0 && (
-              <p className="text-xs leading-relaxed text-muted-foreground">
-                {body.worker.dropped_offers} turns went unqueued while it was
-                behind. Their messages are still unread, so a later run picks
-                them up.
+                    The docstring on spend_lifetime (notebook_store.py) argues
+                    that filtering the lifetime SUM would hide "real spend that
+                    happened" from "the one screen that is supposed to be
+                    honest about every credit spent" - an argument about MONEY,
+                    not about calls. A parenthetical that named only
+                    `.calls` made that argument and then answered a different
+                    question: today's money sat beside a lifetime call count,
+                    so the one figure the docstring is about never reached the
+                    screen. Both numbers now use the same "N unit" words the
+                    line above already uses for today ("calls" / "credits"),
+                    not a bare number - the units are what mark this as a
+                    different KIND of figure, not just its dimmer position. */}
+                <span className="opacity-70">
+                  ({body.spend_lifetime.calls} calls,{" "}
+                  {body.spend_lifetime.cost.toFixed(5)} credits lifetime)
+                </span>
               </p>
-            )}
-          </div>
-        )}
+
+              {/* "We do not know" is not "it was free".
+
+                  The credit figure above is a sum over a NOT NULL column, so a
+                  call the provider declined to price landed in it as zero - and
+                  the line then reads as a call that cost nothing. It is the
+                  one number on this card the reader might act on, so the card
+                  has to say when part of it is missing rather than quietly
+                  rounding an unknown down to the cheapest possible answer.
+
+                  Only when there is something to say: a provider that prices
+                  everything never sees this line. */}
+              <Collapse open={body.spend.cost_unknown > 0}>
+                <p
+                  className="text-xs leading-relaxed text-muted-foreground"
+                  data-testid="worker-cost-unknown"
+                >
+                  {body.spend.cost_unknown} of the calls made today came back with
+                  no price - the credit figure above leaves them out rather than
+                  counting them as free.
+                </p>
+              </Collapse>
+
+              {/* Failures and refusals are separate lines because they call for
+                  different things: one is the provider's problem, the other is
+                  a limit doing its job. */}
+              {/* Rows that cost money carry status 'failed' too, so they are
+                  a SUBSET of this count. Reporting the whole of it under
+                  "nothing was lost" was the lie: for those the money was spent
+                  and those messages are never read. Split, so each line is
+                  true of the runs it describes.
+
+                  The subset is `paid_and_lost`, not `abandoned`. `abandoned`
+                  is only the calls the app was killed in the middle of; a
+                  `write_*` failure happens AFTER the reply has been sent,
+                  generated and billed, and it was landing on the "nothing was
+                  lost" side of this subtraction. */}
+              <Collapse open={body.stats.failed - body.stats.paid_and_lost > 0}>
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  {body.stats.failed - body.stats.paid_and_lost} runs failed.
+                  Nothing was lost - the messages they could not read stay
+                  unread, not skipped.
+                </p>
+              </Collapse>
+
+              <Collapse open={body.stats.abandoned > 0}>
+                <p
+                  className="text-xs leading-relaxed text-muted-foreground"
+                  data-testid="worker-abandoned"
+                >
+                  {body.stats.abandoned} runs were cut off after the request had
+                  already been sent, so they were paid for. Elysium does not
+                  send those stretches again, which is why the notes for them
+                  are missing rather than duplicated.
+                </p>
+              </Collapse>
+
+              {/* WHY they failed, which the two lines above do not say.
+                  Those two answer "how many" and "did it cost money"; a reader
+                  looking at a notebook that wrote nothing needs the third
+                  question, and the answer to it was stored on every failed row
+                  from the start and read by nothing.
+
+                  Subordinate wording on purpose - "of the failures", not "runs
+                  failed" - because these numbers add up to `failed`, which is
+                  already on screen above. Two lines that each look like a total
+                  are how a reader ends up adding them.
+
+                  It carries the abandoned rows too, and that is not the same
+                  as folding the abandoned COUNTER into this dict: the counter
+                  stays its own number above precisely because it is nested
+                  inside `failed` and must never be summed with it. Here every
+                  key is nested in the same way, so nothing is misread by
+                  sitting beside its neighbour. */}
+              {Object.entries(failures).map(([why, n]) => (
+                <p
+                  key={why}
+                  className="text-xs leading-relaxed text-muted-foreground"
+                  data-testid="worker-failure-reason"
+                >
+                  {/* THE DENOMINATOR IS PART OF THE SENTENCE.
+                      Read cold, "2 of the failures" beside "3 runs failed"
+                      invites the one sum that must not be made: the two lines
+                      above are SUBSETS of `failed` (`failed` minus the paid
+                      ones, and the abandoned ones), so the census adds up to a
+                      total that appears nowhere else on the card. A reader
+                      checking the arithmetic found six against three and had
+                      no way to tell which number was wrong. Naming the total
+                      here makes the lines reconcile in front of them, and it
+                      is the only place `failed` itself is legible. */}
+                  {n} of {body.stats.failed} failures: {failureProse(why)}
+                </p>
+              ))}
+
+              {Object.entries(skips).map(([why, n]) => (
+                <p
+                  key={why}
+                  className="text-xs leading-relaxed text-muted-foreground"
+                >
+                  {n} skipped: {skipProse(why)}.
+                </p>
+              ))}
+
+              {/* The worker died. Everything else on this card describes a
+                  worker that is running; without this line the card describes
+                  one that is not, in the same words. */}
+              <Collapse open={!body.worker.alive}>
+                <p className="persona-local-error" role="alert">
+                  The background reader has stopped
+                  {body.worker.died ? ` (${body.worker.died})` : ""}. Restart
+                  Elysium to bring it back. Nothing was lost - unread messages
+                  stay unread.
+                </p>
+              </Collapse>
+
+              <Collapse open={body.worker.unhandled > 0}>
+                <p
+                  className="text-xs leading-relaxed text-muted-foreground"
+                  data-testid="worker-unhandled"
+                >
+                  {body.worker.unhandled} runs ended in an unexpected error
+                  {/* The value is shared with the empty-settle line above, and
+                      it holds whichever event happened LAST. Printed here
+                      unconditionally it put that line's token in this line's
+                      parentheses, so "an unexpected error (settled_chat_gone)"
+                      named the wrong event with a word for the other one. The
+                      counter still speaks for itself; only the attribution is
+                      withheld. */}
+                  {body.worker.last_error && !emptyWhy
+                    ? ` (${body.worker.last_error})`
+                    : ""}.
+                  Those messages stay unread.
+                </p>
+              </Collapse>
+
+              {/* PAID FOR AND EMPTY. Not a failure and not a refusal: the call
+                  went out, came back and was billed, and nothing could be
+                  landed from it. It was reported by a counter and a code that
+                  reach no screen, so on the panel it looked exactly like a
+                  quiet week - which is the one thing this card exists not to
+                  do. The three ways in are named because they call for
+                  different things: two of them are races that fix themselves,
+                  the third is the reader's own edit. */}
+              <Collapse open={body.worker.settled_empty > 0}>
+                <p
+                  className="text-xs leading-relaxed text-muted-foreground"
+                  data-testid="worker-settled-empty"
+                >
+                  {body.worker.settled_empty}{" "}
+                  {body.worker.settled_empty === 1
+                    ? "reply was"
+                    : "replies were"}{" "}
+                  paid for and produced no notes
+                  {/* The reason, when the panel is entitled to it. `last_error`
+                      is one value describing the most recent event of any
+                      kind, so it is named as the most recent rather than as
+                      the reason all of them landed nothing - which it is not,
+                      and a count per reason is not on the wire. Without a
+                      reason the line keeps the three ways in, which is still
+                      more than the number alone said. */}
+                  {emptyWhy
+                    ? <>. The most recent: {emptyProse(emptyWhy)}.</>
+                    : <>
+                        {" "}- those messages had already been read, a retry
+                        arrived first, or they changed while the reply was out.
+                      </>}
+                </p>
+              </Collapse>
+
+              {/* WHAT THE MODEL OFFERED AND THE PARSER REFUSED.
+                  A note thrown away here was paid for and never shown, and the
+                  counters were declared on the wire and rendered nowhere - so
+                  a gate quietly discarding good notes and a model with nothing
+                  to say produced the same empty list. */}
+              {Object.entries(drops).map(([why, n]) => (
+                <p
+                  key={why}
+                  className="text-xs leading-relaxed text-muted-foreground"
+                  data-testid="worker-dropped-note"
+                >
+                  {/* Counted in words, in the idiom the backlog line above
+                      already uses: these are small numbers and "1 suggestions"
+                      is the reading a reader trips over. */}
+                  {n} suggestion{n === 1 ? " was" : "s were"} thrown away:{" "}
+                  {dropProse(why)}.
+                </p>
+              ))}
+
+              <Collapse open={body.worker.refused_by_breaker > 0}>
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  {body.worker.refused_by_breaker} turns were passed over while
+                  it was cooling down. Their messages are still unread.
+                </p>
+              </Collapse>
+
+              {/* Counted apart from the line above, and said apart. Folded
+                  together, "the provider is down" and "these conversations are
+                  broken" read as one number, and only one of them means the
+                  rest of the notebook is working. */}
+              <Collapse open={body.worker.refused_by_chat_breaker > 0}>
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  {body.worker.refused_by_chat_breaker} turns were passed over
+                  in chats that keep failing on their own
+                  {body.worker.tripped_chats > 0
+                    ? ` (${body.worker.tripped_chats} of them right now)`
+                    : ""}
+                  . Every other chat kept running.
+                </p>
+              </Collapse>
+
+              <Collapse open={body.worker.dropped_offers > 0}>
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  {body.worker.dropped_offers} turns went unqueued while it was
+                  behind. Their messages are still unread, so a later run picks
+                  them up.
+                </p>
+              </Collapse>
+            </div>
+          )}
+        </Collapse>
 
         {/* THE WAY BACK.
             The worker only ever moves forward: its cursor is a maximum, and
@@ -897,7 +903,7 @@ export function WorkerPanel() {
 
             Only with a chat open, because there is nothing to read
             otherwise. */}
-        {chatId != null && (
+        <Collapse open={chatId != null}>
           <div className="space-y-1">
             <Button
               type="button"
@@ -911,19 +917,31 @@ export function WorkerPanel() {
               <BookOpen size={12} className="size-3" />
               Read the earlier messages here
             </Button>
-            {(body?.worker.backlog.messages ?? 0) > 0 && (
-              <p
-                className="text-xs leading-relaxed text-muted-foreground"
-                data-testid="worker-backlog"
-              >
-                {body!.worker.backlog.chats} chat
-                {body!.worker.backlog.chats === 1 ? "" : "s"} have{" "}
-                {body!.worker.backlog.messages} unread messages. Nothing is
-                read without you asking - reading them costs calls.
-              </p>
-            )}
+            {/* The data gate inside the Collapse is not decoration and not a
+                second condition on the same thing. Collapse keeps its
+                content mounted, so without it the paragraph is in the tree
+                before the query resolves and `body!` throws; with the reads
+                written as optional instead, the tree carries a sentence with
+                two blanks in it from first paint, and the case that waits
+                for this paragraph to ARRIVE (WorkerPanel.test.tsx, "offers
+                the backlog rather than reading it") resolves on the blank
+                one. Measured both ways; this is the one that keeps the
+                paragraph a thing that appears when it has something to say. */}
+            <Collapse open={(body?.worker.backlog.messages ?? 0) > 0}>
+              {body && (
+                <p
+                  className="text-xs leading-relaxed text-muted-foreground"
+                  data-testid="worker-backlog"
+                >
+                  {body!.worker.backlog.chats} chat
+                  {body!.worker.backlog.chats === 1 ? "" : "s"} have{" "}
+                  {body!.worker.backlog.messages} unread messages. Nothing is
+                  read without you asking - reading them costs calls.
+                </p>
+              )}
+            </Collapse>
 
-            {swept && (
+            <Collapse open={!!swept}>
               <p
                 className="text-xs leading-relaxed text-muted-foreground"
                 role="status"
@@ -931,9 +949,9 @@ export function WorkerPanel() {
               >
                 {swept}
               </p>
-            )}
+            </Collapse>
           </div>
-        )}
+        </Collapse>
 
         {/* Only when it means something. A reset button that is always there
             invites pressing it at random; one that appears when the thing is
@@ -943,17 +961,19 @@ export function WorkerPanel() {
             way to act on that - the one state where the sentence on screen
             asks for a decision was the one state with no button. */}
         {(state === "stopped" || state === "open" || state === "half_open") && (
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            disabled={reset.isPending}
-            onClick={() => void unstick()}
-            className="persona-ghost-action h-7 gap-1.5 px-2 text-xs"
-          >
-            <RotateCcw size={12} className="size-3" />
-            Try again now
-          </Button>
+          <FadeIn>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={reset.isPending}
+              onClick={() => void unstick()}
+              className="persona-ghost-action h-7 gap-1.5 px-2 text-xs"
+            >
+              <RotateCcw size={12} className="size-3" />
+              Try again now
+            </Button>
+          </FadeIn>
         )}
 
         {/* A SECOND button, because they undo different things. The one
@@ -961,17 +981,19 @@ export function WorkerPanel() {
             it; this one unsticks exactly the conversation in front of the
             reader and leaves the others where they are. */}
         {chatId != null && chatState && chatState !== "closed" && (
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            disabled={reset.isPending}
-            onClick={() => void unstick(chatId)}
-            className="persona-ghost-action h-7 gap-1.5 px-2 text-xs"
-          >
-            <RotateCcw size={12} className="size-3" />
-            Try this chat again
-          </Button>
+          <FadeIn>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={reset.isPending}
+              onClick={() => void unstick(chatId)}
+              className="persona-ghost-action h-7 gap-1.5 px-2 text-xs"
+            >
+              <RotateCcw size={12} className="size-3" />
+              Try this chat again
+            </Button>
+          </FadeIn>
         )}
       </section>
     </SlideIn>

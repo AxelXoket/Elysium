@@ -163,13 +163,35 @@
     --app-frame-max-w:    1968px;
     --app-frame-max-h:    880px;
 
-    /* ── Elysium Seasonal: Motion ── */
+    /* ── Elysium Seasonal: Motion ──
+       The one motion token set. Every duration and easing this file or
+       the JS side uses is declared here and nowhere else. The JS mirror is
+       lib/theme/tokens.ts, and test/tokens-sync.test.ts holds the two
+       equal in both directions: by name for the var() fields, by value
+       for the numeric ones. */
     --duration-hover:   140ms;
     --duration-fast:    180ms;
     --duration-normal:  240ms;
     --duration-layout:  300ms;
+    /* Exit is shorter than entry on purpose. A popup opens at
+       --duration-fast and closes at this; the eye is led in and released
+       quickly. Also the length of every opacity fade that stays on under
+       reduced motion. */
+    --duration-exit:    120ms;
+    /* The layout family, deliberately its own durations: a panel sweep
+       re-lays out the conversation beside it, and the column moves less
+       distance and moves alone, so it needs less runway than the panel.
+       The full rationale sits with .es-side-panel further down. */
+    --duration-panel:   420ms;
+    --duration-column:  320ms;
     --ease-spring:      cubic-bezier(0.34, 1.56, 0.64, 1);
     --ease-smooth:      cubic-bezier(0.4, 0, 0.2, 1);
+    /* Symmetric ease-in-out for the panel sweep. --ease-smooth spends its
+       speed early; this spends it in the middle, so no single frame moves
+       a wrap point far. */
+    --ease-resize:      cubic-bezier(0.4, 0, 0.6, 1);
+    /* The curve of every exit and of every reduced-motion fade. */
+    --ease-exit:        ease-out;
 }
 
 /* ── Elysium Seasonal dark theme (applied as :root - always dark) ── */
@@ -666,7 +688,7 @@
   box-shadow: 0 18px 36px rgba(2, 5, 8, 0.32);
   backdrop-filter: blur(16px) saturate(112%);
   -webkit-backdrop-filter: blur(16px) saturate(112%);
-  animation: inline-action-enter 180ms var(--ease-smooth) both;
+  animation: inline-action-enter var(--duration-fast) var(--ease-smooth) both;
 }
 
 .persona-menu-scroll {
@@ -1207,25 +1229,6 @@
   transform: translateY(0) scale(0.985);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .persona-card,
-  .persona-select-action,
-  .persona-ghost-action,
-  .persona-danger-action {
-    transition: opacity 120ms ease-out;
-  }
-
-  .persona-card:hover,
-  .persona-select-action:hover:not(:disabled),
-  .persona-ghost-action:hover:not(:disabled),
-  .persona-danger-action:hover:not(:disabled),
-  .persona-select-action:active:not(:disabled),
-  .persona-ghost-action:active:not(:disabled),
-  .persona-danger-action:active:not(:disabled) {
-    transform: none;
-  }
-}
-
 /* Warm paper-glass chat canvas */
 .warm-canvas {
   position: relative;
@@ -1506,12 +1509,6 @@
   animation: vault-shake 340ms var(--ease-smooth);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .vault-card-shake {
-    animation: none;
-  }
-}
-
 /* FE-1B: central error toast stack over the warm chat canvas */
 .error-toast-stack {
   top: clamp(20px, 4vh, 42px);
@@ -1530,10 +1527,10 @@
   box-shadow: 0 14px 34px rgba(12, 17, 23, 0.26);
   animation: error-toast-enter 220ms var(--ease-smooth) both;
   transition:
-    opacity 180ms var(--ease-smooth),
-    transform 180ms var(--ease-smooth),
-    border-color 180ms var(--ease-smooth),
-    background-color 180ms var(--ease-smooth);
+    opacity var(--duration-fast) var(--ease-smooth),
+    transform var(--duration-fast) var(--ease-smooth),
+    border-color var(--duration-fast) var(--ease-smooth),
+    background-color var(--duration-fast) var(--ease-smooth);
 }
 
 .error-toast:hover,
@@ -1570,28 +1567,6 @@
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .error-toast {
-    animation: error-toast-fade 160ms ease-out both;
-    transition: opacity 120ms ease-out;
-  }
-
-  .error-toast:hover,
-  .error-toast:focus-visible,
-  .error-toast.is-exiting {
-    transform: none;
-  }
-
-  .error-toast.is-exiting {
-    opacity: 0;
-  }
-
-  @keyframes error-toast-fade {
-    from { opacity: 0; }
-    to { opacity: 1; }
   }
 }
 
@@ -1706,9 +1681,9 @@
   border: 1px solid rgba(28, 38, 50, 0.13);
   background: rgba(255, 255, 255, 0.30);
   transition:
-    transform 180ms var(--ease-smooth),
-    border-color 180ms var(--ease-smooth),
-    background-color 180ms var(--ease-smooth);
+    transform var(--duration-fast) var(--ease-smooth),
+    border-color var(--duration-fast) var(--ease-smooth),
+    background-color var(--duration-fast) var(--ease-smooth);
 }
 
 .generation-trigger:hover:not(:disabled) {
@@ -1738,20 +1713,31 @@
   scrollbar-gutter: stable;
 }
 
-/* Every Base UI popup opens AND closes fast. tw-animate-css defaults the
-   data-closed exit animation long enough (~300ms) that a full-viewport overlay
-   un-dim reads as a "page refresh" flash on close; the same slow exit on any
-   popup looks sluggish. Cap them ALL to one snappy duration - covers dialogs
-   (used) plus select/tooltip/popover/menu (same classes, whether used now or
-   added later). Transitions (e.g. .es-collapse) are unaffected - this only
-   caps keyframe animations. */
+/* Every Base UI popup opens at --duration-fast and closes at --duration-exit,
+   the same pair the hand-written menus (.persona-menu, .chat-action-menu,
+   .message-action-confirm) use, so one gesture has one duration across the
+   app. Exit is shorter than entry on purpose: tw-animate-css gives the
+   data-closed animation the same length as the entry, and a full-viewport
+   overlay un-dimming that slowly reads as a "page refresh" flash on close.
+   No !important, so a component can still give itself its own duration;
+   reduced motion is answered once, by the universal block at the end of the
+   file, rather than per slot. Covers dialogs (used) plus
+   select/tooltip/popover/menu (same classes, whether used now or added
+   later). Transitions (e.g. .es-collapse) are unaffected; this only sets
+   keyframe durations. test/lib/motionTokens.test.ts reads both halves of
+   the pair back out of the compiled sheet. */
 [data-slot="dialog-overlay"],
 [data-slot="dialog-content"],
 [data-slot="select-content"],
 [data-slot="tooltip-content"],
 [data-slot="popover-content"],
 [data-slot="menu-content"] {
-  animation-duration: 90ms !important;
+  &[data-open] {
+    animation-duration: var(--duration-fast);
+  }
+  &[data-closed] {
+    animation-duration: var(--duration-exit);
+  }
 }
 
 .generation-summary-grid {
@@ -1806,9 +1792,9 @@
   background: rgba(200, 216, 236, 0.045);
   padding: 0.75rem;
   transition:
-    opacity 180ms var(--ease-smooth),
-    filter 180ms var(--ease-smooth),
-    border-color 180ms var(--ease-smooth);
+    opacity var(--duration-fast) var(--ease-smooth),
+    filter var(--duration-fast) var(--ease-smooth),
+    border-color var(--duration-fast) var(--ease-smooth);
 }
 
 .generation-control label {
@@ -1942,16 +1928,6 @@
   background-clip: padding-box !important;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .generation-trigger,
-  .generation-control,
-  .generation-range,
-  .generation-dialog {
-    transition: none !important;
-    animation-duration: 1ms !important;
-  }
-}
-
 /* ─────────────────────────────────────────────────────────
    PHASE 6E-A: Thinking bubble animation
    Staggered sinusoidal bounce - smooth, calm, premium feel.
@@ -2020,13 +1996,6 @@
   0% { opacity: 0.55; scale: 0.92; }
   45% { opacity: 1; scale: 1.08; }
   100% { opacity: 1; scale: 1; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .thinking-dot {
-    animation: none;
-    opacity: 0.55;
-  }
 }
 
 /* ─────────────────────────────────────────────────────────
@@ -2640,20 +2609,22 @@
   border-color: rgba(200, 216, 236, 0.15);
 }
 
+/* Both are portaled to document.body by ChatList.tsx, which sets position,
+   top or bottom, right and zIndex inline from the trigger's rect; the
+   geometry lives there and nothing here. 13rem flat: the old min() clamp
+   measured against the BODY width once portaled and never engaged.
+   IP-05 takes the inline zIndex out of ChatList and into the layer scale, so
+   this sentence needs its last clause revisited in that unit. */
 .chat-action-menu,
 .chat-action-confirm {
-  position: absolute;
-  right: 0.35rem;
-  top: calc(100% + 0.32rem);
-  z-index: 25;
-  width: min(13rem, calc(100% - 0.7rem));
+  width: 13rem;
   border-radius: 5px;
   border: 1px solid rgba(200, 216, 236, 0.13);
   background: linear-gradient(90deg, rgba(17, 24, 33, 0.96), rgba(40, 52, 66, 0.92));
   box-shadow: 0 18px 36px rgba(2, 5, 8, 0.32);
   backdrop-filter: blur(16px) saturate(112%);
   -webkit-backdrop-filter: blur(16px) saturate(112%);
-  animation: inline-action-enter 180ms var(--ease-smooth) both;
+  animation: inline-action-enter var(--duration-fast) var(--ease-smooth) both;
 }
 
 .chat-action-menu {
@@ -2758,7 +2729,6 @@
 .variant-nav-button:not(:disabled) {
   cursor: pointer;
 }
-
 
 .message-actions {
   position: absolute;
@@ -2872,7 +2842,7 @@
   box-shadow: 0 18px 34px rgba(4, 7, 10, 0.30);
   backdrop-filter: blur(16px) saturate(112%);
   -webkit-backdrop-filter: blur(16px) saturate(112%);
-  animation: inline-action-enter 180ms var(--ease-smooth) both;
+  animation: inline-action-enter var(--duration-fast) var(--ease-smooth) both;
 }
 
 /* The confirm opens UNDER THE BUTTON THAT OPENED IT, on both roles.
@@ -2982,37 +2952,6 @@
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .chat-action-trigger,
-  .chat-action-menu-item,
-  .chat-action-menu,
-  .chat-action-confirm,
-  .message-bubble-shell,
-  .message-actions,
-  .message-action-button,
-  .message-action-confirm,
-  .message-edit-textarea,
-  .inline-confirm-button,
-  .variant-nav-button,
-  .jump-to-latest,
-  .composer-icon-button {
-    animation-duration: 1ms !important;
-    transition: opacity 120ms ease-out !important;
-  }
-
-  .chat-action-trigger,
-  .chat-action-menu-item:hover,
-  .message-actions,
-  .message-action-button:hover:not(:disabled),
-  .inline-confirm-button:hover:not(:disabled),
-  .variant-nav-button:hover:not(:disabled),
-  .variant-nav-button:active:not(:disabled),
-  .composer-icon-button:hover:not(:disabled),
-  .composer-icon-button:active:not(:disabled) {
-    transform: none !important;
-  }
-}
-
 /* ─────────────────────────────────────────────────────────
    Shared collapsible: smooth height via grid-template-rows.
    Used by every open/close panel so shapes AND motion match.
@@ -3020,10 +2959,25 @@
 .es-collapse {
   display: grid;
   grid-template-rows: 0fr;
-  transition: grid-template-rows var(--duration-normal) var(--ease-smooth);
+  transition:
+    grid-template-rows var(--duration-normal) var(--ease-smooth),
+    margin-block-start var(--duration-normal) var(--ease-smooth),
+    margin-block-end var(--duration-normal) var(--ease-smooth);
 }
 .es-collapse[data-open="true"] {
   grid-template-rows: 1fr;
+}
+/* A closed section takes no room, and that includes the room its parent
+   hands every child. This belongs to FIX 6: wrapping the notebook panels'
+   conditional renders in Collapse is what makes a closed block's margin
+   visible in the first place, because Collapse keeps its content mounted
+   and every one of those blocks sits inside a space-y-* stack, so a
+   collapsed section kept its sibling margin and left a gap on screen where
+   nothing was. The margins ride the same transition as the row, so they
+   close with the height rather than snapping once it has gone.
+   test/lib/motionTokens.test.ts holds both halves. */
+.es-collapse:not([data-open="true"]) {
+  margin-block: 0;
 }
 .es-collapse-inner {
   min-height: 0;
@@ -3048,17 +3002,6 @@
 .es-collapse[data-open="true"] .es-collapse-inner {
   overflow: visible;
   transition: overflow 0s var(--duration-normal) allow-discrete;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .es-collapse {
-    transition: none;
-  }
-  /* Nothing to wait for once the height snaps: holding the clip for the
-     length of an animation that is not running would just delay the ring. */
-  .es-collapse-inner {
-    transition: none;
-  }
 }
 
 /* ── Side panel collapse (focus mode) ─────────────────────────────────────
@@ -3103,15 +3046,9 @@
    silently (there are three WebGL canvases here). Chrome's own guidance also
    notes the group animation still runs layout per frame, so it would not even
    buy the thing it was being considered for. */
-:root {
-  --duration-panel: 420ms;
-  /* The column's own half of the sequence, shorter than the panel's: it moves
-     less distance and it moves alone, so it does not need the same runway. */
-  --duration-column: 320ms;
-  /* Symmetric ease-in-out. The house `--ease-smooth` is cubic-bezier(.4,0,.2,1),
-     which spends its speed early; this spends it in the middle. */
-  --ease-resize: cubic-bezier(0.4, 0, 0.6, 1);
-}
+/* The three tokens this uses (--duration-panel, --duration-column and
+   --ease-resize) are declared in the @theme block at the top of the file
+   with the rest of the motion set; the rationale above is theirs. */
 
 .es-side-panel {
   overflow: hidden;
@@ -3128,13 +3065,6 @@
    buying nothing. */
 .es-side-panel-inner {
   will-change: auto;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .es-side-panel,
-  .chat-gutter {
-    transition: none;
-  }
 }
 
 /* Same clipping lesson as .settings-voice-params above, one level out. The
@@ -3386,13 +3316,6 @@
    panel back. The global :focus-visible rule is already compliant; the only
    thing needed here is enough room for it not to be clipped, which the 12px
    inset above provides. */
-
-@media (prefers-reduced-motion: reduce) {
-  .panel-toggle,
-  .panel-toggle > svg {
-    transition: none;
-  }
-}
 
 /* The coarse-pointer rule that used to live here is deleted, not moved. It
    existed to give touch a handle hover could never reveal; the handle is
@@ -3784,16 +3707,6 @@ input::-ms-clear {
   to   { transform: translateX(300%); }
 }
 
-/* Reduced motion: a steady dim fill still reads as "in progress" - the
-   information survives, the movement does not. */
-@media (prefers-reduced-motion: reduce) {
-  .settings-voice-progress::after {
-    animation: none;
-    width: 100%;
-    background: rgba(110, 147, 196, 0.35);
-  }
-}
-
 /* A message that is currently being spoken keeps its button lit, so the
    source of the voice is obvious in a long thread without hunting for the
    one square icon. */
@@ -3801,26 +3714,6 @@ input::-ms-clear {
   color: var(--color-es-primary-sage-deep);
   background: rgba(94, 130, 174, 0.18);
   border-color: rgba(110, 147, 196, 0.45);
-}
-
-/* Spinners, for people who asked the OS for less motion. Freezing them would
-   read as "hung"; slowing the rotation keeps the "still working" signal while
-   dropping the fast spin that actually causes discomfort. This covers every
-   Loader2 in the app - voice setup, saving, deleting, synthesising. */
-@media (prefers-reduced-motion: reduce) {
-  .animate-spin {
-    animation-duration: 2.4s !important;
-    animation-timing-function: linear !important;
-  }
-}
-
-/* Skeletons, same audience. Its sibling above has had this from the start
-   and the pulse did not (KOK 17) - a slow fade still says "loading" without
-   the throb. Frozen would be indistinguishable from a blank panel. */
-@media (prefers-reduced-motion: reduce) {
-  .animate-pulse {
-    animation-duration: 3.2s !important;
-  }
 }
 
 .settings-voice-log {
@@ -3965,10 +3858,15 @@ input::-ms-clear {
      .sidebar-glass each appeared exactly once - here), so five blurred,
      text-bearing surfaces kept their live blur with transparency turned off.
      .message-action-button is spelled out because the !important on
-     .message-bubble-shell does not reach a descendant. */
+     .message-bubble-shell does not reach a descendant.
+     .chat-action-menu shares one blur rule with .chat-action-confirm and
+     was the one name this list missed: the guard in css-contract.test.ts
+     read only the last line of a selector list, so a name hiding behind a
+     comma passed. It reads the whole list now. */
   .glass-dialog,
   .message-bubble-shell,
   .persona-menu,
+  .chat-action-menu,
   .chat-action-confirm,
   .message-action-confirm,
   .message-action-button,
@@ -4057,20 +3955,6 @@ input::-ms-clear {
 [data-voice-loading="true"]:disabled {
   opacity: 1;
   cursor: progress;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  /* A steady dim reads as "not yet" just as well, and a blinking control is
-     exactly what somebody who asked for less motion is avoiding.
-     The :disabled pair is not redundant - `.message-action-button:disabled`
-     (0-2-0) outranks a lone attribute selector (0-1-0), so without it this
-     block would silently deliver that rule's 0.48 instead of the value
-     written here. */
-  [data-voice-loading="true"],
-  [data-voice-loading="true"]:disabled {
-    animation: none;
-    opacity: 0.55;
-  }
 }
 
 /* ── "Voice is set up but nothing is chosen" hint ───────────────────────────
@@ -4164,7 +4048,6 @@ input::-ms-clear {
   }
 }
 
-
 /* =========================================================
    SETTINGS COHERENCE PASS - 21 August 2026
 
@@ -4178,9 +4061,10 @@ input::-ms-clear {
    fixed for the chat at index.css:2600-2604 ("the words look interactive
    and the buttons do not") and the fix was simply never carried across the
    dialog boundary. Everything below is the carry-across, plus the press
-   states and the reduced-motion coverage that the house style already
-   promised (docs/V1_1_PLAN.md:16, "reduced-motion destegi her yeni
-   animasyonda") and this one surface never delivered.
+   states. The reduced-motion coverage this surface also never delivered
+   is no longer a per-surface list: the universal block at the end of this
+   file covers every rule, and test/lib/motionTokens.test.ts proves the
+   set difference is empty.
 
    Appended rather than edited in place: every rule here has the same
    specificity as the one it completes, so source order decides, and the
@@ -4354,81 +4238,6 @@ div.settings-toggle-row:active {
   transition: border-color var(--duration-fast) var(--ease-smooth);
 }
 
-/* 7. Reduced motion. Eleven blocks in this file enumerate class names and
-      not one of them named a settings class, so every hover lift, press
-      scale, switch thumb and chevron rotation on this surface kept moving
-      for somebody who asked the OS for less.
-
-      Following the house answer rather than inventing one: kill the
-      TRANSFORM, keep a short opacity fade so the control still
-      acknowledges the pointer. Freezing is not the reduced-motion answer
-      (index.css:3232) and a control that does nothing at all reads as
-      broken rather than as calm.
-
-      This block deliberately does NOT name .settings-voice-progress::after
-      - palette-guard.test.ts:298 requires exactly one block to claim it,
-      and index.css:3215 already does. */
-@media (prefers-reduced-motion: reduce) {
-  .settings-category-row,
-  .settings-toggle-row,
-  .settings-back-button,
-  .settings-segment-option,
-  .settings-segment-button,
-  .settings-tint-chip,
-  .settings-inline-reset,
-  .settings-switch,
-  .settings-switch-thumb,
-  .settings-voice-model,
-  .settings-voice-pick,
-  .settings-voice-disclosure,
-  .settings-voice-button,
-  .settings-voice-input,
-  .settings-voice-select,
-  .settings-voice-textarea,
-  .settings-text-input,
-  .settings-section-disabled,
-  .settings-preview {
-    transition: opacity 120ms ease-out !important;
-    animation-duration: 1ms !important;
-  }
-
-  .settings-category-row:hover,
-  .settings-category-row:active,
-  .settings-toggle-row:hover,
-  .settings-toggle-row:active,
-  .settings-back-button:hover,
-  .settings-back-button:active,
-  .settings-segment-option:hover,
-  .settings-segment-option:active,
-  .settings-segment-button:active,
-  .settings-tint-chip:hover,
-  .settings-tint-chip:active,
-  .settings-inline-reset:active,
-  .settings-voice-pick:active,
-  .settings-voice-disclosure:active,
-  .settings-voice-button:active {
-    transform: none !important;
-  }
-
-  /* The thumb is the one place where killing the transform would destroy
-     the information: an unmoved thumb says "off". It jumps instead of
-     sliding, which is the same answer the rest of this file gives. */
-  .settings-switch-thumb {
-    transition: none !important;
-  }
-
-  /* The chevrons. `transition` does not inherit, so naming the BUTTON above
-     never reached the svg inside it, and both disclosure arrows kept
-     rotating. One is animated by a rule (.settings-voice-disclosure svg),
-     the other by a Tailwind utility on the svg itself, which is why an
-     enumeration of `transform:` declarations missed them both. */
-  .settings-voice-disclosure svg,
-  .settings-param-group-toggle svg {
-    transition: none !important;
-  }
-}
-
-
 /* ---------------------------------------------------------
    VOICE SECTION BREATHING ROOM - 21 August 2026
 
@@ -4503,8 +4312,6 @@ div.settings-toggle-row:active {
   padding-top: 1.3rem;
 }
 
-
-
 /* ---------------------------------------------------------
    The named doors inside a model's parameter panel.
 
@@ -4566,14 +4373,6 @@ div.settings-toggle-row:active {
   padding: 0.3rem 4px 4px;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .settings-param-group-toggle,
-  .settings-param-group-toggle svg {
-    transition: none !important;
-  }
-}
-
-
 /* ---------------------------------------------------------
    The filled CTA on the app's one LIGHT surface.
 
@@ -4597,4 +4396,201 @@ div.settings-toggle-row:active {
    --------------------------------------------------------- */
 .glass-right [data-slot="button"].bg-primary:hover:not(:disabled) {
   background-color: var(--color-es-primary-sage-deep);
+}
+
+/* =========================================================
+   REDUCED MOTION, ONE BLOCK
+
+   Fifteen hand-written blocks used to answer prefers-reduced-motion, each
+   naming the classes its author remembered, and 25 of the 78 rules that
+   carry a transition or an animation were named in none of them: the
+   sidebar and the persona strip, the sidebar dialogs, the collapse inner, a
+   handful of settings controls. The Base UI popups never answered at all. A
+   list of names is exactly the method that produced that gap, so the answer
+   is universal now and the lists are gone.
+
+   Four declarations, no more. Durations go to 1ms rather than 0 so every
+   animationend and transitionend still fires: Base UI unmounts a popup on
+   the exit animation's end, and an animation of length 0 never ends.
+   Iteration count 1 so an infinite keyframe cannot keep looping at 1ms.
+   Everything after the reset is a NAMED exception, the list has two
+   families, and a third member is added by name here, never by a new block
+   elsewhere. test/lib/motionTokens.test.ts holds this as a set difference
+   over the compiled sheet: every rule that moves is neutralised here or is
+   named below, and nothing is named below that this file does not list.
+   ========================================================= */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* EXCEPTION FAMILY 1: loading indicators keep turning, slowly. Freezing a
+     spinner reads as "hung"; a slow rotation keeps the "still working"
+     signal while dropping the fast spin that causes discomfort. The
+     iteration count comes back with the duration, because the reset above
+     would otherwise let the spinner go round exactly once and stop. Covers
+     every Loader2 in the app (voice setup, saving, deleting, synthesising)
+     and the skeleton pulse (KOK 17), which frozen would be indistinguishable
+     from a blank panel. */
+  .animate-spin {
+    animation-duration: 2.4s !important;
+    animation-timing-function: linear !important;
+    animation-iteration-count: infinite !important;
+  }
+  .animate-pulse {
+    animation-duration: 3.2s !important;
+    animation-iteration-count: infinite !important;
+  }
+
+  /* EXCEPTION FAMILY 2: opacity fades at --duration-exit. Kill the
+     TRANSFORM, keep a short opacity fade so a control still acknowledges
+     the pointer: freezing is not the reduced-motion answer, and a control
+     that does nothing at all reads as broken rather than as calm. Every
+     rule here re-opens its fade with !important because the reset above is
+     !important, and every rule names its surface. */
+  .persona-card,
+  .persona-select-action,
+  .persona-ghost-action,
+  .persona-danger-action {
+    transition: opacity var(--duration-exit) var(--ease-exit) !important;
+  }
+  .persona-card:hover,
+  .persona-select-action:hover:not(:disabled),
+  .persona-ghost-action:hover:not(:disabled),
+  .persona-danger-action:hover:not(:disabled),
+  .persona-select-action:active:not(:disabled),
+  .persona-ghost-action:active:not(:disabled),
+  .persona-danger-action:active:not(:disabled) {
+    transform: none;
+  }
+
+  .error-toast {
+    animation: error-toast-fade 160ms var(--ease-exit) both !important;
+    transition: opacity var(--duration-exit) var(--ease-exit) !important;
+  }
+  .error-toast:hover,
+  .error-toast:focus-visible,
+  .error-toast.is-exiting {
+    transform: none;
+  }
+  .error-toast.is-exiting {
+    opacity: 0;
+  }
+  @keyframes error-toast-fade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  .chat-action-trigger,
+  .chat-action-menu-item,
+  .chat-action-menu,
+  .chat-action-confirm,
+  .message-bubble-shell,
+  .message-actions,
+  .message-action-button,
+  .message-action-confirm,
+  .message-edit-textarea,
+  .inline-confirm-button,
+  .variant-nav-button,
+  .jump-to-latest,
+  .composer-icon-button {
+    transition: opacity var(--duration-exit) var(--ease-exit) !important;
+  }
+  .chat-action-trigger,
+  .chat-action-menu-item:hover,
+  .message-actions,
+  .message-action-button:hover:not(:disabled),
+  .inline-confirm-button:hover:not(:disabled),
+  .variant-nav-button:hover:not(:disabled),
+  .variant-nav-button:active:not(:disabled),
+  .composer-icon-button:hover:not(:disabled),
+  .composer-icon-button:active:not(:disabled) {
+    transform: none !important;
+  }
+
+  .settings-category-row,
+  .settings-toggle-row,
+  .settings-back-button,
+  .settings-segment-option,
+  .settings-segment-button,
+  .settings-tint-chip,
+  .settings-inline-reset,
+  .settings-switch,
+  .settings-switch-thumb,
+  .settings-voice-model,
+  .settings-voice-pick,
+  .settings-voice-disclosure,
+  .settings-voice-button,
+  .settings-voice-input,
+  .settings-voice-select,
+  .settings-voice-textarea,
+  .settings-text-input,
+  .settings-section-disabled,
+  .settings-preview {
+    transition: opacity var(--duration-exit) var(--ease-exit) !important;
+  }
+  .settings-category-row:hover,
+  .settings-category-row:active,
+  .settings-toggle-row:hover,
+  .settings-toggle-row:active,
+  .settings-back-button:hover,
+  .settings-back-button:active,
+  .settings-segment-option:hover,
+  .settings-segment-option:active,
+  .settings-segment-button:active,
+  .settings-tint-chip:hover,
+  .settings-tint-chip:active,
+  .settings-inline-reset:active,
+  .settings-voice-pick:active,
+  .settings-voice-disclosure:active,
+  .settings-voice-button:active {
+    transform: none !important;
+  }
+  /* The thumb is the one place where a fade would mislead: an unmoved thumb
+     says "off". It jumps instead of sliding, and it does not fade either,
+     which is the same answer the rest of this block gives. */
+  .settings-switch-thumb {
+    transition: none !important;
+  }
+
+  /* STEADY STATES, not exceptions. None of these re-opens motion; each
+     replaces a stopped animation with the still frame that carries the same
+     information. */
+  .thinking-dot {
+    animation: none;
+    opacity: 0.55;
+  }
+  /* A steady dim fill still reads as "in progress": the information
+     survives, the movement does not. */
+  .settings-voice-progress::after {
+    animation: none;
+    width: 100%;
+    background: rgba(110, 147, 196, 0.35);
+  }
+  /* A steady dim reads as "not yet" just as well, and a blinking control is
+     exactly what somebody who asked for less motion is avoiding. The
+     :disabled pair is not redundant: `.message-action-button:disabled`
+     (0-2-0) outranks a lone attribute selector (0-1-0), so without it this
+     rule would silently deliver that rule's 0.48 instead of the value
+     written here. */
+  [data-voice-loading="true"],
+  [data-voice-loading="true"]:disabled {
+    animation: none;
+    opacity: 0.55;
+  }
+  /* The collapse inner's overflow flip is DELAYED by the row's duration on
+     the open rule (.es-collapse[data-open="true"] .es-collapse-inner), and a
+     delay survives a 1ms duration. With the height snapping there is
+     nothing to wait for, and holding the clip would only delay the focus
+     ring, so the flip is immediate. The open selector is repeated so this
+     outranks the delay it removes. */
+  .es-collapse-inner,
+  .es-collapse[data-open="true"] .es-collapse-inner {
+    transition: none;
+  }
 }

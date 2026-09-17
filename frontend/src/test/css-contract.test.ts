@@ -4,7 +4,9 @@
  * Three audit findings shared one shape: CSS that reads as intentional, is
  * documented in a comment right above it, and cannot fire. jsdom has no layout
  * and no `prefers-reduced-transparency`, so these are checked statically -
- * against the selectors the components actually render.
+ * against the selectors the components actually render. The blur coverage
+ * case is the exception to "statically": it parses the COMPILED sheet with
+ * postcss, because reading selectors out of raw lines is how it went blind.
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, statSync } from "fs";
@@ -109,43 +111,97 @@ describe("reduced-transparency block", () => {
     }
   });
 
-  it("covers every blurred surface in the stylesheet", () => {
+  it("covers every blurred surface in the stylesheet", async () => {
     // The list used to cover only [class*="glass"] and .message-bubble-shell in
     // practice; five blurred, text-bearing surfaces kept a live backdrop-filter
     // - which is exactly the readability cost the block was written to remove.
+    //
+    // This case used to walk the raw text upwards from each `backdrop-filter:`
+    // line to the first line ending in `{`, which in a multi-line selector
+    // list is the LAST selector of the list. Measured: `.chat-action-menu`
+    // shares one rule with `.chat-action-confirm`, so the scan saw only the
+    // confirm, found it covered, and the menu kept its live blur with
+    // transparency reduced while this test stayed green. And
+    // `selector.includes("glass")` let three surfaces certify themselves by
+    // their own spelling without the reduced-transparency block naming them.
+    // Both holes are the same mistake, reading CSS as lines, so the sheet is
+    // parsed now: the COMPILED sheet, through postcss, every selector of every
+    // blurred rule with nesting folded in, and `[class*="glass"]` is applied
+    // as the attribute substring it is rather than as a keyword. The imports
+    // are deferred so this one case pays for the Vite pipeline and the rest
+    // of the file stays fs-only.
+    const { loadGlassRightCss } = await import("./helpers/glassSurfaceCss");
+    const {
+      parseSheet,
+      resolvedSelectors,
+      inMedia,
+      REDUCED_TRANSPARENCY,
+      switchOffReaches,
+    } = await import("./helpers/compiledSheet");
+    const root = parseSheet(await loadGlassRightCss());
+
     const blurred = new Set<string>();
-    const lines = CSS.split("\n");
-    lines.forEach((line, i) => {
-      if (!/^\s*backdrop-filter:/.test(line)) return;
-      for (let j = i - 1; j >= 0; j -= 1) {
-        const candidate = lines[j].trim();
-        if (candidate.endsWith("{")) {
-          blurred.add(candidate.slice(0, -1).trim());
-          return;
-        }
-      }
+    let blurRules = 0;
+    root.walkDecls(/^(-webkit-)?backdrop-filter$/, (decl) => {
+      // `none !important` is the switch-off, not a surface.
+      if (!/blur\(/.test(decl.value)) return;
+      const rule = decl.parent;
+      if (!rule || rule.type !== "rule") return;
+      blurRules += 1;
+      // No per-rule comparison against `rule.selectors` here. For a
+      // top-level rule that is `resolvedSelectors` measured against its own
+      // first line, which cannot go red; for a NESTED blurred rule it is
+      // wrong, because the folded selector deliberately no longer contains
+      // the raw `&`. The detector for a narrowed collector is the named
+      // surface below, which a narrowing really does drop.
+      for (const selector of resolvedSelectors(rule)) blurred.add(selector);
     });
 
-    // Floor. The set is built by matching a property name in the stylesheet;
-    // a typo in that pattern empties it and this whole rule then iterates
-    // nothing and passes. Five surfaces today.
+    const switchedOff = new Set<string>();
+    root.walkDecls(/^(-webkit-)?backdrop-filter$/, (decl) => {
+      if (!/^none\b/.test(decl.value.trim())) return;
+      if (!inMedia(decl, REDUCED_TRANSPARENCY)) return;
+      const rule = decl.parent;
+      if (!rule || rule.type !== "rule") return;
+      for (const selector of resolvedSelectors(rule)) switchedOff.add(selector);
+    });
+
+    // Floors. Both sets are built by matching a property name in the sheet;
+    // a typo in either pattern empties it and the loop below then iterates
+    // nothing, or covers nothing, and passes.
     expect(
       blurred.size,
       "found no blurred surface in the stylesheet - did the scan break?",
     ).toBeGreaterThan(3);
+    expect(
+      blurRules,
+      "no rule carries a blur; the surfaces below came from nowhere",
+    ).toBeGreaterThan(0);
+    expect(
+      switchedOff.size,
+      "the reduced-transparency block switches nothing off",
+    ).toBeGreaterThan(0);
+    // The scanner's own positive control, and the reason this case exists.
+    // `.chat-action-menu` shares its rule with `.chat-action-confirm`, which
+    // is exactly the shape the old line-walking scan dropped; the floors
+    // above cannot see that, because a scan narrowed to one selector per
+    // rule still finds plenty of surfaces and still covers all of them. So
+    // the surface the hole hid is named here: if it is not in the set, the
+    // set is not the sheet's blurred surfaces, whatever its size.
+    expect(
+      blurred,
+      "the blur scan no longer reaches .chat-action-menu; a rule's selector " +
+        "list is being read as fewer selectors than it has",
+    ).toContain(".chat-action-menu");
 
     for (const selector of blurred) {
-      if (selector.startsWith("@")) continue;
-      const covered =
-        selector.includes("glass") ||
-        selector
-          .split(/[\s:>]/)
-          .filter((part) => part.startsWith("."))
-          .some((part) => block.includes(part));
+      const covered = [...switchedOff].some((entry) =>
+        switchOffReaches(entry, selector),
+      );
       expect(covered, `${selector} keeps its blur with transparency reduced`)
         .toBe(true);
     }
-  });
+  }, 60_000);
 
   it("lists no class that no component renders", () => {
     const classes = [...block.matchAll(/\.([a-z][a-z0-9-]*)/g)].map((m) => m[1]);

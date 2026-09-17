@@ -22,6 +22,7 @@
  * `persona-field` for controls, `persona-local-error` for refusals.
  */
 import { SlideIn } from "@/components/motion/SlideIn";
+import { Collapse } from "@/components/motion/Collapse";
 import { useUiStore } from "@/lib/store/uiStore";
 import { useErrorStore } from "@/lib/errors/errorStore";
 import {
@@ -110,12 +111,12 @@ export function ExtractionSettings() {
           </p>
         )}
 
-        {settings.isError && (
+        <Collapse open={settings.isError}>
           <p className="persona-local-error" role="alert">
             Your saved choice could not be read, so this panel does not know
             whether suggestions are on. Nothing was changed.
           </p>
-        )}
+        </Collapse>
 
         <label className="block space-y-1">
           <span className="text-xs leading-relaxed text-muted-foreground">

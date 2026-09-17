@@ -21,6 +21,7 @@ import { Wordmark } from "@/components/brand/Wordmark";
 import { MistCanvas } from "@/components/backdrop/MistCanvas";
 import { LockOverlay } from "@/components/vault/LockOverlay";
 import { useReducedMotion } from "@/components/motion/ReducedMotion";
+import { easeValues } from "@/lib/theme/tokens";
 import { setVaultLockedHandler, isApiError, request } from "@/lib/api/client";
 import { getErrorMessage } from "@/lib/errors/errorMessages";
 import { useErrorStore } from "@/lib/errors";
@@ -331,7 +332,7 @@ export function VaultGate({ children }: { children: ReactNode }) {
         animate={{ opacity: 1, scale: 1 }}
         transition={{
           duration: reduced ? 0 : stage === "app" ? 0.45 : 0.3,
-          ease: [0.4, 0, 0.2, 1],
+          ease: easeValues.smooth,
         }}
       >
         {content}

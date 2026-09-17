@@ -1,5 +1,6 @@
 import { type ReactNode } from "react";
 import { motion as m, type Variants } from "motion/react";
+import { durationSeconds, easeValues } from "@/lib/theme/tokens";
 import { useReducedMotion } from "./ReducedMotion";
 
 const variants: Variants = {
@@ -26,7 +27,7 @@ interface FadeInProps {
 export function FadeIn({
   children,
   className,
-  duration = 0.24,
+  duration = durationSeconds.normal,
   enabled = true,
 }: FadeInProps) {
   const reduced = useReducedMotion();
@@ -38,8 +39,11 @@ export function FadeIn({
       // from the target to the target.
       initial={enabled ? "hidden" : false}
       animate="visible"
-      transition={{ duration: reduced ? 0 : duration, ease: [0.4, 0, 0.2, 1] }}
+      transition={{ duration: reduced ? 0 : duration, ease: easeValues.smooth }}
       className={className}
+      // The tests ask "is this block inside the fade" through this slot, the
+      // same way the Base UI primitives expose theirs.
+      data-slot="fade-in"
     >
       {children}
     </m.div>

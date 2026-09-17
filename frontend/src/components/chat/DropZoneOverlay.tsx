@@ -1,6 +1,7 @@
 import { motion as m } from "motion/react";
 import { ImagePlus } from "lucide-react";
 import { useReducedMotion } from "@/components/motion/ReducedMotion";
+import { durationSeconds, easeValues } from "@/lib/theme/tokens";
 import { MAX_ATTACHMENTS } from "./attachments";
 
 /**
@@ -21,7 +22,7 @@ export function DropZoneOverlay() {
       aria-label="Drop images to attach"
       initial={reduced ? { opacity: 0 } : { opacity: 0, scale: 0.985 }}
       animate={reduced ? { opacity: 1 } : { opacity: 1, scale: 1 }}
-      transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
+      transition={{ duration: durationSeconds.fast, ease: easeValues.smooth }}
     >
       <div className="drop-overlay-frame">
         <ImagePlus

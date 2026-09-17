@@ -11,6 +11,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
+import { hiddenFromReaders } from "@/test/helpers/accessibility";
 import {
   BoundaryPanel,
   BOUNDARY_MAX_CHARS,
@@ -175,7 +176,10 @@ describe("with no chat open", () => {
     // state and not a reason to hide the sentence that was already correct.
     mockFetch({ "/notebook/boundaries": { body: { boundaries: [] } } });
     renderWithQueryClient(<BoundaryPanel />);
-    expect(await screen.findByText(/no limits set/i)).toBeInTheDocument();
+    await waitFor(() =>
+      // The line is mounted closed before it opens (Collapse), so
+      // "says so" is asked of the accessibility tree.
+      expect(hiddenFromReaders(screen.getByText(/no limits set/i))).toBe(false));
   });
 
   it("shows the global limits instead of claiming none exist", async () => {
@@ -188,7 +192,7 @@ describe("with no chat open", () => {
     });
     renderWithQueryClient(<BoundaryPanel />);
     expect(await screen.findByText("no gore")).toBeInTheDocument();
-    expect(screen.queryByText(/no limits set/i)).not.toBeInTheDocument();
+    expect(hiddenFromReaders(screen.queryByText(/no limits set/i))).toBe(true);
   });
 });
 
@@ -530,8 +534,11 @@ describe("when the limits cannot be loaded", () => {
     });
     renderWithQueryClient(<BoundaryPanel />);
 
-    expect(await screen.findByText(/could not be loaded/i)).toBeInTheDocument();
-    expect(screen.queryByText(/no limits set/i)).not.toBeInTheDocument();
+    await waitFor(() =>
+      // The line is mounted closed before it opens (Collapse), so
+      // "says so" is asked of the accessibility tree.
+      expect(hiddenFromReaders(screen.getByText(/could not be loaded/i))).toBe(false));
+    expect(hiddenFromReaders(screen.queryByText(/no limits set/i))).toBe(true);
   });
 
   it("still says No limits set when the list really is empty", async () => {
@@ -542,8 +549,11 @@ describe("when the limits cannot be loaded", () => {
     });
     renderWithQueryClient(<BoundaryPanel />);
 
-    expect(await screen.findByText(/no limits set/i)).toBeInTheDocument();
-    expect(screen.queryByText(/could not be loaded/i)).not.toBeInTheDocument();
+    await waitFor(() =>
+      // The line is mounted closed before it opens (Collapse), so
+      // "says so" is asked of the accessibility tree.
+      expect(hiddenFromReaders(screen.getByText(/no limits set/i))).toBe(false));
+    expect(hiddenFromReaders(screen.queryByText(/could not be loaded/i))).toBe(true);
   });
 
   it("says neither when there are limits to show", async () => {
@@ -555,8 +565,8 @@ describe("when the limits cannot be loaded", () => {
     renderWithQueryClient(<BoundaryPanel />);
 
     expect(await screen.findByText("no gore")).toBeInTheDocument();
-    expect(screen.queryByText(/no limits set/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/could not be loaded/i)).not.toBeInTheDocument();
+    expect(hiddenFromReaders(screen.queryByText(/no limits set/i))).toBe(true);
+    expect(hiddenFromReaders(screen.queryByText(/could not be loaded/i))).toBe(true);
   });
 
   it("says so with no chat open, when the GLOBAL list is the one that failed",
@@ -570,9 +580,11 @@ describe("when the limits cannot be loaded", () => {
       });
       renderWithQueryClient(<BoundaryPanel />);
 
-      expect(await screen.findByText(/could not be loaded/i))
-        .toBeInTheDocument();
-      expect(screen.queryByText(/no limits set/i)).not.toBeInTheDocument();
+      await waitFor(() =>
+      // The line is mounted closed before it opens (Collapse), so
+      // "says so" is asked of the accessibility tree.
+      expect(hiddenFromReaders(screen.getByText(/could not be loaded/i))).toBe(false));
+      expect(hiddenFromReaders(screen.queryByText(/no limits set/i))).toBe(true);
     });
 });
 

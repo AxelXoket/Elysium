@@ -28,10 +28,15 @@ import { useEffect, useRef, useState } from "react";
 import {
   Pin, PinOff, Plus, Trash2, X, Check, Loader2, Undo2, Search,
 } from "lucide-react";
+import { AnimatePresence, motion as m } from "motion/react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SlideIn } from "@/components/motion/SlideIn";
+import { Collapse } from "@/components/motion/Collapse";
+import { FadeIn } from "@/components/motion/FadeIn";
+import { useReducedMotion } from "@/components/motion/ReducedMotion";
+import { durationSeconds, easeValues } from "@/lib/theme/tokens";
 import { useUiStore } from "@/lib/store/uiStore";
 import {
   PANEL_DRAFT_KEYS,
@@ -159,6 +164,31 @@ export function NotebookPanel() {
   const remove = useDeleteNote();
   const accept = useAcceptNote();
   const pushError = useErrorStore((s) => s.pushError);
+
+  // The two swaps below are the one motion shape `components/motion/` has no
+  // primitive for: a REPLACEMENT rather than an arrival. `AnimatePresence`
+  // with `mode="wait"` is used directly for it, so the outgoing pane finishes
+  // its exit before the incoming one mounts and the two never overlap. Under
+  // reduced motion both halves take no time, which is the plain instant swap
+  // the ternary always was.
+  //
+  // VariantCarousel and VaultGate say in their own comments that they avoid
+  // AnimatePresence, and they still do: the hazard they record is a POPPED
+  // pane lingering under StrictMode, which is a problem of lists of panes.
+  // There is no list here. Each swap has exactly one keyed child and
+  // `mode="wait"`, and the panel's tests WAIT for the incoming pane rather
+  // than assuming it, so a pane that failed to leave turns up as a red test
+  // instead of on screen.
+  const reduced = useReducedMotion();
+  const crossFade = {
+    initial: { opacity: 0 },
+    animate: { opacity: 1 },
+    exit: { opacity: 0 },
+    transition: {
+      duration: reduced ? 0 : durationSeconds.exit,
+      ease: easeValues.exit,
+    },
+  };
 
   // The note being written outlives this panel, because this panel does not
   // outlive a click on a neighbouring tab. Same store as the composer's
@@ -380,7 +410,7 @@ export function NotebookPanel() {
             into their prompt. Silent for a sighted user is the complaint this
             strip answers; silent for a screen reader is the same complaint
             with nothing left to answer it. */}
-        {justSaved.length > 0 && (
+        <Collapse open={justSaved.length > 0}>
           <div
             className="persona-card space-y-2"
             data-testid="just-saved"
@@ -392,67 +422,77 @@ export function NotebookPanel() {
                 ? `: "${justSaved[0].text}"`
                 : "."}
             </p>
-            <div className="flex items-center gap-2">
-              {confirmUndo ? (
-                <>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    disabled={busy}
-                    onClick={() => void handleUndo()}
-                    aria-label={justSaved.length === 1
-                      ? "Confirm delete"
-                      : `Confirm deleting ${justSaved.length} notes`}
-                    className="persona-danger-action h-7 gap-1.5 px-2 text-xs"
-                  >
-                    <Check size={12} className="size-3" />
-                    Delete {justSaved.length === 1
-                      ? "it" : `all ${justSaved.length}`}
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    disabled={busy}
-                    onClick={() => setConfirmUndo(false)}
-                    aria-label="Keep note"
-                    className="persona-ghost-action h-7 px-2 text-xs"
-                  >
-                    Cancel
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    disabled={busy}
-                    onClick={() => setConfirmUndo(true)}
-                    className="persona-danger-action h-7 gap-1.5 px-2 text-xs"
-                  >
-                    <Undo2 size={12} className="size-3" />
-                    Undo
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    onClick={acknowledge}
-                    className="persona-ghost-action h-7 px-2 text-xs"
-                  >
-                    Keep {justSaved.length === 1 ? "it" : "them"}
-                  </Button>
-                </>
-              )}
-            </div>
+            {/* `initial={false}` keeps the first mount still: the pair is
+                already there, it has nothing to arrive from. */}
+            <AnimatePresence mode="wait" initial={false}>
+              <m.div
+                key={confirmUndo ? "confirm" : "undo"}
+                data-slot="cross-fade"
+                data-pane={confirmUndo ? "confirm" : "undo"}
+                className="flex items-center gap-2"
+                {...crossFade}
+              >
+                {confirmUndo ? (
+                  <>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      disabled={busy}
+                      onClick={() => void handleUndo()}
+                      aria-label={justSaved.length === 1
+                        ? "Confirm delete"
+                        : `Confirm deleting ${justSaved.length} notes`}
+                      className="persona-danger-action h-7 gap-1.5 px-2 text-xs"
+                    >
+                      <Check size={12} className="size-3" />
+                      Delete {justSaved.length === 1
+                        ? "it" : `all ${justSaved.length}`}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      disabled={busy}
+                      onClick={() => setConfirmUndo(false)}
+                      aria-label="Keep note"
+                      className="persona-ghost-action h-7 px-2 text-xs"
+                    >
+                      Cancel
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      disabled={busy}
+                      onClick={() => setConfirmUndo(true)}
+                      className="persona-danger-action h-7 gap-1.5 px-2 text-xs"
+                    >
+                      <Undo2 size={12} className="size-3" />
+                      Undo
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={acknowledge}
+                      className="persona-ghost-action h-7 px-2 text-xs"
+                    >
+                      Keep {justSaved.length === 1 ? "it" : "them"}
+                    </Button>
+                  </>
+                )}
+              </m.div>
+            </AnimatePresence>
           </div>
-        )}
+        </Collapse>
 
         {/* Only once there are enough notes for the eye to lose one. A search
             box over four rows is furniture. */}
-        {all.length > 5 && (
+        <Collapse open={all.length > 5}>
           <div className="relative">
             <Search
               size={12}
@@ -468,19 +508,21 @@ export function NotebookPanel() {
               className="persona-field pl-7 text-xs md:text-xs"
             />
             {query !== "" && (
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                aria-label="Clear search"
-                onClick={() => setQuery("")}
-                className="persona-ghost-action absolute right-1 top-1/2 h-6 w-6 -translate-y-1/2 p-0"
-              >
-                <X size={12} className="size-3" />
-              </Button>
+              <FadeIn>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  aria-label="Clear search"
+                  onClick={() => setQuery("")}
+                  className="persona-ghost-action absolute right-1 top-1/2 h-6 w-6 -translate-y-1/2 p-0"
+                >
+                  <X size={12} className="size-3" />
+                </Button>
+              </FadeIn>
             )}
           </div>
-        )}
+        </Collapse>
 
         <div className="flex items-center gap-2">
           <Input
@@ -514,15 +556,29 @@ export function NotebookPanel() {
             aria-label="Add note"
             className="persona-ghost-action h-7 w-7 p-0"
           >
-            {create.isPending ? (
-              <Loader2 size={12} className="size-3 animate-spin" />
-            ) : (
-              <Plus size={12} className="size-3" />
-            )}
+            {/* A span, not a div: this sits inside a button's label, which
+                is phrasing content. */}
+            <AnimatePresence mode="wait" initial={false}>
+              <m.span
+                key={create.isPending ? "busy" : "idle"}
+                data-slot="cross-fade"
+                data-pane={create.isPending ? "busy" : "idle"}
+                className="inline-flex"
+                {...crossFade}
+              >
+                {create.isPending ? (
+                  <Loader2 size={12} className="size-3 animate-spin" />
+                ) : (
+                  <Plus size={12} className="size-3" />
+                )}
+              </m.span>
+            </AnimatePresence>
           </Button>
         </div>
 
-        {isLoading && <p className="text-xs leading-relaxed text-muted-foreground">Loading...</p>}
+        <Collapse open={isLoading}>
+          <p className="text-xs leading-relaxed text-muted-foreground">Loading...</p>
+        </Collapse>
 
         {/* A failed load is not an empty notebook, and it used to read as
             one. `isError` was never taken off the query, so a 500 left
@@ -535,7 +591,7 @@ export function NotebookPanel() {
 
             First in the chain, so the two branches below can stay the pair
             they are rather than being taught about a third case each. */}
-        {!isLoading && isError && (
+        <Collapse open={!isLoading && isError}>
           <p
             className="text-xs leading-relaxed text-muted-foreground"
             role="status"
@@ -543,7 +599,7 @@ export function NotebookPanel() {
             Notes could not be loaded. They are still saved - this panel just
             could not read them. Try again in a moment.
           </p>
-        )}
+        </Collapse>
 
         {/* One or the other, never both. `entries` is the FILTERED list, so
             an empty notebook and a filter that matched nothing produce the
@@ -552,17 +608,17 @@ export function NotebookPanel() {
             here." The two contradict each other, and one of them is telling
             the reader their notes are gone. The filter decides which is
             true. */}
-        {!isLoading && !isError && entries.length === 0 && query === "" && (
+        <Collapse open={!isLoading && !isError && entries.length === 0 && query === ""}>
           <p className="text-xs leading-relaxed text-muted-foreground">
             Nothing yet. Notes are sent with every message, so the character
             stops forgetting what you write here.
           </p>
-        )}
+        </Collapse>
 
         {/* `role="status"`: the list empties out under the reader's own
             typing, and for anyone not watching the rows the count is the only
             evidence that the notes are still there and only hidden. */}
-        {!isLoading && !isError && entries.length === 0 && query !== "" && (
+        <Collapse open={!isLoading && !isError && entries.length === 0 && query !== ""}>
           <p
             className="text-xs leading-relaxed text-muted-foreground"
             role="status"
@@ -570,7 +626,7 @@ export function NotebookPanel() {
             No note matches that. {all.length} are still here - the search
             covers the note and the words it was taken from.
           </p>
-        )}
+        </Collapse>
 
         {/* Once, not on every row. The per-row version told a Turkish-speaking
             reader about their own language's model support every few lines,
@@ -734,17 +790,19 @@ function NoteRow({
           `provenance` stays `model` forever, so the row keeps saying who
           wrote it after the user keeps it. */}
       {state === "proposed" && (
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          disabled={busy}
-          onClick={onAccept}
-          aria-label="Keep suggestion"
-          className="persona-ghost-action h-7 w-7 p-0"
-        >
-          <Check size={12} className="size-3" />
-        </Button>
+        <FadeIn>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            disabled={busy}
+            onClick={onAccept}
+            aria-label="Keep suggestion"
+            className="persona-ghost-action h-7 w-7 p-0"
+          >
+            <Check size={12} className="size-3" />
+          </Button>
+        </FadeIn>
       )}
 
       {/* One button per action, icon swapped in place - no second control
@@ -762,50 +820,54 @@ function NoteRow({
       </Button>
 
       {!confirming && (
-        <Button
-          ref={deleteTriggerRef}
-          type="button"
-          size="sm"
-          variant="ghost"
-          disabled={busy}
-          onClick={onAskDelete}
-          aria-label="Delete note"
-          // `persona-danger-action`, not ghost + an inline colour: the ghost
-          // class sets its colour with !important, so the inline style never
-          // applied and the trash rendered grey here while the identical one
-          // in Limits rendered maroon. The token differs too - es-danger is
-          // the DARK shell's red and lands at about 3.2:1 on this panel.
-          className="persona-danger-action h-7 w-7 p-0"
-        >
-          <Trash2 size={12} className="size-3" />
-        </Button>
-      )}
-      {confirming && (
-        <>
+        <FadeIn>
           <Button
+            ref={deleteTriggerRef}
             type="button"
             size="sm"
             variant="ghost"
             disabled={busy}
-            onClick={onDelete}
-            aria-label="Confirm delete"
+            onClick={onAskDelete}
+            aria-label="Delete note"
+            // `persona-danger-action`, not ghost + an inline colour: the ghost
+            // class sets its colour with !important, so the inline style never
+            // applied and the trash rendered grey here while the identical one
+            // in Limits rendered maroon. The token differs too - es-danger is
+            // the DARK shell's red and lands at about 3.2:1 on this panel.
             className="persona-danger-action h-7 w-7 p-0"
           >
-            <Check size={12} className="size-3" />
+            <Trash2 size={12} className="size-3" />
           </Button>
-          <Button
-            ref={keepButtonRef}
-            type="button"
-            size="sm"
-            variant="ghost"
-            disabled={busy}
-            onClick={onCancelDelete}
-            aria-label="Keep note"
-            className="persona-ghost-action h-7 w-7 p-0"
-          >
-            <X size={12} className="size-3" />
-          </Button>
-        </>
+        </FadeIn>
+      )}
+      {confirming && (
+        <FadeIn className="flex items-start gap-2">
+          <>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={busy}
+              onClick={onDelete}
+              aria-label="Confirm delete"
+              className="persona-danger-action h-7 w-7 p-0"
+            >
+              <Check size={12} className="size-3" />
+            </Button>
+            <Button
+              ref={keepButtonRef}
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={busy}
+              onClick={onCancelDelete}
+              aria-label="Keep note"
+              className="persona-ghost-action h-7 w-7 p-0"
+            >
+              <X size={12} className="size-3" />
+            </Button>
+          </>
+        </FadeIn>
       )}
     </div>
   );

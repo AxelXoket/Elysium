@@ -1,6 +1,7 @@
 import { Children, memo, useMemo, type ReactNode } from "react";
 import { motion as m, type Variants } from "motion/react";
 import { staggerStep } from "@/lib/motion/stagger";
+import { durationSeconds, easeValues } from "@/lib/theme/tokens";
 import { useReducedMotion } from "./ReducedMotion";
 
 interface AnimatedListProps {
@@ -22,7 +23,10 @@ const reducedItemVariants: Variants = {
 /* Hoisted/memoized objects: these components sit on streaming-hot paths
    (MessageList re-renders per flush) - fresh variants/transition literals
    per render would make motion re-diff every item every frame. */
-const ITEM_TRANSITION = { duration: 0.18, ease: [0.4, 0, 0.2, 1] } as const;
+const ITEM_TRANSITION = {
+  duration: durationSeconds.fast,
+  ease: easeValues.smooth,
+} as const;
 
 /* Both exports are memoised for the same reason the objects above are
    hoisted, and the wrapper is the half that was missing: hoisting stops the
