@@ -186,6 +186,22 @@ no exe you can download yet.
 
 ### Fixed
 
+- **The proxy kill-switch is not written down while the server's answer is not
+  in hand.** While the settings fetch was still out, or after it had failed, the
+  "Require proxy" switch sat live at off, and a save that only changed the URL
+  sent that off as a decision: a proxy that was required became optional, with
+  the line above the switch saying "unknown" at the same moment. The switch, the
+  Save button and that line now read one derived value, so all three close until
+  the answer is back, no request carrying the requirement leaves before then,
+  and a switch the user moved keeps its value through a failed refetch and
+  reopens with it.
+- **The proxy name box shows the stored name.** It used to open empty with the
+  name printed on a read-only line above it, so an empty box meant two things at
+  once and clearing what looked like nothing reset the name to the default. The
+  box now opens with the name, emptying it is a choice made in view of it that
+  asks for the default back, and a save that only changes the URL keeps the
+  name.
+
 - **Voice engine setup can finish, for every engine, on a machine that has
   nothing.** Several things stood in the way, each measured on 8 September
   2026.

@@ -78,7 +78,14 @@ export function useSetProxy() {
               ...prev,
               proxy_configured: true,
               proxy_required: vars.proxyRequired,
-              proxy_alias: vars.proxyAlias,
+              // Same rule as useSetProxyAlias below: only a name we KNOW goes
+              // into the cache ahead of the refetch. A null here means the
+              // server is writing its default name, and the refetch is what
+              // brings that name back; writing the null through left the
+              // panel with no name at all in between.
+              ...(vars.proxyAlias !== null
+                ? { proxy_alias: vars.proxyAlias }
+                : {}),
             }
           : prev,
       );

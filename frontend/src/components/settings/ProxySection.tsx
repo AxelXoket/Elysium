@@ -74,24 +74,37 @@ export function ProxySection() {
   // Its three neighbours - the URL above and the passphrases in the section
   // below - are credentials and stay component-local on purpose; the draft
   // store's header argues that exclusion in full. A label is not a secret.
+  //
+  // Seeded from the stored name, so the box SHOWS what the server holds and
+  // an emptied box is a choice made in view of it: no name, back to the
+  // default. The buffer wins the moment the user types (`stored ?? fallback`
+  // in the store) and until then the box follows the server. It used to open
+  // empty, with the stored name printed on a read-only line above it, so a
+  // box that looked empty could reset a name the user never saw leave.
   const [aliasInput, setAliasInput] = usePanelDraft(
     PANEL_DRAFT_KEYS.proxyAlias,
+    settings?.proxy_alias ?? "",
   );
-  // Same reason as requiredDirty: the alias field is write-only too, so an
-  // untouched box must mean "keep what is stored", not "clear it". Sending
-  // `aliasInput.trim() || null` unconditionally wiped the stored alias on
-  // every later URL-only update.
+  // Same reason as requiredDirty: an untouched box must mean "keep what is
+  // stored", not "clear it". Sending `aliasInput.trim() || null`
+  // unconditionally wiped the stored alias on every later URL-only update.
   //
-  // DERIVED from the buffer rather than tracked beside it. A plain
-  // `useState(false)` came back false after every tab switch, so a restored
-  // alias would have been shown to the user and then not saved - a worse
-  // failure than losing it outright, because the box looks like it worked.
-  // A buffer exists exactly when the user has typed in this box.
-  const aliasDirty = useDraftStore(
-    (s) => s.panel[PANEL_DRAFT_KEYS.proxyAlias] != null,
-  );
+  // DERIVED rather than tracked beside the box. A plain `useState(false)`
+  // came back false after every tab switch, so a restored alias would have
+  // been shown to the user and then not saved - a worse failure than losing
+  // it outright, because the box looks like it worked. Dirty is the box
+  // disagreeing with the stored name: a buffer that spells the stored name
+  // again is not a change, and a server that holds no name compares as the
+  // empty box it is shown as.
+  const aliasDirty = aliasInput.trim() !== (settings?.proxy_alias ?? "");
   const clearPanelDraft = useDraftStore((s) => s.clearPanelDraft);
   const clearAliasDraft = () => clearPanelDraft(PANEL_DRAFT_KEYS.proxyAlias);
+  // What the switch shows: the server's value, or the one the user moved it
+  // to. It does NOT also carry "the server has not answered" - that reading
+  // lives in `serverRequired` below and nowhere else, and the switch, the
+  // Save button and the "Required:" line are all closed by it. Two places
+  // answering one question is what let a URL-only save send an off nobody
+  // chose, and a second copy of the unknown would be the same mistake again.
   const [requiredToggle, setRequiredToggle] = useState(false);
   // Tracks whether the user touched the toggle since the last save. While NOT
   // dirty, the toggle mirrors the server value - this prevents a save that only
@@ -101,10 +114,36 @@ export function ProxySection() {
 
   // Render-time state adjustment (react.dev "you might not need an effect"):
   // whenever the server value changes and the toggle is not dirty, mirror it.
-  const serverRequired = settings?.proxy_required ?? null;
+  //
+  // Unknown on the same split the "Required:" line below draws: while the
+  // fetch is out and after it failed, a stale answer in the cache included.
+  // That line reads "checking" or "unknown" then, and a switch left live
+  // beside it would be a second signal contradicting the first, so the
+  // switch and the Save button are closed by this same reading until the
+  // answer is back. A dirty switch keeps the user's choice in view and
+  // reopens with it.
+  const serverRequired: boolean | null =
+    settingsPending || settingsIsError
+      ? null
+      : (settings?.proxy_required ?? null);
+  // The one spelling of "no answer in hand". The switch, the Save button and
+  // the "Required:" line all close on THIS, and none of them restates it in
+  // its own terms. They used to: the switch tested `serverRequired == null`
+  // while the other two tested `settingsPending || settingsIsError`, which
+  // is the same set of states only because `proxy_required` is a bare
+  // boolean in the schema. Give it a `.default()` the way five of its
+  // neighbours already have and a successful fetch can hand back null - and
+  // then the switch closes, the button reopens, the line prints "No", and a
+  // click does nothing at all. One term, one reading, no drift.
+  const answerUnknown = serverRequired == null;
   const [syncedServerRequired, setSyncedServerRequired] = useState<boolean | null>(null);
   if (serverRequired !== syncedServerRequired) {
     setSyncedServerRequired(serverRequired);
+    // Only an answer is written into the switch. With none in hand the
+    // switch keeps the last value it showed, which is what stays in view
+    // while it is closed; what stops that value from being SENT is
+    // `answerUnknown` at the Save button, and `serverRequired` itself in
+    // handleSave, where the null check is also what narrows the type.
     if (!requiredDirty && serverRequired != null) {
       setRequiredToggle(serverRequired);
     }
@@ -127,6 +166,17 @@ export function ProxySection() {
 
   const handleSave = async () => {
     if (!canSave) return;
+    // Not reachable from the screen: the button is closed on this same
+    // reading. It stands anyway, because the body below is written from the
+    // server's answer and there is none to write it from here -
+    // `serverRequired` is null while the fetch is out or failed, a stale
+    // answer in the cache included. Nothing is sent and nothing is guessed
+    // in its place. `settings` is named beside it because the full save
+    // below reads the stored name straight off it, and this line is what
+    // tells the compiler it is there.
+    if (settings == null || serverRequired == null) {
+      return;
+    }
     setFeedback(null);
     try {
       if (fieldsOnlySave) {
@@ -141,11 +191,10 @@ export function ProxySection() {
         const done: string[] = [];
         if (aliasDirty) {
           await setAlias.mutateAsync(aliasInput.trim() || null);
-          // Dropping the buffer is what marks the box clean now, because
-          // "clean" is derived from the buffer's absence. It empties the box
-          // too, which the URL box above has always done on success - both
-          // are write-only, and a box still showing text the server has
-          // already taken invites a second, pointless save.
+          // Dropping the buffer hands the box back to the stored name, which
+          // the cache carries until the refetch lands: a name just typed
+          // stays in view, and an emptied box shows the old name until the
+          // server's default arrives to replace it. Nothing blinks to blank.
           clearAliasDraft();
           // Not "Name cleared" - an emptied box no longer deletes the
           // stored name, it asks for the default one back.
@@ -166,16 +215,16 @@ export function ProxySection() {
       await setProxy.mutateAsync({
         proxyUrl: urlInput.trim(),
         proxyRequired: requiredToggle,
-        // Untouched box → preserve the stored alias instead of erasing it.
-        proxyAlias: aliasDirty
-          ? aliasInput.trim() || null
-          : (settings?.proxy_alias ?? null),
+        // An untouched box spells the stored name, so the stored name goes
+        // back; an emptied one sends null and the server answers with its
+        // default. Read off `settings` itself, never a fallback: with no
+        // answer in hand this line is not reached.
+        proxyAlias: aliasDirty ? aliasInput.trim() || null : settings.proxy_alias,
       });
       setUrlInput(""); // Clear URL on success - write-only
-      // Dropped, not emptied. An empty buffer is still a buffer, and this
-      // box counts as edited whenever one exists - so writing "" here would
-      // leave the next URL-only save convinced the user had asked for the
-      // stored name to be cleared.
+      // Dropped, not emptied. The box follows the stored name again, and an
+      // empty buffer left here would read as "reset the name" on the next
+      // URL-only save.
       clearAliasDraft();
       setRequiredDirty(false); // Saved value is now the server value - resume syncing
       setFeedback({ type: "success", text: "Proxy configured" });
@@ -294,19 +343,19 @@ export function ProxySection() {
                   : "No proxy"}
           </span>
         </div>
-        {settings?.proxy_alias && (
-          <div style={{ color: "var(--color-es-text-muted)" }}>
-            Alias: {settings.proxy_alias}
-          </div>
-        )}
         <div
           data-testid="proxy-required"
+          // "error" is this attribute's spelling of the unknown reading, and
+          // it keeps that spelling: the word the line prints is "unknown",
+          // and every state the attribute has ever carried it in is a failed
+          // fetch. What changed is where the branch gets its answer -
+          // `answerUnknown`, the same term the switch and the button read.
           data-state={
             settingsPending
               ? "pending"
-              : settingsIsError
+              : answerUnknown
                 ? "error"
-                : settings?.proxy_required ? "required" : "optional"
+                : serverRequired ? "required" : "optional"
           }
           style={{ color: "var(--color-es-text-muted)" }}
         >
@@ -316,9 +365,9 @@ export function ProxySection() {
               to read while the answer is still loading. */}
           Required: {settingsPending
             ? "checking"
-            : settingsIsError
+            : answerUnknown
               ? "unknown"
-              : settings?.proxy_required ? "Yes" : "No"}
+              : serverRequired ? "Yes" : "No"}
         </div>
       </div>
 
@@ -406,7 +455,17 @@ export function ProxySection() {
           <Switch
             checked={requiredToggle}
             onCheckedChange={handleRequiredChange}
-            disabled={busy}
+            // Closed, not merely unchecked, while the server's answer is not
+            // in hand: the "Required:" line above says "checking" or
+            // "unknown" at that moment, and a live switch beside it would let
+            // the user believe a change was made that cannot be sent. The
+            // test is `answerUnknown`, the one term the line and the Save
+            // button read too, and never the value on show: a switch the
+            // user has moved keeps that value through a failed refetch, and
+            // a gate read off the value left exactly that switch live beside
+            // a closed button. The value stays in view; the control does not
+            // stay open.
+            disabled={busy || answerUnknown}
             aria-label="Proxy required toggle"
           />
           <span
@@ -418,7 +477,13 @@ export function ProxySection() {
         </div>
         <Button
           size="sm"
-          disabled={busy || !canSave}
+          // Closed on `answerUnknown`, the switch's own term: both writes
+          // this button makes carry what the server holds back to it, the
+          // requirement through the switch and the name through the box, and
+          // with no answer in hand a save would carry a guess. Restating the
+          // condition here as "pending or error" is what let the button and
+          // the switch drift apart on a schema change.
+          disabled={busy || !canSave || answerUnknown}
           onClick={handleSave}
           /* Was an inline backgroundColor + --color-es-text-dark, which
              broke two things at once. It painted #1C2632 on #3E72B0 at
