@@ -297,9 +297,10 @@ export function VaultGate({ children }: { children: ReactNode }) {
   // ENTER fade (the app additionally breathes in from scale 0.992). Enter-
   // only on purpose - every stage shares the same mist-on-ink foundation, so
   // the old screen vanishing instantly under the new one's fade reads as one
-  // smooth motion, and it sidesteps the AnimatePresence exit bookkeeping
-  // that StrictMode+motion is known to wedge (the variant carousel learned
-  // this the hard way). The lock overlay rides ABOVE the swap.
+  // smooth motion. This used to be sold as a workaround for AnimatePresence
+  // exit bookkeeping under StrictMode; the measurement of 16 September 2026
+  // (VariantCarousel.tsx) found no such fault, so it is a design choice. The
+  // lock overlay rides ABOVE the swap.
   let stage: string;
   let content: ReactNode;
   if (isLoading) {
