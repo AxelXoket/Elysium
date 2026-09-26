@@ -415,8 +415,12 @@ class TestUpstreamErrorBodiesAreNotForwarded:
                                          "model_id": self.PROBE_MODEL})
         stored = json.dumps(get_messages(client, chat_id))
         # GROUND: the stream was opened and ended on its error event, so the
-        # frame carrying the marker was read.
-        assert calls == ["stream"], (calls, response.text)
+        # frame carrying the marker was read. A 502 frame before any text is
+        # the passing kind and gets the route's one automatic retry (Q-121),
+        # which reads the same marker a second time; after text it never does.
+        from routers.completions import MAX_PROVIDER_ATTEMPTS
+        expected = ["stream"] * (1 if after_text else MAX_PROVIDER_ATTEMPTS)
+        assert calls == expected, (calls, response.text)
         assert '"type": "error"' in response.text, response.text
         # POSITIVE CONTROL for the log check, as in the plain test.
         assert self._provider_logged(caplog), caplog.text

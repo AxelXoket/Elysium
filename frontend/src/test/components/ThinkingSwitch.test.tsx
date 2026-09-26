@@ -19,9 +19,12 @@ import {
   useGenerationSettings,
 } from "@/components/generation/GenerationSettingsContext";
 import {
+  THINKING_MANDATORY_LABEL,
   THINKING_MANDATORY_NOTE,
   THINKING_OFF_NOTE,
   THINKING_ON_NOTE,
+  THINKING_SWITCH_LABEL,
+  THINKING_UNKNOWN_LABEL,
   THINKING_UNKNOWN_NOTE,
 } from "@/components/generation/ThinkingSetting";
 import { ModelPanel } from "@/components/models/ModelPanel";
@@ -152,13 +155,15 @@ describe("the Thinking switch in the dialog", () => {
 
   it("is off by default and turns thinking on for an optional model", async () => {
     const { api, user } = await renderDialog(optional);
-    const toggle = screen.getByRole("switch", { name: "Thinking" });
+    const toggle = screen.getByRole("switch", { name: THINKING_SWITCH_LABEL });
     expect(toggle).toHaveAttribute("aria-checked", "false");
+    expect(toggle).toHaveTextContent("Off");
     expect(screen.getByText(THINKING_OFF_NOTE)).toBeInTheDocument();
     expect(api.current!.getRequestSettings().generationParams.thinking).toBeUndefined();
 
     await user.click(toggle);
     expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(toggle).toHaveTextContent("On");
     expect(screen.getByText(THINKING_ON_NOTE)).toBeInTheDocument();
     expect(api.current!.getRequestSettings().generationParams.thinking).toBe(true);
 
@@ -168,22 +173,40 @@ describe("the Thinking switch in the dialog", () => {
 
   it("is disabled with its reason on a mandatory model", async () => {
     await renderDialog(mandatory);
-    const toggle = screen.getByRole("switch", { name: "Thinking" });
+    const toggle = screen.getByRole("switch", { name: THINKING_SWITCH_LABEL });
     expect(toggle).toBeDisabled();
     expect(screen.getByText(THINKING_MANDATORY_NOTE)).toBeInTheDocument();
+    // It says what happens: the model thinks. Never "Off" beside
+    // "The selected model always thinks".
+    expect(toggle).toHaveTextContent(THINKING_MANDATORY_LABEL);
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(toggle).not.toHaveTextContent(/^Off$/);
   });
 
   it("is disabled with its reason when the catalogue says nothing", async () => {
     await renderDialog(unknown);
-    expect(screen.getByRole("switch", { name: "Thinking" })).toBeDisabled();
+    const toggle = screen.getByRole("switch", { name: THINKING_SWITCH_LABEL });
+    expect(toggle).toBeDisabled();
     expect(screen.getByText(THINKING_UNKNOWN_NOTE)).toBeInTheDocument();
+    expect(toggle).toHaveTextContent(THINKING_UNKNOWN_LABEL);
+    expect(toggle).not.toHaveTextContent(/^Off$/);
   });
 
   it("GROUND: a model with no reasoning shows no switch", async () => {
     await renderDialog(base);
     // Positive control that the dialog did render its other switch.
     expect(screen.getByRole("switch", { name: "Let replies include pictures" })).toBeInTheDocument();
-    expect(screen.queryByRole("switch", { name: "Thinking" })).toBeNull();
+    expect(screen.queryByRole("switch", { name: THINKING_SWITCH_LABEL })).toBeNull();
     expect(screen.queryByTestId("thinking-setting")).toBeNull();
+  });
+
+  it("the switch label does not repeat its section title", async () => {
+    await renderDialog(optional);
+    // Ground: the section is still titled Thinking.
+    expect(screen.getByRole("heading", { level: 3, name: "Thinking" })).toBeInTheDocument();
+    // The switch says what it does instead of saying "Thinking" again.
+    expect(THINKING_SWITCH_LABEL).not.toBe("Thinking");
+    expect(screen.queryByRole("switch", { name: "Thinking" })).toBeNull();
+    expect(screen.getByRole("switch", { name: THINKING_SWITCH_LABEL })).toBeInTheDocument();
   });
 });

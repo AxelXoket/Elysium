@@ -14,6 +14,16 @@ export const THINKING_ON_NOTE =
 export const THINKING_OFF_NOTE =
   "Off. Models that can skip thinking are asked to skip it.";
 
+/** What the button says when the switch cannot change anything. Exported
+ *  for the tests. */
+export const THINKING_MANDATORY_LABEL = "Always on";
+export const THINKING_UNKNOWN_LABEL = "Provider decides";
+
+/** The switch's own label. The section around it is titled "Thinking", so
+ *  the label says what the switch does instead of repeating the title, the
+ *  way "Let replies include pictures" sits under "Pictures in replies". */
+export const THINKING_SWITCH_LABEL = "Let the model think first";
+
 /**
  * The Thinking switch (D3). Off by default: a model whose reasoning is
  * optional is asked to skip it, because reasoning tokens count against the
@@ -23,7 +33,9 @@ export const THINKING_OFF_NOTE =
  * Hidden when the selected model lists no reasoning at all, and disabled with
  * the reason when its reasoning is mandatory or its rules are unknown: in
  * both cases the request is the same whatever the switch says (the server
- * applies it only to optional reasoning).
+ * applies it only to optional reasoning). The disabled button says what
+ * actually happens ("Always on", "Provider decides"), never "Off" beside a
+ * sentence saying the model always thinks.
  */
 export function ThinkingSetting({
   enabled,
@@ -36,15 +48,22 @@ export function ThinkingSetting({
 }) {
   if (mode === "none") return null;
   const usable = mode === "optional";
-  const on = usable && enabled;
-  let note = on ? THINKING_ON_NOTE : THINKING_OFF_NOTE;
-  if (mode === "mandatory") note = THINKING_MANDATORY_NOTE;
-  if (mode === "unknown") note = THINKING_UNKNOWN_NOTE;
+  const on = usable ? enabled : mode === "mandatory";
+  let note = enabled ? THINKING_ON_NOTE : THINKING_OFF_NOTE;
+  let label = enabled ? "On" : "Off";
+  if (mode === "mandatory") {
+    note = THINKING_MANDATORY_NOTE;
+    label = THINKING_MANDATORY_LABEL;
+  }
+  if (mode === "unknown") {
+    note = THINKING_UNKNOWN_NOTE;
+    label = THINKING_UNKNOWN_LABEL;
+  }
   return (
     <div className="space-y-2" data-testid="thinking-setting">
       <div className="flex items-center justify-between gap-3">
         <label className="text-xs font-semibold" htmlFor="thinking-toggle">
-          Thinking
+          {THINKING_SWITCH_LABEL}
         </label>
         <Button
           id="thinking-toggle"
@@ -52,15 +71,17 @@ export function ThinkingSetting({
           role="switch"
           aria-checked={on}
           size="sm"
-          variant={on ? "default" : "ghost"}
-          className="text-xs"
+          variant={usable && on ? "default" : "ghost"}
+          // Not usable: the word is a state, not a greyed-out action, so it
+          // keeps the full ink "Off" has in the Pictures row next to it.
+          className={usable ? "text-xs" : "text-xs disabled:cursor-default disabled:opacity-100"}
           disabled={!usable}
           onClick={() => onChange(!enabled)}
         >
-          {on ? "On" : "Off"}
+          {label}
         </Button>
       </div>
-      <p className="text-[11px] leading-snug opacity-70">{note}</p>
+      <p className="generation-helper">{note}</p>
     </div>
   );
 }

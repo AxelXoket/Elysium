@@ -24,7 +24,7 @@ import math
 from pathlib import Path
 
 from . import EVAL_DIR, config, detectors, fixtures
-from .judge import final_replies, pair_specs
+from .judge import final_replies
 
 RUBRIC_FILE = EVAL_DIR / "rubric.frozen.json"
 #: sha256 of rubric.frozen.json with line endings normalised to LF.
@@ -308,7 +308,7 @@ def evaluate(out_dir: Path) -> dict:
         rep["verdict"] = "LAYER PASS with a measured benefit: recommend default ON"
     else:
         rep["verdict"] = ("LAYER PASS, no measured benefit: default OFF "
-                          "(owner decision, Ek P F/G)")
+                          "(Ek P F/G)")
     rep["module_verdict"] = ("MODULE PASS: the attack module did not raise violations on these models"
                              if rep["module_gate"]["pass"] else
                              "MODULE FAIL: modules need a Limits-priority fix before they ship on")

@@ -16,7 +16,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 import { streamCompletion } from "@/lib/api/stream";
-import { isOverBudgetError } from "@/lib/api/promptModules";
+import { OVER_BUDGET_FIX, isOverBudgetError } from "@/lib/api/promptModules";
+import { formatCount } from "@/lib/formatCount";
 import { getErrorMessage, parseApiError, useErrorStore } from "@/lib/errors";
 import { queryClient } from "@/lib/query/queryClient";
 
@@ -67,6 +68,24 @@ afterEach(() => {
 });
 
 describe("send-time over-budget refusal", () => {
+  it("the catalogued sentence ends with the same fix the module notice gives", () => {
+    // The body-less fallback and the named notice must point at the same
+    // control, by its label.
+    const sentence = getErrorMessage(CODE);
+    expect(sentence.endsWith(` ${OVER_BUDGET_FIX}`)).toBe(true);
+    // GROUND CONTROL: the fix is not simply in every sentence.
+    expect(getErrorMessage("context_too_large").endsWith(OVER_BUDGET_FIX)).toBe(false);
+  });
+
+  it("names the budget setting by its label, Context budget, never another name", () => {
+    for (const code of [CODE, "context_too_large"]) {
+      const sentence = getErrorMessage(code);
+      // POSITIVE CONTROL: the sentence does talk about the setting.
+      expect(sentence).toContain("Context budget");
+      expect(sentence).not.toMatch(/context window|the context budget/);
+    }
+  });
+
   it("names each module and its cost in the chat's error", async () => {
     // The shape main.py's PromptModuleError handler answers with.
     stubFetch(
@@ -84,9 +103,13 @@ describe("send-time over-budget refusal", () => {
     const err = await sendAndCatch();
     expect(isOverBudgetError(err)).toBe(true);
     const message = parseApiError(err).message;
-    expect(message).toContain("Pacing (about 4200 tokens)");
+    // Counts in the one grouped form the module pages use ("4,200").
+    expect(message).toContain(`Pacing (about ${formatCount(4200)} tokens)`);
+    expect(formatCount(4200)).toBe("4,200");
     expect(message).toContain("Sensory detail (about 640 tokens)");
-    expect(message).toContain("Turn a module off, or raise the context window.");
+    // The fix names the control by its label, the same sentence as the page.
+    expect(message).toContain(OVER_BUDGET_FIX);
+    expect(OVER_BUDGET_FIX).toContain("Context budget");
 
     // And it is what the error store shows, under the catalogued code.
     useErrorStore.getState().pushError(err, "error", { chatId: 1 });

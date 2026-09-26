@@ -327,11 +327,17 @@ FAKE_CLAUDE = textwrap.dedent("""
            "system": open(sysfile, encoding="utf-8").read() if sysfile else None}
     with open(os.path.join(here, "record.json"), "w", encoding="utf-8") as fh:
         json.dump(rec, fh)
-    model = open(os.path.join(here, "model.txt")).read().strip()
+    with open(os.path.join(here, "model.json"), encoding="utf-8") as fh:
+        model = json.load(fh)["model"]
     print(json.dumps({"type": "result", "is_error": False,
                       "structured_output": {"speaks_for_user": False, "quote": ""},
                       "result": "ok", "modelUsage": {model: {"outputTokens": 7}}}))
 """)
+
+
+def _fake_model(d, name):
+    # The model id the fake CLI reports in its usage block.
+    (d / "model.json").write_text(json.dumps({"model": name}), encoding="utf-8")
 
 
 @pytest.fixture
@@ -339,7 +345,7 @@ def fake_claude(tmp_path, monkeypatch):
     d = tmp_path / "bin"
     d.mkdir()
     (d / "fake_claude.py").write_text(FAKE_CLAUDE, encoding="utf-8")
-    (d / "model.txt").write_text("claude-opus-5-5", encoding="utf-8")
+    _fake_model(d, "claude-opus-5-5")
     if os.name == "nt":
         (d / "claude.cmd").write_text(
             f'@echo off\r\n"{sys.executable}" "{d / "fake_claude.py"}" %*\r\n', encoding="utf-8")
@@ -405,7 +411,7 @@ class TestJudgeIsolation:
         assert env.get("PATH") or env.get("Path")
 
     def test_a_verdict_from_another_model_is_refused(self, fake_claude):
-        (fake_claude / "model.txt").write_text("claude-haiku-4-5", encoding="utf-8")
+        _fake_model(fake_claude, "claude-haiku-4-5")
         with pytest.raises(judge.JudgeRefused):
             self._call(dict(os.environ))
 

@@ -137,6 +137,10 @@
 | 429 | openrouter_rate_limited | Rate limited by OpenRouter | Show retry-after message |
 | 502 | openrouter_completion_error | OpenRouter server error | Show generic error |
 | 504 | openrouter_timeout | OpenRouter request timed out | Suggest retry |
+| 400 | model_no_private_endpoint | Refused before sending: the model has no zero-data-retention endpoint, or none that takes `max_tokens` (Q-121). Nothing was stored | Say it will not work for this model; point at another model, not at Enter |
+| 503 | openrouter_no_provider_meets_privacy | OpenRouter answered 404: no endpoint passed the privacy and parameter filters. Never retried | Same as above |
+| 502 | openrouter_temporarily_unavailable | A passing failure (408, 502, 503, 504, a dropped connection) after the one automatic retry was spent or not allowed | Say it usually passes; a resend is fine |
+| 502 | reasoning_used_reply_budget | The reply came back empty, cut off by `length`: the budget went on thinking. Never retried | Suggest a larger Max tokens or Thinking off |
 | 409 | regenerate_conflict | Chat changed while regenerating (stream) | Refresh messages |
 | 409 | edit_conflict | Chat changed while the edit streamed (row edited/deleted, tail grew, chat cleared) - nothing was written | Restore pre-edit view, refresh messages |
 | 409 | exchange_stale | Chat cleared/deleted while the reply streamed - finalize refused, no orphan written | Refresh messages |
@@ -412,8 +416,10 @@ before any upload), `chat_background_unreadable`, `draft_too_large`,
 `draft_budget_exhausted`, `tts_text_truncated`, `tts_lines_dropped`,
 `tts_notice`, `tts_audio_device_error`, and `validation_unavailable` (a
 `key_status` value, not a failure). `openrouter_no_provider_meets_privacy` is
-mapped to 503 and nothing raises it; a real ZDR rejection surfaces as a generic
-completion error. OpenRouter's error table describes 503 as "There is no
+mapped to 503 and is produced by the HTTP STATUS alone (Q-121): a 404 from the
+completion endpoint, or an error chunk carrying code 404, is OpenRouter's
+empty candidate pool, the same answer on every attempt. No message text is
+read for it. A 503 stays a passing failure (below). OpenRouter's error table describes 503 as "There is no
 available model provider that meets your routing requirements", and the typed
 `error.metadata.error_type` it documents for provider errors gives 503 to
 `provider_overloaded` as well, so the status alone does not separate the two.
@@ -422,7 +428,18 @@ with the reason in `error.message`. Opt-in router metadata
 (`X-OpenRouter-Metadata: enabled`) reports `openrouter_metadata.attempt: 0` when the request never
 reached a provider, typically because every candidate was filtered out. This
 app requests no metadata and reads neither the message nor any substring of
-it, so the case stays generic.
+it.
+
+**The one automatic retry (Q-121).** Before any delta or image has reached the
+client, a failure the provider layer marks as passing (HTTP 408/429/502/503/504,
+the same codes in an error chunk, a dropped connection, an empty reply that was
+not cut off by `length`) is sent once more, identical body, after `Retry-After`
+(at most 4 s; a longer one is not retried) or 0.75 s. A timeout, the
+first-token one included, is never retried: the reader has already waited it
+out once.
+A 503 is retried only when the preflight counted at least one private endpoint.
+Two attempts in total. No second user or assistant row is written; the only
+trace is `retried` on the terminal frame.
 
 ---
 
@@ -437,8 +454,8 @@ JSON always carries a `type` field:
 |------|---------|---------|
 | user_message | `message`: full message row | First event. For /complete/stream this is the just-persisted user row; for /regenerate/stream the existing preceding user row. |
 | delta | `content`: string | One streamed content fragment. Repeated. |
-| done | `chat_id`, `model_id`, `user_message`, `assistant_message`, plus three context numbers described under "The `done` frame's context report" | Terminal success event. Rows are persisted. |
-| notice | `code`: string, `count`: int? | Something the request has to disclose. Five codes: `images_omitted` (the model never received one or more attached pictures and answered as if they were not there), `image_output_rejected` (a picture came back but failed validation and was dropped), `image_output_remote_url_refused` (the model answered with a LINK to a picture; fetching it would be a second egress host, so it is refused rather than followed) - those three are sent BEFORE the first delta - and `provider_frame_dropped` / `stream_ended_without_done`, which arrive when they happen. All five are warnings, not failures; the reply still arrives. |
+| done | `chat_id`, `model_id`, `user_message`, `assistant_message`, plus three context numbers described under "The `done` frame's context report", and `retried`: int? | Terminal success event. Rows are persisted. `retried` is present only when the backend made its one automatic retry before any delta (Q-121); the non-streaming responses carry the same field. |
+| notice | `code`: string, `count`: int? | Something the request has to disclose. Six codes: `stop_not_sent_privately` (the user's stop sequences were left out because no zero-data-retention provider for this model accepts them; sent BEFORE the first delta), `images_omitted` (the model never received one or more attached pictures and answered as if they were not there), `image_output_rejected` (a picture came back but failed validation and was dropped), `image_output_remote_url_refused` (the model answered with a LINK to a picture; fetching it would be a second egress host, so it is refused rather than followed) - those three are sent BEFORE the first delta - and `provider_frame_dropped` / `stream_ended_without_done`, which arrive when they happen. All six are warnings, not failures; the reply still arrives. |
 | error | `status`: int, `code`: string, `partial_saved`: bool? | Terminal failure event. Codes match the table above. `partial_saved` means the provider failed AFTER text had arrived and the backend KEPT it - the rows are committed, so the client must not roll its optimistic rows back. |
 | voice_chunk | `audio_id`, `seconds`?, `index` | Spoken audio for one sentence. Arrives AFTER `done` - reading never waits on speaking. Fetch from `GET /tts/audio/{audio_id}`. |
 | voice_notice | `note`: string | The worker telling the person something actionable (a compile that fell back to eager decoding, a cold cache). The speech is fine, just slower or different. |

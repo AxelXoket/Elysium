@@ -3621,7 +3621,23 @@ input::-ms-clear {
 .settings-voice-button.is-quiet {
   background: rgba(200, 216, 236, 0.05);
   border-color: rgba(200, 216, 236, 0.14);
-  color: rgba(202, 212, 224, 0.8);
+  /* The inline confirm buttons' ink. The hint ink this had before measured
+     4.13 to 4.47:1 at the trailing end of the dialog, where the gradient is
+     lightest (Choose file, Voice's Remove); quiet is carried by the fill and
+     the edge, not by a fainter word. */
+  color: rgba(230, 236, 243, 0.84);
+}
+
+/* The destructive answer in an inline confirm (a prompt module's Delete).
+   Quiet grey everywhere else; the rose only on the button that deletes. The
+   fill and edge are the ones .settings-voice-issues already uses, so the
+   danger reads from the ground and the edge; the word keeps the light ink.
+   Rose text on that button measured 3.44 to 3.62:1 at the trailing end of
+   the dialog, where the gradient is lightest; light ink clears 4.5 there. */
+.settings-voice-button.is-danger {
+  background: rgba(195, 106, 114, 0.10);
+  border-color: rgba(195, 106, 114, 0.24);
+  color: var(--color-es-text-light);
 }
 
 /* Blockers ("it will not run") speak the app's ONE established danger

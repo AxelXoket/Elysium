@@ -22,6 +22,8 @@ import {
   request,
   type ApiError,
 } from "./client";
+import { formatCount } from "@/lib/formatCount";
+
 import { launchTokenHeader } from "./launchToken";
 import {
   EnablePresetDefaultsResponseSchema,
@@ -144,13 +146,19 @@ export function withOverBudget(
   return { ...err, detail: "prompt_modules_over_budget", overBudget };
 }
 
+/** The two ways out of a module refusal, said the same way everywhere. It
+ *  names the control by its label: the model's own context window cannot be
+ *  raised, the Context budget in Generation settings can. */
+export const OVER_BUDGET_FIX =
+  "Turn a module off, or raise Context budget in Generation settings.";
+
 /** The chat's sentence for a named refusal: which modules, what each costs,
  *  and the two things that fix it. */
 export function overBudgetSentence(overBudget: PromptModulesOverBudget): string {
   const list = overBudget.modules
-    .map((m) => `${m.name} (about ${m.tokens} tokens)`)
+    .map((m) => `${m.name} (about ${formatCount(m.tokens)} tokens)`)
     .join(", ");
-  return `These prompt modules do not fit this chat's context window: ${list}. Turn a module off, or raise the context window.`;
+  return `These prompt modules do not fit this chat's Context budget: ${list}. ${OVER_BUDGET_FIX}`;
 }
 
 export function importPromptModuleFile(

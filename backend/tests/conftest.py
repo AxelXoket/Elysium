@@ -11,7 +11,6 @@ Strategy:
 
 import os
 import sys
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -387,6 +386,25 @@ def _model_cache_reset():
     openrouter.invalidate_model_cache()
     yield
     openrouter.invalidate_model_cache()
+
+
+@pytest.fixture(autouse=True)
+def _zdr_list_unknown(monkeypatch):
+    """The chat's private endpoint list reads as UNKNOWN unless a test says.
+
+    `openrouter.zdr_index` fetches /endpoints/zdr when it has nothing cached,
+    and every chat send and model listing now asks it. Left alone, each of
+    those tests would dial openrouter.ai and be stopped by `_no_egress`. The
+    unknown answer is the one the app itself falls back to (the model-level
+    filter), so every existing test keeps describing the behaviour it was
+    written for. Tests of the list itself put the real function back
+    (tests/test_zdr_routing.py)."""
+    import openrouter
+
+    async def _unknown(refresh: bool = False):
+        return None
+
+    monkeypatch.setattr(openrouter, "zdr_index", _unknown)
 
 
 @pytest.fixture(autouse=True)

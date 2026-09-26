@@ -376,6 +376,15 @@
       ]
     },
     {
+      "code": "model_no_private_endpoint",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
       "code": "model_web_search_blocked",
       "statuses": [
         400
@@ -575,6 +584,14 @@
     },
     {
       "code": "openrouter_rate_limited",
+      "statuses": [],
+      "channels": [
+        "http",
+        "sse"
+      ]
+    },
+    {
+      "code": "openrouter_temporarily_unavailable",
       "statuses": [],
       "channels": [
         "http",
@@ -877,6 +894,14 @@
       ]
     },
     {
+      "code": "reasoning_used_reply_budget",
+      "statuses": [],
+      "channels": [
+        "http",
+        "sse"
+      ]
+    },
+    {
       "code": "regenerate_conflict",
       "statuses": [
         409
@@ -923,6 +948,13 @@
       ],
       "channels": [
         "http"
+      ]
+    },
+    {
+      "code": "stop_not_sent_privately",
+      "statuses": [],
+      "channels": [
+        "notice"
       ]
     },
     {

@@ -5,8 +5,9 @@
  * reads nothing) and a positive control (the thing present, the check sees it):
  *
  *   MT-10  the import button stays off until a file is chosen AND the consent
- *          box is ticked; the three warnings on screen are the owner's English
- *          text byte for byte, from shared/prompt_module_warnings.json.
+ *          switch is on, and the line beside it says which is missing; the
+ *          three warnings on screen are the owner's English text byte for
+ *          byte, from shared/prompt_module_warnings.json.
  *   9A.4   the counter "Active modules: {n}, about {x} tokens per message." is
  *          always on screen and counts only modules that are on, as the
  *          request will carry them (macros rendered, one separator each).
@@ -16,14 +17,17 @@
  *   H4     a refused toggle names the modules that do not fit.
  *   H3     "Turn on entries enabled in SillyTavern" asks the server for the
  *          whole set, and a set refused whole says nothing was turned on.
- *   15.3   delete asks first, in the page, never through window.confirm.
+ *   15.3   delete asks first, in place of the actions, with the focus on the
+ *          safe answer; Escape answers the innermost open thing only.
+ *   15.2   loading, error and loaded are three different screens: the counter
+ *          never states a number it does not have.
  *
  * The server is mocked at fetch: every assertion about what was sent reads
  * the request the page actually made.
  */
 import { createHash } from "node:crypto";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect, type ReactNode } from "react";
 
@@ -39,11 +43,30 @@ import {
   useGenerationSettings,
 } from "@/components/generation/GenerationSettingsContext";
 import {
+  LAYER_SETTINGS_UNREACHABLE,
+  LAYER_WAITS_FOR_LIST,
+  MODULE_LIST_UNREACHABLE,
+} from "@/components/settings/PromptModulesSection";
+import { IMPORT_CONSENT_LABEL } from "@/components/settings/PromptModuleImport";
+import {
+  IMPORT_HINTS,
+  MODULE_COUNTER_CHECKING,
+  MODULE_COUNTER_FAILED,
   PROMPT_MODULE_LIMITS,
   PROMPT_MODULE_WARNINGS,
   formatModuleCounter,
+  placeholderLine,
+  placeholderName,
+  presetFieldName,
+  secretName,
+  triggerList,
 } from "@/components/settings/promptModuleText";
-import { PROMPT_MODULE_FILENAME_HEADER } from "@/lib/api/promptModules";
+import {
+  OVER_BUDGET_FIX,
+  PROMPT_MODULE_FILENAME_HEADER,
+} from "@/lib/api/promptModules";
+import { formatCount } from "@/lib/formatCount";
+import { hiddenFromReaders } from "@/test/helpers/accessibility";
 import { CHARS_PER_TOKEN } from "@/lib/context/estimateContextUsage";
 import { useUiStore } from "@/lib/store/uiStore";
 import { getErrorMessage } from "@/lib/errors";
@@ -115,8 +138,9 @@ interface Setup {
 /** Routes, most specific first: mockFetch matches by substring in order, and
  *  "/prompt-modules" is a substring of every route below it. */
 function routes({ modules = [], layer = false, words = null, extra = {} }: Setup) {
-  return {
-    ...extra,
+  // A route in `extra` replaces the default of the same key, and keeps its
+  // own place at the front (first match wins).
+  const defaults: Record<string, { status?: number; body: unknown }> = {
     "GET /prompt-modules/settings": {
       body: { prompt_layer_enabled: layer, reply_length_words: words },
     },
@@ -129,6 +153,10 @@ function routes({ modules = [], layer = false, words = null, extra = {} }: Setup
       body: { modules, imports: [], enabled_count: 0 },
     },
     "/settings": { body: settingsFixture },
+  };
+  return {
+    ...extra,
+    ...Object.fromEntries(Object.entries(defaults).filter(([key]) => !(key in extra))),
   };
 }
 
@@ -168,17 +196,26 @@ function sent(fetchMock: ReturnType<typeof mockFetch>, method: string, part: str
 const bodyOf = (c: Call) => JSON.parse(String(c.init.body));
 
 async function waitForList() {
-  await waitFor(() =>
-    expect(screen.queryByText("Loading…")).not.toBeInTheDocument(),
-  );
+  await waitFor(() => expect(screen.queryAllByText("Loading…")).toHaveLength(0));
 }
+
+/** The always-on counter, by its role: it is the page's one live status. */
+const counter = () => screen.getByRole("status");
+
+/** Move, rename and delete sit behind the row's one "More" button. */
+async function openActions(user: ReturnType<typeof userEvent.setup>, name: string) {
+  await user.click(screen.getByRole("button", { name: `More actions for ${name}` }));
+}
+
+/** The layer switch, named by its label; its state line is its description. */
+const layerSwitch = () => screen.getByRole("switch", { name: "Roleplay layer" });
 
 function fileOf(name: string, text: string): File {
   return new File([text], name, { type: "application/octet-stream" });
 }
 
 const importButton = () => screen.getByRole("button", { name: /^Import$/ });
-const consentBox = () => screen.getByRole("checkbox");
+const consentBox = () => screen.getByRole("switch", { name: IMPORT_CONSENT_LABEL });
 const fileInput = () => screen.getByLabelText("Choose a prompt module file");
 
 beforeEach(() => {
@@ -236,16 +273,28 @@ describe("the owner's warning texts", () => {
 // ── MT-10: consent gates the import ─────────────────────────────────────
 
 describe("import (MT-10)", () => {
-  it("GROUND: with no file chosen the button is off, ticked or not", async () => {
+  it("GROUND: with no file chosen the button is off, consent or not", async () => {
     const user = userEvent.setup();
     renderPage();
     expect(importButton()).toBeDisabled();
+    // A disabled button is never silent: it says what is missing.
+    expect(importButton()).toHaveAccessibleDescription(IMPORT_HINTS.noFile);
     await user.click(consentBox());
     expect(consentBox()).toBeChecked();
     expect(importButton()).toBeDisabled();
+    expect(importButton()).toHaveAccessibleDescription(IMPORT_HINTS.noFile);
   });
 
-  it("a chosen file stays unimportable until the consent box is ticked", async () => {
+  it("the consent is the app's own switch row, not an OS checkbox", async () => {
+    renderPage();
+    // Ground: no native checkbox anywhere on the page.
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    // Positive control: the switch is there, off, and a real button.
+    expect(consentBox()).toHaveAttribute("aria-checked", "false");
+    expect(consentBox().tagName).toBe("BUTTON");
+  });
+
+  it("a chosen file stays unimportable until the consent switch is on", async () => {
     const user = userEvent.setup();
     const { fetchMock } = renderPage({
       extra: {
@@ -262,15 +311,17 @@ describe("import (MT-10)", () => {
     await user.upload(fileInput(), fileOf("pacing.txt", "Keep scenes short."));
     expect(screen.getByText("pacing.txt")).toBeInTheDocument();
     expect(importButton()).toBeDisabled();
+    expect(importButton()).toHaveAccessibleDescription(IMPORT_HINTS.noConsent);
     // Clicking the disabled button sends nothing.
     await user.click(importButton());
     expect(sent(fetchMock, "POST", "/import")).toHaveLength(0);
 
     await user.click(consentBox());
     expect(importButton()).toBeEnabled();
+    expect(importButton()).toHaveAccessibleDescription(IMPORT_HINTS.ready);
     await user.click(importButton());
 
-    await screen.findByTestId("prompt-module-report");
+    await screen.findByRole("region", { name: "Import report" });
     const posts = sent(fetchMock, "POST", "/prompt-modules/import");
     expect(posts).toHaveLength(1);
     const headers = posts[0].init.headers as Record<string, string>;
@@ -288,8 +339,9 @@ describe("import (MT-10)", () => {
     expect(screen.getByTestId("prompt-module-consent-text").textContent).toBe(
       warningsJson.import_consent,
     );
-    // And it is what names the box.
-    expect(consentBox()).toHaveAccessibleName(warningsJson.import_consent);
+    // And it is what describes the switch a reader lands on.
+    expect(consentBox()).toHaveAccessibleName(IMPORT_CONSENT_LABEL);
+    expect(consentBox()).toHaveAccessibleDescription(warningsJson.import_consent);
   });
 
   it("a non-ASCII file name travels percent-encoded", async () => {
@@ -305,7 +357,7 @@ describe("import (MT-10)", () => {
     await user.upload(fileInput(), fileOf("kısa sahne.md", "text"));
     await user.click(consentBox());
     await user.click(importButton());
-    await screen.findByTestId("prompt-module-report");
+    await screen.findByRole("region", { name: "Import report" });
     const headers = sent(fetchMock, "POST", "/import")[0].init.headers as Record<string, string>;
     expect(decodeURIComponent(headers[PROMPT_MODULE_FILENAME_HEADER])).toBe("kısa sahne.md");
     expect(headers[PROMPT_MODULE_FILENAME_HEADER]).toMatch(/^[\x20-\x7e]+$/);
@@ -318,11 +370,14 @@ describe("import (MT-10)", () => {
     await user.upload(fileInput(), big);
     await user.click(consentBox());
     expect(importButton()).toBeDisabled();
-    expect(screen.getByText(/over the 96 KB limit/)).toBeInTheDocument();
+    expect(importButton()).toHaveAccessibleDescription(IMPORT_HINTS.badFile);
+    const tooBig = screen.getByText(/over the 96 KB limit/);
+    expect(tooBig.closest('[data-slot="collapse"]')).toHaveAttribute("data-open", "true");
 
-    // Positive control: exactly at the cap is fine.
+    // Positive control: exactly at the cap is fine, and the refusal closes.
     await user.upload(fileInput(), fileOf("cap.txt", "a".repeat(limitsJson.txt_md_max_bytes)));
     expect(importButton()).toBeEnabled();
+    expect(hiddenFromReaders(tooBig)).toBe(true);
 
     await user.upload(fileInput(), fileOf("notes.docx", "x"));
     expect(importButton()).toBeDisabled();
@@ -340,8 +395,11 @@ describe("SillyTavern preset warning", () => {
       fileInput(),
       fileOf("preset.json", JSON.stringify({ prompts: [], prompt_order: [] })),
     );
-    const warning = await screen.findByTestId("prompt-module-st-warning");
+    const warning = screen.getByTestId("prompt-module-st-warning");
+    await waitFor(() => expect(hiddenFromReaders(warning)).toBe(false));
     expect(warning.textContent).toBe(warningsJson.st_preset);
+    // It arrives through the house Collapse, not in one frame.
+    expect(warning.closest('[data-slot="collapse"]')).toHaveAttribute("data-open", "true");
   });
 
   it("GROUND: not for the app's own .json, and not for a .txt", async () => {
@@ -357,7 +415,8 @@ describe("SillyTavern preset warning", () => {
     await screen.findByText("mine.json");
     await user.upload(fileInput(), fileOf("a.txt", "{\"prompts\": []}"));
     await screen.findByText("a.txt");
-    expect(screen.queryByTestId("prompt-module-st-warning")).not.toBeInTheDocument();
+    // Held closed in its Collapse: in the DOM, gone for every reader.
+    expect(hiddenFromReaders(screen.getByTestId("prompt-module-st-warning"))).toBe(true);
   });
 });
 
@@ -370,7 +429,7 @@ const ST_REPORT = {
   structure_rows: 1,
   all_start_off: true,
   warnings: ["st_preset_behaviour"],
-  secrets_removed: ["$.proxy_password"],
+  secrets_removed: ["$.proxy_password", "reverse_proxy"],
   order_source: "100001",
   per_character_orders_unused: 2,
   markers: ["chatHistory"],
@@ -413,14 +472,32 @@ async function importPreset(extra: Setup["extra"] = {}) {
   await user.upload(fileInput(), fileOf("preset.json", "{\"prompts\": []}"));
   await user.click(consentBox());
   await user.click(importButton());
-  const report = await screen.findByTestId("prompt-module-report");
+  const report = await screen.findByRole("region", { name: "Import report" });
   return { user, report, ...view };
 }
 
 describe("import report", () => {
-  it("lists everything that did not come across as it was", async () => {
-    const { report } = await importPreset();
+  it("folds each report group under a heading with its count", async () => {
+    const { user, report } = await importPreset();
     const r = within(report);
+    const toggle = r.getByRole("button", { name: /^Not made into modules, \d+ entries$/ });
+    // Ground: folded by default, the lines are there but out of reach.
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(r.queryByRole("list", { name: "Entries not made into modules" })).toBeNull();
+    // Positive control: one click opens that group, and only that one.
+    await user.click(toggle);
+    expect(r.getByRole("list", { name: "Entries not made into modules" })).toBeInTheDocument();
+    expect(r.queryByRole("list", { name: "Preset fields" })).toBeNull();
+    // The summary line is never folded.
+    expect(r.getByTestId("prompt-module-report-created")).toHaveTextContent("3 modules created");
+  });
+
+  it("lists everything that did not come across as it was", async () => {
+    const { user, report } = await importPreset();
+    const r = within(report);
+    for (const toggle of r.getAllByRole("button", { expanded: false })) {
+      await user.click(toggle);
+    }
     expect(r.getByTestId("prompt-module-report-st-warning").textContent).toBe(
       warningsJson.st_preset,
     );
@@ -428,9 +505,14 @@ describe("import report", () => {
       "3 modules created, all off",
     );
     const notMade = r.getByRole("list", { name: "Entries not made into modules" });
-    expect(notMade).toHaveTextContent("chatHistory");
-    expect(notMade).toHaveTextContent("imp - kept, but it only fires on impersonate");
-    expect(notMade).toHaveTextContent("ghost - named in the order list");
+    // Placeholders by what they held, not by SillyTavern's identifier.
+    expect(notMade).toHaveTextContent(`${placeholderName("chatHistory")}: a SillyTavern placeholder`);
+    expect(placeholderName("chatHistory")).not.toBe("chatHistory");
+    // A sentence, with the trigger said in words.
+    expect(notMade).toHaveTextContent(
+      `imp: kept, but it only fires on ${triggerList(["impersonate"])}, which this app does not have`,
+    );
+    expect(notMade).toHaveTextContent("ghost: named in the order list");
     expect(r.getByRole("list", { name: "Badge counts" })).toHaveTextContent(
       "Went after the chat history in SillyTavern: 1",
     );
@@ -442,11 +524,29 @@ describe("import report", () => {
       "2 per-character order lists were not used",
     );
     const fields = r.getByRole("list", { name: "Preset fields" });
-    expect(fields).toHaveTextContent("temperature = 1.1 - stored, not applied");
-    expect(fields).toHaveTextContent("reverse_proxy - stored, value not shown");
-    expect(r.getByRole("list", { name: "Removed secrets" })).toHaveTextContent(
-      "$.proxy_password",
-    );
+    // A field the page knows is named in words; an unknown one keeps its key.
+    expect(fields).toHaveTextContent(`${presetFieldName("temperature")} 1.1: stored, not applied`);
+    expect(presetFieldName("temperature")).not.toBe("temperature");
+    expect(fields).toHaveTextContent("reverse_proxy: stored, value not shown");
+    const secrets = r.getByRole("list", { name: "Removed secrets" });
+    // A key the page knows is named in words; one caught by its shape keeps
+    // its own name. Ground: the gloss really differs from the raw key.
+    expect(secrets).toHaveTextContent(secretName("reverse_proxy"));
+    expect(secretName("reverse_proxy")).not.toBe("reverse_proxy");
+    expect(within(secrets).queryByText("reverse_proxy")).toBeNull();
+    expect(secrets).toHaveTextContent("$.proxy_password");
+  });
+
+  it("the report arrives and leaves through the house Collapse", async () => {
+    const { user, report } = await importPreset();
+    const host = report.closest('[data-slot="collapse"]');
+    expect(host).toHaveAttribute("data-open", "true");
+    await user.click(within(report).getByRole("button", { name: "Close report" }));
+    // The focus goes to the start of the next import, not to the page.
+    expect(screen.getByRole("button", { name: "Choose file" })).toHaveFocus();
+    // Held while it closes, and gone for readers at once.
+    expect(host).toHaveAttribute("data-open", "false");
+    expect(hiddenFromReaders(report)).toBe(true);
   });
 
   it("GROUND: a plain text import shows no SillyTavern warning and no empty sections", async () => {
@@ -466,7 +566,7 @@ describe("import report", () => {
     await user.upload(fileInput(), fileOf("plain.txt", "x"));
     await user.click(consentBox());
     await user.click(importButton());
-    const report = await screen.findByTestId("prompt-module-report");
+    const report = await screen.findByRole("region", { name: "Import report" });
     expect(within(report).queryByTestId("prompt-module-report-st-warning")).toBeNull();
     expect(within(report).getByTestId("prompt-module-report-created")).toHaveTextContent(
       "1 module created, off",
@@ -477,18 +577,44 @@ describe("import report", () => {
     ).toBeNull();
   });
 
+  it("offers the SillyTavern button once, on the preset's group, never in the report", async () => {
+    const { report } = await importPreset({
+      "GET /prompt-modules/settings": {
+        body: { prompt_layer_enabled: false, reply_length_words: null },
+      },
+      "GET /prompt-modules": { body: { modules: stModules(), imports: [], enabled_count: 0 } },
+    });
+    // Ground: the report has no copy of it.
+    expect(
+      within(report).queryByRole("button", { name: /Turn on entries enabled in SillyTavern/ }),
+    ).toBeNull();
+    // Positive control: the list's group has it, and it is the only one.
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("button", { name: /Turn on entries enabled in SillyTavern/ }),
+      ).toHaveLength(1),
+    );
+    const group = screen.getByRole("group", { name: /^From / });
+    expect(
+      within(group).getByRole("button", { name: /Turn on entries enabled in SillyTavern/ }),
+    ).toBeInTheDocument();
+  });
+
   it("turns on what SillyTavern had on, as one request with the window", async () => {
     useUiStore.setState({ selectedChatId: 4, selectedModelId: "vendor/model-a" });
-    const { user, report, fetchMock } = await importPreset({
-      "POST /prompt-modules/enable-preset-defaults": {
-        body: { enabled_ids: [1, 2], left_out: [] },
+    const user = userEvent.setup();
+    const { fetchMock } = renderPage({
+      modules: stModules(),
+      extra: {
+        "POST /prompt-modules/enable-preset-defaults": {
+          body: { enabled_ids: [1, 2], left_out: [] },
+        },
       },
     });
+    await waitForList();
     // Two of the three were on in SillyTavern and can fire here.
     await user.click(
-      within(report).getByRole("button", {
-        name: "Turn on entries enabled in SillyTavern (2)",
-      }),
+      screen.getByRole("button", { name: "Turn on entries enabled in SillyTavern (2)" }),
     );
     await waitFor(() =>
       expect(sent(fetchMock, "POST", "/enable-preset-defaults")).toHaveLength(1),
@@ -522,7 +648,7 @@ describe("import report", () => {
     );
     const left = await screen.findByRole("list", { name: "Left off" });
     expect(left).toHaveTextContent(
-      "Imp - it only fired on a kind of reply this app does not have",
+      "Imp: it only fired on a kind of reply this app does not have",
     );
   });
 
@@ -550,28 +676,39 @@ describe("import report", () => {
   });
 
   it("a set refused whole says nothing was turned on and names the modules", async () => {
-    const { user, report } = await importPreset({
-      "POST /prompt-modules/enable-preset-defaults": {
-        status: 409,
-        body: {
-          detail: "prompt_modules_over_budget",
-          modules: [
-            { id: 1, name: "Main", tokens: 3000 },
-            { id: 2, name: "Tail", tokens: 2100 },
-          ],
-          total_tokens: 5101,
-          room_tokens: 4549,
+    const user = userEvent.setup();
+    renderPage({
+      modules: stModules(),
+      extra: {
+        "POST /prompt-modules/enable-preset-defaults": {
+          status: 409,
+          body: {
+            detail: "prompt_modules_over_budget",
+            modules: [
+              { id: 1, name: "Main", tokens: 3000 },
+              { id: 2, name: "Tail", tokens: 2100 },
+            ],
+            total_tokens: 5101,
+            room_tokens: 4549,
+          },
         },
       },
     });
+    await waitForList();
     await user.click(
-      within(report).getByRole("button", { name: /Turn on entries enabled in SillyTavern/ }),
+      screen.getByRole("button", { name: /Turn on entries enabled in SillyTavern/ }),
     );
-    const notice = await within(report).findByTestId("prompt-modules-over-budget");
+    const notice = await screen.findByRole("alert");
+    // The list keeps its list role: the alert sits around it, not on it.
+    const list = within(notice).getByRole("list", { name: "Modules over Context budget" });
+    expect(within(list).getAllByRole("listitem").length).toBeGreaterThan(2);
     expect(notice).toHaveTextContent("Nothing was turned on.");
-    expect(notice).toHaveTextContent("Main, about 3000 tokens");
-    expect(notice).toHaveTextContent("Tail, about 2100 tokens");
-    expect(notice).toHaveTextContent("About 5101 tokens in all.");
+    // Counts in the one grouped form ("3,000"), and the fix named by its label.
+    expect(notice).toHaveTextContent(`Main, about ${formatCount(3000)} tokens`);
+    expect(formatCount(3000)).toBe("3,000");
+    expect(notice).toHaveTextContent(`Tail, about ${formatCount(2100)} tokens`);
+    expect(notice).toHaveTextContent(`About ${formatCount(5101)} tokens in all.`);
+    expect(notice).toHaveTextContent(OVER_BUDGET_FIX);
   });
 });
 
@@ -592,7 +729,7 @@ describe("counter (9A.4 warning 2)", () => {
   it("GROUND: with no modules it is on screen and reads zero", async () => {
     renderPage();
     await waitForList();
-    expect(screen.getByTestId("prompt-module-counter").textContent).toBe(
+    expect(counter().textContent).toBe(
       "Active modules: 0, about 0 tokens per message.",
     );
   });
@@ -609,10 +746,9 @@ describe("counter (9A.4 warning 2)", () => {
       ],
     });
     await waitForList();
-    const counter = screen.getByTestId("prompt-module-counter");
-    expect(counter.textContent).toBe(formatModuleCounter(2, expectedTokens([on1, on2])));
+    expect(counter().textContent).toBe(formatModuleCounter(2, expectedTokens([on1, on2])));
     // The template is the owner's with only the two numbers changed.
-    expect(counter.textContent).toBe(
+    expect(counter().textContent).toBe(
       warningsJson.counter.replace("{n}", "2").replace("{x}", String(expectedTokens([on1, on2]))),
     );
   });
@@ -625,7 +761,7 @@ describe("counter (9A.4 warning 2)", () => {
     expect(vector, "no length-changing vector to test with").toBeDefined();
     renderPage({ modules: [mod({ content: vector!.in, enabled: true })] });
     await waitForList();
-    expect(screen.getByTestId("prompt-module-counter").textContent).toBe(
+    expect(counter().textContent).toBe(
       formatModuleCounter(1, expectedTokens([vector!.out])),
     );
     // Ground: the raw text would have priced differently, or this proved nothing.
@@ -647,12 +783,12 @@ describe("counter (9A.4 warning 2)", () => {
       ],
     });
     await waitForList();
-    expect(screen.getByTestId("prompt-module-counter").textContent).toBe(
+    expect(counter().textContent).toBe(
       formatModuleCounter(1, expectedTokens([send])),
     );
     // Still on, so the layer still does not go: mode a counts every module on.
-    expect(screen.getByTestId("prompt-layer-suppressed")).toHaveTextContent(
-      "2 modules are on",
+    expect(screen.getByTestId("prompt-layer-state")).toHaveTextContent(
+      "Not sent now: 2 modules are on.",
     );
   });
 
@@ -662,10 +798,10 @@ describe("counter (9A.4 warning 2)", () => {
       modules: [mod({ content: "r".repeat(900), enabled: false, triggers: ["regenerate"] })],
     });
     await waitForList();
-    expect(screen.getByTestId("prompt-module-counter").textContent).toBe(
+    expect(counter().textContent).toBe(
       formatModuleCounter(0, 0),
     );
-    expect(screen.queryByTestId("prompt-layer-suppressed")).toBeNull();
+    expect(screen.getByTestId("prompt-layer-state")).not.toHaveTextContent(/not sent/i);
   });
 
   it("a macro comment costs nothing: it never reaches the model", async () => {
@@ -676,9 +812,74 @@ describe("counter (9A.4 warning 2)", () => {
       ],
     });
     await waitForList();
-    expect(screen.getByTestId("prompt-module-counter").textContent).toBe(
+    expect(counter().textContent).toBe(
       formatModuleCounter(1, expectedTokens([text])),
     );
+  });
+});
+
+describe("counter while loading and after a failed load (15.2)", () => {
+  it("says it is checking while the list is on its way, and no number", async () => {
+    // A list request that never answers; everything else as usual.
+    const base = mockFetch(routes({}));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
+        String(input).endsWith("/prompt-modules")
+          ? new Promise<Response>(() => undefined)
+          : base(input, init),
+      ),
+    );
+    renderWithQueryClient(<PromptModulesSection />, {
+      wrapper: ({ children }) => (
+        <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
+      ),
+    });
+    expect(counter().textContent).toBe(MODULE_COUNTER_CHECKING);
+    expect(counter().textContent).not.toMatch(/\d/);
+    // The layer controls wait for the list too: no switch showing a guess.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByRole("switch", { name: "Roleplay layer" })).toBeNull();
+  });
+
+  it("says it could not load when the list fails, never 0 modules", async () => {
+    const on = mod({ enabled: true });
+    renderPage({
+      modules: [on],
+      extra: { "GET /prompt-modules/settings": { body: { prompt_layer_enabled: true, reply_length_words: null } }, "GET /prompt-modules": { status: 500, body: { detail: "internal_error" } } },
+    });
+    await waitFor(() => expect(counter().textContent).toBe(MODULE_COUNTER_FAILED));
+    expect(counter().textContent).not.toBe(formatModuleCounter(0, 0));
+    // Voice's warning language, and the layer is not offered on a guess.
+    const alerts = screen.getAllByRole("alert");
+    expect(alerts.map((a) => a.textContent)).toContain(MODULE_LIST_UNREACHABLE);
+    // Said once: the layer section does not repeat the list's failure.
+    expect(alerts.filter((a) => a.textContent === MODULE_LIST_UNREACHABLE)).toHaveLength(1);
+    expect(alerts.map((a) => a.textContent)).toContain(LAYER_WAITS_FOR_LIST);
+    expect(screen.queryByRole("switch", { name: "Roleplay layer" })).toBeNull();
+  });
+
+  it("says the layer settings could not load, and shows no guessed switch", async () => {
+    renderPage({
+      extra: { "GET /prompt-modules/settings": { status: 500, body: { detail: "internal_error" } } },
+    });
+    await waitFor(() =>
+      expect(screen.getAllByRole("alert").map((a) => a.textContent)).toContain(
+        LAYER_SETTINGS_UNREACHABLE,
+      ),
+    );
+    expect(screen.queryByRole("switch", { name: "Roleplay layer" })).toBeNull();
+    expect(screen.queryByRole("radiogroup", { name: "Reply length" })).toBeNull();
+    // Positive control: the list itself still loaded and counts.
+    expect(counter().textContent).toBe(formatModuleCounter(0, 0));
+  });
+
+  it("GROUND: once both load, the numbers and the layer are there", async () => {
+    renderPage({ layer: true });
+    await waitForList();
+    await waitFor(() => expect(layerSwitch()).toBeEnabled());
+    expect(counter().textContent).toBe(formatModuleCounter(0, 0));
+    expect(screen.queryAllByRole("alert")).toHaveLength(0);
   });
 });
 
@@ -705,12 +906,96 @@ describe("module list", () => {
     const alpha = mod({ name: "Alpha" });
     const { fetchMock } = renderPage({ modules: [alpha] });
     await waitForList();
+    await openActions(user, "Alpha");
     await user.click(screen.getByRole("button", { name: "Rename Alpha" }));
     const input = screen.getByRole("textbox", { name: "New name for Alpha" });
+    // The name swaps to the box through the house fade, not in one frame.
+    expect(input.closest('[data-slot="fade-in"]')).not.toBeNull();
     await user.clear(input);
     await user.type(input, "Beta{Enter}");
     await waitFor(() => expect(sent(fetchMock, "PATCH", "/prompt-modules/")).toHaveLength(1));
     expect(bodyOf(sent(fetchMock, "PATCH", "/prompt-modules/")[0])).toEqual({ name: "Beta" });
+  });
+
+  it("Enter in the rename box saves once and does not reopen the box", async () => {
+    const user = userEvent.setup();
+    const alpha = mod({ name: "Alpha" });
+    const { fetchMock } = renderPage({ modules: [alpha] });
+    await waitForList();
+    await openActions(user, "Alpha");
+    await user.click(screen.getByRole("button", { name: "Rename Alpha" }));
+    const input = screen.getByRole("textbox", { name: "New name for Alpha" });
+    await user.clear(input);
+    await user.type(input, "Beta");
+    // A real key: keydown, keypress and keyup, as the browser sends them.
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(sent(fetchMock, "PATCH", "/prompt-modules/")).toHaveLength(1));
+    // The box is gone and stays gone; the focus is back on Rename.
+    expect(screen.queryByRole("textbox", { name: /^New name for/ })).toBeNull();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(screen.queryByRole("textbox", { name: /^New name for/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Rename Alpha" })).toHaveFocus();
+    // Positive control: Rename itself still opens the box.
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("textbox", { name: "New name for Alpha" })).toBeInTheDocument();
+  });
+
+  it("while renaming, the first Tab from the box reaches Save name", async () => {
+    const user = userEvent.setup();
+    renderPage({ modules: [mod({ name: "Alpha" })] });
+    await waitForList();
+    await openActions(user, "Alpha");
+    await user.click(screen.getByRole("button", { name: "Rename Alpha" }));
+    expect(screen.getByRole("textbox", { name: "New name for Alpha" })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Save name" })).toHaveFocus();
+    // Ground: outside a rename the switch and the disclosure are live.
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("switch", { name: "Alpha" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "More actions for Alpha" })).toBeEnabled();
+  });
+
+  it("the switch ends the row, after the name, before the disclosure", async () => {
+    renderPage({ modules: [mod({ name: "Alpha" })] });
+    await waitForList();
+    const name = screen.getByText("Alpha");
+    const sw = screen.getByRole("switch", { name: "Alpha" });
+    const more = screen.getByRole("button", { name: "More actions for Alpha" });
+    const follows = (a: Node, b: Node) =>
+      Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(follows(name, sw)).toBe(true);
+    expect(follows(sw, more)).toBe(true);
+  });
+
+  it("after a delete the focus goes to the next module, never to the page", async () => {
+    const user = userEvent.setup();
+    const one = mod({ name: "One", sort_order: 0 });
+    const two = mod({ name: "Two", sort_order: 1 });
+    renderPage({ modules: [one, two] });
+    await waitForList();
+    await openActions(user, "One");
+    await user.click(screen.getByRole("button", { name: "Delete One" }));
+    await user.click(
+      within(screen.getByRole("group", { name: "Confirm delete" })).getByRole("button", {
+        name: "Delete",
+      }),
+    );
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Two" })).toHaveFocus());
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it("after deleting the last module the focus goes to Choose file", async () => {
+    const user = userEvent.setup();
+    renderPage({ modules: [mod({ name: "Solo" })] });
+    await waitForList();
+    await openActions(user, "Solo");
+    await user.click(screen.getByRole("button", { name: "Delete Solo" }));
+    await user.click(
+      within(screen.getByRole("group", { name: "Confirm delete" })).getByRole("button", {
+        name: "Delete",
+      }),
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Choose file" })).toHaveFocus());
   });
 
   it("a refused toggle names the modules that do not fit", async () => {
@@ -731,11 +1016,12 @@ describe("module list", () => {
       },
     });
     await waitForList();
-    expect(screen.queryByTestId("prompt-modules-over-budget")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
     await user.click(screen.getByRole("switch", { name: "Alpha" }));
-    const notice = await screen.findByTestId("prompt-modules-over-budget");
-    expect(notice).toHaveTextContent("Alpha, about 4800 tokens");
-    expect(notice).toHaveTextContent("Turn a module off, or make the context window bigger.");
+    const notice = await screen.findByRole("alert");
+    expect(notice).toHaveTextContent(`Alpha, about ${formatCount(4800)} tokens`);
+    expect(notice).toHaveTextContent(OVER_BUDGET_FIX);
+    expect(notice.closest('[data-slot="collapse"]')).toHaveAttribute("data-open", "true");
   });
 
   it("GROUND: any other refusal is its own sentence, not the budget notice", async () => {
@@ -755,7 +1041,7 @@ describe("module list", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       getErrorMessage("prompt_module_cannot_enable"),
     );
-    expect(screen.queryByTestId("prompt-modules-over-budget")).toBeNull();
+    expect(screen.queryByRole("list", { name: "Modules over Context budget" })).toBeNull();
   });
 
   it("an entry that never fires here cannot be switched on, says why, and offers no copy", async () => {
@@ -763,7 +1049,10 @@ describe("module list", () => {
     const { fetchMock } = renderPage({ modules: [imp] });
     await waitForList();
     expect(screen.getByRole("switch", { name: "Imp" })).toBeDisabled();
-    expect(screen.getByText(/only fired on a kind of reply this app does not have/)).toBeInTheDocument();
+    // The reason is the switch's own description, not a caption nearby.
+    expect(screen.getByRole("switch", { name: "Imp" })).toHaveAccessibleDescription(
+      /only fired on a kind of reply this app does not have/,
+    );
     expect(screen.getByText("Never fires in this app: impersonate")).toBeInTheDocument();
     // The server has no copy route (test_modules_privacy pins its absence),
     // so the page must not offer one: no such button, and no request to it.
@@ -775,6 +1064,7 @@ describe("module list", () => {
     renderPage({ modules: [mod({ name: "Plain" })] });
     await waitForList();
     expect(screen.getByRole("switch", { name: "Plain" })).toBeEnabled();
+    expect(screen.getByRole("switch", { name: "Plain" })).toHaveAccessibleDescription("");
     expect(screen.queryByText(/only fired on a kind of reply this app does not have/)).toBeNull();
   });
 
@@ -784,11 +1074,34 @@ describe("module list", () => {
     const second = mod({ name: "Second", sort_order: 1 });
     const { fetchMock } = renderPage({ modules: [second, first] });
     await waitForList();
+    await openActions(user, "First");
+    await openActions(user, "Second");
     expect(screen.getByRole("button", { name: "Move First up" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Move Second down" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Move First down" }));
     await waitFor(() => expect(sent(fetchMock, "PATCH", `/${first.id}`)).toHaveLength(1));
     expect(bodyOf(sent(fetchMock, "PATCH", `/${first.id}`)[0])).toEqual({ sort_order: 1 });
+  });
+
+  it("each row shows one action besides its switch; the rest open under it", async () => {
+    const user = userEvent.setup();
+    renderPage({ modules: [mod({ name: "Solo" })] });
+    await waitForList();
+    const row = screen.getByTestId(/^prompt-module-\d+$/);
+    const more = screen.getByRole("button", { name: "More actions for Solo" });
+    // Ground: closed, the row offers the switch and "More", nothing else.
+    expect(more).toHaveAttribute("aria-expanded", "false");
+    expect(within(row).getAllByRole("switch")).toHaveLength(1);
+    expect(within(row).getAllByRole("button").map((b) => b.getAttribute("aria-label")))
+      .toEqual(["More actions for Solo"]);
+    // Positive control: open, the rare actions are there, inside a Collapse.
+    await user.click(more);
+    expect(more).toHaveAttribute("aria-expanded", "true");
+    const actions = screen.getByRole("group", { name: "Actions for Solo" });
+    expect(actions.closest('[data-slot="collapse"]')).toHaveAttribute("data-open", "true");
+    for (const name of ["Move Solo up", "Move Solo down", "Rename Solo", "Delete Solo"]) {
+      expect(within(actions).getByRole("button", { name })).toBeInTheDocument();
+    }
   });
 
   it("delete asks in the page first, and never through window.confirm", async () => {
@@ -797,13 +1110,27 @@ describe("module list", () => {
     const gone = mod({ name: "Gone" });
     const { fetchMock } = renderPage({ modules: [gone] });
     await waitForList();
+    await openActions(user, "Gone");
 
     await user.click(screen.getByRole("button", { name: "Delete Gone" }));
     const ask = screen.getByRole("group", { name: "Confirm delete" });
+    expect(ask.closest('[data-slot="fade-in"]')).not.toBeNull();
+    // The question replaces the trigger, and the focus lands on the safe answer.
+    expect(screen.queryByRole("button", { name: "Delete Gone" })).toBeNull();
+    expect(within(ask).getByRole("button", { name: "Keep" })).toHaveFocus();
     expect(sent(fetchMock, "DELETE", "/prompt-modules/")).toHaveLength(0);
 
-    await user.click(within(ask).getByRole("button", { name: "Cancel" }));
+    await user.click(within(ask).getByRole("button", { name: "Keep" }));
     expect(screen.queryByRole("group", { name: "Confirm delete" })).toBeNull();
+    expect(sent(fetchMock, "DELETE", "/prompt-modules/")).toHaveLength(0);
+    // Focus goes back to the trigger it came from, not to the page.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Delete Gone" })).toHaveFocus());
+
+    // Escape answers the question the same way.
+    await user.click(screen.getByRole("button", { name: "Delete Gone" }));
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("group", { name: "Confirm delete" })).toBeNull();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Delete Gone" })).toHaveFocus());
     expect(sent(fetchMock, "DELETE", "/prompt-modules/")).toHaveLength(0);
 
     await user.click(screen.getByRole("button", { name: "Delete Gone" }));
@@ -824,12 +1151,18 @@ describe("module list", () => {
     ];
     renderPage({ modules: rows });
     await waitForList();
-    expect(screen.getByText("From preset.json")).toBeInTheDocument();
-    expect(screen.getByTestId("prompt-module-marker")).toHaveTextContent("Placeholder: chatHistory");
-    expect(screen.getByText(/On in SillyTavern/)).toBeInTheDocument();
-    expect(screen.getByText(/Off in SillyTavern/)).toBeInTheDocument();
+    // One group, named by its file, holding the button and the placeholder.
+    const group = screen.getByRole("group", { name: "From preset.json" });
+    expect(within(group).getByText("From preset.json")).toBeInTheDocument();
+    // The placeholder reads as a plain sentence, not SillyTavern's identifier.
+    expect(within(group).getByTestId("prompt-module-marker").textContent).toBe(
+      placeholderLine("chatHistory"),
+    );
+    expect(within(group).queryByText(/chatHistory/)).toBeNull();
+    expect(within(group).getByText("SillyTavern: on")).toBeInTheDocument();
+    expect(within(group).getByText("SillyTavern: off")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Turn on entries enabled in SillyTavern (1)" }),
+      within(group).getByRole("button", { name: "Turn on entries enabled in SillyTavern (1)" }),
     ).toBeInTheDocument();
   });
 
@@ -837,8 +1170,9 @@ describe("module list", () => {
     renderPage();
     await waitForList();
     expect(screen.getByTestId("prompt-module-empty")).toBeInTheDocument();
-    expect(screen.queryAllByRole("switch").map((s) => s.getAttribute("aria-label")))
-      .toEqual(["Roleplay layer"]);
+    await waitFor(() => expect(layerSwitch()).toBeInTheDocument());
+    // Only the page's own two switches: consent and the layer. No module row.
+    expect(screen.getAllByRole("switch")).toEqual([consentBox(), layerSwitch()]);
   });
 });
 
@@ -846,19 +1180,22 @@ describe("module list", () => {
 
 const lengthRadios = () =>
   within(screen.getByRole("radiogroup", { name: "Reply length" })).getAllByRole("radio");
+const lengthGroup = () => screen.getByRole("radiogroup", { name: "Reply length" });
+
+/** Every visible sentence on the page that says the layer is not sent. */
+const notSentLines = () =>
+  screen.queryAllByText(/not (being )?sent/i).filter((n) => !hiddenFromReaders(n));
 
 describe("roleplay layer and reply length", () => {
   it("mode c (no module, layer off): length greyed out with its reason", async () => {
     renderPage({ layer: false });
     await waitForList();
-    await waitFor(() => expect(screen.getByRole("switch", { name: "Roleplay layer" })).toBeEnabled());
-    expect(screen.getByRole("switch", { name: "Roleplay layer" })).toHaveAttribute("aria-checked", "false");
+    await waitFor(() => expect(layerSwitch()).toBeEnabled());
+    expect(layerSwitch()).toHaveAttribute("aria-checked", "false");
     for (const radio of lengthRadios()) expect(radio).toBeDisabled();
-    expect(screen.getByTestId("reply-length-reason")).toHaveTextContent(
-      "part of the roleplay layer, which is off",
-    );
-    expect(screen.getByTestId("reply-length")).toHaveClass("settings-section-disabled");
-    expect(screen.queryByTestId("prompt-layer-suppressed")).toBeNull();
+    // The reason is the group's own description line.
+    expect(lengthGroup()).toHaveAccessibleDescription("Part of the roleplay layer, which is off.");
+    expect(notSentLines()).toHaveLength(0);
   });
 
   it("mode b (no module, layer on): length is live and saves both settings together", async () => {
@@ -866,13 +1203,15 @@ describe("roleplay layer and reply length", () => {
     const { fetchMock } = renderPage({ layer: true, words: null });
     await waitForList();
     await waitFor(() => expect(lengthRadios()[1]).toBeEnabled());
-    expect(screen.queryByTestId("reply-length-reason")).toBeNull();
-    expect(screen.getByTestId("reply-length")).not.toHaveClass("settings-section-disabled");
+    expect(lengthGroup()).toHaveAccessibleDescription(
+      "Adaptive sends no length line; the card decides.",
+    );
     expect(lengthRadios()[0]).toHaveAttribute("aria-checked", "true");
     const allowed = limitsJson.reply_length_words_allowed;
+    // Short labels, so the choices fit beside the label at the dialog's width.
     expect(lengthRadios().map((r) => r.textContent)).toEqual([
       "Adaptive",
-      ...allowed.map((n) => `About ${n} words`),
+      ...allowed.map((n) => `${formatCount(n)} words`),
     ]);
     await user.click(lengthRadios()[1]);
     await waitFor(() => expect(sent(fetchMock, "PUT", "/prompt-modules/settings")).toHaveLength(1));
@@ -882,53 +1221,51 @@ describe("roleplay layer and reply length", () => {
     });
   });
 
-  it("mode a (a module on, layer on): the layer is shown as not sent, length greyed out", async () => {
+  it("mode a (a module on, layer on): the layer row says it is not sent, once", async () => {
     renderPage({ layer: true, modules: [mod({ enabled: true })] });
     await waitForList();
-    expect(await screen.findByTestId("prompt-layer-suppressed")).toHaveTextContent(
-      "Not being sent right now: 1 module is on.",
+    await waitFor(() => expect(layerSwitch()).toBeEnabled());
+    // Said by the row itself, in its description line...
+    expect(layerSwitch()).toHaveAccessibleDescription(
+      /^Not sent now: 1 module is on\. It comes back when the last one is turned off\.$/,
     );
+    // ...and nowhere else on the page (it used to be said three times).
+    expect(notSentLines()).toHaveLength(1);
     for (const radio of lengthRadios()) expect(radio).toBeDisabled();
-    expect(screen.getByTestId("reply-length-reason")).toHaveTextContent(
-      "Prompt modules are on (1), so the roleplay layer and its length line are not sent.",
-    );
+    expect(lengthGroup()).toHaveAccessibleDescription("Part of the roleplay layer.");
   });
 
   it("a blank module that is on does not count: the layer is still sent (mode b)", async () => {
     // The server's list_enabled skips it (store.block_reason), so the page
     // must not tell the user the layer is off. U+0085 is blank to the server
     // and not to JS trim().
-    renderPage({ layer: true, modules: [mod({ enabled: true, content: " 	" })] });
+    renderPage({ layer: true, modules: [mod({ enabled: true, content: " " })] });
     await waitForList();
     await waitFor(() => expect(lengthRadios()[1]).toBeEnabled());
-    expect(screen.queryByTestId("prompt-layer-suppressed")).toBeNull();
-    expect(screen.queryByTestId("reply-length-reason")).toBeNull();
-    expect(screen.getByTestId("prompt-module-counter").textContent).toBe(
-      formatModuleCounter(0, 0),
-    );
+    expect(notSentLines()).toHaveLength(0);
+    expect(counter().textContent).toBe(formatModuleCounter(0, 0));
   });
 
-  it("mode a with the layer switch off: no suppressed note, same reason", async () => {
+  it("mode a with the layer switch off: no not-sent line, length still greyed out", async () => {
     renderPage({ layer: false, modules: [mod({ enabled: true }), mod({ enabled: true })] });
     await waitForList();
-    await screen.findByText(/Prompt modules are on \(2\)/);
-    expect(screen.queryByTestId("prompt-layer-suppressed")).toBeNull();
+    await waitFor(() => expect(layerSwitch()).toBeEnabled());
+    expect(notSentLines()).toHaveLength(0);
+    expect(lengthGroup()).toHaveAccessibleDescription("Part of the roleplay layer.");
+    for (const radio of lengthRadios()) expect(radio).toBeDisabled();
   });
 
-  it("the not-sent-with-modules note is always on screen", async () => {
+  it("the section title says when the layer applies, even before anything loads", async () => {
     renderPage();
-    expect(screen.getByTestId("prompt-layer-note")).toHaveTextContent(
-      "Never sent while any prompt module is on.",
-    );
+    expect(screen.getByRole("heading", { level: 3, name: "When no module is on" })).toBeInTheDocument();
   });
 
   it("flipping the layer keeps the stored length", async () => {
     const user = userEvent.setup();
     const { fetchMock } = renderPage({ layer: false, words: 300 });
     await waitForList();
-    const layer = screen.getByRole("switch", { name: "Roleplay layer" });
-    await waitFor(() => expect(layer).toBeEnabled());
-    await user.click(layer);
+    await waitFor(() => expect(layerSwitch()).toBeEnabled());
+    await user.click(layerSwitch());
     await waitFor(() => expect(sent(fetchMock, "PUT", "/settings")).toHaveLength(1));
     expect(bodyOf(sent(fetchMock, "PUT", "/settings")[0])).toEqual({
       prompt_layer_enabled: true,
@@ -939,9 +1276,11 @@ describe("roleplay layer and reply length", () => {
   it("warns when the chosen length cannot fit the reply cap (A9 condition 3)", async () => {
     renderPage({ layer: true, words: 300 }, 512);
     await waitForList();
-    expect(await screen.findByTestId("reply-length-max-tokens")).toHaveTextContent(
-      "replies stop at 512",
-    );
+    const warning = await screen.findByTestId("reply-length-max-tokens");
+    expect(warning).toHaveTextContent("replies stop at 512");
+    // It names the control by its label in the Generation settings dialog.
+    expect(warning).toHaveTextContent("Max new tokens");
+    expect(warning.closest('[data-slot="collapse"]')).toHaveAttribute("data-open", "true");
   });
 
   it("GROUND: no cap warning when it fits, or when length is not live", async () => {
@@ -954,7 +1293,21 @@ describe("roleplay layer and reply length", () => {
 
 // ── The hook in the Settings dialog ─────────────────────────────────────
 
+function renderDialog(setup: Setup = {}) {
+  const onOpenChange = vi.fn();
+  mockFetch(routes(setup));
+  useUiStore.setState({ settingsInitialPage: "prompt" });
+  renderWithQueryClient(<AppSettingsDialog open onOpenChange={onOpenChange} />, {
+    wrapper: ({ children }) => (
+      <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
+    ),
+  });
+  return { onOpenChange };
+}
+
 describe("Settings dialog", () => {
+  afterEach(() => useUiStore.setState({ settingsInitialPage: null }));
+
   it("has its own Prompt modules heading that opens this page", async () => {
     const user = userEvent.setup();
     mockFetch(routes({}));
@@ -964,11 +1317,57 @@ describe("Settings dialog", () => {
         <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
       ),
     });
-    expect(screen.queryByTestId("prompt-module-counter")).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
     await user.click(await screen.findByText("Prompt modules"));
-    expect(await screen.findByTestId("prompt-module-counter")).toBeInTheDocument();
-    // The page's own title in the dialog, and the section heading on it.
+    expect(await screen.findByRole("status")).toBeInTheDocument();
+    // The dialog's title names the page once; the page does not repeat it
+    // as a section heading (the Voice page's headings name parts, not the page).
     expect(screen.getByRole("heading", { level: 2, name: /Prompt modules/ })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 3, name: "Prompt modules" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { level: 3, name: "Prompt modules" })).toBeNull();
+    // Positive control: the page's one section heading is there.
+    expect(screen.getByRole("heading", { level: 3, name: "When no module is on" })).toBeInTheDocument();
+  });
+
+  it("Escape in the rename box cancels the rename and leaves the dialog open", async () => {
+    const user = userEvent.setup();
+    const { onOpenChange } = renderDialog({ modules: [mod({ name: "Alpha" })] });
+    await user.click(await screen.findByRole("button", { name: "More actions for Alpha" }));
+    await user.click(screen.getByRole("button", { name: "Rename Alpha" }));
+    const input = screen.getByRole("textbox", { name: "New name for Alpha" });
+    await user.type(input, "zzz");
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("textbox", { name: "New name for Alpha" })).toBeNull();
+    expect(onOpenChange).not.toHaveBeenCalledWith(false, expect.anything());
+    expect(onOpenChange).not.toHaveBeenCalled();
+    // The focus goes back to the button that started it.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Rename Alpha" })).toHaveFocus());
+  });
+
+  it("Escape on the delete question answers the question only", async () => {
+    const user = userEvent.setup();
+    const { onOpenChange } = renderDialog({ modules: [mod({ name: "Alpha" })] });
+    await user.click(await screen.findByRole("button", { name: "More actions for Alpha" }));
+    await user.click(screen.getByRole("button", { name: "Delete Alpha" }));
+    expect(screen.getByRole("button", { name: "Keep" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("group", { name: "Confirm delete" })).toBeNull();
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  it("Escape on the open actions closes them, then the next Escape closes the dialog", async () => {
+    const user = userEvent.setup();
+    const { onOpenChange } = renderDialog({ modules: [mod({ name: "Alpha" })] });
+    const more = await screen.findByRole("button", { name: "More actions for Alpha" });
+    await user.click(more);
+    await user.click(screen.getByRole("button", { name: "Rename Alpha" }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await user.keyboard("{Escape}");
+    expect(more).toHaveAttribute("aria-expanded", "false");
+    await waitFor(() => expect(more).toHaveFocus());
+    expect(onOpenChange).not.toHaveBeenCalled();
+    // GROUND: with nothing of ours open, Escape reaches the dialog as usual.
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalled());
+    expect(onOpenChange.mock.calls[0][0]).toBe(false);
   });
 });

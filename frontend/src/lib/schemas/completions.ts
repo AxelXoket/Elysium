@@ -44,6 +44,8 @@ export const CompletionResponseSchema = z.object({
   assistant_message: MessageSchema,
   // Regenerate only: the sibling variant that was active before this one.
   deactivated_message_id: z.number().nullable().optional(),
+  // Automatic retries before the reply arrived (at most one; absent for none).
+  retried: z.number().optional(),
 });
 
 export type GenerationParams = z.infer<typeof GenerationParamsSchema>;

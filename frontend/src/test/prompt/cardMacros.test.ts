@@ -102,9 +102,21 @@ describe("renderMacros", () => {
     });
   }
 
-  /** Best-of-nine time at half and full count of a one-part repeated vector.
-   *  The gate asserts the RATIO, not milliseconds: a ratio does not go red
-   *  because the machine is busy, and a quadratic scan still shows as ~4. */
+  /** How much slower the full count of a one-part repeated vector renders
+   *  than a quarter of it. Linear work gives about 4, quadratic about 16, so
+   *  the gate sits at 8: a factor of two of room on either side.
+   *
+   *  The gate asserts a RATIO, never milliseconds, and the ratio is built to
+   *  survive a busy machine (the full suite runs files in parallel):
+   *  - each round times the quarter and the full text back to back, so load
+   *    that comes and goes hits both halves of one round alike;
+   *  - each side of a round is a best of three, which drops a single GC pause
+   *    or scheduler stall;
+   *  - the answer is the MEDIAN of the rounds, so a few spoiled rounds do not
+   *    move it. One warm-up round runs first and is not counted. */
+  const GROWTH_FACTOR = 4;
+  const LINEAR_CEILING = 8;
+  const ROUNDS = 7;
   function growth(id: string): { ratio: number; out: string; v: RenderVector } {
     const v = RENDER.find((x) => x.id === id) as RenderVector;
     const [part] = v.text as Part[];
@@ -112,29 +124,37 @@ describe("renderMacros", () => {
     const ctx = ctxOf(v);
     const time = (t: string) => {
       let best = Infinity;
-      for (let k = 0; k < 9; k++) {
+      for (let k = 0; k < 3; k++) {
         const t0 = performance.now();
         renderMacros(t, ctx);
         best = Math.min(best, performance.now() - t0);
       }
       return best;
     };
-    const half = part.repeat.repeat(Math.floor(part.times / 2));
+    const small = part.repeat.repeat(Math.floor(part.times / GROWTH_FACTOR));
     const full = part.repeat.repeat(part.times);
-    const ratio = time(full) / time(half);
+    time(small);
+    time(full);
+    const ratios: number[] = [];
+    for (let r = 0; r < ROUNDS; r++) {
+      const s = time(small);
+      ratios.push(time(full) / Math.max(s, 1e-3));
+    }
+    ratios.sort((a, b) => a - b);
+    const ratio = ratios[Math.floor(ROUNDS / 2)];
     return { ratio, out: renderMacros(full, ctx), v };
   }
 
-  it("grows linearly with the macro count (MV18 shape, ratio under 2.5)", () => {
+  it("grows linearly with the macro count (MV18 shape, 4x the input under 8x the time)", () => {
     const { ratio, out, v } = growth("MV18");
     expect(out === decode(v.expect as Field)).toBe(true);
-    expect(ratio).toBeLessThan(2.5);
+    expect(ratio).toBeLessThan(LINEAR_CEILING);
   });
 
-  it("stays linear on many unclosed comments (MV34 shape, ratio under 2.5)", () => {
+  it("stays linear on many unclosed comments (MV34 shape, 4x the input under 8x the time)", () => {
     const { ratio, out, v } = growth("MV34");
     expect(out === decode(v.expect as Field)).toBe(true);
-    expect(ratio).toBeLessThan(2.5);
+    expect(ratio).toBeLessThan(LINEAR_CEILING);
   });
 });
 

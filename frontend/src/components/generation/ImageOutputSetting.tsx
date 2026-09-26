@@ -74,18 +74,18 @@ export function ImageOutputSetting({
           {enabled ? "On" : "Off"}
         </Button>
       </div>
-      <p className="text-[11px] leading-snug opacity-70">
+      <p className="generation-helper">
         {enabled
           ? "Models that can draw may answer with an image as well as words. Pictures are stored in your encrypted vault like any attachment, and are never sent back to the model on later turns."
           : "Off. Replies are text only."}
       </p>
       {enabled && supported === "no" ? (
-        <p className="text-[11px] leading-snug opacity-70">
+        <p className="generation-helper">
           {IMAGE_OUTPUT_NOT_ASKED_NOTE}
         </p>
       ) : null}
       {enabled && supported === "unknown" ? (
-        <p className="text-[11px] leading-snug opacity-70">
+        <p className="generation-helper">
           {IMAGE_OUTPUT_UNKNOWN_NOTE}
         </p>
       ) : null}

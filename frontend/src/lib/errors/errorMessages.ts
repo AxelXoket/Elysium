@@ -57,8 +57,19 @@ const ERROR_MESSAGES: Record<string, string> = {
   // every source file, and a sentence is not an exception to it.
   openrouter_insufficient_credits:
     "Your OpenRouter account does not have enough credits, so nothing was sent. Top up the account this API key belongs to, then try again.",
+  // Q-121. Two different answers the reader must be able to tell apart:
+  // "never, for this model" (the three below the first) and "not right now"
+  // (openrouter_temporarily_unavailable, rate limit, timeout). A sentence that
+  // says "try again" for the first kind is what made people press Enter five
+  // times at a request that could not succeed.
   openrouter_no_provider_meets_privacy:
-    "This model may not be available with Elysium's strict privacy routing. Try another model.",
+    "No provider for this model that meets Elysium's privacy rules would take this request. Sending it again will not help; choose another model.",
+  model_no_private_endpoint:
+    "This model has no provider that meets Elysium's privacy rules (zero data retention), so nothing was sent. Choose another model.",
+  openrouter_temporarily_unavailable:
+    "The privacy-safe providers for this model are busy or down right now. This usually passes: wait a moment and send again.",
+  reasoning_used_reply_budget:
+    "The model spent the whole reply length on thinking and wrote no answer. Raise Max tokens or turn Thinking off, then send again.",
   openrouter_completion_error:
     "The provider returned an error. Please try again.",
   // This used to arrive as auth_failed, so a refused message read as "check
@@ -103,8 +114,8 @@ const ERROR_MESSAGES: Record<string, string> = {
     + "post-history instruction, the voice block, your notes and limits, "
     + "and the message you are sending now - an attached image counts as "
     + "roughly a thousand words of it. Clearing older messages will not "
-    + "help, because they are not counted here, and lowering the context "
-    + "budget makes it worse. Raise the context budget, shorten what you "
+    + "help, because they are not counted here, and lowering Context "
+    + "budget makes it worse. Raise Context budget, shorten what you "
     + "are sending, shorten the persona or the character or the "
     + "post-history instruction, remove some notes or limits, or pick a "
     + "model with a larger window.",
@@ -185,6 +196,10 @@ const ERROR_MESSAGES: Record<string, string> = {
   // counted inside the provider layer and never left it, so a piece of a
   // reply could go missing, or a reply could simply stop, and the app showed
   // a normal complete message either way.
+  // Q-121: the user's stop sequences were left out of the request because no
+  // privacy-safe provider for this model accepts them. Never silent.
+  stop_not_sent_privately:
+    "Your stop sequences were not sent: no privacy-safe provider for this model supports them, so the reply may run past where they would have cut it.",
   provider_frame_dropped:
     "Part of this reply did not arrive in a form Elysium could read, so a piece of it is missing. Nothing else was affected.",
   stream_ended_without_done:
@@ -343,7 +358,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   prompt_module_upload_raw_only:
     "The file was sent in a way this app does not accept. Please choose the file again.",
   prompt_modules_over_budget:
-    "The prompt modules that are on do not fit this chat's context window: together they would take more than half of what is left for the conversation. Switch a module off, or raise the context budget.",
+    "The prompt modules that are on do not fit this chat's Context budget: together they would take more than half of what is left for the conversation. Turn a module off, or raise Context budget in Generation settings.",
   prompt_settings_invalid:
     "That prompt setting could not be saved: the reply length can only be adaptive, 150 or 300 words.",
 

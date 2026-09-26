@@ -201,9 +201,16 @@ class TestGates:
     def test_the_rubric_is_frozen(self, tmp_path):
         rub = gates.load_rubric()
         assert rub["layer_family"]["alpha"] == 0.01
+        # Ground control: a byte-identical copy loads and says the same thing.
+        same = tmp_path / "same.json"
+        same.write_bytes(gates.RUBRIC_FILE.read_bytes())
+        assert gates.load_rubric(same) == rub
+        # A lowered threshold is a different exam, and it is refused.
+        loosened = json.loads(json.dumps(rub))
+        loosened["validity"]["v4_min_order_consistency"] = 0.60
+        assert loosened != rub
         changed = tmp_path / "r.json"
-        changed.write_text(gates.RUBRIC_FILE.read_text(encoding="utf-8").replace("0.70", "0.60"),
-                           encoding="utf-8")
+        changed.write_text(json.dumps(loosened, indent=2), encoding="utf-8")
         with pytest.raises(gates.RubricChanged):
             gates.load_rubric(changed)
 

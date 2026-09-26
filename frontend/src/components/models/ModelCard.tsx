@@ -1,8 +1,13 @@
-import { memo } from "react";
+import { memo, useId } from "react";
 import { ModalityBadge } from "./ModalityBadge";
 import type { Model } from "@/lib/schemas/models";
 import { useUiStore } from "@/lib/store/uiStore";
-import { Check } from "lucide-react";
+import { Check, ShieldOff } from "lucide-react";
+
+/** Why a row cannot be picked (Q-121). Exported so tests read the same words. */
+export const NO_PRIVATE_PROVIDER_LABEL = "No private provider";
+export const NO_PRIVATE_PROVIDER_REASON =
+  "Unavailable: no provider for this model meets Elysium's privacy rules (zero data retention), so a message could not be sent to it.";
 
 interface ModelCardProps {
   model: Model;
@@ -16,16 +21,28 @@ interface ModelCardProps {
 export const ModelCard = memo(function ModelCard({ model }: ModelCardProps) {
   const isSelected = useUiStore((s) => s.selectedModelId === model.id);
   const selectModel = useUiStore((s) => s.selectModel);
+  const reasonId = useId();
+  // Q-121: 0 means the backend counted this model's zero-data-retention
+  // endpoints and none takes a chat request, so the send point would refuse
+  // it. Disabled with the reason on the row, never hidden. null/undefined
+  // (the list unknown) claims nothing and leaves the row as it was.
+  // aria-disabled rather than `disabled`, so the row stays focusable and a
+  // screen reader can still reach the reason.
+  const blocked = model.zdr_endpoints === 0;
 
   return (
     <button
       type="button"
-      onClick={() => selectModel(model.id)}
+      onClick={blocked ? undefined : () => selectModel(model.id)}
       className={`sidebar-item w-full rounded-xl px-3 py-2.5 text-left ${
         isSelected ? "sidebar-item-selected" : "sidebar-item-unselected"
       }`}
+      style={blocked ? { opacity: 0.55, cursor: "not-allowed" } : undefined}
       aria-label={`Select model ${model.name}`}
       aria-pressed={isSelected}
+      aria-disabled={blocked || undefined}
+      aria-describedby={blocked ? reasonId : undefined}
+      title={blocked ? NO_PRIVATE_PROVIDER_REASON : undefined}
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
@@ -62,6 +79,17 @@ export const ModelCard = memo(function ModelCard({ model }: ModelCardProps) {
           promised, scrollTop was clamped back, and the list could not be
           scrolled down. Reserving the line keeps estimate and reality equal. */}
       <div className="mt-1.5 flex min-h-[1.125rem] flex-wrap items-center gap-1.5">
+        {blocked && (
+          <span
+            id={reasonId}
+            className="inline-flex items-center gap-1 text-[10px]"
+            style={{ color: "var(--color-es-danger)" }}
+          >
+            <ShieldOff size={10} aria-hidden="true" />
+            {NO_PRIVATE_PROVIDER_LABEL}
+            <span className="sr-only">. {NO_PRIVATE_PROVIDER_REASON}</span>
+          </span>
+        )}
         {model.context_length && (
           <span
             className="text-[10px]"

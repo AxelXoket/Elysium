@@ -44,6 +44,9 @@ export const StreamEventSchema = z.discriminatedUnion("type", [
     notebook_sent: z.number().optional(),
     notebook_total: z.number().optional(),
     history_trimmed: z.number().optional(),
+    // How many automatic retries the backend made before the reply began
+    // (at most one; absent when there were none). Metadata only.
+    retried: z.number().optional(),
   }),
   z.object({
     type: z.literal("error"),

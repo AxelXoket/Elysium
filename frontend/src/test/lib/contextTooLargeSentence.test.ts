@@ -30,8 +30,8 @@ describe("the context_too_large sentence", () => {
   it("does not tell anyone to reduce the context budget", () => {
     // `available` is derived FROM the budget: lowering it makes the refusal
     // arrive sooner.
-    expect(sentence).not.toMatch(/reduc\w* the context budget/i);
-    expect(sentence).not.toMatch(/lower\w* the context budget(?!.{0,40}worse)/i);
+    expect(sentence).not.toMatch(/reduc\w* (?:the )?context budget/i);
+    expect(sentence).not.toMatch(/lower\w* (?:the )?context budget(?!.{0,40}worse)/i);
   });
 
   it("names the things that are actually counted", () => {
@@ -46,6 +46,6 @@ describe("the context_too_large sentence", () => {
   it("offers something that moves the number", () => {
     // Raising the budget, or making the fixed part smaller, or a model with
     // more room. At least one has to be there or the message is a dead end.
-    expect(sentence).toMatch(/raise the context budget|larger window/i);
+    expect(sentence).toMatch(/raise (?:the )?context budget|larger window/i);
   });
 });

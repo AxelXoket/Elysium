@@ -138,7 +138,9 @@ describe("errorMessages", () => {
       "API key is invalid. Please check it and try again.",
     );
     expect(getErrorMessage("openrouter_no_provider_meets_privacy")).toBe(
-      "This model may not be available with Elysium's strict privacy routing. Try another model.",
+      // Q-121: this is the "never for this model" kind now (an HTTP 404 empty
+      // pool), so it no longer hedges with "may" and says a resend will not help.
+      "No provider for this model that meets Elysium's privacy rules would take this request. Sending it again will not help; choose another model.",
     );
     expect(getErrorMessage("not_last_assistant_message")).toBe(
       "Only the latest assistant message can be regenerated.",

@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useRef, useState, type ReactNode, type Ref } from "react";
 import {
   Dialog,
   DialogClose,
@@ -28,6 +28,7 @@ import { getReasoningMode, hasOutputModality } from "@/lib/models/modelHelpers";
 import { useSettings, useSetImageOutput } from "@/lib/query/settings";
 import { ImageOutputSetting } from "./ImageOutputSetting";
 import { ThinkingSetting } from "./ThinkingSetting";
+import { FadeIn } from "@/components/motion/FadeIn";
 import type { Model } from "@/lib/schemas/models";
 import { SlidersHorizontal, X } from "lucide-react";
 
@@ -60,6 +61,13 @@ export function GenerationSettingsDialog({
   selectedModel,
 }: GenerationSettingsDialogProps) {
   const [open, setOpen] = useState(false);
+  // The dialog opens with the focus on its title. Left to itself it lands on
+  // the first control, the Temperature clear button, where a reflexive Enter
+  // or Space would throw away a setting the user made. The footer's Close was
+  // tried first and scrolled the dialog to its bottom on open, past the
+  // header and all of Sampling; the title sits at the top, so focusing it
+  // moves nothing. It is not a tab stop (tabIndex -1), only a landing place.
+  const titleRef = useRef<HTMLHeadingElement>(null);
   const {
     settings,
     setSetting,
@@ -157,10 +165,15 @@ export function GenerationSettingsDialog({
         }
       />
 
-      <DialogContent className="glass-dialog sidebar-dialog generation-dialog max-h-[88vh] overflow-y-auto sm:max-w-2xl">
+      <DialogContent
+        className="glass-dialog sidebar-dialog generation-dialog max-h-[88vh] overflow-y-auto sm:max-w-2xl"
+        initialFocus={titleRef}
+      >
         <DialogHeader>
           <DialogTitle
-            className="flex items-center gap-2 text-base font-semibold"
+            ref={titleRef}
+            tabIndex={-1}
+            className="flex items-center gap-2 text-base font-semibold outline-none"
             style={{ color: "var(--color-es-text-light)" }}
           >
             <SlidersHorizontal size={15} />
@@ -325,7 +338,9 @@ export function GenerationSettingsDialog({
           >
             Reset all
           </Button>
-          <DialogClose render={<Button type="button" size="sm" className="sidebar-dialog-action text-xs" />}>
+          <DialogClose
+            render={<Button type="button" size="sm" className="sidebar-dialog-action text-xs" />}
+          >
             Close
           </DialogClose>
         </div>
@@ -392,6 +407,10 @@ function RangeSetting({
   onChange: (value: number) => void;
 }) {
   const unset = value === null;
+  const valueRef = useRef<HTMLInputElement>(null);
+  // While unset the slider still needs a position; it rests on the display
+  // value with its thumb dimmed, and the number box stays empty, so nothing
+  // reads as a number the request will carry.
   const normalizedValue = clampNumber(value ?? unsetDisplay ?? min, min, max);
   const commitValue = (next: number) => {
     const clamped = clampNumber(next, min, max);
@@ -402,43 +421,55 @@ function RangeSetting({
     <div className={`generation-control ${disabled ? "is-disabled" : ""}`}>
       <div className="flex items-center justify-between gap-3">
         <label className="text-xs font-semibold">{label}</label>
-        {unset ? (
-          <span className="generation-helper" data-testid={`${label} unset`}>
-            Provider default
-          </span>
-        ) : (
-          onClear && (
-            <button
-              type="button"
-              aria-label={`Use the provider default for ${label}`}
-              title="Use the provider default"
-              className="shrink-0 opacity-60 transition-opacity hover:opacity-100"
-              disabled={disabled}
-              onClick={onClear}
-            >
-              <X size={13} />
-            </button>
-          )
-        )}
-        <DraftNumberInput
-          ariaLabel={`${label} value`}
-          min={min}
-          max={max}
-          step={step}
-          committedValue={normalizedValue}
-          disabled={disabled}
-          onCommit={commitValue}
-        />
+        <span className="flex shrink-0 items-center gap-1.5">
+          {/* A fixed slot, so the number box does not jump sideways when the
+              clear button comes and goes. */}
+          {onClear && (
+            <span className="inline-flex size-6 shrink-0 items-center justify-center">
+              {!unset && (
+                <FadeIn className="inline-flex">
+                  <button
+                    type="button"
+                    aria-label={`Use the provider default for ${label}`}
+                    title="Use the provider default"
+                    className="inline-flex size-6 shrink-0 items-center justify-center rounded-icon-btn opacity-60 transition-opacity duration-(--duration-fast) ease-smooth hover:opacity-100 focus-visible:opacity-100 motion-reduce:transition-none"
+                    disabled={disabled}
+                    onClick={() => {
+                      onClear();
+                      // This button leaves as the value goes; the focus goes
+                      // to the box beside it, which now reads "default".
+                      valueRef.current?.focus();
+                    }}
+                  >
+                    <X size={12} />
+                  </button>
+                </FadeIn>
+              )}
+            </span>
+          )}
+          <DraftNumberInput
+            inputRef={valueRef}
+            ariaLabel={`${label} value`}
+            min={min}
+            max={max}
+            step={step}
+            committedValue={unset ? null : normalizedValue}
+            disabled={disabled}
+            onCommit={commitValue}
+          />
+        </span>
       </div>
       <input
         type="range"
         aria-label={`${label} slider`}
+        aria-valuetext={unset ? "Provider default" : undefined}
         min={min}
         max={max}
         step={step}
         value={normalizedValue}
         disabled={disabled}
-        className="generation-range"
+        data-unset={unset ? "true" : undefined}
+        className={`generation-range${unset ? " [&::-webkit-slider-thumb]:opacity-45" : ""}`}
         onChange={(event) => commitValue(Number(event.currentTarget.value))}
       />
       <p className="generation-helper">{helper}</p>
@@ -458,6 +489,7 @@ function RangeSetting({
  * mid-keystroke. The paired slider stays synced to committed values.
  */
 function DraftNumberInput({
+  inputRef,
   ariaLabel,
   min,
   max,
@@ -466,11 +498,13 @@ function DraftNumberInput({
   disabled,
   onCommit,
 }: {
+  inputRef?: Ref<HTMLInputElement>;
   ariaLabel: string;
   min: number;
   max: number;
   step: number;
-  committedValue: number;
+  /** null: unset. The box is empty and shows "default". */
+  committedValue: number | null;
   disabled: boolean;
   onCommit: (value: number) => void;
 }) {
@@ -490,9 +524,13 @@ function DraftNumberInput({
       min={min}
       max={max}
       step={step}
-      value={draft ?? committedValue}
+      ref={inputRef}
+      value={draft ?? committedValue ?? ""}
+      placeholder={committedValue === null ? "default" : undefined}
+      // "default" is the only sign the sampler is unset, so it is information
+      // and takes the box's own ink, not the field's faint placeholder grey.
       disabled={disabled}
-      className="sidebar-dialog-field generation-number-input"
+      className={`sidebar-dialog-field generation-number-input${committedValue === null ? " placeholder:text-current!" : ""}`}
       onChange={(event) => setDraft(event.currentTarget.value)}
       onBlur={(event) => commitDraft(event.currentTarget.value)}
       onKeyDown={(event) => {
@@ -581,7 +619,7 @@ function StopSequencesSetting({
                 <button
                   type="button"
                   aria-label={`Remove stop sequence ${index + 1}`}
-                  className="shrink-0 opacity-60 transition-opacity hover:opacity-100"
+                  className="-my-1 -mr-1.5 inline-flex size-6 shrink-0 items-center justify-center rounded-icon-btn opacity-60 transition-opacity duration-(--duration-fast) ease-smooth hover:opacity-100 focus-visible:opacity-100 motion-reduce:transition-none"
                   onClick={() => removeSequence(sequence)}
                 >
                   <X size={10} />

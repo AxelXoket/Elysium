@@ -27,6 +27,10 @@ export const ModelSchema = z.object({
     })
     .nullable()
     .optional(),
+  // Q-121, added by the /models route (not by _normalise_model): how many
+  // zero-data-retention endpoints take a chat request. 0 = the send point
+  // refuses this model; null = the list was unknown, nothing is claimed.
+  zdr_endpoints: z.number().nullable().optional(),
 });
 
 // Exact match of openrouter.py fetch_models() return shape
@@ -36,6 +40,8 @@ export const ModelListSchema = z.object({
   count: z.number(),
   models: z.array(ModelSchema),
   fallback_reason: z.string().optional(), // only present on public_fallback
+  // Q-121: whether the zero-data-retention list was known for this answer.
+  zdr_known: z.boolean().optional(),
 });
 
 export type Model = z.infer<typeof ModelSchema>;

@@ -84,11 +84,29 @@ class OpenRouterError(Exception):
     reservation is kept rather than handed back on a guess - refunding a call
     that really was paid for is the failure the reservation exists to
     prevent.
+
+    `status`, `retryable` and `retry_after` feed the chat routes' one
+    automatic retry (routers/completions.py, `_may_retry`). They never change
+    `reason`: the notebook worker sorts its breakers on that string, and a
+    new reason there would move a provider fault into "unknown".
+    - status: the upstream HTTP status, or the int code of a mid-stream error
+      chunk; None when there was no status (a timeout, a dead socket).
+    - retryable: True only where the raise site KNOWS the failure is the
+      passing kind (RETRYABLE_STATUSES, a dropped connection). Everything else
+      stays False, so an unrecognised failure is never sent twice. No timeout
+      is marked: a timeout already cost the reader its full wait (up to
+      STREAM_FIRST_TOKEN_TIMEOUT), and a second attempt could double it.
+    - retry_after: seconds from a Retry-After header, when one was sent.
     """
-    def __init__(self, reason: str, *, reached_provider: bool = True) -> None:
+    def __init__(self, reason: str, *, reached_provider: bool = True,
+                 status: int | None = None, retryable: bool = False,
+                 retry_after: float | None = None) -> None:
         super().__init__(reason)
         self.reason = reason
         self.reached_provider = reached_provider
+        self.status = status
+        self.retryable = retryable
+        self.retry_after = retry_after
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +445,7 @@ def invalidate_model_cache() -> None:
     """
     global _zdr_cache
     _model_cache.clear()
+    _forget_zdr_index()  # F4-15: the chat's per-endpoint view, same reason
     _zdr_cache = None
 
 
@@ -640,6 +659,67 @@ def _status_to_reason(status_code: int, payload: object | None = None) -> str:
     return "openrouter_error"
 
 
+#: Upstream statuses that describe a passing state rather than the request:
+#: timeout, rate limit, bad gateway, unavailable, gateway timeout. OpenRouter
+#: documents 408/504 as timeouts, 429 with Retry-After, 502 as a provider that
+#: went down, 503 as "no provider available right now". 404 is NOT here: an
+#: empty candidate pool is the same answer on every attempt. 500 is not here
+#: either: its message is masked and it may be the request itself.
+RETRYABLE_STATUSES: frozenset[int] = frozenset({408, 429, 502, 503, 504})
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    """Seconds from a Retry-After header, or None when absent or unreadable.
+
+    Both forms RFC 9110 allows: delay-seconds, and an HTTP date (turned into
+    seconds from now, never below zero). A value that is neither is treated
+    as absent rather than guessed at.
+    """
+    if not value:
+        return None
+    text = value.strip()
+    try:
+        seconds = float(text)
+    except ValueError:
+        try:
+            import email.utils
+            when = email.utils.parsedate_to_datetime(text)
+        except (TypeError, ValueError, IndexError):
+            return None
+        if when is None:
+            return None
+        import datetime as _dt
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=_dt.timezone.utc)
+        seconds = (when - _dt.datetime.now(_dt.timezone.utc)).total_seconds()
+    if seconds != seconds or seconds in (float("inf"), float("-inf")):
+        return None
+    return max(0.0, seconds)
+
+
+def _http_failure(response: httpx.Response, payload: object | None) -> OpenRouterError:
+    """The one OpenRouterError for a non-success chat response.
+
+    Same reason table as before (`_status_to_reason`); the status and the
+    Retry-After header ride along for the retry decision, and nothing of the
+    body does.
+    """
+    status = response.status_code
+    headers = getattr(response, "headers", None)
+    retry_after = None
+    if headers is not None:
+        try:
+            retry_after = _parse_retry_after(headers.get("retry-after"))
+        except Exception:  # noqa: BLE001 - a header is optional information
+            retry_after = None
+    return OpenRouterError(
+        _status_to_reason(status, payload),
+        status=status,
+        retryable=status in RETRYABLE_STATUSES,
+        retry_after=retry_after,
+    )
+
+
 def _read_the_gate() -> tuple[str | None, tuple[str, ...]]:
     """The two things this module needs out of the vault, on ONE trip.
 
@@ -814,9 +894,8 @@ async def complete(
         # call sites - the drift that copy invited is the reason there is now
         # one table.
         if not response.is_success:
-            raise OpenRouterError(_status_to_reason(
-                response.status_code, _parse_error_payload(response.content),
-            ))
+            raise _http_failure(
+                response, _parse_error_payload(response.content))
 
         return response.json()
 
@@ -833,6 +912,8 @@ async def complete(
         # reached the provider. Folded into the parent, a call that never
         # opened a socket kept its reservation for the rest of the day.
         logger.warning("Completion request could not connect.")
+        # Not retryable: nothing was billed, but the reader already waited the
+        # whole timeout, and a second try could make them wait it again.
         raise OpenRouterError("openrouter_timeout", reached_provider=False)
     except httpx.TimeoutException:
         # Read, write or pool. The request was accepted and the answer was
@@ -855,7 +936,8 @@ async def complete(
         # DNS, a refused connection, a dead route. No socket, no bill.
         logger.warning("Completion request could not reach the provider.")
         raise OpenRouterError(
-            "openrouter_error", reached_provider=False) from exc
+            "openrouter_error", reached_provider=False,
+            retryable=True) from exc
     except Exception as exc:
         # UNRECOGNISED, so ASSUMED BILLED. The default is the conservative
         # one on purpose: keeping a reservation for a call that never left
@@ -1109,15 +1191,15 @@ async def complete_stream(
                 # It has to be read here rather than skipped: a 403 means one of
                 # two unrelated things and the body is the only thing that tells
                 # them apart. See _status_to_reason.
-                reason = _status_to_reason(
-                    response.status_code,
+                failure = _http_failure(
+                    response,
                     _parse_error_payload(await _peek_error_body(response)),
                 )
                 logger.warning(
                     "Streaming completion HTTP error: status=%d reason=%s",
-                    response.status_code, reason,
+                    response.status_code, failure.reason,
                 )
-                raise OpenRouterError(reason)
+                raise failure
 
             saw_token = False
             dropped_frames = 0
@@ -1152,6 +1234,9 @@ async def complete_stream(
                         "Stream produced no token in %.0fs.",
                         waited,
                     )
+                    # Not retryable: the reader already waited the full
+                    # first-token timeout, and a second attempt could make
+                    # that wait twice as long.
                     raise OpenRouterError("openrouter_timeout")
                 if waited > STREAM_TOTAL_TIMEOUT:
                     logger.warning(
@@ -1236,7 +1321,16 @@ async def complete_stream(
                         "Mid-stream provider error: reason=%s",
                         reason,
                     )
-                    raise OpenRouterError(reason)
+                    # The chunk's own int code decides retryability, the same
+                    # table as the HTTP path. Whether anything had already
+                    # reached the reader is the caller's question, not this
+                    # one's: it is the caller that saw the deltas.
+                    raise OpenRouterError(
+                        reason,
+                        status=code if isinstance(code, int) else None,
+                        retryable=(isinstance(code, int)
+                                   and code in RETRYABLE_STATUSES),
+                    )
 
                 delta = choice.get("delta") or {}
                 # Images may ride the delta, or arrive only on a final
@@ -1313,6 +1407,8 @@ async def complete_stream(
         raise
     except httpx.TimeoutException:
         logger.warning("Streaming completion timed out.")
+        # Not retryable, for the same reason as the first-token timeout: the
+        # wait has already been spent once.
         raise OpenRouterError("openrouter_timeout")
     except httpx.ProxyError as exc:
         # The user's OWN proxy rejected or could not establish the tunnel (407,
@@ -1323,6 +1419,19 @@ async def complete_stream(
         # cannot cover this: it only runs when proxy_required is on.
         logger.warning("%s rejected by the configured proxy.", "Streaming completion")
         raise OpenRouterError("proxy_auth_failed") from exc
+    except (httpx.ConnectError, httpx.ReadError, httpx.WriteError,
+            httpx.RemoteProtocolError) as exc:
+        # A connection that could not open or dropped. Same reason as the
+        # catch-all below (nothing about the provider's reply changed), but
+        # the passing kind, so the chat route may try once more while nothing
+        # has reached the reader. The destination gate's refusal is not one of
+        # these classes and stays in the catch-all, never retried.
+        logger.warning("Streaming completion connection failed: %s",
+                       type(exc).__name__)
+        raise OpenRouterError(
+            "openrouter_error",
+            reached_provider=not isinstance(exc, httpx.ConnectError),
+            retryable=True) from exc
     except Exception as exc:
         # CancelledError/GeneratorExit are BaseException subclasses and pass
         # through untouched, preserving client-abort semantics.
@@ -1366,40 +1475,13 @@ async def fetch_extraction_models(refresh: bool = False) -> list[dict]:
     if not refresh and _zdr_cache and now - _zdr_cache[0] < MODEL_LIST_TTL:
         return _zdr_cache[1]
 
-    client = get_client()
-    url = f"{OPENROUTER_BASE_URL}{_ZDR_ENDPOINTS_PATH}"
-    # The key is optional here (the policy list is public) but sending it when
-    # we have one keeps this request indistinguishable from every other one the
-    # app makes: one host, one identity, one rate-limit bucket.
-    # Off the loop: reading it opens SQLCipher, and blocking here freezes
-    # every live stream in the process. A locked vault is not an error - the
-    # policy list is public - but it does mean the request goes out
-    # unauthenticated, which is why it is not allowed to raise.
-    try:
-        api_key = await anyio.to_thread.run_sync(get_secret, SECRET_API_KEY)
-    except Exception:
-        api_key = None
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-    try:
-        response = await client.get(
-            url, headers=headers, timeout=httpx.Timeout(MODELS_FETCH_TIMEOUT))
-    # The module's own shape, and not decoration: a narrow `except
-    # httpx.HTTPError` lets anything the transport raises that is NOT an
-    # httpx error - a proxy library, an SSL layer, a resolver - escape as a
-    # raw 500 with a traceback instead of a code the UI can name.
-    except httpx.TimeoutException as exc:
-        raise OpenRouterError("openrouter_timeout") from exc
-    except httpx.ProxyError as exc:
-        raise OpenRouterError("proxy_auth_failed") from exc
-    except Exception as exc:
-        logger.warning("Extraction model list failed: %s", type(exc).__name__)
-        raise OpenRouterError("openrouter_unreachable") from exc
-    if not response.is_success:
-        raise OpenRouterError(_status_to_reason(
-            response.status_code, _parse_error_payload(response.content)))
+    generation = _zdr_generation
+    rows = await _download_zdr_rows(MODELS_FETCH_TIMEOUT)
+    # The same download answers the chat's question too; one GET, two views.
+    _remember_zdr_index(rows, generation)
 
     best: dict[str, dict] = {}
-    for endpoint in (response.json().get("data") or []):
+    for endpoint in rows:
         params = set(endpoint.get("supported_parameters") or [])
         if "structured_outputs" not in params:
             continue
@@ -1447,3 +1529,240 @@ async def fetch_extraction_models(refresh: bool = False) -> list[dict]:
     _zdr_cache = (now, models)
     return models
 
+
+# ---------------------------------------------------------------------------
+# The shared download, and the chat's index of it
+# ---------------------------------------------------------------------------
+
+
+async def _download_zdr_rows(timeout_s: float) -> list[dict]:
+    """GET /endpoints/zdr once and return its rows. Raises OpenRouterError.
+
+    Shared by the extraction picker and the chat's per-endpoint index, so the
+    list is fetched one way: same host, same identity, same error codes.
+    """
+    client = get_client()
+    url = f"{OPENROUTER_BASE_URL}{_ZDR_ENDPOINTS_PATH}"
+    # The key is optional here (the policy list is public) but sending it when
+    # we have one keeps this request indistinguishable from every other one the
+    # app makes: one host, one identity, one rate-limit bucket.
+    # Off the loop: reading it opens SQLCipher, and blocking here freezes
+    # every live stream in the process. A locked vault is not an error - the
+    # policy list is public - but it does mean the request goes out
+    # unauthenticated, which is why it is not allowed to raise.
+    try:
+        api_key = await anyio.to_thread.run_sync(get_secret, SECRET_API_KEY)
+    except Exception:
+        api_key = None
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        response = await client.get(
+            url, headers=headers, timeout=httpx.Timeout(timeout_s))
+    # The module's own shape, and not decoration: a narrow `except
+    # httpx.HTTPError` lets anything the transport raises that is NOT an
+    # httpx error - a proxy library, an SSL layer, a resolver - escape as a
+    # raw 500 with a traceback instead of a code the UI can name.
+    except httpx.TimeoutException as exc:
+        raise OpenRouterError("openrouter_timeout") from exc
+    except httpx.ProxyError as exc:
+        raise OpenRouterError("proxy_auth_failed") from exc
+    except Exception as exc:
+        logger.warning("Extraction model list failed: %s", type(exc).__name__)
+        raise OpenRouterError("openrouter_unreachable") from exc
+    if not response.is_success:
+        raise OpenRouterError(_status_to_reason(
+            response.status_code, _parse_error_payload(response.content)))
+    try:
+        data = response.json().get("data")
+    except Exception as exc:  # noqa: BLE001 - a body that is not JSON
+        raise OpenRouterError("openrouter_unreachable") from exc
+    return [row for row in (data or []) if isinstance(row, dict)]
+
+
+# ---------------------------------------------------------------------------
+# Q-121 - the chat's view of the same list: which PRIVATE endpoints a model
+# has, and which request keys each one accepts
+# ---------------------------------------------------------------------------
+#
+# Every chat request carries `provider.zdr: true` and
+# `provider.require_parameters: true`. OpenRouter then keeps only endpoints
+# that are on the zero-data-retention list AND accept every key that was sent.
+# The app used to decide what to send from the MODEL-level
+# `supported_parameters` of /models, which is the union over ALL endpoints,
+# private or not. On the 26 Sep 2026 lists, Opus 5.5 has six private endpoints
+# and none of them lists a sampler, so a temperature the model-level list
+# allowed emptied the pool and the send failed while the model was fine. The
+# list the extraction picker already reads carries per-endpoint
+# `supported_parameters`, so the chat decides from that instead.
+
+#: (fetched_at, {model_id: [endpoint, ...]}) where an endpoint is
+#: {"accepts": frozenset[str]}. Only what the decision needs is kept.
+_zdr_index_cache: tuple[float, dict[str, list[dict]]] | None = None
+#: When the last send-path fetch of the list failed, monotonic. A list
+#: endpoint that is down must not cost every send a fresh timeout.
+_zdr_index_failed_at: float | None = None
+#: Bumped by every invalidation. A fetch that started before a key or proxy
+#: change must not write what it read over the old path back into the cache
+#: after the change cleared it (F4-15).
+_zdr_generation: int = 0
+
+#: How long a send waits for the list when it has none. Short on purpose: the
+#: list only sharpens the request, and a send without it still goes, filtered
+#: the old way.
+ZDR_SEND_FETCH_TIMEOUT: float = 5.0
+#: How long a failed fetch is remembered before a send tries again.
+ZDR_FAILURE_MEMORY_S: float = 60.0
+
+#: Keys that must reach the provider for the reply to be what was asked for.
+#: `max_tokens` is the app's output reservation: the history trim is sized
+#: against it, so it is never dropped to widen the pool.
+REQUIRED_PRIVATE_KEYS: tuple[str, ...] = ("max_tokens",)
+
+#: Order in which OPTIONAL keys claim the pool. The user's own settings first
+#: (stop, then the samplers in the order the validator knows them), then the
+#: app's reasoning control. A key is kept only while some private endpoint
+#: accepts it together with every key kept before it, so the kept set always
+#: has at least one endpoint that takes all of it.
+_OPTIONAL_KEY_ORDER: tuple[str, ...] = (
+    "stop",
+    *(k for k in _PARAM_SPEC if k not in REQUIRED_PRIVATE_KEYS),
+    "reasoning",
+)
+
+
+def _forget_zdr_index() -> None:
+    """Drop the chat's endpoint index and the memory of a failed fetch."""
+    global _zdr_index_cache, _zdr_index_failed_at, _zdr_generation
+    _zdr_index_cache = None
+    _zdr_index_failed_at = None
+    _zdr_generation += 1
+
+
+def _remember_zdr_index(rows: list[dict], generation: int) -> None:
+    """Index downloaded rows by model id, unless an invalidation came first."""
+    global _zdr_index_cache, _zdr_index_failed_at
+    if generation != _zdr_generation:
+        # A key or proxy change landed while this download was in flight:
+        # what it read came over the old path, and the cache stays empty.
+        return
+    index: dict[str, list[dict]] = {}
+    for row in rows:
+        model_id = row.get("model_id")
+        if not isinstance(model_id, str) or not model_id:
+            continue
+        params = row.get("supported_parameters")
+        accepts = frozenset(p for p in (params or []) if isinstance(p, str))
+        index.setdefault(model_id, []).append({"accepts": accepts})
+    _zdr_index_cache = (time.monotonic(), index)
+    _zdr_index_failed_at = None
+
+
+async def zdr_index(refresh: bool = False) -> dict[str, list[dict]] | None:
+    """The chat's per-model private endpoint index, or None when unknown.
+
+    Fresh cache: returned (unless `refresh`, the picker's refresh button).
+    Otherwise one fetch with a short timeout, unless one failed within
+    ZDR_FAILURE_MEMORY_S. On failure the previous index is used if there is
+    one (a list minutes old is still the best answer this process has), else
+    None and the caller filters the old way. Never raises.
+    """
+    global _zdr_index_failed_at
+    now = time.monotonic()
+    cached = _zdr_index_cache
+    if (not refresh and cached is not None
+            and now - cached[0] < MODEL_LIST_TTL):
+        return cached[1]
+    if (not refresh and _zdr_index_failed_at is not None
+            and now - _zdr_index_failed_at < ZDR_FAILURE_MEMORY_S):
+        return cached[1] if cached is not None else None
+    generation = _zdr_generation
+    try:
+        rows = await _download_zdr_rows(ZDR_SEND_FETCH_TIMEOUT)
+    except OpenRouterError as exc:
+        if generation == _zdr_generation:
+            _zdr_index_failed_at = time.monotonic()
+        logger.warning(
+            "ZDR endpoint list unavailable (reason=%s); %s.", exc.reason,
+            "using the previous list" if cached is not None
+            else "filtering parameters by the model-level list")
+        return cached[1] if cached is not None else None
+    _remember_zdr_index(rows, generation)
+    current = _zdr_index_cache
+    return current[1] if current is not None else None
+
+
+def zdr_endpoints_in(index: dict[str, list[dict]], model_id: str) -> list[dict]:
+    """The private endpoints of one model in a known index; [] when none.
+
+    A routing suffix OpenRouter resolves to the base model (`:nitro`,
+    `:floor`) is looked up under the base id, but only when the full id is not
+    a model of its own in the catalogue: `:free` and `:batch` ids ARE separate
+    models with separate endpoints, and borrowing the paid sibling's list for
+    them would promise endpoints they do not have.
+    """
+    rows = index.get(model_id)
+    if rows is not None:
+        return rows
+    if ":" in model_id and get_cached_model_metadata(model_id) is None:
+        return index.get(model_id.split(":", 1)[0], [])
+    return []
+
+
+def endpoint_accepts(endpoint: dict, key: str) -> bool:
+    """Whether one private endpoint takes this request key.
+
+    `max_tokens` is also satisfied by `max_completion_tokens`: OpenAI's
+    private endpoints list only the second, and their replies arrive with the
+    first (the d4 simulation's own caveat). Refusing those models would
+    refuse models that work.
+    """
+    accepts = endpoint.get("accepts") or frozenset()
+    if key in accepts:
+        return True
+    return key == "max_tokens" and "max_completion_tokens" in accepts
+
+
+def private_endpoint_count(endpoints: list[dict]) -> int:
+    """How many private endpoints take every REQUIRED key. 0 means refuse."""
+    return sum(1 for ep in endpoints
+               if all(endpoint_accepts(ep, k) for k in REQUIRED_PRIVATE_KEYS))
+
+
+def plan_private_params(endpoints: list[dict],
+                        params: dict) -> tuple[dict, list[str], int]:
+    """Cut `params` to what the model's private endpoints can take together.
+
+    Returns (kept_params, dropped_keys, eligible) where `eligible` is the
+    number of private endpoints that accept EVERY kept key. Pure.
+
+    Required keys present in `params` narrow the pool first; with none left,
+    eligible is 0, nothing is dropped, and the caller refuses the send. Then
+    each optional key, in _OPTIONAL_KEY_ORDER, is kept only if some endpoint
+    still in the pool takes it, and the pool narrows to those. Keys with no
+    place in that order come last, alphabetically, under the same rule.
+
+    That is a subset of "at least one private endpoint lists it" (the union
+    rule D1 sets for samplers) with one more guarantee: the kept keys are
+    accepted TOGETHER by at least one endpoint, so require_parameters is
+    never handed a set that no single endpoint serves.
+    """
+    pool = [ep for ep in endpoints
+            if all(endpoint_accepts(ep, k)
+                   for k in REQUIRED_PRIVATE_KEYS if k in params)]
+    if not pool:
+        return dict(params), [], 0
+    kept: set[str] = {k for k in REQUIRED_PRIVATE_KEYS if k in params}
+    dropped: list[str] = []
+    ordered = [k for k in _OPTIONAL_KEY_ORDER if k in params]
+    ordered += sorted(k for k in params
+                      if k not in _OPTIONAL_KEY_ORDER
+                      and k not in REQUIRED_PRIVATE_KEYS)
+    for key in ordered:
+        takers = [ep for ep in pool if endpoint_accepts(ep, key)]
+        if takers:
+            kept.add(key)
+            pool = takers
+        else:
+            dropped.append(key)
+    # The caller's key order, so the body reads the same as before.
+    return {k: v for k, v in params.items() if k in kept}, dropped, len(pool)

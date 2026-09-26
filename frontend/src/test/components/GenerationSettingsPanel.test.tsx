@@ -254,11 +254,13 @@ describe("Generation Settings Panel", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Reset all" }));
 
-    // D1: the default is UNSET, shown as the provider default, not 0.8.
-    expect(screen.getByLabelText("Temperature value")).toHaveValue(
-      SAMPLER_UNSET_DISPLAY.temperature,
-    );
-    expect(screen.getByTestId("Temperature unset")).toHaveTextContent(
+    // D1: the default is UNSET: an empty box that says "default", not 0.8
+    // and not the display number either.
+    const box = screen.getByLabelText("Temperature value");
+    expect(box).toHaveValue(null);
+    expect(box).toHaveAttribute("placeholder", "default");
+    expect(screen.getByLabelText("Temperature slider")).toHaveAttribute(
+      "aria-valuetext",
       "Provider default",
     );
   });
@@ -1324,10 +1326,14 @@ describe("Generation Settings unset samplers (D1)", () => {
   it("the dialog shows an unset sampler as the provider default", async () => {
     await renderWithModel(fullModel);
     await openDialog();
-    expect(screen.getByTestId("Top P unset")).toHaveTextContent("Provider default");
-    expect(screen.getByLabelText("Top P value")).toHaveValue(
-      SAMPLER_UNSET_DISPLAY.top_p,
-    );
+    // An empty box with "default" in it: no number the request will not carry.
+    const box = screen.getByLabelText("Top P value");
+    expect(box).toHaveValue(null);
+    expect(box).toHaveAttribute("placeholder", "default");
+    // The slider still has a resting place, and says what it means.
+    const slider = screen.getByLabelText("Top P slider");
+    expect(slider).toHaveValue(String(SAMPLER_UNSET_DISPLAY.top_p));
+    expect(slider).toHaveAttribute("aria-valuetext", "Provider default");
     // Positive control: no clear button while nothing is set.
     expect(
       screen.queryByRole("button", { name: "Use the provider default for Top P" }),
@@ -1341,13 +1347,75 @@ describe("Generation Settings unset samplers (D1)", () => {
       target: { value: "0.5" },
     });
     expect(api.current!.getRequestSettings().generationParams.top_p).toBe(0.5);
-    expect(screen.queryByTestId("Top P unset")).toBeNull();
+    // Set: the box shows the number and the slider no longer says default.
+    expect(screen.getByLabelText("Top P value")).toHaveValue(0.5);
+    expect(screen.getByLabelText("Top P slider")).not.toHaveAttribute("aria-valuetext");
 
     await userEvent.click(
       screen.getByRole("button", { name: "Use the provider default for Top P" }),
     );
     expect("top_p" in api.current!.getRequestSettings().generationParams).toBe(false);
-    expect(screen.getByTestId("Top P unset")).toBeInTheDocument();
+    expect(screen.getByLabelText("Top P value")).toHaveValue(null);
+    expect(screen.getByLabelText("Top P value")).toHaveAttribute("placeholder", "default");
+  });
+
+  it("the dialog opens with the focus on its title: not a clear button, not the footer", async () => {
+    const api = await renderWithModelAndApi(fullModel);
+    act(() => api.current!.setSetting("temperature", 1.2));
+    await openDialog();
+    // Positive control: a clear button exists and is the first control.
+    const clear = screen.getByRole("button", {
+      name: "Use the provider default for Temperature",
+    });
+    expect(clear).toBeInTheDocument();
+    // The title takes the focus: it is the first thing in the dialog, so
+    // focusing it cannot scroll the dialog down (the footer Close did, and
+    // opened it at "Seed"). jsdom has no layout, so the scroll itself is
+    // measured in a real headless browser; here the guard is WHERE it lands.
+    const title = screen.getByRole("heading", { name: /Generation Settings/ });
+    await waitFor(() => expect(title).toHaveFocus());
+    expect(clear).not.toHaveFocus();
+    // Everything focusable in the dialog comes after it: nothing above it to
+    // scroll past, and it is not a tab stop of its own.
+    const sections = screen.getAllByRole("heading", { level: 3 });
+    expect(title.compareDocumentPosition(sections[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(title).toHaveAttribute("tabindex", "-1");
+    // Ground: the footer Close is not where the focus went.
+    const footerClose = screen
+      .getAllByRole("button", { name: "Close" })
+      .find((b) => b.textContent?.trim() === "Close");
+    expect(footerClose).toBeDefined();
+    expect(footerClose).not.toHaveFocus();
+  });
+
+  it("clearing a sampler hands the focus to its box, not to the dialog", async () => {
+    const api = await renderWithModelAndApi(fullModel);
+    act(() => api.current!.setSetting("top_p", 0.5));
+    await openDialog();
+    const user = userEvent.setup();
+    const clear = screen.getByRole("button", { name: "Use the provider default for Top P" });
+    clear.focus();
+    await user.keyboard("{Enter}");
+    expect("top_p" in api.current!.getRequestSettings().generationParams).toBe(false);
+    // Ground: the button that had the focus is gone.
+    expect(
+      screen.queryByRole("button", { name: "Use the provider default for Top P" }),
+    ).toBeNull();
+    expect(screen.getByLabelText("Top P value")).toHaveFocus();
+  });
+
+  it("an unset value can be typed straight into the empty box", async () => {
+    const api = await renderWithModelAndApi(fullModel);
+    await openDialog();
+    const box = screen.getByLabelText("Top K value");
+    expect(box).toHaveValue(null);
+    // Ground: leaving it empty keeps it unset.
+    fireEvent.blur(box);
+    expect("top_k" in api.current!.getRequestSettings().generationParams).toBe(false);
+    fireEvent.change(box, { target: { value: "30" } });
+    fireEvent.blur(box);
+    expect(api.current!.getRequestSettings().generationParams.top_k).toBe(30);
+    expect(box).toHaveValue(30);
   });
 
   it("the persisted slice keeps null and turns junk into unset", () => {

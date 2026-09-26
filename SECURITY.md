@@ -480,6 +480,10 @@ third relaxes neither. When the provider OpenRouter picked is unavailable,
 it may use a backup from that filtered list, for the same model.
 Model fallback is a separate `models` parameter, and no request carries a
 `models` list, so failover does not swap the model.
+When a reply fails before any of it has reached you, and the failure is the
+passing kind (busy, down, rate limited with a short wait, timed out, empty),
+the app sends the identical request once more: same body, same model, same
+policy. Never a third time, and never once any of the reply has arrived.
 The other requests below are GETs with no body, so they carry no policy block
 and have nothing to force.
 
@@ -538,14 +542,17 @@ panel asks for the proxy's health as it appears, whether or not you have armed
 involved.
 
 The ZERO-RETENTION ENDPOINT LIST, which the notebook uses so it can offer you
-only models that keep nothing. It goes out unauthenticated when there is no
-key to send.
+only models that keep nothing. The chat reads the same list to send only the
+settings a zero-retention provider for your model accepts, and to refuse, and
+mark in the model list, a model that has no such provider. It goes out
+unauthenticated when there is no key to send.
 
 So what carries your key depends on what you have stored, which is why this
 counts paths rather than promising anything about the key. The key check is
 the only one that never goes out on its own; the model list and the proxy
 check have refresh buttons as well. The model list, both ways round, goes out
-when the chat screen loads, and the zero-retention list goes out when the
+when the chat screen loads, and the zero-retention list goes out with it,
+before a send when the copy held is older than five minutes, and when the
 notebook needs it. A locked vault is a different matter: while it is locked
 everything under the API path answers 423 except the vault's own routes and
 the `OPTIONS` method, so none of the four is reachable at all. The three

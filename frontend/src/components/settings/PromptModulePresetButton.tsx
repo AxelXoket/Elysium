@@ -10,6 +10,8 @@ import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Loader2, ToggleRight } from "lucide-react";
 
+import { Collapse } from "@/components/motion/Collapse";
+
 import { isApiError } from "@/lib/api/client";
 import { isOverBudgetError } from "@/lib/api/promptModules";
 import type {
@@ -20,6 +22,7 @@ import { getErrorMessage } from "@/lib/errors";
 
 import { promptModuleKeys, useEnablePresetDefaults } from "./promptModuleQueries";
 import { OverBudgetNotice } from "./PromptModuleOverBudget";
+import { useHeldValue } from "./useHeldValue";
 
 const LEFT_OUT_REASONS: Record<string, string> = {
   never_triggers: "it only fired on a kind of reply this app does not have",
@@ -52,7 +55,7 @@ export function PresetDefaultsButton({
         const nameOf = (id: number) => rows.find((r) => r.id === id)?.name ?? `Module ${id}`;
         setLeftOut(
           result.left_out.map(
-            (entry) => `${nameOf(entry.id)} - ${LEFT_OUT_REASONS[entry.reason] ?? entry.reason}`,
+            (entry) => `${nameOf(entry.id)}: ${LEFT_OUT_REASONS[entry.reason] ?? entry.reason}`,
           ),
         );
       },
@@ -63,8 +66,15 @@ export function PresetDefaultsButton({
     });
   };
 
+  // Held so each notice can animate shut instead of vanishing in one frame.
+  const shownOverBudget = useHeldValue(overBudget);
+  const shownError = useHeldValue(error);
+  const shownLeftOut = useHeldValue(leftOut.length > 0 ? leftOut : null);
+
+  // One block: the button, then its notices under it. A closed Collapse
+  // drops its stack margin (index.css .es-collapse), so it takes no room.
   return (
-    <>
+    <div className="space-y-2">
       <button
         type="button"
         className="settings-voice-button"
@@ -72,26 +82,32 @@ export function PresetDefaultsButton({
         onClick={run}
       >
         {enable.isPending ? (
-          <Loader2 size={13} className="animate-spin" />
+          <Loader2 size={12} className="animate-spin" />
         ) : (
-          <ToggleRight size={13} />
+          <ToggleRight size={12} />
         )}
         Turn on entries enabled in SillyTavern ({count})
       </button>
-      {overBudget && <OverBudgetNotice overBudget={overBudget} whole />}
-      {leftOut.length > 0 && (
-        <ul className="settings-voice-issues" aria-label="Left off">
-          <li>Left off, because they cannot be turned on here:</li>
-          {leftOut.map((line) => (
-            <li key={line}>{line}</li>
-          ))}
-        </ul>
-      )}
-      {error && (
-        <p className="settings-error" role="alert">
-          {error}
-        </p>
-      )}
-    </>
+      <Collapse open={overBudget != null}>
+        {shownOverBudget && <OverBudgetNotice overBudget={shownOverBudget} whole />}
+      </Collapse>
+      <Collapse open={leftOut.length > 0}>
+        {shownLeftOut && (
+          <ul className="settings-voice-issues" aria-label="Left off">
+            <li>Left off, because they cannot be turned on here:</li>
+            {shownLeftOut.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+        )}
+      </Collapse>
+      <Collapse open={error != null}>
+        {shownError && (
+          <p className="settings-error" role="alert">
+            {shownError}
+          </p>
+        )}
+      </Collapse>
+    </div>
   );
 }

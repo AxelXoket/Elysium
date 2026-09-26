@@ -31,11 +31,20 @@ const SECRETS_CTA_CODES = new Set([
   "proxy_auth_failed",
 ]);
 
-function getErrorDisplay(err: unknown): { text: string; cta?: "secrets" } {
+// The refusals whose fix lives in Settings > Prompt modules: the band gets a
+// gear that opens that page, the same way the key errors get one for
+// Security.
+const PROMPT_MODULES_CTA_CODES = new Set(["prompt_modules_over_budget"]);
+
+function getErrorDisplay(err: unknown): { text: string; cta?: "secrets" | "prompt" } {
   const parsed = parseApiError(err);
   return {
     text: parsed.message,
-    cta: SECRETS_CTA_CODES.has(parsed.detail) ? "secrets" : undefined,
+    cta: SECRETS_CTA_CODES.has(parsed.detail)
+      ? "secrets"
+      : PROMPT_MODULES_CTA_CODES.has(parsed.detail)
+        ? "prompt"
+        : undefined,
   };
 }
 
@@ -102,6 +111,7 @@ export const Composer = memo(function Composer({
   const msgFontPx = useUiStore((s) => s.msgFontPx);
   // CTA routes to "secrets" tab (renamed from "settings" in Phase 6E-A)
   const setActiveTab = useUiStore((s) => s.setActiveRightPanelTab);
+  const openSettings = useUiStore((s) => s.openSettings);
   const { data: settings, isLoading: settingsLoading, error: settingsError } = useSettings();
   const { data: models } = useModels();
 
@@ -360,6 +370,16 @@ export const Composer = memo(function Composer({
               className="shrink-0 opacity-70 hover:opacity-100 transition-opacity"
               onClick={() => setActiveTab("secrets")}
               aria-label="Go to Security"
+            >
+              <Settings size={12} />
+            </button>
+          )}
+          {errorInfo.cta === "prompt" && (
+            <button
+              type="button"
+              className="shrink-0 opacity-70 hover:opacity-100 transition-opacity"
+              onClick={() => openSettings("prompt")}
+              aria-label="Go to Prompt modules"
             >
               <Settings size={12} />
             </button>

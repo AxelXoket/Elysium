@@ -182,8 +182,8 @@ inside the repository).
 
 * The worst case is computed from the real prompts, not dF's nominal sizes;
   the nominal model is kept and a test pins it at $0.837.
-* The attack card arm (6 calls) is new: the owner asked for an attack card
-  fixture, and it is reported as information, not a gate.
+* The attack card arm (6 calls) is new: it adds an attack card fixture, and
+  it is reported as information, not a gate.
 * V3 pairs the normal layer against the sabotaged one (dF's V3 text); dF's
   judge table said SAB-OFF.
 * Smoke is 10 calls, as dF_eval_cost.py computes (dF's prose says 12).

@@ -88,6 +88,7 @@ from generated_images import (
     decode_data_url,
     image_output_enabled,
 )
+import openrouter
 import safeword_filter
 from openrouter import (
     NOTICE_FRAME_DROPPED,
@@ -97,6 +98,7 @@ from openrouter import (
     MODALITIES_WITH_IMAGE,
     finish_reasons,
     image_urls_from,
+    plan_private_params,
     validate_and_filter_gen_params,
     get_cached_model_metadata,
     complete,
@@ -714,6 +716,18 @@ def _reasoning_is_optional(model_id: str) -> bool:
     return reasoning_param(model_id) == {"enabled": False}
 
 
+async def _private_endpoints_for(model_id: str) -> list[dict] | None:
+    """This model's zero-data-retention endpoints, [] for none, None unknown.
+
+    Through the module attribute, so the one lookup is the one a test can
+    stand in for.
+    """
+    index = await openrouter.zdr_index()
+    if index is None:
+        return None
+    return openrouter.zdr_endpoints_in(index, model_id)
+
+
 def _build_provider_dict(req_provider: ProviderPolicy) -> dict:
     """Build the provider dict from config defaults + request overrides.
 
@@ -775,6 +789,16 @@ _ERROR_MAP: dict[str, tuple[int, str]] = {
     "openrouter_server_error":               (502, "openrouter_completion_error"),
     "openrouter_error":                      (502, "openrouter_completion_error"),
     "openrouter_timeout":                    (504, "openrouter_timeout"),
+    # The passing kind (429 aside, which keeps its own sentence): a provider
+    # that was down, overloaded or timed out at the gateway, or a connection
+    # that dropped. Chosen by `_provider_failure` from the exception's
+    # `retryable` flag, never from the provider's prose.
+    "openrouter_temporarily_unavailable":    (502, "openrouter_temporarily_unavailable"),
+    # A reply that came back empty with finish_reason "length": the budget
+    # went on thinking. Retrying does not help; a larger budget does.
+    "reasoning_used_reply_budget":           (502, "reasoning_used_reply_budget"),
+    # A reply that came back empty for no stated reason. Retried once.
+    "openrouter_empty_reply":                (502, "openrouter_completion_error"),
     "model_web_search_blocked":              (400, "model_web_search_blocked"),
     "model_id_carries_api_key":              (400, "model_id_carries_api_key"),
 }
@@ -794,6 +818,98 @@ RELAY_DETAILS: frozenset[str] = (
     frozenset(detail for _, detail in _ERROR_MAP.values())
     | {"openrouter_completion_error"}
 )
+
+#: Refused before sending: the model has no zero-data-retention endpoint, or
+#: none that takes the keys every chat request must carry (Q-121).
+MODEL_NO_PRIVATE_ENDPOINT = "model_no_private_endpoint"
+
+#: Reasons raised in THIS module for a reply that arrived empty.
+REASONING_BUDGET_REASON = "reasoning_used_reply_budget"
+EMPTY_REPLY_REASON = "openrouter_empty_reply"
+
+# ---------------------------------------------------------------------------
+# One automatic retry, before anything reached the reader
+# ---------------------------------------------------------------------------
+#
+# OpenRouter already fails over between providers before the first token, so
+# a failure that reaches this app has usually been tried more than once over
+# there. A second request from here covers the passing burst (a 429 with a
+# short Retry-After, a provider that restarted, a connection that dropped
+# before any output) and nothing else. A timeout is never retried: the reader
+# has already waited it out once, and a second attempt could double the wait. Two attempts in total: every attempt is a separately billed
+# generation, and there is no idempotency key. The frontend and the HTTP client
+# do not retry (httpx transports default to zero retries and none is set), so
+# this is the only layer that does.
+
+#: Attempts per send, the first included.
+MAX_PROVIDER_ATTEMPTS = 2
+#: A Retry-After longer than this is not waited out: the reader is told to wait
+#: instead of watching a spinner. Also the ceiling on any single wait.
+RETRY_AFTER_CAP_S = 4.0
+#: The wait when the provider named none.
+RETRY_BACKOFF_S = 0.75
+
+
+async def _retry_sleep(seconds: float) -> None:
+    """The wait between attempts. A seam for tests, nothing more."""
+    await asyncio.sleep(seconds)
+
+
+def _may_retry(exc: OpenRouterError, attempt: int,
+               private_endpoints: int | None) -> bool:
+    """Whether attempt number `attempt` may be followed by one more.
+
+    The CALLER owns the other half of the rule: nothing may have reached the
+    reader yet. This judges only the failure.
+    - the cap: MAX_PROVIDER_ATTEMPTS in total;
+    - only failures the raise site marked `retryable` (RETRYABLE_STATUSES, a
+      dropped connection, an empty reply). A 404 "no endpoints", a
+      400/401/402/403/413, a context overflow, any timeout (the first-token
+      one included) and an empty reply cut off by "length" are never marked;
+    - a 503 only when the preflight counted at least one private endpoint that
+      takes this request: with none it is the same answer every time;
+    - a Retry-After above RETRY_AFTER_CAP_S is honoured by NOT retrying early.
+    """
+    if attempt >= MAX_PROVIDER_ATTEMPTS:
+        return False
+    if not getattr(exc, "retryable", False):
+        return False
+    if getattr(exc, "status", None) == 503 and not private_endpoints:
+        return False
+    retry_after = getattr(exc, "retry_after", None)
+    if retry_after is not None and retry_after > RETRY_AFTER_CAP_S:
+        return False
+    return True
+
+
+def _retry_delay(exc: OpenRouterError) -> float:
+    """Seconds to wait before the next attempt."""
+    retry_after = getattr(exc, "retry_after", None)
+    if retry_after is None:
+        return RETRY_BACKOFF_S
+    return min(max(0.0, retry_after), RETRY_AFTER_CAP_S)
+
+
+def _provider_failure(exc: OpenRouterError) -> tuple[int, str]:
+    """The (status, code) a provider failure reports, from its facts.
+
+    Two kinds the reader has to tell apart (owner, item 5):
+    - NEVER for this model as it stands: an HTTP 404 from the completion
+      endpoint is OpenRouter's empty candidate pool (no endpoint passed the
+      privacy and parameter filters), the same answer every time. It gets the
+      privacy sentence, which says to pick another model.
+    - TEMPORARY: anything the raise site marked retryable, once the one retry
+      is spent or was not allowed. 429 and timeouts keep their own sentences.
+    Everything else reads the reason table as before.
+    """
+    reason = exc.reason
+    if getattr(exc, "status", None) == 404:
+        reason = "openrouter_no_provider_meets_privacy"
+    elif (getattr(exc, "retryable", False)
+          and reason not in ("openrouter_rate_limited", "openrouter_timeout",
+                             EMPTY_REPLY_REASON)):
+        reason = "openrouter_temporarily_unavailable"
+    return _ERROR_MAP.get(reason, (502, "openrouter_completion_error"))
 
 
 # ---------------------------------------------------------------------------
@@ -1047,6 +1163,14 @@ async def _prepare_completion(
     # ── Proxy health check ────────────────────────────────────────────────
     await enforce_proxy_gate()
 
+    # ── Q-121: the model's PRIVATE endpoints ─────────────────────────────
+    #
+    # After the proxy gate, because it may be an outbound GET, and before
+    # anything is assembled or written, because a model no private endpoint
+    # serves is refused here. None means the list is unknown (never fetched
+    # and the fetch failed): the send then goes out filtered the old way.
+    private_endpoints = await _private_endpoints_for(model_id)
+
     # ── Assemble messages ─────────────────────────────────────────────────
     model_id_stripped = model_id  # already stripped by validator
 
@@ -1116,6 +1240,13 @@ async def _prepare_completion(
         )
     except ValueError:
         raise HTTPException(422, "invalid_gen_params")
+
+    # Refused before the arithmetic below and before the notebook exclusions
+    # are written: a turn that cannot be sent must leave no trace. Only the
+    # REQUIRED keys decide this (optional ones are dropped further down).
+    if private_endpoints is not None and plan_private_params(
+            private_endpoints, filtered_gen_params)[2] == 0:
+        raise HTTPException(400, MODEL_NO_PRIVATE_ENDPOINT)
 
     req_max_tokens = generation_params.max_tokens
     max_tokens_val = req_max_tokens if req_max_tokens else meta_max_tokens
@@ -1219,24 +1350,40 @@ async def _prepare_completion(
         "history_trimmed": trimmed_out[0] if trimmed_out else 0,
     }
 
-    if meta and meta.get("supported_parameters"):
-        supported = set(meta["supported_parameters"])
-        filtered_gen_params = {
-            k: v for k, v in filtered_gen_params.items()
-            if k in supported or k == "stop"
-        }
-
     # D3: thinking off where the model allows it, the lowest effort and no
     # returned text where it does not; nothing when the catalogue says
-    # nothing. Added after the filter above, which only knows samplers.
-    # The Thinking switch only reaches models whose reasoning is optional
-    # (the ones that would otherwise get the disable). A mandatory or unknown
-    # model keeps its default above whatever the switch says.
+    # nothing. The Thinking switch only reaches models whose reasoning is
+    # optional (the ones that would otherwise get the disable). A mandatory or
+    # unknown model keeps its default above whatever the switch says.
     thinking = (generation_params.thinking
                 and _reasoning_is_optional(model_id_stripped))
     reasoning = reasoning_param(model_id_stripped, thinking=thinking)
-    if reasoning is not None:
-        filtered_gen_params["reasoning"] = reasoning
+
+    stop_dropped = False
+    eligible: int | None = None
+    if private_endpoints is not None:
+        # Q-121: every key, `reasoning` included (D3: "only when the model's
+        # ZDR endpoints list it"), is judged against the endpoints the request
+        # can actually land on. What is kept is accepted TOGETHER by at least
+        # one of them, so require_parameters cannot empty the pool.
+        if reasoning is not None:
+            filtered_gen_params["reasoning"] = reasoning
+        filtered_gen_params, dropped, eligible = plan_private_params(
+            private_endpoints, filtered_gen_params)
+        stop_dropped = "stop" in dropped
+    else:
+        # The list is unknown. Today's rule, unchanged: the model-level list,
+        # `stop` always kept, reasoning added after the samplers.
+        logger.info("Private endpoint list unknown; parameters filtered by "
+                    "the model-level list.")
+        if meta and meta.get("supported_parameters"):
+            supported = set(meta["supported_parameters"])
+            filtered_gen_params = {
+                k: v for k, v in filtered_gen_params.items()
+                if k in supported or k == "stop"
+            }
+        if reasoning is not None:
+            filtered_gen_params["reasoning"] = reasoning
 
     # Keep the outgoing max_tokens consistent with the (possibly reduced)
     # output reservation, so the provider cannot generate past the space
@@ -1250,6 +1397,10 @@ async def _prepare_completion(
     provider_dict = _build_provider_dict(provider)
 
     notices: list[dict] = []
+    if stop_dropped:
+        # Never silent: a reply that runs past where the user's stop sequence
+        # would have cut it looks like the model ignoring them.
+        notices.append({"type": "notice", "code": "stop_not_sent_privately"})
     if omitted_images:
         logger.warning(
             "Completion payload omitted %d image(s): chat_id=%d",
@@ -1274,7 +1425,7 @@ async def _prepare_completion(
     )
 
     return (messages, filtered_gen_params, provider_dict, notices,
-            modalities, context_notes)
+            modalities, context_notes, {"private_endpoints": eligible})
 
 
 def _with_refusals(notices: list[dict], refused: int) -> list[dict]:
@@ -1409,11 +1560,12 @@ async def _call_provider_for_chat(
     history_before_id: int | None = None,
     pending_attachments: list[dict] | None = None,
     generation: str = "send",
-) -> tuple[str, list[dict], list[tuple[bytes, str, int, int]], bool]:
+) -> tuple[str, list[dict], list[tuple[bytes, str, int, int]], bool, int]:
     """Non-streaming provider call: prepare, call OpenRouter, parse.
 
-    Returns (assistant_text, notices, generated_image_bytes, truncated) on
-    success. The notices ride back out to the caller for the same reason the
+    Returns (assistant_text, notices, generated_image_bytes, truncated,
+    retried) on success; `retried` is how many automatic retries it took
+    (see `_may_retry`). The notices ride back out to the caller for the same reason the
     SSE path emits them: this endpoint has a response body, so "the model
     never saw your picture" has somewhere to go here too, and the two paths
     must not disagree about that (P4). `truncated` is read from THIS choice's
@@ -1423,7 +1575,7 @@ async def _call_provider_for_chat(
     Raises HTTPException on any failure.
     """
     (messages, filtered_gen_params, provider_dict, notices,
-     modalities, context_notes) = await _prepare_completion(
+     modalities, context_notes, routing) = await _prepare_completion(
         chat_id=chat_id,
         model_id=model_id,
         user_message_text=user_message_text,
@@ -1439,49 +1591,77 @@ async def _call_provider_for_chat(
     # ── Call OpenRouter ───────────────────────────────────────────────────
     logger.info("Completion request: chat_id=%d", chat_id)
 
-    try:
-        raw = await complete(messages, model_id, filtered_gen_params,
-                             provider_dict, modalities=modalities)
-    except OpenRouterError as exc:
-        status, detail = _ERROR_MAP.get(exc.reason, (502, "openrouter_completion_error"))
-        raise HTTPException(status, detail)
+    # At most MAX_PROVIDER_ATTEMPTS. Nothing is persisted until this returns,
+    # so a retry can never leave a second row behind: the caller writes once,
+    # with the reply that finally arrived.
+    attempt = 0
+    retried = 0
+    while True:
+        attempt += 1
+        try:
+            raw = await complete(messages, model_id, filtered_gen_params,
+                                 provider_dict, modalities=modalities)
 
-    # ── Parse response ────────────────────────────────────────────────────
-    choices = raw.get("choices")
-    if not isinstance(choices, list) or not choices:
-        raise HTTPException(502, "invalid_openrouter_completion_response")
+            # ── Parse response ────────────────────────────────────────────
+            choices = raw.get("choices")
+            if not isinstance(choices, list) or not choices:
+                raise HTTPException(502, "invalid_openrouter_completion_response")
 
-    choice = choices[0] if isinstance(choices[0], dict) else {}
-    message = choice.get("message")
-    if not isinstance(message, dict):
-        raise HTTPException(502, "invalid_openrouter_completion_response")
-    # Read from the CHOICE, not the message - finish_reason/native_finish_reason
-    # are siblings of "message" in the OpenRouter shape, never inside it.
-    truncated = bool(finish_reasons(choice) & TRUNCATED_FINISH_REASONS)
+            choice = choices[0] if isinstance(choices[0], dict) else {}
+            message = choice.get("message")
+            if not isinstance(message, dict):
+                raise HTTPException(502, "invalid_openrouter_completion_response")
+            # Read from the CHOICE, not the message - finish_reason/
+            # native_finish_reason are siblings of "message" in the OpenRouter
+            # shape, never inside it.
+            truncated = bool(finish_reasons(choice) & TRUNCATED_FINISH_REASONS)
 
-    # Images first, because whether the reply is empty depends on the answer.
-    # Nothing is fetched here and nothing base64 survives past this call.
-    generated: list[tuple[bytes, str, int, int]] = []
-    if modalities:
-        # Off the loop: this now includes the Pillow decode and re-encode too.
-        generated, image_notices = await anyio.to_thread.run_sync(
-            _decode_generated_images, image_urls_from(message), chat_id,
-        )
-        notices.extend(image_notices)
+            # Images first, because whether the reply is empty depends on the
+            # answer. Nothing is fetched here and nothing base64 survives past
+            # this call.
+            generated: list[tuple[bytes, str, int, int]] = []
+            image_notices: list[dict] = []
+            if modalities:
+                # Off the loop: this includes the Pillow decode and re-encode.
+                generated, image_notices = await anyio.to_thread.run_sync(
+                    _decode_generated_images, image_urls_from(message), chat_id,
+                )
 
-    content = message.get("content")
-    text = content if isinstance(content, str) else ""
-    # ONE judgement, where there used to be two consecutive refusals. A reply
-    # that is only delivery tags renders as a permanently empty bubble once they
-    # are stripped (audit-2), so "visible" is the right measure - but a reply
-    # that is a PICTURE and no words is not empty, it is a picture. The four
-    # places that judge this must agree on the same bytes; see _visible_view.
-    visible = _visible_view(text).strip()
-    if not visible and not generated:
-        raise HTTPException(502, "invalid_openrouter_completion_response")
+            content = message.get("content")
+            text = content if isinstance(content, str) else ""
+            # ONE judgement, where there used to be two consecutive refusals. A
+            # reply that is only delivery tags renders as a permanently empty
+            # bubble once they are stripped (audit-2), so "visible" is the
+            # right measure - but a reply that is a PICTURE and no words is not
+            # empty, it is a picture. The four places that judge this must
+            # agree on the same bytes; see _visible_view.
+            visible = _visible_view(text).strip()
+            if not visible and not generated:
+                if not text and truncated:
+                    # Cut off by "length" before a single word: the budget went
+                    # on thinking. The same request would do the same again.
+                    raise OpenRouterError(REASONING_BUDGET_REASON)
+                if not text:
+                    raise OpenRouterError(EMPTY_REPLY_REASON, retryable=True)
+                raise HTTPException(502, "invalid_openrouter_completion_response")
+        except OpenRouterError as exc:
+            if _may_retry(exc, attempt, routing["private_endpoints"]):
+                delay = _retry_delay(exc)
+                logger.info("Provider attempt %d failed: status=%d; retrying.",
+                            attempt, int(exc.status or 0))
+                await _retry_sleep(delay)
+                retried += 1
+                continue
+            if exc.reason == EMPTY_REPLY_REASON:
+                # Unchanged wording for this path once the retry is spent.
+                raise HTTPException(502, "invalid_openrouter_completion_response")
+            status, detail = _provider_failure(exc)
+            raise HTTPException(status, detail)
+        break
 
+    notices.extend(image_notices)
     logger.info("Gen params keys: %s", list(filtered_gen_params.keys()))
-    return text, notices, generated, truncated
+    return text, notices, generated, truncated, retried
 
 
 # ---------------------------------------------------------------------------
@@ -1572,7 +1752,8 @@ async def complete_chat(chat_id: int, body: CompleteRequest) -> dict:
 
     pending_rows = _validate_request_attachments(body.attachments, body.model_id)
 
-    assistant_text, notices, generated, truncated = await _call_provider_for_chat(
+    (assistant_text, notices, generated, truncated,
+     retried) = await _call_provider_for_chat(
         chat_id=chat_id,
         model_id=body.model_id,
         user_message_text=body.message,
@@ -1625,6 +1806,7 @@ async def complete_chat(chat_id: int, body: CompleteRequest) -> dict:
         "user_message": user_msg,
         "assistant_message": asst_msg,
         "notices": notices,
+        **({"retried": retried} if retried else {}),
     }
 
 
@@ -1992,6 +2174,9 @@ async def _stream_exchange(
     # count would speak once and then go quiet exactly when the ceiling starts
     # biting every turn. One frame per turn, no merging, nothing persisted.
     context_notes: dict | None = None,
+    # Q-121: how many private endpoints take this exact request, from the
+    # preflight; None when the list was unknown. Only `_may_retry` reads it.
+    private_endpoints: int | None = None,
 ):
     """Stream one provider reply and commit it. The body all three share.
 
@@ -2231,28 +2416,65 @@ async def _stream_exchange(
         # on - and the byte-identical reply through /complete stored nothing,
         # because that path gates on `modalities`. Off has to mean off on the
         # path the app actually uses.
-        async for delta in complete_stream(
-            messages, model_id, gen_params, provider_dict,
-            modalities=modalities,
-            on_image=image_urls.append if modalities else None,
-            # A SEPARATE queue, not `notices`: those were already emitted
-            # above, before the first delta. These arrive during the stream
-            # and are drained below.
-            on_notice=_note,
-            on_finish=_on_finish,
-        ):
-            parts.append(delta)                      # RAW - storage
-            voice.feed(delta)                        # RAW - the tags are
-            # what make the delivery worth hearing, and only the raw text
-            # has them; the client never sees this view.
-            shown = stripper.feed(delta) if stripper else delta
-            if shown:
-                yield _sse_event({"type": "delta", "content": shown})
-            while late_notices:
-                yield _sse_event(late_notices.pop(0))
-            for event in voice.events():             # never waits
-                yield _sse_event(event)
-
+        # At most MAX_PROVIDER_ATTEMPTS, and a second one only while NOTHING
+        # has reached the reader: no delta, no picture. The barrier is `parts`
+        # and `image_urls` themselves, the two things every delivery goes
+        # through, so no path can deliver and still retry. OpenRouter stops
+        # its own failover at the same point. The user row was written once,
+        # before this generator started; the assistant row is written once,
+        # by finalize, after the loop. A retry adds neither.
+        attempt = 0
+        retried = 0
+        while True:
+            attempt += 1
+            finish_state[0] = False
+            try:
+                async for delta in complete_stream(
+                    messages, model_id, gen_params, provider_dict,
+                    modalities=modalities,
+                    on_image=image_urls.append if modalities else None,
+                    # A SEPARATE queue, not `notices`: those were already
+                    # emitted above, before the first delta. These arrive
+                    # during the stream and are drained below.
+                    on_notice=_note,
+                    on_finish=_on_finish,
+                ):
+                    parts.append(delta)                      # RAW - storage
+                    voice.feed(delta)                        # RAW - the tags
+                    # are what make the delivery worth hearing, and only the
+                    # raw text has them; the client never sees this view.
+                    shown = stripper.feed(delta) if stripper else delta
+                    if shown:
+                        yield _sse_event({"type": "delta", "content": shown})
+                    while late_notices:
+                        yield _sse_event(late_notices.pop(0))
+                    for event in voice.events():             # never waits
+                        yield _sse_event(event)
+                if not parts and not image_urls:
+                    # Not one byte of reply. `finish_state` is complete_stream's
+                    # "cut off" verdict, which also covers a stream that ended
+                    # without saying why; that second case is the one that
+                    # queued NOTICE_STREAM_UNFINISHED, and only the first is a
+                    # budget spent on thinking.
+                    unfinished = any(n.get("code") == NOTICE_STREAM_UNFINISHED
+                                     for n in late_notices)
+                    if finish_state[0] and not unfinished:
+                        raise OpenRouterError(REASONING_BUDGET_REASON)
+                    raise OpenRouterError(EMPTY_REPLY_REASON, retryable=True)
+            except OpenRouterError as exc:
+                if (parts or image_urls
+                        or not _may_retry(exc, attempt, private_endpoints)):
+                    raise
+                # What the failed attempt queued describes a stream nobody
+                # will see.
+                late_notices.clear()
+                delay = _retry_delay(exc)
+                logger.info("Provider attempt %d failed: status=%d; retrying.",
+                            attempt, int(exc.status or 0))
+                await _retry_sleep(delay)
+                retried += 1
+                continue
+            break
         # A tag still held at stream end was never a tag - show it now,
         # or the visible tail of the message would simply vanish.
         tail = stripper.flush() if stripper else ""
@@ -2368,6 +2590,9 @@ async def _stream_exchange(
             "model_id": model_id,
             **(context_notes or {}),
             **done,
+            # The only trace a retry leaves for the reader: how many there
+            # were. Absent on the ordinary path, so that frame is unchanged.
+            **({"retried": retried} if retried else {}),
         })
 
         # The text is done; the audio is not. Reading must never wait on
@@ -2390,7 +2615,7 @@ async def _stream_exchange(
             "Streaming %s failed: chat_id=%d reason=%s partial_kept=%s",
             label, chat_id, exc.reason, kept,
         )
-        status, detail = _provider_error_status(exc.reason)
+        status, detail = _provider_failure(exc)
         event = {"type": "error", "status": status, "code": detail}
         if kept:
             # The client keeps what it read instead of rolling it back; the
@@ -2468,7 +2693,7 @@ async def complete_chat_stream(chat_id: int, body: CompleteRequest) -> Streaming
     pending_rows = _validate_request_attachments(body.attachments, body.model_id)
 
     (messages, filtered_gen_params, provider_dict, notices,
-     modalities, context_notes) = await _prepare_completion(
+     modalities, context_notes, routing) = await _prepare_completion(
         chat_id=chat_id,
         model_id=body.model_id,
         user_message_text=body.message,
@@ -2578,6 +2803,7 @@ async def complete_chat_stream(chat_id: int, body: CompleteRequest) -> Streaming
     return StreamingResponse(
         _stream_exchange(
             context_notes=context_notes,
+            private_endpoints=routing["private_endpoints"],
             chat_id=chat_id,
             model_id=model_id_stripped,
             label="completion",
@@ -2719,7 +2945,8 @@ async def regenerate_message(chat_id: int, message_id: int,
     # Call provider first - the old assistant variants stay untouched until
     # the new one exists. history_before_id excludes the user message (it is
     # re-appended as the current turn) and the whole target variant group.
-    assistant_text, notices, generated, truncated = await _call_provider_for_chat(
+    (assistant_text, notices, generated, truncated,
+     retried) = await _call_provider_for_chat(
         chat_id=chat_id,
         model_id=body.model_id,
         user_message_text=user_text,
@@ -2774,6 +3001,7 @@ async def regenerate_message(chat_id: int, message_id: int,
         ),
         "deactivated_message_id": result["deactivated_id"],
         "notices": _with_refusals(notices, result["refused_images"]),
+        **({"retried": retried} if retried else {}),
     }
 
 
@@ -2807,7 +3035,7 @@ async def regenerate_message_stream(chat_id: int, message_id: int,
     model_id_stripped = body.model_id
 
     (messages, filtered_gen_params, provider_dict, notices,
-     modalities, context_notes) = await _prepare_completion(
+     modalities, context_notes, routing) = await _prepare_completion(
         chat_id=chat_id,
         model_id=body.model_id,
         user_message_text=user_text,
@@ -2863,6 +3091,7 @@ async def regenerate_message_stream(chat_id: int, message_id: int,
     return StreamingResponse(
         _stream_exchange(
             context_notes=context_notes,
+            private_endpoints=routing["private_endpoints"],
             chat_id=chat_id,
             model_id=model_id_stripped,
             label="regenerate",
@@ -3074,7 +3303,8 @@ async def edit_message(chat_id: int, message_id: int, body: EditRequest) -> dict
     )
     new_content = body.message.strip()
 
-    assistant_text, notices, generated, truncated = await _call_provider_for_chat(
+    (assistant_text, notices, generated, truncated,
+     retried) = await _call_provider_for_chat(
         chat_id=chat_id,
         model_id=body.model_id,
         user_message_text=new_content,
@@ -3116,6 +3346,7 @@ async def edit_message(chat_id: int, message_id: int, body: EditRequest) -> dict
         "user_message": result["user_message"],
         "assistant_message": result["assistant_message"],
         "notices": _with_refusals(notices, result["refused_images"]),
+        **({"retried": retried} if retried else {}),
     }
 
 
@@ -3142,7 +3373,7 @@ async def edit_message_stream(chat_id: int, message_id: int,
     model_id_stripped = body.model_id
 
     (messages, filtered_gen_params, provider_dict, notices,
-     modalities, context_notes) = await _prepare_completion(
+     modalities, context_notes, routing) = await _prepare_completion(
         chat_id=chat_id,
         model_id=body.model_id,
         user_message_text=new_content,
@@ -3190,6 +3421,7 @@ async def edit_message_stream(chat_id: int, message_id: int,
     return StreamingResponse(
         _stream_exchange(
             context_notes=context_notes,
+            private_endpoints=routing["private_endpoints"],
             chat_id=chat_id,
             model_id=model_id_stripped,
             label="edit",

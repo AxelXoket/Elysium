@@ -1,3 +1,5 @@
+import { formatCount } from "@/lib/formatCount";
+
 /**
  * The owner-approved warnings for prompt modules, and the few numbers the
  * page needs before it asks the server anything.
@@ -21,11 +23,19 @@ export const PROMPT_MODULE_WARNINGS = {
 /** The counter sentence with its two numbers in. Only the placeholders
  *  change; every other byte is the owner's. */
 export function formatModuleCounter(enabled: number, tokens: number): string {
-  const fmt = new Intl.NumberFormat("en-US");
   return PROMPT_MODULE_WARNINGS.counter
-    .replace("{n}", fmt.format(enabled))
-    .replace("{x}", fmt.format(tokens));
+    .replace("{n}", formatCount(enabled))
+    .replace("{x}", formatCount(tokens));
 }
+
+/**
+ * What the counter says before the list is known, and when it could not be
+ * read. The sentence carries numbers, and a
+ * number the page does not have would be a false statement: "0 modules"
+ * while modules are on and being sent.
+ */
+export const MODULE_COUNTER_CHECKING = "Active modules: checking…";
+export const MODULE_COUNTER_FAILED = "Active modules: could not load";
 
 /** Mirror of shared/prompt_module_limits.json, the fields the page reads. */
 export const PROMPT_MODULE_LIMITS = {
@@ -37,6 +47,14 @@ export const PROMPT_MODULE_LIMITS = {
   reply_length_words_allowed: [150, 300],
   plain_json_format: "elysium.prompt-modules",
   filename_header: "X-Prompt-Module-Filename",
+} as const;
+
+/** The line beside Import: why it is off, or what happens when it is on. */
+export const IMPORT_HINTS = {
+  noFile: "Choose a file first. Every imported module starts off.",
+  badFile: "Choose a different file.",
+  noConsent: "Turn on the switch above to import.",
+  ready: "Every imported module starts off.",
 } as const;
 
 /** File types the import accepts. */
@@ -124,6 +142,88 @@ export function badgeLabel(code: string, placement?: BadgePlacement): string {
   }
 }
 
+
+// SillyTavern words, in plain English ---------------------------------------
+
+/**
+ * A SillyTavern placeholder ("marker") holds no text: it only says where
+ * something went in SillyTavern's prompt. The raw identifiers
+ * ("chatHistory") mean nothing to someone who never opened SillyTavern's
+ * Prompt Manager, so the page says what the slot was.
+ */
+const PLACEHOLDER_NAMES: Record<string, string> = {
+  chatHistory: "Chat history",
+  worldInfoBefore: "World info (before the character)",
+  worldInfoAfter: "World info (after the character)",
+  dialogueExamples: "Example dialogue",
+  charDescription: "Character description",
+  charPersonality: "Character personality",
+  scenario: "Scenario",
+  personaDescription: "Persona description",
+};
+
+export function placeholderName(identifier: string): string {
+  return PLACEHOLDER_NAMES[identifier] ?? identifier;
+}
+
+/** "Chat history goes here": the line a placeholder shows in the list. */
+export function placeholderLine(identifier: string): string {
+  return `${placeholderName(identifier)} goes here`;
+}
+
+/** SillyTavern generation types this app does not have, by what they do. */
+const TRIGGER_NAMES: Record<string, string> = {
+  impersonate: "Impersonate (the model writing as you)",
+  quiet: "quiet background prompts",
+  continue: "Continue",
+};
+
+/** "Impersonate (...) and Continue", for a report line. */
+export function triggerList(triggers: string[]): string {
+  const words = triggers.map((t) => TRIGGER_NAMES[t] ?? t);
+  if (words.length <= 1) return words[0] ?? "generations";
+  return `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`;
+}
+
+/**
+ * The preset keys the import removes by exact name
+ * (backend/prompt_modules/parsers.py _SECRET_KEYS_EXACT), in words. Any other
+ * removed key is shown as it is: it was caught by its shape (a password, a
+ * token), and its own name is the most honest description of it.
+ */
+const SECRET_NAMES: Record<string, string> = {
+  proxy_password: "Proxy password",
+  reverse_proxy: "Reverse proxy address",
+  custom_url: "Custom server address",
+  custom_include_headers: "Custom request headers",
+  custom_include_body: "Custom request body",
+};
+
+export function secretName(key: string): string {
+  return SECRET_NAMES[key] ?? key;
+}
+
+/**
+ * Preset fields the report names in words. A field it does not know keeps
+ * its own key: that is the only honest name the page has for it.
+ */
+const PRESET_FIELD_NAMES: Record<string, string> = {
+  temperature: "Temperature",
+  top_p: "Top P",
+  top_k: "Top K",
+  min_p: "Min P",
+  frequency_penalty: "Frequency penalty",
+  presence_penalty: "Presence penalty",
+  repetition_penalty: "Repetition penalty",
+  openai_max_tokens: "Max new tokens",
+  openai_max_context: "Context size",
+  assistant_prefill: "Assistant prefill",
+  "extensions.regex_scripts": "Regex scripts",
+};
+
+export function presetFieldName(key: string): string {
+  return PRESET_FIELD_NAMES[key] ?? key;
+}
 
 // Sources and modes ----------------------------------------------------------
 

@@ -10,10 +10,12 @@ Privacy invariants:
     - This module does NOT import requests, urllib.request, or keyring.
 """
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, HTTPException
 
+import openrouter
 from openrouter import fetch_models, model_id_blocked, OpenRouterError
 from proxy_health import enforce_proxy_gate
 
@@ -32,10 +34,13 @@ async def list_openrouter_models(refresh: bool = False) -> dict:
     # 1. Proxy gate
     await enforce_proxy_gate()
 
-    # 2. Fetch models
+    # 2. Fetch models, and the private endpoint list beside them (Q-121). The
+    # second never raises: unknown is an answer, and the list still loads.
+    zdr_task = asyncio.ensure_future(openrouter.zdr_index(refresh=refresh))
     try:
         data = await fetch_models(refresh=refresh)
     except OpenRouterError as e:
+        zdr_task.cancel()
         # Every branch below raises `reason` itself rather than a literal, so
         # the source shows a variable name and nothing about what it can hold.
         # RELAY_DETAILS at the bottom of this file is that answer, and it is
@@ -60,7 +65,19 @@ async def list_openrouter_models(refresh: bool = False) -> dict:
     # model, because the metadata lookups read it by id.
     kept = [m for m in data.get("models") or []
             if not model_id_blocked(str(m.get("id") or ""))]
-    return {**data, "models": kept, "count": len(kept)}
+
+    # 4. Q-121: how many zero-data-retention endpoints each model has that
+    # take the keys every chat request carries. 0 is a model the send point
+    # refuses (model_no_private_endpoint), so the picker shows it disabled
+    # with the reason instead of hiding it. None: the list is unknown, and
+    # nothing is claimed either way. The same count the send point uses.
+    index = await zdr_task
+    rows = [{**m, "zdr_endpoints": (
+                None if index is None else openrouter.private_endpoint_count(
+                    openrouter.zdr_endpoints_in(index, str(m.get("id") or ""))))}
+            for m in kept]
+    return {**data, "models": rows, "count": len(rows),
+            "zdr_known": index is not None}
 
 
 #: Every detail the /models route can put in front of a user.

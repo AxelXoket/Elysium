@@ -346,6 +346,32 @@ CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
 #: asymmetry as the README's PROSE_CLAIMS: a reworded or deleted sentence
 #: fails, a brand new one does not, and that is why DOCUMENT_DIGEST exists.
 PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    # Q-121 (26 Sep 2026). One automatic retry, only before any reply text,
+    # the same body, never a third attempt; and the zero-retention list used
+    # by the chat to shape the request and to refuse and mark a model.
+    ("the app sends the identical request once more", (
+        "tests/test_zdr_routing.py::TestRetry"
+        "::test_a_passing_failure_is_retried_once_and_answered",
+        "tests/test_zdr_routing.py::TestWhatIsSent"
+        "::test_the_provider_block_is_untouched",
+    )),
+    ("Never a third time, and never once any of the reply has arrived", (
+        "tests/test_zdr_routing.py::TestRetry::test_the_cap_is_two_attempts",
+        "tests/test_zdr_routing.py::TestRetry"
+        "::test_nothing_is_retried_after_the_first_delta",
+    )),
+    ("settings a zero-retention provider for your model accepts", (
+        "tests/test_zdr_routing.py::TestWhatIsSent"
+        "::test_the_private_list_decides_not_the_model_level_one",
+        "tests/test_zdr_routing.py::TestWhatIsSent"
+        "::test_a_key_the_private_list_carries_is_sent",
+    )),
+    ("mark in the model list, a model that has no such provider", (
+        "tests/test_zdr_routing.py::TestPreflight"
+        "::test_no_private_endpoint_is_refused_before_anything",
+        "tests/test_zdr_routing.py::TestPreflight"
+        "::test_the_model_list_marks_it_instead_of_hiding_it",
+    )),
     # Prompt modules (26 Sep 2026). The upload is read in memory, the rows
     # live in the vault only, secrets go before anything is kept, the report
     # names paths and never values, and prompt text is deliberately not
@@ -1681,7 +1707,7 @@ def _acknowledged_problems(
 #: sample - so this covers all of it. Updating this constant is the
 #: deliberate act that means a human decided what a change claims and
 #: registered a proof for it.
-DOCUMENT_DIGEST = "e2c5c8e845ab78a85d657bf8aa98018b0205e1749d0687098b9f9d2177728a6b"
+DOCUMENT_DIGEST = "a9891bd7e4168df5542aba02b2b9778a0cef78beacd4067a535b613fe4502e1d"
 
 
 class TestEveryProvenClaimHasAProof:

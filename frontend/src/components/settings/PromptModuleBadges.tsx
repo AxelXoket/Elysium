@@ -1,40 +1,36 @@
 /**
- * Badges on a module: where it behaves differently here than in the tool it
+ * Notes on a module: where it behaves differently here than in the tool it
  * came from.
  *
  * The server sends stable keys (backend/prompt_modules/parsers.py BADGE_*);
  * this names the ones the page knows. A key it does not know is shown as the
- * key itself rather than hidden, because a badge exists to say "this is not
+ * key itself rather than hidden, because a note exists to say "this is not
  * what it was", and dropping one says the opposite.
+ *
+ * Plain hint lines, not pills: in this dialog a rounded chip is something to
+ * click (the Delivery presets), and these are sentences to read. As text they
+ * also wrap instead of being cut off at the dialog's edge.
  */
-import { Badge } from "@/components/ui/badge";
-
 import { badgeLabel, type BadgePlacement } from "./promptModuleText";
 
 export function ModuleBadges({
   badges,
   placement,
+  className = "",
 }: {
   badges: string[];
   placement?: BadgePlacement;
+  /** Extra layout, e.g. an indent where the notes sit under a name in a list. */
+  className?: string;
 }) {
   if (badges.length === 0) return null;
   return (
-    <span className="mt-1 flex flex-wrap gap-1">
+    <ul className={`mt-0.5 ${className}`.trim()} aria-label="Differences from SillyTavern">
       {badges.map((code, index) => (
-        <Badge
-          key={`${code}-${index}`}
-          variant="outline"
-          className="font-normal"
-          data-badge={code}
-          style={{
-            borderColor: "var(--color-es-glass-border-dark)",
-            color: "var(--color-es-text-muted)",
-          }}
-        >
+        <li key={`${code}-${index}`} className="settings-hint" data-badge={code}>
           {badgeLabel(code, placement)}
-        </Badge>
+        </li>
       ))}
-    </span>
+    </ul>
   );
 }
