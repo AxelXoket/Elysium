@@ -39,6 +39,7 @@ import config
 import database
 import launch_token
 import passphrase_strength
+import prompt_layer
 import secure_delete
 import vault_state
 import crypto
@@ -452,6 +453,17 @@ def _sweep_crashed_rotation_backups(key: bytes) -> list[str]:
     return left
 
 
+def _drop_prompt_state() -> None:
+    """Decrypted card and module text sits in the prompt sanitizer's cache,
+    and the per-chat salt key beside it; every path that clears the vault key
+    drops both. Never raises: the steps after it on the lock path (voice
+    wipe, screen privacy, proxy client) must run whatever happens here."""
+    try:
+        prompt_layer.on_vault_lock()
+    except Exception:                                         # noqa: BLE001
+        logger.warning("Could not drop the prompt cache on lock.")
+
+
 def _bootstrap_unlocked() -> str | None:
     """Deferred, SELF-HEALING startup work that needs the key. Idempotent and
     run on every init/unlock, so a state left half-finished by a crashed or
@@ -470,6 +482,8 @@ def _bootstrap_unlocked() -> str | None:
     Returns the plaintext backup path if a migration ran this call, else None.
     """
     _purge_voice_cache()
+    # The lock marked the prompt sanitizer's cache unwritable; unlock lifts it.
+    prompt_layer.on_vault_unlock()
     # What nobody has read, counted once. A COUNT, not a scan: the offer goes
     # on the screen and the reader decides whether to spend anything on it.
     # See notebook_store.unread_backlog.
@@ -829,6 +843,7 @@ async def vault_init(body: PassphraseBody) -> dict:
         except Exception:
             # Leave no half-open state: a failed bootstrap relocks the vault.
             vault_state.clear_key()
+            _drop_prompt_state()
             await _lock_down_voice()
             logger.exception("Vault init bootstrap failed")
             raise HTTPException(500, "vault_init_failed")
@@ -1047,6 +1062,7 @@ async def vault_unlock(body: PassphraseBody) -> dict:
             migrated_backup = await anyio.to_thread.run_sync(_bootstrap_unlocked)
         except Exception:
             vault_state.clear_key()
+            _drop_prompt_state()
             await _lock_down_voice()
             logger.exception("Vault unlock bootstrap failed")
             raise HTTPException(500, "vault_unlock_failed")
@@ -1118,6 +1134,7 @@ async def lock_vault_now(reason: str = "request") -> list[str]:
             logger.warning("Notebook worker did not stand down cleanly.")
 
         vault_state.clear_key()
+        _drop_prompt_state()
         # The single funnel: the idle watchdog comes through here too, so the
         # window stops being protected the moment the conversation stops being
         # on screen - and only then.
@@ -1309,6 +1326,7 @@ async def vault_change_passphrase(body: ChangePassphraseBody) -> dict:
                 # so a failed bootstrap never leaves the key resident; the next
                 # unlock self-heals (bootstrap is idempotent).
                 vault_state.clear_key()
+                _drop_prompt_state()
                 await _lock_down_voice()
                 logger.exception("Post-change bootstrap failed; vault re-locked")
         # A COMPLETE database still encrypted under the passphrase being

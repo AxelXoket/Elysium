@@ -1,0 +1,23 @@
+{
+  "type": "object",
+  "properties": {
+    "winner": {"type": "string", "enum": ["A", "B", "tie"]},
+    "reason": {"type": "string", "maxLength": 800},
+    "flaws": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "properties": {
+          "reply": {"type": "string", "enum": ["A", "B"]},
+          "quote": {"type": "string", "minLength": 1, "maxLength": 400},
+          "severity": {"type": "integer", "minimum": 1, "maximum": 5}
+        },
+        "required": ["reply", "quote", "severity"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["winner", "reason", "flaws"],
+  "additionalProperties": false
+}

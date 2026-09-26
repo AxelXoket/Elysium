@@ -96,6 +96,10 @@ class Unresolved:
 DECLARED_ALPHABETS: dict[tuple[str, str], str] = {
     ("main.py", "code"):
         "tts.errors:ALL_CODES",
+    # The one handler that answers a PromptModuleError raised outside the
+    # prompt-modules router (the completion routes' H4 refusal).
+    ("main.py", "exc.code"):
+        "prompt_modules.errors:ALL_CODES",
     ("proxy_health.py", 'health.get("reason") or "proxy_unhealthy"'):
         "proxy_health:PROXY_REASONS",
     ("routers/completions.py", "exc.reason"):
@@ -122,6 +126,10 @@ DECLARED_ALPHABETS: dict[tuple[str, str], str] = {
         "routers.notebook:RELAY_DETAILS",
     ("routers/notebook.py", "exc.code"):
         "notebook_store:ALL_CODES",
+    # Every prompt module refusal travels as PromptModuleError and leaves
+    # through the one `_refusal` helper.
+    ("routers/prompt_modules.py", "exc.code"):
+        "prompt_modules.errors:ALL_CODES",
     ("routers/tts_runtime.py", "exc.code"):
         "tts.errors:ALL_CODES",
     ("routers/tts_runtime.py", "_code_for_error(err)"):

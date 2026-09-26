@@ -184,6 +184,13 @@ CONTENT_DENYLIST = frozenset({
     # discard half of a tuple unpack, and a name being ignored today is no
     # reason for the gate to stop seeing it.
     "chunk_text", "haystacks", "folded_evidence", "_body",
+    # Added with prompt modules. An imported file's entry (`raw_entry`, and
+    # its stored JSON copy `raw_entry_json`), the file's name as the user
+    # saved it (`filename`, `source_filename`), a module's name
+    # (`module_name`), a preset entry's author note (`note`) and the persona
+    # name the macros fill in (`user_name`) are all user text.
+    "raw_entry", "raw_entry_json", "filename", "source_filename",
+    "module_name", "note", "user_name",
 })
 
 #: Calls that build a string out of what they are given. Used only to decide

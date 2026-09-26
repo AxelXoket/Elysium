@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import {
   CONTEXT_BUDGET_MIN,
   MAX_STOP_SEQUENCES,
+  SAMPLER_UNSET_DISPLAY,
   SEED_MAX,
   SEED_MIN,
   clampNumber,
@@ -23,13 +24,15 @@ import {
   type GenerationSettingsValues,
 } from "./GenerationSettingsContext";
 import { isParamSupportedByModel } from "@/lib/generation";
-import { hasOutputModality } from "@/lib/models/modelHelpers";
+import { getReasoningMode, hasOutputModality } from "@/lib/models/modelHelpers";
 import { useSettings, useSetImageOutput } from "@/lib/query/settings";
 import { ImageOutputSetting } from "./ImageOutputSetting";
+import { ThinkingSetting } from "./ThinkingSetting";
 import type { Model } from "@/lib/schemas/models";
 import { SlidersHorizontal, X } from "lucide-react";
 
 type NumericSettingKey = Exclude<keyof GenerationSettingsValues, "seed">;
+type SamplerSettingKey = keyof typeof SAMPLER_UNSET_DISPLAY;
 type SupportedGenerationKey =
   | "temperature"
   | "top_p"
@@ -57,8 +60,16 @@ export function GenerationSettingsDialog({
   selectedModel,
 }: GenerationSettingsDialogProps) {
   const [open, setOpen] = useState(false);
-  const { settings, setSetting, stopSequences, setStopSequences, resetAll } =
-    useGenerationSettings();
+  const {
+    settings,
+    setSetting,
+    stopSequences,
+    setStopSequences,
+    thinking,
+    setThinking,
+    resetAll,
+  } = useGenerationSettings();
+  const reasoningMode = getReasoningMode(selectedModel);
   // The VAULT settings, distinct from the generation values above: this one
   // lives server-side because it changes the outgoing request.
   const vaultSettings = useSettings();
@@ -102,6 +113,10 @@ export function GenerationSettingsDialog({
 
   const setNumeric = (key: NumericSettingKey, value: number) => {
     setSetting(key, value);
+  };
+  // D1: a sampler goes back to unset (not sent) rather than to a number.
+  const clearSampler = (key: SamplerSettingKey) => {
+    setSetting(key, null);
   };
 
   const setSeed = (rawValue: string) => {
@@ -180,6 +195,8 @@ export function GenerationSettingsDialog({
             <RangeSetting
               label="Temperature"
               value={displayedSettings.temperature}
+              unsetDisplay={SAMPLER_UNSET_DISPLAY.temperature}
+              onClear={() => clearSampler("temperature")}
               min={0}
               max={2}
               step={0.05}
@@ -190,6 +207,8 @@ export function GenerationSettingsDialog({
             <RangeSetting
               label="Top P"
               value={displayedSettings.top_p}
+              unsetDisplay={SAMPLER_UNSET_DISPLAY.top_p}
+              onClear={() => clearSampler("top_p")}
               min={0}
               max={1}
               step={0.01}
@@ -200,6 +219,8 @@ export function GenerationSettingsDialog({
             <RangeSetting
               label="Top K"
               value={displayedSettings.top_k}
+              unsetDisplay={SAMPLER_UNSET_DISPLAY.top_k}
+              onClear={() => clearSampler("top_k")}
               min={0}
               max={200}
               step={1}
@@ -214,6 +235,8 @@ export function GenerationSettingsDialog({
             <RangeSetting
               label="Repetition penalty"
               value={displayedSettings.repetition_penalty}
+              unsetDisplay={SAMPLER_UNSET_DISPLAY.repetition_penalty}
+              onClear={() => clearSampler("repetition_penalty")}
               min={0.8}
               max={1.5}
               step={0.01}
@@ -259,6 +282,18 @@ export function GenerationSettingsDialog({
               the editor blocked a feature that works AND kept sending the
               chips it had greyed out - generation truncated at "Human:" on a
               model the UI had just said did not support stop. */}
+          {/* D3. Only models that list reasoning show it; the server applies
+              it to optional reasoning only. */}
+          {reasoningMode !== "none" && (
+            <GenerationSection title="Thinking">
+              <ThinkingSetting
+                enabled={thinking}
+                mode={reasoningMode}
+                onChange={setThinking}
+              />
+            </GenerationSection>
+          )}
+
           <GenerationSection title="Stop sequences">
             <StopSequencesSetting
               sequences={stopSequences}
@@ -337,19 +372,27 @@ function RangeSetting({
   helper,
   disabled = false,
   integer = false,
+  unsetDisplay,
+  onClear,
   onChange,
 }: {
   label: string;
-  value: number;
+  /** null: unset, the provider's own default applies (D1). */
+  value: number | null;
   min: number;
   max: number;
   step: number;
   helper: string;
   disabled?: boolean;
   integer?: boolean;
+  /** What the control shows while unset. Display only, never sent. */
+  unsetDisplay?: number;
+  /** Present on a sampler that can go back to unset. */
+  onClear?: () => void;
   onChange: (value: number) => void;
 }) {
-  const normalizedValue = clampNumber(value, min, max);
+  const unset = value === null;
+  const normalizedValue = clampNumber(value ?? unsetDisplay ?? min, min, max);
   const commitValue = (next: number) => {
     const clamped = clampNumber(next, min, max);
     onChange(integer ? Math.round(clamped) : Number(clamped.toFixed(2)));
@@ -359,6 +402,24 @@ function RangeSetting({
     <div className={`generation-control ${disabled ? "is-disabled" : ""}`}>
       <div className="flex items-center justify-between gap-3">
         <label className="text-xs font-semibold">{label}</label>
+        {unset ? (
+          <span className="generation-helper" data-testid={`${label} unset`}>
+            Provider default
+          </span>
+        ) : (
+          onClear && (
+            <button
+              type="button"
+              aria-label={`Use the provider default for ${label}`}
+              title="Use the provider default"
+              className="shrink-0 opacity-60 transition-opacity hover:opacity-100"
+              disabled={disabled}
+              onClick={onClear}
+            >
+              <X size={13} />
+            </button>
+          )
+        )}
         <DraftNumberInput
           ariaLabel={`${label} value`}
           min={min}

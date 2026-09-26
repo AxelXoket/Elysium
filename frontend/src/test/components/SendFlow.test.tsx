@@ -196,7 +196,8 @@ describe("SendFlow", () => {
     });
   });
 
-  // T-45: FE-4B defaults are sent safely
+  // T-45: FE-4B defaults are sent safely. D1: the samplers default to unset,
+  // and an unset sampler is not in the body at all.
   it("T-45: POST body includes safe generation defaults", async () => {
     const user = userEvent.setup();
     setupReadyState();
@@ -224,13 +225,7 @@ describe("SendFlow", () => {
       );
       expect(postCalls.length).toBeGreaterThanOrEqual(1);
       const body = JSON.parse((postCalls[0][1] as RequestInit).body as string);
-      expect(body.generation_params).toEqual({
-        temperature: 0.8,
-        top_p: 0.9,
-        top_k: 40,
-        repetition_penalty: 1.05,
-        max_tokens: 1024,
-      });
+      expect(body.generation_params).toEqual({ max_tokens: 1024 });
       expect(body.context_budget_tokens).toBe(16384);
       expect(body.generation_params).not.toHaveProperty("seed");
       expect(body.generation_params).not.toHaveProperty("context_budget_tokens");

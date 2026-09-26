@@ -168,7 +168,7 @@ class TestNoBracketCrossesTheWire:
         """The flicker check, end to end: what streamed onto the screen equals
         what the refresh after `done` renders."""
         _enable_voice(client, monkeypatch, tmp_path)
-        raw = "[seductive] I missed you... [low voice] come closer. See [docs](https://x.y)."
+        raw = "[warm] There you are... [low voice] come closer. See [docs](https://x.y)."
         _capture_payload(monkeypatch, [raw[i:i + 5] for i in range(0, len(raw), 5)])
         chat_id = _mk_chat(client)
         r = client.post(f"/api/v1/chats/{chat_id}/complete/stream",

@@ -44,7 +44,7 @@ import audio_sweep
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 from config import (
     SECRET_API_KEY,
@@ -54,8 +54,14 @@ from config import (
     IMAGE_TOKEN_ESTIMATE,
     MAX_ATTACHMENTS_PER_MESSAGE,
 )
+import card_macros
 import notebook_store
+import prompt_layer
+import prompt_sanitizer
 import voice_tags
+from prompt_modules import budget as pm_budget
+from prompt_modules import errors as pm_errors
+from prompt_modules import store as pm_store
 from database import get_db
 from typing import Annotated, Literal
 
@@ -82,6 +88,7 @@ from generated_images import (
     decode_data_url,
     image_output_enabled,
 )
+import safeword_filter
 from openrouter import (
     NOTICE_FRAME_DROPPED,
     NOTICE_STREAM_UNFINISHED,
@@ -94,6 +101,8 @@ from openrouter import (
     get_cached_model_metadata,
     complete,
     complete_stream,
+    model_id_blocked,
+    reasoning_param,
 )
 from proxy_health import enforce_proxy_gate
 
@@ -179,6 +188,11 @@ class GenerationParams(BaseModel):
     stop: str | Annotated[
         list[str], Field(max_length=MAX_STOP_SEQUENCES_READ)
     ] | None = None
+    # D3, the "Thinking" switch. Not a sampler and never forwarded under this
+    # name: validate_and_filter_gen_params drops it (it is not on the numeric
+    # allow-list), and _prepare_completion reads it only to choose the
+    # `reasoning` field. Strict, so "true" as a string is a 422, not a yes.
+    thinking: StrictBool = False
 
     @field_validator(
         "temperature", "top_p", "top_k", "min_p", "top_a",
@@ -282,38 +296,39 @@ class CompleteRequest(SpeakOptions):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _build_system_block(char_row) -> str:
-    """Build the system-role message from character fields.
+def _col(row, name: str):
+    """One column of a sqlite Row or a plain dict; None when it is absent."""
+    try:
+        return row[name]
+    except (KeyError, IndexError, TypeError):
+        return None
 
-    Sections with empty (stripped) values are omitted.
-    Non-empty sections are separated by double newlines.
+
+class _CardRow(dict):
+    """A character row with every card column present (None when absent)."""
+
+    _KEYS = ("name", "system_prompt", "description", "personality",
+             "scenario", "mes_example", "post_history_instruction")
+
+    def __init__(self, row) -> None:
+        super().__init__({k: _col(row, k) for k in self._KEYS})
+
+
+def _build_system_block(char_row, user_name: str = card_macros.DEFAULT_USER_NAME) -> str:
+    """The labelled card block (modes a and c), without the final note.
+
+    K-31. The character's NAME reaches the model as a LABEL, the persona
+    header's twin, not as "You are {name}.": a header states the fact and
+    leaves the framing to whoever wrote the card. A blank name gives no
+    header at all, so a hand-edited vault never produces "[Character: ]".
+
+    The text is what is SENT: macros rendered with the sanitized card name,
+    then the sanitizer (prompt_sanitizer), then trimmed. The stored card is
+    untouched.
     """
-    sections = []
-    # K-31. The character's NAME never reached the model at all - five fields
-    # went out and the one word naming who is speaking was not among them. The
-    # user's persona has carried its name since the beginning
-    # (_build_persona_block below), so the model was told who it was talking
-    # TO and not who it was playing.
-    #
-    # A LABEL, not an instruction, and the persona header's exact twin. "You
-    # are {name}." was the alternative and it competes with the card: an
-    # author who has already set the voice in system_prompt now has the app
-    # talking over them. A header states the fact and leaves the framing to
-    # whoever wrote it.
-    name = (char_row["name"] or "").strip()
-    if name:
-        sections.append(f"[Character: {name}]")
-    for label, field in [
-        ("System Prompt", "system_prompt"),
-        ("Description", "description"),
-        ("Personality", "personality"),
-        ("Scenario", "scenario"),
-        ("Example Dialogue", "mes_example"),
-    ]:
-        value = (char_row[field] or "").strip()
-        if value:
-            sections.append(f"[{label}]\n{value}")
-    return "\n\n".join(sections)
+    card = prompt_layer.card_text(_CardRow(char_row), user_name)
+    card.final_note = ""
+    return prompt_layer.labelled_card_block(card)
 
 
 def _build_persona_block(persona_row) -> str:
@@ -460,75 +475,86 @@ def _assemble_messages(
     image_blobs: dict[str, bytes] | None = None,
     voice_block: str = "",
     omitted_images: list[int] | None = None,
-    # FAZ 2. Three blocks, three different authorities, and they default to
-    # empty so every existing caller keeps its exact behaviour:
+    # Three blocks, three different authorities, and they default to empty:
     #   boundary_block      - standing rules; counted, never dropped
-    #   notebook_user_block - what the person wrote; system channel, by persona
-    #   notebook_model_block- what the model wrote; tail, by the PHI
+    #   notebook_user_block - what the person wrote; system message, by persona
+    #   notebook_model_block- what the model wrote; the tail (or the end of
+    #                         the system message, prompt_layer switch)
     boundary_block: str = "",
     notebook_user_block: str = "",
     notebook_model_block: str = "",
     # Out-param, same shape as omitted_images: the trim loop counts what it
     # drops so the turn can say so instead of dropping history in silence.
     trimmed_out: list[int] | None = None,
+    *,
+    # Mode b's <reminder>: the last thing in the tail.
+    reminder_block: str = "",
+    # Every ENABLED module as dicts of id, name, content (the text as sent)
+    # and `sent` (whether its text is inside `system_block` this turn). H4
+    # counts them all, worst case (dF 5.1); the trim counts the sent ones.
+    modules: list[dict] | None = None,
 ) -> list[dict]:
-    """Build the final messages list with context budget truncation.
+    """ONE system message, the history, and the user message with the tail.
 
-    history entries may carry an "attachments" list (user messages only);
-    pending_attachments belong to the current user_message. Each image costs
-    a flat _IMAGE_CHAR_COST in the trim math.
+    `system_block` is the head of the system message (salt, modules or the
+    layer, the card block); `post_history_instruction` is the card's final
+    note, placed right after it under its label (empty in mode b, where it
+    sits in the layer's author slot). Then persona, Limits, the user's notes
+    and voice. Parts are separated by one blank line.
 
-    Raises HTTPException(400, "context_too_large") if even the system block
-    plus persona plus the current user message exceeds the available budget.
+    The tail (model notes, then mode b's <reminder>) is folded into the LAST
+    user message after the user's own text, which is never altered; a message
+    carrying images gets it as its own final text part. Several system
+    messages broke some chat templates (Qwen 3.5+, pre-V7 Mistral) and one
+    (gpt-oss) silently dropped every system message after the first, Limits
+    included (PK-04).
+
+    Every part is counted BEFORE the trim. Refusals, in order:
+      boundaries_do_not_fit       the limits alone cannot fit
+      context_too_large           everything but the modules cannot fit
+      prompt_modules_over_budget  H4: the modules would take more than half
+                                  of what the rest leaves for history
     """
-    # post_history_instruction is appended unconditionally after the trim, so
-    # its length must be reserved up front - otherwise a large PHI silently
-    # pushes the real payload past the model context. (The frontend estimator
-    # already charges PHI to fixed cost; this keeps backend and gauge aligned.)
-    phi_chars = len(post_history_instruction.strip()) if post_history_instruction else 0
+    system_text, tail = _system_and_tail(
+        system_block, post_history_instruction, persona_block, boundary_block,
+        notebook_user_block, voice_block, notebook_model_block, reminder_block)
 
     available = context_budget_chars - max_tokens_chars
-    # The voice-delivery block (V4) is reserved like the PHI: injected
-    # unconditionally when voice is on, so unbudgeted it would silently push
-    # the payload past the model context on long chats.
-    # BEFORE the trim, and this ordering is the whole of it. `system_chars` is
-    # what the loop below subtracts from `available` to decide how much history
-    # survives; a block added after this sum would be sent anyway and the trim
-    # would over-drop by exactly its size, with no counter noticing.
-    #
-    # Boundaries are counted here too but are NOT in the droppable set - see
-    # notebook_store.BoundariesDoNotFit. They are the one block that refuses
-    # rather than shrinks.
-    notebook_chars = (len(notebook_user_block) + len(notebook_model_block)
-                      + len(boundary_block))
-    system_chars = (len(system_block) + len(persona_block) + phi_chars
-                    + len(voice_block) + notebook_chars)
-    user_msg_chars = _entry_chars(user_message, pending_attachments,
-                                  include_images)
-    min_required = system_chars + user_msg_chars
+    # BEFORE the trim, and this ordering is the whole of it: `fixed_chars` is
+    # what the loop below subtracts from `available` to decide how much
+    # history survives. A part added after this sum would be sent anyway and
+    # the trim would keep history there is no room for.
+    user_msg_chars = (_entry_chars(user_message, pending_attachments,
+                                   include_images)
+                      + prompt_layer.tail_chars(tail))
+    fixed_chars = len(system_text) + user_msg_chars
+    module_chars = pm_budget.module_addition_chars(
+        [m["content"] for m in modules or [] if m.get("sent", True)])
 
-    if min_required > available:
+    if fixed_chars - module_chars > available:
         # The limits are the one block that refuses instead of shrinking. If
         # they do not fit, generating anyway would mean speaking WITHOUT rules
-        # the user believes are in force - and nothing would say so. That is
-        # the documented lorebook failure: the budget runs out and entries stop
-        # activating while their keywords are right there in the prompt.
+        # the user believes are in force - and nothing would say so.
         if boundary_block and len(boundary_block) + user_msg_chars > available:
             raise HTTPException(400, "boundaries_do_not_fit")
+        # The card alone overflowing keeps its old name: a module is never
+        # blamed for a card that does not fit without any module.
+        raise HTTPException(400, "context_too_large")
+    if modules:
+        _check_module_budget(modules, available, fixed_chars - module_chars)
+    if fixed_chars > available:
         raise HTTPException(400, "context_too_large")
 
     # Trim history from oldest end until it fits
-    remaining = available - system_chars - user_msg_chars
+    remaining = available - fixed_chars
     history_chars = sum(
         _entry_chars(m["content"], m.get("attachments"), include_images,
                      role=m["role"])
         for m in history
     )
-    # The count exists because the silence did. History has always been trimmed
-    # oldest-first with nothing recording it - so a conversation could lose ten
-    # turns and the only trace was the frontend gauge. Shipping a notice for the
-    # notebook's own truncation while leaving this silent would teach the user
-    # that dropped context gets announced, which would then be false.
+    # The count exists because the silence did: history has always been
+    # trimmed oldest-first, and a notice for the notebook alone would teach
+    # that dropped context gets announced.
     trimmed = 0
     while history_chars > remaining and history:
         dropped = history.pop(0)
@@ -541,32 +567,10 @@ def _assemble_messages(
     if trimmed_out is not None:
         trimmed_out.append(trimmed)
 
-    # Build final list
     blobs = image_blobs or {}
     messages: list[dict] = []
-
-    if system_block:
-        messages.append({"role": "system", "content": system_block})
-
-    if persona_block:
-        messages.append({"role": "system", "content": persona_block})
-
-    # V4: HOW to speak - injected at call level, invisible to the user, never
-    # stored on the character. After the persona (stable identity first),
-    # before the history (so the examples read as instruction, not dialogue).
-    # Limits before anything the story can argue with. They are standing rules
-    # set by the person, not content produced inside the fiction.
-    if boundary_block:
-        messages.append({"role": "system", "content": boundary_block})
-
-    # What the USER wrote about this chat. Same channel as the persona because
-    # it is the same trust class - a person typing into their own app - and the
-    # primacy end of the prompt is where a stable fact belongs.
-    if notebook_user_block:
-        messages.append({"role": "system", "content": notebook_user_block})
-
-    if voice_block:
-        messages.append({"role": "system", "content": voice_block})
+    if system_text:
+        messages.append({"role": "system", "content": system_text})
 
     for msg in history:
         messages.append({
@@ -577,30 +581,137 @@ def _assemble_messages(
             ),
         })
 
+    # The user's own text first and untouched; the tail after it.
     messages.append({
         "role": "user",
-        "content": _content_for(
+        "content": prompt_layer.fold_tail(_content_for(
             user_message.strip(), pending_attachments, include_images, blobs,
             omitted_images,
-        ),
+        ), tail),
     })
-
-    # What the MODEL wrote, at the tail beside the post-history instruction
-    # rather than up in the system channel with the persona. Same table, same
-    # ceiling, lower authority - and the split only means anything because
-    # nothing can relabel a row's provenance on the way here.
-    #
-    # This was budgeted and never appended for one commit: charged for, not
-    # sent. A read-only review caught it mid-flight, which is exactly the
-    # class of defect that ships looking correct.
-    if notebook_model_block:
-        messages.append({"role": "system", "content": notebook_model_block})
-
-    phi = post_history_instruction.strip() if post_history_instruction else ""
-    if phi:
-        messages.append({"role": "system", "content": phi})
-
     return messages
+
+
+def _system_and_tail(system_block: str, post_history_instruction: str,
+                     persona_block: str, boundary_block: str,
+                     notebook_user_block: str, voice_block: str,
+                     notebook_model_block: str,
+                     reminder_block: str) -> tuple[str, list[str]]:
+    """The one system message and the tail, from their parts. The ONE place
+    the request is shaped: the assembly and the toggle-time H4 check
+    (module_budget_check) both measure what this returns.
+
+    The model's notes ride in the user channel, after the user's text, with
+    their own "unverified notes" header (C3 a; owner, 26 Sep 2026, which
+    replaces KARAR-V2-13's system-role placement). In the system message
+    they would come back every turn with the authority of the app.
+    """
+    final_note = prompt_layer.final_note_part(
+        prompt_layer.strip_space(post_history_instruction or ""))
+    system_text = prompt_layer.PART_SEP.join(p for p in (
+        system_block, final_note, persona_block, boundary_block,
+        notebook_user_block, voice_block) if p)
+    tail = [t for t in (notebook_model_block, reminder_block) if t]
+    return system_text, tail
+
+
+def _check_module_budget(modules: list[dict], available: int,
+                         fixed_chars: int) -> None:
+    """H4 with prompt_modules.budget, the rule's one definition. A refusal is
+    prompt_modules.errors.PromptModuleError(OVER_BUDGET) carrying each
+    module's id, name and token cost; main.py answers it with the same JSON
+    body the prompt-modules routes use, so one client parser reads both."""
+    try:
+        pm_budget.check(modules, available_chars=available,
+                        fixed_chars=fixed_chars)
+    except pm_errors.PromptModuleError as exc:
+        if exc.code != pm_errors.OVER_BUDGET:
+            # The card alone not fitting is checked before this call and
+            # keeps its own name; nothing else is raised by the rule.
+            raise HTTPException(400, "context_too_large") from None
+        raise
+
+
+def module_budget_check(con, chat_id: int | None, modules: list[dict],
+                        available_chars: int, *,
+                        user_message_chars: int = 0) -> None:
+    """H4 at TOGGLE time, counted exactly as a request counts it (A5).
+
+    `modules` are the modules that would be on (dicts with id, name and the
+    STORED content). They are prepared the way the request prepares them
+    (macros with the chat's card and persona names, then the sanitizer), and
+    the non-module cost is the same single system message and tail the
+    request builds: salt, card block and final note, persona, Limits, notes,
+    voice. Without a chat, a card of REFERENCE_CARD_CHARS characters stands
+    in (dF 4). The user's next message is not known yet and counts as
+    `user_message_chars`.
+
+    Raises PromptModuleError (over budget), HTTPException 404 for a missing
+    chat or card, and prompt_sanitizer.PromptFieldTooLarge /
+    card_macros.MacroOutputTooLarge (both code "prompt_field_too_large").
+    """
+    from prompt_modules.limits import REFERENCE_CARD_CHARS
+
+    char_row: dict
+    if chat_id is not None:
+        chat = con.execute("SELECT character_id FROM chats WHERE id = ?",
+                           (chat_id,)).fetchone()
+        if chat is None:
+            raise HTTPException(404, "chat_not_found")
+        row = con.execute(
+            "SELECT name, system_prompt, description, personality, scenario, "
+            "mes_example, post_history_instruction FROM characters WHERE id = ?",
+            (chat["character_id"],)).fetchone()
+        if row is None:
+            raise HTTPException(404, "character_not_found")
+        char_row = _CardRow(row)
+    else:
+        char_row = _CardRow({"name": "", "description": "x" * REFERENCE_CARD_CHARS})
+
+    persona_row = None
+    sel = con.execute("SELECT value FROM settings WHERE key = ?",
+                      ("selected_persona_id",)).fetchone()
+    if sel and (sel["value"] or "").strip().isdigit():
+        persona_row = con.execute(
+            "SELECT id, display_name, description FROM personas WHERE id = ?",
+            (int(sel["value"]),)).fetchone()
+    user_name = card_macros.DEFAULT_USER_NAME
+    if persona_row is not None:
+        user_name = (persona_row["display_name"] or "").strip() or user_name
+
+    card = prompt_layer.card_text(char_row, user_name)
+    prepared = []
+    for m in modules:
+        texts = prompt_layer.module_texts([m], card.name, user_name)
+        if texts:
+            prepared.append({"id": m.get("id"), "name": m["name"],
+                             "content": texts[0], "sent": True})
+    head = prompt_layer.build_head(
+        chat_id=chat_id or 0, card=card, user_name=user_name,
+        modules_enabled=bool(modules), modules=[p["content"] for p in prepared],
+        layer_enabled=False, length_words=None)
+    if chat_id is not None:
+        nb = notebook_store.build_notebook_blocks(chat_id, available_chars)
+    else:
+        nb = {"boundary_block": "", "user_block": "", "model_block": ""}
+    system_text, tail = _system_and_tail(
+        head.text, head.final_note,
+        _build_persona_block(persona_row) if persona_row is not None else "",
+        nb["boundary_block"], nb["user_block"], voice_tags.voice_block(),
+        nb["model_block"], head.reminder)
+    fixed = (len(system_text) + prompt_layer.tail_chars(tail)
+             + user_message_chars - head.module_chars)
+    if fixed > available_chars:
+        raise HTTPException(400, "context_too_large")
+    if prepared:
+        _check_module_budget(prepared, available_chars, fixed)
+
+
+def _reasoning_is_optional(model_id: str) -> bool:
+    """Whether the Thinking switch applies to this model (D3): its reasoning
+    can be turned off, which is exactly when reasoning_param answers the
+    disable. One definition, the same one the request uses."""
+    return reasoning_param(model_id) == {"enabled": False}
 
 
 def _build_provider_dict(req_provider: ProviderPolicy) -> dict:
@@ -664,6 +775,8 @@ _ERROR_MAP: dict[str, tuple[int, str]] = {
     "openrouter_server_error":               (502, "openrouter_completion_error"),
     "openrouter_error":                      (502, "openrouter_completion_error"),
     "openrouter_timeout":                    (504, "openrouter_timeout"),
+    "model_web_search_blocked":              (400, "model_web_search_blocked"),
+    "model_id_carries_api_key":              (400, "model_id_carries_api_key"),
 }
 
 #: Every detail this module can relay from a provider failure, as a set.
@@ -689,6 +802,7 @@ RELAY_DETAILS: frozenset[str] = (
 
 def _load_completion_context(
     chat_id: int, history_before_id: int | None, persona_id: int | None,
+    generation: str = "send",
 ) -> dict:
     """Every DB read one completion needs, in ONE worker-thread hop.
 
@@ -736,9 +850,27 @@ def _load_completion_context(
                 (chat_id, history_before_id),
             ).fetchall()
 
+        # The greeting is the chat's oldest row when it is the assistant's
+        # (chats.py seeds it first). It is card text and goes out sanitized.
+        first = con.execute(
+            "SELECT id, role FROM messages WHERE chat_id = ? ORDER BY id ASC LIMIT 1",
+            (chat_id,),
+        ).fetchone()
+        greeting_id = first["id"] if first and first["role"] == "assistant" else None
+
+        # Prompt modules and the layer settings, on the same connection.
+        # `modules_enabled` is every module that is on (the mode and H4 count
+        # them all, worst case); `modules_sent` is what fires for this kind of
+        # generation.
+        modules_enabled = pm_store.list_enabled(con)
+        modules_sent = pm_store.list_enabled(con, generation)
+        layer_enabled = pm_store.layer_enabled(con)
+        reply_length_words = pm_store.reply_length_words(con)
+
     history_att = load_for_messages([r["id"] for r in history_rows])
     history = [
         {
+            "id": r["id"],
             "role": r["role"],
             "content": r["content"],
             "attachments": history_att.get(r["id"], []),
@@ -784,7 +916,48 @@ def _load_completion_context(
         "persona_row": persona_row,
         "resolved_persona_id": resolved_persona_id,
         "persona_from_settings": from_settings,
+        "greeting_id": greeting_id,
+        "modules_enabled": modules_enabled,
+        "modules_sent": modules_sent,
+        "layer_enabled": layer_enabled,
+        "reply_length_words": reply_length_words,
     }
+
+
+def _build_prompt(chat_id: int, ctx: dict, persona_row) -> dict:
+    """Card, modules and greeting as SENT, and the head of the system message.
+
+    Runs in a worker thread: macros and the sanitizer are linear but a 1 MiB
+    field still costs hundreds of milliseconds (synthesis 4.4), and every live
+    SSE stream would wait for it on the loop. Macros first, sanitizer second:
+    a macro can assemble a marker ("[Lim{{//x}}its") that the sanitizer must
+    then see. The stored rows are never changed.
+    """
+    user_name = card_macros.DEFAULT_USER_NAME
+    if persona_row is not None:
+        user_name = (persona_row["display_name"] or "").strip() or user_name
+    try:
+        card = prompt_layer.card_text(_CardRow(ctx["char_row"]), user_name)
+        sent_ids = {m["id"] for m in ctx["modules_sent"]}
+        modules = []
+        for m in ctx["modules_enabled"]:
+            texts = prompt_layer.module_texts([m], card.name, user_name)
+            if texts:
+                modules.append({"id": m["id"], "name": m["name"],
+                                "content": texts[0], "sent": m["id"] in sent_ids})
+        for msg in ctx["history"]:
+            if msg.get("id") == ctx["greeting_id"] and msg["role"] == "assistant":
+                msg["content"] = prompt_sanitizer.sanitize_field(msg["content"])
+    except (card_macros.MacroOutputTooLarge, prompt_sanitizer.PromptFieldTooLarge):
+        raise HTTPException(400, "prompt_field_too_large") from None
+    head = prompt_layer.build_head(
+        chat_id=chat_id, card=card, user_name=user_name,
+        modules_enabled=bool(ctx["modules_enabled"]),
+        modules=[m["content"] for m in modules if m["sent"]],
+        layer_enabled=ctx["layer_enabled"],
+        length_words=ctx["reply_length_words"],
+    )
+    return {"head": head, "modules": modules}
 
 
 async def _prepare_completion(
@@ -797,6 +970,7 @@ async def _prepare_completion(
     context_budget_tokens: int | None,
     history_before_id: int | None = None,
     pending_attachments: list[dict] | None = None,
+    generation: str = "send",
 ) -> tuple[list[dict], dict, dict, list[dict]]:
     """Build everything needed for a provider call, without calling it.
 
@@ -824,8 +998,8 @@ async def _prepare_completion(
     # ── Every DB read, once, OFF the event loop ───────────────────────────
     ctx = await anyio.to_thread.run_sync(
         _load_completion_context, chat_id, history_before_id, persona_id,
+        generation,
     )
-    char_row = ctx["char_row"]
     history = ctx["history"]
     persona_row = ctx["persona_row"]
     resolved_persona_id = ctx["resolved_persona_id"]
@@ -843,17 +1017,38 @@ async def _prepare_completion(
             notebook_store.safeword_in, user_message_text):
         raise HTTPException(400, "safeword_triggered")
 
+    # C9, at the same point and for the same reason: a typed message holding
+    # the stored API key is refused whole, before it is assembled, sent or
+    # stored (the stream route writes the user turn after this returns). The
+    # key everywhere else in the body is cut by the scrub in openrouter.
+    if await anyio.to_thread.run_sync(safeword_filter.api_key_in,
+                                      user_message_text):
+        raise HTTPException(400, "api_key_in_message")
+
+    # The model id is checked for the key too. No log line names a model id
+    # any more, but the id still goes to the provider as the model name, where
+    # the scrub does not reach, so it is refused here, before the stream
+    # routes store the user turn. Not for the safeword: a model id is a
+    # protocol value, and "exit" in `vendor/exit-model` is not a person
+    # saying stop (test_safeword.py, test_the_model_id_is_never_cut).
+    if await anyio.to_thread.run_sync(safeword_filter.api_key_in, model_id):
+        raise HTTPException(400, "model_id_carries_api_key")
+
     # ── Check API key ─────────────────────────────────────────────────────
     if not ctx["api_key_present"]:
         raise HTTPException(401, "api_key_missing")
+
+    # C4: a model id that makes the provider search the web is refused here,
+    # before the stream route stores the user turn. openrouter.complete and
+    # complete_stream refuse it too, for every other sender.
+    if model_id_blocked(model_id):
+        raise HTTPException(400, "model_web_search_blocked")
 
     # ── Proxy health check ────────────────────────────────────────────────
     await enforce_proxy_gate()
 
     # ── Assemble messages ─────────────────────────────────────────────────
     model_id_stripped = model_id  # already stripped by validator
-    system_block = _build_system_block(char_row)
-    phi = (char_row["post_history_instruction"] or "").strip()
 
     # ── Resolve persona ───────────────────────────────────────────────────
     persona_block = ""
@@ -967,26 +1162,36 @@ async def _prepare_completion(
     notebook = await anyio.to_thread.run_sync(
         lambda: notebook_store.build_notebook_blocks(
             chat_id, context_budget_chars - max_tokens_chars))
-    messages = _assemble_messages(
-        system_block,
-        persona_block,
-        history,
-        user_message_text,
-        phi,
-        context_budget_chars,
-        max_tokens_chars,
-        include_images=include_images,
-        pending_attachments=pending_attachments,
-        image_blobs=image_blobs,
-        # Off the event loop: a cold capability cache walks the models folder,
-        # and one slow disk must not stall every in-flight request (audit-2).
-        voice_block=await anyio.to_thread.run_sync(voice_tags.voice_block),
-        omitted_images=omitted_images,
-        boundary_block=notebook["boundary_block"],
-        notebook_user_block=notebook["user_block"],
-        notebook_model_block=notebook["model_block"],
-        trimmed_out=trimmed_out,
-    )
+    # Off the event loop: a cold capability cache walks the models folder,
+    # and one slow disk must not stall every in-flight request (audit-2).
+    voice_block = await anyio.to_thread.run_sync(voice_tags.voice_block)
+
+    def _assemble() -> list[dict]:
+        prompt = _build_prompt(chat_id, ctx, persona_row)
+        head = prompt["head"]
+        return _assemble_messages(
+            head.text,
+            persona_block,
+            history,
+            user_message_text,
+            head.final_note,
+            context_budget_chars,
+            max_tokens_chars,
+            include_images=include_images,
+            pending_attachments=pending_attachments,
+            image_blobs=image_blobs,
+            voice_block=voice_block,
+            omitted_images=omitted_images,
+            boundary_block=notebook["boundary_block"],
+            notebook_user_block=notebook["user_block"],
+            notebook_model_block=notebook["model_block"],
+            trimmed_out=trimmed_out,
+            reminder_block=head.reminder,
+            modules=prompt["modules"],
+        )
+
+    # The whole assembly, sanitizer included, in one worker-thread hop.
+    messages = await anyio.to_thread.run_sync(_assemble)
 
     # AFTER the assembly, because the assembly can still refuse the turn -
     # `boundaries_do_not_fit` and `context_too_large` both raise out of it.
@@ -1020,6 +1225,18 @@ async def _prepare_completion(
             k: v for k, v in filtered_gen_params.items()
             if k in supported or k == "stop"
         }
+
+    # D3: thinking off where the model allows it, the lowest effort and no
+    # returned text where it does not; nothing when the catalogue says
+    # nothing. Added after the filter above, which only knows samplers.
+    # The Thinking switch only reaches models whose reasoning is optional
+    # (the ones that would otherwise get the disable). A mandatory or unknown
+    # model keeps its default above whatever the switch says.
+    thinking = (generation_params.thinking
+                and _reasoning_is_optional(model_id_stripped))
+    reasoning = reasoning_param(model_id_stripped, thinking=thinking)
+    if reasoning is not None:
+        filtered_gen_params["reasoning"] = reasoning
 
     # Keep the outgoing max_tokens consistent with the (possibly reduced)
     # output reservation, so the provider cannot generate past the space
@@ -1191,6 +1408,7 @@ async def _call_provider_for_chat(
     context_budget_tokens: int | None,
     history_before_id: int | None = None,
     pending_attachments: list[dict] | None = None,
+    generation: str = "send",
 ) -> tuple[str, list[dict], list[tuple[bytes, str, int, int]], bool]:
     """Non-streaming provider call: prepare, call OpenRouter, parse.
 
@@ -1215,10 +1433,11 @@ async def _call_provider_for_chat(
         context_budget_tokens=context_budget_tokens,
         history_before_id=history_before_id,
         pending_attachments=pending_attachments,
+        generation=generation,
     )
 
     # ── Call OpenRouter ───────────────────────────────────────────────────
-    logger.info("Completion request: chat_id=%d model=%s", chat_id, model_id)
+    logger.info("Completion request: chat_id=%d", chat_id)
 
     try:
         raw = await complete(messages, model_id, filtered_gen_params,
@@ -2272,8 +2491,8 @@ async def complete_chat_stream(chat_id: int, body: CompleteRequest) -> Streaming
     )
 
     logger.info(
-        "Streaming completion start: chat_id=%d model=%s user_msg_id=%d",
-        chat_id, model_id_stripped, user_msg_id,
+        "Streaming completion start: chat_id=%d user_msg_id=%d",
+        chat_id, user_msg_id,
     )
 
     finalize_loop = asyncio.get_running_loop()
@@ -2510,6 +2729,7 @@ async def regenerate_message(chat_id: int, message_id: int,
         context_budget_tokens=body.context_budget_tokens,
         history_before_id=existing_user_row["id"],
         pending_attachments=user_atts,
+        generation="regenerate",
     )
 
     # Atomic variant append on a worker thread (v1.1 FB2b): the swap txn must
@@ -2597,11 +2817,12 @@ async def regenerate_message_stream(chat_id: int, message_id: int,
         context_budget_tokens=body.context_budget_tokens,
         history_before_id=existing_user_row["id"],
         pending_attachments=user_atts,
+        generation="regenerate",
     )
 
     logger.info(
-        "Streaming regenerate start: chat_id=%d model=%s target_msg_id=%d",
-        chat_id, model_id_stripped, message_id,
+        "Streaming regenerate start: chat_id=%d target_msg_id=%d",
+        chat_id, message_id,
     )
 
     finalize_loop = asyncio.get_running_loop()
@@ -2934,8 +3155,8 @@ async def edit_message_stream(chat_id: int, message_id: int,
     )
 
     logger.info(
-        "Streaming edit start: chat_id=%d model=%s user_msg_id=%d",
-        chat_id, model_id_stripped, message_id,
+        "Streaming edit start: chat_id=%d user_msg_id=%d",
+        chat_id, message_id,
     )
 
     finalize_loop = asyncio.get_running_loop()

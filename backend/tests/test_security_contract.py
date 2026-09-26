@@ -346,6 +346,87 @@ CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
 #: asymmetry as the README's PROSE_CLAIMS: a reworded or deleted sentence
 #: fails, a brand new one does not, and that is why DOCUMENT_DIGEST exists.
 PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    # Prompt modules (26 Sep 2026). The upload is read in memory, the rows
+    # live in the vault only, secrets go before anything is kept, the report
+    # names paths and never values, and prompt text is deliberately not
+    # searched for keys.
+    ("is read in memory and never written to disk", (
+        "tests/test_modules_api.py::TestNoDisk::test_an_upload_writes_no_file",
+        "tests/test_modules_api.py::TestNoDisk::test_the_spy_sees_a_temp_file",
+    )),
+    ("are stored only in the encrypted database", (
+        "tests/test_modules_privacy.py::TestDisk"
+        "::test_names_content_and_raw_entries_only_exist_encrypted",
+    )),
+    ("are removed from every stored copy", (
+        "tests/test_modules_privacy.py::TestDisk"
+        "::test_preset_secrets_are_absent_from_every_stored_row",
+        "tests/test_modules_parsers.py::TestSecretsNested"
+        "::test_secrets_at_any_depth_never_reach_storage_or_report",
+        "tests/test_modules_parsers.py::TestSecretsNested::test_lookalike_keys_survive",
+    )),
+    ("lists which fields were removed, never their values", (
+        "tests/test_modules_parsers.py::TestStChatPreset"
+        "::test_secrets_are_removed_before_anything_is_kept",
+    )),
+    ("is not searched for keys", (
+        "tests/test_modules_parsers.py::TestStChatPreset"
+        "::test_secrets_are_removed_before_anything_is_kept",
+    )),
+    # The salt line (C8): no instruction and no chat id, stable per chat,
+    # different between chats, and its key gone on lock.
+    ("carries no instruction and not the chat's number", (
+        "tests/test_prompt_assembly.py"
+        "::test_the_salt_carries_no_instruction_and_no_chat_id",
+    )),
+    ("so it stays the same for a chat", (
+        "tests/test_prompt_assembly.py"
+        "::test_the_salt_is_stable_for_a_chat_and_differs_between_chats",
+    )),
+    ("is dropped when the vault locks", (
+        "tests/test_prompt_assembly.py::test_a_vault_lock_drops_the_salt_key",
+        "tests/test_prompt_request_guards.py"
+        "::test_the_vault_lock_empties_the_prompt_cache_and_drops_the_salt_key",
+    )),
+    # 26 Sep 2026 (W2 round 2, M-A items 1-3 and L7): what a chat request
+    # refuses and what it leaves out, and the other half of "stored as typed".
+    ("and sent as typed: only your own key is cut out on the way", (
+        "tests/test_api_key_scrub.py::TestTheKeyIsCutFromWhatGoesOut"
+        "::test_the_key_in_a_card_and_a_stop_sequence_is_cut",
+        "tests/test_api_key_scrub.py::TestTheKeyIsCutFromWhatGoesOut"
+        "::test_ground_an_ordinary_body_goes_out_unchanged",
+    )),
+    ("Models that search the web on their own are refused before anything is sent", (
+        "tests/test_openrouter_request_params.py::TestTheSendPointRefusesBlockedIds"
+        "::test_streaming_route_sends_nothing",
+        "tests/test_openrouter_request_params.py::TestTheSendPointRefusesBlockedIds"
+        "::test_the_chat_route_sends_nothing",
+        "tests/test_openrouter_request_params.py::TestTheSendPointRefusesBlockedIds"
+        "::test_the_chat_route_names_the_refusal",
+    )),
+    ("A message that contains your stored API key is refused before it is stored or sent", (
+        "tests/test_api_key_scrub.py::TestTheTypedMessageIsRefused"
+        "::test_the_plain_route_sends_and_stores_nothing",
+        "tests/test_api_key_scrub.py::TestTheKeyIsCutFromWhatGoesOut"
+        "::test_the_key_in_old_history_is_cut_and_the_line_stays",
+        "tests/test_api_key_scrub.py::TestTheKeyIsCutFromWhatGoesOut"
+        "::test_the_streaming_twin_cuts_it_too",
+    )),
+    ("`reasoning` is sent only when the cached model list says the model takes it", (
+        "tests/test_prompt_request_guards.py"
+        "::test_d3_a_mandatory_thinker_gets_the_lowest_effort_and_no_returned_text",
+        "tests/test_prompt_request_guards.py"
+        "::test_d3_an_optional_thinker_is_switched_off",
+        "tests/test_prompt_request_guards.py"
+        "::test_d3_ground_control_a_model_without_reasoning_gets_no_field",
+    )),
+    ("are not sent unless you set them", (
+        "tests/test_prompt_request_guards.py"
+        "::test_d1_samplers_the_user_never_set_are_not_sent",
+        "tests/test_prompt_request_guards.py"
+        "::test_d1_positive_control_a_set_sampler_is_sent",
+    )),
+
     # The half of the failover paragraph that is about this app rather than
     # about OpenRouter: the body never names a second model.
     ("no request carries a\n`models` list", (
@@ -966,7 +1047,7 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "::test_an_accepted_safeword_is_not_echoed_either",
     )),
     # And the file count in the same paragraph, for the same reason.
-    ("shipped tree - 80 files", (
+    ("shipped tree - 90 files", (
         "tests/test_locked_numbers.py::TestTheSweptTree"
         "::test_the_file_count_in_the_prose_is_the_one_the_gate_reads",
         "tests/test_locked_numbers.py::TestTheSweptTree"
@@ -1600,7 +1681,7 @@ def _acknowledged_problems(
 #: sample - so this covers all of it. Updating this constant is the
 #: deliberate act that means a human decided what a change claims and
 #: registered a proof for it.
-DOCUMENT_DIGEST = "016dee86c93350a6ec3d17783440785a7c936c606727df2f90dc2011f642c80b"
+DOCUMENT_DIGEST = "e2c5c8e845ab78a85d657bf8aa98018b0205e1749d0687098b9f9d2177728a6b"
 
 
 class TestEveryProvenClaimHasAProof:

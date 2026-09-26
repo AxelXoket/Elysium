@@ -1,0 +1,4 @@
+{
+  "_why": "Ek P, B8: character and persona names are capped. Read by backend/routers/characters.py and held equal to the frontend mirror in frontend/src/lib/characters/nameLimits.ts by a test.",
+  "name_max_code_points": 64
+}

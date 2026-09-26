@@ -31,7 +31,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { PERSISTED as UI_PERSISTED } from "@/lib/store/uiStore";
 
-import { useUiStore } from "@/lib/store/uiStore";
+import { LEGACY_SAMPLER_DEFAULTS, useUiStore } from "@/lib/store/uiStore";
 import { readDeviceNarration } from "@/lib/voice/narrationMigration";
 // Seeding a blob the store no longer produces cannot go through the store,
 // and static-safety S-09 reserves direct device-storage writes for lib/store.
@@ -260,5 +260,66 @@ describe("every preference survives a restart", () => {
     seedRawUiState("{not json at all");
 
     expect((await relaunch()).msgFontPx).toBe(14);
+  });
+});
+
+// D1: samplers default to unset. An existing install carries the OLD
+// defaults in this blob (they were written on the first set of anything), and
+// those are cleared ONCE by the version-4 migration. A value the user chose
+// that differs from the old default is theirs and stays.
+describe("the old sampler defaults are cleared once (D1)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.resetModules();
+  });
+
+  it("a version-3 blob holding the old defaults comes back unset", async () => {
+    seedRawUiState(
+      JSON.stringify({ version: 3, state: { ...LEGACY_SAMPLER_DEFAULTS } }),
+    );
+    const next = await relaunch();
+    for (const key of Object.keys(LEGACY_SAMPLER_DEFAULTS)) {
+      expect(
+        (next as unknown as Record<string, unknown>)[key],
+        `${key} kept its old default`,
+      ).toBeNull();
+    }
+  });
+
+  it("positive control: values the user changed survive the migration", async () => {
+    seedRawUiState(
+      JSON.stringify({
+        version: 3,
+        state: {
+          ...LEGACY_SAMPLER_DEFAULTS,
+          genTemperature: 0.7,
+          genTopK: LEGACY_SAMPLER_DEFAULTS.genTopK + 1,
+          genMaxOutput: 777,
+        },
+      }),
+    );
+    const next = await relaunch();
+    expect(next.genTemperature).toBe(0.7);
+    expect(next.genTopK).toBe(LEGACY_SAMPLER_DEFAULTS.genTopK + 1);
+    expect(next.genTopP).toBeNull();
+    expect(next.genMaxOutput).toBe(777);
+  });
+
+  it("runs once: a version-4 blob that holds an old default keeps it", async () => {
+    // Set on purpose after the migration, so it is the user's choice now.
+    seedRawUiState(
+      JSON.stringify({
+        version: 4,
+        state: { genTemperature: LEGACY_SAMPLER_DEFAULTS.genTemperature },
+      }),
+    );
+    const next = await relaunch();
+    expect(next.genTemperature).toBe(LEGACY_SAMPLER_DEFAULTS.genTemperature);
+  });
+
+  it("a fresh install starts unset", async () => {
+    const next = await relaunch();
+    expect(next.genTemperature).toBeNull();
+    expect(next.genRepetitionPenalty).toBeNull();
   });
 });

@@ -4,6 +4,7 @@ export {
   getModelContextLength,
   getModelMaxCompletionTokens,
   getModelSupportedParameters,
+  getReasoningMode,
   getModelModalities,
   acceptsImages,
   hasInputModality,
@@ -14,4 +15,4 @@ export {
   TEXT_ONLY_NOTE,
 } from "./modelHelpers";
 
-export type { ModalitySupport } from "./modelHelpers";
+export type { ModalitySupport, ReasoningMode } from "./modelHelpers";

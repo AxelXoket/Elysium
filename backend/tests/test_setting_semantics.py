@@ -465,7 +465,7 @@ def test_a_long_reply_keeps_its_direction_all_the_way_down():
     """
     budget = voice_tags.TagBudget(voice_tags.MAX_TAGS_PER_REPLY)
     moods = ["warm", "soft", "amused", "quiet, hurt", "low voice", "teasing",
-             "tired", "urgent", "seductive", "firm", "sad", "playful", "flat"]
+             "tired", "urgent", "gentle", "firm", "sad", "playful", "flat"]
     kept = []
     for i, mood in enumerate(moods):
         out = voice_tags.sanitize_for_tts(

@@ -12,11 +12,12 @@
  * Backend formulas mirrored here (cited per step below):
  *  - config.py:        CHARS_PER_TOKEN_ESTIMATE = 3, CONTEXT_SAFETY_MARGIN = 256
  *  - completions.py:   _DEFAULT_CONTEXT_LEN = 32000, _DEFAULT_MAX_TOKENS = 2048
- *  - completions.py:   _build_system_block() - "[Label]\n{value}" sections
- *                      joined by "\n\n", empty (stripped) sections skipped
- *  - completions.py:   _build_persona_block() - "[User Persona: {name}]"
- *                      header + "\n{description}" when non-empty; a name-only
- *                      persona still injects the header
+ *  - prompt_layer.py:  ONE system message (salt, modules or the layer or
+ *                      the labelled card block, the card's final note,
+ *                      persona, Limits, notes, voice; parts joined by "\n\n")
+ *                      and a tail folded into the user message. Rebuilt by
+ *                      lib/prompt/assembly.ts with the same text and rules:
+ *                      macros, then the sanitizer, then the trim.
  *  - completions.py:   effective_tokens = budget set ? min(budget, model_ctx)
  *                      : model_ctx; safety = min(256, effective // 8);
  *                      context_budget_chars = max(0, effective - safety) * 3;
@@ -27,14 +28,10 @@
  *                      until the remainder fits the available budget
  *
  * Known, deliberate approximations (this is an ESTIMATE, never exact):
- *  - The backend appends post_history_instruction AFTER trimming without
- *    counting it against the trim budget; we include its length in the fixed
- *    cost so the estimate stays conservative.
  *  - The backend additionally reserves the pending user message being sent;
  *    the preview has no pending message, so it reflects the state right now.
- *  - Python len() counts code points, JS .length counts UTF-16 code units -
- *    they differ on astral characters (emoji). Chars-per-token is itself an
- *    estimate, so this is noise.
+ *  - Lengths are CODE POINTS, as Python's len() counts them (PK-28), so an
+ *    emoji costs what the backend charges for it.
  *  - Image attachments are charged at a flat IMAGE_TOKEN_ESTIMATE per
  *    attachment, matching the backend's per-image budget estimate.
  */
@@ -56,6 +53,15 @@ import {
 } from "../models";
 import { findActivePersona } from "../personas";
 import { isMessageActive } from "../chat";
+import { DEFAULT_USER_NAME } from "../prompt/cardMacros";
+import {
+  cardText,
+  labelledCardBlock,
+  personaBlock,
+  promptCost,
+  type ModuleInput,
+} from "../prompt/assembly";
+import { cpLength, sanitizeField } from "../prompt/sanitizer";
 
 // ── Constants (backend parity) ───────────────────────────────────
 
@@ -140,6 +146,13 @@ export interface ContextUsageInput {
    * never invented - and is a smaller gap than charging nothing.
    */
   pendingMessageChars?: number | null;
+  /** Every ENABLED prompt module, in stored order (GET /prompt-modules,
+   * `enabled` true). Any module on means the layer is not sent (Ek O 7). */
+  promptModules?: readonly ModuleInput[] | null;
+  /** The layer setting (sent only when no module is on). */
+  promptLayerEnabled?: boolean | null;
+  /** The reply length setting (a reminder sentence, layer only). */
+  replyLengthWords?: number | null;
 }
 
 export interface ContextUsageEstimate {
@@ -186,65 +199,39 @@ export interface ContextUsageEstimate {
    * thousand" are different problems for a reader deciding what to cut.
    */
   overflowChars: number;
+  /** What the enabled modules add, in characters (0 with none on). */
+  moduleChars: number;
+  /** H4, predicted: the modules would take more than half of what the rest
+   * of the request leaves for history, and the backend answers
+   * prompt_modules_over_budget. Only ever true with a module on. */
+  modulesOverBudget: boolean;
 }
 
 export type ContextUsageState = "normal" | "warning" | "danger";
 
-// ── System block (completions.py _build_system_block) ───────────
-
-/** Section order and labels - must match _build_system_block exactly. */
-const SYSTEM_BLOCK_SECTIONS: readonly (readonly [
-  label: string,
-  field: "system_prompt" | "description" | "personality" | "scenario" | "mes_example",
-])[] = [
-  ["System Prompt", "system_prompt"],
-  ["Description", "description"],
-  ["Personality", "personality"],
-  ["Scenario", "scenario"],
-  ["Example Dialogue", "mes_example"],
-];
+// ── System block (prompt_layer.labelled_card_block) ─────────────
 
 /**
- * Build the system-role block from character fields, mirroring
- * completions.py _build_system_block(): each non-empty (trimmed) section is
- * rendered as "[Label]\n{value}" and sections are joined by "\n\n".
+ * The labelled card block as the backend SENDS it (modes a and c): macros
+ * with the sanitized name, the sanitizer, the trim. The final note is its own
+ * part and is not in here. Kept under its old name for the tests that pin it.
  */
-export function buildSystemBlock(character: Character): string {
-  const sections: string[] = [];
-  // K-31, and this half is what keeps the gauge honest. The backend now opens
-  // the block with the character's name; a mirror that did not would report a
-  // budget slightly smaller than the one actually sent, silently, on every
-  // single conversation.
-  const name = character.name.trim();
-  if (name) {
-    sections.push(`[Character: ${name}]`);
-  }
-  for (const [label, field] of SYSTEM_BLOCK_SECTIONS) {
-    const value = character[field].trim();
-    if (value) {
-      sections.push(`[${label}]\n${value}`);
-    }
-  }
-  return sections.join("\n\n");
+export function buildSystemBlock(
+  character: Character,
+  userName: string = DEFAULT_USER_NAME,
+): string {
+  return labelledCardBlock(cardText(character, userName));
 }
 
 /**
  * Mirror of completions.py _build_persona_block(): a "[User Persona: {name}]"
  * header with the trimmed description on the next line when non-empty. A
- * name-only persona still injects the header (16 + name.length chars). No
- * active persona -> "". Must stay char-for-char with the backend or the gauge
- * undercounts the header.
+ * name-only persona still injects the header. No active persona -> "".
  */
 export function buildPersonaBlock(
   persona: Persona | null | undefined,
 ): string {
-  if (!persona) return "";
-  const name = persona.display_name.trim();
-  const desc = persona.description.trim();
-  // The schema forbids blank names; this defensive branch keeps the backend
-  // mirror exact for hand-edited data.
-  if (!name) return desc;
-  return desc ? `[User Persona: ${name}]\n${desc}` : `[User Persona: ${name}]`;
+  return personaBlock(persona);
 }
 
 // ── Per-message cost ─────────────────────────────────────────────
@@ -277,14 +264,22 @@ export function buildPersonaBlock(
  * `attachments` is read defensively - older cached Message objects may predate
  * the field; the safe optional read yields 0.
  */
-function messageChars(message: Message, imagesSent: boolean): number {
+function messageChars(
+  message: Message,
+  imagesSent: boolean,
+  greetingId: number | null,
+): number {
   const attachments = (
     message as Message & { attachments?: readonly { id: number }[] }
   ).attachments;
   const replayed = imagesSent && message.role === "user";
   const attachmentCount = replayed ? attachments?.length ?? 0 : 0;
+  // The greeting is card text and goes out sanitized (the stored row does not
+  // change); every other turn goes as stored.
+  const content =
+    message.id === greetingId ? sanitizeField(message.content) : message.content;
   return (
-    message.content.length +
+    cpLength(content) +
     attachmentCount * IMAGE_TOKEN_ESTIMATE * CHARS_PER_TOKEN
   );
 }
@@ -313,6 +308,13 @@ export function estimateContextUsage(
   // siblings (GET /messages returns them for the carousel) never reach the
   // provider payload, so they must not count against the budget here either.
   const messages = rawMessages.filter(isMessageActive);
+  // The chat's oldest row, when it is the assistant's, is the seeded greeting
+  // (completions._load_completion_context reads the first row the same way).
+  const oldest = rawMessages.reduce<Message | null>(
+    (min, m) => (min == null || m.id < min.id ? m : min),
+    null,
+  );
+  const greetingId = oldest && oldest.role === "assistant" ? oldest.id : null;
 
   // What the outgoing request would carry (mirrors buildCompletionPayload):
   // params filtered by model support, max_tokens/budget clamped.
@@ -354,24 +356,27 @@ export function estimateContextUsage(
   // completions.py _assemble_messages: available = budget - reservation.
   const availableChars = contextBudgetChars - maxTokensChars;
 
-  // Fixed prompt cost: system block + persona block (+ post-history
-  // instruction - see the approximation note in the module doc comment).
-  const systemBlock = buildSystemBlock(character);
-  const personaBlock = buildPersonaBlock(findActivePersona(input.personas));
-  const phi = character.post_history_instruction.trim();
-  // V4/G2: the injected voice-delivery block is reserved server-side exactly
-  // like the PHI; charging it here keeps the gauge and the backend budget in
-  // agreement the moment the toggle flips.
-  const voiceChars = Math.max(0, input.voicePromptChars ?? 0);
-  const notebookChars = Math.max(0, input.notebookChars ?? 0);
-  const fixedChars =
-    systemBlock.length + personaBlock.length + phi.length + voiceChars
-    + notebookChars;
+  // Fixed prompt cost: the whole system message and the folded tail, as the
+  // backend builds them (lib/prompt/assembly.ts). Voice and notebook are the
+  // backend's own measurements (V4/G2); the voice block also costs its
+  // separator.
+  const cost = promptCost({
+    card: character,
+    persona: findActivePersona(input.personas),
+    modules: input.promptModules ?? [],
+    layerEnabled: !!input.promptLayerEnabled,
+    lengthWords: input.replyLengthWords,
+    voiceChars: Math.max(0, input.voicePromptChars ?? 0),
+    notebookChars: Math.max(0, input.notebookChars ?? 0),
+  });
+  const fixedChars = cost.fixedChars;
 
   // completions.py _assemble_messages: trim history from the OLDEST end
   // until it fits what is left after the fixed cost.
   const imagesSent = acceptsImages(model);
-  const perMessageChars = messages.map((m) => messageChars(m, imagesSent));
+  const perMessageChars = messages.map((m) =>
+    messageChars(m, imagesSent, greetingId),
+  );
   let historyChars = perMessageChars.reduce((sum, chars) => sum + chars, 0);
   const remaining = availableChars - fixedChars;
   let droppedMessages = 0;
@@ -389,7 +394,20 @@ export function estimateContextUsage(
   // backend refuses showed up as an amber gauge.
   const pendingChars = Math.max(0, input.pendingMessageChars ?? 0);
   const minRequired = fixedChars + pendingChars;
-  const willRefuse = minRequired > availableChars ? "context_too_large" : null;
+  // H4 (prompt_modules/budget.py): the modules may take at most half of what
+  // the rest of the request leaves; the card alone overflowing stays
+  // context_too_large and is checked first, as the backend does.
+  const nonModule = minRequired - cost.moduleChars;
+  const cardOverflow = nonModule > availableChars;
+  const moduleRoom = cardOverflow
+    ? 0
+    : Math.floor((availableChars - nonModule) / 2);
+  const modulesOverBudget =
+    !cardOverflow && cost.moduleRuleChars > 0 && cost.moduleRuleChars > moduleRoom;
+  const willRefuse =
+    !modulesOverBudget && minRequired > availableChars
+      ? "context_too_large"
+      : null;
   const overflowChars = willRefuse ? minRequired - availableChars : 0;
 
   const totalMessages = messages.length;
@@ -409,6 +427,8 @@ export function estimateContextUsage(
   return {
     willRefuse,
     overflowChars,
+    moduleChars: cost.moduleChars,
+    modulesOverBudget,
     usedTokens,
     capacityTokens,
     reservedOutputTokens,

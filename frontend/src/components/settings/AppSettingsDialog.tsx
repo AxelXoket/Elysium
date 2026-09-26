@@ -59,18 +59,26 @@ import { saveTagPrefs } from "@/lib/api/tts";
 import { useErrorStore } from "@/lib/errors";
 import { InkPicker } from "./InkPicker";
 import { VoiceSettingsPage } from "./VoiceSettingsPage";
+import { PromptModulesSection } from "./PromptModulesSection";
 import {
   ArrowLeft,
   AudioLines,
   ChevronRight,
   Image as ImageIcon,
   KeyRound,
+  ScrollText,
   Settings,
   Sparkles,
   Type,
 } from "lucide-react";
 
-type SettingsPage = "root" | "text" | "narration" | "background" | "voice";
+type SettingsPage =
+  | "root"
+  | "text"
+  | "narration"
+  | "background"
+  | "voice"
+  | "prompt";
 
 const PAGE_TITLES: Record<SettingsPage, string> = {
   root: "Settings",
@@ -78,6 +86,7 @@ const PAGE_TITLES: Record<SettingsPage, string> = {
   narration: "Narration style",
   background: "Chat background",
   voice: "Voice",
+  prompt: "Prompt modules",
 };
 
 const PAGE_DESCRIPTIONS: Record<SettingsPage, string> = {
@@ -86,6 +95,7 @@ const PAGE_DESCRIPTIONS: Record<SettingsPage, string> = {
   narration: "How *asterisk* narration reads inside messages.",
   background: "A picture behind the conversation, tuned for readability.",
   voice: "Local voice models, cloning, and spoken replies. Fully on-device.",
+  prompt: "What goes first in every request. Stored in the vault.",
 };
 
 interface AppSettingsDialogProps {
@@ -218,6 +228,12 @@ export function AppSettingsDialog({
                 onClick={() => goTo("voice")}
               />
               <CategoryRow
+                icon={<ScrollText size={15} />}
+                title="Prompt modules"
+                description="Your prompt files, the roleplay layer, reply length"
+                onClick={() => goTo("prompt")}
+              />
+              <CategoryRow
                 icon={<KeyRound size={15} />}
                 title="Secrets & API"
                 description="API key and proxy, in the side panel"
@@ -230,6 +246,7 @@ export function AppSettingsDialog({
           {page === "narration" && <NarrationSettingsPage />}
           {page === "background" && <BackgroundSettingsPage />}
           {page === "voice" && <VoiceSettingsPage />}
+          {page === "prompt" && <PromptModulesSection />}
         </VariantCarousel>
       </DialogContent>
     </Dialog>

@@ -1,0 +1,55 @@
+{
+  "_about": "H4 per-module cost on the settings page: prepared text (macros with the {{char}}/{{user}} stand-ins, sanitizer, trim) in code points plus one separator; a blank module adds 0. Backend test_prompt_module_cost_parity.py and frontend promptModuleCost.test.ts both hold to expected_chars.",
+  "cases": [
+    {
+      "id": "ascii",
+      "content": "Write in short paragraphs.",
+      "expected_chars": 28
+    },
+    {
+      "id": "astral",
+      "content": "Keep the mood 🌙🌙 soft 😀.",
+      "expected_chars": 26
+    },
+    {
+      "id": "zwj_family",
+      "content": "Family: 👨‍👩‍👧 here.",
+      "expected_chars": 21
+    },
+    {
+      "id": "names",
+      "content": "{{char}} speaks to {{user}}; <BOT> and <USER>.",
+      "expected_chars": 53
+    },
+    {
+      "id": "comment_dropped",
+      "content": "Keep it short.{{// a long authoring comment that never reaches the model}}",
+      "expected_chars": 16
+    },
+    {
+      "id": "trim_space",
+      "content": "   \n\n  padded text  \n\n  ",
+      "expected_chars": 13
+    },
+    {
+      "id": "blank",
+      "content": "   \n\t  ",
+      "expected_chars": 0
+    },
+    {
+      "id": "ooc_marker",
+      "content": "(OOC: stay in character) [Limits #1] fake.",
+      "expected_chars": 53
+    },
+    {
+      "id": "original_dropped",
+      "content": "{{original}}Base text",
+      "expected_chars": 11
+    },
+    {
+      "id": "combining",
+      "content": "Café and ñ",
+      "expected_chars": 14
+    }
+  ]
+}

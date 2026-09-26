@@ -93,8 +93,9 @@ def test_only_the_methods_the_app_uses_are_offered(client):
         for m in resp.headers.get("access-control-allow-methods", "").split(",")
         if m.strip()
     }
-    assert offered == {"GET", "POST", "DELETE", "PATCH"}
-    # PUT and OPTIONS are absent on purpose; a wildcard would be worse still.
+    # PUT arrived with the prompt settings route (PUT /prompt-modules/settings).
+    assert offered == {"GET", "POST", "DELETE", "PATCH", "PUT"}
+    # OPTIONS is absent on purpose; a wildcard would be worse still.
     assert "*" not in offered
 
 

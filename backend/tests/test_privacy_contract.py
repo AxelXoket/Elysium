@@ -214,6 +214,50 @@ CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "tests/test_security_headers.py"
         "::test_a_row_whose_mime_is_not_an_image_is_refused",
     )),
+    # 26 Sep 2026, prompt layer and modules (W2 round 2, M-A). Each new
+    # sentence is registered on its own words, including the two that extend
+    # an older bullet, so the older marker cannot stand in for them.
+    ("Models that search the web on their own are refused before anything is sent", (
+        "tests/test_openrouter_request_params.py::TestTheSendPointRefusesBlockedIds"
+        "::test_streaming_route_sends_nothing",
+        "tests/test_openrouter_request_params.py::TestTheSendPointRefusesBlockedIds"
+        "::test_the_chat_route_sends_nothing",
+        "tests/test_openrouter_request_params.py::TestTheSendPointRefusesBlockedIds"
+        "::test_the_chat_route_names_the_refusal",
+    )),
+    ("Every system message starts with one line of hex", (
+        "tests/test_prompt_assembly.py"
+        "::test_the_salt_carries_no_instruction_and_no_chat_id",
+        "tests/test_prompt_assembly.py"
+        "::test_the_salt_is_stable_for_a_chat_and_differs_between_chats",
+        "tests/test_prompt_assembly.py::test_a_vault_lock_drops_the_salt_key",
+        "tests/test_prompt_request_guards.py"
+        "::test_the_vault_lock_empties_the_prompt_cache_and_drops_the_salt_key",
+    )),
+    ("A message that contains your stored API key is refused before it is stored or sent", (
+        "tests/test_api_key_scrub.py::TestTheTypedMessageIsRefused"
+        "::test_the_plain_route_sends_and_stores_nothing",
+        "tests/test_api_key_scrub.py::TestTheKeyIsCutFromWhatGoesOut"
+        "::test_the_key_in_old_history_is_cut_and_the_line_stays",
+        "tests/test_api_key_scrub.py::TestTheKeyIsCutFromWhatGoesOut"
+        "::test_the_key_in_a_card_and_a_stop_sequence_is_cut",
+        "tests/test_api_key_scrub.py::TestTheKeyIsCutFromWhatGoesOut"
+        "::test_the_streaming_twin_cuts_it_too",
+    )),
+    ("`reasoning` is sent only when the cached model list says the model takes it", (
+        "tests/test_prompt_request_guards.py"
+        "::test_d3_a_mandatory_thinker_gets_the_lowest_effort_and_no_returned_text",
+        "tests/test_prompt_request_guards.py"
+        "::test_d3_an_optional_thinker_is_switched_off",
+        "tests/test_prompt_request_guards.py"
+        "::test_d3_ground_control_a_model_without_reasoning_gets_no_field",
+    )),
+    ("are not sent unless you set them", (
+        "tests/test_prompt_request_guards.py"
+        "::test_d1_samplers_the_user_never_set_are_not_sent",
+        "tests/test_prompt_request_guards.py"
+        "::test_d1_positive_control_a_set_sampler_is_sent",
+    )),
 )
 
 #: Claims made in the prose paragraphs rather than as list items. The line
@@ -313,6 +357,21 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "tests/test_provision_proxy.py::TestM5ARefusalIsNotTheNewDefault"
         "::test_with_no_proxy_required_the_install_finishes",
     )),
+    # 26 Sep 2026: the "At rest" paragraph names prompt modules.
+    ("Prompt modules you import (their text, their names, the file name and the SillyTavern preset fields kept with them) are stored only inside the database", (
+        "tests/test_modules_privacy.py::TestDisk"
+        "::test_names_content_and_raw_entries_only_exist_encrypted",
+    )),
+    ("The file is read in memory and never written to disk", (
+        "tests/test_modules_api.py::TestNoDisk::test_an_upload_writes_no_file",
+        "tests/test_modules_api.py::TestNoDisk::test_the_spy_sees_a_temp_file",
+    )),
+    ("fields that can hold a secret are removed before anything is kept", (
+        "tests/test_modules_privacy.py::TestDisk"
+        "::test_preset_secrets_are_absent_from_every_stored_row",
+        "tests/test_modules_input_hardening.py::TestCamelCaseSecretKeys"
+        "::test_camel_case_and_upper_case_secret_keys_never_reach_storage",
+    )),
 )
 
 
@@ -323,7 +382,7 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
 #: test would notice. This closes that by refusing ANY change to the section
 #: until somebody comes here, decides what the change claims, and registers a
 #: proof for it. Updating this constant is the deliberate act.
-SECTION_DIGEST = "7163501156f63df25f37d7c77925d2b5d59068a64987bec7573e48ff46155e22"
+SECTION_DIGEST = "e2e1c4638b1e4f0b94a6f3f4a98555314f3e52240fdab58764a424a98bc1c6cb"
 
 
 def _section() -> str:

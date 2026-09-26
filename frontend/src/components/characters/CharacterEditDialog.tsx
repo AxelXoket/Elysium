@@ -82,6 +82,13 @@ export function CharacterEditDialog({
     setTagsInput(character.tags.join(", "));
     setError(null);
     setConfirmingDelete(false);
+    // B7 (PK-08): these two fields go to the model on every turn, so a card
+    // that carries either opens with them in view instead of hiding them
+    // behind a closed section. An empty card keeps the section closed.
+    setAdvancedOpen(
+      character.system_prompt.trim() !== "" ||
+        character.post_history_instruction.trim() !== "",
+    );
   };
 
   // Destructive confirm a11y: focus the confirm button when the step appears.

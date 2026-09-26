@@ -1,0 +1,17 @@
+{
+  "_why": "Bounds of the prompt modules feature, read by the frontend and pinned against backend/prompt_modules/limits.py by the backend gate suite. Change both sides together.",
+  "txt_md_max_bytes": 98304,
+  "json_max_bytes": 1048576,
+  "module_max_chars": 24000,
+  "module_name_max_chars": 64,
+  "module_note_max_chars": 500,
+  "plain_json_max_modules": 100,
+  "module_separator": "\n\n",
+  "module_budget_share_percent": 50,
+  "reference_card_chars": 3000,
+  "reply_length_words_allowed": [150, 300],
+  "plain_json_format": "elysium.prompt-modules",
+  "plain_json_version": 1,
+  "filename_header": "X-Prompt-Module-Filename",
+  "filename_max_chars": 255
+}

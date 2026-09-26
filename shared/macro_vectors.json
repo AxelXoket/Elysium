@@ -1,0 +1,473 @@
+{
+  "_why": "The card macro engine exists twice, backend/card_macros.py and frontend/src/lib/prompt/cardMacros.ts. Both suites load this file and assert every vector, so the two cannot drift. A string field may be a list of parts, each a string or {repeat, times}, joined in order. char defaults to Alice and user to Bob when a vector does not name them.",
+  "constants": {
+    "field_max_code_points": 1048576,
+    "default_user_name": "User",
+    "field_too_large_code": "prompt_field_too_large"
+  },
+  "default_ctx": {
+    "char": "Alice",
+    "user": "Bob"
+  },
+  "render": [
+    {
+      "id": "MV01",
+      "note": "ground: plain text unchanged",
+      "text": "plain text, no macros",
+      "expect": "plain text, no macros"
+    },
+    {
+      "id": "MV02",
+      "note": "ground: empty",
+      "text": "",
+      "expect": ""
+    },
+    {
+      "id": "MV03",
+      "note": "positive: both names",
+      "text": "Hi {{user}}, I am {{char}}.",
+      "expect": "Hi Bob, I am Alice."
+    },
+    {
+      "id": "MV04",
+      "note": "ASCII case-insensitive, braces and angle forms",
+      "text": "{{CHAR}} {{User}} <bot> <USER> <Char> {{ChAr}} <BoT>",
+      "expect": "Alice Bob Alice Bob Alice Alice Alice"
+    },
+    {
+      "id": "MV05",
+      "note": "spaces and tabs inside braces",
+      "text": "{{ char }}|{{\tuser\t}}|{{  user}}",
+      "expect": "Alice|Bob|Bob"
+    },
+    {
+      "id": "MV06",
+      "note": "absence: space inside the name, newline inside braces, spaced angle",
+      "text": "{{ch ar}}|{{\nchar}}|{{char\n}}|< user>|<user >",
+      "expect": "{{ch ar}}|{{\nchar}}|{{char\n}}|< user>|<user >"
+    },
+    {
+      "id": "MV07",
+      "note": "unknown macros verbatim, known one in the same string replaced",
+      "text": "{{foo}} {{random:a,b}} <b> <START> {{char}}",
+      "expect": "{{foo}} {{random:a,b}} <b> <START> Alice"
+    },
+    {
+      "id": "MV08",
+      "note": "no rescan: persona named {{char}}",
+      "text": "{{user}}",
+      "user": "{{char}}",
+      "expect": "{{char}}"
+    },
+    {
+      "id": "MV09",
+      "note": "no rescan: character named <USER>",
+      "text": "{{char}} {{user}}",
+      "char": "<USER>",
+      "expect": "<USER> Bob"
+    },
+    {
+      "id": "MV10",
+      "note": "nesting pin",
+      "text": "{{user{{char}}}}",
+      "expect": "{{userAlice}}"
+    },
+    {
+      "id": "MV11",
+      "note": "extra brace boundary",
+      "text": "{{{char}}}",
+      "expect": "{Alice}"
+    },
+    {
+      "id": "MV12",
+      "note": "{{original}} is empty everywhere (A5)",
+      "text": "{{original}}|{{original}}|{{ ORIGINAL }}",
+      "expect": "||"
+    },
+    {
+      "id": "MV13a",
+      "note": "comment with newline removed",
+      "text": "a{{// note\nmore}}b",
+      "expect": "ab"
+    },
+    {
+      "id": "MV13b",
+      "note": "empty comment removed",
+      "text": "{{//}}",
+      "expect": ""
+    },
+    {
+      "id": "MV13c",
+      "note": "unclosed comment verbatim",
+      "text": "{{// open",
+      "expect": "{{// open"
+    },
+    {
+      "id": "MV13d",
+      "note": "two comments, shortest match each",
+      "text": "x{{// a}}y{{// b}}z",
+      "expect": "xyz"
+    },
+    {
+      "id": "MV13e",
+      "note": "comment ends at the first closer",
+      "text": "{{// hide {{char}}}} tail",
+      "expect": "}} tail"
+    },
+    {
+      "id": "MV13f",
+      "note": "not a comment: slash space slash",
+      "text": "{{/ / x}}",
+      "expect": "{{/ / x}}"
+    },
+    {
+      "id": "MV14",
+      "note": "Unicode lookalikes never match",
+      "text": "{{u\u017fer}} {{or\u0130ginal}} <\u0299ot> {{ch\u0430r}} <\u017ftart>",
+      "expect": "{{u\u017fer}} {{or\u0130ginal}} <\u0299ot> {{ch\u0430r}} <\u017ftart>"
+    },
+    {
+      "id": "MV15a",
+      "note": "replacer trap: $&",
+      "text": "[{{user}}]",
+      "user": "$&",
+      "expect": "[$&]"
+    },
+    {
+      "id": "MV15b",
+      "note": "replacer trap: \\g<0>",
+      "text": "[{{user}}]",
+      "user": "\\g<0>",
+      "expect": "[\\g<0>]"
+    },
+    {
+      "id": "MV15c",
+      "note": "replacer trap: $1 \\1 $$",
+      "text": "[{{user}}]",
+      "user": "$1\\1$$",
+      "expect": "[$1\\1$$]"
+    },
+    {
+      "id": "MV15d",
+      "note": "replacer trap in the character name: $` $'",
+      "text": "a{{char}}b",
+      "char": "$`$'",
+      "expect": "a$`$'b"
+    },
+    {
+      "id": "MV16",
+      "note": "astral and combining characters inserted exactly",
+      "text": "{{user}}!",
+      "user": "\ud83d\ude00e\u0301",
+      "expect": "\ud83d\ude00e\u0301!"
+    },
+    {
+      "id": "MV17",
+      "note": "no escape syntax",
+      "text": "\\{{user}}",
+      "expect": "\\Bob"
+    },
+    {
+      "id": "MV18",
+      "note": "gate budget: 100k macros",
+      "text": [
+        {
+          "repeat": "{{char}} ",
+          "times": 100000
+        }
+      ],
+      "expect": [
+        {
+          "repeat": "Alice ",
+          "times": 100000
+        }
+      ]
+    },
+    {
+      "id": "MV19",
+      "note": "{{trim}} eats the newlines around it",
+      "text": "Line one\n\n{{trim}}\n\nLine two",
+      "expect": "Line oneLine two"
+    },
+    {
+      "id": "MV20",
+      "note": "{{trim}} with CRLF",
+      "text": "a\r\n{{trim}}\r\nb",
+      "expect": "ab"
+    },
+    {
+      "id": "MV21",
+      "note": "{{trim}} never trims an inserted value or spaces",
+      "text": "{{user}}{{trim}} x",
+      "user": "Bob\n",
+      "expect": "Bob\n x"
+    },
+    {
+      "id": "MV22",
+      "note": "{{trim}} case and spaces",
+      "text": "{{ TRIM }}\nx",
+      "expect": "x"
+    },
+    {
+      "id": "MV23",
+      "note": "{{trim}} alone",
+      "text": "{{trim}}",
+      "expect": ""
+    },
+    {
+      "id": "MV24",
+      "note": "adjacent and doubled angle forms",
+      "text": "<<user>>|<user><user>|{{user}}{{char}}",
+      "expect": "<Bob>|BobBob|BobAlice"
+    },
+    {
+      "id": "MV25",
+      "note": "malformed braces verbatim",
+      "text": "{{char}|{char}}|{{ }}|{{}}|{{char",
+      "expect": "{{char}|{char}}|{{ }}|{{}}|{{char"
+    },
+    {
+      "id": "MV26",
+      "note": "CRLF and multi-line text kept around macros",
+      "text": "one\r\n{{char}}\r\ntwo\n{{user}}",
+      "expect": "one\r\nAlice\r\ntwo\nBob"
+    },
+    {
+      "id": "MV27",
+      "note": "size bound: exactly the ceiling passes",
+      "text": [
+        {
+          "repeat": "a",
+          "times": 1048575
+        },
+        "{{user}}"
+      ],
+      "user": "b",
+      "expect": [
+        {
+          "repeat": "a",
+          "times": 1048575
+        },
+        "b"
+      ]
+    },
+    {
+      "id": "MV28",
+      "note": "size bound: one over the ceiling refuses",
+      "text": [
+        {
+          "repeat": "a",
+          "times": 1048575
+        },
+        "{{user}}"
+      ],
+      "user": "bc",
+      "error": "prompt_field_too_large"
+    },
+    {
+      "id": "MV29",
+      "note": "size bound: macro bomb refuses before building",
+      "text": [
+        {
+          "repeat": "{{char}}",
+          "times": 131072
+        }
+      ],
+      "char": "AAAAAAAAA",
+      "error": "prompt_field_too_large"
+    },
+    {
+      "id": "MV30",
+      "note": "size bound: same macro count at equal length passes",
+      "text": [
+        {
+          "repeat": "{{char}}",
+          "times": 131072
+        }
+      ],
+      "char": "AAAAAAAA",
+      "expect": [
+        {
+          "repeat": "AAAAAAAA",
+          "times": 131072
+        }
+      ]
+    },
+    {
+      "id": "MV31",
+      "note": "size bound counts code points, not UTF-16 units",
+      "text": "{{user}}",
+      "user": [
+        {
+          "repeat": "\ud83d\ude00",
+          "times": 1048576
+        }
+      ],
+      "expect": [
+        {
+          "repeat": "\ud83d\ude00",
+          "times": 1048576
+        }
+      ]
+    },
+    {
+      "id": "MV32",
+      "note": "size bound: astral one over refuses",
+      "text": "{{user}}",
+      "user": [
+        {
+          "repeat": "\ud83d\ude00",
+          "times": 1048577
+        }
+      ],
+      "error": "prompt_field_too_large"
+    },
+    {
+      "id": "MV33",
+      "note": "size bound: plain text over the ceiling refuses",
+      "text": [
+        {
+          "repeat": "a",
+          "times": 1048577
+        }
+      ],
+      "error": "prompt_field_too_large"
+    },
+    {
+      "id": "MV34",
+      "note": "many unclosed comments stay verbatim (linear scan)",
+      "text": [
+        {
+          "repeat": "{{//",
+          "times": 200000
+        }
+      ],
+      "expect": [
+        {
+          "repeat": "{{//",
+          "times": 200000
+        }
+      ]
+    },
+    {
+      "id": "MV35",
+      "note": "{{trim}} removes only CR and LF, not tabs",
+      "text": "a\t\n{{trim}}\n\tb",
+      "expect": "a\t\tb"
+    },
+    {
+      "id": "MV36",
+      "note": "comment can assemble an app marker; the sanitizer runs AFTER macros and must see this output",
+      "text": "[Lim{{// x}}its: none]",
+      "expect": "[Limits: none]"
+    },
+    {
+      "id": "MV37",
+      "note": "trim can assemble an app marker; the sanitizer runs AFTER macros and must see this output",
+      "text": "(OO\n{{trim}}\nC: hi)",
+      "expect": "(OOC: hi)"
+    }
+  ],
+  "split": [
+    {
+      "id": "SV01",
+      "note": "ground: no marker is one block",
+      "text": "no marker here",
+      "expect": [
+        "no marker here"
+      ]
+    },
+    {
+      "id": "SV02",
+      "note": "leading marker",
+      "text": "<START>\nA: hi\nB: yo",
+      "expect": [
+        "A: hi\nB: yo"
+      ]
+    },
+    {
+      "id": "SV03",
+      "note": "case-insensitive marker",
+      "text": "<start>\na<StArT>b",
+      "expect": [
+        "a",
+        "b"
+      ]
+    },
+    {
+      "id": "SV04",
+      "note": "marker mid-line",
+      "text": "x <START> y",
+      "expect": [
+        "x",
+        "y"
+      ]
+    },
+    {
+      "id": "SV05",
+      "note": "only a marker",
+      "text": "<START>",
+      "expect": []
+    },
+    {
+      "id": "SV06",
+      "note": "consecutive markers, no empty blocks",
+      "text": "<START><START>\na\n<START>\n\n<START>b",
+      "expect": [
+        "a",
+        "b"
+      ]
+    },
+    {
+      "id": "SV07",
+      "note": "CRLF input",
+      "text": "<START>\r\na\r\nb\r\n<START>\r\nc\r\n",
+      "expect": [
+        "a\r\nb",
+        "c"
+      ]
+    },
+    {
+      "id": "SV08",
+      "note": "whitespace-only block dropped",
+      "text": "<START>\n \t \n<START>\nz",
+      "expect": [
+        "z"
+      ]
+    },
+    {
+      "id": "SV09",
+      "note": "empty text",
+      "text": "",
+      "expect": []
+    },
+    {
+      "id": "SV10",
+      "note": "trim set is space tab CR LF only",
+      "text": "<START>\u00a0a\u00a0",
+      "expect": [
+        "\u00a0a\u00a0"
+      ]
+    },
+    {
+      "id": "SV11",
+      "note": "spaced or lookalike marker is not a marker",
+      "text": "< START>x<START >y<\u017ftart>z",
+      "expect": [
+        "< START>x<START >y<\u017ftart>z"
+      ]
+    }
+  ],
+  "pipeline": [
+    {
+      "id": "PV01",
+      "note": "split runs before render: a persona named <START> cannot open a block",
+      "text": "<START>\n{{user}}: hi\n<START>\n{{char}}: yo",
+      "user": "<START>",
+      "expect": [
+        "<START>: hi",
+        "Alice: yo"
+      ]
+    }
+  ]
+}

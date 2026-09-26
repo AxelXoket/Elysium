@@ -6,10 +6,12 @@
  * her deeper, slower, closer" is answerable here in one line of text, with no
  * hunting for a new recording and no DSP touching the audio.
  *
- * The palette is not decoration. These particular phrasings were the ones that
+ * The palette is not decoration. Four of these phrasings were the ones that
  * actually worked during the engine bake-off, and offering them saves a person
  * from discovering by trial and error that this engine takes free-form prose
- * rather than a fixed vocabulary.
+ * rather than a fixed vocabulary. Two ("soft, gentle" and "quiet, hesitant")
+ * replaced "soft, intimate" and "breathless" under the neutral-base rule
+ * (A8) and have not been tried on the engine yet.
  *
  * Preview matters for the same reason: a delivery dial you cannot hear is a
  * dial you tune by superstition.
@@ -32,14 +34,15 @@ import { useErrorStore } from "@/lib/errors/errorStore";
 import { leaveStage, takeStage, type VoiceSource } from "@/lib/voice/stage";
 import { keys } from "@/lib/query/keys";
 
-/** Phrasings measured to work on the tag-reading engine, not invented here. */
+/** Starting phrasings for the tag-reading engine; see the header for which
+ *  were measured in the bake-off and which are A8's neutral replacements. */
 const PALETTE = [
   "low voice, slow",
   "warm, close to the ear",
-  "soft, intimate",
+  "soft, gentle",
   "bright, playful",
   "cold, clipped",
-  "breathless",
+  "quiet, hesitant",
 ];
 
 const PREVIEW_LINE = "I was starting to think you would never ask.";

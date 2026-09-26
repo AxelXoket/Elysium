@@ -289,8 +289,107 @@ async def fetch_models(refresh: bool = False) -> dict:
         raise OpenRouterError("openrouter_models_error") from exc
 
 
+#: The reason `complete` and `complete_stream` raise for a blocked model id.
+MODEL_BLOCKED_REASON = "model_web_search_blocked"
+
+#: A model id that holds the stored API key. Refused before the body is
+#: built: scrub leaves the model field alone as a protocol value, so without
+#: this the key would go out as the model name. The safeword is NOT checked
+#: here: `vendor/exit-model` is an ordinary id and "exit" an ordinary
+#: safeword (test_safeword.py, test_the_model_id_is_never_cut), and no log
+#: line names a model id any more, so there is nothing for it to leak into.
+MODEL_KEY_REASON = "model_id_carries_api_key"
+
+#: Ek P C8: the one top-level prompt-caching field OpenRouter documents as
+#: the automatic option for Claude. Sent only for `anthropic/...` ids; other
+#: providers cache on their own by prefix and get nothing extra.
+ANTHROPIC_CACHE_CONTROL = {"type": "ephemeral"}
+
+
+def cache_control_for(model_id: str) -> dict | None:
+    """The top-level `cache_control` value for this model id, or None. Pure.
+
+    A fresh dict each call, so a caller that edits its body cannot change the
+    constant for the next request.
+    """
+    if (model_id or "").strip().lower().startswith("anthropic/"):
+        return dict(ANTHROPIC_CACHE_CONTROL)
+    return None
+
+
+#: Substrings of a model slug that mean the model searches the web on its
+#: own: Perplexity's `sonar` family, `...-search-preview` style ids, and the
+#: deep research models, which browse as part of answering.
+_SEARCHING_SLUG_PARTS = ("sonar", "-search", "deep-research")
+
+
+def model_id_blocked(model_id: str) -> bool:
+    """Whether this model id makes the provider search the web for us (C4).
+
+    Decided in Ek O 9, C4 (a): no outside search until the app has its own
+    retrieval. The app promises one egress; a search a provider runs with
+    the conversation as its query is a second one. Blocked, case-insensitive:
+    - a `:online` variant, matched as a whole `:`-segment, so
+      `vendor/online-model` is not caught;
+    - `openrouter/auto`, which picks the model (and so its tools) for us.
+      Only that id: other `openrouter/...` ids are ordinary hosted models;
+    - an `@preset/...` id, whose server-side preset can switch search on;
+    - a slug naming a searching model (`_SEARCHING_SLUG_PARTS`).
+    Pure; `complete` and `complete_stream` raise on it before anything is
+    sent, which covers the chat routes and the notebook reader alike.
+    """
+    mid = (model_id or "").strip().lower()
+    slug, _sep, variants = mid.partition(":")
+    if "online" in variants.split(":"):
+        return True
+    if slug == "openrouter/auto" or mid.startswith("@preset/"):
+        return True
+    return any(part in slug for part in _SEARCHING_SLUG_PARTS)
+
+
+#: Reasoning effort words from least to most, as the models API spells them.
+#: `none` is not an effort a mandatory model accepts, so it is skipped.
+REASONING_EFFORT_ORDER = ("minimal", "low", "medium", "high", "xhigh")
+
+
+def reasoning_param(model_id: str, *, thinking: bool = False) -> dict | None:
+    """The `reasoning` request field for this model, or None to send nothing (D3).
+
+    Read from the cached model list, never fetched: no metadata, no field.
+    - `thinking` True: None, the provider default (the "Thinking" toggle).
+    - the model does not list `reasoning` in its supported parameters, or the
+      catalogue carries no reasoning object for it: None. Sending a disable
+      to a model whose rules are unknown can be refused outright.
+    - mandatory reasoning: never a disable (the model rejects it); the lowest
+      effort it lists, and `exclude` so the text is not returned.
+    - optional reasoning: `{"enabled": False}`. Reasoning tokens count
+      against max_tokens and are billed even when the reply comes back empty.
+    """
+    if thinking:
+        return None
+    meta = get_cached_model_metadata(model_id)
+    if not meta or "reasoning" not in (meta.get("supported_parameters") or []):
+        return None
+    info = meta.get("reasoning")
+    if not isinstance(info, dict) or not info:
+        return None
+    if info.get("mandatory"):
+        listed = info.get("supported_efforts") or []
+        out: dict = {"exclude": True}
+        for effort in REASONING_EFFORT_ORDER:
+            if effort in listed:
+                out["effort"] = effort
+                break
+        return out
+    return {"enabled": False}
+
+
 def _normalise_model(raw: dict) -> dict:
-    """Normalize a raw OpenRouter model object to the stable 12-field shape."""
+    """Normalize a raw OpenRouter model object to the stable shape.
+
+    Thirteen fields: `reasoning` joined the twelve for D3 (the models API's
+    `{"mandatory": bool, "supported_efforts": [...]}`, or None).
+    """
     arch = raw.get("architecture") or {}
     top = raw.get("top_provider") or {}
     ctx = raw.get("context_length")
@@ -309,6 +408,9 @@ def _normalise_model(raw: dict) -> dict:
         "top_provider":          top,
         "created":               raw.get("created"),
         "canonical_slug":        raw.get("canonical_slug") or "",
+        "reasoning":             (raw.get("reasoning")
+                                  if isinstance(raw.get("reasoning"), dict)
+                                  else None),
     }
 
 
@@ -563,7 +665,10 @@ def _read_the_gate() -> tuple[str | None, tuple[str, ...]]:
     api_key = get_secret(SECRET_API_KEY)
     if not api_key:
         return None, ()
-    return api_key, safeword_filter.needles()
+    # The key itself is a needle too (C9): a key pasted into a chat once is
+    # cut out of every later body instead of riding along in history.
+    return api_key, (safeword_filter.needles()
+                     + safeword_filter.key_needles(api_key))
 
 
 async def complete(
@@ -623,6 +728,13 @@ async def complete(
     if not api_key:
         # NOTHING LEFT. Raised before a client exists, let alone a socket.
         raise OpenRouterError("api_key_not_set", reached_provider=False)
+    # C4: the one guard for every sender, before a client exists. No log line
+    # in this module names the model id: it is a name a person reads, and the
+    # log is plaintext outside the vault.
+    if model_id_blocked(model_id):
+        raise OpenRouterError(MODEL_BLOCKED_REASON, reached_provider=False)
+    if safeword_filter.carries(model_id, safeword_filter.key_needles(api_key)):
+        raise OpenRouterError(MODEL_KEY_REASON, reached_provider=False)
 
     payload: dict = {
         "model": model_id,
@@ -668,12 +780,17 @@ async def complete(
     # on the same trip as the key.
     payload = await anyio.to_thread.run_sync(
         safeword_filter.scrub, payload, safeword)
+    # After the scrub: an app-built constant, and a safeword that happened to
+    # be "ephemeral" must not cut it.
+    cache_control = cache_control_for(model_id)
+    if cache_control is not None:
+        payload["cache_control"] = cache_control
 
     timeout = httpx.Timeout(COMPLETION_TIMEOUT)
     client = get_client()
 
     # Log only non-sensitive fields.
-    logger.info("Completion request: model=%s", model_id)
+    logger.info("Completion request.")
     start = time.monotonic()
 
     try:
@@ -687,8 +804,8 @@ async def complete(
             timeout=timeout,
         )
         latency_ms = int((time.monotonic() - start) * 1000)
-        logger.info("Completion response: model=%s status=%d latency_ms=%d",
-                    model_id, response.status_code, latency_ms)
+        logger.info("Completion response: status=%d latency_ms=%d",
+                    response.status_code, latency_ms)
 
         # Map HTTP error status to sanitized reason codes (μ8). The raw body is
         # NEVER forwarded; _status_to_reason inspects it for one documented
@@ -715,13 +832,12 @@ async def complete(
         # `ConnectTimeout` is a subclass, and it is the half where nothing
         # reached the provider. Folded into the parent, a call that never
         # opened a socket kept its reservation for the rest of the day.
-        logger.warning("Completion request could not connect: model=%s",
-                       model_id)
+        logger.warning("Completion request could not connect.")
         raise OpenRouterError("openrouter_timeout", reached_provider=False)
     except httpx.TimeoutException:
         # Read, write or pool. The request was accepted and the answer was
         # lost on the way back, which is billed.
-        logger.warning("Completion request timed out: model=%s", model_id)
+        logger.warning("Completion request timed out.")
         raise OpenRouterError("openrouter_timeout")
     except httpx.ProxyError as exc:
         # The user's OWN proxy rejected or could not establish the tunnel (407,
@@ -938,6 +1054,11 @@ async def complete_stream(
     if not api_key:
         # NOTHING LEFT. Raised before a client exists, let alone a socket.
         raise OpenRouterError("api_key_not_set", reached_provider=False)
+    # C4, and the key check, as in complete().
+    if model_id_blocked(model_id):
+        raise OpenRouterError(MODEL_BLOCKED_REASON, reached_provider=False)
+    if safeword_filter.carries(model_id, safeword_filter.key_needles(api_key)):
+        raise OpenRouterError(MODEL_KEY_REASON, reached_provider=False)
 
     payload: dict = {
         "model": model_id,
@@ -955,6 +1076,10 @@ async def complete_stream(
     # person actually watches does not have.
     payload = await anyio.to_thread.run_sync(
         safeword_filter.scrub, payload, safeword)
+    # Same field, same placement as in complete().
+    cache_control = cache_control_for(model_id)
+    if cache_control is not None:
+        payload["cache_control"] = cache_control
 
     timeout = httpx.Timeout(
         connect=STREAM_CONNECT_TIMEOUT,
@@ -964,7 +1089,7 @@ async def complete_stream(
     )
     client = get_client()
 
-    logger.info("Streaming completion request: model=%s", model_id)
+    logger.info("Streaming completion request.")
     start = time.monotonic()
 
     try:
@@ -989,8 +1114,8 @@ async def complete_stream(
                     _parse_error_payload(await _peek_error_body(response)),
                 )
                 logger.warning(
-                    "Streaming completion HTTP error: model=%s status=%d reason=%s",
-                    model_id, response.status_code, reason,
+                    "Streaming completion HTTP error: status=%d reason=%s",
+                    response.status_code, reason,
                 )
                 raise OpenRouterError(reason)
 
@@ -1024,14 +1149,14 @@ async def complete_stream(
                 waited = time.monotonic() - start
                 if not saw_token and waited > STREAM_FIRST_TOKEN_TIMEOUT:
                     logger.warning(
-                        "Stream produced no token in %.0fs: model=%s",
-                        waited, model_id,
+                        "Stream produced no token in %.0fs.",
+                        waited,
                     )
                     raise OpenRouterError("openrouter_timeout")
                 if waited > STREAM_TOTAL_TIMEOUT:
                     logger.warning(
-                        "Stream exceeded its wall-clock budget (%.0fs): model=%s",
-                        waited, model_id,
+                        "Stream exceeded its wall-clock budget (%.0fs).",
+                        waited,
                     )
                     raise OpenRouterError("openrouter_timeout")
 
@@ -1083,8 +1208,8 @@ async def complete_stream(
                     # that response body content is never written down. Its
                     # length and the model are enough to diagnose the shape.
                     logger.error(
-                        "Malformed stream frame: model=%s len=%d",
-                        model_id, len(data),
+                        "Malformed stream frame: len=%d",
+                        len(data),
                     )
                     continue
 
@@ -1108,8 +1233,8 @@ async def complete_stream(
                         else "openrouter_error"
                     )
                     logger.warning(
-                        "Mid-stream provider error: model=%s reason=%s",
-                        model_id, reason,
+                        "Mid-stream provider error: reason=%s",
+                        reason,
                     )
                     raise OpenRouterError(reason)
 
@@ -1176,18 +1301,18 @@ async def complete_stream(
                      or not stopped_cleanly)
         if dropped_frames:
             logger.error(
-                "Stream completed with %d unparseable frame(s): model=%s",
-                dropped_frames, model_id,
+                "Stream completed with %d unparseable frame(s).",
+                dropped_frames,
             )
         logger.info(
-            "Streaming completion finished: model=%s latency_ms=%d",
-            model_id, latency_ms,
+            "Streaming completion finished: latency_ms=%d",
+            latency_ms,
         )
 
     except OpenRouterError:
         raise
     except httpx.TimeoutException:
-        logger.warning("Streaming completion timed out: model=%s", model_id)
+        logger.warning("Streaming completion timed out.")
         raise OpenRouterError("openrouter_timeout")
     except httpx.ProxyError as exc:
         # The user's OWN proxy rejected or could not establish the tunnel (407,

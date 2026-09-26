@@ -7,6 +7,7 @@ import {
   usePanelDraft,
 } from "@/lib/store/draftStore";
 import { useNotebook } from "@/lib/query/notebook";
+import { usePromptCostInputs } from "@/lib/prompt/usePromptCostInputs";
 import { useChats, useMessages } from "@/lib/query/chats";
 import { useCharacters } from "@/lib/query/characters";
 import { usePersonas } from "@/lib/query/personas";
@@ -183,6 +184,9 @@ export function ModelPanel() {
   // meters disagree with each other the moment the toggle flips.
   const { data: voiceMode } = useVoiceMode();
   const notebook = useNotebook(selectedChatId);
+  // Modules and the layer change the system message; the backend builds it
+  // the same way (lib/prompt/assembly.ts).
+  const promptInputs = usePromptCostInputs();
   // Subscribed, not read once: the gauge has to move as the reader types,
   // which is the only moment the prediction is worth anything.
   const composerDraftChars = useDraftStore((s) =>
@@ -206,6 +210,7 @@ export function ModelPanel() {
     // danger. The state worth warning about - green at 60%, a long paste,
     // then a refusal - was undetectable by construction.
     pendingMessageChars: composerDraftChars,
+    ...promptInputs,
   });
 
   return (

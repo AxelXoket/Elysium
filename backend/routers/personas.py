@@ -25,6 +25,8 @@ from pydantic import BaseModel, field_validator
 # transaction as their guard read. See _select_persona_sync.
 import default_names
 from database import get_db, get_setting
+# One cap and one surrogate rule for both name doors (Ek P, B8; PK-07).
+from routers.characters import name_is_too_long, refuse_unpaired_surrogate
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,10 @@ class PersonaCreate(BaseModel):
         default can be numbered against them."""
         return (v or "").strip()
 
+    _no_surrogates = field_validator(
+        "display_name", "description", mode="before",
+    )(refuse_unpaired_surrogate)
+
 
 class PersonaPatch(BaseModel):
     display_name: str | None = None
@@ -66,6 +72,10 @@ class PersonaPatch(BaseModel):
         leaves the stored one alone; one PRESENT and blank is an emptied box,
         which is a rename to the default."""
         return v.strip() if v is not None else v
+
+    _no_surrogates = field_validator(
+        "display_name", "description", mode="before",
+    )(refuse_unpaired_surrogate)
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +151,8 @@ def _create_persona_sync(body: "PersonaCreate") -> dict:
     the same number. It now reads before it writes, like delete and select
     below.
     """
+    if name_is_too_long(body.display_name):
+        raise HTTPException(400, "name_too_long")
     with get_db() as con:
         con.execute("BEGIN IMMEDIATE")
         display_name = default_names.name_or_default(
@@ -185,10 +197,17 @@ def _patch_persona_sync(persona_id: int, body: "PersonaPatch") -> dict:
         # None and _row_to_dict(None) raise a TypeError 500 instead of a 404.
         con.execute("BEGIN IMMEDIATE")
         existing = con.execute(
-            "SELECT id FROM personas WHERE id = ?", (persona_id,)
+            "SELECT id, display_name FROM personas WHERE id = ?", (persona_id,)
         ).fetchone()
         if existing is None:
             raise HTTPException(404, "persona_not_found")
+
+        # Checked on CHANGE only, as for characters: an older record keeps
+        # its name, and sending that same name back is not a rename.
+        if (body.display_name is not None
+                and body.display_name != existing["display_name"]
+                and name_is_too_long(body.display_name)):
+            raise HTTPException(400, "name_too_long")
 
         updates: list[str] = []
         params: list = []

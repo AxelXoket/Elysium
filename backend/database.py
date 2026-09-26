@@ -157,6 +157,55 @@ CREATE TABLE IF NOT EXISTS vault_secrets (
     name  TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- Prompt modules. One row per imported file; `preset_json` holds the file's
+-- preset-level fields with secrets stripped and NO entry text (that lives only
+-- in the entry's own row), never returned or logged.
+CREATE TABLE IF NOT EXISTS prompt_module_imports (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_type     TEXT    NOT NULL,
+    source_filename TEXT    NOT NULL DEFAULT '',
+    preset_json     TEXT    NOT NULL DEFAULT '{}',
+    report_json     TEXT    NOT NULL DEFAULT '{}',
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+-- One row per entry. Every structural SillyTavern field has its own column
+-- (Ek O 1: nothing dropped); `raw_entry_json` keeps the entry as the file had
+-- it, secrets stripped, and is never returned. Markers are kind 'marker'.
+CREATE TABLE IF NOT EXISTS prompt_modules (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    import_id             INTEGER REFERENCES prompt_module_imports(id),
+    kind                  TEXT    NOT NULL CHECK (kind IN ('module', 'marker')),
+    name                  TEXT    NOT NULL,
+    content               TEXT    NOT NULL DEFAULT '',
+    note                  TEXT    NOT NULL DEFAULT '',
+    enabled               INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+    sort_order            INTEGER NOT NULL,
+    revision              INTEGER NOT NULL DEFAULT 1,
+    source_type           TEXT    NOT NULL,
+    source_filename       TEXT    NOT NULL DEFAULT '',
+    st_identifier         TEXT,
+    st_enabled            INTEGER,
+    st_role               TEXT,
+    st_system_prompt      INTEGER,
+    st_marker             INTEGER NOT NULL DEFAULT 0,
+    st_injection_position INTEGER,
+    st_injection_depth    INTEGER,
+    st_injection_order    INTEGER,
+    st_injection_trigger  TEXT,
+    st_forbid_overrides   INTEGER,
+    st_extension          INTEGER,
+    after_history         INTEGER NOT NULL DEFAULT 0,
+    triggers              TEXT    NOT NULL DEFAULT '[]',
+    badges                TEXT    NOT NULL DEFAULT '[]',
+    raw_entry_json        TEXT,
+    created_at            TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at            TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_prompt_modules_order_v1
+    ON prompt_modules(sort_order, id);
 """
 
 

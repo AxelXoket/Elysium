@@ -155,21 +155,21 @@ def _log_worker_event(log, engine_id: str, frame: dict) -> None:
     # what it is.
     raw_note = frame.get("note")
     if isinstance(raw_note, str) and raw_note in _wire.ALL_NOTES:
-        note = raw_note
+        worker_note = raw_note
     elif raw_note:
-        note = sanitize_worker_detail(raw_note)
+        worker_note = sanitize_worker_detail(raw_note)
     else:
-        note = None
+        worker_note = None
     detail = frame.get("detail")
     detail = sanitize_worker_detail(detail) if detail else None
     prefix = f"tts[{engine_id or '?'}]"
     # BOTH, when both are there. `note` is what to tell the user; `detail` is
     # the exception that caused it - and dropping the detail whenever a note
     # existed threw away exactly the line needed to diagnose the note.
-    if note and detail:
-        log.warning("%s %s: %s (%s)", prefix, stage, note, detail)
-    elif note:
-        log.warning("%s %s: %s", prefix, stage, note)
+    if worker_note and detail:
+        log.warning("%s %s: %s (%s)", prefix, stage, worker_note, detail)
+    elif worker_note:
+        log.warning("%s %s: %s", prefix, stage, worker_note)
     elif detail:
         log.info("%s %s (%s)", prefix, stage, detail)
     else:

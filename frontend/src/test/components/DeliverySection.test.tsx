@@ -73,6 +73,17 @@ describe("DeliverySection", () => {
     );
   });
 
+  it("A8: the palette offers neutral phrasings only", async () => {
+    renderWithQueryClient(<DeliverySection />);
+    await screen.findByText("Delivery");
+    // Ground: the palette is rendered, and the neutral replacements are in it.
+    expect(screen.getByText("low voice, slow")).toBeInTheDocument();
+    expect(screen.getByText("soft, gentle")).toBeInTheDocument();
+    expect(screen.getByText("quiet, hesitant")).toBeInTheDocument();
+    const buttons = screen.getAllByRole("button").map((b) => b.textContent ?? "");
+    expect(buttons.some((t) => /intima|breathless|seductive|husky/i.test(t))).toBe(false);
+  });
+
   it("saves a typed tone on blur, not on every keystroke", async () => {
     renderWithQueryClient(<DeliverySection />);
     const input = await screen.findByPlaceholderText("e.g. low voice, slow");

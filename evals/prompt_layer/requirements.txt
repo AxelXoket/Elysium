@@ -1,0 +1,4 @@
+# G3-lite only. Not shipped, not imported by anything under backend/.
+# o200k_base token counts bound the input side of the spend guard; without
+# tiktoken the paid run refuses to start (it cannot price its prompts).
+tiktoken>=0.9

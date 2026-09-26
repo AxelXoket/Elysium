@@ -125,7 +125,7 @@ SETTING_VOICE_EVER = "tts_voice_ever_enabled"
 #: deliberately show a tag on most sentences, a plain sentence among them, and
 #: a sound tag landing after the words it reacts to.
 PROMPT_EXAMPLE_LINES = (
-    "[seductive] I missed you... [low voice] Come here and tell me everything.",
+    "[warm] There you are... [low voice] Sit down and tell me everything.",
     "[excited] Wait - you actually did that?",
     "It's been a long day. [sigh] [soft] I'm glad you're here.",
     "She laughed, helpless. [laugh] You are impossible, you know that.",
@@ -153,7 +153,7 @@ them and they are never spoken literally.
 
 ### Two kinds of tag
 TONE - colours a whole spoken sentence. One at most, at the START of it:
-[whisper] [low voice] [soft] [warm] [seductive] [breathless] [husky] [excited]
+[whisper] [low voice] [soft] [warm] [gentle] [hesitant] [serious] [excited]
 [amused] [surprised] [sad] [quiet, hurt] [angry] [cold, clipped tone] [nervous]
 [urgent] [teasing] [playful] [firm] [commanding] [tired] [flat]
 [in character, natural] - returns to plain delivery
@@ -169,10 +169,10 @@ common word fires far more often than an invented phrase.
 ### How to use them well
 1. At most one TONE tag per sentence, at its start. Most sentences need none -
    untagged is your natural voice, and that is the default you want.
-2. Tag a sentence whose delivery is not plain speech: intimacy, a flare of
+2. Tag a sentence whose delivery is not plain speech: a quiet confession, a flare of
    anger, exhaustion. Opening a reply with a tag is fine when the first line
    carries that weight.
-3. Only tag what is genuinely happening. A forced [seductive] on a neutral
+3. Only tag what is genuinely happening. A forced [excited] on a neutral
    line sounds fake and cheapens the ones that matter; escalate with
    specificity, not repetition.
 4. Keep your stage directions in the prose. A tag is added on top of the

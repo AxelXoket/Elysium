@@ -590,7 +590,8 @@ copy.
     "repetition_penalty": "float 0.001-2.0 | null",
     "max_tokens": "int 1-131072 | null",
     "seed": "int | null",
-    "stop": "string or [string] | null"
+    "stop": "string or [string] | null",
+    "thinking": "bool (optional, default false; strict: a string is 422)"
   },
   "persona_id": "int | null (optional; overrides selected_persona_id from settings)",
   "context_budget_tokens": "int | null (optional; range 512-2000000; NOT forwarded to OpenRouter)"
@@ -617,6 +618,8 @@ copy.
 | context_budget_tokens | int | 512-2000000 | **NO** | App-level budget only |
 
 Note: `context` (bare) is not a generation param and is never accepted.
+
+`generation_params.thinking` (bool, strict, default false) is the Thinking switch (D3), not a forwarded parameter, so it is not in the table above. For a model whose reasoning is optional, true sends no `reasoning` field (the provider default) instead of `{"enabled": false}`. A mandatory or unknown model gets its usual `reasoning` value whatever it says. It never reaches OpenRouter under its own name.
 
 ---
 
@@ -801,6 +804,24 @@ Deletes all messages in the chat. The chat shell is preserved with `updated_at` 
 
 **Errors:**
 - `404 chat_not_found`
+
+---
+
+## Prompt modules
+
+User files imported into the vault; an enabled module goes at the very top of
+the one system message. Every refusal is `{detail: <code>, ...}` with a named
+code from `prompt_modules/errors.py`.
+
+| Method | Path | What |
+|---|---|---|
+| GET | /prompt-modules | Every row in stored order (modules and SillyTavern marker rows), the imports, and `enabled_count` / `enabled_chars` / `enabled_tokens` for an ordinary send, counted on the prepared text. `enabled_any` also counts regenerate-only entries. No raw file text, no raw entry JSON |
+| POST | /prompt-modules/import | Raw body (never multipart), `Content-Length` required, file name in `X-Prompt-Module-Filename` (percent-encoded UTF-8, at most 255 characters, no control characters, else `400 prompt_module_filename_invalid`). `.txt`/`.md` up to 96 KiB, `.json` up to 1 MiB, refused before the body is read. Answers `201 {import_id, modules, report}`; the report is returned here only. Every module starts off |
+| PATCH | /prompt-modules/{id} | Any of `enabled`, `sort_order` (0-based target position), `name`. Switching on runs the H4 size check; send the window with it: `chat_id`, `context_budget_tokens`, `max_tokens`, `model_id` (all optional) |
+| DELETE | /prompt-modules/{id} | Remove one row; the last module of an import takes the import with it |
+| POST | /prompt-modules/enable-preset-defaults | `{import_id, ...window}`: switch on every entry SillyTavern had on, all or none. Answers `{enabled_ids, left_out}` |
+| GET | /prompt-modules/settings | `{prompt_layer_enabled: bool, reply_length_words: 150 \| 300 \| null}` |
+| PUT | /prompt-modules/settings | Both keys, replaced together; anything else is `400 prompt_settings_invalid` |
 
 ---
 

@@ -444,3 +444,59 @@ describe("Character Edit Dialog Tests", () => {
     ).toBeInTheDocument();
   });
 });
+
+// B7 (PK-08): the system prompt and final reminder go to the model on every
+// turn, so a card that carries either opens with the Advanced section in view.
+describe("Character Edit Dialog: Advanced opens when it holds text (B7)", () => {
+  const ADVANCED = { name: /^Advanced \(System Prompt/ };
+
+  function renderFor(character: typeof characterFixture) {
+    mockFetch({});
+    renderWithQueryClient(
+      <CharacterEditDialog character={character} trigger={<Button>Edit</Button>} />,
+      { wrapper: TooltipProvider },
+    );
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("ground: a card with neither field opens closed", async () => {
+    const user = userEvent.setup();
+    renderFor({ ...characterFixture, system_prompt: "", post_history_instruction: "" });
+    await openDialog(user);
+    expect(screen.getByRole("button", ADVANCED)).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("whitespace alone does not count as text", async () => {
+    const user = userEvent.setup();
+    renderFor({ ...characterFixture, system_prompt: "  \n ", post_history_instruction: "\t" });
+    await openDialog(user);
+    expect(screen.getByRole("button", ADVANCED)).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("a system prompt opens it", async () => {
+    const user = userEvent.setup();
+    renderFor({ ...characterFixture, system_prompt: "Stay terse.", post_history_instruction: "" });
+    await openDialog(user);
+    expect(screen.getByRole("button", ADVANCED)).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("a final reminder alone opens it", async () => {
+    const user = userEvent.setup();
+    renderFor({ ...characterFixture, system_prompt: "", post_history_instruction: "Keep it short." });
+    await openDialog(user);
+    expect(screen.getByRole("button", ADVANCED)).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("the toggle still works after it opened itself", async () => {
+    const user = userEvent.setup();
+    renderFor({ ...characterFixture, system_prompt: "Stay terse." });
+    await openDialog(user);
+    const toggle = screen.getByRole("button", ADVANCED);
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+  });
+});
+

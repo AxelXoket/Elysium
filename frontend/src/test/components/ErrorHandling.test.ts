@@ -224,8 +224,10 @@ describe("errorMessages", () => {
     expect(getErrorMessage("character_json_too_large")).toBe(
       "This character file is too large. Please use a smaller file.",
     );
+    // PK-06/PK-07: the same code now also answers deep nesting, a huge
+    // number and a broken character, so the sentence names all of them.
     expect(getErrorMessage("invalid_character_json")).toBe(
-      "This character file is not valid JSON. Please check the file and try again.",
+      "This character file could not be read as a card. It is not valid JSON, or it holds something a card cannot (a broken character, a number too long, nesting too deep). Please check the file and try again.",
     );
     // S-9 rewrite: `character_name_required` is gone for the same reason as
     // `title_required`. A card with no name is imported and named, so the

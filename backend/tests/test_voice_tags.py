@@ -44,7 +44,7 @@ class TestStripForDisplay:
         assert "  " not in got
 
     def test_multiple_tags_all_go(self):
-        got = strip_tags("[seductive] I missed you. [pause] Come here. [soft] Stay.")
+        got = strip_tags("[warm] I missed you. [pause] Come here. [soft] Stay.")
         assert got == "I missed you. Come here. Stay."
 
     def test_untagged_text_is_returned_byte_for_byte(self):

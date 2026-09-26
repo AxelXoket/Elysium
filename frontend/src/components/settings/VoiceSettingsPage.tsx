@@ -90,7 +90,7 @@ export function VoiceSettingsPage() {
           performed voice they had installed an engine for. */}
       <p className="settings-hint">
         When on, a short instruction is added to every request asking the model
-        to mark <em>how</em> lines are performed - [low voice], [breathless].
+        to mark <em>how</em> lines are performed - [low voice], [soft].
         The marks never appear in the chat, and only engines that can read them
         receive it. Speaking a message works with this off too; it just has no
         direction.

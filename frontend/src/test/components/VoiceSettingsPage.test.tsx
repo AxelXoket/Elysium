@@ -903,6 +903,16 @@ describe("VoiceSettingsPage - what the voice toggle actually controls", () => {
     expect(hint).toHaveTextContent(/never appear in the chat/i);
   });
 
+  it("A8: the hint's example marks are neutral", async () => {
+    mockFetch(baseRoutes());
+    renderWithQueryClient(<VoiceSettingsPage />);
+
+    const hint = await screen.findByText(/added to every request/i);
+    // Positive control: the hint still shows example marks.
+    expect(hint).toHaveTextContent("[low voice]");
+    expect(hint.textContent ?? "").not.toMatch(/breathless|seductive|husky|intima/i);
+  });
+
   it("does not claim the chat is silent when it is off", async () => {
     // Speaking works with this off - the per-message button and the composer's
     // continuous-voice button are both independent of it.

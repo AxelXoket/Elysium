@@ -267,6 +267,23 @@ function applySpeak(payload: Record<string, unknown>, input: SpeakInput) {
 }
 
 /**
+ * The Thinking switch (D3). The sampler filters above drop it (it is not a
+ * sampler and no model lists it), so it is put back here, after them, and
+ * only when it is on: off is the server default and adds nothing.
+ */
+function applyThinking(
+  payload: Record<string, unknown>,
+  params: GenerationParams | null | undefined,
+) {
+  if (params?.thinking === true) {
+    payload.generation_params = {
+      ...((payload.generation_params as GenerationParams | undefined) ?? {}),
+      thinking: true,
+    };
+  }
+}
+
+/**
  * Build a safe completion request payload.
  * - Filters and prunes generation params by model support
  * - Clamps max_tokens and context_budget_tokens
@@ -300,6 +317,7 @@ export function buildCompletionPayload(input: CompletionPayloadInput) {
   if (clampedBudget != null) {
     payload.context_budget_tokens = clampedBudget;
   }
+  applyThinking(payload, input.generationParams);
 
   return applySpeak(payload, input);
 }
@@ -333,6 +351,7 @@ export function buildRegeneratePayload(input: RegeneratePayloadInput) {
   if (clampedBudget != null) {
     payload.context_budget_tokens = clampedBudget;
   }
+  applyThinking(payload, input.generationParams);
 
   return applySpeak(payload, input);
 }

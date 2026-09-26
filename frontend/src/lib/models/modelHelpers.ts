@@ -107,6 +107,30 @@ export function getModelSupportedParameters(
   return model.supported_parameters;
 }
 
+// ── Reasoning (D3) ───────────────────────────────────────────────
+
+/**
+ * What the Thinking switch can do for this model, read the way the backend
+ * reads it (openrouter.reasoning_param):
+ *  - "none": the model lists no `reasoning` parameter; nothing to switch.
+ *  - "optional": reasoning can be turned off, so it is off unless Thinking
+ *    is on. The only case where the switch does anything.
+ *  - "mandatory": the model always reasons; the app asks for the lowest
+ *    effort and does not show the reasoning text.
+ *  - "unknown": the model lists `reasoning` but the catalogue does not say
+ *    whether it can be turned off, so the app sends nothing either way.
+ */
+export type ReasoningMode = "none" | "optional" | "mandatory" | "unknown";
+
+export function getReasoningMode(
+  model: Pick<Model, "supported_parameters" | "reasoning"> | null | undefined,
+): ReasoningMode {
+  if (!model?.supported_parameters?.includes("reasoning")) return "none";
+  const info = model.reasoning;
+  if (!info || Object.keys(info).length === 0) return "unknown";
+  return info.mandatory ? "mandatory" : "optional";
+}
+
 // ── Modality helpers ─────────────────────────────────────────────
 
 /**

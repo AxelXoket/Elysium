@@ -235,8 +235,17 @@ def test_stream_payload_contains_persona_block(client, stream_provider):
         read_events(resp)
 
     msgs = stream_provider.calls[0]["messages"]
-    assert {
+    # One system message since the single-system-message assembly (Ek O 8):
+    # salt, the card block, then the persona: the same exact message
+    # test_completions_flow.py pins on /complete, so the routes cannot drift.
+    import prompt_layer
+    assert msgs[0] == {
         "role": "system",
-        "content": "[User Persona: Nova]\nCurious explorer.",
-    } in msgs
-    assert msgs[1]["content"] == "[User Persona: Nova]\nCurious explorer."
+        "content": prompt_layer.PART_SEP.join([
+            prompt_layer.chat_salt(chat_id),
+            "[Character: Testchar]",
+            "[Description]\nA test character",
+            "[User Persona: Nova]\nCurious explorer.",
+        ]),
+    }
+    assert [m["role"] for m in msgs].count("system") == 1

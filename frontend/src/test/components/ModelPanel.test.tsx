@@ -347,54 +347,58 @@ describe("Context usage meter", () => {
   });
 
   it("renders the estimate label and normal state under 75%", async () => {
-    // One 600-char message: used = ceil((30 + 600) / 3) = 210 tokens.
-    // percent = 210 / 775 * 100 = 27.09...% -> normal.
+    // Since the single system message (Ek O 8) the fixed cost opens with
+    // a 24-char salt line and a 2-char separator: card block
+    // "[Character: Terse]\n\n[System Prompt]\nYou are terse." = 50,
+    // fixed = 24 + 2 + 50 = 76.
+    // One 600-char message: used = ceil((76 + 600) / 3) = 226 tokens.
+    // percent = 226 / 775 * 100 = 29.16...% -> normal.
     mockMeterRoutes([meterMsg(1, "x".repeat(600))]);
 
     renderWithQueryClient(<ModelPanel />, { wrapper });
 
     const meter = await screen.findByTestId("context-usage-meter");
     expect(meter).toHaveAttribute("data-state", "normal");
-    expect(meter).toHaveTextContent("Context ≈ 217 / 775 tokens · 1 msg");
+    expect(meter).toHaveTextContent("Context ≈ 226 / 775 tokens · 1 msg");
     expect(meter).not.toHaveTextContent("dropped");
 
     const fill = screen.getByTestId("context-usage-fill");
-    expect(fill.style.width).toBe(`${(217 / 775) * 100}%`);
+    expect(fill.style.width).toBe(`${(226 / 775) * 100}%`);
   });
 
   it("switches to the warning state at 75% and danger at 92%", async () => {
-    // 1800 chars: used = ceil((30 + 1800) / 3) = 610 -> 78.7% -> warning.
+    // 1800 chars: used = ceil((76 + 1800) / 3) = 626 -> 80.8% -> warning.
     mockMeterRoutes([meterMsg(1, "x".repeat(1800))]);
 
     const { unmount } = renderWithQueryClient(<ModelPanel />, { wrapper });
 
     const meter = await screen.findByTestId("context-usage-meter");
-    expect(meter).toHaveTextContent("Context ≈ 617 / 775 tokens · 1 msg");
+    expect(meter).toHaveTextContent("Context ≈ 626 / 775 tokens · 1 msg");
     expect(meter).toHaveAttribute("data-state", "warning");
 
     unmount();
 
-    // 2150 chars: used = ceil((30 + 2150) / 3) = ceil(726.67) = 727
-    // -> 93.8% -> danger (2150 <= 2295, so nothing is dropped).
+    // 2150 chars: used = ceil((76 + 2150) / 3) = 742
+    // -> 95.7% -> danger (2150 <= 2325 - 76 = 2249, so nothing is dropped).
     mockMeterRoutes([meterMsg(1, "x".repeat(2150))]);
 
     renderWithQueryClient(<ModelPanel />, { wrapper });
 
     const dangerMeter = await screen.findByTestId("context-usage-meter");
-    expect(dangerMeter).toHaveTextContent("Context ≈ 734 / 775 tokens · 1 msg");
+    expect(dangerMeter).toHaveTextContent("Context ≈ 742 / 775 tokens · 1 msg");
     expect(dangerMeter).toHaveAttribute("data-state", "danger");
   });
 
   it("reports dropped oldest messages in the label", async () => {
-    // Two 1200-char messages = 2400 > 2295 -> oldest dropped, 1200 kept.
-    // used = ceil((30 + 1200) / 3) = 410 tokens.
+    // Two 1200-char messages = 2400 > 2249 -> oldest dropped, 1200 kept.
+    // used = ceil((76 + 1200) / 3) = 426 tokens.
     mockMeterRoutes([meterMsg(1, "a".repeat(1200)), meterMsg(2, "b".repeat(1200))]);
 
     renderWithQueryClient(<ModelPanel />, { wrapper });
 
     const meter = await screen.findByTestId("context-usage-meter");
     expect(meter).toHaveTextContent(
-      "Context ≈ 417 / 775 tokens · 2 msgs (1 oldest dropped)",
+      "Context ≈ 426 / 775 tokens · 2 msgs (1 oldest dropped)",
     );
   });
 
@@ -404,35 +408,35 @@ describe("Context usage meter", () => {
     renderWithQueryClient(<ModelPanel />, { wrapper });
 
     const meter = await screen.findByTestId("context-usage-meter");
-    expect(meter).toHaveTextContent("Context ≈ 217 / 775 tokens · 1 msg");
+    expect(meter).toHaveTextContent("Context ≈ 226 / 775 tokens · 1 msg");
 
     act(() => {
       useUiStore.setState({ selectedModelId: meterModelLarge.id });
     });
 
-    // Same 210 used tokens, but capacity becomes 3644 -> "3.6K".
+    // Same 226 used tokens, but capacity becomes 3644 -> "3.6K".
     await waitFor(() => {
       expect(screen.getByTestId("context-usage-meter")).toHaveTextContent(
-        "Context ≈ 217 / 3.6K tokens · 1 msg",
+        "Context ≈ 226 / 3.6K tokens · 1 msg",
       );
     });
   });
 
   it("exposes the meter as an accessible progressbar", async () => {
-    // Same inputs as the normal-state test: percent = 210 / 775 * 100 = 27.09%,
-    // which rounds to an aria-valuenow of 27.
+    // Same inputs as the normal-state test: percent = 226 / 775 * 100 = 29.16%,
+    // which rounds to an aria-valuenow of 29.
     mockMeterRoutes([meterMsg(1, "x".repeat(600))]);
 
     renderWithQueryClient(<ModelPanel />, { wrapper });
 
     await screen.findByTestId("context-usage-meter");
     const bar = screen.getByRole("progressbar");
-    expect(bar).toHaveAttribute("aria-valuenow", "28");
+    expect(bar).toHaveAttribute("aria-valuenow", "29");
     expect(bar).toHaveAttribute("aria-valuemin", "0");
     expect(bar).toHaveAttribute("aria-valuemax", "100");
     expect(bar).toHaveAttribute(
       "aria-label",
-      "Estimated context usage: 28 percent",
+      "Estimated context usage: 29 percent",
     );
     // The estimate caveat is available to assistive tech, not mouse-hover only.
     const describedBy = bar.getAttribute("aria-describedby");
@@ -619,6 +623,6 @@ describe("the gauge says the backend will refuse", () => {
 
     const meter = await render();
 
-    expect(meter).toHaveTextContent("Context ≈ 217 / 775 tokens · 1 msg");
+    expect(meter).toHaveTextContent("Context ≈ 226 / 775 tokens · 1 msg");
   });
 });

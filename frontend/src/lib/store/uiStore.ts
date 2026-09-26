@@ -55,25 +55,39 @@ export type MsgContrast = "soft" | "default" | "high";
 // fields use genMaxOutput / genContextBudget instead. Stop sequences are USER
 // CONTENT (character names) and NEVER persist - they stay in-memory in the
 // GenerationSettingsProvider (accepted loss on lock).
+//
+// D1: the four samplers are `number | null`, null meaning UNSET (not sent).
 export interface GenPersistedSettings {
-  genTemperature: number;
-  genTopP: number;
-  genTopK: number;
-  genRepetitionPenalty: number;
+  genTemperature: number | null;
+  genTopP: number | null;
+  genTopK: number | null;
+  genRepetitionPenalty: number | null;
   genMaxOutput: number;
   genSeed: string;
   genContextBudget: number;
 }
 
 export const GEN_PERSISTED_DEFAULTS: GenPersistedSettings = {
-  genTemperature: 0.8,
-  genTopP: 0.9,
-  genTopK: 40,
-  genRepetitionPenalty: 1.05,
+  genTemperature: null,
+  genTopP: null,
+  genTopK: null,
+  genRepetitionPenalty: null,
   genMaxOutput: 1024,
   genSeed: "",
   genContextBudget: 16384,
 };
+
+/**
+ * The sampler defaults before D1. Sent on every request whether or not the
+ * user had touched them; the v4 migration below clears a stored value that
+ * still equals one of these.
+ */
+export const LEGACY_SAMPLER_DEFAULTS = {
+  genTemperature: 0.8,
+  genTopP: 0.9,
+  genTopK: 40,
+  genRepetitionPenalty: 1.05,
+} as const satisfies Partial<Record<keyof GenPersistedSettings, number>>;
 
 /** Defensive clamp for values coming back from localStorage (a corrupted
  * store must never crash the app; request-time builders clamp again). */
@@ -84,13 +98,20 @@ function clampGenSettings(
     typeof v === "number" && Number.isFinite(v)
       ? Math.min(Math.max(v, min), max)
       : fallback;
+  // A sampler may be null (unset, D1), and anything that is not a finite
+  // number falls back to unset rather than to an invented value.
+  const sampler = (v: unknown, min: number, max: number) =>
+    v === null ? null : num(v, min, max, Number.NaN);
+  const unsetIfNaN = (v: number | null) => (Number.isNaN(v) ? null : v);
   const out: Partial<GenPersistedSettings> = {};
   if ("genTemperature" in values)
-    out.genTemperature = num(values.genTemperature, 0, 2, 0.8);
-  if ("genTopP" in values) out.genTopP = num(values.genTopP, 0, 1, 0.9);
-  if ("genTopK" in values) out.genTopK = num(values.genTopK, 0, 500, 40);
+    out.genTemperature = unsetIfNaN(sampler(values.genTemperature, 0, 2));
+  if ("genTopP" in values)
+    out.genTopP = unsetIfNaN(sampler(values.genTopP, 0, 1));
+  if ("genTopK" in values)
+    out.genTopK = unsetIfNaN(sampler(values.genTopK, 0, 500));
   if ("genRepetitionPenalty" in values)
-    out.genRepetitionPenalty = num(values.genRepetitionPenalty, 0, 2, 1.05);
+    out.genRepetitionPenalty = unsetIfNaN(sampler(values.genRepetitionPenalty, 0, 2));
   if ("genMaxOutput" in values)
     out.genMaxOutput = num(values.genMaxOutput, 1, 2_000_000, 1024);
   if ("genContextBudget" in values)
@@ -226,10 +247,11 @@ interface UiState {
   ambientFogOn: boolean;
 
   // v1.1 FF7: persisted generation sampling scalars (neutral names).
-  genTemperature: number;
-  genTopP: number;
-  genTopK: number;
-  genRepetitionPenalty: number;
+  // D1: null is an unset sampler.
+  genTemperature: number | null;
+  genTopP: number | null;
+  genTopK: number | null;
+  genRepetitionPenalty: number | null;
   genMaxOutput: number;
   genSeed: string;
   genContextBudget: number;
@@ -467,9 +489,18 @@ export const useUiStore = create<UiState>()(
       // Version 2: tab names renamed (model→models, settings→secrets, info→models).
       // The original persist config had no explicit version, which Zustand treats as 0.
       // Bumping to 2 triggers the migrate function for all existing localStorage entries.
-      version: 3,
+      //
+      // Version 4: D1, samplers default to unset. A stored sampler exactly
+      // equal to its OLD default is cleared once; any other value is the
+      // user's own choice and stays.
+      version: 4,
       migrate: (persisted: unknown, fromVersion: number) => {
         const state = { ...(persisted ?? {}) } as Record<string, unknown>;
+        if (fromVersion < 4) {
+          for (const [key, old] of Object.entries(LEGACY_SAMPLER_DEFAULTS)) {
+            if (state[key] === old) state[key] = null;
+          }
+        }
         if (fromVersion < 2) {
           // Normalize old tab value to new tab name
           state.activeRightPanelTab = normalizeTab(state.activeRightPanelTab);

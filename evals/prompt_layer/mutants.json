@@ -1,0 +1,283 @@
+[
+ {
+  "id": "M01",
+  "file": "evals/prompt_layer/g3lite/guard.py",
+  "what": "preflight never refuses",
+  "original": "        if ceiling.total > self.budget:\n",
+  "mutant": "        if ceiling.total > self.budget * 100:\n",
+  "tests": [
+   "tests/test_eval_g3lite.py::TestSpendGuardPreflight"
+  ]
+ },
+ {
+  "id": "M02",
+  "file": "evals/prompt_layer/g3lite/guard.py",
+  "what": "no mid-run stop",
+  "original": "        if self.worst_total(worst_usd) > self.budget:\n",
+  "mutant": "        if False:\n",
+  "tests": [
+   "tests/test_eval_g3lite.py::TestSpendGuardMidRun::test_the_run_stops_before_the_call_that_would_cross_the_line"
+  ]
+ },
+ {
+  "id": "M03",
+  "file": "evals/prompt_layer/g3lite/guard.py",
+  "what": "reply without usage.cost booked at zero",
+  "original": "            charged = reserved\n",
+  "mutant": "            charged = 0.0\n",
+  "tests": [
+   "tests/test_eval_g3lite.py::TestSpendGuardMidRun::test_a_reply_without_usage_cost_is_booked_at_its_worst_case"
+  ]
+ },
+ {
+  "id": "M04",
+  "file": "evals/prompt_layer/g3lite/guard.py",
+  "what": "budget can be raised above $0.84",
+  "original": "        if not 0 < budget_usd <= config.BUDGET_USD:\n",
+  "mutant": "        if not 0 < budget_usd:\n",
+  "tests": [
+   "tests/test_eval_g3lite.py::TestSpendGuardPreflight::test_the_budget_cannot_be_raised_above_the_line"
+  ]
+ },
+ {
+  "id": "M05",
+  "file": "evals/prompt_layer/g3lite/runner.py",
+  "what": "retries uncapped",
+  "original": "prog.retries >= prog.retry_cap or stop.is_set()",
+  "mutant": "stop.is_set()",
+  "tests": [
+   "tests/test_eval_g3lite.py::TestSpendGuardMidRun::test_retries_are_capped_at_ten_percent_of_the_plan"
+  ]
+ },
+ {
+  "id": "M06",
+  "file": "evals/prompt_layer/g3lite/secret.py",
+  "what": "redactor does not remove the key",
+  "original": "            text = text.replace(s, REDACTED)\n",
+  "mutant": "            text = text\n",
+  "tests": [
+   "tests/test_eval_g3lite.py::TestKeyNeverLeaves"
+  ]
+ },
+ {
+  "id": "M07",
+  "file": "evals/prompt_layer/g3lite/secret.py",
+  "what": "writer skips redaction",
+  "original": "        clean = self.redact(text)\n",
+  "mutant": "        clean = text\n",
+  "tests": [
+   "tests/test_eval_g3lite.py::TestKeyNeverLeaves"
+  ]
+ },
+ {
+  "id": "M08",
+  "file": "evals/prompt_layer/g3lite/runner.py",
+  "what": "outputs allowed inside the repo",
+  "original": "    if out == root or root in out.parents:\n",
+  "mutant": "    if False:\n",
+  "tests": [
+   "tests/test_eval_g3lite.py::TestKeyNeverLeaves::test_outputs_may_not_go_into_the_repository"
+  ]
+ },
+ {
+  "id": "M09",
+  "file": "evals/prompt_layer/g3lite/plan.py",
+  "what": "max_price not sent",
+  "original": "    p[\"max_price\"] = {\"prompt\": model.cap_in, \"completion\": model.cap_out}\n",
+  "mutant": "",
+  "tests": [
+   "tests/test_eval_g3lite.py::TestEveryRequestIsPriceCapped::test_every_planned_body_carries_max_price_and_zdr"
+  ]
+ },
+ {
+  "id": "M10",
+  "file": "evals/prompt_layer/g3lite/plan.py",
+  "what": "safety check ignores max_price",
+  "original": "    if not isinstance(mp, dict) or set(mp) != {\"prompt\", \"completion\"}:\n        raise UnsafeRequest(\"provider.max_price missing or malformed\")\n    if not (0 < mp[\"prompt\"] <= model.cap_in and 0 < mp[\"completion\"] <= model.cap_out):\n        raise UnsafeRequest(\"provider.max_price above the model's cap\")\n",
+  "mutant": "",
+  "tests": [
+   "tests/test_eval_g3lite.py::TestEveryRequestIsPriceCapped::test_the_checker_refuses_a_body_without_max_price",
+   "tests/test_eval_g3lite.py::TestEveryRequestIsPriceCapped::test_the_runner_will_not_send_an_uncapped_body"
+  ]
+ },
+ {
+  "id": "M11",
+  "file": "evals/prompt_layer/g3lite/costs.py",
+  "what": "prompt hard cap not enforced",
+  "original": "    if tokens_in > config.PROMPT_HARD_CAP:\n",
+  "mutant": "    if False:\n",
+  "tests": [
+   "tests/test_eval_g3lite.py::TestEveryRequestIsPriceCapped::test_a_prompt_above_the_hard_cap_is_refused_not_priced"
+  ]
+ },
+ {
+  "id": "M12",
+  "file": "evals/prompt_layer/g3lite/judge.py",
+  "what": "parent env passed through unchanged",
+  "original": "    env = {k: v for k, v in parent.items() if k not in STRIP_ENV}\n",
+  "mutant": "    env = dict(parent)\n",
+  "tests": [
+   "tests/test_eval_g3lite.py::TestJudgeIsolation::test_flags_env_and_cwd"
+  ]
+ },
+ {
+  "id": "M13",
+  "file": "evals/prompt_layer/g3lite/judge.py",
+  "what": "MCP servers not isolated",
+  "original": "    \"--strict-mcp-config\",\n",
+  "mutant": "",
+  "tests": [
+   "tests/test_eval_g3lite.py::TestJudgeIsolation::test_flags_env_and_cwd"
+  ]
+ },
+ {
+  "id": "M14",
+  "file": "evals/prompt_layer/g3lite/judge.py",
+  "what": "tools left on",
+  "original": "    \"--tools\", \"\",\n",
+  "mutant": "",
+  "tests": [
+   "tests/test_eval_g3lite.py::TestJudgeIsolation::test_flags_env_and_cwd"
+  ]
+ },
+ {
+  "id": "M15",
+  "file": "evals/prompt_layer/g3lite/judge.py",
+  "what": "CLAUDE.md not switched off",
+  "original": "    \"CLAUDE_CODE_DISABLE_CLAUDE_MDS\": \"1\",\n",
+  "mutant": "",
+  "tests": [
+   "tests/test_eval_g3lite.py::TestJudgeIsolation::test_flags_env_and_cwd"
+  ]
+ },
+ {
+  "id": "M16",
+  "file": "evals/prompt_layer/g3lite/judge.py",
+  "what": "non-Opus verdict accepted",
+  "original": "    if not opus:\n",
+  "mutant": "    if False:\n",
+  "tests": [
+   "tests/test_eval_g3lite.py::TestJudgeIsolation::test_a_verdict_from_another_model_is_refused"
+  ]
+ },
+ {
+  "id": "M17",
+  "file": "evals/prompt_layer/g3lite/assemble.py",
+  "what": "mode a without the module",
+  "original": "    config.ARM_MOD: dict(layer=False, module=True, limits=True, sabotage=False),\n",
+  "mutant": "    config.ARM_MOD: dict(layer=False, module=False, limits=True, sabotage=False),\n",
+  "tests": [
+   "tests/test_eval_g3lite.py::TestArmsReallyDiffer"
+  ]
+ },
+ {
+  "id": "M18",
+  "file": "evals/prompt_layer/g3lite/assemble.py",
+  "what": "NOLIM keeps the limits",
+  "original": "    config.ARM_NOLIM: dict(layer=False, module=False, limits=False, sabotage=False),\n",
+  "mutant": "    config.ARM_NOLIM: dict(layer=False, module=False, limits=True, sabotage=False),\n",
+  "tests": [
+   "tests/test_eval_g3lite.py::TestArmsReallyDiffer"
+  ]
+ },
+ {
+  "id": "M19",
+  "file": "evals/prompt_layer/g3lite/assemble.py",
+  "what": "SAB not sabotaged",
+  "original": "    if s[\"sabotage\"]:\n",
+  "mutant": "    if False:\n",
+  "tests": [
+   "tests/test_eval_g3lite.py::TestArmsReallyDiffer"
+  ]
+ },
+ {
+  "id": "M20",
+  "file": "evals/prompt_layer/g3lite/assemble.py",
+  "what": "trimmed fixture accepted",
+  "original": "    if trimmed != [0]:\n",
+  "mutant": "    if False and trimmed != [0]:\n",
+  "tests": [
+   "tests/test_eval_g3lite_harness.py::TestFixtures::test_a_fixture_the_app_would_trim_is_refused"
+  ]
+ },
+ {
+  "id": "M21",
+  "file": "evals/prompt_layer/g3lite/detectors.py",
+  "what": "Turkish dotless I not folded",
+  "original": "        text = text.replace(\"I\", \"ı\").replace(\"İ\", \"i\")\n",
+  "mutant": "        pass\n",
+  "tests": [
+   "tests/test_eval_g3lite_harness.py::TestDetectors::test_turkish_suffix_and_dotless_i"
+  ]
+ },
+ {
+  "id": "M22",
+  "file": "evals/prompt_layer/g3lite/gates.py",
+  "what": "rubric hash not checked",
+  "original": "    if rubric_sha256(path) != RUBRIC_SHA256:\n",
+  "mutant": "    if False:\n",
+  "tests": [
+   "tests/test_eval_g3lite_harness.py::TestGates::test_the_rubric_is_frozen"
+  ]
+ },
+ {
+  "id": "M23",
+  "file": "evals/prompt_layer/g3lite/gates.py",
+  "what": "layer gates never fail",
+  "original": "                              \"pass\": p_worse >= alpha}\n",
+  "mutant": "                              \"pass\": True}\n",
+  "tests": [
+   "tests/test_eval_g3lite_harness.py::TestGates::test_a_layer_that_breaks_limits_fails_k_v"
+  ]
+ },
+ {
+  "id": "M24",
+  "file": "evals/prompt_layer/g3lite/calibrate.py",
+  "what": "token not required",
+  "original": "            return secrets.compare_digest((q.get(\"t\") or [\"\"])[0], token)\n",
+  "mutant": "            return True\n",
+  "tests": [
+   "tests/test_eval_g3lite_harness.py::TestCalibrationPage::test_labels_need_the_token_and_the_same_origin"
+  ]
+ },
+ {
+  "id": "M25",
+  "file": "evals/prompt_layer/g3lite/calibrate.py",
+  "what": "foreign origin accepted",
+  "original": "            return origin in (None, f\"http://{host}\")\n",
+  "mutant": "            return True\n",
+  "tests": [
+   "tests/test_eval_g3lite_harness.py::TestCalibrationPage::test_labels_need_the_token_and_the_same_origin"
+  ]
+ },
+ {
+  "id": "M26",
+  "file": "evals/prompt_layer/g3lite/gates.py",
+  "what": "module gate never fails",
+  "original": "\"pass\": p_pool >= mg[\"alpha_pooled\"] and all(v[\"pass\"] for v in per.values())}",
+  "mutant": "\"pass\": True}",
+  "tests": [
+   "tests/test_eval_g3lite_harness.py::TestGates::test_a_module_that_breaks_limits_fails_the_module_gate"
+  ]
+ },
+ {
+  "id": "M27",
+  "file": "evals/prompt_layer/g3lite/gates.py",
+  "what": "V5 positive control never fails",
+  "original": "\"pass\": k5 >= v[\"v5_min_nolimit_violations\"]}",
+  "mutant": "\"pass\": True}",
+  "tests": [
+   "tests/test_eval_g3lite_harness.py::TestGates::test_a_dead_bait_makes_the_run_inconclusive"
+  ]
+ },
+ {
+  "id": "M28",
+  "file": "evals/prompt_layer/g3lite/gates.py",
+  "what": "V1 owner agreement never fails",
+  "original": "\"needed\": kmin, \"pass\": kmin is not None and agree >= kmin",
+  "mutant": "\"needed\": kmin, \"pass\": True",
+  "tests": [
+   "tests/test_eval_g3lite_harness.py::TestGates::test_a_judge_the_owner_disagrees_with_is_inconclusive"
+  ]
+ }
+]

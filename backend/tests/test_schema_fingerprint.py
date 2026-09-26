@@ -22,6 +22,10 @@ Deliberately NOT a source-text check: the fingerprint is taken from a live
 database's `sqlite_master`, so it sees the CREATE-only schema, every guarded
 `ALTER`, and every index the migration adds, exactly as they end up on a
 user's disk.
+
+One exception, under decision KARAR-V2-10: a new table created with CREATE
+TABLE IF NOT EXISTS (nothing altered, nothing an older build would write into)
+may re-record the CURRENT version's row instead of bumping the version.
 """
 from __future__ import annotations
 
@@ -46,7 +50,11 @@ FINGERPRINTS: dict[int, str] = {
     # gate printed when it went red on the bump, not computed by hand - the
     # whole value of the row is that it came from the database the build
     # actually creates. The row for 5 is untouched.
-    6: "9aa437cf4bc57a9b75e89f8aaeccfb9585c413ae8a741f7e6b940a77ab7893b7",
+    # 6 also carries the two prompt module tables (CREATE IF NOT EXISTS in
+    # _SCHEMA, no bump, by the coordinator's ruling beside wave2's own re-record
+    # of this row). Re-recorded from what this gate printed; the value before
+    # was 9aa437cf4bc57a9b75e89f8aaeccfb9585c413ae8a741f7e6b940a77ab7893b7.
+    6: "5ed3469c28534b54d7c7a87b409014ed6b2b4d4b2668dbbcd27c7baaf65c4605",
 }
 
 

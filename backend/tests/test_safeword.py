@@ -872,7 +872,8 @@ def sent_body(wire):
 #: `stream` is the one that cannot be driven: both payload builders write it
 #: as a bool literal (`openrouter.py`), so there is no string to plant and no
 #: way for a cut to reach it.
-COVERED_PROTOCOL_FIELDS = {"model", "provider", "response_format", "modalities"}
+COVERED_PROTOCOL_FIELDS = {"model", "provider", "response_format", "modalities",
+                           "reasoning"}
 
 
 def wire_of(body: dict):
@@ -1284,6 +1285,25 @@ class TestTheWordIsCutOutOfWhatGoesOut:
             assert body["modalities"] == planted
             _assert_the_cut_was_live(body)
             assert modalities != planted, "the fixture is not testing anything"
+        finally:
+            notebook.set_safeword("")
+
+    @pytest.mark.anyio
+    async def test_the_reasoning_setting_is_never_cut(self, db, sent_body) -> None:
+        """D3 sends `{"effort": "low", "exclude": true}` on models that must
+        think. `low` is a three letter word a person can pick as a safeword,
+        and a cut there sends an effort the provider does not know."""
+        notebook.set_safeword("low")
+        try:
+            reasoning = {"effort": "low", "exclude": True}
+            assert notebook.safeword_in(reasoning["effort"]), (
+                "no collision, so no measurement")
+
+            body = await sent_body([_live_control("low")],
+                                   gen_params={"reasoning": dict(reasoning)})
+
+            assert body["reasoning"] == reasoning
+            _assert_the_cut_was_live(body)
         finally:
             notebook.set_safeword("")
 

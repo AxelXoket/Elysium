@@ -70,7 +70,7 @@ def _swept() -> list[tuple[str, str]]:
 
 
 #: Floors, not targets (same reasoning as test_tree_hygiene._SWEEP_FLOOR):
-#: measured at 80 files on 2026-09-08 (the file count is bound to this
+#: measured at 90 files on 2026-09-26 (the file count is bound to this
 #: comment by test_locked_numbers.py; the LINE count deliberately is
 #: not - it moves on every ordinary edit, so pinning it would be a
 #: chore rather than a guard, and _LINE_FLOOR already catches a sweep
@@ -587,6 +587,35 @@ class TestTheScannerCanActuallyFire:
             "        logger.warning('bad: %s', getattr(exc, 'args', ''))\n"
         )
         assert len(log_leak_scan.scan_source(source, path="<control>")) == 1
+
+    @pytest.mark.parametrize("name", [
+        "raw_entry", "raw_entry_json", "filename", "source_filename",
+        "module_name", "note", "user_name", "content",
+    ])
+    def test_a_prompt_module_name_reaching_a_logger_is_caught(self, name) -> None:
+        """Prompt modules bind file text, file names, module names, entry
+        notes and the persona name to these. Each one is on the denylist
+        (imported, not retyped) and each one is caught at a log site."""
+        assert name in log_leak_scan.CONTENT_DENYLIST
+        source = (
+            "import logging\n"
+            "logger = logging.getLogger(__name__)\n"
+            f"def f({name}):\n"
+            f"    logger.info('import: %s', {name})\n"
+        )
+        hits = log_leak_scan.scan_source(source, path="<control>")
+        assert len(hits) == 1 and name in hits[0].what
+
+    def test_a_prompt_module_id_and_count_are_not_flagged(self) -> None:
+        """Ground control for the one above: the router's real log lines
+        carry an id and a count, and those stay allowed."""
+        source = (
+            "import logging\n"
+            "logger = logging.getLogger(__name__)\n"
+            "def f(module_id, filename, raw_entry):\n"
+            "    logger.info('module %d imported, %d chars', module_id, len(raw_entry))\n"
+        )
+        assert log_leak_scan.scan_source(source, path="<control>") == []
 
     def test_a_plain_id_is_not_flagged(self) -> None:
         # The rule this whole change protects: numeric ids stay in the log.

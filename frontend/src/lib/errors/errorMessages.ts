@@ -6,6 +6,8 @@
  * Raw upstream/provider text is never exposed through this map.
  */
 
+import { NAME_MAX_CODE_POINTS } from "@/lib/characters/nameLimits";
+
 const ERROR_MESSAGES: Record<string, string> = {
   // Auth / API key
   api_key_missing:
@@ -245,6 +247,15 @@ const ERROR_MESSAGES: Record<string, string> = {
     "Too many images attached. Please use at most 4 images per message.",
   model_no_image_input:
     "The selected model does not support image input. Remove the images or choose another model.",
+  // C4: web search variants (`:online`), the auto router, presets and the
+  // searching model families stay blocked until the app has its own
+  // retrieval. Raised before anything is sent.
+  model_web_search_blocked:
+    "This model searches the web with your conversation, and that is turned off in this app. Nothing was sent. Choose a model without web search.",
+  // The model id holds the stored API key. It would go to the provider as
+  // the model name, where the scrub does not reach.
+  model_id_carries_api_key:
+    "Stopped. The model name contains your API key, so nothing was sent and nothing was saved. Choose the model from the list again.",
 
   // Response / network
   // Synthesised by the frontend in two places (client.ts when a JSON body is
@@ -272,10 +283,69 @@ const ERROR_MESSAGES: Record<string, string> = {
   // Character import
   character_json_too_large:
     "This character file is too large. Please use a smaller file.",
+  // Also the answer to JSON that parses in principle but not here: nesting
+  // too deep, a number too long, a broken (unpaired surrogate) character.
+  // Those used to be a 500 (PK-06, PK-07).
   invalid_character_json:
-    "This character file is not valid JSON. Please check the file and try again.",
+    "This character file could not be read as a card. It is not valid JSON, or it holds something a card cannot (a broken character, a number too long, nesting too deep). Please check the file and try again.",
   // No `character_name_required` either: a card with no name is imported and
   // named, so nothing raises it.
+  // Characters and personas. An import is shortened instead, so this only
+  // answers a name typed or edited in a form.
+  name_too_long:
+    `That name is too long. A name can be at most ${NAME_MAX_CODE_POINTS} characters.`,
+  // Raised when a chat is opened and the character's greeting, with its
+  // {{char}} / {{user}} placeholders filled in, would outgrow the per-field
+  // ceiling. Nothing was created.
+  prompt_field_too_large:
+    "This character's greeting grows too large once its placeholders are filled in, so the chat was not created. Shorten the greeting and try again.",
+  // Prompt modules. Imports, toggles and the two prompt settings. The upload
+  // is refused before it is read when its type or size is wrong, so these
+  // name what to change in the FILE, not in the app.
+  prompt_module_cannot_enable:
+    "This entry cannot be switched on: it is a placeholder, it is empty, it is longer than a module may be, or it only runs in a kind of generation this app does not have.",
+  prompt_module_empty:
+    "This file is empty. A module needs some text.",
+  prompt_module_file_too_large:
+    "This file is too large to import. A .txt or .md module can be at most 96 KB, and a .json file at most 1 MB.",
+  prompt_module_file_type_unsupported:
+    "Only .txt, .md and .json files can be imported as prompt modules.",
+  prompt_module_filename_missing:
+    "The file arrived without a name, so its type could not be told. Please choose the file again.",
+  prompt_module_filename_invalid:
+    "The file name is too long or has characters a file name cannot have. Rename the file and choose it again.",
+  prompt_module_import_not_found:
+    "That import no longer exists. It may have been removed with its last module.",
+  prompt_module_json_invalid:
+    "This JSON file could not be read as prompt modules. It is not valid JSON, or a field is missing, empty, too long or of the wrong kind.",
+  prompt_module_json_is_character_card:
+    "This is a character card, not a prompt module file. Import it from the characters page instead.",
+  prompt_module_json_no_modules:
+    "This file holds nothing that can become a module: no entry with text in it.",
+  prompt_module_json_unknown_keys:
+    "This module file has fields this app does not know, so nothing was imported. Remove the extra fields and try again.",
+  prompt_module_json_unrecognized:
+    "This JSON file is not a format this app can import as prompt modules: the app's own module file, or a SillyTavern chat preset, prompt export, master export or system prompt.",
+  prompt_module_json_version_newer:
+    "This module file was written by a newer version of the app. Update the app to import it.",
+  prompt_module_length_required:
+    "The upload did not say how large it is, so it was not read. Please choose the file again.",
+  prompt_module_name_invalid:
+    "A module name must have at least one visible character and be at most 64 characters long.",
+  prompt_module_not_found:
+    "That module no longer exists. Refresh the list and try again.",
+  prompt_module_not_utf8:
+    "This file is not UTF-8 text, so it could not be read. Save it as UTF-8 and try again.",
+  prompt_module_request_invalid:
+    "The change could not be applied because the request was malformed. Please try again.",
+  prompt_module_too_long:
+    "This module is too long. A module can be at most 24,000 characters.",
+  prompt_module_upload_raw_only:
+    "The file was sent in a way this app does not accept. Please choose the file again.",
+  prompt_modules_over_budget:
+    "The prompt modules that are on do not fit this chat's context window: together they would take more than half of what is left for the conversation. Switch a module off, or raise the context budget.",
+  prompt_settings_invalid:
+    "That prompt setting could not be saved: the reply length can only be adaptive, 150 or 300 words.",
 
   // Catch-all
   // ── Voice / TTS (V0) ───────────────────────────────────────────────────────
@@ -567,6 +637,10 @@ const ERROR_MESSAGES: Record<string, string> = {
   // message as the turn, and this is the sentence it shows.
   safeword_triggered:
     "Stopped. Your safeword was in that message, so nothing was sent - not the message, not your notes, not your limits. Nothing was saved either. The same word in older text is cut out instead, and that turn still goes.",
+  // C9. Checked against the stored API key only; the vault password is not
+  // checked (it is kept as a slow hash, not as text), and the sentence says so.
+  api_key_in_message:
+    "Stopped. That message contains your API key, so nothing was sent and nothing was saved. Remove the key and send again. (Only the API key is checked this way, not your vault password.)",
   safeword_blank:
     "A space is not a safeword - it would have turned the stop off while the box still looked filled in. Clear the box completely to turn it off, or type a word.",
   safeword_too_short:

@@ -1,0 +1,19 @@
+{
+  "name": "G3-lite frozen rubric",
+  "source": "audit decision file dF, section 2.5; frozen before any paid call",
+  "layer_family": {
+    "alpha": 0.01,
+    "gates": ["K-Q quality sign test, LAYER loses", "K-S speak-for-user, LAYER higher", "K-O OOC probe failure, LAYER higher", "K-V limit violation, LAYER higher", "K-C canary miss, LAYER higher"]
+  },
+  "module_gate": {"alpha_pooled": 0.025, "alpha_per_model": 0.00625},
+  "secondary": {"alpha": 0.05},
+  "validity": {
+    "v1_owner_agreement_alpha": 0.05,
+    "v1_owner_pairs": 20,
+    "v2_aa_two_sided_alpha": 0.01,
+    "v3_sabotage_alpha": 0.05,
+    "v4_min_order_consistency": 0.70,
+    "v5_min_nolimit_violations": 6,
+    "v6_max_off_violation_rate": 0.25
+  }
+}

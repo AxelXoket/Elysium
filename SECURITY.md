@@ -133,6 +133,18 @@ The whole file is encrypted, not just the fields. Opening it with an ordinary
 SQLite tool fails; it does not show you a table with scrambled cells, it does
 not open at all.
 
+### Prompt modules
+
+A prompt module file you import is read in memory and never written to disk
+as a file. Its text, the module names, the file name and the raw entries kept
+from a SillyTavern preset are stored only in the encrypted database. Before
+anything is stored, fields that can hold a secret (a proxy password, custom
+headers, a reverse proxy or custom address, and any key named like a
+password, token or API key) are removed from every stored copy. The import
+report lists which fields were removed, never their values. Prompt text itself
+is not searched for keys: a key pasted into a module's text is stored as
+typed, and sent as typed: only your own key is cut out on the way.
+
 ### Idle auto-lock
 
 **On by default, 5 minutes.** Locking overwrites the key buffer it holds,
@@ -211,6 +223,32 @@ than merely dropped. **This is not "the key is wiped from memory"** and the
 code says so: copies exist that Python cannot reach, including anything
 Windows paged to disk. Overwriting one buffer is worth doing; claiming more
 would be a lie.
+
+### The line at the top of every chat request
+
+The system message of every chat request starts with one line of hex that
+carries no instruction and not the chat's number. It is a keyed hash of the chat id
+under a random key the app makes in memory, so it stays the same for a chat
+while the app runs and differs between chats. That key is never written to
+disk and is dropped when the vault locks; after a lock or a restart the line
+is a different one.
+
+### What a chat request refuses, and what it leaves out
+
+Models that search the web on their own are refused before anything is sent:
+any `:online` variant, `openrouter/auto`, any `@preset/...` id, and model ids
+naming `sonar`, `-search` or `deep-research`. The check sits in the one sender
+every request passes through, so it covers the chat routes and the notebook's
+background reader alike.
+
+A message that contains your stored API key is refused before it is stored or
+sent, and the key is cut out of every outgoing request body wherever else it
+appears (history, card, modules, notes).
+
+`reasoning` is sent only when the cached model list says the model takes it:
+to switch reasoning off, or, for a model that requires it, at its lowest
+effort with the reasoning text excluded. Temperature, top_p, top_k and
+repetition_penalty are not sent unless you set them.
 
 ### One window per vault
 
@@ -752,7 +790,7 @@ file, and only the warnings among them reach the console.
 Both kinds have been found here. The name kind is closed, and the end of this
 section says how. The other kind, a value out of your text reaching a log
 line, is open and measured, and is the next paragraph. What keeps the rest
-closed is a gate that reads every logging call in the shipped tree - 80 files,
+closed is a gate that reads every logging call in the shipped tree - 90 files,
 and that number is checked rather than remembered - and fails the build on a
 value that can carry content or a name: an exception's own message, which
 nothing stops from being built out of your text; anything derived from one; a

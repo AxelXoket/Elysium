@@ -22,24 +22,52 @@ import type { GenPersistedSettings } from "@/lib/store/uiStore";
 /** Stable empty list: a fresh `[]` each render would re-run every memo below. */
 const EMPTY_STOP: string[] = [];
 
+/**
+ * The four samplers that may be left UNSET (D1). Unset is `null`, and an
+ * unset sampler is not sent at all, so the provider applies its own tuned
+ * default. That is OpenRouter's documented behaviour for an absent sampling
+ * parameter, and it keeps `require_parameters` from narrowing the private
+ * (zero-retention) server pool to endpoints that list every key we send.
+ */
+export type SamplerKey = "temperature" | "top_p" | "top_k" | "repetition_penalty";
+export const SAMPLER_KEYS: readonly SamplerKey[] = [
+  "temperature",
+  "top_p",
+  "top_k",
+  "repetition_penalty",
+];
+
 export interface GenerationSettingsValues {
-  temperature: number;
-  top_p: number;
-  top_k: number;
-  repetition_penalty: number;
+  temperature: number | null;
+  top_p: number | null;
+  top_k: number | null;
+  repetition_penalty: number | null;
   max_tokens: number;
   seed: string;
   context_budget_tokens: number;
 }
 
 export const GENERATION_SETTINGS_DEFAULTS: GenerationSettingsValues = {
-  temperature: 0.8,
-  top_p: 0.9,
-  top_k: 40,
-  repetition_penalty: 1.05,
+  temperature: null,
+  top_p: null,
+  top_k: null,
+  repetition_penalty: null,
   max_tokens: 1024,
   seed: "",
   context_budget_tokens: 16384,
+};
+
+/**
+ * What an UNSET sampler's control shows: OpenRouter's documented defaults
+ * (temperature 1, top_p 1, top_k 0 = off, repetition_penalty 1). Display
+ * only; nothing here is ever sent. The provider's real default can differ
+ * per model, which is why the control says "Provider default" beside it.
+ */
+export const SAMPLER_UNSET_DISPLAY: Record<SamplerKey, number> = {
+  temperature: 1,
+  top_p: 1,
+  top_k: 0,
+  repetition_penalty: 1,
 };
 
 export const MAX_TOKENS_FALLBACK_MAX = 8192;
@@ -71,6 +99,10 @@ interface GenerationSettingsContextValue {
   ) => void;
   stopSequences: string[];
   setStopSequences: (sequences: string[]) => void;
+  /** D3, the Thinking switch. Off by default and kept for this session
+   *  only; the server applies it to models whose reasoning is optional. */
+  thinking: boolean;
+  setThinking: (on: boolean) => void;
   resetAll: (model?: Model | null) => void;
   getRequestSettings: () => {
     generationParams: GenerationParams;
@@ -194,6 +226,8 @@ export function GenerationSettingsProvider({
     [saveStop],
   );
 
+  const [thinking, setThinking] = useState(false);
+
   const setSetting = useCallback(
     <K extends keyof GenerationSettingsValues,>(
       key: K,
@@ -215,19 +249,22 @@ export function GenerationSettingsProvider({
       const defaults = getModelAwareGenerationDefaults(model);
       setSettings(defaults);
       setStopSequences([]);
+      setThinking(false);
       useUiStore.getState().setGenSettings(toPersisted(defaults));
     },
     [setStopSequences],
   );
 
   const getRequestSettings = useCallback(() => {
-    const generationParams: GenerationParams = {
-      temperature: settings.temperature,
-      top_p: settings.top_p,
-      top_k: settings.top_k,
-      repetition_penalty: settings.repetition_penalty,
-      max_tokens: settings.max_tokens,
-    };
+    const generationParams: GenerationParams = {};
+    // Only the samplers the user actually set. An unset one is left out of
+    // the body entirely, not sent as null (D1). Samplers first, then
+    // max_tokens: the key order is the order the preview lists them in.
+    for (const key of SAMPLER_KEYS) {
+      const value = settings[key];
+      if (value != null) generationParams[key] = value;
+    }
+    generationParams.max_tokens = settings.max_tokens;
     const seed = parseSeed(settings.seed);
     if (seed != null) {
       generationParams.seed = seed;
@@ -236,12 +273,16 @@ export function GenerationSettingsProvider({
     if (stopSequences.length > 0) {
       generationParams.stop = [...stopSequences];
     }
+    // Only when on: off is the server's default.
+    if (thinking) {
+      generationParams.thinking = true;
+    }
 
     return {
       generationParams,
       contextBudgetTokens: settings.context_budget_tokens,
     };
-  }, [settings, stopSequences]);
+  }, [settings, stopSequences, thinking]);
 
   const value = useMemo(
     () => ({
@@ -249,6 +290,8 @@ export function GenerationSettingsProvider({
       setSetting,
       stopSequences,
       setStopSequences,
+      thinking,
+      setThinking,
       resetAll,
       getRequestSettings,
     }),
@@ -257,6 +300,7 @@ export function GenerationSettingsProvider({
       setSetting,
       stopSequences,
       setStopSequences,
+      thinking,
       resetAll,
       getRequestSettings,
     ],

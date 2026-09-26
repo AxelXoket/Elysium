@@ -332,7 +332,7 @@ def _unlink_entry(entry: Path) -> bool:
 
 
 def _remove_link_entry(entry: Path, born: float,
-                       note: str = LINK_ENTRY_REMOVED,
+                       log_line: str = LINK_ENTRY_REMOVED,
                        scan: bool = False) -> tuple[bool, int]:
     """Take a confirmed reparse point out of this app's own profile.
 
@@ -371,7 +371,7 @@ def _remove_link_entry(entry: Path, born: float,
     if not _unlink_entry(entry):
         log.warning(LINK_ENTRY_STUCK, entry)
         return False, shredded
-    log.warning(note, entry)
+    log.warning(log_line, entry)
     if target:
         log.warning(LINK_TARGET_KEPT, _readable(target))
     return True, shredded

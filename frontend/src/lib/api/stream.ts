@@ -17,6 +17,7 @@ import type { ApiError } from "./client";
 import { notifyVaultLocked } from "./client";
 import { API_BASE as BASE } from "./base";
 import { launchTokenHeader } from "./launchToken";
+import { overBudgetFromBody, withOverBudget } from "./promptModules";
 
 // ── Event schemas ────────────────────────────────────────────────
 
@@ -255,6 +256,12 @@ export async function streamCompletion(
         : typeof json?.detail === "string" && json.detail.length > 0
           ? (json.detail as string)
           : "unknown_error";
+    // H4 at send time: the body lists the modules and their token cost, and
+    // the chat's sentence names them.
+    if (detail === "prompt_modules_over_budget") {
+      const overBudget = await overBudgetFromBody(json);
+      if (overBudget) throw withOverBudget(makeApiError(res.status, detail), overBudget);
+    }
     throw makeApiError(res.status, detail);
   }
 

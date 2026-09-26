@@ -6,6 +6,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   CONTEXT_BUDGET_UI_MAX,
   GenerationSettingsProvider,
+  SAMPLER_KEYS,
+  SAMPLER_UNSET_DISPLAY,
   getContextBudgetUiMax,
   useGenerationSettings,
 } from "@/components/generation/GenerationSettingsContext";
@@ -14,7 +16,7 @@ import {
   IMAGE_OUTPUT_NOT_ASKED_NOTE,
   IMAGE_OUTPUT_UNKNOWN_NOTE,
 } from "@/components/generation/ImageOutputSetting";
-import { useUiStore } from "@/lib/store/uiStore";
+import { GEN_PERSISTED_DEFAULTS, useUiStore } from "@/lib/store/uiStore";
 import { mockFetch } from "@/test/mocks/api";
 import { settingsFixture } from "@/test/mocks/fixtures";
 import { modelFixture } from "@/test/mocks/fixtures";
@@ -252,7 +254,13 @@ describe("Generation Settings Panel", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Reset all" }));
 
-    expect(input).toHaveValue(0.8);
+    // D1: the default is UNSET, shown as the provider default, not 0.8.
+    expect(screen.getByLabelText("Temperature value")).toHaveValue(
+      SAMPLER_UNSET_DISPLAY.temperature,
+    );
+    expect(screen.getByTestId("Temperature unset")).toHaveTextContent(
+      "Provider default",
+    );
   });
 
   it("keeps slider and numeric input in sync", async () => {
@@ -1266,5 +1274,93 @@ describe("pictures in replies: what the panel claims about the request", () => {
 
     expect(screen.queryByText(IMAGE_OUTPUT_NOT_ASKED_NOTE)).toBeNull();
     expect(screen.queryByText(IMAGE_OUTPUT_UNKNOWN_NOTE)).toBeNull();
+  });
+});
+
+// D1: samplers default to UNSET, and an unset sampler is not sent at all.
+describe("Generation Settings unset samplers (D1)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    mockDialogFetch(fullModel);
+    useUiStore.setState({ ...GEN_PERSISTED_DEFAULTS });
+  });
+
+  it("ground: a fresh store sends max_tokens and no sampler key at all", () => {
+    const api = renderSettingsHarness();
+    const params = api.current!.getRequestSettings().generationParams;
+    expect(params.max_tokens).toBe(GEN_PERSISTED_DEFAULTS.genMaxOutput);
+    for (const key of SAMPLER_KEYS) {
+      expect(key in params, `${key} was sent while unset`).toBe(false);
+    }
+  });
+
+  it("a sampler the user sets is sent, and only that one", () => {
+    const api = renderSettingsHarness();
+    act(() => api.current!.setSetting("temperature", 0.7));
+    const params = api.current!.getRequestSettings().generationParams;
+    expect(params.temperature).toBe(0.7);
+    for (const key of SAMPLER_KEYS.filter((k) => k !== "temperature")) {
+      expect(key in params).toBe(false);
+    }
+  });
+
+  it("a set value equal to an old default is still sent once chosen", () => {
+    const api = renderSettingsHarness();
+    act(() => api.current!.setSetting("repetition_penalty", 1.05));
+    expect(
+      api.current!.getRequestSettings().generationParams.repetition_penalty,
+    ).toBe(1.05);
+  });
+
+  it("clearing a sampler takes it out of the request again", () => {
+    const api = renderSettingsHarness();
+    act(() => api.current!.setSetting("top_k", 25));
+    expect(api.current!.getRequestSettings().generationParams.top_k).toBe(25);
+    act(() => api.current!.setSetting("top_k", null));
+    expect("top_k" in api.current!.getRequestSettings().generationParams).toBe(false);
+    expect(useUiStore.getState().genTopK).toBeNull();
+  });
+
+  it("the dialog shows an unset sampler as the provider default", async () => {
+    await renderWithModel(fullModel);
+    await openDialog();
+    expect(screen.getByTestId("Top P unset")).toHaveTextContent("Provider default");
+    expect(screen.getByLabelText("Top P value")).toHaveValue(
+      SAMPLER_UNSET_DISPLAY.top_p,
+    );
+    // Positive control: no clear button while nothing is set.
+    expect(
+      screen.queryByRole("button", { name: "Use the provider default for Top P" }),
+    ).toBeNull();
+  });
+
+  it("the clear button returns a set sampler to unset", async () => {
+    const api = await renderWithModelAndApi(fullModel);
+    await openDialog();
+    fireEvent.change(screen.getByLabelText("Top P slider"), {
+      target: { value: "0.5" },
+    });
+    expect(api.current!.getRequestSettings().generationParams.top_p).toBe(0.5);
+    expect(screen.queryByTestId("Top P unset")).toBeNull();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Use the provider default for Top P" }),
+    );
+    expect("top_p" in api.current!.getRequestSettings().generationParams).toBe(false);
+    expect(screen.getByTestId("Top P unset")).toBeInTheDocument();
+  });
+
+  it("the persisted slice keeps null and turns junk into unset", () => {
+    useUiStore.getState().setGenSettings({ genTemperature: 1.2 });
+    expect(useUiStore.getState().genTemperature).toBe(1.2);
+    useUiStore.getState().setGenSettings({ genTemperature: null });
+    expect(useUiStore.getState().genTemperature).toBeNull();
+    useUiStore
+      .getState()
+      .setGenSettings({ genTopP: "0.5" as unknown as number });
+    expect(useUiStore.getState().genTopP).toBeNull();
+    // Out of range still clamps, as before.
+    useUiStore.getState().setGenSettings({ genTopP: 7 });
+    expect(useUiStore.getState().genTopP).toBe(1);
   });
 });

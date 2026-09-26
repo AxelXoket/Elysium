@@ -473,6 +473,17 @@ async def _tts_error_net(request: Request, exc: _TtsError):
     return JSONResponse({"detail": code}, status_code=500)
 
 
+# The prompt-module budget refusal (H4) is raised from the completion routes
+# as well as the prompt-modules routes; one body shape for both, so the client
+# reads one thing: the code, and the modules with their names and token cost.
+from prompt_modules.errors import PromptModuleError as _PromptModuleError
+
+
+@app.exception_handler(_PromptModuleError)
+async def _prompt_module_refusal(request: Request, exc: _PromptModuleError):
+    return JSONResponse({"detail": exc.code, **exc.extra}, status_code=exc.status)
+
+
 # H-42. A rejected body was handed straight back to the sender.
 #
 # FastAPI's default validation handler writes `jsonable_encoder(exc.errors())`
@@ -536,8 +547,11 @@ async def _validation_error_without_the_body(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(FRONTEND_ORIGINS),
-    allow_methods=["GET", "POST", "DELETE", "PATCH"],
-    allow_headers=["Content-Type"],
+    # PUT: the prompt settings (PUT /prompt-modules/settings). The filename
+    # header carries the name of an imported module file. No response header
+    # is exposed: the H4 refusal carries its module list in the JSON body.
+    allow_methods=["GET", "POST", "DELETE", "PATCH", "PUT"],
+    allow_headers=["Content-Type", "X-Prompt-Module-Filename"],
     allow_credentials=False,
 )
 
@@ -726,6 +740,10 @@ app.include_router(tts_runtime_router.router, prefix="/api/v1")
 # locked moves nothing. Not in _IDLE_EXEMPT, for the reason written there.
 from routers import activity as activity_router
 app.include_router(activity_router.router, prefix="/api/v1")
+#
+# Prompt modules (active). Behind the vault gate: modules live in the vault.
+from routers import prompt_modules as prompt_modules_router
+app.include_router(prompt_modules_router.router, prefix="/api/v1")
 
 
 # ── Phase 1 liveness probe ────────────────────────────────────────────────────

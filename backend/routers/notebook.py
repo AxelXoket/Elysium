@@ -43,6 +43,7 @@ from pydantic import BaseModel, Field
 
 import config
 import notebook_store as notebook
+from prompt_layer import PART_SEP
 
 logger = logging.getLogger(__name__)
 
@@ -473,9 +474,13 @@ async def list_entries(chat_id: int) -> dict:
             # for the turn, which this route does not know. Sized against a
             # generous budget so it reports the full cost rather than a
             # truncated one, and the per-turn truth arrives in the done frame.
-            "notebook_chars": (len(blocks["user_block"])
-                               + len(blocks["model_block"])
-                               + len(blocks["boundary_block"])),
+            # Each block that is there also brings the blank-line separator
+            # the request puts before it (a system part, or the folded tail).
+            "notebook_chars": sum(
+                len(b) + len(PART_SEP)
+                for b in (blocks["user_block"], blocks["model_block"],
+                          blocks["boundary_block"])
+                if b),
         }
     try:
         return await anyio.to_thread.run_sync(_read)
@@ -699,7 +704,9 @@ async def list_extraction_models() -> dict:
         # gate believed nobody could produce.
         status, detail = _relay(exc)
         raise HTTPException(status, detail) from None
-    return {"models": models}
+    # C4: the reader's send is refused for these ids, so they are not offered.
+    return {"models": [m for m in models
+                       if not openrouter.model_id_blocked(str(m.get("id") or ""))]}
 
 
 @router.get("/extract/settings")
@@ -738,6 +745,11 @@ async def set_extract_settings(body: ExtractSettingsBody) -> dict:
             raise HTTPException(400, "notebook_model_id_too_long")
         if not _MODEL_ID.match(body.model_id):
             raise HTTPException(400, "notebook_model_id_invalid")
+        # C4, the same predicate the send point uses: saving such an id would
+        # only make every background run fail with no reason on screen.
+        import openrouter
+        if openrouter.model_id_blocked(body.model_id):
+            raise HTTPException(400, "model_web_search_blocked")
 
     def _write() -> None:
         from database import set_setting

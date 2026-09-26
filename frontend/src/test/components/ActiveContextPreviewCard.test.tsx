@@ -111,6 +111,13 @@ describe("ActiveContextPreviewCard", () => {
       selectedChatId: 1,
       selectedCharacterId: characterFixture.id,
       selectedModelId: modelFixture.id,
+      // D1: samplers default to unset and are not sent. The listing tests
+      // below are about which SET parameters the model accepts, so they set
+      // all four the way a user would.
+      genTemperature: 0.8,
+      genTopP: 0.9,
+      genTopK: 40,
+      genRepetitionPenalty: 1.05,
     });
   });
 
@@ -223,6 +230,22 @@ describe("ActiveContextPreviewCard", () => {
     expect(screen.queryByText("Test Persona")).not.toBeInTheDocument();
   });
 
+  it("D1: unset samplers are not listed as sent", async () => {
+    useUiStore.setState({
+      selectedModelId: permissiveModel.id,
+      genTemperature: null,
+      genTopP: null,
+      genTopK: null,
+      genRepetitionPenalty: null,
+    });
+    mockAllRoutes();
+    renderCard();
+    await openCard();
+    // Ground: the row still renders, with the one parameter that is sent.
+    expect(await screen.findByText("max_tokens")).toBeInTheDocument();
+    expect(screen.queryByText(/temperature/)).toBeNull();
+  });
+
   it("updates when generation params change", async () => {
     useUiStore.setState({ selectedModelId: permissiveModel.id });
     mockAllRoutes();
@@ -289,10 +312,12 @@ describe("ActiveContextPreviewCard", () => {
     // Fixed cost from characterFixture + personaFixture:
     //   system_block = "[System Prompt]\n" + 25 + "\n\n[Description]\n" + 32
     //     + "\n\n[Personality]\n" + 21 + "\n\n[Scenario]\n" + 20 = 159 chars
+    //   + "[Character: Test Character]\n\n" (29) -> card block 188 chars
     //   persona block = "[User Persona: Test Persona]\n" (29) + 15 = 44,
-    //   phi = 0 -> fixed = 159 + 44 = 203  (v1.1 KUME D name header)
+    //   single system message (Ek O 8): 24-char salt + "\n\n" before the
+    //   card and before the persona -> fixed = 24 + 2 + 188 + 2 + 44 = 260
     // History: 28 + 30 = 58 chars, both fit.
-    //   used = ceil((203 + 58) / 3) = ceil(261 / 3) = 87
+    //   used = ceil((260 + 58) / 3) = ceil(318 / 3) = 106
     mockFetch({
       "/models/openrouter": { body: modelListBody },
       "/personas": { body: [personaFixture] },
@@ -304,7 +329,7 @@ describe("ActiveContextPreviewCard", () => {
     await openCard();
 
     expect(
-      await screen.findByText("2 of 2 messages fit (≈97 / 8.1K tokens)"),
+      await screen.findByText("2 of 2 messages fit (≈106 / 8.1K tokens)"),
     ).toBeInTheDocument();
     expect(
       screen.queryByText("2 messages in chat history"),
@@ -319,8 +344,8 @@ describe("ActiveContextPreviewCard", () => {
     //   budget = clamp(16384, 600) = 600; safety = min(256, 75) = 75
     //   budget_chars = 525 * 3 = 1575; reservation = 100 * 3 = 300
     //   available = 1275 -> capacity = floor(1275 / 3) = 425
-    // fixed = 203 -> remaining = 1072; history 600 + 600 = 1200 > 1072
-    //   -> oldest dropped -> 600 kept; used = ceil((203 + 600) / 3) = 268
+    // fixed = 260 -> remaining = 1015; history 600 + 600 = 1200 > 1015
+    //   -> oldest dropped -> 600 kept; used = ceil((260 + 600) / 3) = 287
     const tinyModel: Model = {
       ...modelFixture,
       id: "test/tiny-ctx",
@@ -358,7 +383,7 @@ describe("ActiveContextPreviewCard", () => {
     await openCard();
 
     expect(
-      await screen.findByText("1 of 2 messages fit (≈278 / 425 tokens)"),
+      await screen.findByText("1 of 2 messages fit (≈287 / 425 tokens)"),
     ).toBeInTheDocument();
     expect(
       screen.getByTestId("context-usage-dropped-note"),

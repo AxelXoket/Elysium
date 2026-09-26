@@ -164,9 +164,13 @@ def test_corrupt_selected_persona_does_not_500(client, provider):
 # ---------------------------------------------------------------------------
 
 def _persona_blocks(call: dict) -> list[str]:
+    """Persona parts of the ONE system message (parts are separated by one
+    blank line since the single-system-message assembly, Ek O 8)."""
+    import prompt_layer
     return [
-        m["content"] for m in call["messages"]
-        if m["role"] == "system" and str(m["content"]).startswith("[User Persona")
+        part for m in call["messages"] if m["role"] == "system"
+        for part in str(m["content"]).split(prompt_layer.PART_SEP)
+        if part.startswith("[User Persona")
     ]
 
 
@@ -186,18 +190,20 @@ def test_persona_name_and_description_reach_provider(client, provider):
     assert resp.status_code == 200, resp.text
 
     msgs = provider.calls[0]["messages"]
-    # Character block first, persona block second.
-    assert "[Description]\nA test character" in msgs[0]["content"]
-    assert msgs[1] == {
+    # ONE system message: salt, character block, then the persona, all
+    # before the first user turn.
+    import prompt_layer
+    assert msgs[0] == {
         "role": "system",
-        "content": "[User Persona: Nova]\nCurious explorer.",
+        "content": prompt_layer.PART_SEP.join([
+            prompt_layer.chat_salt(chat_id),
+            "[Character: Testchar]",
+            "[Description]\nA test character",
+            "[User Persona: Nova]\nCurious explorer.",
+        ]),
     }
-    # Persona sits AFTER the character block and BEFORE the first user turn.
-    persona_idx = next(
-        i for i, m in enumerate(msgs)
-        if m["role"] == "system" and m["content"].startswith("[User Persona")
-    )
-    assert 0 < persona_idx < _first_user_index(provider.calls[0])
+    assert [m["role"] for m in msgs].count("system") == 1
+    assert _first_user_index(provider.calls[0]) > 0
 
 
 def test_name_only_persona_injects_header(client, provider):

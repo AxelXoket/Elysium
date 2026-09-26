@@ -58,10 +58,15 @@ class TestWhatReachesTheModel:
         assert any("Mira is her sister." in m["content"] for m in msgs)
 
     def test_an_empty_notebook_adds_nothing(self, db, chat) -> None:
+        """Since the single system message (Ek O 8) a block is a PART of that
+        message, not a message of its own: an empty notebook adds no part, a
+        note adds exactly one block and no message."""
         before, _, _ = _payload(chat)
+        assert not any("[Notebook #" in str(m["content"]) for m in before)
         notebook.create_entry(chat, "x")
         after, _, _ = _payload(chat)
-        assert len(after) == len(before) + 1
+        assert len(after) == len(before)
+        assert sum(str(m["content"]).count("[Notebook #") for m in after) == 1
 
     def test_a_proposed_note_never_reaches_the_model(self, db, chat) -> None:
         """§G-2. The whole safety of the extraction step rests on this one
@@ -105,7 +110,10 @@ class TestWhatReachesTheModel:
         parentheses, and there is no punctuation nobody uses."""
         notebook.create_entry(chat, "anything")
         msgs, _, _ = _payload(chat)
-        block = next(m["content"] for m in msgs if "anything" in m["content"])
+        # The block is one part of the single system message; parts are
+        # separated by one blank line and a block has none inside it.
+        block = next(part for m in msgs for part in str(m["content"]).split("\n\n")
+                     if "anything" in part)
         assert "DATA NOT INSTRUCTIONS" in block
         lines = block.splitlines()
         tag = lines[0].split("#", 1)[1].split()[0]

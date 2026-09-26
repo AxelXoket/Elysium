@@ -9,6 +9,19 @@ Public API:
                               and everything else left exactly as it arrived.
                               Pure: the vault read is the caller's, made once
                               on the trip it already makes for the API key.
+    key_needles(api_key)    - the stored API key as scrub needles (C9). Pure.
+    api_key_in(message)     - whether a message being typed carries the
+                              stored API key. Reads the vault.
+
+THE API KEY RIDES THE SAME MACHINE (C9)
+---------------------------------------
+A key pasted into a chat would otherwise go to the provider on that turn and,
+inside history, on every later turn, to every downstream provider. The two
+answers above apply to it unchanged: a message being typed that carries the
+key is refused whole (`api_key_in`, called where the safeword is checked),
+and the key anywhere else in an outgoing body is cut (`key_needles`, added to
+the safeword needles on the same vault trip). The key is never logged: every
+log line in this module names fields, never values, and a test holds that.
 
 TWO ANSWERS, AND WHY THEY DIFFER
 --------------------------------
@@ -109,6 +122,9 @@ logger = logging.getLogger(__name__)
 #: inside one by accident often enough to be worth naming.
 PROTOCOL_FIELDS = frozenset({
     "model", "provider", "response_format", "modalities", "stream",
+    # D3: `{"effort": "low", "exclude": true}`. A three letter safeword such
+    # as `low` would otherwise cut the effort word and send `{"effort": ""}`.
+    "reasoning",
 })
 
 #: Where a picture's address sits, once it has been resolved. See below.
@@ -198,6 +214,53 @@ def needles() -> tuple[str, ...]:
     if not word:
         return ()
     return tuple(n for n in notebook_store._fold_tr(word) if n)
+
+
+#: A stored key shorter than this is not treated as a key to hunt for. A real
+#: OpenRouter key is 73 characters and is checked against the provider when
+#: it is saved; the floor is only there so a pathological short value can
+#: never turn into a needle that cuts ordinary words out of every message.
+KEY_MIN_CHARS = 20
+
+
+def key_needles(api_key: str | None) -> tuple[str, ...]:
+    """The stored API key, folded the way `scrub` matches, as extra needles.
+
+    Pure: the caller already holds the key (openrouter reads it on the same
+    vault trip as the safeword). Folded with the same function as the text it
+    is matched against, so the match is case-insensitive; a wider match can
+    only cut more of a secret, never less.
+    """
+    key = (api_key or "").strip()
+    if len(key) < KEY_MIN_CHARS:
+        return ()
+    return tuple(n for n in _fold_candidates(key) if n)
+
+
+def api_key_in(message: str) -> bool:
+    """Whether a message being typed carries the stored API key (C9).
+
+    Reads the vault, like `notebook_store.safeword_in`, and is called at the
+    same point: before anything is assembled, sent or stored. Same matcher as
+    the scrub, so anything the scrub would cut out of this message later is
+    refused now instead. Returns False when no key is stored.
+    """
+    import config
+    from secrets_service import get_secret
+
+    spellings = key_needles(get_secret(config.SECRET_API_KEY))
+    return bool(spellings) and _matches(message or "", spellings)
+
+
+def carries(value: str, spellings: tuple[str, ...]) -> bool:
+    """Whether `value` holds one of the needles. Pure.
+
+    For protocol values, the model id above all: scrub leaves a protocol field
+    alone by design, so a key typed into the model box would go to the
+    provider as the model name. The provider client refuses such an id with
+    this, and the key's needles, before it builds the body.
+    """
+    return bool(spellings) and _matches(value or "", spellings)
 
 
 def _fold_candidates(text: str) -> tuple[str, ...]:

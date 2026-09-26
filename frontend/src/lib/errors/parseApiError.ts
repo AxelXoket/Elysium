@@ -13,6 +13,7 @@
 
 import type { ApiError } from "@/lib/api/client";
 import { isApiError } from "@/lib/api/client";
+import { isOverBudgetError, overBudgetSentence } from "@/lib/api/promptModules";
 import { getErrorMessage } from "./errorMessages";
 
 /**
@@ -30,7 +31,12 @@ export function parseApiError(err: unknown): ApiError {
     return {
       status: err.status,
       detail,
-      message: getErrorMessage(detail),
+      // A module refusal that arrived with its names says which modules and
+      // what they cost; built from our own sentence and the user's own module
+      // names, never from provider text.
+      message: isOverBudgetError(err)
+        ? overBudgetSentence(err.overBudget)
+        : getErrorMessage(detail),
     };
   }
 

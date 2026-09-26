@@ -16,6 +16,8 @@ Privacy invariants:
 
 import json
 import logging
+import sys
+from pathlib import Path
 
 import audio_sweep
 
@@ -34,6 +36,60 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/characters", tags=["characters"])
 
 MAX_IMPORT_BYTES = 1_048_576  # 1 MiB
+
+#: The longest name a character or a persona may be given, in code points
+#: (Ek P, B8). The name travels into the prompt in several places and the
+#: prompt side cuts it here anyway, so a longer name was only ever a name
+#: the model never saw in full. personas.py imports this, so the two doors
+#: cannot drift apart; the number itself lives in shared/name_limits.json,
+#: which the frontend mirror is tested against.
+def _shared_dir() -> Path:
+    """shared/ beside the exe in a frozen build, else in the repository. Same
+    rule as prompt_sanitizer.shared_path; the spec has to ship shared/."""
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", ".")) / "shared"
+    return Path(__file__).resolve().parents[2] / "shared"
+
+
+NAME_MAX_CODE_POINTS: int = json.loads(
+    (_shared_dir() / "name_limits.json").read_text(encoding="utf-8")
+)["name_max_code_points"]
+
+
+def name_is_too_long(name: str | None) -> bool:
+    """Longer than the cap, counted in code points (Python `len`).
+
+    None is not too long. A body that leaves the name out keeps the model's
+    default of None (pydantic does not run validators on defaults), and that
+    name is filled in by `default_names` at the write.
+    """
+    return name is not None and len(name) > NAME_MAX_CODE_POINTS
+
+
+def unpaired_surrogate_in(text: str) -> bool:
+    """Whether this string holds a lone UTF-16 surrogate.
+
+    JSON can spell one (`"\\ud800"`), Python holds it as a str, and the first
+    thing that tries to write it as UTF-8 raises: the database INSERT and the
+    response encoder both did, and both answered 500 (PK-07). I ask the codec
+    itself rather than scanning ranges, because the codec is what fails.
+    """
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return True
+    return False
+
+
+def refuse_unpaired_surrogate(value):
+    """Pydantic hook shared by the create and patch models here and in
+    personas.py. Raising ValueError makes it a 422 `validation_failed`, and
+    main.py's handler drops the input from that answer, so the broken text is
+    never echoed back."""
+    texts = value if isinstance(value, list) else [value]
+    if any(isinstance(t, str) and unpaired_surrogate_in(t) for t in texts):
+        raise ValueError("text holds an unpaired surrogate code point")
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +131,13 @@ class CharacterCreate(BaseModel):
         if not all(isinstance(t, str) for t in v):
             raise ValueError("tags must be a list of strings.")
         return v
+
+    # mode="before" so the check sees the raw value, ahead of the trim above.
+    _no_surrogates = field_validator(
+        "name", "description", "personality", "scenario", "first_mes",
+        "mes_example", "system_prompt", "post_history_instruction", "tags",
+        mode="before",
+    )(refuse_unpaired_surrogate)
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +208,8 @@ def _create_character_sync(body: "CharacterCreate") -> dict:
     landing together would each scan a set that does not contain the other and
     both take the same number - the one race a generated name can lose.
     """
+    if name_is_too_long(body.name):
+        raise HTTPException(400, "name_too_long")
     with get_db() as con:
         con.execute("BEGIN IMMEDIATE")
         name = default_names.name_or_default(
@@ -221,9 +286,14 @@ def _import_character_sync(raw: bytes) -> dict:
 
     The HTTPExceptions raised below travel out of the thread unchanged.
     """
+    # ValueError covers JSONDecodeError and UnicodeDecodeError (both are
+    # subclasses) and also the integer-digit limit: a 5000-digit number is
+    # valid JSON that Python refuses to build. RecursionError is a deeply
+    # nested array or object. Both used to escape as a 500 (PK-06); a file
+    # that cannot be read as a card is the same answer whatever broke it.
     try:
         payload = json.loads(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    except (ValueError, RecursionError):
         raise HTTPException(400, "invalid_character_json")
 
     if not isinstance(payload, dict):
@@ -256,6 +326,26 @@ def _import_character_sync(raw: bytes) -> dict:
         else []
     )
 
+    fields = {key: _text(data, key) for key in (
+        "description", "personality", "scenario", "first_mes", "mes_example",
+        "system_prompt")}
+
+    # Every string this import stores or answers with, checked before the
+    # write. A lone surrogate made the INSERT raise (text columns) or the
+    # response encoder raise (tags, stored as escaped JSON and decoded on the
+    # way out), both as a 500 (PK-07).
+    if any(unpaired_surrogate_in(t)
+           for t in (name, post_history, *fields.values(), *tags)):
+        raise HTTPException(400, "invalid_character_json")
+
+    # A long name is shortened, not refused (Ek P, B8): one field is not a
+    # reason to throw the card away, the same rule the missing name follows
+    # above. The answer says it happened; the name itself is not logged.
+    report: dict = {}
+    if name_is_too_long(name):
+        report["name_shortened_from"] = len(name)
+        name = name[:NAME_MAX_CODE_POINTS].rstrip()
+
     # raw_json: preserve original body exactly as received
     raw_json_str = raw.decode("utf-8", errors="replace")
 
@@ -273,9 +363,9 @@ def _import_character_sync(raw: bytes) -> dict:
             "INSERT INTO characters (name, description, personality, scenario, "
             "first_mes, mes_example, system_prompt, post_history_instruction, "
             "tags, raw_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (name, _text(data, "description"), _text(data, "personality"),
-             _text(data, "scenario"), _text(data, "first_mes"),
-             _text(data, "mes_example"), _text(data, "system_prompt"),
+            (name, fields["description"], fields["personality"],
+             fields["scenario"], fields["first_mes"],
+             fields["mes_example"], fields["system_prompt"],
              post_history, json.dumps(tags), raw_json_str),
         )
         row_id = cur.lastrowid
@@ -283,7 +373,10 @@ def _import_character_sync(raw: bytes) -> dict:
             f"SELECT {_SELECT_COLS} FROM characters WHERE id = ?", (row_id,)
         ).fetchone()
     logger.info("Character imported: id=%d", row["id"])
-    return _row_to_dict(row)
+    # `import_report` rides on the import answer only. It is empty when the
+    # card went in as written; the frontend schema strips keys it does not
+    # know, so an older client is unaffected.
+    return {**_row_to_dict(row), "import_report": report}
 
 
 @router.post("/import", status_code=201)
@@ -346,6 +439,12 @@ class CharacterPatch(BaseModel):
             raise ValueError("tags must be a list of strings.")
         return v
 
+    _no_surrogates = field_validator(
+        "name", "description", "personality", "scenario", "first_mes",
+        "mes_example", "system_prompt", "post_history_instruction", "tags",
+        mode="before",
+    )(refuse_unpaired_surrogate)
+
 
 def _patch_character_sync(character_id: int, body: "CharacterPatch") -> dict:
     """Worker-thread body (audit KÖK 8): own connection, one write txn.
@@ -361,10 +460,17 @@ def _patch_character_sync(character_id: int, body: "CharacterPatch") -> dict:
         # into None and a _row_to_dict(None) TypeError 500 instead of a 404.
         con.execute("BEGIN IMMEDIATE")
         existing = con.execute(
-            "SELECT id FROM characters WHERE id = ?", (character_id,)
+            "SELECT id, name FROM characters WHERE id = ?", (character_id,)
         ).fetchone()
         if existing is None:
             raise HTTPException(404, "character_not_found")
+
+        # The cap is checked on CHANGE only (Ek P, B8). A record saved before
+        # the cap existed keeps its name, and a PATCH that carries that same
+        # name back (the edit dialog sends every field) is not a rename.
+        if (body.name is not None and body.name != existing["name"]
+                and name_is_too_long(body.name)):
+            raise HTTPException(400, "name_too_long")
 
         updates: list[str] = []
         params: list = []

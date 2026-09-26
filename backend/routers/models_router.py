@@ -14,7 +14,7 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 
-from openrouter import fetch_models, OpenRouterError
+from openrouter import fetch_models, model_id_blocked, OpenRouterError
 from proxy_health import enforce_proxy_gate
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,7 @@ async def list_openrouter_models(refresh: bool = False) -> dict:
 
     # 2. Fetch models
     try:
-        return await fetch_models(refresh=refresh)
+        data = await fetch_models(refresh=refresh)
     except OpenRouterError as e:
         # Every branch below raises `reason` itself rather than a literal, so
         # the source shows a variable name and nothing about what it can hold.
@@ -53,6 +53,14 @@ async def list_openrouter_models(refresh: bool = False) -> dict:
             raise HTTPException(502, reason)
         else:
             raise HTTPException(502, "openrouter_models_error")
+
+    # 3. C4: a model the send point refuses (web search, the auto router,
+    # presets) is not offered. The same predicate as the refusal, so the list
+    # and the send cannot disagree. A new dict: the cached one keeps every
+    # model, because the metadata lookups read it by id.
+    kept = [m for m in data.get("models") or []
+            if not model_id_blocked(str(m.get("id") or ""))]
+    return {**data, "models": kept, "count": len(kept)}
 
 
 #: Every detail the /models route can put in front of a user.

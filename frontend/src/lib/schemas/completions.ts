@@ -13,6 +13,10 @@ export const GenerationParamsSchema = z.object({
     .union([z.string().min(1), z.array(z.string().min(1)).min(1)])
     .nullable()
     .optional(),
+  // D3, the Thinking switch. Not a sampler: the payload builders add it after
+  // the sampler filters, only when true, and the backend reads it to choose
+  // the `reasoning` field (it is never forwarded under this name).
+  thinking: z.boolean().optional(),
 });
 
 export const CompletionRequestSchema = z.object({

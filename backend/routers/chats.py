@@ -25,9 +25,10 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlcipher3 import dbapi2 as sqlite3
 
+import card_macros
 import default_names
 import notebook_store as notebook
-from database import get_db, iter_chunks
+from database import get_db, get_setting_con, iter_chunks
 from attachments_service import (
     load_for_messages,
     delete_for_messages,
@@ -120,6 +121,29 @@ async def list_chats() -> list[dict]:
 # POST /chats
 # ---------------------------------------------------------------------------
 
+def _active_persona_name(con) -> str:
+    """The name `{{user}}` becomes in a greeting: the selected persona's
+    display name, else card_macros.DEFAULT_USER_NAME.
+
+    Read the way completions.py reads it: a missing, non-numeric or dangling
+    selected_persona_id means "no persona", never an error, because a broken
+    setting must not stop a chat from opening. The name itself is never
+    logged.
+    """
+    raw = get_setting_con(con, "selected_persona_id")
+    try:
+        persona_id = int(raw) if raw else None
+    except ValueError:
+        persona_id = None
+    if persona_id is None:
+        return card_macros.DEFAULT_USER_NAME
+    persona = con.execute(
+        "SELECT display_name FROM personas WHERE id = ?", (persona_id,)
+    ).fetchone()
+    name = (persona["display_name"] or "").strip() if persona else ""
+    return name or card_macros.DEFAULT_USER_NAME
+
+
 def _create_chat_sync(character_id: int, title_in: str | None,
                       model_id_in: str | None) -> dict:
     """Worker-thread body (audit KÖK 8): own connection, one write txn.
@@ -146,6 +170,26 @@ def _create_chat_sync(character_id: int, title_in: str | None,
             raise HTTPException(404, "character_not_found")
 
         first_mes = char_row["first_mes"].strip() if char_row["first_mes"] else ""
+        # The greeting's macros are filled in ONCE, here, with the persona
+        # that is active right now, and the rendered text is what gets
+        # stored (decision B2). Display, TTS, the notebook extractor
+        # and the prompt then all read one string. Changing persona later
+        # does not rewrite a greeting that was already said. Both names go
+        # in as written: this row is what the person reads. The copy that
+        # reaches the model passes the prompt sanitizer on the way out, and
+        # that is where the 64 code point name cut and the marker rules
+        # apply. A field that
+        # would outgrow the per-field ceiling refuses the whole creation;
+        # the transaction rolls back and no half-made chat is left.
+        if first_mes:
+            try:
+                first_mes = card_macros.render_macros(
+                    first_mes,
+                    char=(char_row["name"] or "").strip(),
+                    user=_active_persona_name(con),
+                ).strip()
+            except card_macros.MacroOutputTooLarge:
+                raise HTTPException(400, card_macros.FIELD_TOO_LARGE_CODE)
 
         # 2. Normalize + cap title (parity with rename's title_too_long)
         #
@@ -232,7 +276,8 @@ def _create_chat_sync(character_id: int, title_in: str | None,
 
 @router.post("", status_code=201)
 async def create_chat(body: ChatCreate) -> dict:
-    """Create a chat session. Optionally inserts character.first_mes."""
+    """Create a chat session. Optionally inserts character.first_mes, with its
+    card macros rendered for the active persona."""
     return await anyio.to_thread.run_sync(
         _create_chat_sync, body.character_id, body.title, body.model_id,
     )

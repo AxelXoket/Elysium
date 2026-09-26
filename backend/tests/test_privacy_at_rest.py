@@ -337,12 +337,16 @@ class TestUpstreamErrorBodiesAreNotForwarded:
         return calls
 
     def _provider_logged(self, caplog: pytest.LogCaptureFixture) -> bool:
-        """True when openrouter.py's own logger wrote a line naming the probe
-        model. The router logs the model too, so matching the text alone
-        would pass with the provider module's records missing."""
-        return any(record.name == openrouter.logger.name
-                   and self.PROBE_MODEL in record.getMessage()
-                   for record in caplog.records)
+        """True when openrouter.py's own logger wrote its request line, which
+        proves caplog sees that module's records at all. Matched by logger
+        name, since the router writes a request line of its own. No line
+        names the model any more (a model id is a name a person reads), so
+        the probe model is required to be ABSENT from every record."""
+        records = [r for r in caplog.records if r.name == openrouter.logger.name]
+        assert not any(self.PROBE_MODEL in r.getMessage() for r in caplog.records)
+        return any(r.getMessage().startswith(("Completion request",
+                                              "Streaming completion request"))
+                   for r in records)
 
     @pytest.mark.parametrize("shape", sorted(PLAIN_200_ERRORS))
     def test_a_200_carrying_an_error_relays_nothing_of_it(

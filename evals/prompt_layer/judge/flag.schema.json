@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "properties": {
+    "speaks_for_user": {"type": "boolean"},
+    "quote": {"type": "string", "maxLength": 400}
+  },
+  "required": ["speaks_for_user", "quote"],
+  "additionalProperties": false
+}

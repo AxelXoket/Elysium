@@ -36,6 +36,14 @@ datas += [
     if name.endswith(".py") and name != "__init__.py"
 ]
 datas += [(os.path.join(BACKEND, "tts", "requirements"), "tts/requirements")]
+# Data the backend reads from shared/ at run time (the prompt sanitizer's
+# table, the prompt layer's text, the name cap); the frontend mirrors the same
+# files. prompt_sanitizer.shared_path and characters._shared_dir resolve them
+# under _MEIPASS/shared in a frozen build. tests/test_prompt_packaging.py
+# records what a real start opens and holds this list to it.
+datas += [(os.path.join(BACKEND, "..", "shared", name), "shared")
+          for name in ("prompt_sanitizer.json", "prompt_layer_text.txt",
+                       "name_limits.json")]
 binaries = []
 
 # App modules PyInstaller cannot see through the lazy `from main import app`.

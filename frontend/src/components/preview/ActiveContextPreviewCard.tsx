@@ -12,6 +12,7 @@ import { findModelById, TEXT_ONLY_NOTE } from "@/lib/models";
 import { useVoiceMode } from "@/lib/query/tts";
 import { useDraftStore } from "@/lib/store/draftStore";
 import { useNotebook } from "@/lib/query/notebook";
+import { usePromptCostInputs } from "@/lib/prompt/usePromptCostInputs";
 import { estimateContextUsage, formatTokensCompact } from "@/lib/context";
 
 /**
@@ -74,6 +75,7 @@ export function ActiveContextPreviewCard() {
     : null;
   const { data: voiceMode } = useVoiceMode();
   const notebook = useNotebook(selectedChatId);
+  const promptInputs = usePromptCostInputs();
   const composerDraftChars = useDraftStore((s) =>
     selectedChatId == null ? 0 : (s.composer[selectedChatId]?.text.length ?? 0),
   );
@@ -96,6 +98,7 @@ export function ActiveContextPreviewCard() {
     // which is the failure the notebook and voice numbers above are
     // deliberately shared to avoid.
     pendingMessageChars: composerDraftChars,
+    ...promptInputs,
   });
   const messagesValue =
     contextUsage && contextUsage.totalMessages > 0

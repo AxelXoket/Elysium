@@ -2,7 +2,12 @@
  * ContextUsage.test.ts - unit tests for the live context usage estimator.
  *
  * Every fixture's arithmetic is hand-computed in comments so the backend
- * parity (routers/completions.py + config.py) can be audited:
+ * parity (routers/completions.py + prompt_layer.py + config.py) can be
+ * audited. Since the single system message (Ek O 8) every request opens with
+ * a 24-character salt line, and every part after it costs one "\n\n"
+ * separator: SALT = 24 + 2 before the card block, + 2 before each further
+ * part (final note, persona, voice). Exact per-mode text parity lives in
+ * test/prompt/assembly.test.ts against shared/prompt_assembly_vectors.json.
  *   CHARS_PER_TOKEN = 3, CONTEXT_SAFETY_MARGIN = 256,
  *   _DEFAULT_CONTEXT_LEN = 32000, _DEFAULT_MAX_TOKENS = 2048,
  *   IMAGE_TOKEN_ESTIMATE = 1100 tokens per attachment.
@@ -91,7 +96,8 @@ function msg(id: number, content: string): Message {
 // persona50: display_name "Test Persona" (12) + description 50 chars
 //   persona_block = "[User Persona: Test Persona]\n" (29) + 50 = 79 chars
 //   (v1.1 KUME D: the block now carries the NAME header, not just the desc)
-// fixed = 116 + 79 + 0 (no post_history_instruction) = 195 chars
+// card block = "[Character: Estimator]" (22) + 2 + 116 = 140 chars
+// fixed = 24 salt + 2 + 140 + 2 + 79 = 247 chars (no final note)
 const character100 = makeCharacter({ system_prompt: "S".repeat(100) });
 const persona50 = [makePersona({ description: "P".repeat(50) })];
 
@@ -125,7 +131,7 @@ describe("estimateContextUsage", () => {
   });
 
   it("handles an empty history (fixed cost only)", () => {
-    // fixed = 195 -> used = ceil(195 / 3) = 65; capacity = 950 (see ctx1200).
+    // fixed = 247 -> used = ceil(247 / 3) = 83; capacity = 950 (see ctx1200).
     const result = estimateContextUsage({
       model: ctx1200,
       character: character100,
@@ -133,7 +139,7 @@ describe("estimateContextUsage", () => {
       messages: [],
     });
     expect(result).toMatchObject({
-      usedTokens: 73,
+      usedTokens: 83,
       capacityTokens: 950,
       reservedOutputTokens: 100,
       includedMessages: 0,
@@ -142,13 +148,13 @@ describe("estimateContextUsage", () => {
       isEstimate: true,
     });
     // percent = 65 / 950 * 100 = 6.842...
-    expect(result!.percent).toBeCloseTo((73 / 950) * 100, 9);
+    expect(result!.percent).toBeCloseTo((83 / 950) * 100, 9);
   });
 
   it("drops the oldest messages until the history fits", () => {
-    // available = 2850, fixed = 195 -> remaining = 2655.
-    // history = 3 x 1000 = 3000 > 2655 -> drop oldest -> 2000 <= 2655.
-    // used = ceil((195 + 2000) / 3) = ceil(2195 / 3) = 732.
+    // available = 2850, fixed = 247 -> remaining = 2603.
+    // history = 3 x 1000 = 3000 > 2603 -> drop oldest -> 2000 <= 2603.
+    // used = ceil((247 + 2000) / 3) = ceil(2247 / 3) = 749.
     const result = estimateContextUsage({
       model: ctx1200,
       character: character100,
@@ -160,14 +166,14 @@ describe("estimateContextUsage", () => {
       ],
     });
     expect(result).toMatchObject({
-      usedTokens: 740,
+      usedTokens: 749,
       capacityTokens: 950,
       reservedOutputTokens: 100,
       includedMessages: 2,
       droppedMessages: 1,
       totalMessages: 3,
     });
-    expect(result!.percent).toBeCloseTo((740 / 950) * 100, 9);
+    expect(result!.percent).toBeCloseTo((749 / 950) * 100, 9);
   });
 
   it("excludes inactive variant siblings, mirroring the backend active filter", () => {
@@ -186,7 +192,7 @@ describe("estimateContextUsage", () => {
       ],
     });
     expect(result).toMatchObject({
-      usedTokens: 740,
+      usedTokens: 749,
       includedMessages: 2,
       droppedMessages: 1,
       totalMessages: 3, // active rows only - the hidden sibling is invisible
@@ -211,19 +217,19 @@ describe("estimateContextUsage", () => {
       input_modalities: ["text", "image"],
     });
     const plain = [msg(1, "a".repeat(1000)), msg(2, "b".repeat(1000))];
-    // Without attachments: used = ceil((195 + 2000) / 3) = ceil(2195/3) = 732.
+    // Without attachments: used = ceil((247 + 2000) / 3) = ceil(2247/3) = 749.
     const without = estimateContextUsage({
       model: ctx4000,
       character: character100,
       personas: persona50,
       messages: plain,
     });
-    expect(without!.usedTokens).toBe(740);
+    expect(without!.usedTokens).toBe(749);
     expect(without!.capacityTokens).toBe(3644);
 
     // One attachment adds 1100 * 3 = 3300 chars to that message:
-    // used = ceil((195 + 1000 + 1000 + 3300) / 3) = ceil(5495 / 3) = 1832.
-    // 1832 - 732 = 1100 tokens, exactly IMAGE_TOKEN_ESTIMATE.
+    // used = ceil((247 + 1000 + 1000 + 3300) / 3) = ceil(5547 / 3) = 1849.
+    // 1849 - 749 = 1100 tokens, exactly IMAGE_TOKEN_ESTIMATE.
     // On a USER row: those are the only images that get re-sent, so those are
     // the only ones that cost anything. (plain[1] is an assistant row - see the
     // test below.)
@@ -237,7 +243,7 @@ describe("estimateContextUsage", () => {
       personas: persona50,
       messages: withImage,
     });
-    expect(withAttachment!.usedTokens).toBe(1840);
+    expect(withAttachment!.usedTokens).toBe(1849);
     expect(withAttachment!.usedTokens - without!.usedTokens).toBe(1100);
     expect(withAttachment!.includedMessages).toBe(2);
   });
@@ -413,8 +419,8 @@ describe("estimateContextUsage", () => {
     });
     expect(result!.capacityTokens).toBe(14080);
     expect(result!.reservedOutputTokens).toBe(2048);
-    // fixed = 195 -> used = ceil(195 / 3) = 65.
-    expect(result!.usedTokens).toBe(73);
+    // fixed = 247 -> used = ceil(247 / 3) = 83.
+    expect(result!.usedTokens).toBe(83);
 
     // Budget larger than the model context clamps down to the context:
     // effective = 1200 -> identical numbers to the no-budget ctx1200 case.
@@ -453,9 +459,9 @@ describe("estimateContextUsage", () => {
     //   reservation = 1000 * 3 = 3000 > 1575 -> floor(1575 / 2) = 787
     //   available = 1575 - 787 = 788 -> capacity = floor(788 / 3) = 262
     //   reserved = floor(787 / 3) = 262
-    // personas: none active -> persona block "" -> fixed = 116.
-    // history = one 500-char message; remaining = 788 - 116 = 672 >= 500.
-    // used = ceil((116 + 500) / 3) = ceil(616 / 3) = 206.
+    // personas: none active -> no persona part -> fixed = 24 + 2 + 140 = 166.
+    // history = one 500-char message; remaining = 788 - 166 = 622 >= 500.
+    // used = ceil((166 + 500) / 3) = ceil(666 / 3) = 222.
     const tiny = makeModel({ id: "test/ctx-600", context_length: 600 });
     const result = estimateContextUsage({
       model: tiny,
@@ -465,7 +471,7 @@ describe("estimateContextUsage", () => {
       generationParams: { max_tokens: 1000 },
     });
     expect(result).toMatchObject({
-      usedTokens: 214,
+      usedTokens: 222,
       capacityTokens: 262,
       reservedOutputTokens: 262,
       includedMessages: 1,
@@ -509,7 +515,7 @@ describe("estimateContextUsage", () => {
   });
 
   it("omits the persona block when no persona is active", () => {
-    // fixed = 116 (system block only) -> used = ceil(116 / 3) = 39.
+    // fixed = 24 + 2 + 140 = 166 (no persona part) -> ceil(166 / 3) = 56.
     const inactive = [makePersona({ description: "P".repeat(50), is_active: false })];
     const result = estimateContextUsage({
       model: ctx1200,
@@ -517,13 +523,13 @@ describe("estimateContextUsage", () => {
       personas: inactive,
       messages: [],
     });
-    expect(result!.usedTokens).toBe(47);
+    expect(result!.usedTokens).toBe(56);
   });
 
   it("charges a name-only persona for its header (v1.1 KUME D)", () => {
     // display_name "Nova" (4), no description ->
     //   block = "[User Persona: Nova]" = 20 chars.
-    // fixed = 116 + 20 = 136 -> used = ceil(136 / 3) = 46 (vs 39 with none).
+    // fixed = 166 + 2 + 20 = 188 -> used = ceil(188 / 3) = 63 (vs 56 with none).
     const nameOnly = [
       makePersona({ display_name: "Nova", description: "", is_active: true }),
     ];
@@ -533,14 +539,15 @@ describe("estimateContextUsage", () => {
       personas: nameOnly,
       messages: [],
     });
-    expect(result!.usedTokens).toBe(54);
+    expect(result!.usedTokens).toBe(63);
   });
 
   it("clamps percent to 100 when even the fixed cost overflows", () => {
     // ctx 600, meta max 100: safety = 75; budget_chars = 1575;
     // reservation 300 -> available = 1275 -> capacity = 425.
-    // fixed = 2016 (system block 16 + 2000) + 79 persona = 2095 > available
-    // -> every message dropped; used = ceil(2095 / 3) = 699 > 425 -> 100%.
+    // card block = 22 + 2 + 16 + 2000 = 2040; fixed = 24 + 2 + 2040 + 2 + 79
+    // = 2147 > available -> every message dropped; used = ceil(2147 / 3) =
+    // 716 > 425 -> 100%.
     const tiny = makeModel({
       id: "test/ctx-600-meta",
       context_length: 600,
@@ -554,7 +561,7 @@ describe("estimateContextUsage", () => {
       messages: [msg(1, "aaa"), msg(2, "bbb")],
     });
     expect(result).toMatchObject({
-      usedTokens: 707,
+      usedTokens: 716,
       capacityTokens: 425,
       includedMessages: 0,
       droppedMessages: 2,
@@ -630,8 +637,9 @@ describe("buildSystemBlock", () => {
   });
 
   it("renders labeled sections in backend order and skips blank ones", () => {
-    // Mirrors completions.py _build_system_block: "[Label]\n{value}" joined
-    // by "\n\n"; whitespace-only sections (description here) are skipped.
+    // Mirrors prompt_layer.labelled_card_block in mode c (today's order,
+    // [System Prompt] first): "[Label]\n{value}" joined by "\n\n";
+    // whitespace-only sections (description here) are skipped.
     const character = makeCharacter({
       system_prompt: "SP",
       description: "   ",
@@ -645,11 +653,12 @@ describe("buildSystemBlock", () => {
   });
 
   it("feeds the exact fixed cost into the estimate", () => {
-    // Sections: "[System Prompt]\nSP" = 18, "[Personality]\nPE" = 16,
-    // "[Scenario]\nSC" = 13, "[Example Dialogue]\nME" = 21 -> 68 chars
-    // + 3 joins x 2 = 74. Persona (name "Test Persona", " PD " -> "PD"):
-    // block = "[User Persona: Test Persona]\nPD" = 31; phi "PH" adds 2.
-    // fixed = 74 + 31 + 2 = 107 -> used = ceil(107 / 3) = 36.
+    // Card block: "[Character: Estimator]" = 22, "[System Prompt]\nSP" = 18,
+    // "[Personality]\nPE" = 16, "[Scenario]\nSC" = 13,
+    // "[Example Dialogue]\nME" = 21 -> 90 + 4 joins x 2 = 98.
+    // Final note "[Character card: final note]\nPH" = 31. Persona (name
+    // "Test Persona", " PD " -> "PD") = "[User Persona: Test Persona]\nPD" = 31.
+    // fixed = 24 salt + 2 + 98 + 2 + 31 + 2 + 31 = 190 -> ceil(190 / 3) = 64.
     const character = makeCharacter({
       system_prompt: "SP",
       description: "   ",
@@ -664,7 +673,7 @@ describe("buildSystemBlock", () => {
       personas: [makePersona({ description: " PD " })],
       messages: [],
     });
-    expect(result!.usedTokens).toBe(44);
+    expect(result!.usedTokens).toBe(64);
     expect(result!.capacityTokens).toBe(950);
   });
 });
@@ -726,7 +735,7 @@ describe("formatTokensCompact", () => {
 
 
 describe("G2: the voice-delivery block in the fixed cost", () => {
-  it("charges voicePromptChars exactly like the PHI", () => {
+  it("charges voicePromptChars and its separator", () => {
     const model = makeModel({ context_length: 3000 });
     const character = makeCharacter({ system_prompt: "S".repeat(300) });
     const base = estimateContextUsage({
@@ -740,13 +749,13 @@ describe("G2: the voice-delivery block in the fixed cost", () => {
       messages: [],
       voicePromptChars: 3200,
     })!;
-    // 3200 chars at 3 chars/token is ~1066-1067 tokens of extra fixed cost
-    // (the exact value depends on where the ceil rounding lands relative to
-    // the base). What matters: the gauge moves by the block's full weight the
-    // moment the toggle would inject it - not by zero, not by an estimate.
+    // The block is one part of the single system message, so it costs its
+    // own length plus one "\n\n" separator: 3202 chars, 1067-1068 tokens
+    // depending on where the ceil lands. What matters: the gauge moves by
+    // the block's full weight the moment the toggle would inject it.
     const diff = withVoice.usedTokens - base.usedTokens;
-    expect(diff).toBeGreaterThanOrEqual(Math.floor(3200 / 3));
-    expect(diff).toBeLessThanOrEqual(Math.ceil(3200 / 3));
+    expect(diff).toBeGreaterThanOrEqual(Math.floor((3200 + 2) / 3));
+    expect(diff).toBeLessThanOrEqual(Math.ceil((3200 + 2) / 3));
   });
 
   it("an unknown flag charges nothing - matching a backend that cannot inject what it cannot read", () => {

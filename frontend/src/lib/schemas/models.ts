@@ -1,6 +1,6 @@
 import { z } from "zod/v4";
 
-// Exact match of openrouter.py _normalise_model() - 12 fields
+// Exact match of openrouter.py _normalise_model() - 13 fields
 export const ModelSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -18,6 +18,15 @@ export const ModelSchema = z.object({
   top_provider: z.record(z.string(), z.unknown()),
   created: z.number().nullable(),
   canonical_slug: z.string(),
+  // D3: OpenRouter's reasoning object, or null when the catalogue has none.
+  // Optional so a cached list from before it existed still parses.
+  reasoning: z
+    .object({
+      mandatory: z.boolean().optional(),
+      supported_efforts: z.array(z.string()).nullable().optional(),
+    })
+    .nullable()
+    .optional(),
 });
 
 // Exact match of openrouter.py fetch_models() return shape

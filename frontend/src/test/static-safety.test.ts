@@ -308,16 +308,25 @@ const PERSISTED_KEY_SHAPES: Record<string, PersistedShape> = {
     accepts: isBool,
     sample: false,
   },
+  // D1: a sampler is a number or null (unset, not sent).
   genTemperature: {
-    why: "Sampling scalar, 0..2.",
-    accepts: inRange(0, 2),
+    why: "Sampling scalar, 0..2, or unset.",
+    accepts: (v) => v === null || inRange(0, 2)(v),
     sample: 0.8,
   },
-  genTopP: { why: "Sampling scalar, 0..1.", accepts: inRange(0, 1), sample: 0.9 },
-  genTopK: { why: "Sampling scalar, 0..500.", accepts: inRange(0, 500), sample: 40 },
+  genTopP: {
+    why: "Sampling scalar, 0..1, or unset.",
+    accepts: (v) => v === null || inRange(0, 1)(v),
+    sample: 0.9,
+  },
+  genTopK: {
+    why: "Sampling scalar, 0..500, or unset.",
+    accepts: (v) => v === null || inRange(0, 500)(v),
+    sample: 40,
+  },
   genRepetitionPenalty: {
-    why: "Sampling scalar, 0..2.",
-    accepts: inRange(0, 2),
+    why: "Sampling scalar, 0..2, or unset.",
+    accepts: (v) => v === null || inRange(0, 2)(v),
     sample: 1.05,
   },
   genMaxOutput: {

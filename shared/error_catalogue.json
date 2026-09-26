@@ -3,6 +3,15 @@
   "_shape": "code: the exact detail string the client receives. statuses: every HTTP status a LITERAL raise site pairs with this code, machine-derived, and [] when only a computed site produces it. channels: which exits carry it, machine-derived - http, sse, voice_sse, notice. no_backend_producer: the ONE escape hatch, a written reason why the backend enumerator will never find this code. A record without it that the enumerator cannot find is an orphan and fails. Both statuses and channels are checked for set EQUALITY in both directions, so neither is decoration. Nothing here holds the English sentence: that stays in frontend/src/lib/errors/errorMessages.ts, where 56 lines of comment explain why one code is not its neighbour, and generating one from the other would make the check that they agree true by construction.",
   "codes": [
     {
+      "code": "api_key_in_message",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
       "code": "api_key_invalid",
       "statuses": [
         422
@@ -348,7 +357,36 @@
       ]
     },
     {
+      "code": "model_id_carries_api_key",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http",
+        "sse"
+      ]
+    },
+    {
       "code": "model_no_image_input",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "model_web_search_blocked",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http",
+        "sse"
+      ]
+    },
+    {
+      "code": "name_too_long",
       "statuses": [
         400
       ],
@@ -608,6 +646,169 @@
       "statuses": [
         404
       ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "prompt_field_too_large",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "prompt_module_cannot_enable",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "prompt_module_empty",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "prompt_module_file_too_large",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "prompt_module_file_type_unsupported",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "prompt_module_filename_invalid",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "prompt_module_filename_missing",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "prompt_module_import_not_found",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "prompt_module_json_invalid",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "prompt_module_json_is_character_card",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "prompt_module_json_no_modules",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "prompt_module_json_unknown_keys",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "prompt_module_json_unrecognized",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "prompt_module_json_version_newer",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "prompt_module_length_required",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "prompt_module_name_invalid",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "prompt_module_not_found",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "prompt_module_not_utf8",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "prompt_module_request_invalid",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "prompt_module_too_long",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "prompt_module_upload_raw_only",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "prompt_modules_over_budget",
+      "statuses": [],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "prompt_settings_invalid",
+      "statuses": [],
       "channels": [
         "http"
       ]

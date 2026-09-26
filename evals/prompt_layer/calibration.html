@@ -1,0 +1,72 @@
+<title>G3-lite calibration</title>
+<style>
+  :root { --bg:#f7f6f2; --fg:#1d1d1b; --muted:#6b6a64; --card:#ffffff; --line:#dddcd5; --pick:#2f5d8a; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.55 system-ui, sans-serif; }
+  main { max-width:1100px; margin:0 auto; padding:24px 16px 80px; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  .muted { color:var(--muted); }
+  .pair { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:16px; margin:20px 0; }
+  .story { white-space:pre-wrap; max-height:260px; overflow:auto; border-left:3px solid var(--line); padding-left:10px; font-size:14px; }
+  .replies { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px; }
+  @media (max-width:760px) { .replies { grid-template-columns:1fr; } }
+  .reply { white-space:pre-wrap; border:1px solid var(--line); border-radius:6px; padding:10px; }
+  .reply b { display:block; margin-bottom:6px; }
+  .choices { margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; }
+  button { font:inherit; padding:6px 16px; border-radius:6px; border:1px solid var(--line); background:var(--bg); cursor:pointer; }
+  button[aria-pressed="true"] { background:var(--pick); color:#fff; border-color:var(--pick); }
+  #bar { position:sticky; top:0; background:var(--bg); padding:8px 0; border-bottom:1px solid var(--line); }
+</style>
+<main>
+  <h1>G3-lite blind calibration</h1>
+  <p class="muted">For each pair, pick the reply a regular roleplayer would rather receive at that point in the story. Labels are random; nothing tells which setup wrote which reply. Every choice is saved as soon as you click.</p>
+  <div id="bar"><span id="count"></span> <span id="saved" class="muted"></span></div>
+  <div id="pairs"></div>
+</main>
+<script nonce="__NONCE__">
+const PAIRS = __PAIRS__;
+const TOKEN = "__TOKEN__";
+let labels = {};
+function el(tag, text, cls) { const e = document.createElement(tag); if (text !== undefined) e.textContent = text; if (cls) e.className = cls; return e; }
+function update() {
+  const n = Object.keys(labels).length;
+  document.getElementById("count").textContent = n + " of " + PAIRS.length + " labelled";
+}
+async function save() {
+  const r = await fetch("/labels?t=" + encodeURIComponent(TOKEN), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(labels) });
+  document.getElementById("saved").textContent = r.ok ? "saved" : "NOT saved (" + r.status + ")";
+}
+function render() {
+  const root = document.getElementById("pairs");
+  PAIRS.forEach((p, i) => {
+    const box = el("section", undefined, "pair");
+    box.appendChild(el("h2", "Pair " + (i + 1) + " of " + PAIRS.length));
+    box.appendChild(el("div", p.card, "muted"));
+    box.appendChild(el("div", p.story, "story"));
+    const grid = el("div", undefined, "replies");
+    ["A", "B"].forEach(side => {
+      const r = el("div", undefined, "reply");
+      r.appendChild(el("b", "Reply " + side));
+      r.appendChild(document.createTextNode(p[side]));
+      grid.appendChild(r);
+    });
+    box.appendChild(grid);
+    const row = el("div", undefined, "choices");
+    const buttons = [];
+    [["A", "A is better"], ["B", "B is better"], ["tie", "Equal"]].forEach(([v, t]) => {
+      const b = el("button", t);
+      b.type = "button";
+      b.setAttribute("aria-pressed", labels[p.pid] === v ? "true" : "false");
+      b.addEventListener("click", () => {
+        labels[p.pid] = v;
+        buttons.forEach(x => x.setAttribute("aria-pressed", x === b ? "true" : "false"));
+        update(); save();
+      });
+      buttons.push(b); row.appendChild(b);
+    });
+    box.appendChild(row);
+    root.appendChild(box);
+  });
+  update();
+}
+fetch("/labels?t=" + encodeURIComponent(TOKEN)).then(r => r.ok ? r.json() : {}).then(j => { labels = j || {}; render(); }).catch(() => render());
+</script>

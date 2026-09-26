@@ -21,6 +21,7 @@ agrees with a broken formula. Sizes are DISCOVERED by measurement instead.
 import pytest
 
 import database
+import prompt_layer
 from conftest import make_character, make_chat, make_persona
 
 MODEL = "test/model-1"
@@ -74,13 +75,15 @@ def _survivors(client, provider, current_len: int) -> list[str]:
 # ── the order ────────────────────────────────────────────────────────────────
 
 def test_the_payload_arrives_in_the_order_the_model_is_promised(client, provider):
-    """Character, then persona, then the conversation, then the turn being
-    sent, and the trailing instruction LAST.
+    """ONE system message, then the conversation, then the turn being sent.
 
-    post_history_instruction is named for its position. A well meant "fix"
-    moving it up next to the system block would leave every assertion in
-    test_character_edit_reaches_prompt.py green - that file checks the string
-    is somewhere in the payload, never where.
+    Since the single-system-message assembly (Ek O 8, A3/A4) the card's
+    post-history text is NOT a trailing system message any more: it sits in
+    the system message under "[Character card: final note]", right after the
+    card block and BEFORE the persona and the user's Limits (PK-01: at the
+    tail it outranked the Limits). Seven system messages broke some chat
+    templates and one dropped all but the first (PK-04), so there is exactly
+    one, and the exact list is pinned here rather than "somewhere in".
     """
     char = make_character(client, first_mes="")
     chat = make_chat(client, char)
@@ -96,13 +99,18 @@ def test_the_payload_arrives_in_the_order_the_model_is_promised(client, provider
 
     sent = provider.calls[-1]["messages"]
     shape = [(m["role"], str(m["content"])) for m in sent]
-    assert shape[0][0] == "system" and "A test character" in shape[0][1]
-    assert shape[1] == ("system", "[User Persona: Nova]\nPERSONA-BLOCK")
-    assert shape[2] == ("user", "FIRST")
-    assert shape[3] == ("assistant", "ANSWER")
-    assert shape[4] == ("user", "SECOND")
-    assert shape[5] == ("system", "PHI-BLOCK")
-    assert len(shape) == 6, shape
+    assert shape == [
+        ("system", prompt_layer.PART_SEP.join([
+            prompt_layer.chat_salt(chat),
+            "[Character: Testchar]",
+            "[Description]\nA test character",
+            prompt_layer.FINAL_NOTE_LABEL + "\nPHI-BLOCK",
+            "[User Persona: Nova]\nPERSONA-BLOCK",
+        ])),
+        ("user", "FIRST"),
+        ("assistant", "ANSWER"),
+        ("user", "SECOND"),
+    ], shape
 
 
 # ── what falls off, and from which end ───────────────────────────────────────
@@ -210,9 +218,12 @@ def test_the_blocks_that_are_not_history_are_never_trimmed(client, provider):
     assert len(_history_of(sent)) < 12, "no trim happened, so nothing is proven"
 
     blocks = [str(m["content"]) for m in sent if m["role"] == "system"]
-    assert any("A test character" in b for b in blocks), blocks
-    assert any("PERSONA-BLOCK" in b for b in blocks), blocks
-    assert blocks[-1] == "PHI-BLOCK", blocks
+    assert len(blocks) == 1, blocks
+    parts = blocks[0].split(prompt_layer.PART_SEP)
+    assert parts[0] == prompt_layer.chat_salt(chat)
+    assert "[Description]\nA test character" in parts
+    assert prompt_layer.FINAL_NOTE_LABEL + "\nPHI-BLOCK" in parts
+    assert parts[-1] == "[User Persona: Nova]\nPERSONA-BLOCK", parts
 
 
 def test_the_card_greeting_is_ordinary_history_and_can_be_pushed_out(client,
@@ -255,7 +266,7 @@ def test_editing_a_persona_reaches_the_very_next_reply(client, provider):
     chat = make_chat(client, make_character(client, first_mes=""))
 
     _ok(client, chat, "hello")
-    assert "Keeps to herself." in str(provider.calls[-1]["messages"][1]["content"])
+    assert "Keeps to herself." in str(provider.calls[-1]["messages"][0]["content"])
 
     assert client.patch(f"/api/v1/personas/{persona}",
                         json={"description": "Talks to everyone."}
@@ -278,7 +289,7 @@ def test_clearing_a_persona_description_stops_sending_it(client, provider):
                            description="Keeps to herself.", select=True)
     chat = make_chat(client, make_character(client, first_mes=""))
     _ok(client, chat, "hello")
-    assert "Keeps to herself." in str(provider.calls[-1]["messages"][1]["content"])
+    assert "Keeps to herself." in str(provider.calls[-1]["messages"][0]["content"])
 
     assert client.patch(f"/api/v1/personas/{persona}",
                         json={"description": ""}).status_code == 200

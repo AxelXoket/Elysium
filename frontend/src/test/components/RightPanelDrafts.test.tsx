@@ -193,6 +193,12 @@ function panelRoutes(): Record<string, { status?: number; body: unknown }> {
     // The Models tab's context gauge asks for these four. They answered 404
     // until `assertNoUnansweredRoutes` below said so out loud.
     "/tts/voice-mode": { body: { enabled: false, active: false, prompt_chars: 0 } },
+    // The gauge also reads the prompt modules and the layer setting, which
+    // change the system message it counts.
+    "/prompt-modules/settings": {
+      body: { prompt_layer_enabled: false, reply_length_words: null },
+    },
+    "/prompt-modules": { body: { modules: [] } },
     [`/chats/${CHAT_ID}/messages`]: { body: [] },
     [`/chats/${OTHER_CHAT_ID}/messages`]: { body: [] },
     "/chats": { body: [] },

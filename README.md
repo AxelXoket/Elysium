@@ -138,9 +138,11 @@ Every completion request body carries all three side by side, from the chat rout
 Additional guarantees:
 
 - `context_budget_tokens` is **never** forwarded to OpenRouter - app-level history trimming only
-- `raw_json`, `avatar_path`, `tools`, `tool_choice` - **never** sent. `response_format` is sent by exactly one path, the notebook's background reader, and only ever as the same fixed schema defined in this repository: the only request that carries it is that reader's own, and nothing the frontend sends can add it to any request at all. That reader does send your conversation - it is the one thing here that does, on a timer, and the Known Limitations section says so at length. This line used to say nothing sent it at all, which stopped being true in v1.1.5 when that reader shipped. `image_url` parts are built server-side **only** for images the user explicitly attached (vision models); the frontend never constructs them
+- `raw_json`, `avatar_path`, `tools`, `tool_choice` - **never** sent. `response_format` is sent by exactly one path, the notebook's background reader, and only ever as the same fixed schema defined in this repository: the only request that carries it is that reader's own, and nothing the frontend sends can add it to any request at all. That reader does send your conversation - it is the one thing here that does, on a timer, and the Known Limitations section says so at length. This line used to say nothing sent it at all, which stopped being true in v1.1.5 when that reader shipped. `image_url` parts are built server-side **only** for images the user explicitly attached (vision models); the frontend never constructs them. `reasoning` is sent only when the cached model list says the model takes it: to switch reasoning off, or, for a model that requires it, at its lowest effort with the reasoning text excluded. Temperature, top_p, top_k and repetition_penalty are not sent unless you set them.
 - Raw upstream OpenRouter error bodies are never forwarded to the client - safe mapped codes only, on the streaming path as well as the plain one. Streaming otherwise uses the same hardcoded provider policy, relaying deltas untouched
-- API key is sealed inside the encrypted vault (unreachable while locked); never returned by any endpoint, never logged
+- Models that search the web on their own are refused before anything is sent: any `:online` variant, `openrouter/auto`, any `@preset/...` id, and model ids naming `sonar`, `-search` or `deep-research`. The check sits in the one sender every request passes through, so it covers the chat routes and the notebook's background reader alike.
+- Every system message starts with one line of hex, a keyed hash of the chat id under a key held only in memory. It carries no instruction and not the chat id, and the key is dropped at every lock.
+- API key is sealed inside the encrypted vault (unreachable while locked); never returned by any endpoint, never logged. A message that contains your stored API key is refused before it is stored or sent, and the key is cut out of every outgoing request body wherever else it appears (history, card, modules, notes).
 - Browser storage holds only UI preferences - never messages, personas, characters, API keys, or proxy URLs
 - Frontend never emits an `Authorization` header - all provider auth happens backend-side
 - Logs carry numeric ids, counts and status codes - never message content, passphrases, key material, or a name you read on screen. One gap is measured rather than claimed away, because a promise nobody has counted is not a promise: crash handlers write the exception's own message, which can hold whatever the code was holding when it failed, and there are fifty such places. A scanner reads every logging call in the shipped backend, that number is written down, and it cannot grow without something going red. The gap this sentence used to name second - a voice created before the folder names were made opaque carrying the label you typed into the log when it was deleted or listed - is CLOSED: those lines now write twelve characters of a keyed hash instead, and the scanner's content ledger is empty
@@ -158,7 +160,10 @@ passphrase it does not open as SQLite at all. Images are stored as encrypted
 blobs INSIDE that database (v0.6) - both the ones you attach and the ones a
 model generates, through the same validate-and-re-encode pipeline - and the API
 key + proxy URL are sealed in it too; served images carry `Cache-Control: no-store` so the
-browser keeps no plaintext copies. The scrypt salt and verifier (`salt.bin`,
+browser keeps no plaintext copies. Prompt modules you import (their text, their
+names, the file name and the SillyTavern preset fields kept with them) are
+stored only inside the database. The file is read in memory and never written
+to disk, and fields that can hold a secret are removed before anything is kept. The scrypt salt and verifier (`salt.bin`,
 `verifier.bin`) sit beside the DB by design (they are not secrets, but never
 publish them). `vault.recovery` is a second copy of the salt and its cost
 settings, and holds no verifier: deleting or corrupting `salt.bin` alone used
