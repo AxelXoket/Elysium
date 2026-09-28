@@ -24,6 +24,7 @@
  * (see helpers/glassSurfaceCss.ts), so a real edit to index.css is a real
  * red test rather than a fixture that quietly stopped matching.
  */
+import { CHOICE_UNREAD } from "@/components/notebook/noteProse";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -669,7 +670,7 @@ describe("the words the right panel paints", () => {
     const panel = panelOf();
     const lines = [
       await screen.findByText(/^the list of models could not be fetched/i),
-      await screen.findByText(/^your saved choice could not be read/i),
+      await screen.findByText(CHOICE_UNREAD),
       await screen.findByText(/^the background reader has stopped/i),
     ];
     // GROUND: the stopped reader's line is the fixture's, with its reason.

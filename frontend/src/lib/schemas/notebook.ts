@@ -203,14 +203,18 @@ export const BackfillStopSchema = z.object({
   reason: z.string().optional(),
 });
 
-/** `POST /notebook/extract/undo/{job_id}?chat_id=`. The two `kept_*`
- *  counts are the notes the reader made theirs since - pinned or edited -
- *  which undo leaves alone and says so. */
+/** `POST /notebook/extract/undo/{job_id}?chat_id=`. The four `kept_*`
+ *  counts are the notes the reader made theirs since, each counted once
+ *  from an exact mark: pinned now, words changed (`edited_at`), Keep
+ *  pressed on the suggestion (`hand_accepted_at`), or accepted before the
+ *  vault recorded who accepts (`kept_older`). Undo leaves them and says so. */
 export const BackfillUndoSchema = z.object({
   job_id: z.number(),
   removed: z.number(),
   kept_pinned: z.number(),
   kept_edited: z.number(),
+  kept_accepted: z.number(),
+  kept_older: z.number(),
 });
 export type BackfillUndo = z.infer<typeof BackfillUndoSchema>;
 

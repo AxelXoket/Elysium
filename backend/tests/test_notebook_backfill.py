@@ -2493,7 +2493,8 @@ class TestUndo:
 
         assert r.status_code == 200, r.text
         assert r.json() == {"job_id": job_id, "removed": len(wrote) - 2,
-                            "kept_pinned": 1, "kept_edited": 1}
+                            "kept_pinned": 1, "kept_edited": 1,
+                            "kept_accepted": 0, "kept_older": 0}
         left = {e["id"] for e in notebook.list_entries(chat)}
         for gone in wrote[2:]:
             assert gone["id"] not in left
@@ -4308,20 +4309,20 @@ class TestTheReviewQueueGate:
             assert is_retired == (i in retired), (case, i)
 
 
-class TestUndoCountsAReorderAsTheReadersHand:
-    """`updated_at` has exactly one reader - "did the reader make this note
-    theirs" - and four writers, and one of them was stamping a bare
-    `datetime('now')`.
+class TestUndoDoesNotReadADragAsAKeep:
+    """The undo reads only the exact marks now (kept is
+    accepted by hand, pinned, or edited, and nothing else).
 
-    Both columns default to the same second-resolution clock, so a note
-    DRAGGED inside the second it was written in kept `updated_at` equal to
-    `created_at` and the undo removed it, while the same note EDITED in
-    that second was kept. Two answers to one question, decided by which
-    writer happened to run.
+    This class used to assert the opposite: a drag stamped `updated_at`,
+    `updated_at` was the undo's only signal, so a dragged note was kept and
+    called "edited". The drag still stamps `updated_at` (asserted below, so
+    the old signal is known to be firing), and the undo no longer listens
+    to it: a note the reader only moved goes with its run, and nothing says
+    "edited" about it.
     """
 
     @pytest.mark.anyio
-    async def test_a_note_dragged_in_its_own_second_is_still_theirs(
+    async def test_a_dragged_note_goes_with_its_run(
             self, client, chat, monkeypatch) -> None:
         provider(monkeypatch)
         out = await run_and_wait(chat, "next")
@@ -4347,16 +4348,16 @@ class TestUndoCountsAReorderAsTheReadersHand:
         r = client.post(f"{API}/extract/undo/{out['job_id']}?chat_id={chat}")
 
         assert r.status_code == 200, r.text
-        assert r.json()["removed"] == 0, r.json()
-        assert r.json()["kept_edited"] == len(wrote), r.json()
+        assert r.json()["removed"] == len(wrote), r.json()
+        assert r.json()["kept_edited"] == 0, r.json()
         left = {e["id"] for e in notebook.list_entries(chat)}
-        assert {e["id"] for e in wrote} <= left
+        assert not ({e["id"] for e in wrote} & left)
 
     @pytest.mark.anyio
     async def test_GROUND_an_untouched_note_is_still_removed(
             self, client, chat, monkeypatch) -> None:
-        """Without this the row above passes on an undo that removes
-        nothing at all."""
+        """Twin of the row above with no drag: the same count, so the drag
+        is shown to change nothing."""
         provider(monkeypatch)
         out = await run_and_wait(chat, "next")
         wrote = [e for e in notebook.list_entries(chat)
@@ -4727,12 +4728,21 @@ class TestUndoRemovesWhatTheJobItselfRetired:
         # is classified correctly by accident. Moved back an hour, the two
         # are equal only while nothing stamps the column, which is the
         # thing under test.
+        #
+        # The vault's marks-since moment is moved back further still, so
+        # the aged note stays one this build wrote. Left where `init_db`
+        # put it, the aged note would read as written before the marks
+        # existed and be kept as `kept_older` - true for such a note, and
+        # not the note this test is about.
         with get_db() as con:
             con.execute("BEGIN IMMEDIATE")
             con.execute(
                 "UPDATE notebook_entries SET created_at = "
                 "datetime('now', '-1 hour'), updated_at = "
                 "datetime('now', '-1 hour') WHERE id = ?", (wrote["id"],))
+            con.execute(
+                "UPDATE settings SET value = datetime('now', '-2 hours') "
+                "WHERE key = ?", (database.HAND_MARKS_SINCE_KEY,))
         fresh = {e["id"]: e for e in notebook.list_entries(chat)}[wrote["id"]]
         assert fresh["updated_at"] == fresh["created_at"], (
             "ground: nothing has touched it yet")

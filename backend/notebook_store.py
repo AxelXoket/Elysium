@@ -37,7 +37,7 @@ import secrets_service
 # The DRIVER's exception, not the stdlib's. SQLCipher raises its own
 # IntegrityError, and catching sqlite3.IntegrityError here caught nothing at
 # all - the duplicate-key path that makes this idempotent never ran.
-from database import get_db, iter_chunks, sqlite3
+from database import HAND_MARKS_SINCE_KEY, get_db, iter_chunks, sqlite3
 
 #: Written by the caller who accepts a suggestion, never by the model itself.
 STATUS_PROPOSED = "proposed"
@@ -309,9 +309,9 @@ def update_entry(entry_id: int, chat_id: int | None = None, **fields) -> dict:
 
     sets = ", ".join(f"{k} = ?" for k in fields)
     params: list = list(fields.values())
-    # THE TWO EXACT MARKS (decisions 15 a and 60 a), written here because
-    # this function is the only door both hand actions come through: PATCH
-    # for an edit, the accept route for Keep. Nothing else calls it.
+    # THE TWO EXACT MARKS (decisions 15 a and 60 a). An edit comes through
+    # here (PATCH), and so does Keep on a suggestion (the accept route);
+    # Keep on an already accepted note has its own door, `mark_kept`.
     #
     # `hand_accepted_at` is a CASE, and SQLite evaluates it against the row
     # as it was BEFORE this statement, so "was it still a proposal" is
@@ -327,11 +327,10 @@ def update_entry(entry_id: int, chat_id: int | None = None, **fields) -> dict:
         params.append(STATUS_PROPOSED)
     # `updated_at` is stamped AT LEAST one second past `created_at`, not
     # merely "now". Both default to the same second-resolution clock, so an
-    # edit inside the second a note was written in left the two equal and
-    # the note read as never touched - which is the one fact "undo this
-    # run" needs from this row: a note the reader edited is theirs and is
-    # not removed. One second of slack on a timestamp nobody reads to the
-    # second is the whole cost.
+    # edit inside the second a note was written in left the two equal. The
+    # undo no longer reads it for notes written since the marks began (it
+    # reads `edited_at`, `hand_accepted_at` and `pinned`); it still reads it
+    # for a suggestion from before them, the only record those have.
     with get_db() as con:
         if chat_id is not None and not _in_chat(con, entry_id, chat_id):
             # BEFORE the update and before the read. Refusing after either
@@ -372,6 +371,28 @@ def update_entry(entry_id: int, chat_id: int | None = None, **fields) -> dict:
             "SELECT * FROM notebook_entries WHERE id = ?", (entry_id,)).fetchone()
     if row is None:
         raise NotebookError("notebook_entry_not_found")
+    return _row(row)
+
+
+def mark_kept(entry_id: int, chat_id: int) -> dict:
+    """The reader pressed Keep on a note that was already accepted - the
+    automatic switch accepted it and the "Saved a note the model wrote"
+    card asked. Stamps `hand_accepted_at` once, so the undo keeps the note
+    and the card does not ask again, after a restart too.
+
+    Only an accepted, not retired note of this chat; a second press does
+    not restamp. A proposal goes through the accept route instead.
+    """
+    with get_db() as con:
+        if not _in_chat(con, entry_id, chat_id):
+            raise NotebookError("notebook_entry_not_found")
+        con.execute(
+            "UPDATE notebook_entries SET hand_accepted_at = datetime('now') "
+            "WHERE id = ? AND status = ? AND retired_at IS NULL "
+            "AND hand_accepted_at IS NULL",
+            (entry_id, STATUS_ACCEPTED))
+        row = con.execute("SELECT * FROM notebook_entries WHERE id = ?",
+                          (entry_id,)).fetchone()
     return _row(row)
 
 
@@ -607,12 +628,26 @@ def delete_job_notes(con, job_id: int) -> dict:
     no job, so "undo that run" cannot reach it; a note an EARLIER job wrote
     carries that job's id, so it cannot reach that either.
 
-    Two classes are kept and counted rather than removed, because the
-    reader has since made them theirs: a note they PINNED, and a note they
-    EDITED (`updated_at` moved past `created_at` - an edit, an accept, a pin
-    toggle and a reorder all stamp it, and all four are the reader's hand).
-    A pinned note is counted under `kept_pinned` even when it was edited
-    too, so the two counts add up to what was kept.
+    FOUR classes are kept and counted rather than removed, each from an
+    exact record, never from a guess:
+
+      * `kept_pinned`: the note is pinned now.
+      * `kept_edited`: `edited_at` is set - the reader changed its words.
+      * `kept_accepted`: `hand_accepted_at` is set - the reader pressed Keep
+        on it while it was a suggestion.
+      * `kept_older`: the note was written before this vault had the two
+        marks (`database.HAND_MARKS_SINCE_KEY`) and is accepted. Nothing
+        recorded then whether a person or the automatic switch accepted it,
+        so it is kept rather than guessed away: a silent loss of a note the
+        reader may have chosen is the one outcome this must never have.
+
+    Each kept note is counted ONCE, in that order of precedence (a pinned
+    note that was also edited is `kept_pinned`), so the four counts add up
+    to what was kept. Everything else the job wrote goes: a suggestion
+    nobody answered, and a note the automatic switch accepted that nobody
+    has touched since. A drag, a kind change or a pin taken back again is
+    not in any class; `updated_at`, which all of them move, is no longer
+    read here at all.
 
     A hard delete, like `delete_entry`, and with the same repair first:
     anything that pointed at a doomed row stops pointing AND stops being
@@ -623,25 +658,46 @@ def delete_job_notes(con, job_id: int) -> dict:
 
     The caller opens the transaction, like `commit_extraction`.
     """
+    since_row = con.execute(
+        "SELECT value FROM settings WHERE key = ?",
+        (HAND_MARKS_SINCE_KEY,)).fetchone()
+    # NO ROW FAILS TOWARD KEEP. `init_db` writes the row on every vault it
+    # opens, so it is missing only if that write failed (it logs when it
+    # does). Then nothing can say which notes predate the marks, and every
+    # note is treated as possibly older: kept rather than guessed away.
+    marks_since = since_row[0] if since_row is not None else None
     rows = con.execute(
-        "SELECT id, pinned, retired_at, created_at, updated_at "
-        "FROM notebook_entries WHERE job_id = ?", (job_id,)).fetchall()
+        "SELECT id, pinned, status, created_at, updated_at, edited_at, "
+        "hand_accepted_at FROM notebook_entries WHERE job_id = ?",
+        (job_id,)).fetchall()
     doomed: list[int] = []
-    kept_pinned = 0
-    kept_edited = 0
+    kept = {"kept_pinned": 0, "kept_edited": 0, "kept_accepted": 0,
+            "kept_older": 0}
     for row in rows:
-        # EDITED BEFORE RETIRED, and the order is the promise: being retired
-        # is a thing the app did to a note afterwards, having been edited is
-        # a thing the reader did to it, and the reader's action wins. That
-        # order is only safe because `retire_superseded` no longer stamps
-        # `updated_at` - see the comment there. While it did, this arm
-        # caught every note the job wrote and the job itself replaced, the
-        # undo kept them, the repair below un-retired them back into the
-        # prompt, and the reader was told they had made them theirs.
+        # THE READER'S HAND BEFORE RETIRED, and the order is the promise:
+        # being retired is a thing the app did to a note afterwards, being
+        # pinned, edited or kept is a thing the reader did to it, and the
+        # reader's action wins. A retired note is not special-cased at all:
+        # it falls through to whichever class its own marks put it in.
         if row["pinned"]:
-            kept_pinned += 1
-        elif row["updated_at"] != row["created_at"]:
-            kept_edited += 1
+            kept["kept_pinned"] += 1
+        elif row["edited_at"] is not None:
+            kept["kept_edited"] += 1
+        elif row["hand_accepted_at"] is not None:
+            kept["kept_accepted"] += 1
+        # Strictly before: a note written in the very second the marks
+        # began was written by this build and carries them.
+        elif ((marks_since is None or row["created_at"] < marks_since)
+              and row["status"] == STATUS_ACCEPTED):
+            kept["kept_older"] += 1
+        elif ((marks_since is None or row["created_at"] < marks_since)
+              and row["updated_at"] != row["created_at"]):
+            # A suggestion from before the marks that the reader touched
+            # then. The old build stamped `updated_at` for an edit (and for
+            # a pin or a drag, which cannot be told apart now), so it is
+            # kept and counted as edited: the only exact signal did not
+            # exist yet, and losing the reader's words is the worse error.
+            kept["kept_edited"] += 1
         else:
             # Either retired by a later unit of this same job, or untouched
             # since it was written. Both are the job's own work and both go.
@@ -660,8 +716,7 @@ def delete_job_notes(con, job_id: int) -> dict:
             f"WHERE superseded_by IN ({marks})", chunk)
         con.execute(
             f"DELETE FROM notebook_entries WHERE id IN ({marks})", chunk)
-    return {"job_id": job_id, "removed": len(doomed),
-            "kept_pinned": kept_pinned, "kept_edited": kept_edited}
+    return {"job_id": job_id, "removed": len(doomed), **kept}
 
 
 def reorder(chat_id: int, ordered_ids: list[int]) -> None:

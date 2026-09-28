@@ -64,11 +64,12 @@
 | GET | /notebook/extract/plan/{chat_id} | The preview of a reading job, and it spends nothing. Query `scope` (`next` / `all` / `range`, required, 422 without it) and, for `range`, `from_message_id` and `to_message_id` (400 `notebook_range_invalid` when they run backwards or fall outside the chat; 404 `chat_not_found` when the chat is not there). Answers `ready`, `blocked_by`, the counts, `calls_planned`, `daily_cap` (the day's ceiling, the same number `GET /notebook/worker` reports), `backfill_cap` (what a job may claim: the day's ceiling minus `ELYSIUM_NOTEBOOK_LIVE_RESERVE`), `live_reserve`, `calls_spent_today`, `fits_today`, `prompt_price`, `cost_estimate` (null when the price is unknown, never a fake zero), `model_id` and `model_is_chat_bind`. See "Reading a chat on request" below | IP-01 (notebook) |
 | POST | /notebook/extract/run/{chat_id} | Start a reading job. Body `{scope, from_message_id?, to_message_id?}`. `{started: true, job_id, calls_planned}` and the job runs on as its own task; or `{started: false, reason}` - a refusal, HTTP 200, never an error, with one of the ten reasons below. `next` reads ONE unit and writes a job row so it can be undone (it is the one-press read the removed sweep route used to be, decision 69 a); `all` loops until nothing is unread up to the last message present when the job started (3.13), or a stop lands, re-asking the ceiling every turn - a message written during the job is left to the ordinary reader; `range` reads the chosen stretch again, read or not. 404 `chat_not_found`, 400 `notebook_range_invalid` | IP-01 (notebook) |
 | POST | /notebook/extract/stop/{chat_id} | Stop the running job after the unit in flight. `{stopped: true, job_id, calls_spent}` or `{stopped: false, reason: "nothing_running"}`, which is the tenth refusal, not an error. 404 `chat_not_found` | IP-01 (notebook) |
-| POST | /notebook/extract/undo/{job_id} | Remove exactly the notes one job wrote. `chat_id` is a REQUIRED query parameter and the cross-chat gate: a job that is not this chat's answers 404 `notebook_job_not_found`, the same answer as a job that does not exist. A job still running answers 409 `notebook_backfill_running`. Notes the reader has since pinned or edited are left alone and counted back: `{job_id, removed, kept_pinned, kept_edited}` | IP-01 (notebook) |
+| POST | /notebook/extract/undo/{job_id} | Remove exactly the notes one job wrote. `chat_id` is a REQUIRED query parameter and the cross-chat gate: a job that is not this chat's answers 404 `notebook_job_not_found`, the same answer as a job that does not exist. A job still running answers 409 `notebook_backfill_running`. Notes the reader has since made theirs are left alone and counted back, each once: `{job_id, removed, kept_pinned, kept_edited, kept_accepted, kept_older}` (pinned now; words changed, `edited_at`, or a suggestion touched before the vault recorded marks; Keep pressed, `hand_accepted_at`, on a suggestion or on the saved-notes card (`POST .../keep`); accepted before the vault recorded who accepts). A note the automatic switch accepted and nobody touched is removed | IP-01 (notebook) |
 | POST | /notebook/{chat_id}/auto-accept | Decide whether THIS chat keeps model-written notes without asking, or hand the decision back to the global switch with `enabled: null`. The column behind it had exactly one writer for most of its life - the chat INSERT, which sets it to 0 for a chat opened from an imported card - so until now a chat that was wrongly trusted stayed trusted for its whole life. It matters most for the case the import signal cannot see: somebody who pastes a downloaded card's fields into the form by hand leaves no record that the text came from outside, and no signal in the application can know that. `GET /notebook/auto-accept?chat_id=` reports the same decision back as `effective`, with `overridden` saying whether the chat or the global switch decided it | FAZ 3 (notebook) |
 | GET | /notebook/auto-accept | Whether proposals are accepted without review. **Unset is ON** - the default, not "off" | FAZ 5 (notebook) |
 | POST | /notebook/auto-accept | Turn review on or off. A chat opened from an imported card overrides this to OFF for itself, whatever the global says | FAZ 5 (notebook) |
 | POST | /notebook/entries/{id}/accept | Promote one proposal. Changes `status` and nothing else - `provenance` stays `model` forever | FAZ 5 (notebook) |
+| POST | /notebook/entries/{id}/keep | Keep a note the automatic switch already accepted (the saved-notes card's "Keep"). `chat_id` REQUIRED, same scope as accept. Stamps `hand_accepted_at` once on an accepted, not retired note; a second press does not restamp. Returns the row. "Undo this run" then keeps the note, and the card does not ask again | Notes tab (notebook) |
 | GET | /notebook/extract/models | Models a background extraction may use. Filtered to endpoints that keep no data AND honour a strict JSON schema - a model that cannot do the job has no business being pickable and then failing at request time | FAZ 4 (notebook) |
 | GET | /notebook/extract/settings | The chosen extraction model and instruction language. `model_id: null` means extraction never runs | FAZ 4 (notebook) |
 | POST | /notebook/extract/settings | Choose the model and the instruction language (`en` or `tr`) | FAZ 4 (notebook) |
@@ -1004,7 +1005,8 @@ POST /notebook/extract/stop/{chat_id}
 -> { "stopped": false, "reason": "nothing_running" }
 
 POST /notebook/extract/undo/{job_id}?chat_id=4
--> { "job_id": 17, "removed": 12, "kept_pinned": 3, "kept_edited": 1 }
+-> { "job_id": 17, "removed": 12, "kept_pinned": 3, "kept_edited": 1,
+     "kept_accepted": 2, "kept_older": 0 }
 ```
 
 `blocked_by` carries `no_character`, `no_chat_model`, `no_extract_model`
@@ -1187,9 +1189,9 @@ Invisible characters (zero-width space, joiners, byte-order mark) do not
 count either. The duplicate check keeps its own looser comparison. A pin, a
 kind, an importance, a reorder or an accept never sets it, and sending the
 same words back does not either. **`hand_accepted_at`** is set when the
-accept route moves a proposal to `accepted`; pressing it again does not
-restamp, a note the app accepted on its own never gets one, and editing a
-proposal's text does not set it. Notes from before these
+accept route moves a proposal to `accepted`, or when `POST .../keep` is
+pressed on a note the app accepted on its own; pressing either again does
+not restamp, and editing a proposal's text does not set it. Notes from before these
 fields existed carry `null` in both: `updated_at` moving past `created_at`
 was the old guess, and it is not copied in.
 

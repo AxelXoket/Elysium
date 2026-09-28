@@ -27,6 +27,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { SwitchRow } from "@/components/settings/SwitchRow";
+import { settledAt } from "@/components/notebook/useRetryPress";
+import { SettingUnread } from "@/components/notebook/SettingUnread";
+import { LIMITS_UNREAD, SETTING_LOADING } from "@/components/notebook/noteProse";
 import { useUiStore } from "@/lib/store/uiStore";
 import {
   LIMIT_DRAFT_FIELDS,
@@ -54,6 +57,10 @@ import {
   BOUNDARY_SEVERITY_ITEMS,
 } from "@/lib/notebook/labels";
 import type { Boundary } from "@/lib/schemas/notebook";
+
+/** The safeword box's id, so "Try again" can hand it focus once the saved
+ *  word has been read. One panel, one safeword box, so one id. */
+const SAFEWORD_FIELD = "safeword-field";
 
 /**
  * notebook_store.BOUNDARY_MAX_CHARS. The field used to stop at 240 - the NOTE
@@ -149,7 +156,8 @@ const NEW_LIMIT_PROMPT = "Something to keep out of the story...";
 
 export function BoundaryPanel() {
   const chatId = useUiStore((s) => s.selectedChatId);
-  const { data, isError: chatFailed } = useChatBoundaries(chatId);
+  const chatBoundaries = useChatBoundaries(chatId);
+  const { data, isError: chatFailed } = chatBoundaries;
   // Called unconditionally, per the rules of hooks - the hook takes no
   // `enabled` of its own to gate on chatId. With a chat open its answer goes
   // unused below: `data` above is already the MERGED view, global rows
@@ -337,26 +345,52 @@ export function BoundaryPanel() {
           <span className="text-label leading-relaxed text-muted-foreground">
             Safeword - stops a message before it is sent
           </span>
-          <Input
-            value={shown}
-            maxLength={64}
-            placeholder="A word you would never write by accident..."
-            title="A word you would never write by accident..."
-            disabled={busy || !safewordQuery.isSuccess}
-            onChange={(e) => setSafeword(e.target.value)}
-            onBlur={() => void saveSafeword()}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") void saveSafeword();
-            }}
-            aria-label="Safeword"
-            className="persona-field text-label"
-          />
+          {/* NO BOX UNTIL THE SAVED WORD IS KNOWN. An empty box reads as
+              "no safeword", which is a value, and a guess. Until the word
+              is read the box is not drawn; a line says it is loading or
+              could not be read, with Try again. */}
+          {safewordQuery.isSuccess && (
+            <Input
+              id={SAFEWORD_FIELD}
+              autoComplete="off"
+              value={shown}
+              maxLength={64}
+              placeholder="A word you would never write by accident..."
+              title="A word you would never write by accident..."
+              disabled={busy}
+              onChange={(e) => setSafeword(e.target.value)}
+              onBlur={() => void saveSafeword()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void saveSafeword();
+              }}
+              aria-label="Safeword"
+              className="persona-field text-label"
+            />
+          )}
         </label>
+        <Collapse
+          open={safewordQuery.isPending && safewordQuery.errorUpdateCount === 0}
+          className="min-w-0"
+        >
+          <p className="text-label leading-relaxed text-muted-foreground" role="status">
+            {SETTING_LOADING}
+          </p>
+        </Collapse>
+        <SettingUnread
+          open={safewordQuery.isError}
+          retrying={safewordQuery.isFetching}
+          settled={settledAt(safewordQuery)}
+          onRetry={() => void safewordQuery.refetch()}
+          focusAfter={() => document.getElementById(SAFEWORD_FIELD)}
+        />
         <p className="text-label leading-relaxed text-muted-foreground">
-          Put it anywhere in a message and nothing is sent - not the message,
-          not your notes, not these limits - and nothing is saved. This one is
-          not a request to the model; it is checked here. Leave it empty to
-          turn it off.
+          {/* Short sentences: this used to be one 23-word sentence. */}
+          Put it in a message and nothing is sent or saved. That covers the
+          message, your notes and these limits. It is checked here, not asked
+          of the model.
+          {/* Only beside a box there is: with the saved word unread, no box
+              is drawn and there is nothing to leave empty. */}
+          {safewordQuery.isSuccess && " Leave it empty to turn it off."}
         </p>
         {/* The second half, and it has to be here rather than left unsaid.
             The sentence above is true about the message being SENT and only
@@ -495,15 +529,15 @@ export function BoundaryPanel() {
         </div>
       </div>
 
-      <Collapse open={failed} className="min-w-0">
-        <p
-          className="text-label leading-relaxed text-muted-foreground"
-          role="status"
-        >
-          Limits could not be loaded. They are still saved - this panel just
-          could not read them. Try again in a moment.
-        </p>
-      </Collapse>
+      <SettingUnread
+        open={failed}
+        tone="muted"
+        text={LIMITS_UNREAD}
+        retrying={chatId == null ? globalBoundaries.isFetching : chatBoundaries.isFetching}
+        settled={settledAt(chatId == null ? globalBoundaries : chatBoundaries)}
+        onRetry={() => void (chatId == null
+          ? globalBoundaries.refetch() : chatBoundaries.refetch())}
+      />
 
       <Collapse open={!failed && rows.length === 0} className="min-w-0">
         <p className="text-label leading-relaxed text-muted-foreground">No limits set.</p>

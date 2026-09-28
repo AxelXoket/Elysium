@@ -1,6 +1,8 @@
 import "@testing-library/jest-dom/vitest";
 import { afterEach } from "vitest";
 import { useDraftStore } from "@/lib/store/draftStore";
+import { useNoteRangeStore } from "@/lib/chat/noteRange";
+import { useHeldDiscards } from "@/lib/chat/heldDiscards";
 // Imported for its side effect, and the side effect is the point. This module
 // writes to storage while it is being LOADED, which is the one thing the
 // setupFiles order exists to catch: sentinels.ts is listed before this file
@@ -25,6 +27,10 @@ import "./helpers/writesWhileBeingImported";
  */
 afterEach(() => {
   useDraftStore.getState().clearAll();
+  // The same reasoning for the notebook store a test can leave a mark in:
+  // a range picked in one test would open the next test's strip.
+  useNoteRangeStore.setState({ byChat: {}, picks: 0 });
+  useHeldDiscards.setState({ byChat: {} });
 });
 
 // Mock window.matchMedia for jsdom (not available by default)

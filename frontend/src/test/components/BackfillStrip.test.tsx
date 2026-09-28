@@ -16,6 +16,7 @@ import userEvent from "@testing-library/user-event";
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { hiddenFromReaders } from "@/test/helpers/accessibility";
 import { delayRoute } from "@/test/helpers/delayRoute";
+import { useHeldDiscards } from "@/lib/chat/heldDiscards";
 import {
   expectOptionsOnTheOptionStep,
   expectPlacedCollisionPadding,
@@ -51,14 +52,19 @@ import type { BackfillStatus } from "@/lib/schemas/notebook";
 import {
   BLOCKED_PROSE,
   PREVIEW_FAILED,
+  RANGE_WORDS,
   SCOPE_LABELS,
   SCOPE_ORDER,
   blockedProse,
+  rangeSummary,
   capProse,
   outcomeProse,
   planProse,
   stopProse,
   undoProse,
+  UNDO_NOTHING_LEFT,
+  UNDO_RUN_ASK,
+  UNDO_RUN_CONFIRM,
 } from "@/components/notebook/backfillProse";
 import type { BackfillPlan } from "@/lib/schemas/notebook";
 import { keys } from "@/lib/query/keys";
@@ -117,6 +123,22 @@ function job(over: Partial<BackfillStatus> = {}): BackfillStatus {
   };
 }
 
+/** A chat's message list as `GET /chats/{id}/messages` serves it.
+ *
+ *  The ids are deliberately NOT the positions: they start high and step by
+ *  three, the way ids interleave across chats in one table. A strip that
+ *  sent a typed position as an id, or showed an id as a position, reads
+ *  the wrong number against this fixture instead of passing by accident. */
+function chatMessages(chatId: number, count: number, firstId = 103) {
+  return Array.from({ length: count }, (_, i) => ({
+    id: firstId + i * 3,
+    chat_id: chatId,
+    role: i % 2 === 0 ? "user" : "assistant",
+    content: `Message number ${i + 1} says something about the lighthouse keeper and the storm that night.`,
+    created_at: "2026-09-27 10:00:00",
+  }));
+}
+
 /** Method-prefixed keys FIRST: the mock takes the first match in insertion
  *  order, and a bare `/notebook/extract` substring would swallow them. */
 function mount(
@@ -131,6 +153,8 @@ function mount(
   const fetchMock = mockFetch({
     ...extra,
     [`GET /notebook/extract/plan/${CHAT}`]: plan,
+    [`GET /chats/${CHAT}/messages`]: { body: chatMessages(CHAT, 12) },
+    [`GET /chats/${OTHER}/messages`]: { body: chatMessages(OTHER, 4, 900) },
     "/notebook/worker": { body: served },
   });
   const view = renderWithQueryClient(<BackfillStrip chatId={CHAT} />);
@@ -1045,8 +1069,12 @@ describe("the preview comes before the button acts", () => {
       { status: 400, body: { detail: "notebook_range_invalid" } });
     await openPreview(user);
     await pickScope(user, /a range of messages/i);
-    await user.type(screen.getByLabelText(/first message/i), "6");
-    await user.type(screen.getByLabelText(/last message/i), "2");
+    // Two places that ARE in this chat, in order, so the refusal below is
+    // the server's (a message deleted from under the strip, say) and not
+    // the strip's own check, which never asks the server at all.
+    await user.type(await screen.findByLabelText(/first message/i), "2");
+    await user.clear(screen.getByLabelText(/last message/i));
+    await user.type(screen.getByLabelText(/last message/i), "6");
     const alert = await screen.findByRole("alert");
     await waitFor(() => expect(alert.textContent)
       .toContain(getErrorMessage("notebook_range_invalid")));
@@ -1216,7 +1244,9 @@ describe("the run", () => {
       .toBe("all");
   });
 
-  it("a range carries both ids, in the body and in the preview's query", async () => {
+  it("a range typed as places in the chat is sent as those messages' ids", async () => {
+    // Places 2 and 6 of this chat are ids 106 and 118 in the fixture. The
+    // reader types what the chat shows; the server gets what it keys on.
     const user = userEvent.setup({ delay: null });
     const { calls } = mount({}, {
       [`POST /notebook/extract/run/${CHAT}`]:
@@ -1224,18 +1254,23 @@ describe("the run", () => {
     }, { body: planBody({ scope: "range", messages_unread: 5, calls_planned: 1 }) });
     await openPreview(user);
     await pickScope(user, /a range of messages/i);
-    await user.type(screen.getByLabelText(/first message/i), "2");
+    await user.type(await screen.findByLabelText(/first message/i), "2");
+    await user.clear(screen.getByLabelText(/last message/i));
     await user.type(screen.getByLabelText(/last message/i), "6");
     await waitFor(() => expect(
-      calls("GET", `/notebook/extract/plan/${CHAT}?scope=range&from_message_id=2&to_message_id=6`),
+      calls("GET", `/notebook/extract/plan/${CHAT}?scope=range&from_message_id=106&to_message_id=118`),
     ).toHaveLength(1));
+    // GROUND for the mapping: the positions themselves never went out.
+    expect(calls("GET", "from_message_id=2&")).toHaveLength(0);
+    expect(screen.getByTestId("backfill-range-said").textContent)
+      .toBe(rangeSummary(2, 6, 12, false));
     const start = screen.getByRole("button", { name: /start reading/i });
     await waitFor(() => expect(start).toBeEnabled());
     await user.click(start);
     await waitFor(() =>
       expect(calls("POST", `/notebook/extract/run/${CHAT}`)).toHaveLength(1));
     expect(JSON.parse(String(calls("POST", `/notebook/extract/run/${CHAT}`)[0].body)))
-      .toEqual({ scope: "range", from_message_id: 2, to_message_id: 6 });
+      .toEqual({ scope: "range", from_message_id: 106, to_message_id: 118 });
   });
 
   it("every refusal the backend can answer reaches the screen as words", async () => {
@@ -1445,7 +1480,7 @@ describe("a finished job and its undo", () => {
     // the answer on the confirm's last exit frame.
     reducedMotion();
     const user = userEvent.setup();
-    const answer = { job_id: 17, removed: 12, kept_pinned: 3, kept_edited: 1 };
+    const answer = { job_id: 17, removed: 12, kept_pinned: 3, kept_edited: 1, kept_accepted: 2, kept_older: 1 };
     const { calls } = mount({ backfill: job({ notes_written: 16 }) }, {
       [`POST /notebook/extract/undo/17`]: { body: answer },
     });
@@ -1456,93 +1491,126 @@ describe("a finished job and its undo", () => {
     // cross-fade with `mode="wait"`, so the confirm pane mounts once the
     // trigger's pane has left rather than inside the click's own frame.
     await user.click(
-      await screen.findByRole("button", { name: /^remove all 16$/i }));
+      await screen.findByRole("button", { name: UNDO_RUN_CONFIRM }));
     await waitFor(() =>
       expect(calls("POST", `/notebook/extract/undo/17?chat_id=${CHAT}`)).toHaveLength(1));
     const said = await screen.findByTestId("backfill-undone");
     expect(said.textContent).toBe(undoProse(answer));
-    expect(said.textContent).toMatch(/12 notes removed/);
-    expect(said.textContent).toMatch(/4 kept/);
-    expect(said.textContent).toMatch(/3 pinned, 1 edited/);
+    // Each class under its own name, in the order the sentence promises, each count once.
+    expect(said.textContent).toBe(
+      "Removed 12 notes. Kept 7: 3 pinned, 1 edited, 2 kept, 1 earlier.");
   });
 
-  it("an undo answer that lands as the confirm finishes leaving still says what was removed",
-     async () => {
-    // THE SWAP MUST NOT STOP ON A PANE NOBODY CAN PRESS. The confirm press
-    // swaps back to the trigger while the request is out, so the pane
-    // waiting to arrive is the trigger's. If the answer lands in the same
-    // render as the confirm's exit finishing, that pane is mounted already
-    // superseded, and the "removed N notes" line only arrives because
-    // `CrossFade` restarts the swap for it.
-    //
-    // The answer is held open and released on the confirm's LAST exit
-    // frame, which is only a last frame when the exit is a whole fade: the
-    // confirm is pressed once it has fully arrived, so it starts leaving
-    // from 1 and writes 0 only as the exit finishes. Pressed while it was
-    // still arriving, it went inert already at 0, the answer was let go as
-    // the exit STARTED, and this row passed with the restart switched off
-    // (measured: 5 of 5). Both halves of that are asked on every run below.
+  it("the undo question says what will go and what stays, before anything goes", async () => {
+    reducedMotion();
     const user = userEvent.setup();
-    const answer = { job_id: 17, removed: 12, kept_pinned: 3, kept_edited: 1 };
+    const { calls } = mount({ backfill: job({ notes_written: 16 }) }, {
+      [`POST /notebook/extract/undo/17`]: { body: {
+        job_id: 17, removed: 12, kept_pinned: 3, kept_edited: 1, kept_accepted: 0, kept_older: 0 } },
+    });
+    // GROUND: no question before the first press.
+    expect(screen.queryByTestId("backfill-undo-ask")).toBeNull();
+    await user.click(await screen.findByRole("button", { name: /^undo this run$/i }));
+    const ask = await screen.findByTestId("backfill-undo-ask");
+    expect(ask.textContent).toBe(UNDO_RUN_ASK);
+    const confirm = screen.getByRole("button", { name: UNDO_RUN_CONFIRM });
+    // Label in name: the words on the button ARE its name, and it points at
+    // the question.
+    expect((confirm.textContent ?? "").replace(/\s+/g, " ").trim()).toBe(UNDO_RUN_CONFIRM);
+    expect(confirm).toHaveAccessibleDescription(UNDO_RUN_ASK);
+    // It no longer promises "all": the count of what the run wrote is not
+    // on the button, because what goes can be fewer.
+    expect(confirm.textContent).not.toMatch(/all|16/i);
+    expect(calls("POST", "/notebook/extract/undo/")).toHaveLength(0);
+  });
+
+  it("suggestions the reader discarded are deleted before the undo, so it does not count them", async () => {
+    const user = userEvent.setup();
+    const answer = { job_id: 17, removed: 2, kept_pinned: 0, kept_edited: 0, kept_accepted: 0, kept_older: 0 };
+    const { fetchMock, queryClient } = mount({ backfill: job({ notes_written: 4 }) }, {
+      "DELETE /notebook/entries/111": { body: { ok: true } },
+      [`POST /notebook/extract/undo/17`]: { body: answer },
+    });
+    // The Notes list on hand says 111 is still a suggestion.
+    queryClient.setQueryData(keys.notebookEntries(CHAT), {
+      entries: [{ id: 111, status: "proposed" }], notebook_chars: 0 });
+    useHeldDiscards.getState().hold(CHAT, 111);
+    await user.click(await screen.findByRole("button", { name: /undo this run/i }));
+    await user.click(await screen.findByRole("button", { name: UNDO_RUN_CONFIRM }));
+    await screen.findByTestId("backfill-undone");
+    const order = fetchMock.mock.calls
+      .filter((c: unknown[]) => ["DELETE", "POST"].includes(String((c[1] as RequestInit | undefined)?.method)))
+      .map((c: unknown[]) => `${(c[1] as RequestInit).method} ${String(c[0]).replace(/^.*\/api\/v1/, "")}`);
+    // The held delete goes out, and BEFORE the undo.
+    expect(order[0]).toMatch(/^DELETE \/notebook\/entries\/111\?chat_id=/);
+    expect(order[1]).toMatch(/^POST \/notebook\/extract\/undo\/17/);
+    expect(useHeldDiscards.getState().byChat[CHAT] ?? []).toEqual([]);
+  });
+
+  it("the undo keeps the keyboard at every step, and its answer is heard", async () => {
+    // No step of the run's undo drops focus to the page's body. The
+    // question opens on Cancel; Cancel and Escape give focus back to "Undo
+    // this run"; Remove keeps it while the request is out (aria-disabled,
+    // not disabled) and the answer line, a live region, takes it after.
+    const user = userEvent.setup();
+    const answer = { job_id: 17, removed: 12, kept_pinned: 3, kept_edited: 1, kept_accepted: 0, kept_older: 0 };
     const { calls, fetchMock } = mount({ backfill: job({ notes_written: 16 }) }, {
       [`POST /notebook/extract/undo/17`]: { body: answer },
     });
-    await user.click(await screen.findByRole("button", { name: /undo this run/i }));
-    const confirm = await screen.findByRole("button",
-      { name: /^remove all 16$/i });
-    const pane = confirm.closest<HTMLElement>('[data-slot="cross-fade"]');
-    expect(pane, "the confirm is not inside a swap").not.toBeNull();
-    await waitFor(() => expect(pane!.style.opacity,
-      "the confirm never finished arriving").toBe("1"));
-    const release = delayRoute(fetchMock, "POST", "/notebook/extract/undo/17",
-      { body: answer });
-    const INERT_PANE = '[data-slot="cross-fade"][inert]';
-    let leftFrom: string | null = null;
-    let seenLeaving = false;
-    let released = false;
-    const watch = new MutationObserver(() => {
-      if (released || !pane!.hasAttribute("inert")) return;
-      // What the confirm showed when it went inert, read on the first
-      // callback that sees it leaving, and whether the selector the last
-      // assertion uses finds it there.
-      if (leftFrom === null) leftFrom = pane!.style.opacity;
-      if ([...document.querySelectorAll(INERT_PANE)].includes(pane!)) seenLeaving = true;
-      if (pane!.style.opacity === "0") {
-        released = true;
-        release();
-      }
-    });
-    watch.observe(document.body, {
-      subtree: true, childList: true, attributes: true,
-      attributeFilter: ["style", "inert"],
-    });
+    const trigger = await screen.findByRole("button", { name: /undo this run/i });
+    trigger.focus();
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus());
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /undo this run/i })).toHaveFocus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus());
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /undo this run/i })).toHaveFocus());
+    expect(calls("POST", "/notebook/extract/undo/")).toHaveLength(0);
+
+    await user.keyboard("{Enter}");
+    const confirm = await screen.findByRole("button", { name: UNDO_RUN_CONFIRM });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus());
+    confirm.focus();
+    const release = delayRoute(fetchMock, "POST", "/notebook/extract/undo/17", { body: answer });
     try {
-      await user.click(confirm);
-      // GROUND: the answer really was held until the confirm's last exit
-      // frame, so the render that finishes the exit is the one it lands in:
-      // it was let go at 0, and the exit it ended started from 1.
-      await waitFor(() => expect(released,
-        "the confirm never finished leaving, so the answer was never let go")
-        .toBe(true));
-      expect(leftFrom, "the confirm started leaving before it had arrived, so 0 "
-        + "was its first exit frame and not its last").toBe("1");
-      const said = await screen.findByTestId("backfill-undone");
-      expect(said.textContent).toBe(undoProse(answer));
-      expect(calls("POST", `/notebook/extract/undo/17?chat_id=${CHAT}`))
-        .toHaveLength(1);
-      // And nothing is left behind in the swap. POSITIVE CONTROL for that
-      // absence: the same selector found the confirm while it was leaving,
-      // so it can see an inert pane when there is one.
-      expect(seenLeaving, "the selector never found the leaving confirm")
-        .toBe(true);
-      await waitFor(() => expect(
-        document.querySelectorAll(INERT_PANE),
-        "a pane nobody can press is still in the swap",
-      ).toHaveLength(0));
+      await user.keyboard("{Enter}");
+      await waitFor(() => expect(confirm).toHaveAttribute("aria-disabled", "true"));
+      // While it is out: still the same button, still focused, not disabled.
+      expect(confirm).toHaveFocus();
+      expect(confirm).not.toBeDisabled();
     } finally {
-      watch.disconnect();
       release();
     }
+    const said = await screen.findByTestId("backfill-undone");
+    expect(said.textContent).toBe(undoProse(answer));
+    expect(said).toHaveAttribute("role", "status");
+    await waitFor(() => expect(said).toHaveFocus());
+    expect(calls("POST", `/notebook/extract/undo/17?chat_id=${CHAT}`)).toHaveLength(1);
+  });
+
+  it("'Reading this chat now.' leaves once the run it started has finished", async () => {
+    const user = userEvent.setup();
+    const { poll } = mount({}, {
+      [`POST /notebook/extract/run/${CHAT}`]: { body: { started: true, job_id: 5, calls_planned: 1 } },
+    });
+    await user.click(await screen.findByRole("button", { name: /read the earlier messages/i }));
+    const start = await screen.findByRole("button", { name: /start reading/i });
+    await waitFor(() => expect(start).toBeEnabled());
+    await user.click(start);
+    const said = await screen.findByTestId("backfill-said");
+    await waitFor(() => expect(said.textContent).toBe("Reading this chat now."));
+    await poll(job({ job_id: 5, state: "running", calls_spent: 0, notes_written: 0 }));
+    // GROUND: while it runs, the sentence stays.
+    await new Promise((r) => setTimeout(r, 30));
+    expect(hiddenFromReaders(said)).toBe(false);
+    await poll(job({ job_id: 5, state: "done", notes_written: 2 }));
+    await waitFor(() => expect(hiddenFromReaders(said)).toBe(true));
+    // The outcome says how it ended instead.
+    expect(screen.getByTestId("backfill-outcome").textContent).toMatch(/^Finished reading/);
   });
 
   it("GROUND: a job that wrote nothing has nothing to undo", async () => {
@@ -1564,7 +1632,7 @@ describe("a finished job and its undo", () => {
     const user = userEvent.setup();
     const first = job({ job_id: 17, notes_written: 16 });
     const second = job({ job_id: 18, notes_written: 9, calls_spent: 5 });
-    const answer = { job_id: 18, removed: 9, kept_pinned: 0, kept_edited: 0 };
+    const answer = { job_id: 18, removed: 9, kept_pinned: 0, kept_edited: 0, kept_accepted: 0, kept_older: 0 };
     const { calls, poll } = mount({ backfill: first }, {
       [`POST /notebook/extract/undo/18`]: { body: answer },
     });
@@ -1573,7 +1641,7 @@ describe("a finished job and its undo", () => {
       await screen.findByRole("button", { name: /undo this run/i }));
     // GROUND: the confirm really was armed against job 17, so what happens
     // below is it being disarmed rather than it never having been there.
-    await screen.findByRole("button", { name: /^remove all 16$/i });
+    await screen.findByRole("button", { name: UNDO_RUN_CONFIRM });
 
     await poll(second);
     // The poll landed and the block on screen is job 18's. The absence
@@ -1603,7 +1671,7 @@ describe("a finished job and its undo", () => {
     // POSITIVE CONTROL for the row as a whole: re-armed, the confirm still
     // deletes, and it deletes THIS job and no other.
     await user.click(
-      await screen.findByRole("button", { name: /^remove all 9$/i }));
+      await screen.findByRole("button", { name: UNDO_RUN_CONFIRM }));
     await waitFor(() => expect(
       calls("POST", `/notebook/extract/undo/18?chat_id=${CHAT}`),
     ).toHaveLength(1));
@@ -1625,15 +1693,15 @@ describe("a finished job and its undo", () => {
     const second = job({ job_id: 18, notes_written: 9, calls_spent: 5 });
     const { calls, poll } = mount({ backfill: first }, {
       "POST /notebook/extract/undo/17": { body: {
-        job_id: 17, removed: 16, kept_pinned: 0, kept_edited: 0 } },
+        job_id: 17, removed: 16, kept_pinned: 0, kept_edited: 0, kept_accepted: 0, kept_older: 0 } },
       "POST /notebook/extract/undo/18": { body: {
-        job_id: 18, removed: 9, kept_pinned: 0, kept_edited: 0 } },
+        job_id: 18, removed: 9, kept_pinned: 0, kept_edited: 0, kept_accepted: 0, kept_older: 0 } },
     });
 
     await user.click(
       await screen.findByRole("button", { name: /undo this run/i }));
     const armed = await screen.findByRole("button",
-      { name: /^remove all 16$/i });
+      { name: UNDO_RUN_CONFIRM });
     const pane = armed.closest('[data-slot="cross-fade"]');
     expect(pane, "the confirm is not inside a swap at all").not.toBeNull();
     // GROUND, and it is the positive control for every absence below: while
@@ -1688,7 +1756,7 @@ describe("a finished job and its undo", () => {
     await user.click(
       await screen.findByRole("button", { name: /undo this run/i }));
     await user.click(
-      await screen.findByRole("button", { name: /^remove all 9$/i }));
+      await screen.findByRole("button", { name: UNDO_RUN_CONFIRM }));
     await waitFor(() => expect(
       calls("POST", `/notebook/extract/undo/18?chat_id=${CHAT}`)).toHaveLength(1));
     expect(calls("POST", "/notebook/extract/undo/17")).toHaveLength(0);
@@ -1704,12 +1772,12 @@ describe("a finished job and its undo", () => {
     const second = job({ job_id: 18, notes_written: 9, calls_spent: 5 });
     const { calls, poll } = mount({ backfill: first }, {
       "POST /notebook/extract/undo/17": { body: {
-        job_id: 17, removed: 16, kept_pinned: 0, kept_edited: 0 } },
+        job_id: 17, removed: 16, kept_pinned: 0, kept_edited: 0, kept_accepted: 0, kept_older: 0 } },
     });
     await user.click(
       await screen.findByRole("button", { name: /undo this run/i }));
     // GROUND: armed, and armed against the run that is about to be replaced.
-    await screen.findByRole("button", { name: /^remove all 16$/i });
+    await screen.findByRole("button", { name: UNDO_RUN_CONFIRM });
 
     await poll(second);
     // The new pane is live and the old confirm is gone, with no dead pane
@@ -1736,7 +1804,7 @@ describe("a finished job and its undo", () => {
     const user = userEvent.setup();
     const first = job({ job_id: 17, notes_written: 16 });
     const second = job({ job_id: 18, notes_written: 9, calls_spent: 5 });
-    const answer = { job_id: 17, removed: 12, kept_pinned: 3, kept_edited: 1 };
+    const answer = { job_id: 17, removed: 12, kept_pinned: 3, kept_edited: 1, kept_accepted: 0, kept_older: 0 };
     const { poll, calls } = mount({ backfill: first }, {
       [`POST /notebook/extract/undo/17`]: { body: answer },
     });
@@ -1744,7 +1812,7 @@ describe("a finished job and its undo", () => {
     await user.click(
       await screen.findByRole("button", { name: /undo this run/i }));
     await user.click(
-      await screen.findByRole("button", { name: /^remove all 16$/i }));
+      await screen.findByRole("button", { name: UNDO_RUN_CONFIRM }));
     // The press first, then the line, as two waits: a press that sent
     // nothing and a line that never mounted are different failures, and
     // asked in order each one says which.
@@ -1793,7 +1861,8 @@ describe("nothing carries over when the chat does", () => {
     }, { body: planBody({ scope: "range", messages_unread: 5, calls_planned: 1 }) });
     await openPreview(user);
     await pickScope(user, /a range of messages/i);
-    await user.type(screen.getByLabelText(/first message/i), "2");
+    await user.type(await screen.findByLabelText(/first message/i), "2");
+    await user.clear(screen.getByLabelText(/last message/i));
     await user.type(screen.getByLabelText(/last message/i), "6");
     const start = screen.getByRole("button", { name: /start reading/i });
     await waitFor(() => expect(start).toBeEnabled());
@@ -2076,7 +2145,7 @@ describe("the strip's Select sits on the house primitive (KURAL 7.4, T-19)", () 
       if (state === "armed") {
         await user.click(
           await screen.findByRole("button", { name: /undo this run/i }));
-        await screen.findByRole("button", { name: /^remove all 14$/i });
+        await screen.findByRole("button", { name: UNDO_RUN_CONFIRM });
       }
 
       const buttons = [...strip.querySelectorAll("button")];
@@ -2150,14 +2219,21 @@ describe("the strip's Select sits on the house primitive (KURAL 7.4, T-19)", () 
         // By type, because Base UI's Select renders a hidden `<input>` of
         // its own for form submission and that one is not a field a reader
         // types in.
-        const fields = [...strip.querySelectorAll('input[type="number"]')];
-        expect(fields.map((f) => f.getAttribute("aria-label")),
-          "the range fields are not mounted")
-          .toEqual(["First message", "Last message"]);
+        // Named by a visible `<label>` now (KURAL 11.3), so the name is
+        // read through the field's own `labels`, not an attribute.
+        const fields = [...strip.querySelectorAll<HTMLInputElement>(
+          'input[type="number"]')];
+        const names = fields.map((f) => f.labels?.[0]?.textContent ?? null);
+        expect(names, "the range fields are not mounted")
+          .toEqual([RANGE_WORDS.firstLabel, RANGE_WORDS.lastLabel]);
         for (const field of fields) {
           expect(stepOf(field),
-            `${field.getAttribute("aria-label")} left the label step`)
+            `${field.labels?.[0]?.textContent} left the label step`)
             .toBe(LABEL);
+          // The name beside a field is chrome, like the scope field's.
+          expect(stepOf(field.labels![0]),
+            "the words naming a range field took the label step")
+            .toBe(UI);
         }
       }
       cleanup();
@@ -2177,7 +2253,7 @@ describe("the strip's Select sits on the house primitive (KURAL 7.4, T-19)", () 
       .toEqual([
         "Cancel",
         "Read the earlier messages",
-        "Remove all N",
+        "Remove untouched notes",
         "Start reading",
         "Stop reading",
         "Undo this run",
@@ -2444,12 +2520,25 @@ describe("every count the strip says, at 0, 1 and 2", () => {
       says: ["0 messages are still unread.", "1 message is still unread.",
         "2 messages are still unread."] },
     { name: "the notes an undo removed",
-      say: (n) => undoProse({ job_id: 17, removed: n, kept_pinned: 0, kept_edited: 0 }),
-      says: ["0 notes removed.", "1 note removed.", "2 notes removed."] },
-    { name: "the notes an undo kept",
-      say: (n) => undoProse({ job_id: 17, removed: 3, kept_pinned: n, kept_edited: 0 }),
-      says: ["3 notes removed.", "3 notes removed; 1 kept because you had made it yours (1 pinned).",
-        "3 notes removed; 2 kept because you had made them yours (2 pinned)."] },
+      say: (n) => undoProse({ job_id: 17, removed: n, kept_pinned: 0, kept_edited: 0, kept_accepted: 0, kept_older: 0 }),
+      says: [UNDO_NOTHING_LEFT, "Removed 1 note.", "Removed 2 notes."] },
+    { name: "the notes an undo kept because they were pinned",
+      say: (n) => undoProse({ job_id: 17, removed: 3, kept_pinned: n, kept_edited: 0, kept_accepted: 0, kept_older: 0 }),
+      says: ["Removed 3 notes.", "Removed 3 notes. Kept 1 pinned note.",
+        "Removed 3 notes. Kept 2 pinned notes."] },
+    { name: "the notes an undo kept because they were accepted by hand",
+      say: (n) => undoProse({ job_id: 17, removed: 0, kept_pinned: 0, kept_edited: 0, kept_accepted: n, kept_older: 0 }),
+      says: [UNDO_NOTHING_LEFT, "Removed nothing. Kept 1 note you chose to keep.",
+        "Removed nothing. Kept 2 notes you chose to keep."] },
+    { name: "the notes an undo kept because they were edited",
+      say: (n) => undoProse({ job_id: 17, removed: 1, kept_pinned: 0, kept_edited: n, kept_accepted: 0, kept_older: 0 }),
+      says: ["Removed 1 note.", "Removed 1 note. Kept 1 edited note.",
+        "Removed 1 note. Kept 2 edited notes."] },
+    { name: "the notes an undo kept from before the marks",
+      say: (n) => undoProse({ job_id: 17, removed: 1, kept_pinned: 1, kept_edited: 0, kept_accepted: 0, kept_older: n }),
+      says: ["Removed 1 note. Kept 1 pinned note.",
+        "Removed 1 note. Kept 2: 1 pinned, 1 earlier.",
+        "Removed 1 note. Kept 3: 1 pinned, 2 earlier."] },
   ];
 
   it.each(SENTENCES.map((s) => [s.name, s] as const))("%s", (_name, sentence) => {
@@ -2530,7 +2619,7 @@ describe("every count the strip says, at 0, 1 and 2", () => {
       }
       expect(offer, `no undo is offered at ${n}`).not.toBeNull();
       await user.click(offer!);
-      const [remove, keep] = n === 1 ? ["Remove it", "Cancel"] : ["Remove all 2", "Cancel"];
+      const [remove, keep] = [UNDO_RUN_CONFIRM, "Cancel"];
       const confirm = await screen.findByRole("button", { name: remove });
       expect(flat(confirm.textContent), `at ${n}`).toBe(remove);
       expect(screen.getByRole("button", { name: keep }), `at ${n}`).toBeInTheDocument();

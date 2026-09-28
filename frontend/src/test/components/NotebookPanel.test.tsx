@@ -7,6 +7,8 @@
  * that a note never disappears, so none of them is hidden - which means the
  * mark is the only thing separating "working" from "silently not sent".
  */
+import { UNDO_RUN_CONFIRM } from "@/components/notebook/backfillProse";
+import { NOTES_UNREAD, NOTE_ROW_WORDS } from "@/components/notebook/noteProse";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -239,9 +241,11 @@ describe("NotebookPanel", () => {
       // remount and no dialog opens over the list.
       expect(screen.queryByRole("button", { name: /delete note/i }))
         .not.toBeInTheDocument();
-      expect(screen.getByRole("button", { name: /confirm delete/i }))
+      // In words now: "Delete" beside "Cancel", the way the
+      // strip's confirms read, and never a Check, which keeps.
+      expect(screen.getByRole("button", { name: NOTE_ROW_WORDS.confirmDelete }))
         .toBeInTheDocument();
-      expect(screen.getByRole("button", { name: /keep note/i }))
+      expect(screen.getByRole("button", { name: NOTE_ROW_WORDS.cancelDelete }))
         .toBeInTheDocument();
     });
 
@@ -501,14 +505,34 @@ describe("what the model wrote, and taking it back", () => {
       expect(useSeenNotesStore.getState().byChat[7] ?? []).toEqual([]);
     });
 
-  it("stops announcing once it has been acknowledged", async () => {
+  it("Keep it is a hand keep: it marks the note on the server and stops announcing it", async () => {
+    // "Keep it" writes `hand_accepted_at` (POST .../keep), so "Undo
+    // this run" keeps the note and the card does not ask again after a
+    // restart, when the in-memory seen list is empty.
     const user = userEvent.setup();
-    mockFetch({ "/notebook/7": { body: { entries: [modelNote()],
-                                         notebook_chars: 10 } } });
+    const served = { entries: [modelNote()], notebook_chars: 10 };
+    const fetchMock = mockFetch({
+      "POST /notebook/entries/5/keep": { get body() {
+        served.entries = [modelNote({ hand_accepted_at: "2026-09-27 12:00:00" })];
+        return served.entries[0];
+      } },
+      "/notebook/7": { get body() { return served; } },
+    });
     renderWithQueryClient(<NotebookPanel />);
     await user.click(await screen.findByRole("button", { name: /keep it/i }));
     await waitFor(() =>
       expect(hiddenFromReaders(screen.queryByTestId("just-saved"))).toBe(true));
+    const kept = fetchMock.mock.calls.filter((c: unknown[]) =>
+      String(c[0]).includes("/notebook/entries/5/keep?chat_id=7")
+      && (c[1] as RequestInit | undefined)?.method === "POST");
+    expect(kept).toHaveLength(1);
+    // After a "restart": the seen list is empty, and the mark alone keeps
+    // the card shut.
+    useSeenNotesStore.setState({ byChat: {} });
+    cleanup();
+    renderWithQueryClient(<NotebookPanel />);
+    await screen.findByTestId("note-5");
+    expect(hiddenFromReaders(screen.queryByTestId("just-saved"))).toBe(true);
   });
 
   it("shows the Turkish original under an English note", async () => {
@@ -790,13 +814,13 @@ describe("carrying a filter into the next chat", () => {
       renderWithQueryClient(<NotebookPanel />);
       await user.click(
         (await screen.findAllByRole("button", { name: /delete note/i }))[0]);
-      expect(screen.getByRole("button", { name: /confirm delete/i }))
+      expect(screen.getByRole("button", { name: NOTE_ROW_WORDS.confirmDelete }))
         .toBeInTheDocument();
 
       act(() => useUiStore.setState({ selectedChatId: 3 }));
 
       await screen.findByTestId("note-300");
-      expect(screen.queryByRole("button", { name: /confirm delete/i }))
+      expect(screen.queryByRole("button", { name: NOTE_ROW_WORDS.confirmDelete }))
         .not.toBeInTheDocument();
     });
 });
@@ -922,12 +946,12 @@ describe("answering the delete question from the keyboard", () => {
     await user.click(
       await screen.findByRole("button", { name: /delete note/i }));
 
-    expect(screen.getByRole("button", { name: /keep note/i })).toHaveFocus();
+    expect(screen.getByRole("button", { name: NOTE_ROW_WORDS.cancelDelete })).toHaveFocus();
     // Ground, twice over: not <body> (the unfixed behaviour) and not the
     // destructive button, which would put an irreversible delete under a
     // reflexive Enter.
     expect(document.activeElement).not.toBe(document.body);
-    expect(screen.getByRole("button", { name: /confirm delete/i }))
+    expect(screen.getByRole("button", { name: NOTE_ROW_WORDS.confirmDelete }))
       .not.toHaveFocus();
   });
 
@@ -943,7 +967,7 @@ describe("answering the delete question from the keyboard", () => {
     expect(trigger).toHaveFocus();
     // Ground: backing out leaves the note alone rather than deleting it.
     expect(screen.getByTestId("note-1")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /confirm delete/i }))
+    expect(screen.queryByRole("button", { name: NOTE_ROW_WORDS.confirmDelete }))
       .not.toBeInTheDocument();
   });
 
@@ -956,7 +980,7 @@ describe("answering the delete question from the keyboard", () => {
     renderWithQueryClient(<NotebookPanel />);
     await user.click(
       await screen.findByRole("button", { name: /delete note/i }));
-    await user.click(screen.getByRole("button", { name: /keep note/i }));
+    await user.click(screen.getByRole("button", { name: NOTE_ROW_WORDS.cancelDelete }));
 
     expect(await screen.findByRole("button", { name: /delete note/i }))
       .toHaveFocus();
@@ -1062,7 +1086,7 @@ describe("when the notes cannot be loaded", () => {
     await waitFor(() =>
       // The line is mounted closed before it opens (Collapse), so
       // "says so" is asked of the accessibility tree.
-      expect(hiddenFromReaders(screen.getByText(/could not be loaded/i))).toBe(false));
+      expect(hiddenFromReaders(screen.getByText(NOTES_UNREAD))).toBe(false));
     expect(hiddenFromReaders(screen.queryByText(/nothing yet/i))).toBe(true);
   });
 
@@ -1076,7 +1100,7 @@ describe("when the notes cannot be loaded", () => {
       // The line is mounted closed before it opens (Collapse), so
       // "says so" is asked of the accessibility tree.
       expect(hiddenFromReaders(screen.getByText(/nothing yet/i))).toBe(false));
-    expect(hiddenFromReaders(screen.queryByText(/could not be loaded/i))).toBe(true);
+    expect(hiddenFromReaders(screen.queryByText(NOTES_UNREAD))).toBe(true);
   });
 
   it("says neither when there are notes to show", async () => {
@@ -1085,7 +1109,7 @@ describe("when the notes cannot be loaded", () => {
 
     expect(await screen.findByText(/mira is her sister/i)).toBeInTheDocument();
     expect(hiddenFromReaders(screen.queryByText(/nothing yet/i))).toBe(true);
-    expect(hiddenFromReaders(screen.queryByText(/could not be loaded/i))).toBe(true);
+    expect(hiddenFromReaders(screen.queryByText(NOTES_UNREAD))).toBe(true);
   });
 });
 
@@ -1203,9 +1227,9 @@ describe("every count the notebook says, at 0, 1 and 2", () => {
       said.push(flat(line.textContent));
     }
     expect(said).toEqual([
-      expect.stringMatching(/^No note matches that\. 0 are still here /),
-      expect.stringMatching(/^No note matches that\. 1 is still here /),
-      expect.stringMatching(/^No note matches that\. 2 are still here /),
+      expect.stringMatching(/^No note matches that\. 0 are still here,/),
+      expect.stringMatching(/^No note matches that\. 1 is still here,/),
+      expect.stringMatching(/^No note matches that\. 2 are still here,/),
     ]);
   }, 30_000);
 
@@ -1273,7 +1297,11 @@ describe("every button in the Notes tab is named by the words it shows", () => {
     await armNotesTabConfirms(user);
     // GROUND: the two confirms with words of their own are on screen, found
     // by the words they show and not by their names, which are the question.
-    for (const words of [/^remove all \d+$/, /^cancel$/]) {
+    // The run's confirm now reads "Remove untouched notes" (what it does);
+    // the saved notes' reads "Remove all N". Both begin "Remove".
+    for (const words of [
+      new RegExp(`^remove (all \\d+|${UNDO_RUN_CONFIRM.toLowerCase().replace(/^remove /, "")})$`),
+      /^cancel$/]) {
       expect(worded().filter((b) => words.test(flat(b.textContent))).length, `${words}`)
         .toBeGreaterThan(1);
     }
@@ -1321,7 +1349,11 @@ describe("every button in the Notes tab is named by the words it shows", () => {
       .map((name) => pairOf(screen.getByRole("button", { name })));
     // GROUND: both confirms are on screen, each as a pair.
     expect(pairs.map((p) => p.length)).toEqual([2, 2]);
-    const PATTERN = [/^remove (it|all \d+)$/, /^cancel$/];
+    // "Remove untouched notes" is the run's: the run keeps what the reader
+    // kept, pinned or edited, so "all N" would promise more than it does.
+    const PATTERN = [
+      new RegExp(`^remove (it|all \\d+|${UNDO_RUN_CONFIRM.toLowerCase().replace(/^remove /, "")})$`),
+      /^cancel$/];
     const offPattern = (pair: string[]): boolean =>
       !(pair.length === PATTERN.length && pair.every((words, i) => PATTERN[i].test(words)));
     expect(pairs.filter(offPattern), "a confirm pair in the Notes tab speaks another pattern")

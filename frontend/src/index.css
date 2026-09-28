@@ -1363,6 +1363,22 @@ input.persona-field {
   box-shadow: 0 0 0 3px var(--es-sage-14);
 }
 
+/* A switch in a SwitchRow: the house focus outline, at 3:1 or better on the
+   light panels (the primitive's 50% halo alone measured about 1.95:1). */
+.persona-switch-ring:focus-visible {
+  outline: 2px solid var(--color-es-primary-sage);
+  outline-offset: 2px;
+}
+
+/* The note edit box and the range fields: their focus has to read at 3:1
+   against the panel (the shared rule above measured 1.64:1). Scoped to
+   these fields, in the house focus-ring colour, so the other persona fields
+   keep the look they were measured in. */
+.persona-field.is-strong-focus:focus {
+  border-color: var(--color-es-primary-sage) !important;
+  box-shadow: 0 0 0 1px var(--color-es-primary-sage);
+}
+
 .persona-select-action {
   border: 1px solid var(--es-deep-22) !important;
   background: var(--es-sage-18) !important;
@@ -3069,6 +3085,24 @@ input.persona-field {
   transition:
     opacity var(--duration-fast) var(--ease-smooth),
     transform var(--duration-fast) var(--ease-smooth);
+}
+
+/* The notes-range button: a second line of the row, under its last button,
+   inside the strip the row already reserves on the right of the words. It
+   is NOT counted in data-actions, so no bubble's padding or minimum width
+   changes for it (a one-line bubble is taller than two rows of buttons). */
+.message-actions > .message-action-button.is-second-row {
+  position: absolute;
+  top: calc(100% + 0.22rem);
+  right: 0;
+}
+
+/* A focus ring on a user bubble sits on the bubble's navy, where the
+   house sage ring measured 2.16:1. There it is the chat's light text colour
+   instead (about 9:1 on the navy), the same width and offset, for every
+   message action, Delete included: Delete's own red ink measured 2.96:1. */
+.message-bubble-shell.is-user .message-action-button:focus-visible {
+  outline-color: var(--color-es-text-light);
 }
 
 .message-bubble-shell:hover .message-actions,

@@ -972,6 +972,47 @@ CREATE TABLE notebook_deleted_traces (
     for name, ddl in _RANGE_READING_INDEXES.items():
         if name not in present:
             con.execute(ddl)
+    _record_hand_marks_since(con)
+
+
+#: The `settings` key that says from when the two hand marks above
+#: (`edited_at`, `hand_accepted_at`) have been written on this vault. A
+#: note created BEFORE this moment can carry neither mark even when the
+#: reader did accept it by hand, because nothing wrote marks then; a note
+#: created after it carries them exactly. "Undo this run" needs to tell the
+#: two apart (`notebook_store.delete_job_notes`): an old accepted note is
+#: kept, never guessed away.
+HAND_MARKS_SINCE_KEY = "notebook_hand_marks_since"
+
+
+def _record_hand_marks_since(con: sqlite3.Connection) -> None:
+    """Write `HAND_MARKS_SINCE_KEY` once, on the first run of this build.
+
+    DATA, not DDL, and written only when absent (`INSERT OR IGNORE`), so a
+    second launch changes nothing. The value is the clock and the format
+    `notebook_entries.created_at` uses, so the store compares them as text.
+
+    A vault that already had the columns before this line existed gets a
+    LATER moment than the truth, never an earlier one: more notes then
+    count as "from before", and those are kept, so the error can only keep
+    a note, never remove one.
+
+    Guarded like the auto-accept backfill: the phase-2 migration tests build
+    a file with no `settings` table and run this against it, and a step
+    that raises there takes the whole migration down with it.
+    """
+    try:
+        con.execute(
+            "INSERT OR IGNORE INTO settings (key, value) "
+            "VALUES (?, datetime('now'))", (HAND_MARKS_SINCE_KEY,))
+    except Exception as exc:                                  # noqa: BLE001
+        # Same reason as `_migrate_notebook_backfill`: two sqlite modules,
+        # two classes with one name. Not silent: a vault without this row
+        # makes every undo keep every accepted note of an old run
+        # (`delete_job_notes` fails toward keep), and the log says why.
+        logger.warning("Notebook hand-marks moment not recorded: %s",
+                       type(exc).__name__)
+        return
 
 
 def _migrate_notebook(con: sqlite3.Connection) -> None:

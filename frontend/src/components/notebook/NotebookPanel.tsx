@@ -24,9 +24,22 @@
  */
 import { useContextNotesStore } from "@/lib/chat/contextNotes";
 import { useSeenNotesStore } from "@/lib/chat/seenNotes";
-import { useEffect, useRef, useState } from "react";
+import { useHeldDiscards } from "@/lib/chat/heldDiscards";
 import {
-  Pin, PinOff, Plus, Trash2, X, Check, Loader2, Undo2, Search,
+  EDIT_EMPTY,
+  MODEL_NOTE_WORDS,
+  NOTE_ROW_WORDS,
+  NOTES_UNREAD,
+  saveFailedProse,
+} from "@/components/notebook/noteProse";
+import { PendingButton } from "@/components/notebook/PendingButton";
+import { focusHandoff } from "@/components/notebook/focusHandoff";
+import { settledAt } from "@/components/notebook/useRetryPress";
+import { SettingUnread } from "@/components/notebook/SettingUnread";
+import { isApiError } from "@/lib/api/client";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  Pin, PinOff, Plus, Trash2, X, Check, Loader2, Undo2, Search, Pencil,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -50,6 +63,8 @@ import {
   usePatchNote,
   useDeleteNote,
   useAcceptNote,
+  useKeepNote,
+  useCommitDiscards,
 } from "@/lib/query/notebook";
 import type { NotebookEntry } from "@/lib/schemas/notebook";
 
@@ -155,17 +170,26 @@ function noteState(
   return "live";
 }
 
+/** A stable empty list, so the held-discards selector does not return a
+ *  new array on every render. */
+const NO_IDS: number[] = [];
+
 /** What the empty field asks for; its placeholder and its title. */
 const NEW_NOTE_PROMPT = "Something this story has established...";
 
 export function NotebookPanel() {
   const chatId = useUiStore((s) => s.selectedChatId);
-  const { data, isLoading, isError } = useNotebook(chatId);
+  const notebook = useNotebook(chatId);
+  const { data, isLoading, isError } = notebook;
   const create = useCreateNote();
   const patch = usePatchNote();
   const remove = useDeleteNote();
   const accept = useAcceptNote();
+  const keep = useKeepNote();
+  const commitDiscards = useCommitDiscards();
   const pushError = useErrorStore((s) => s.pushError);
+  const [handoff] = useState(focusHandoff);
+  const cardTextRef = useRef<HTMLParagraphElement>(null);
 
   // The two swaps below go through `CrossFade`, the house primitive for a
   // REPLACEMENT rather than an arrival. It lived inline here until the
@@ -232,8 +256,25 @@ export function NotebookPanel() {
     setConfirmUndo(false);
   }
 
+  // DISCARD IS HELD, NOT SENT, while its row says "Suggestion discarded."
+  // with an Undo: a suggestion is not in force, so holding it back changes
+  // nothing the model sees, and Undo can put it back exactly as it was
+  // (the store has no way to bring a deleted row back). The deletes are
+  // sent, as ordinary requests, when the panel leaves the chat or unmounts,
+  // or when "Undo this run" is pressed (the strip sends them first). Once
+  // sent they are gone from the store, so no Undo is offered for them.
+  // Nothing is sent when the page closes: this app sends no request that
+  // outlives its page (no keepalive, no beacon; the test egress sentinel
+  // refuses one), so a suggestion discarded just before closing is simply
+  // still there next time - the safe side. Held in `useHeldDiscards`.
+  const discarded = useHeldDiscards((s) =>
+    chatId == null ? NO_IDS : s.byChat[chatId] ?? NO_IDS);
+  useEffect(() => () => {
+    if (chatId != null) commitDiscards(useHeldDiscards.getState().take(chatId), chatId);
+  }, [chatId, commitDiscards]);
+
   const busy = create.isPending || patch.isPending || remove.isPending
-    || accept.isPending;
+    || accept.isPending || keep.isPending;
 
   const all = data?.entries ?? [];
   const entries = all.filter((e) => matches(e, query));
@@ -261,15 +302,40 @@ export function NotebookPanel() {
   // Accepted, written by the model, and never announced. `proposed` rows are
   // deliberately excluded: those already announce themselves by sitting in
   // the list unsent, which is the whole point of review being on.
+  //
+  // And a note the READER already answered is not asked about again: one
+  // they kept by hand (`hand_accepted_at`, written by the Keep press
+  // itself), whose words they changed (`edited_at`), or that they pinned -
+  // the card's Undo must never offer to delete a pinned note. All on disk, so
+  // this holds after a restart too, when the in-memory `seen` list is
+  // empty. The strip used to open on the note the reader had just kept and
+  // ask "Keep it?" about it.
   const seen = useSeenNotesStore((s) =>
     chatId == null ? undefined : s.byChat[chatId]);
   const markSeen = useSeenNotesStore((s) => s.markSeen);
   const justSaved = all.filter(
     (e) => e.provenance === "model" && e.status === "accepted"
-      && !e.retired_at && !(seen ?? []).includes(e.id));
+      && !e.retired_at && !e.hand_accepted_at && !e.edited_at && !e.pinned
+      && !(seen ?? []).includes(e.id));
 
-  function acknowledge() {
-    if (chatId != null) markSeen(chatId, justSaved.map((e) => e.id));
+  /** "Keep it" / "Keep them": a hand keep, written on the server
+   *  (`hand_accepted_at`), so "Undo this run" keeps these notes and the
+   *  card does not ask about them again, after a restart too. Only what
+   *  was kept is marked seen; a failure leaves the rest announced. */
+  async function handleKeepSaved() {
+    if (chatId == null || busy) return;
+    const kept: number[] = [];
+    try {
+      for (const e of justSaved) {
+        await keep.mutateAsync([e.id, chatId]);
+        kept.push(e.id);
+      }
+    } catch (err) {
+      pushError(err, "error", { chatId });
+    }
+    if (kept.length) markSeen(chatId, kept);
+    // The card closes under the keyboard; the new-note field takes it.
+    focusTarget.current = "new";
   }
 
   async function handleUndo() {
@@ -278,6 +344,9 @@ export function NotebookPanel() {
     // fact they explicitly rejected.
     const doomed = justSaved.map((e) => e.id);
     if (chatId == null) return;
+    // The Remove button is about to leave: the card's words hold the
+    // keyboard until the deletes are done (and stay holding it if all fail).
+    cardTextRef.current?.focus({ preventScroll: true });
     setConfirmUndo(false);
     // ACKNOWLEDGE ONLY WHAT ACTUALLY WENT, AND ONLY AFTERWARDS.
     //
@@ -298,7 +367,10 @@ export function NotebookPanel() {
     } catch (err) {
       pushError(err, "error", { chatId: chatId ?? undefined });
     }
-    if (removed.length) markSeen(chatId, removed);
+    if (removed.length) {
+      markSeen(chatId, removed);
+      focusTarget.current = "new";
+    }
   }
 
   async function handleAdd() {
@@ -323,22 +395,84 @@ export function NotebookPanel() {
     }
   }
 
-  async function handleAccept(id: number) {
+  /** Saves new words for a note through the existing PATCH. Answers null
+   *  when saved, else the sentence that says why not, from the server's own
+   *  reason: the ROW says it, beside the words it kept. `provenance` is not
+   *  in the payload and cannot be; the store writes `edited_at` itself. */
+  async function handleSave(entry: NotebookEntry, text: string): Promise<string | null> {
+    if (chatId == null) return saveFailedProse(null);
     try {
-      if (chatId == null) return;
+      await patch.mutateAsync([entry.id, chatId, { text }]);
+      return null;
+    } catch (err) {
+      return saveFailedProse(isApiError(err) ? err.detail : null);
+    }
+  }
+
+  /** Where the keyboard goes once a row is gone: the next row, else the one
+   *  before, else the new-note field. Without it focus fell to the page's
+   *  body and a keyboard reader was thrown back to the top. Picked BEFORE
+   *  the request, from the list on screen, because the row being removed
+   *  is still there when the answer comes back. */
+  const newNoteRef = useRef<HTMLInputElement>(null);
+  const focusTarget = useRef<number | "new" | null>(null);
+  function focusAfterRemoving(id: number) {
+    const at = entries.findIndex((e) => e.id === id);
+    const neighbour = entries[at + 1] ?? entries[at - 1];
+    return () => { focusTarget.current = neighbour ? neighbour.id : "new"; };
+  }
+  // Moved on the first render that is no longer busy: the new-note field is
+  // disabled while a request is out, and a disabled element cannot take
+  // focus. A ref and an effect with no list, so it is read after EVERY
+  // render; the refetch that takes the row away is one, and nothing is set
+  // here that would cause another.
+  useLayoutEffect(() => {
+    const target = focusTarget.current;
+    if (target == null || busy) return;
+    const row = target === "new" ? null
+      : document.querySelector<HTMLElement>(
+        `[data-testid="note-${target}"] button:not([disabled])`);
+    (row ?? newNoteRef.current)?.focus();
+    focusTarget.current = null;
+  });
+
+  /** Declining a suggestion: one press, no question, and not silent - the
+   *  row becomes "Suggestion discarded." with an Undo, which takes the
+   *  keyboard. The delete itself is held (see `discarded`). */
+  function handleDiscard(id: number) {
+    handoff.want(`undo-discard-${id}`);
+    if (chatId != null) useHeldDiscards.getState().hold(chatId, id);
+  }
+
+  /** Undo a discard: the suggestion comes back, and its Discard button
+   *  takes the keyboard, where the reader was. */
+  function handleUndoDiscard(id: number) {
+    handoff.want(`discard-${id}`);
+    if (chatId != null) useHeldDiscards.getState().release(chatId, id);
+  }
+
+  /** Keep a suggestion. Answers whether it worked, so the row only hands
+   *  the keyboard on for a keep that happened. */
+  async function handleAccept(id: number): Promise<boolean> {
+    try {
+      if (chatId == null) return false;
       await accept.mutateAsync([id, chatId]);
+      return true;
     } catch (err) {
       pushError(err, "error", { chatId: chatId ?? undefined });
+      return false;
     }
   }
 
   async function handleDelete(id: number) {
     setConfirmDeleteId(null);
+    if (chatId == null) return;
+    const refocus = focusAfterRemoving(id);
     try {
-      if (chatId == null) return;
       await remove.mutateAsync([id, chatId]);
+      refocus();
     } catch (err) {
-      pushError(err, "error", { chatId: chatId ?? undefined });
+      pushError(err, "error", { chatId });
     }
   }
 
@@ -408,7 +542,11 @@ export function NotebookPanel() {
             {/* Breaks inside a word, as the note's own row below does: a note
                 that is one long word quoted here otherwise ran past the card
                 and was cut by its clip. */}
-            <p className="break-words text-label leading-relaxed text-muted-foreground">
+            <p
+              ref={cardTextRef}
+              tabIndex={-1}
+              className="break-words text-label leading-relaxed text-muted-foreground outline-none"
+            >
               Saved {justSaved.length === 1 ? "a note" : `${justSaved.length} notes`}{" "}
               the model wrote{justSaved.length === 1
                 ? `: "${justSaved[0].text}"`
@@ -420,53 +558,63 @@ export function NotebookPanel() {
             >
               {confirmUndo ? (
                 <>
-                  <Button
+                  <PendingButton
                     type="button"
                     size="sm"
                     variant="ghost"
-                    disabled={busy}
+                    pending={busy}
                     onClick={() => void handleUndo()}
                     className="persona-danger-action h-7 gap-1.5 px-2 text-ui"
                   >
-                    <Check size={12} className="size-3" />
-                    {/* The strip's own words for its undo, so the two
-                        confirms in this tab read alike. */}
+                    <Trash2 size={12} className="size-3" />
+                    {/* "Remove" is this tab's word for an undo (this card's
+                        and the run's), "Delete" for a note, "Discard" for
+                        a suggestion. */}
                     Remove {justSaved.length === 1
                       ? "it" : `all ${justSaved.length}`}
-                  </Button>
-                  <Button
+                  </PendingButton>
+                  <PendingButton
+                    ref={handoff.take("card-cancel")}
                     type="button"
                     size="sm"
                     variant="ghost"
-                    disabled={busy}
-                    onClick={() => setConfirmUndo(false)}
+                    pending={busy}
+                    onClick={() => {
+                      handoff.want("card-undo", cardTextRef.current);
+                      setConfirmUndo(false);
+                    }}
                     className="persona-ghost-action h-7 px-2 text-ui"
                   >
                     Cancel
-                  </Button>
+                  </PendingButton>
                 </>
               ) : (
                 <>
-                  <Button
+                  <PendingButton
+                    ref={handoff.take("card-undo")}
                     type="button"
                     size="sm"
                     variant="ghost"
-                    disabled={busy}
-                    onClick={() => setConfirmUndo(true)}
+                    pending={busy}
+                    onClick={() => {
+                      handoff.want("card-cancel", cardTextRef.current);
+                      setConfirmUndo(true);
+                    }}
                     className="persona-danger-action h-7 gap-1.5 px-2 text-ui"
                   >
                     <Undo2 size={12} className="size-3" />
                     Undo
-                  </Button>
-                  <Button
+                  </PendingButton>
+                  <PendingButton
                     type="button"
                     size="sm"
                     variant="ghost"
-                    onClick={acknowledge}
+                    pending={busy}
+                    onClick={() => void handleKeepSaved()}
                     className="persona-ghost-action h-7 px-2 text-ui"
                   >
                     Keep {justSaved.length === 1 ? "it" : "them"}
-                  </Button>
+                  </PendingButton>
                 </>
               )}
             </CrossFade>
@@ -510,6 +658,7 @@ export function NotebookPanel() {
 
         <div className="flex items-center gap-2">
           <Input
+            ref={newNoteRef}
             value={draft}
             maxLength={ENTRY_MAX_CHARS}
             placeholder={NEW_NOTE_PROMPT}
@@ -558,7 +707,8 @@ export function NotebookPanel() {
           </Button>
         </div>
 
-        <Collapse open={isLoading} className="min-w-0">
+        {/* The first load only: a retry keeps its own line open instead. */}
+        <Collapse open={isLoading && notebook.errorUpdateCount === 0} className="min-w-0">
           <p className="text-label leading-relaxed text-muted-foreground">Loading...</p>
         </Collapse>
 
@@ -573,15 +723,15 @@ export function NotebookPanel() {
 
             First in the chain, so the two branches below can stay the pair
             they are rather than being taught about a third case each. */}
-        <Collapse open={!isLoading && isError} className="min-w-0">
-          <p
-            className="text-label leading-relaxed text-muted-foreground"
-            role="status"
-          >
-            Notes could not be loaded. They are still saved - this panel just
-            could not read them. Try again in a moment.
-          </p>
-        </Collapse>
+        <SettingUnread
+          open={!isLoading && isError}
+          tone="muted"
+          text={NOTES_UNREAD}
+          retrying={notebook.isFetching}
+          settled={settledAt(notebook)}
+          onRetry={() => void notebook.refetch()}
+          focusAfter={() => newNoteRef.current}
+        />
 
         {/* One or the other, never both. `entries` is the FILTERED list, so
             an empty notebook and a filter that matched nothing produce the
@@ -605,8 +755,10 @@ export function NotebookPanel() {
             className="text-label leading-relaxed text-muted-foreground"
             role="status"
           >
+            {/* Two short sentences: the second used to run to 16
+                words explaining what the search covers. */}
             No note matches that. {all.length} {all.length === 1 ? "is" : "are"} still
-            here - the search covers the note and the words it was taken from.
+            here, hidden by the search.
           </p>
         </Collapse>
 
@@ -622,22 +774,72 @@ export function NotebookPanel() {
         )}
 
         <div className="space-y-1">
-          {entries.map((entry) => (
+          {entries.map((entry) => discarded.includes(entry.id) ? (
+            <DiscardedRow
+              key={`discarded-${entry.id}`}
+              entry={entry}
+              takeFocus={handoff.take}
+              onUndo={() => handleUndoDiscard(entry.id)}
+            />
+          ) : (
             <NoteRow
               key={entry.id}
               entry={entry}
               busy={busy}
               confirming={confirmDeleteId === entry.id}
+              onSave={(text) => handleSave(entry, text)}
               onPin={() => void handlePin(entry)}
-              onAccept={() => void handleAccept(entry.id)}
+              onAccept={() => handleAccept(entry.id)}
+              onDiscard={() => handleDiscard(entry.id)}
               onAskDelete={() => setConfirmDeleteId(entry.id)}
               onCancelDelete={() => setConfirmDeleteId(null)}
               onDelete={() => void handleDelete(entry.id)}
+              takeFocus={handoff.take}
             />
           ))}
         </div>
       </section>
     </SlideIn>
+  );
+}
+
+/** A suggestion the reader discarded, standing in its place until the
+ *  panel leaves the chat: the discard is held there, not sent, so Undo can
+ *  put it back. Nothing about a Discard is silent any more. */
+function DiscardedRow({
+  entry,
+  takeFocus,
+  onUndo,
+}: {
+  entry: NotebookEntry;
+  takeFocus: (key: string) => (el: HTMLElement | null) => void;
+  onUndo: () => void;
+}) {
+  return (
+    <Collapse open className="min-w-0">
+      <div
+        className="persona-card flex items-center gap-2"
+        data-testid={`note-${entry.id}-discarded`}
+      >
+        <p
+          className="min-w-0 flex-1 text-label leading-relaxed text-muted-foreground"
+          role="status"
+        >
+          {NOTE_ROW_WORDS.discarded}
+        </p>
+        <Button
+          ref={takeFocus(`undo-discard-${entry.id}`)}
+          type="button"
+          size="sm"
+          variant="ghost"
+          onClick={onUndo}
+          className="persona-ghost-action h-7 shrink-0 gap-1.5 px-2 text-ui"
+        >
+          <Undo2 size={12} className="size-3" />
+          {NOTE_ROW_WORDS.undoDiscard}
+        </Button>
+      </div>
+    </Collapse>
   );
 }
 
@@ -647,48 +849,139 @@ function NoteRow({
   confirming,
   onPin,
   onAccept,
+  onDiscard,
   onAskDelete,
   onCancelDelete,
   onDelete,
+  onSave,
+  takeFocus,
 }: {
   entry: NotebookEntry;
   busy: boolean;
   confirming: boolean;
   onPin: () => void;
-  onAccept: () => void;
+  /** Keeps a suggestion; resolves whether it worked. */
+  onAccept: () => Promise<boolean>;
+  /** Declines a suggestion; the panel shows "Suggestion discarded." with an
+   *  Undo in its place. */
+  onDiscard: () => void;
   onAskDelete: () => void;
   onCancelDelete: () => void;
   onDelete: () => void;
+  /** Saves new words; resolves null when saved, else the sentence that
+   *  says why not. */
+  onSave: (text: string) => Promise<string | null>;
+  /** The panel's one-shot focus hand-off (see `focusHandoff`). */
+  takeFocus: (key: string) => (el: HTMLElement | null) => void;
 }) {
   const state = noteState(entry);
   const original = originalOf(entry);
+  const proposed = state === "proposed";
 
-  // The confirm REPLACES its trigger, which means React unmounts the element
-  // the keyboard was standing on and focus drops to <body>. From there the
-  // question the user just opened is reachable only by tabbing in from the
-  // top of the document, and Escape answered nothing. A keyboard user could
-  // ask to delete a note and then not practically be able to finish, or back
-  // out. MessageBubble's confirm already solves this; this is the same three
-  // behaviours - autofocus, Escape closes, focus returns to the trigger.
-  //
-  // With one deliberate difference: MessageBubble focuses the DESTRUCTIVE
-  // button, so a reflexive Enter deletes. The SAFE choice takes the focus
-  // here, so the same reflex keeps the note. The destructive button is one
-  // Tab away, which is the right amount of work for the irreversible one.
+  // EDIT IN PLACE. The text line becomes a field in the same row, the same
+  // size and in the same spot, and the row itself never remounts (it is
+  // keyed on the note's id and this is its own state). The pencil is ONE
+  // button whose icon and name swap to Save, so the keyboard never loses
+  // the element it is standing on; the last slot (Discard or Delete) gives
+  // its place to Cancel. Enter (with or without Shift) saves - a note is
+  // one line - Escape cancels and puts the words back, and focus returns to
+  // the pencil. Nothing happens on blur.
+  const [editing, setEditing] = useState(false);
+  const [draftText, setDraftText] = useState("");
+  const [saving, setSaving] = useState(false);
+  /** Why the last save did not land, or null. */
+  const [saveFailed, setSaveFailed] = useState<string | null>(null);
+  const editButtonRef = useRef<HTMLButtonElement>(null);
+  const pinRef = useRef<HTMLButtonElement>(null);
+  const fieldRef = useRef<HTMLTextAreaElement>(null);
+  const wasEditing = useRef(false);
+  const emptyDraft = draftText.trim() === "";
+  const hintId = `note-${entry.id}-edit-hint`;
+
+  // Layout, not passive: the field is focused in the same task as the
+  // commit that drew it, so nothing paints with focus nowhere. After Escape
+  // or Cancel the keyboard goes back to the pencil; a Save pressed on the
+  // pencil never loses it (the same element, only `aria-disabled` while it
+  // saves).
+  const giveFocusBack = useRef(false);
+  useLayoutEffect(() => {
+    if (editing) {
+      wasEditing.current = true;
+      giveFocusBack.current = false;
+      const field = fieldRef.current;
+      if (field) {
+        field.focus();
+        const end = field.value.length;
+        field.setSelectionRange(end, end);
+      }
+    } else if (wasEditing.current) {
+      wasEditing.current = false;
+      giveFocusBack.current = true;
+    }
+  }, [editing]);
+  // KEEP hands the keyboard on too: the Keep button leaves the row once the
+  // suggestion is accepted, and Pin, the next button, is where it lands.
+  const keepPressed = useRef(false);
+  useLayoutEffect(() => {
+    if (keepPressed.current && !proposed) {
+      keepPressed.current = false;
+      pinRef.current?.focus();
+    }
+    if (giveFocusBack.current && editButtonRef.current) {
+      giveFocusBack.current = false;
+      editButtonRef.current.focus();
+    }
+  });
+
+  function beginEdit() {
+    if (confirming) onCancelDelete();
+    setDraftText(entry.text);
+    setSaveFailed(null);
+    setEditing(true);
+  }
+
+  function cancelEdit() {
+    setSaveFailed(null);
+    setEditing(false);
+  }
+
+  async function saveEdit() {
+    if (saving) return;
+    const text = draftText.trim();
+    if (!text) return;
+    if (text === entry.text) {
+      cancelEdit();
+      return;
+    }
+    setSaving(true);
+    setSaveFailed(null);
+    const why = await onSave(text);
+    setSaving(false);
+    if (why == null) setEditing(false);
+    else setSaveFailed(why);
+  }
+
+  // The delete question opens UNDER the note's words, in its own line, and
+  // the Trash button stays where it was (hidden and out of reach while the
+  // question is open). The question used to replace the Trash with two
+  // worded buttons, which narrowed the words' column and re-wrapped them.
+  // The safe choice takes the keyboard; Escape and Cancel give it back to
+  // the Trash button.
   const deleteTriggerRef = useRef<HTMLButtonElement>(null);
   const keepButtonRef = useRef<HTMLButtonElement>(null);
-  // Whether focus is OURS to give back. Without it every row in the list
-  // would grab focus on its first render, when nothing has been confirmed.
   const wasConfirming = useRef(false);
 
-  useEffect(() => {
+  // Layout, not passive: the question's buttons leave in the same commit
+  // that brings the trigger back, and a passive effect left the keyboard on
+  // the page's body for a frame. After Delete the trigger holds it while
+  // the request is out (it is `aria-disabled`, not disabled), keeps it if
+  // the delete fails, and the panel moves it on once the row is gone.
+  useLayoutEffect(() => {
     if (confirming) {
       wasConfirming.current = true;
       keepButtonRef.current?.focus();
     } else if (wasConfirming.current) {
       wasConfirming.current = false;
-      // The trigger was remounted by the render this effect follows, so the
-      // ref points at a live element again by the time this runs.
       deleteTriggerRef.current?.focus();
     }
   }, [confirming]);
@@ -698,9 +991,7 @@ function NoteRow({
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       // Stopped for the same reason MessageBubble stops it: Composer binds
-      // Escape at the WINDOW to "stop generating", and document bubbles to
-      // window - so one press would both dismiss this question and kill a
-      // reply streaming in the chat behind the panel.
+      // Escape at the WINDOW to "stop generating".
       event.stopPropagation();
       event.preventDefault();
       onCancelDelete();
@@ -714,19 +1005,71 @@ function NoteRow({
       className="persona-card flex items-start gap-2"
       data-testid={`note-${entry.id}`}
       data-state={state}
+      data-editing={editing || undefined}
+      // Escape anywhere in the row while editing backs out. Stopped here,
+      // at the row: Composer binds Escape at the WINDOW to "stop
+      // generating", and React's handler runs before the window's.
+      onKeyDown={(e) => {
+        if (!editing || e.key !== "Escape") return;
+        e.stopPropagation();
+        e.preventDefault();
+        if (!saving) cancelEdit();
+      }}
     >
       <div className="min-w-0 flex-1">
         {/* The panel's own ink, named here: a line with none inherits the
             body's, which is the dark theme's text, and on this light panel
-            that measured 1.02 to 1.07:1. */}
-        <p
-          className="break-words text-ui font-semibold"
-          style={{ color: "var(--color-es-text-light)" }}
-        >
-          {entry.text}
-        </p>
-        {/* The two ways a note stops being sent read the same in a plain list
-            and are not the same thing, so each says which it is. */}
+            that measured 1.02 to 1.07:1.
+
+            While editing, the SAME spot holds a field with the same type,
+            weight and ink; its border and padding are pulled back out with
+            negative margins, so the words do not move. `field-sizing:
+            content` makes it as tall as its text. */}
+        {editing ? (
+          <textarea
+            ref={fieldRef}
+            value={draftText}
+            rows={1}
+            maxLength={ENTRY_MAX_CHARS}
+            aria-label={NOTE_ROW_WORDS.field}
+            aria-invalid={saveFailed != null || undefined}
+            aria-describedby={emptyDraft || saveFailed != null ? hintId : undefined}
+            readOnly={saving}
+            // ONE LINE, like the new-note box: a note is one line on the
+            // server, so a pasted line break becomes a space here and
+            // Enter, with or without Shift, saves.
+            onChange={(e) => {
+              setDraftText(e.target.value.replace(/[\r\n]+/g, " "));
+              setSaveFailed(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
+              e.preventDefault();
+              void saveEdit();
+            }}
+            className="persona-field is-strong-focus block w-[calc(100%+10px)] min-w-0 resize-none rounded-sm border px-1 py-0 -mx-[5px] -my-px break-words text-ui font-semibold outline-none [field-sizing:content]"
+          />
+        ) : (
+          <p
+            className="break-words text-ui font-semibold"
+            style={{ color: "var(--color-es-text-light)" }}
+          >
+            {entry.text}
+          </p>
+        )}
+        {/* Why Save is off, or why it did not work. One line, in place;
+            a failure keeps every word typed and says why, in the server's
+            own terms. */}
+        <Collapse open={editing && (emptyDraft || saveFailed != null)} className="min-w-0">
+          <p
+            id={hintId}
+            className={saveFailed != null ? "persona-local-error" : "text-label leading-relaxed text-muted-foreground"}
+            role={saveFailed != null ? "alert" : undefined}
+            data-testid={`note-${entry.id}-edit-hint`}
+          >
+            {saveFailed ?? (emptyDraft ? EDIT_EMPTY : "")}
+          </p>
+        </Collapse>
         {state === "retired" && (
           <p className="text-label leading-relaxed text-muted-foreground">Replaced by a newer note - not sent.</p>
         )}
@@ -746,26 +1089,25 @@ function NoteRow({
             Waiting for you - not sent until you keep it.
           </p>
         )}
-        {/* The distinction that matters inside "written by the model": a note
-            taken from what the USER said is a paraphrase of something that was
-            really said, and one taken from the model's own reply may be the
-            model's own invention - the verbatim check cannot tell, because it
-            passes by construction when the model quotes itself. Marked, not
-            withheld: the research on review queues says an honest label
-            somebody can see beats a queue nobody reads. */}
         {entry.provenance === "model" && entry.evidence_role === "assistant" && (
           <p className="text-label leading-relaxed text-muted-foreground">
             Taken from the model's own reply, not from something you wrote.
           </p>
         )}
+        {/* Who wrote it, truthfully after an edit too. `provenance` stays
+            `model` (an edit cannot launder the model's words into the
+            reader's), so the line says both halves. Read from `edited_at`,
+            which the store writes only when a save really changed the words:
+            it is on disk, so it survives a restart. A note the reader wrote
+            has no such line, edited or not. */}
         {entry.provenance === "model" && (
-          <p className="text-label leading-relaxed text-muted-foreground">
-            Written by the model.
+          <p
+            className="text-label leading-relaxed text-muted-foreground"
+            data-testid={`note-${entry.id}-author`}
+          >
+            {entry.edited_at ? MODEL_NOTE_WORDS.edited : MODEL_NOTE_WORDS.wrote}
           </p>
         )}
-        {/* What was actually said, verbatim, in whichever language it was
-            said in. Without it an English paraphrase of a Turkish sentence
-            cannot be checked against anything. */}
         {original && (
           <p className="break-words text-label leading-relaxed text-muted-foreground">
             {TURKISH_LETTERS.test(original) ? "Türkçe aslı: " : "From: "}
@@ -774,89 +1116,199 @@ function NoteRow({
             </span>
           </p>
         )}
+        {/* The delete question, under the words. "Delete" with the Trash
+            glyph the trigger has (never the Check that means keep), and
+            "Cancel", which takes the keyboard. */}
+        <Collapse open={!proposed && confirming} className="min-w-0">
+          {confirming && (
+          <FadeIn className="flex items-center gap-2 pt-1">
+            <>
+              <PendingButton
+                type="button"
+                size="sm"
+                variant="ghost"
+                pending={busy}
+                onClick={onDelete}
+                className="persona-danger-action h-7 gap-1.5 px-2 text-ui"
+              >
+                <Trash2 size={12} className="size-3" />
+                {NOTE_ROW_WORDS.confirmDelete}
+              </PendingButton>
+              <PendingButton
+                ref={keepButtonRef}
+                type="button"
+                size="sm"
+                variant="ghost"
+                pending={busy}
+                onClick={onCancelDelete}
+                className="persona-ghost-action h-7 px-2 text-ui"
+              >
+                {NOTE_ROW_WORDS.cancelDelete}
+              </PendingButton>
+            </>
+          </FadeIn>
+          )}
+        </Collapse>
       </div>
 
-      {/* Only for a proposal, and it is the only thing that promotes one:
-          `provenance` stays `model` forever, so the row keeps saying who
-          wrote it after the user keeps it. */}
-      {state === "proposed" && (
-        <FadeIn>
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            disabled={busy}
-            onClick={onAccept}
-            aria-label="Keep suggestion"
-            className="persona-ghost-action h-7 w-7 p-0"
+      {/* THE ROW'S BUTTONS, in slots that never move.
+
+            Keep (a suggestion only), Pin, Edit (which IS Save while
+            editing: one element, icon and name swapped), and last Discard
+            (a suggestion) or Delete (an accepted note), which Cancel
+            replaces while editing.
+
+          While editing, Keep and Pin are HIDDEN, NOT REMOVED: `invisible`
+          keeps their width, so the words' column does not re-wrap, and
+          `inert` plus tabIndex -1 take them out of the tab order and the
+          accessibility tree, so Tab goes field, Save, Cancel. One glyph, one
+          meaning: Check keeps or saves, X discards, Undo2 takes back (Cancel
+          edit), Trash deletes. Every button is `aria-disabled`, not
+          `disabled`, while a request is out, so the keyboard stays on it. */}
+      {proposed && (
+        <FadeIn className={editing ? "invisible" : undefined}>
+          <span
+            className="contents"
+            inert={editing || undefined}
+            aria-hidden={editing || undefined}
           >
-            <Check size={12} className="size-3" />
-          </Button>
+            <PendingButton
+              type="button"
+              size="sm"
+              variant="ghost"
+              pending={busy}
+              onClick={() => {
+                keepPressed.current = true;
+                void onAccept().then((ok) => {
+                  // A keep that failed leaves the row a suggestion, and its
+                  // Keep button keeps the keyboard; a LATER keep of this row
+                  // must not find this press still armed.
+                  if (!ok) keepPressed.current = false;
+                });
+              }}
+              tabIndex={editing ? -1 : undefined}
+              aria-label={NOTE_ROW_WORDS.keep}
+              title={NOTE_ROW_WORDS.keep}
+              className="persona-ghost-action h-7 w-7 p-0"
+            >
+              <Check size={12} className="size-3" />
+            </PendingButton>
+          </span>
         </FadeIn>
       )}
 
-      {/* One button per action, icon swapped in place - no second control
-          appears and nothing remounts when the state flips. */}
-      <Button
+      <span
+        className={editing ? "contents invisible" : "contents"}
+        inert={editing || undefined}
+        aria-hidden={editing || undefined}
+        data-testid={`note-${entry.id}-pin-slot`}
+      >
+        <PendingButton
+          ref={pinRef}
+          type="button"
+          size="sm"
+          variant="ghost"
+          pending={busy}
+          onClick={onPin}
+          tabIndex={editing ? -1 : undefined}
+          aria-label={entry.pinned ? NOTE_ROW_WORDS.unpin : NOTE_ROW_WORDS.pin}
+          title={entry.pinned ? NOTE_ROW_WORDS.unpin : NOTE_ROW_WORDS.pin}
+          className="persona-ghost-action h-7 w-7 p-0"
+        >
+          {entry.pinned ? <Pin size={12} className="size-3" /> : <PinOff size={12} className="size-3" />}
+        </PendingButton>
+      </span>
+
+      {/* Edit, then Save: one button, icon and name swapped, never
+          remounted. Off (`disabled`) only while the draft is empty, and the
+          line under the field says why. */}
+      <PendingButton
+        ref={editButtonRef}
         type="button"
         size="sm"
         variant="ghost"
-        disabled={busy}
-        onClick={onPin}
-        aria-label={entry.pinned ? "Unpin note" : "Pin note"}
+        pending={busy || saving}
+        disabled={editing && emptyDraft}
+        aria-describedby={editing && emptyDraft ? hintId : undefined}
+        onClick={editing ? () => void saveEdit() : beginEdit}
+        aria-label={editing ? NOTE_ROW_WORDS.save : NOTE_ROW_WORDS.edit}
+        title={editing ? NOTE_ROW_WORDS.save : NOTE_ROW_WORDS.edit}
         className="persona-ghost-action h-7 w-7 p-0"
       >
-        {entry.pinned ? <Pin size={12} className="size-3" /> : <PinOff size={12} className="size-3" />}
-      </Button>
+        {saving ? (
+          <Loader2 size={12} className="size-3 animate-spin" />
+        ) : editing ? (
+          <Check size={12} className="size-3" />
+        ) : (
+          <Pencil size={12} className="size-3" />
+        )}
+      </PendingButton>
 
-      {!confirming && (
+      {editing && (
         <FadeIn>
-          <Button
+          <PendingButton
+            type="button"
+            size="sm"
+            variant="ghost"
+            pending={saving}
+            onClick={cancelEdit}
+            aria-label={NOTE_ROW_WORDS.cancel}
+            title={NOTE_ROW_WORDS.cancel}
+            className="persona-ghost-action h-7 w-7 p-0"
+          >
+            <Undo2 size={12} className="size-3" />
+          </PendingButton>
+        </FadeIn>
+      )}
+      {!editing && proposed && (
+        <FadeIn>
+          <PendingButton
+            ref={takeFocus(`discard-${entry.id}`)}
+            type="button"
+            size="sm"
+            variant="ghost"
+            pending={busy}
+            // A click that is the SECOND of a double click is ignored:
+            // Cancel sits in this same spot while editing. A keyboard press
+            // has `detail` 0 and a single click 1; both go through.
+            onClick={(e) => {
+              if (e.detail > 1) return;
+              onDiscard();
+            }}
+            aria-label={NOTE_ROW_WORDS.discard}
+            title={NOTE_ROW_WORDS.discard}
+            className="persona-ghost-action h-7 w-7 p-0"
+          >
+            <X size={12} className="size-3" />
+          </PendingButton>
+        </FadeIn>
+      )}
+      {!editing && !proposed && (
+        <FadeIn className={confirming ? "invisible" : undefined}>
+        <span
+          className="contents"
+          inert={confirming || undefined}
+          aria-hidden={confirming || undefined}
+        >
+          <PendingButton
             ref={deleteTriggerRef}
             type="button"
             size="sm"
             variant="ghost"
-            disabled={busy}
+            pending={busy}
             onClick={onAskDelete}
-            aria-label="Delete note"
+            tabIndex={confirming ? -1 : undefined}
+            aria-label={NOTE_ROW_WORDS.delete}
+            title={NOTE_ROW_WORDS.delete}
             // `persona-danger-action`, not ghost + an inline colour: the ghost
             // class sets its colour with !important, so the inline style never
-            // applied and the trash rendered grey here while the identical one
-            // in Limits rendered maroon. The token differs too - es-danger is
-            // the DARK shell's red and lands at about 3.2:1 on this panel.
+            // applied. The token differs too - es-danger is the DARK shell's
+            // red and lands at about 3.2:1 on this panel.
             className="persona-danger-action h-7 w-7 p-0"
           >
             <Trash2 size={12} className="size-3" />
-          </Button>
-        </FadeIn>
-      )}
-      {confirming && (
-        <FadeIn className="flex items-start gap-2">
-          <>
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              disabled={busy}
-              onClick={onDelete}
-              aria-label="Confirm delete"
-              className="persona-danger-action h-7 w-7 p-0"
-            >
-              <Check size={12} className="size-3" />
-            </Button>
-            <Button
-              ref={keepButtonRef}
-              type="button"
-              size="sm"
-              variant="ghost"
-              disabled={busy}
-              onClick={onCancelDelete}
-              aria-label="Keep note"
-              className="persona-ghost-action h-7 w-7 p-0"
-            >
-              <X size={12} className="size-3" />
-            </Button>
-          </>
+          </PendingButton>
+        </span>
         </FadeIn>
       )}
     </div>

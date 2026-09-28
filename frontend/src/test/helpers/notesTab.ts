@@ -20,6 +20,8 @@
  *   search box is open too;
  * - one limit, and both extraction pickers.
  */
+import { UNDO_RUN_CONFIRM } from "@/components/notebook/backfillProse";
+import { NOTE_ROW_WORDS } from "@/components/notebook/noteProse";
 import { createElement } from "react";
 import { screen } from "@testing-library/react";
 import { RightPanel } from "@/components/layout/RightPanel";
@@ -192,12 +194,12 @@ export async function settleNotesTab(): Promise<void> {
 
 /** The four confirms the tab shows once each first press is made, by the
  *  names they carry: the run's undo, the saved notes' undo, a limit's
- *  delete and a note's delete. */
+ *  delete and a note's delete (its pair has words: "Delete" and "Cancel"). */
 export const NOTES_TAB_CONFIRMS = {
-  run: new RegExp(`^remove all ${NOTES_TAB_RUN_WROTE}$`, "i"),
+  run: new RegExp(`^${UNDO_RUN_CONFIRM}$`, "i"),
   saved: new RegExp(`^remove all ${NOTES_TAB_MODEL_SAVED}$`, "i"),
   limit: /^confirm delete limit$/i,
-  note: /^confirm delete$/i,
+  note: new RegExp(`^${NOTE_ROW_WORDS.confirmDelete}$`, "i"),
 } as const;
 
 /** Makes every first press in the tab and waits for each confirm to

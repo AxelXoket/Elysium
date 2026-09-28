@@ -83,6 +83,16 @@ export function acceptNote(id: number, chatId: number) {
   });
 }
 
+/** Keep a note the automatic switch already accepted: the saved-notes
+ *  card's "Keep". The server stamps `hand_accepted_at` once, so "Undo this
+ *  run" keeps the note and the card does not ask about it again. */
+export function keepNote(id: number, chatId: number) {
+  return request(
+    `/notebook/entries/${id}/keep?chat_id=${chatId}`, NotebookEntrySchema, {
+    method: "POST",
+  });
+}
+
 export function deleteNote(id: number, chatId: number) {
   return request(
     `/notebook/entries/${id}?chat_id=${chatId}`, NotebookOkSchema, {

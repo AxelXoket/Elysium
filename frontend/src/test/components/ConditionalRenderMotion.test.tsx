@@ -25,6 +25,10 @@
  * inline note labels (`state === "retired"` and friends inside a row),
  * the Pin/PinOff icon swap, and the model-note paragraph that IP-02 wraps.
  */
+import { UNDO_RUN_CONFIRM } from "@/components/notebook/backfillProse";
+import {
+  CHOICE_UNREAD, LIMITS_UNREAD, NOTES_UNREAD, NOTE_ROW_WORDS,
+} from "@/components/notebook/noteProse";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -74,6 +78,11 @@ function expectHeldClosed(node: HTMLElement | null, what: string) {
 /** A line of text by its words, through the accessibility tree. The
  *  notebook lines are plain paragraphs, live regions or alerts, so all
  *  three roles are searched; a closed Collapse hides them from all three. */
+/** A whole line, matched exactly, from the imported constant. */
+function exactly(words: string): RegExp {
+  return new RegExp(`^${words.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
+}
+
 function paragraph(re: RegExp): HTMLElement | null {
   return [
     ...screen.queryAllByRole("paragraph"),
@@ -114,7 +123,7 @@ describe("NotebookPanel", () => {
     renderWithQueryClient(<NotebookPanel />);
 
     expectShownInside(paragraph(/^loading/i), "collapse", "the loading line");
-    expectHeldClosed(paragraphInDom(/could not be loaded/i), "the error line");
+    expectHeldClosed(paragraphInDom(exactly(NOTES_UNREAD)), "the error line");
     expectHeldClosed(paragraphInDom(/nothing yet/i), "the empty state");
     expectHeldClosed(paragraphInDom(/no note matches that/i), "the no-match line");
     // The strip and the search box are Collapses too: mounted, unreachable.
@@ -128,7 +137,7 @@ describe("NotebookPanel", () => {
     mockFetch({ "/notebook/7": { status: 500, body: { detail: "boom" } } });
     renderWithQueryClient(<NotebookPanel />);
     await waitFor(() =>
-      expectShownInside(paragraph(/could not be loaded/i), "collapse", "the error line"));
+      expectShownInside(paragraph(exactly(NOTES_UNREAD)), "collapse", "the error line"));
     expectHeldClosed(paragraphInDom(/^loading/i), "the loading line");
     expectHeldClosed(paragraphInDom(/nothing yet/i), "the empty state");
   });
@@ -139,7 +148,7 @@ describe("NotebookPanel", () => {
     await waitFor(() =>
       expectShownInside(paragraph(/nothing yet/i), "collapse", "the empty state"));
     expectHeldClosed(paragraphInDom(/no note matches that/i), "the no-match line");
-    expectHeldClosed(paragraphInDom(/could not be loaded/i), "the error line");
+    expectHeldClosed(paragraphInDom(exactly(NOTES_UNREAD)), "the error line");
   });
 
   it("over a long list: the search box opens, and a query opens the clear button and the no-match line", async () => {
@@ -166,33 +175,34 @@ describe("NotebookPanel", () => {
     expectHeldClosed(paragraphInDom(/nothing yet/i), "the empty state");
   });
 
-  it("a user's own note: the strip stays closed, the delete trigger fades in, and the confirm pair replaces it", async () => {
+  it("a user's own note: the strip stays closed, the delete trigger fades in, and the confirm pair opens in its place", async () => {
     const user = userEvent.setup();
     mockFetch({ "/notebook/7": { body: { entries: [entry()], notebook_chars: 10 } } });
     renderWithQueryClient(<NotebookPanel />);
-    const trigger = await screen.findByRole("button", { name: /delete note/i });
+    const trigger = await screen.findByRole("button", { name: NOTE_ROW_WORDS.delete });
     expectShownInside(trigger, "fade-in", "the delete trigger");
     expectHeldClosed(screen.queryByTestId("just-saved"), "the just-saved strip");
     // An accepted note has no Keep-suggestion button; FadeIn means not rendered.
-    expect(screen.queryByRole("button", { name: /keep suggestion/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /confirm delete/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: NOTE_ROW_WORDS.keep })).toBeNull();
+    expect(screen.queryByRole("button", { name: NOTE_ROW_WORDS.confirmDelete })).toBeNull();
 
     await user.click(trigger);
-    const confirm = await screen.findByRole("button", { name: /confirm delete/i });
+    const confirm = await screen.findByRole("button", { name: NOTE_ROW_WORDS.confirmDelete });
     expectShownInside(confirm, "fade-in", "the confirm button");
-    expectShownInside(
-      screen.getByRole("button", { name: /keep note/i }), "fade-in", "the keep button");
-    // The pair shares one fade, so the row keeps its layout.
-    expect(confirm.closest('[data-slot="fade-in"]'))
-      .toBe(screen.getByRole("button", { name: /keep note/i }).closest('[data-slot="fade-in"]'));
-    expect(screen.queryByRole("button", { name: /delete note/i })).toBeNull();
+    const cancel = screen.getByRole("button", { name: NOTE_ROW_WORDS.cancelDelete });
+    expectShownInside(cancel, "fade-in", "the cancel button");
+    // The pair shares one fade, under the words, in a Collapse.
+    expect(confirm.closest('[data-slot="fade-in"]')).toBe(cancel.closest('[data-slot="fade-in"]'));
+    expectShownInside(confirm, "collapse", "the delete question");
+    // The trigger keeps its place but is out of reach while the question is open.
+    expect(screen.queryByRole("button", { name: NOTE_ROW_WORDS.delete })).toBeNull();
   });
 
   it("a proposal: the Keep-suggestion button fades in", async () => {
     mockFetch({ "/notebook/7": { body: { entries: [modelNote({ status: "proposed" })], notebook_chars: 10 } } });
     renderWithQueryClient(<NotebookPanel />);
     expectShownInside(
-      await screen.findByRole("button", { name: /keep suggestion/i }), "fade-in", "the accept button");
+      await screen.findByRole("button", { name: NOTE_ROW_WORDS.keep }), "fade-in", "the accept button");
   });
 
   it("a note the model saved: the strip opens, and Undo cross-fades into its confirmation", async () => {
@@ -260,7 +270,7 @@ describe("BoundaryPanel", () => {
       await screen.findByRole("switch", { name: /use my global limits/i }), "collapse", "the global switch");
     await screen.findByText("no gore");
     expectHeldClosed(paragraphInDom(/no limits set/i), "the empty line");
-    expectHeldClosed(paragraphInDom(/could not be loaded/i), "the error line");
+    expectHeldClosed(paragraphInDom(exactly(LIMITS_UNREAD)), "the error line");
 
     const trigger = screen.getByRole("button", { name: /^delete limit$/i });
     expectShownInside(trigger, "fade-in", "the delete trigger");
@@ -293,7 +303,7 @@ describe("BoundaryPanel", () => {
     mockFetch({ "/notebook/7/boundaries": { status: 500, body: { detail: "boom" } } });
     renderWithQueryClient(<BoundaryPanel />);
     await waitFor(() =>
-      expectShownInside(paragraph(/could not be loaded/i), "collapse", "the error line"));
+      expectShownInside(paragraph(exactly(LIMITS_UNREAD)), "collapse", "the error line"));
     expectHeldClosed(paragraphInDom(/no limits set/i), "the empty line");
   });
 });
@@ -544,7 +554,7 @@ describe("BackfillStrip", () => {
 
     await user.click(undo);
     // mode="wait": the confirm pane mounts once the undo pane has left.
-    const confirm = await screen.findByRole("button", { name: /^remove all 14$/i });
+    const confirm = await screen.findByRole("button", { name: UNDO_RUN_CONFIRM });
     expectShownInside(confirm, "cross-fade", "the confirm button");
     expect(paneOf(confirm)).toBe("confirm");
     const keep = screen.getByRole("button", { name: /^cancel$/i });
@@ -563,11 +573,11 @@ describe("BackfillStrip", () => {
     const user = userEvent.setup();
     mountStrip({ backfill: backfillJob({ notes_written: 14 }) }, {
       "POST /notebook/extract/undo/17": { body: {
-        job_id: 17, removed: 12, kept_pinned: 2, kept_edited: 0 } },
+        job_id: 17, removed: 12, kept_pinned: 2, kept_edited: 0, kept_accepted: 0, kept_older: 0 } },
     });
     await user.click(await screen.findByRole("button", { name: /undo this run/i }));
     await user.click(
-      await screen.findByRole("button", { name: /^remove all 14$/i }));
+      await screen.findByRole("button", { name: UNDO_RUN_CONFIRM }));
     const undone = await screen.findByTestId("backfill-undone");
     expectShownInside(undone, "cross-fade", "the undo answer");
     expect(paneOf(undone)).toBe("undone");
@@ -635,8 +645,8 @@ describe("ExtractionSettings", () => {
     renderWithQueryClient(<ExtractionSettings />);
     await waitFor(() =>
       expectShownInside(
-        screen.queryAllByRole("alert").find((a) => /saved choice could not be read/i.test(a.textContent ?? "")) ?? null,
-        "collapse", "the settings alert"));
+        screen.queryAllByRole("status").find((a) => a.textContent === CHOICE_UNREAD) ?? null,
+        "collapse", "the settings line"));
   });
 
   it("when it can: the alert is held closed", async () => {
@@ -646,7 +656,7 @@ describe("ExtractionSettings", () => {
     });
     renderWithQueryClient(<ExtractionSettings />);
     await screen.findByText(/suggestions are off/i);
-    expectHeldClosed(paragraphInDom(/saved choice could not be read/i), "the settings alert");
+    expectHeldClosed(paragraphInDom(exactly(CHOICE_UNREAD)), "the settings line");
     expect(within(document.body).queryByRole("alert")).toBeNull();
   });
 });

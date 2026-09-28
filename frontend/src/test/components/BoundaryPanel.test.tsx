@@ -6,6 +6,7 @@
  * set, and the moment the global toggle fails to save. Both are tested here,
  * because both look like a working limit list otherwise.
  */
+import { LIMITS_UNREAD } from "@/components/notebook/noteProse";
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -335,7 +336,7 @@ describe("the safeword", () => {
     // to a model; this one is not, and a user reaching for it in a bad moment
     // needs to know which kind it is.
     mount();
-    expect(await screen.findByText(/not a request to the model; it is checked here/i))
+    expect(await screen.findByText(/it is checked here, not asked of the model/i))
       .toBeInTheDocument();
   });
 
@@ -592,7 +593,7 @@ describe("when the limits cannot be loaded", () => {
     await waitFor(() =>
       // The line is mounted closed before it opens (Collapse), so
       // "says so" is asked of the accessibility tree.
-      expect(hiddenFromReaders(screen.getByText(/could not be loaded/i))).toBe(false));
+      expect(hiddenFromReaders(screen.getByText(LIMITS_UNREAD))).toBe(false));
     expect(hiddenFromReaders(screen.queryByText(/no limits set/i))).toBe(true);
   });
 
@@ -608,7 +609,7 @@ describe("when the limits cannot be loaded", () => {
       // The line is mounted closed before it opens (Collapse), so
       // "says so" is asked of the accessibility tree.
       expect(hiddenFromReaders(screen.getByText(/no limits set/i))).toBe(false));
-    expect(hiddenFromReaders(screen.queryByText(/could not be loaded/i))).toBe(true);
+    expect(hiddenFromReaders(screen.queryByText(LIMITS_UNREAD))).toBe(true);
   });
 
   it("says neither when there are limits to show", async () => {
@@ -621,7 +622,7 @@ describe("when the limits cannot be loaded", () => {
 
     expect(await screen.findByText("no gore")).toBeInTheDocument();
     expect(hiddenFromReaders(screen.queryByText(/no limits set/i))).toBe(true);
-    expect(hiddenFromReaders(screen.queryByText(/could not be loaded/i))).toBe(true);
+    expect(hiddenFromReaders(screen.queryByText(LIMITS_UNREAD))).toBe(true);
   });
 
   it("says so with no chat open, when the GLOBAL list is the one that failed",
@@ -638,7 +639,7 @@ describe("when the limits cannot be loaded", () => {
       await waitFor(() =>
       // The line is mounted closed before it opens (Collapse), so
       // "says so" is asked of the accessibility tree.
-      expect(hiddenFromReaders(screen.getByText(/could not be loaded/i))).toBe(false));
+      expect(hiddenFromReaders(screen.getByText(LIMITS_UNREAD))).toBe(false));
       expect(hiddenFromReaders(screen.queryByText(/no limits set/i))).toBe(true);
     });
 });

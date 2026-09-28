@@ -24,7 +24,9 @@
 import { useId } from "react";
 
 import { SlideIn } from "@/components/motion/SlideIn";
-import { Collapse } from "@/components/motion/Collapse";
+import { settledAt } from "@/components/notebook/useRetryPress";
+import { SettingUnread } from "@/components/notebook/SettingUnread";
+import { CHOICE_UNREAD } from "@/components/notebook/noteProse";
 import {
   Select,
   SelectContent,
@@ -212,12 +214,13 @@ export function ExtractionSettings() {
           </p>
         )}
 
-        <Collapse open={settings.isError} className="min-w-0">
-          <p className="persona-local-error" role="alert">
-            Your saved choice could not be read, so this panel does not know
-            whether suggestions are on. Nothing was changed.
-          </p>
-        </Collapse>
+        <SettingUnread
+          open={settings.isError}
+          text={CHOICE_UNREAD}
+          retrying={settings.isFetching}
+          settled={settledAt(settings)}
+          onRetry={() => void settings.refetch()}
+        />
 
         <label className="block space-y-1">
           <span

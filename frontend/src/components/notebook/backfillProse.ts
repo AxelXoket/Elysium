@@ -47,6 +47,52 @@ export const SCOPE_LABELS: Record<BackfillScope, string> = {
   range: "A range of messages, read again",
 };
 
+/** The range block's own words. The two field names are also what a screen
+ *  reader calls the fields; the rest is why "Start reading" is off, said
+ *  where the reader is looking. None of them mentions an id: the fields take
+ *  a message's place in this chat, 1 to N, which the chat itself shows. */
+export const RANGE_WORDS = {
+  firstLabel: "First message",
+  lastLabel: "Last message",
+  /** While both ends are empty. Action first, and both ways in: the book
+   *  icon on a message (the same book as the tab's Read button), or a
+   *  number. */
+  pick: "Pick messages with the book icon in the chat, or type numbers.",
+  /** Once the first end is set and the last is not. */
+  pickLast: "Pick the last message with the book icon, or type its number.",
+  /** Once the last end is set and the first is not. */
+  pickFirst: "Pick the first message with the book icon, or type its number.",
+  /** While the chat's messages are still on their way. */
+  loading: "Loading this chat's messages...",
+  /** When they could not be read; a Try again sits beside it. */
+  unread: "Could not load this chat's messages.",
+  noMessages: "This chat has no messages to read yet.",
+  /** Two typed numbers the wrong way round. What to do, then why. */
+  order: "Swap the numbers so the first comes before the last.",
+} as const;
+
+/** A typed place that is not in this chat: what to type instead, with the
+ *  chat's size in it. The number typed is not repeated back; the reader
+ *  can see it in the box. */
+export function noSuchMessage(total: number): string {
+  return total === 1
+    ? "Type 1. This chat has one message."
+    : `Type a number from 1 to ${total}.`;
+}
+
+/** The chosen range in words, the way the chat counts: "Messages 3 to 12
+ *  of 12." A range a pick had to turn round says so, because the reader
+ *  clicked the two ends the other way up and should not have to work out
+ *  why the numbers read backwards from what they did. */
+export function rangeSummary(
+  first: number, last: number, total: number, swapped: boolean,
+): string {
+  const what = first === last
+    ? `Message ${first} of ${total} only.`
+    : `Messages ${first} to ${last} of ${total}.`;
+  return swapped ? `${what} First and last were swapped.` : what;
+}
+
 /** Why the preview says a run cannot start, per `blocked_by` token.
  *
  *  SIX KEYS, one per member of the backend's `_BLOCKER_REFUSALS`, and the
@@ -203,15 +249,55 @@ export function outcomeProse(job: BackfillStatus): string {
   }
 }
 
-/** The undo answer, with the numbers from the body: what went and what was
- *  kept because the reader had made it theirs. */
+/** The undo question, before anything is removed: what goes and what
+ *  stays, true to `delete_job_notes` (a note the reader kept, pinned or
+ *  edited is not removed). */
+export const UNDO_RUN_ASK =
+  "Remove this run's untouched notes? Notes you kept, pinned or edited stay.";
+
+/** The button that answers it; its words are its accessible name. */
+export const UNDO_RUN_CONFIRM = "Remove untouched notes";
+
+/** The run's notes were all gone before the undo: nothing removed, nothing
+ *  kept. */
+export const UNDO_NOTHING_LEFT =
+  "Nothing to remove. Those notes were already gone.";
+
+/** One reason a note stayed, as a count, for the undo answer. `alone` is
+ *  how it reads when it is the only reason ("Kept 2 pinned notes."). */
+const KEPT_WHY: ReadonlyArray<{
+  key: "kept_pinned" | "kept_edited" | "kept_accepted" | "kept_older";
+  word: string;
+  alone: (n: number) => string;
+}> = [
+  { key: "kept_pinned", word: "pinned",
+    alone: (n) => `${n} pinned ${n === 1 ? "note" : "notes"}` },
+  { key: "kept_edited", word: "edited",
+    alone: (n) => `${n} edited ${n === 1 ? "note" : "notes"}` },
+  { key: "kept_accepted", word: "kept",
+    alone: (n) => `${n} ${n === 1 ? "note" : "notes"} you chose to keep` },
+  { key: "kept_older", word: "earlier",
+    alone: (n) => `${n} earlier ${n === 1 ? "note" : "notes"}` },
+];
+
+/** The undo answer, from the body's numbers: what went, then what stayed,
+ *  counted by why, in the words the tab's own buttons use.
+ *
+ *    "Removed 9 notes. Kept 5: 1 pinned, 1 edited, 1 kept, 2 earlier."
+ *    "Removed 3 notes. Kept 2 pinned notes."   (one reason only)
+ *
+ *  Every count comes from an exact mark on the note (the server's
+ *  `delete_job_notes`): pinned = pinned now, edited = words changed, kept =
+ *  Keep pressed, earlier = written before the app recorded any of that.
+ *  None is claimed without its mark. Two sentences, each at most 12 words. */
 export function undoProse(out: BackfillUndo): string {
-  const kept = out.kept_pinned + out.kept_edited;
-  const removed = `${counted(out.removed, "note", "notes")} removed`;
-  if (kept === 0) return `${removed}.`;
-  const why: string[] = [];
-  if (out.kept_pinned) why.push(`${out.kept_pinned} pinned`);
-  if (out.kept_edited) why.push(`${out.kept_edited} edited`);
-  return `${removed}; ${kept} kept because you had made ${kept === 1 ? "it" : "them"} `
-    + `yours (${why.join(", ")}).`;
+  const why = KEPT_WHY.filter((w) => out[w.key] > 0);
+  const kept = why.reduce((n, w) => n + out[w.key], 0);
+  if (out.removed === 0 && kept === 0) return UNDO_NOTHING_LEFT;
+  const removed = out.removed === 0
+    ? "Removed nothing."
+    : `Removed ${counted(out.removed, "note", "notes")}.`;
+  if (kept === 0) return removed;
+  if (why.length === 1) return `${removed} Kept ${why[0].alone(out[why[0].key])}.`;
+  return `${removed} Kept ${kept}: ${why.map((w) => `${out[w.key]} ${w.word}`).join(", ")}.`;
 }

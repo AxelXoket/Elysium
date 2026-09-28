@@ -20,6 +20,10 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { useUiStore } from "@/lib/store/uiStore";
 import { SwitchRow } from "@/components/settings/SwitchRow";
+import { settledAt } from "@/components/notebook/useRetryPress";
+import { SettingUnread } from "@/components/notebook/SettingUnread";
+import { PendingButton } from "@/components/notebook/PendingButton";
+import { SETTING_LOADING } from "@/components/notebook/noteProse";
 import { useHeldValue } from "@/components/settings/useHeldValue";
 import { SlideIn } from "@/components/motion/SlideIn";
 import { Collapse } from "@/components/motion/Collapse";
@@ -38,6 +42,10 @@ import {
   useSetAutoAccept,
   useSetChatAutoAccept,
 } from "@/lib/query/notebook";
+
+/** The auto-accept switch's id, so "Try again" can hand it focus once its
+ *  value has been read. */
+const AUTO_ACCEPT_SWITCH = "auto-accept-switch";
 
 /** Why a run was refused, in words. These are machine tokens on the wire and
  *  must not reach a reader as such.
@@ -607,22 +615,51 @@ export function WorkerPanel() {
             voice control could not address the switch by what it says -
             and here it also duplicated the name, which is worse. SwitchRow
             is that rule made into a component. */}
-        <SwitchRow
-          checked={auto.data?.enabled ?? true}
-          // Not operable until the stored value is known: a switch that
-          // shows a guess and accepts a click is the "you believe it is in
-          // force and it is not" failure this feature warns about.
-          disabled={setAuto.isPending || !auto.isSuccess}
-          onCheckedChange={(v) => void toggle(v)}
-        >
-          Keep suggestions without asking
-        </SwitchRow>
+        {/* NO SWITCH UNTIL THE VALUE IS KNOWN. A two-state switch cannot
+            say "unknown": drawn off it reads as off, and a screen reader
+            says "off". So until the stored value is read there is no switch
+            here at all - its name, and a line that says it is loading or
+            could not be read, with Try again. The line that explains "Off"
+            waits for the value too. It used to be drawn ON (`?? true`),
+            then OFF; both were guesses. */}
+        {auto.isSuccess ? (
+          <SwitchRow
+            id={AUTO_ACCEPT_SWITCH}
+            checked={auto.data.enabled}
+            disabled={setAuto.isPending}
+            onCheckedChange={(v) => void toggle(v)}
+          >
+            Keep suggestions without asking
+          </SwitchRow>
+        ) : (
+          <p className="text-ui leading-relaxed text-muted-foreground">
+            Keep suggestions without asking
+          </p>
+        )}
+        {/* The first read only: a retry keeps its own line open instead. */}
+        <Collapse open={auto.isPending && auto.errorUpdateCount === 0} className="min-w-0">
+          <p className="text-label leading-relaxed text-muted-foreground" role="status">
+            {SETTING_LOADING}
+          </p>
+        </Collapse>
+        <SettingUnread
+          open={auto.isError}
+          retrying={auto.isFetching}
+          settled={settledAt(auto)}
+          onRetry={() => void auto.refetch()}
+          // The id lands on Base UI's hidden checkbox, not on the switch
+          // the reader sees; the switch is its role="switch" sibling.
+          focusAfter={() => document.getElementById(AUTO_ACCEPT_SWITCH)
+            ?.closest("label")?.querySelector<HTMLElement>('[role="switch"]') ?? null}
+        />
 
-        <p className="text-label leading-relaxed text-muted-foreground">
-          Off, a suggestion waits in the list until you keep it, and is not
-          sent to the model meanwhile. A chat opened from an imported card
-          always waits, whatever this says.
-        </p>
+        <Collapse open={auto.isSuccess} className="min-w-0">
+          <p className="text-label leading-relaxed text-muted-foreground">
+            Off, a suggestion waits in the list until you keep it, and is not
+            sent to the model meanwhile. A chat opened from an imported card
+            always waits, whatever this says.
+          </p>
+        </Collapse>
 
         {/* WHAT THIS CHAT WILL ACTUALLY DO.
             The switch above is the GLOBAL setting; a chat can carry its own
@@ -657,11 +694,13 @@ export function WorkerPanel() {
                   ? " - this chat decides, not the switch above."
                   : "."}
               </p>
-              <Button
+              <PendingButton
                 type="button"
                 size="sm"
                 variant="ghost"
-                disabled={setChatAuto.isPending}
+                // Keeps the keyboard while it saves: its words change in
+                // place, and a disabled button would have dropped focus.
+                pending={setChatAuto.isPending}
                 data-testid="chat-auto-accept-toggle"
                 onClick={() => void overrideForThisChat(
                   auto.data.overridden
@@ -674,7 +713,7 @@ export function WorkerPanel() {
                   : ((auto.data.effective ?? auto.data.enabled)
                       ? "Hold this chat's suggestions for review"
                       : "Keep this chat's suggestions without asking")}
-              </Button>
+              </PendingButton>
             </div>
           )}
         </Collapse>

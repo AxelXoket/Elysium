@@ -15,6 +15,8 @@ import {
 } from "@/lib/chat";
 import { useUiStore } from "@/lib/store/uiStore";
 import { useDraftStore, editDraftKey } from "@/lib/store/draftStore";
+import { messageAnchor } from "@/lib/chat/chatActions";
+import { NOTE_RANGE_WORDS, useNoteRangeStore } from "@/lib/chat/noteRange";
 import { bubbleSurface } from "@/lib/appearance/bubbleSurface";
 import {
   fetchImageObjectUrl,
@@ -30,6 +32,9 @@ import {
   ChevronRight,
   CornerDownLeft,
   Scissors,
+  ArrowDownFromLine,
+  ArrowDownToLine,
+  BookOpen,
 } from "lucide-react";
 
 /**
@@ -184,6 +189,30 @@ export const MessageBubble = memo(function MessageBubble({
   const deleteMessage = useDeleteMessageAndFollowing();
   const isUser = message.role === "user";
   const isPersisted = message.id > 0;
+  // THE NOTES RANGE, picked here rather than typed as ids nobody can see
+  // (lib/chat/noteRange.ts has the whole cycle). Both selectors return a
+  // primitive, so a pick re-renders the bubbles whose answer changed and no
+  // other: `next` flips every bubble of this chat once per pick, the mark
+  // only the one or two bubbles it names. Nothing here scans `messages`;
+  // the store does that once, on the press.
+  const anchor = messageAnchor(message);
+  const rangeNext = useNoteRangeStore((s) => s.byChat[chatId]?.next ?? "from");
+  const rangeMark = useNoteRangeStore((s) => {
+    const r = s.byChat[chatId];
+    if (!r) return null;
+    if (r.from === anchor && r.to === anchor) return "only" as const;
+    if (r.from === anchor) return "from" as const;
+    if (r.to === anchor) return "to" as const;
+    return null;
+  });
+  const pickRange = () => {
+    useNoteRangeStore.getState().pick(chatId, messages, anchor);
+    // The strip that shows the pick lives in the Notes tab; a pick the
+    // reader cannot see is a silent action, so the tab comes forward.
+    const ui = useUiStore.getState();
+    ui.setActiveRightPanelTab("notebook");
+    if (ui.rightPanelCollapsed) ui.toggleRightPanel();
+  };
   // Who is speaking was carried by alignment and bubble colour alone, and a
   // screen reader hears neither. The label below is the single source of that
   // fact: the bubble is named BY it rather than repeating it in an aria-label,
@@ -336,6 +365,23 @@ export const MessageBubble = memo(function MessageBubble({
   }, [confirmEdit]);
 
   const handleDelete = () => {
+    if (deleteMessage.isPending) return;
+    // WHERE THE KEYBOARD GOES. This bubble, and every one after it, leaves
+    // the list once the delete succeeds (the mutation drops the rows then),
+    // and the Delete button the keyboard is on goes with it. So the
+    // keyboard moves NOW, to what will stay: the message before this one
+    // (its first action), else the composer when it can take focus, else
+    // the chat area itself - never the page's body.
+    const shell = confirmDeleteButtonRef.current?.closest(".message-bubble-shell");
+    const shells = [...document.querySelectorAll<HTMLElement>(".message-bubble-shell")];
+    const before = shell ? shells[shells.indexOf(shell as HTMLElement) - 1] : undefined;
+    const composer = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
+    const canvas = document.querySelector<HTMLElement>("main.warm-canvas");
+    if (canvas && !canvas.hasAttribute("tabindex")) canvas.tabIndex = -1;
+    const land = before?.querySelector<HTMLElement>(".message-action-button:not([disabled])")
+      ?? (composer && !composer.disabled ? composer : null)
+      ?? canvas;
+    land?.focus({ preventScroll: true });
     deleteMessage.mutate(
       { chatId, messageId: message.id },
       // onSettled, not onSuccess (v1.1 D2): a 404 must ALSO close the panel -
@@ -840,6 +886,40 @@ export const MessageBubble = memo(function MessageBubble({
                   <Trash2 size={13} />
                 )}
               </button>
+              {/* The notes range, from the message itself. ONE button whose
+                  name swaps with what the next press does, never two. The
+                  icon is the BOOK the Notes tab's own "Read" button carries,
+                  so the strip can name it in words ("the book icon").
+
+                  ON A SECOND LINE of the row, under the last button, and
+                  NOT counted in `data-actions`. The reserve on the right of
+                  the words is sized by that count, and so is the short-
+                  bubble minimum width; counting this button moved every
+                  plain message into the four-button bucket and made short
+                  bubbles about 75% wider. Below the first line it sits in
+                  the same reserved strip, so it never covers a word and no
+                  bubble changes size. Last in the DOM so Tab follows what
+                  the eye sees: the first line, then this. */}
+              {!editing && (
+                <button
+                  type="button"
+                  className="message-action-button is-second-row"
+                  data-testid="note-range-button"
+                  aria-label={
+                    rangeNext === "from"
+                      ? NOTE_RANGE_WORDS.pickFrom
+                      : NOTE_RANGE_WORDS.pickTo
+                  }
+                  title={
+                    rangeNext === "from"
+                      ? NOTE_RANGE_WORDS.pickFrom
+                      : NOTE_RANGE_WORDS.pickTo
+                  }
+                  onClick={pickRange}
+                >
+                  <BookOpen size={13} aria-hidden="true" />
+                </button>
+              )}
             </div>
           )}
 
@@ -1033,6 +1113,29 @@ export const MessageBubble = memo(function MessageBubble({
                 {TRUNCATED_MARK_TEXT}
               </span>
             )}
+            {/* Where the notes range starts and ends, said IN THE CHAT
+                while it is being picked, so the reader sees the two
+                messages they chose without looking at the panel. The
+                Truncated mark's own vocabulary (msg-chrome, text-micro,
+                13px icon), without its opacity-70: these words are new
+                and must read at full contrast. */}
+            {rangeMark && (
+              <span
+                className="msg-chrome flex items-center gap-1 text-micro"
+                data-testid="note-range-mark"
+              >
+                {rangeMark === "to" ? (
+                  <ArrowDownToLine size={13} aria-hidden="true" />
+                ) : (
+                  <ArrowDownFromLine size={13} aria-hidden="true" />
+                )}
+                {rangeMark === "from"
+                  ? NOTE_RANGE_WORDS.markFrom
+                  : rangeMark === "to"
+                    ? NOTE_RANGE_WORDS.markTo
+                    : NOTE_RANGE_WORDS.markOnly}
+              </span>
+            )}
             {showCounter && (
               <span
                 className="variant-counter"
@@ -1077,7 +1180,10 @@ export const MessageBubble = memo(function MessageBubble({
                   type="button"
                   className="inline-confirm-button is-danger"
                   onClick={handleDelete}
-                  disabled={isBusy}
+                  // Not `disabled` while its own delete runs: a disabled
+                  // button under the keyboard drops focus to the body.
+                  disabled={isBusy && !deleteMessage.isPending}
+                  aria-disabled={deleteMessage.isPending || undefined}
                 >
                   {deleteMessage.isPending ? "Deleting..." : "Delete"}
                 </button>

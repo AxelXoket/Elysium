@@ -1,7 +1,9 @@
+import { useCallback } from "react";
 import {
   useMutation,
   useQuery,
   useQueryClient,
+  type QueryClient,
 } from "@tanstack/react-query";
 
 import { keys } from "./keys";
@@ -16,6 +18,7 @@ import {
   patchNote,
   deleteNote,
   acceptNote,
+  keepNote,
   getWorkerStatus,
   resetWorker,
   getAutoAccept,
@@ -97,6 +100,38 @@ export const useDeleteNote = () =>
 
 export const useAcceptNote = () =>
   useNotebookMutation((id: number, chatId: number) => acceptNote(id, chatId));
+
+export const useKeepNote = () =>
+  useNotebookMutation((id: number, chatId: number) => keepNote(id, chatId));
+
+/** Sends the deletes a Discard held back (the row said "Suggestion
+ *  discarded." with an Undo while they waited), ONLY for notes that are
+ *  still suggestions in the list on hand: a note that became accepted in
+ *  the meantime is not deleted by a late discard. Ordinary requests; a
+ *  failed one leaves the suggestion where it was (it shows up again, it is
+ *  not lost). Resolves once every delete has settled. */
+export async function sendHeldDiscards(
+  qc: QueryClient, ids: readonly number[], chatId: number,
+): Promise<void> {
+  if (ids.length === 0) return;
+  const list = qc.getQueryData<{ entries: { id: number; status: string }[] }>(
+    keys.notebookEntries(chatId));
+  const stillSuggested = ids.filter((id) =>
+    list?.entries.find((e) => e.id === id)?.status === "proposed");
+  if (stillSuggested.length === 0) return;
+  await Promise.allSettled(stillSuggested.map((id) => deleteNote(id, chatId)));
+  await qc.invalidateQueries({ queryKey: keys.notebook() });
+}
+
+/** `sendHeldDiscards`, bound to the query client, for the panel's
+ *  leave-the-chat and unmount paths (a mutation hook of a component that is
+ *  going away cannot be used there). */
+export function useCommitDiscards() {
+  const qc = useQueryClient();
+  return useCallback((ids: readonly number[], chatId: number) => {
+    void sendHeldDiscards(qc, ids, chatId);
+  }, [qc]);
+}
 
 export const useReorderNotes = () =>
   useNotebookMutation((chatId: number, ids: number[]) =>

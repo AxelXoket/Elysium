@@ -10,7 +10,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { NotebookEntrySchema } from "@/lib/schemas/notebook";
+import { BackfillUndoSchema, NotebookEntrySchema } from "@/lib/schemas/notebook";
 
 const ROW = {
   id: 1, chat_id: 7, position: 0, kind: "fact", text: "Mira keeps the mill.",
@@ -40,5 +40,21 @@ describe("the two marks on the wire", () => {
     expect(parsed.hand_accepted_at ?? null).toBeNull();
     // Positive control for the parse itself: a neighbouring field survives.
     expect(parsed.updated_at).toBe(ROW.updated_at);
+  });
+});
+
+describe("the undo answer on the wire", () => {
+  const BODY = { job_id: 17, removed: 1, kept_pinned: 1, kept_edited: 1 };
+
+  it("carries all four kept counts", () => {
+    const parsed = BackfillUndoSchema.parse({ ...BODY, kept_accepted: 2, kept_older: 3 });
+    expect(parsed.kept_accepted).toBe(2);
+    expect(parsed.kept_older).toBe(3);
+  });
+
+  it("refuses an answer without the two new counts", () => {
+    // A server that still sends the old shape must not be read as "kept 0
+    // you kept": the sentence would then be false.
+    expect(() => BackfillUndoSchema.parse(BODY)).toThrow();
   });
 });

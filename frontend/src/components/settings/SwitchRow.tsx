@@ -31,6 +31,10 @@ export interface SwitchRowProps {
   className?: string;
   /** Extra classes on the text span. */
   labelClassName?: string;
+  /** An id for the control. Base UI puts it on the switch's hidden
+   *  checkbox, not on the role="switch" element the reader sees: to hand
+   *  the switch focus, find that element next to it (WorkerPanel does). */
+  id?: string;
 }
 
 export function SwitchRow({
@@ -41,6 +45,7 @@ export function SwitchRow({
   "aria-label": ariaLabel,
   className,
   labelClassName,
+  id,
 }: SwitchRowProps) {
   return (
     <label className={cn("flex items-center gap-2", className)}>
@@ -49,6 +54,10 @@ export function SwitchRow({
         disabled={disabled}
         onCheckedChange={onCheckedChange}
         aria-label={ariaLabel}
+        id={id}
+        // The primitive's own focus ring is a 50% halo that measured under
+        // 2:1 on the light panels; this adds the house outline.
+        className="persona-switch-ring"
       />
       <span
         className={cn(

@@ -134,8 +134,14 @@ class TestTheMigrationFromThePreviousShape:
             "ORDER BY name").fetchall()]
         old_cols = {t: [c for c in _columns(con, t)
                         if (t, c) not in _NEW_COLUMNS] for t in tables}
-        return {t: _rows(con, t, old_cols[t]) for t in tables
-                if t not in database._RANGE_READING_TABLES}
+        out = {t: _rows(con, t, old_cols[t]) for t in tables
+               if t not in database._RANGE_READING_TABLES}
+        # The one row the record ADDS to an old table, taken out here and
+        # asserted on its own below: "nothing old changed" is about the rows
+        # that were there, and a new key is not one of them.
+        out["settings"] = [r for r in out["settings"]
+                           if r[0] != database.HAND_MARKS_SINCE_KEY]
+        return out
 
     def test_the_fixture_is_the_previous_shape(self, old_vault) -> None:
         """GROUND for every test in this class: without it the rest could
@@ -170,6 +176,15 @@ class TestTheMigrationFromThePreviousShape:
                 "59 a: the stamp stays 6")
             assert _fingerprint(con) == FINGERPRINTS[6]
             assert self._snapshot(con) == before, "an old row changed"
+            # ... and the one new row is there, later than every old note,
+            # so an undo can tell the old notes from the new ones.
+            since = con.execute(
+                "SELECT value FROM settings WHERE key = ?",
+                (database.HAND_MARKS_SINCE_KEY,)).fetchone()
+            assert since is not None, "the marks-since moment was not written"
+            newest = con.execute(
+                "SELECT MAX(created_at) FROM notebook_entries").fetchone()[0]
+            assert newest < since[0]
             for table in database._RANGE_READING_TABLES:
                 assert con.execute(
                     f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0

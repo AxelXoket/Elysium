@@ -78,7 +78,7 @@ describe("the backfill job mutations", () => {
     const qc = createTestQueryClient();
     const spy = vi.spyOn(qc, "invalidateQueries");
     mockFetch({ "POST /notebook/extract/undo/1": {
-      body: { job_id: 1, removed: 2, kept_pinned: 0, kept_edited: 0 } } });
+      body: { job_id: 1, removed: 2, kept_pinned: 0, kept_edited: 0, kept_accepted: 0, kept_older: 0 } } });
     const { result } = renderHookWithQueryClient(() => useUndoBackfill(), { client: qc });
     await result.current.mutateAsync([1, 7]);
     await waitFor(() => {

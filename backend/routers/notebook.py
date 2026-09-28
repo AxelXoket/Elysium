@@ -477,6 +477,21 @@ async def accept_entry(entry_id: int, chat_id: int) -> dict:
     return entry
 
 
+@router.post("/entries/{entry_id}/keep")
+async def keep_entry(entry_id: int, chat_id: int) -> dict:
+    """Keep a note the automatic switch already accepted: stamps
+    `hand_accepted_at` once (`notebook_store.mark_kept`), so "Undo this
+    run" keeps it and the saved-notes card does not ask about it again.
+    `chat_id` is REQUIRED and scopes the note, like accept."""
+    try:
+        entry = await anyio.to_thread.run_sync(
+            notebook.mark_kept, entry_id, chat_id)
+    except notebook.NotebookError as exc:
+        _refuse(exc)
+    logger.info("Notebook note kept by hand: id=%d", entry_id)
+    return entry
+
+
 @router.get("/{chat_id}")
 async def list_entries(chat_id: int) -> dict:
     """The notes, and what they COST - measured here, not re-derived there.
@@ -915,8 +930,10 @@ async def undo_backfill(job_id: int, chat_id: int) -> dict:
     from another chat. A job still running answers 409
     `notebook_backfill_running`: stop first, then undo.
 
-    Notes the reader has since pinned or edited are theirs and are left
-    alone, counted back as `kept_pinned` and `kept_edited`.
+    Notes the reader has since made theirs are left alone and counted back
+    by why: `kept_pinned`, `kept_edited`, `kept_accepted` (Keep pressed on
+    the suggestion), and `kept_older` (accepted before the vault recorded
+    who accepts). `notebook_store.delete_job_notes` has the rule.
     """
     import notebook_worker
 
