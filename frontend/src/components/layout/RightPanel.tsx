@@ -1,6 +1,5 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PanelMist } from "@/components/backdrop/MistCanvas";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { useUiStore } from "@/lib/store/uiStore";
 import { ModelPanel } from "@/components/models/ModelPanel";
 import { SettingsPanel } from "@/components/settings/SettingsPanel";
@@ -117,18 +116,24 @@ export function RightPanel() {
             because it is allowed to carry a user and a password inside it.
             That exclusion is argued in full in the draft store's header. */}
 
+        {/* All four tabs scroll on the tab body itself. Two of them handed
+            that job to a ScrollArea, which builds a viewport of its own and
+            draws its own bar inside it. The sheet already gives every
+            scroller in the app one appearance by name, and it reached that
+            viewport too, so the panel was carrying a library bar and a
+            native one at once and looked different depending on which tab
+            was open. A wrapper that replaces the scrolling element is also
+            what reading-place logic like lib/layout/holdReaderPlace.ts holds
+            on to, which is the reason the direction here is native rather
+            than the other way round. */}
         {/* Models tab */}
-        <TabsContent value="models" className="flex-1 overflow-hidden">
-          <ScrollArea className="h-full">
-            <ModelPanel />
-          </ScrollArea>
+        <TabsContent value="models" className="flex-1 overflow-y-auto">
+          <ModelPanel />
         </TabsContent>
 
         {/* Secrets tab - existing SettingsPanel, visually reframed */}
-        <TabsContent value="secrets" className="flex-1 overflow-hidden">
-          <ScrollArea className="h-full">
-            <SettingsPanel />
-          </ScrollArea>
+        <TabsContent value="secrets" className="flex-1 overflow-y-auto">
+          <SettingsPanel />
         </TabsContent>
 
         {/* Persona tab - shell only in Phase 6E-A, no persistence */}

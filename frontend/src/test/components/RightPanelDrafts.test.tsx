@@ -25,13 +25,24 @@
  *  - POSITIVE CONTROL for the credential exclusion: the proxy label DOES
  *    reach the store, which is what makes "the API key does not" a fact about
  *    the API key rather than about a scan that sees nothing anywhere.
+ *
+ * The last block in the file is about the panel's SCROLLING rather than its
+ * text (T-21 and T-21z). Two of the four tabs used to hand their scrolling to
+ * a library ScrollArea, which builds a viewport of its own and draws a bar of
+ * its own beside the native one, so the panel showed two different scrollbars
+ * depending on which tab was open. All four scroll on their own body now, and
+ * that block is what holds them to one appearance.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
+import type { Root } from "postcss";
+
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
+import { loadGlassRightCss } from "@/test/helpers/glassSurfaceCss";
+import { candidatesFor, parseSheet, winningDeclaration } from "@/test/helpers/compiledSheet";
 import { chooseOption } from "@/test/helpers/select";
 import { RightPanel } from "@/components/layout/RightPanel";
 import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
@@ -1395,4 +1406,211 @@ describe("panel buffer accounting", () => {
     expect(useDraftStore.getState().panel[KEY]?.bytes).toBe(MAX_DRAFT_BYTES);
     expect(useErrorStore.getState().errors).toHaveLength(0);
   });
+});
+
+/**
+ * T-21 and T-21z: one scrollbar appearance across the four tabs.
+ *
+ * The panel is mounted inside `.elysium-page`, the way `AppShell` mounts it,
+ * because that is the scope half of the question: the rule that draws a bar
+ * thin reaches a page scroller by descending from that class, and a panel
+ * rendered loose in the document would answer "no rule reaches me" for a
+ * reason that has nothing to do with the panel.
+ *
+ * jsdom computes no layout, so nothing here asks whether a bar is DRAWN. The
+ * two halves it can answer are asked instead: the geometry, injected the way
+ * `ChatCanvasScroll.test.tsx` injects it, decides whether a scroller has
+ * anything to scroll; and the compiled sheet decides what the bar on it would
+ * look like. T-21z is the ground for the first half and a bare div is the
+ * ground for the second.
+ */
+describe("one scrollbar across the right panel's tabs (T-21)", () => {
+  /** Every tab, by the label on its trigger and the value the store keeps. */
+  const TABS = ["Models", "Security", "Persona", "Notes"];
+
+  let root: Root;
+
+  beforeAll(async () => {
+    root = parseSheet(await loadGlassRightCss());
+  }, 60_000);
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useDraftStore.getState().clearAll();
+    useErrorStore.getState().clearAll();
+    useSeenNotesStore.setState({ byChat: {} });
+    useContextNotesStore.setState({ byChat: {} });
+    localStorage.clear();
+    sessionStorage.clear();
+    useUiStore.setState({
+      selectedChatId: CHAT_ID,
+      selectedCharacterId: null,
+      selectedModelId: null,
+      activeRightPanelTab: "models",
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  /** The panel inside the page scope, as the shell renders it. */
+  function renderInPage() {
+    return renderWithQueryClient(
+      <div className="elysium-page">
+        <RightPanel />
+      </div>,
+      { wrapper },
+    );
+  }
+
+  /**
+   * The element the open tab really scrolls on.
+   *
+   * Persona is the reason this is a search and not `getByRole("tabpanel")`:
+   * its tab body does not scroll, the panel component inside it does. The
+   * plan names that element, and measuring the body instead would report a
+   * scroller the user never touches.
+   */
+  function scrollerOfOpenTab(): HTMLElement {
+    const panel = screen.getByRole("tabpanel");
+    if (panel.classList.contains("overflow-y-auto")) return panel;
+    const inner = panel.querySelector<HTMLElement>(".overflow-y-auto");
+    if (inner) return inner;
+    if (panel.querySelector('[data-slot="scroll-area-viewport"]')) {
+      throw new Error(
+        "the open tab hands its scrolling to a ScrollArea viewport, which builds a " +
+          "scroller the sheet does not reach and draws a bar of its own beside the " +
+          "native one",
+      );
+    }
+    throw new Error("the open tab has no scroller in it");
+  }
+
+  /** Geometry, injected: jsdom reports 0 for both of these on everything. */
+  function give(el: HTMLElement, content: number, view: number): void {
+    Object.defineProperty(el, "scrollHeight", { value: content, configurable: true });
+    Object.defineProperty(el, "clientHeight", { value: view, configurable: true });
+  }
+
+  /** Whether this element has more than it can show. The one question about
+   *  a scrollbar that jsdom can answer at all. */
+  const overflows = (el: HTMLElement): boolean => el.scrollHeight > el.clientHeight;
+
+  const WIDTH = /^scrollbar-width$/;
+  const GUTTER = /^scrollbar-gutter$/;
+  /** The selectors of rules declaring `prop` that reach `el`. */
+  const cover = (el: Element, prop: RegExp): string[] => [
+    ...new Set(candidatesFor(root, el, prop).map((c) => c.selector)),
+  ];
+
+  /** Walk all four tabs and hand each one's scroller to `look`. */
+  async function eachTab(
+    look: (tab: string, scroller: HTMLElement) => void,
+  ): Promise<void> {
+    const user = userEvent.setup();
+    mockPanelApi();
+    renderInPage();
+    await screen.findByRole("textbox", { name: "Search models" });
+    for (const tab of TABS) {
+      await openTab(user, tab);
+      await waitFor(() => {
+        expect(screen.getByRole("tab", { name: tab })).toHaveAttribute(
+          "aria-selected",
+          "true",
+        );
+      });
+      look(tab, scrollerOfOpenTab());
+    }
+  }
+
+  it("all four tabs scroll on an element the sheet draws the same way", async () => {
+    const widths = new Map<string, string | undefined>();
+    const selectors = new Map<string, string>();
+    const overflowing: string[] = [];
+    await eachTab((tab, scroller) => {
+      // More content than view, so this is an element that would really show
+      // a bar. T-21z below is the ground for this line.
+      give(scroller, 2000, 600);
+      if (overflows(scroller)) overflowing.push(tab);
+      widths.set(tab, winningDeclaration(root, scroller, WIDTH)?.value);
+      selectors.set(tab, cover(scroller, WIDTH).sort().join(" | "));
+    });
+
+    // GROUND: all four were found, and all four had something to scroll.
+    expect(overflowing, "a tab's scroller does not overflow, so it would show no bar")
+      .toEqual(TABS);
+    // The claim. One value, and it is a real one.
+    const values = [...new Set(widths.values())];
+    expect(
+      values,
+      `the four tabs are drawn with ${[...widths].map(([t, w]) => `${t}=${w}`).join(", ")}`,
+    ).toHaveLength(1);
+    expect(values[0], "no rule in the sheet draws these scrollers at all").toBeDefined();
+    // And they get it the same WAY, not by four different routes that happen
+    // to agree today.
+    expect(
+      [...new Set(selectors.values())],
+      `the tabs are reached by different rules: ${[...selectors]
+        .map(([t, s]) => `${t} <- ${s}`)
+        .join("; ")}`,
+    ).toHaveLength(1);
+
+    // POSITIVE CONTROL for the reader: it is not answering this for
+    // everything. A div with none of the panel's classes is reached by
+    // nothing and has no winning value.
+    const stray = document.createElement("div");
+    expect(cover(stray, WIDTH)).toEqual([]);
+    expect(winningDeclaration(root, stray, WIDTH)).toBeNull();
+  }, 40_000);
+
+  it("T-21z GROUND: a tab with nothing to scroll shows no scrollbar", async () => {
+    // Without this, "all four overflow" above would pass on a reader that
+    // said yes to everything, and the case would be about nothing.
+    const quiet: string[] = [];
+    await eachTab((tab, scroller) => {
+      give(scroller, 400, 600);
+      if (!overflows(scroller)) quiet.push(tab);
+    });
+    expect(quiet, "a tab reported an overflow with less content than view").toEqual(TABS);
+  }, 40_000);
+
+  it("no tab renders a ScrollArea viewport (M-06-4)", async () => {
+    // Behaviour, not a file check: the four tabs are rendered and the tree
+    // is searched for the slot the library wrapper puts on its viewport. A
+    // wrapper that came back anywhere in the panel is found here.
+    const found: string[] = [];
+    const tabsRendered: string[] = [];
+    await eachTab((tab) => {
+      if (document.querySelector('[data-slot="scroll-area-viewport"]')) found.push(tab);
+      // GROUND for the query itself: the same kind of search, for a slot the
+      // panel really does render, comes back with something.
+      if (document.querySelector('[data-slot="tabs-content"]')) tabsRendered.push(tab);
+    });
+    expect(tabsRendered, "the slot query found nothing at all, so the absence proves nothing")
+      .toEqual(TABS);
+    expect(found, "a tab still hands its scrolling to a ScrollArea").toEqual([]);
+  }, 40_000);
+
+  it("the gutter does not change from tab to tab (M-06-5)", async () => {
+    // A reserved strip that comes and goes is a width jump on every tab
+    // click, which is the one thing a gutter exists to prevent.
+    const gutters = new Map<string, string | undefined>();
+    await eachTab((tab, scroller) => {
+      gutters.set(tab, winningDeclaration(root, scroller, GUTTER)?.value);
+    });
+    const values = [...new Set(gutters.values())];
+    expect(
+      values,
+      `the tabs reserve ${[...gutters].map(([t, g]) => `${t}=${g}`).join(", ")}`,
+    ).toHaveLength(1);
+    // Matching is not reserving: a rule that still reaches the element while
+    // saying `auto` reserves nothing and would pass a "one value" check on
+    // its own.
+    expect(values[0], "the tabs reserve no gutter at all").toBe("stable");
+    // POSITIVE CONTROL: the reader can say no. Nothing reserves a gutter for
+    // a bare div.
+    expect(winningDeclaration(root, document.createElement("div"), GUTTER)).toBeNull();
+  }, 40_000);
 });

@@ -62,7 +62,7 @@ const CSS = resolve(
  *    a two-stop gradient is two decisions.
  *  - Tailwind's OWN generated rules are skipped, by `generatedByTailwind`
  *    below. lib/theme/paletteBudget.ts carries the reason and the
- *    measurement that shows the remainder is the same 268 on the source file
+ *    measurement that shows the remainder is the same 262 on the source file
  *    and on the compiled sheet.
  */
 function countColourLiterals(root: Root): { direct: number; tokenised: number } {

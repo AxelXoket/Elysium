@@ -6,9 +6,11 @@
  * tabIndex 0. tabs.tsx paired that with a bare `outline-none` and no
  * `focus-visible:ring` companion, so a keyboard user tabbing into Models,
  * Security, Persona or Notes landed on a focusable element with zero visible
- * indicator - a WCAG 2.4.7 failure. scroll-area.tsx already carries the
- * house pattern for exactly this shape; the fix copies it rather than
- * inventing a new ring.
+ * indicator - a WCAG 2.4.7 failure. The house pattern for this shape is
+ * `focus-visible:ring-[3px] focus-visible:ring-ring/50`, which the trigger
+ * beside it already uses; the fix takes that rather than inventing a ring.
+ * It used to be copied from scroll-area.tsx, which carried the same pairing
+ * and has since been deleted with the library wrapper it wrapped.
  *
  * jsdom applies no stylesheet (see ContrastOrthogonality.test.tsx), so the
  * honest assertion here is the same one the rest of this suite already makes

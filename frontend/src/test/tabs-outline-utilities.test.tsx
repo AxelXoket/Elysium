@@ -19,11 +19,15 @@
  * left every one of them green - measured. The last block is the one that
  * guards: it renders the components and asserts which of them may carry the
  * pairing, which is the claim the rest of the file only explains.
+ *
+ * That block used to render a ScrollArea as a third suspect. The component
+ * no longer exists, so the suspects are the tab panel and the tab trigger,
+ * and the trigger case below is what keeps the pair from being deleted
+ * everywhere to make the first one pass.
  */
 import { beforeAll, describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { loadGlassRightCss } from "@/test/helpers/glassSurfaceCss";
 
@@ -111,15 +115,18 @@ describe("who is allowed to carry the pairing", () => {
 
   it("no element pairs outline-none with an outline width", () => {
     renderTabs();
-    render(<ScrollArea>scrolls</ScrollArea>);
 
+    // TWO suspects, not three. The third was a ScrollArea viewport, and that
+    // component is gone: the right panel's two library scrollers were the
+    // only thing rendering one, and they scroll on the tab body now like the
+    // other two tabs always did. The threshold moves with it, because a list
+    // that lost a member while the floor stayed at three would fail on the
+    // count before it ever looked at a class name.
     const suspects = [
       screen.getByRole("tabpanel"),
       screen.getAllByRole("tab")[0],
-      ...Array.from(document.querySelectorAll<HTMLElement>(
-        '[data-slot="scroll-area-viewport"]')),
     ];
-    expect(suspects.length).toBeGreaterThanOrEqual(3);
+    expect(suspects.length).toBeGreaterThanOrEqual(2);
 
     for (const el of suspects) {
       const dead = el.className.includes("outline-none")

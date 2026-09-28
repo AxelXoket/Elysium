@@ -23,10 +23,11 @@
  * reduce)` is counted exactly as one written at the top level.
  *
  * Measured on 19 September 2026 with one counter over both substrates, on
- * the tree that carries IP-03, IP-05 and IP-06 ADIM 1 together:
+ * the tree that carries the three tokenised families, the type scale and
+ * both halves of the scrollbar work:
  *
- *   index.css (source)   268 direct / 191 tokenised
- *   the compiled sheet   268 direct / 192 tokenised
+ *   index.css (source)   262 direct / 191 tokenised
+ *   the compiled sheet   262 direct / 192 tokenised
  *
  * The direct halves agree to the unit, which is why the guard could stop
  * reading the source file at all: reading the source was never the point, it
@@ -42,13 +43,28 @@
  * Measured, in order:
  *   416 direct / 107 tokenised   before this work (audit OLCUM item 3)
  *   269 direct / 189 tokenised   after the three heaviest families moved
- *   268 direct / 192 tokenised   with IP-06 ADIM 1's scrollbar work beside it
+ *   268 direct / 191 tokenised   once the scrollbar rules were rewritten
+ *   262 direct / 191 tokenised   once the webkit families were deleted
  *
- * The last line is what integration measured, not a second round of
- * tokenising: IP-06 ADIM 1 rewrote the scrollbar rules and came out one
- * direct literal lighter and three token definitions heavier. The ceiling
- * follows the count down in the same commit, which is what the ratchet
- * means; the floor is a minimum and stays where it was measured.
+ * The compiled sheet reads one token higher than the last two lines, 192
+ * rather than 191, and that difference is `--color-black` and nothing else:
+ * Tailwind emits its own theme default into `@layer theme` because a utility
+ * references it. The floor is a minimum, so it clears either way.
+ *
+ * The last two lines are not a second round of tokenising. Rewriting the
+ * scrollbar rules came out one direct literal lighter and two token
+ * definitions heavier - the two entries in `lib/theme/tokens.ts`, one thumb
+ * colour for light surfaces and one for dark. Deleting the
+ * `::-webkit-scrollbar` families those rules had made inert, and the
+ * ScrollArea's own thumb styling, then took six more, all of them thumb and
+ * hover colours. Four were colours nothing could
+ * paint: two on the page-wide family, two on the dark-wallpaper thumb. The
+ * other two were painted, by the thumb of the ScrollArea the Models and
+ * Security tabs scrolled in, and left with that component when both tabs
+ * moved to the panel's own native scroller. The ceiling follows the count
+ * down in the same commit, which is what the ratchet means; the floor is a
+ * minimum and stays where it was measured, because no token definition was
+ * deleted.
  *
  * Two of the tokenised literals are known dead and are counted anyway:
  * `--card: #1B2634` and `--card-foreground: #EAEEF3`. Their only consumer was
@@ -74,7 +90,7 @@
  */
 
 /** The most direct colour literals the sheet may carry. Goes down, never up. */
-export const LITERAL_CEILING = 268;
+export const LITERAL_CEILING = 262;
 
 /**
  * The fewest literals that must sit INSIDE a token definition.

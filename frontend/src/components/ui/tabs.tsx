@@ -73,8 +73,7 @@ function TabsContent({ className, ...props }: TabsPrimitive.Panel.Props) {
       data-slot="tabs-content"
       // base-ui hands this panel a real tab stop (role="tabpanel", tabIndex 0)
       // whenever it is the open one, so `outline-none` alone leaves a focused
-      // panel with no indicator at all - the same shape scroll-area.tsx already
-      // pairs correctly. Kept on the BASE class list, not appended after
+      // panel with no indicator at all. Kept on the BASE class list, not after
       // `className`, so a caller's own className cannot displace it: cn's
       // tailwind-merge only lets a later utility win within the same
       // variant+property group, and no caller here passes its own

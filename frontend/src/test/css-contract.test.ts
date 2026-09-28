@@ -61,6 +61,7 @@ import {
   declarationOnSelector,
   conditional,
   insetRightPx,
+  layerOf,
   nearestDeclaration,
   paintedStops,
   paintLayersBehind,
@@ -391,20 +392,6 @@ describe("reduced-transparency block", () => {
   });
 });
 
-describe("dark-wallpaper scrollbar", () => {
-  it("writes the dark-wallpaper thumb as a two-class rule and drops the one-class version", () => {
-    // Both match the SAME element: the scroller carries Tailwind's
-    // overflow-y-auto and sits inside .elysium-page. A single-class selector
-    // (0-1-1) lost to the page-wide two-class rule (0-2-1), so the thumb stayed
-    // dark-on-dark over a dark wallpaper.
-    expect(CSS).toContain(
-      ".elysium-page .chat-bg-dark::-webkit-scrollbar-thumb",
-    );
-    const bare = CSS.match(/(^|\n)\.chat-bg-dark::-webkit-scrollbar-thumb\s*\{/);
-    expect(bare, "the outranked single-class rule is still there").toBeNull();
-  });
-});
-
 describe("message-ink preview", () => {
   it("has something that can put the class on a preview", () => {
     // `.settings-preview.msg-ink-custom` existed but no component ever added
@@ -686,17 +673,18 @@ describe("the scrollbar look is granted by name, not by page scope (T-89)", () =
     return scrollerAround([panel], "the notebook tab");
   }
 
-  /** The right panel's models tab, whose scroller is a ScrollArea viewport
-   *  rather than a plain overflow container. It is the third selector of the
-   *  width rule and of the gutter rule, and the only element in the app that
-   *  either of them reaches by that name. */
-  async function modelsTabViewport(): Promise<Element> {
+  /** The right panel's models tab. It handed its scrolling to a ScrollArea
+   *  until the library wrapper came out; the tab body scrolls on itself now,
+   *  the same way the notebook tab always has, so it is reached by the
+   *  page's own selector rather than by a slot name. */
+  async function modelsTabScroller(): Promise<Element> {
     useUiStore.setState({ activeRightPanelTab: "models" });
     mountShell();
     const panel = await screen.findByRole("tabpanel");
-    const viewport = panel.querySelector('[data-slot="scroll-area-viewport"]');
-    if (!viewport) throw new Error("the models tab rendered no ScrollArea viewport");
-    return viewport;
+    if (!panel.classList.contains("overflow-y-auto")) {
+      throw new Error("the models tab does not scroll on its own body");
+    }
+    return panel;
   }
 
   /** The chat scroller on the light canvas (.warm-canvas), a chat selected. */
@@ -812,7 +800,7 @@ describe("the scrollbar look is granted by name, not by page scope (T-89)", () =
   const GUTTERED: Array<[string, Mount]> = [
     ["the generation dialog", generationSettingsDialog],
     ["a page scroller", characterListScroller],
-    ["a page ScrollArea viewport", modelsTabViewport],
+    ["the models tab", modelsTabScroller],
   ];
 
   it.each(GUTTERED)("POSITIVE CONTROL: %s does reserve a gutter", async (name, mount) => {
@@ -1655,6 +1643,16 @@ describe("the scrollbar look is granted by name, not by page scope (T-89)", () =
       unmodelledVeil: ".panel-mist-right .panel-mist-veil",
     },
     {
+      // The second right-panel scroller, and the one that CHANGED: this tab
+      // handed its scrolling to a library wrapper until ADIM 2, so its bar
+      // is drawn by a different rule than it was and the ground under that
+      // bar is measured again rather than assumed from the tab beside it.
+      name: "RightPanel models tab",
+      mount: modelsTabScroller,
+      boxes: PANEL_BOXES,
+      unmodelledVeil: ".panel-mist-right .panel-mist-veil",
+    },
+    {
       name: "ChatCanvas on the light canvas",
       mount: chatScroller,
       boxes: CANVAS_BOXES,
@@ -2356,17 +2354,25 @@ describe("the scrollbar look is granted by name, not by page scope (T-89)", () =
     ).toBeLessThan(1);
 
     /* And the band's WIDTH is the drawn bar's, not the sheet's.
-     * `::-webkit-scrollbar { width }` is inert on every scroller here -
-     * Chromium drops the whole family for an element whose `scrollbar-width`
-     * is not `auto` - and it is narrower than the bar the engine draws, so a
-     * band sized from it leaves the inboard strip of every bar unmeasured.
-     * On a panel that strip is the LIT one, which is the direction that
-     * quietly reports a better number. */
+     * No `::-webkit-scrollbar` rule NAMES this scroller any more; the family
+     * that did was inert the moment the standard properties went on, and it
+     * is deleted. What is left reaching it is the unscoped rule in
+     * `@layer base`, which declares the 5px bar the fields are left with, so
+     * a band sized from the sheet would now be half the bar rather than
+     * nine tenths of it. The half it dropped would be the inboard one, which
+     * on a panel is the LIT strip: the direction that quietly reports a
+     * better number. Both legs are asserted, because the first is what keeps
+     * the second honest. */
+    expect(
+      webkitBarSelectors(scroller).filter((s) => !s.startsWith("::")),
+      "a ::-webkit-scrollbar rule names this scroller again, so the sheet is back " +
+        "in the business of sizing a bar the engine has already sized",
+    ).toEqual([]);
     const declaredBar = scrollbarWidthPx(root, rem);
     expect(
       SCROLLBAR_THIN_PX,
-      `the band is ${SCROLLBAR_THIN_PX}px and the inert ::-webkit-scrollbar rule ` +
-        `declares ${declaredBar}px; sizing the band from that rule would leave the ` +
+      `the band is ${SCROLLBAR_THIN_PX}px and the only ::-webkit-scrollbar rule left ` +
+        `declares ${declaredBar}px; sizing the band from the sheet would leave the ` +
         `inboard ${(SCROLLBAR_THIN_PX - declaredBar).toFixed(2)}px of every bar unmeasured`,
     ).toBeGreaterThan(declaredBar);
 
@@ -2649,19 +2655,30 @@ describe("the scrollbar look is granted by name, not by page scope (T-89)", () =
    *  a width, so this is the one an inherited colour costs. */
   const WEBKIT_BAR = /::-webkit-scrollbar(?![-\w])/;
 
+  /** The element part of a selector that carries a pseudo-element.
+   *  A DESCENDANT combinator immediately before the pseudo-element means
+   *  "the bar of anything inside this", so the trailing space has to become
+   *  `*`: trimming it away turns `.warm-canvas ::-webkit-scrollbar-thumb`
+   *  into a rule that reads as though it named the surface itself, and the
+   *  reader then answers no for every element the rule really paints. */
+  function elementPart(selector: string, at: number): string {
+    const head = selector.slice(0, at);
+    if (head === "") return "*";
+    return /\s$/.test(head) ? `${head.trim()} *` : head;
+  }
+
   /** The `::-webkit-scrollbar` rules that reach `el`'s own bar.
    *  `candidatesFor` cannot answer this and should not: it drops
    *  pseudo-element selectors because their declarations paint another
    *  box. Here that other box is the question, so the pseudo-element is
    *  cut off and the element part is put to the selector engine. */
-  function webkitBarSelectors(el: Element): string[] {
+  function webkitBarSelectors(el: Element, sheet: Root = root): string[] {
     const out = new Set<string>();
-    root.walkRules((rule) => {
+    sheet.walkRules((rule) => {
       if (conditional(rule)) return;
       for (const selector of resolvedSelectors(rule)) {
         if (!WEBKIT_BAR.test(selector)) continue;
-        const base = selector.slice(0, selector.indexOf("::")).trim() || "*";
-        if (el.matches(base)) out.add(selector);
+        if (el.matches(elementPart(selector, selector.indexOf("::")))) out.add(selector);
       }
     });
     return [...out];
@@ -3146,11 +3163,11 @@ describe("the scrollbar look is granted by name, not by page scope (T-89)", () =
    * nowhere lower to go; the equivalent guard for them is the field rule,
    * which the FIELDED_DIALOGS cases assert. */
   it("every page surface hands its colour down to its scrollers and declares none itself", async () => {
-    // A chat open so the canvas scrolls, and the right panel on the tab whose
-    // scroller is a plain overflow container: the Models tab hands its
-    // scrolling to a ScrollArea whose overflow is set inline by the library,
-    // so the sheet cannot see it and this case would silently be about two
-    // surfaces instead of three.
+    // A chat open so the canvas scrolls, and the right panel on a named tab.
+    // Every tab scrolls on its own body now, so any of the four would do; the
+    // tab is still named rather than left to whatever was persisted, because
+    // a case that lands on a tab it did not choose is one fixture away from
+    // being about two surfaces instead of three.
     useUiStore.setState({
       selectedChatId: chatFixture.id,
       activeRightPanelTab: "notebook",
@@ -3195,13 +3212,341 @@ describe("the scrollbar look is granted by name, not by page scope (T-89)", () =
     }
   }, 25_000);
 
-  it("POSITIVE CONTROL: the webkit reader tells a reached element from an unreached one", async () => {
+  /* ---- ADIM 2: the families that named our own scrollers are gone ------
+   *
+   * Chromium builds the `::-webkit-scrollbar` family for an element only
+   * while BOTH standard properties compute `auto`. Every scroller the app
+   * styles now takes `scrollbar-width: thin` and a `scrollbar-color`, so
+   * every webkit rule that named one of them was already describing a bar
+   * nobody could see. Those rules are deleted: the page-wide family, and the
+   * dark-wallpaper thumb pair that was written for the chat scroller and
+   * fell to the same premise. The unscoped pair in `@layer base` is NOT
+   * deleted, and that is a measurement rather than an oversight: what it is
+   * left for are the fields, which keep both properties at `auto` precisely
+   * so it can go on drawing them a 5px bar.
+   *
+   * The ORDER between the two halves is where the whole risk of this unit
+   * sits. Deleting the families before the portalled surfaces were named in
+   * the width rule would have dropped them onto the platform's wide bar
+   * with arrow buttons, which on Windows carries stepper buttons at either
+   * end. So the first case below measures the COVER and not the deletion:
+   * it sweeps the real document for containers that scroll and takes the
+   * difference against the rules that draw a bar thin, and a container left
+   * out of that set is the regression, named.
+   *
+   * One scroller is knowingly outside the sweep and outside this step:
+   * `.persona-menu-scroll`, the persona picker's portalled menu, which no
+   * list in this step names and which only exists while that menu is open.
+   * It is left out deliberately and said so here rather than covered
+   * quietly, so the next reader knows the set is smaller than the sweep.
+   *
+   * One selector LEFT the lists in this step and it is worth saying why here
+   * rather than only in a commit message. `[data-slot="scroll-area-viewport"]`
+   * was the library wrapper's viewport, and the wrapper is deleted, so the
+   * selector could not match anything ever again. A rule that cannot fire is
+   * not a rule. The last case below is the general form of that: every
+   * selector which draws or reserves a bar has to reach something the app
+   * really renders, so the next dead one is a red test rather than a comment
+   * somebody has to notice.
+   */
+
+  /** Every `::-webkit-scrollbar` rule OUTSIDE `@layer base` that reaches
+   *  `el`, thumb and track included.
+   *
+   *  Two narrowings, and both are the claim rather than convenience. The
+   *  bar reader above answers only for the bar itself, because that is the
+   *  rule that sets a width; this one is the whole family, because the pair
+   *  this step deleted from the dark wallpaper were thumb rules. And
+   *  `@layer base` is left out because it is the one family the step KEEPS:
+   *  it reaches the fields, which take neither standard property, and the
+   *  case below is where that is measured instead of assumed. */
+  const BASE_LAYER = "base";
+  function webkitFamilyIn(
+    el: Element,
+    opts: { sheet?: Root; includeBase?: boolean } = {},
+  ): string[] {
+    const sheet = opts.sheet ?? root;
+    const out = new Set<string>();
+    sheet.walkRules((rule) => {
+      if (!opts.includeBase && layerOf(rule) === BASE_LAYER) return;
+      for (const selector of resolvedSelectors(rule)) {
+        const at = selector.indexOf("::-webkit-scrollbar");
+        if (at < 0) continue;
+        if (el.matches(elementPart(selector, at))) out.add(selector);
+      }
+    });
+    return [...out];
+  }
+  const webkitFamilyNaming = (el: Element, sheet?: Root): string[] =>
+    webkitFamilyIn(el, { sheet });
+
+  /** Every element in the document the SHEET says overflows, fields left
+   *  out by name. A field is the one thing that must NOT be drawn thin: a
+   *  non-auto value on it is what switches off the bar `@layer base` draws
+   *  for it, and the FIELDED_DIALOGS cases are where that half is measured.
+   *  Inline overflow is invisible to this, deliberately: an element the
+   *  sheet does not scroll is one the sheet was never going to style. */
+  const FIELD = /^(textarea|input|select)$/;
+  const scrollingContainers = (): Element[] =>
+    [...document.querySelectorAll("*")].filter(
+      (el) => scrolls(el) && !FIELD.test(el.tagName.toLowerCase()),
+    );
+
+  const describeEl = (el: Element): string =>
+    `<${el.tagName.toLowerCase()} class="${el.getAttribute("class") ?? ""}">`;
+
+  /** Mount each surface the app really has, one at a time, and call `visit`
+   *  while that surface is in the document. The shell is mounted LAST and
+   *  left standing, so a caller can go on asking questions of it. */
+  async function overEverySurface(visit: (name: string) => void): Promise<void> {
+    const surfaces: Array<[string, Mount]> = [
+      ...GROUP_B,
+      ["GenerationSettingsDialog", generationSettingsDialog],
+    ];
+    for (const [name, mount] of surfaces) {
+      await mount();
+      visit(name);
+      cleanup();
+      queryClient.clear();
+    }
+    mountShell();
+    await screen.findAllByText(characterFixture.name);
+    visit("the shell");
+  }
+
+  it("every container that scrolls is drawn thin, portalled ones included (M-06-2)", async () => {
+    // The order lock. Sweeps the surfaces the app really renders - the four
+    // portalled ones and the whole shell - collects what scrolls, and takes
+    // the DIFFERENCE against the rules that draw a bar thin. Nothing here
+    // reads a selector list; the list is what is on trial.
+    const seen: Array<[string, Element]> = [];
+    await overEverySurface((name) => {
+      for (const el of scrollingContainers()) seen.push([name, el]);
+    });
+
+    // GROUND: the sweep found scrollers, and found them on more than one
+    // surface, so an empty document or a single lucky container cannot carry
+    // the difference below.
+    expect(seen.length, "no scrolling container was found anywhere").toBeGreaterThan(0);
+    expect(
+      [...new Set(seen.map(([name]) => name))].length,
+      `only ${[...new Set(seen.map(([name]) => name))].join(", ")} rendered a scroller`,
+    ).toBeGreaterThanOrEqual(3);
+    // And on BOTH sides of the portal boundary, which is the side the width
+    // rule reaches by name rather than by page scope.
+    expect(
+      seen.filter(([, el]) => !el.closest(".elysium-page")).length,
+      "every scroller found was inside the page, so a portalled one was never asked",
+    ).toBeGreaterThan(0);
+
+    const uncovered = seen
+      .filter(([, el]) => cover(el, WIDTH).length === 0)
+      .map(([name, el]) => `${name} ${describeEl(el)}`);
+    expect(
+      uncovered,
+      "a container scrolls and no rule draws its bar thin, so it falls to the " +
+        `platform's bar with arrow buttons: ${uncovered.join("; ")}`,
+    ).toEqual([]);
+    // Reached is not enough; `auto` and `none` both match and neither is a
+    // thin bar.
+    for (const [name, el] of seen) {
+      expect(
+        winningDeclaration(root, el, WIDTH)?.value,
+        `${name} ${describeEl(el)} is reached, but the value that wins on it is not thin`,
+      ).toBe(THIN);
+    }
+    // POSITIVE CONTROL for the difference: the reader can still say no. A
+    // container with none of these classes is uncovered, so "uncovered is
+    // empty" is a fact about the app and not about the filter.
+    const stray = document.createElement("div");
+    expect(cover(stray, WIDTH)).toEqual([]);
+  }, 60_000);
+
+  it("no ::-webkit-scrollbar rule outside @layer base reaches a scroller of ours", async () => {
+    // The deletion itself, asked of the elements rather than of the text.
+    // Both regions this step removed are covered: the page-wide family, and
+    // the dark-wallpaper thumb pair, which is why the reader here is the
+    // whole family and not only the bar.
+    const scroller = await characterListScroller();
+    cleanup();
+    queryClient.clear();
+    const chat = await darkChatScroller();
+    for (const [name, el] of [
+      ["the sidebar list", scroller],
+      ["the chat scroller over a dark wallpaper", chat],
+    ] as Array<[string, Element]>) {
+      expect(
+        webkitFamilyNaming(el),
+        `${name} is named by a ::-webkit-scrollbar rule, which Chromium drops for it ` +
+          "anyway: the rule describes a bar nobody can see",
+      ).toEqual([]);
+    }
+    // POSITIVE CONTROL: the reader does find a named rule when there is one.
+    const probe = parseSheet(
+      ".elysium-page .chat-bg-dark::-webkit-scrollbar-thumb { background: #fff; }\n",
+    );
+    expect(webkitFamilyNaming(chat, probe)).toEqual([
+      ".elysium-page .chat-bg-dark::-webkit-scrollbar-thumb",
+    ]);
+  }, 40_000);
+
+  it("the unscoped family in @layer base is kept, and the warm canvas thumb with it", async () => {
+    // The second condition the step is held to, measured rather than
+    // assumed. The base rules stay only while what they target takes NEITHER
+    // standard property: no `scrollbar-width`, and no `scrollbar-color`
+    // inherited from an ancestor. The composer's message box is that
+    // element - it scrolls on itself, outside the chat scroller - and the
+    // `.warm-canvas` thumb rule is the one whose fate was genuinely open,
+    // because a colour on an ancestor would have killed it silently.
+    const { box } = await composerAndScroller();
+    expect(
+      computedScrollbarColour(box),
+      "the message box inherits a thumb colour, so the base family is dead for it " +
+        "and the rules kept here are decoration",
+    ).toBe("auto");
+    expect(
+      cover(box, WIDTH),
+      "the message box is drawn thin, so the base family is dead for it",
+    ).toEqual([]);
+    const reaching = webkitBarSelectors(box);
+    expect(
+      reaching,
+      "no ::-webkit-scrollbar rule reaches the message box, so nothing draws its bar",
+    ).not.toEqual([]);
+    // The warm-canvas thumb specifically, by the rule that paints it.
+    expect(
+      webkitFamilyIn(box, { includeBase: true }).filter((s) =>
+        s.startsWith(".warm-canvas"),
+      ),
+      "the .warm-canvas thumb rule no longer reaches the message box",
+    ).not.toEqual([]);
+    // And it is a real bar: the base rule gives it a width.
+    expect(
+      scrollbarWidthPx(root, remPx(root)),
+      "no ::-webkit-scrollbar rule in the sheet gives a bar a width",
+    ).toBeGreaterThan(0);
+  }, 25_000);
+
+  /** The selectors of every unconditional rule declaring `prop`. */
+  function selectorsDeclaring(prop: RegExp, sheet: Root = root): string[] {
+    const out = new Set<string>();
+    sheet.walkRules((rule) => {
+      if (conditional(rule)) return;
+      let declares = false;
+      rule.walkDecls(prop, () => {
+        declares = true;
+      });
+      if (!declares) return;
+      for (const selector of resolvedSelectors(rule)) out.add(selector);
+    });
+    return [...out];
+  }
+
+  /** Which of `selectors` match nothing currently in the document. */
+  const unmatched = (selectors: string[]): string[] =>
+    selectors.filter((s) => document.querySelector(s) === null);
+
+  it("every selector that draws or reserves a bar reaches something the app renders", async () => {
+    /* A rule that cannot fire is not a rule, and this step produced one:
+     * `[data-slot="scroll-area-viewport"]` was the library wrapper's
+     * viewport, and deleting the wrapper left that name in three lists with
+     * nothing left to match. It is out of all three now. This case is the
+     * general form, so the next dead selector is a red test instead of
+     * something the next reader has to spot: every selector that draws a bar
+     * thin or reserves a gutter has to reach an element some surface of the
+     * app really renders.
+     *
+     * Width and gutter only, and the omission is deliberate rather than
+     * convenient. The colour family includes the field rule, which is
+     * DEFENSIVE by design - it names `select` inside a popup that renders no
+     * field precisely so the question cannot come back - and holding a
+     * deliberate guard to "something matches me today" would delete it. */
+    const drawn = selectorsDeclaring(WIDTH);
+    const reserved = selectorsDeclaring(GUTTER);
+    // GROUND: the sheet has rules for this to be about at all.
+    expect(drawn.length, "no rule in the sheet draws a bar thin").toBeGreaterThan(0);
+    expect(reserved.length, "no rule in the sheet reserves a gutter").toBeGreaterThan(0);
+
+    const live = new Set<string>();
+    await overEverySurface(() => {
+      for (const selector of [...drawn, ...reserved]) {
+        if (!live.has(selector) && document.querySelector(selector)) live.add(selector);
+      }
+    });
+
+    const dead = [...drawn, ...reserved].filter((s) => !live.has(s));
+    expect(
+      [...new Set(dead)],
+      `${dead.join(", ")} draws or reserves a bar for an element no surface of the app ` +
+        "renders, so the rule cannot fire",
+    ).toEqual([]);
+
+    /* GROUND CONTROL and POSITIVE CONTROL in one, on a probe sheet, with the
+     * shell still standing from the sweep above. The reader is handed the
+     * selector this step deleted beside the one that replaced it: it has to
+     * call the first dead and the second live. A reader that answered "live"
+     * to everything, or "dead" to everything, fails here rather than passing
+     * the assertion above for free. */
+    const probe = parseSheet(
+      '.elysium-page [data-slot="scroll-area-viewport"] { scrollbar-width: thin; }\n' +
+        ".elysium-page .overflow-y-auto { scrollbar-width: thin; }\n",
+    );
+    const probed = selectorsDeclaring(WIDTH, probe);
+    expect(probed, "the probe sheet did not parse into two selectors").toHaveLength(2);
+    expect(
+      unmatched(probed),
+      "the deleted viewport selector is reported as reaching something, so this " +
+        "reader could not have caught it",
+    ).toEqual(['.elysium-page [data-slot="scroll-area-viewport"]']);
+  }, 60_000);
+
+  it("the Select popup is drawn thin and takes the dark surfaces' thumb (T-19)", async () => {
+    // The scrollbar half of T-19, on the popup the component rendered. The
+    // eight call sites IP-03 opened all render this one surface, so the
+    // claim is made once, here, about the element they share.
+    const popup = await selectPopup();
+    expect(
+      winningDeclaration(root, popup, WIDTH)?.value,
+      "the Select popup is not drawn thin",
+    ).toBe(THIN);
+    // Its own rule, not an inherited one. It is portalled to document.body,
+    // so there is nothing above it to inherit from and a colour that arrived
+    // by inheritance would mean the popup had been moved back into the page.
+    const own = nearestDeclaration(root, popup, COLOUR);
+    expect(own?.element, "the popup takes its thumb colour from an ancestor").toBe(popup);
+    expect(
+      own?.declaration.selector ?? "",
+      "the popup is not the element the colour rule names",
+    ).toContain('[data-slot="select-content"]');
+    // The VALUE, read off the token the sheet ships rather than retyped.
+    expect(
+      tokensOf(resolveVars(computedScrollbarColour(popup), table))[0],
+      "the popup's thumb is not the dark surfaces' one",
+    ).toBe(resolveVars(tokens.colors.scrollbarOnDark, table));
+    // GROUND: the reader is not answering this for everything. A bare div
+    // takes no colour rule of its own.
+    expect(nearestDeclaration(root, document.createElement("div"), COLOUR)).toBeNull();
+  }, 20_000);
+
+  it("POSITIVE CONTROL: the webkit reader tells a reached element from an unreached one", () => {
     // `::-webkit-scrollbar` in @layer base is unscoped, so a bare div is
-    // reached; `.generation-dialog::-webkit-scrollbar` is not for it.
+    // reached by the shipped sheet. The other half of this control needs a
+    // rule that NAMES an element, and the shipped sheet no longer has one -
+    // that absence is the whole of ADIM 2 - so it is put to a probe sheet
+    // instead. Without this the reader could be returning everything, or
+    // nothing, and every absence in this block would be free.
     const bare = document.createElement("div");
     expect(webkitBarSelectors(bare)).not.toEqual([]);
-    expect(webkitBarSelectors(bare).filter((s) => s.startsWith(".generation-dialog"))).toEqual(
-      [],
+
+    const probe = parseSheet(
+      "::-webkit-scrollbar { width: 5px; }\n" +
+        ".generation-dialog::-webkit-scrollbar { width: 0.55rem; }\n",
+    );
+    expect(webkitBarSelectors(bare, probe)).toEqual(["::-webkit-scrollbar"]);
+    const named = document.createElement("div");
+    named.className = "generation-dialog";
+    expect(webkitBarSelectors(named, probe)).toContain(
+      ".generation-dialog::-webkit-scrollbar",
     );
   });
 });

@@ -2081,13 +2081,13 @@
 /* Membership in the standard scrollbar look is by NAME in this list, not by
    sitting inside .elysium-page: the dialogs and the Select popup are portalled
    to document.body and inherit nothing from the page. The gutter is a
-   separate rule below, carrying only the three selectors whose scroller is in
+   separate rule below, carrying only the two selectors whose scroller is in
    the page's own flow, because a reserved strip is a layout cost and only
-   those three have a layout shift to spend it on. T-89 asserts the VALUE as
+   those two have a layout shift to spend it on. T-89 asserts the VALUE as
    well as the match, on both rules: `auto` leaves the standard properties
-   half-applied and `none` hides every bar in the app. */
+   half-applied and `none` hides every bar in the app, and it asserts every
+   selector here still reaches something the app renders. */
 .elysium-page .overflow-y-auto,
-.elysium-page [data-slot="scroll-area-viewport"],
 .generation-dialog,
 .sidebar-dialog,
 [data-slot="select-content"] {
@@ -2121,8 +2121,7 @@
    of the panel's decoration to make room for the bar; the glow and the
    sheen paint their whole box, and T-89 asserts they still do. */
 .warm-canvas .overflow-y-auto,
-.glass-right .overflow-y-auto,
-.glass-right [data-slot="scroll-area-viewport"] {
+.glass-right .overflow-y-auto {
   scrollbar-color: var(--color-es-scrollbar-on-light) transparent;
 }
 
@@ -2154,10 +2153,13 @@
    dropdown is drawn by the platform, so this costs nothing and removes the
    question.
 
-   ADIM 2 note: when the webkit families go, every element pinned here has
-   NEITHER standard property left and falls to the platform bar with arrow
-   buttons. The field family needs its own width and colour pair in that
-   step; it is not covered by the name list above. */
+   The webkit families that named our own scrollers are gone, and this rule
+   is what keeps a field out of that removal rather than a casualty of it.
+   With `auto` on both standard properties Chromium still builds the
+   `::-webkit-scrollbar` family for a field, so the unscoped rule in
+   `@layer base` goes on drawing it the same 5px bar it always drew. No
+   width is pinned here on purpose: pinning one is the very thing that
+   switches that family off. */
 .warm-canvas :where(textarea, input, select),
 .glass-right :where(textarea, input, select),
 .glass-dark :where(textarea, input, select),
@@ -2167,55 +2169,8 @@
 }
 
 .elysium-page .overflow-y-auto,
-.elysium-page [data-slot="scroll-area-viewport"],
 .generation-dialog {
   scrollbar-gutter: stable;
-}
-
-.elysium-page .overflow-y-auto::-webkit-scrollbar,
-.elysium-page [data-slot="scroll-area-viewport"]::-webkit-scrollbar,
-.generation-dialog::-webkit-scrollbar {
-  width: 0.55rem;
-  height: 0.55rem;
-}
-
-.elysium-page .overflow-y-auto::-webkit-scrollbar-track,
-.elysium-page [data-slot="scroll-area-viewport"]::-webkit-scrollbar-track,
-.generation-dialog::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.elysium-page .overflow-y-auto::-webkit-scrollbar-thumb,
-.elysium-page [data-slot="scroll-area-viewport"]::-webkit-scrollbar-thumb,
-.generation-dialog::-webkit-scrollbar-thumb {
-  border: 2px solid transparent;
-  border-radius: 999px;
-  background: rgba(70, 86, 106, 0.60) border-box;
-  background-clip: padding-box;
-}
-
-.elysium-page .overflow-y-auto::-webkit-scrollbar-thumb:hover,
-.elysium-page [data-slot="scroll-area-viewport"]::-webkit-scrollbar-thumb:hover,
-.generation-dialog::-webkit-scrollbar-thumb:hover {
-  background: rgba(88, 106, 128, 0.72) border-box;
-  background-clip: padding-box;
-}
-
-.elysium-page [data-slot="scroll-area-scrollbar"] {
-  border-color: transparent !important;
-  opacity: 0.86;
-  transition: background-color 160ms var(--ease-smooth);
-}
-
-.elysium-page [data-slot="scroll-area-thumb"] {
-  border: 2px solid transparent;
-  background: rgba(66, 82, 102, 0.56) border-box !important;
-  background-clip: padding-box !important;
-}
-
-.elysium-page [data-slot="scroll-area-scrollbar"]:hover [data-slot="scroll-area-thumb"] {
-  background: rgba(82, 100, 122, 0.66) border-box !important;
-  background-clip: padding-box !important;
 }
 
 /* ─────────────────────────────────────────────────────────
@@ -2816,20 +2771,6 @@
 .chat-bg-dark .variant-nav-button:hover:not(:disabled),
 .chat-bg-dark .variant-nav-button:focus-visible {
   background: rgba(230, 234, 239, 0.16);
-}
-
-/* Matched with the SAME two class selectors as the page-wide thumb rule
-   (.elysium-page .overflow-y-auto::-webkit-scrollbar-thumb, 0-2-1). The
-   single-class version lost to it on specificity while matching the very same
-   element - the scroller carries Tailwind's overflow-y-auto and sits inside
-   .elysium-page - so the thumb stayed dark-on-dark over a dark wallpaper and
-   half of the documented orthogonality contract was dead. */
-.elysium-page .chat-bg-dark::-webkit-scrollbar-thumb {
-  background: rgba(230, 234, 239, 0.35);
-}
-
-.elysium-page .chat-bg-dark::-webkit-scrollbar-thumb:hover {
-  background: rgba(230, 234, 239, 0.5);
 }
 
 /* Deepen the bubble shadow over a dark wallpaper. MessageBubble sets the
