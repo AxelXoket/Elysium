@@ -619,6 +619,10 @@ class Worker:
         # cancelled by name (`_stand_down_reading`), so its request does not
         # stay open after the key is gone.
         self._reading: asyncio.Task | None = None
+        #: The chat `_reading` is reading. Set with it, in the same breath
+        #: as the dequeue (no await between them), and cleared with it, so
+        #: `reading()` has no gap between the queue and the claim (58 a).
+        self._reading_chat: int | None = None
         #: The (chat, model) pairs already told why the model is refused,
         #: newest last, each with the reason it was told. See `_prepare`'s
         #: gate: the refusal is written as a named skip row ONCE per pair
@@ -748,6 +752,7 @@ class Worker:
                 unit = asyncio.create_task(self._handle(chat_id),
                                            name="notebook-read")
                 self._reading = unit
+                self._reading_chat = chat_id
                 unit.add_done_callback(self._reading_finished)
                 await asyncio.shield(unit)
             except asyncio.CancelledError:
@@ -1742,6 +1747,22 @@ class Worker:
         except Exception:                                 # pragma: no cover
             pass
 
+    def reading(self, chat_id: int) -> bool:
+        """Whether this chat has a read waiting or out right now (58 a).
+
+        Waiting: an offer for it is in the queue. Out: the ordinary reader
+        took it off the queue (`_reading_chat`, set before any await) or
+        either door holds its claim (`_active_chats`). The Notes tab polls
+        this after a reply and refreshes the list once it turns False, so a
+        False while the read is still coming would show the old list and
+        stop asking. The offer is queued before the reply's `done` reaches
+        the page: the persist thread schedules it on the loop before its
+        own result is delivered."""
+        if chat_id == self._reading_chat or chat_id in self._active_chats:
+            return True
+        queue = self.queue
+        return queue is not None and chat_id in list(queue._queue)
+
     def _reading_finished(self, task: "asyncio.Task") -> None:
         """The ordinary reader's unit is done: forget it, and read its
         outcome so an exception that nobody awaited (the loop was cancelled
@@ -1749,6 +1770,7 @@ class Worker:
         `run()` has already counted it when it was there to see it."""
         if self._reading is task:
             self._reading = None
+            self._reading_chat = None
         if not task.cancelled():
             task.exception()
 
@@ -2501,6 +2523,9 @@ class Worker:
             # a key that appears and disappears is a key every client has to
             # guess at, and zod strips what it was not told about.
             "chat": self._chat_status(chat_id, now),
+            # Whether the chat asked about has a read waiting or out; None
+            # without a chat. What the Notes tab's fast poll asks (58 a).
+            "reading": None if chat_id is None else self.reading(chat_id),
             # The backfill job: this chat's newest when a chat was asked
             # about, the one in flight otherwise, null when there is none.
             # Always present, for the same reason as `chat`.
@@ -2568,6 +2593,7 @@ def start() -> asyncio.Task:
     rd = worker._reading
     if rd is not None and rd.get_loop() is not here:
         worker._reading = None
+        worker._reading_chat = None
     worker.queue = asyncio.Queue(maxsize=QUEUE_MAXSIZE)
     worker.task = asyncio.create_task(worker.run(), name="notebook-worker")
     worker.task.add_done_callback(_note_death)

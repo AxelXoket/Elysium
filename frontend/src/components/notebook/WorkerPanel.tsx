@@ -37,6 +37,7 @@ import { getErrorMessage, isKnownErrorCode } from "@/lib/errors/errorMessages";
 import { keys } from "@/lib/query/keys";
 import {
   useWorkerStatus,
+  useNotesAfterReply,
   useResetWorker,
   useAutoAccept,
   useSetAutoAccept,
@@ -497,6 +498,12 @@ export function WorkerPanel() {
   // The chat is part of the QUESTION, not just of the answer: the worker's
   // per-chat breaker is only reported for the chat that was asked about.
   const status = useWorkerStatus(chatId);
+  // After a reply, ask fast until this chat's read ends (58 a). Here because
+  // this panel is mounted only while the Notes tab is open; the right panel
+  // itself collapses to zero width and stays mounted, so a collapsed panel
+  // is asked about as no chat at all.
+  const panelCollapsed = useUiStore((s) => s.rightPanelCollapsed);
+  useNotesAfterReply(panelCollapsed ? null : chatId);
   const reset = useResetWorker();
   const auto = useAutoAccept(chatId);
   const setAuto = useSetAutoAccept();

@@ -1,10 +1,11 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import {
   useMutation,
   useQuery,
   useQueryClient,
   type QueryClient,
 } from "@tanstack/react-query";
+import { create } from "zustand";
 
 import { keys } from "./keys";
 import {
@@ -214,6 +215,78 @@ export function useWorkerStatus(chatId?: number | null) {
     // learns that a run happened while the user was reading something else.
     refetchInterval: WORKER_POLL_MS,
   });
+}
+
+// -- Decision 58 a: notes on screen right after the read that wrote them ----
+//
+// A reply that ends is what starts a read, and the read ends a few seconds
+// later. The list used to learn about it only on the twenty-second tick
+// above, and the refresh the stream fires on `done` runs BEFORE the read,
+// so it fetched the old list. So while the Notes tab is open, a finished
+// reply starts a short poll of this chat's status; the first answer that
+// says the chat is no longer being read refreshes the list once and ends it.
+
+/** The fast poll's step. Under two seconds so a note is on screen at most
+ *  one step after the read that wrote it. */
+export const FAST_POLL_MS = 1_500;
+
+/** The fast poll's ceiling: the reply's own timeout (120 s) in steps. */
+export const FAST_POLL_MAX = 80;
+
+/** Replies that finished, counted per chat. The stream bumps it on `done`;
+ *  only a Notes tab that is open when it moves acts on it. */
+export const useReplyFinishedStore = create<{
+  finished: Record<number, number>;
+  mark: (chatId: number) => void;
+}>((set) => ({
+  finished: {},
+  mark: (chatId) =>
+    set((s) => ({
+      finished: { ...s.finished, [chatId]: (s.finished[chatId] ?? 0) + 1 },
+    })),
+}));
+
+/** Mounted with the Notes tab (WorkerPanel), so a closed tab asks nothing
+ *  and unmounting ends the poll. A failed ask ends it too: that is the vault
+ *  locking, and asking a locked vault again helps nobody. */
+export function useNotesAfterReply(chatId?: number | null) {
+  const qc = useQueryClient();
+  const finished = useReplyFinishedStore((s) =>
+    chatId == null ? 0 : (s.finished[chatId] ?? 0));
+  // What had already happened when this chat came on screen is not news:
+  // the list was fetched on the same mount.
+  const seen = useRef({ chatId, finished });
+  useEffect(() => {
+    if (chatId == null) return;
+    const before = seen.current;
+    seen.current = { chatId, finished };
+    if (before.chatId !== chatId || before.finished === finished) return;
+
+    let stopped = false;
+    let asked = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const ask = async () => {
+      if (stopped) return;
+      asked += 1;
+      let reading: boolean;
+      try {
+        reading = (await getWorkerStatus(chatId)).worker.reading === true;
+      } catch {
+        return;
+      }
+      if (stopped) return;
+      if (!reading) {
+        void qc.invalidateQueries({ queryKey: keys.notebook() });
+        return;
+      }
+      if (asked < FAST_POLL_MAX) timer = setTimeout(ask, FAST_POLL_MS);
+    };
+    timer = setTimeout(ask, FAST_POLL_MS);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [chatId, finished, qc]);
 }
 
 export function useResetWorker() {

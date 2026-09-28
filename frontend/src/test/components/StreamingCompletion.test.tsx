@@ -21,6 +21,7 @@ import { useStreamingCompletion } from "@/lib/chat/useStreamingCompletion";
 import { useStreamRegistry, stopChat } from "@/lib/chat/streamRegistry";
 import { useClearChat, useDeleteChat } from "@/lib/query/chats";
 import { keys } from "@/lib/query/keys";
+import { useReplyFinishedStore } from "@/lib/query/notebook";
 import { useErrorStore } from "@/lib/errors";
 import {
   mockFetchWithStreams,
@@ -1446,3 +1447,209 @@ describe("useStreamingCompletion - the notebook hears about it", () => {
   });
 });
 
+
+/**
+ * Decision 58 a. The refresh above runs BEFORE the read the reply starts,
+ * so it cannot bring that read's notes. A finished reply is also counted
+ * per chat, and an open Notes tab polls for the read's end off that count
+ * (WorkerPanelFastPoll.test.tsx). A turn that was stopped with nothing
+ * streamed persisted no reply, so it starts no read and is not counted.
+ */
+describe("useStreamingCompletion - a finished reply is counted for the Notes tab", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useErrorStore.getState().clearAll();
+    useReplyFinishedStore.setState({ finished: {} });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  const count = () => useReplyFinishedStore.getState().finished[1] ?? 0;
+
+  it("a finished turn counts one reply for its chat", async () => {
+    const qc = createTestQueryClient();
+    qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]);
+    const stream = controlledSseResponse();
+    mockFetchWithStreams({
+      "/chats/1/complete/stream": { response: () => stream.response },
+    });
+    const { result } = renderHookWithQueryClient(
+      () => useStreamingCompletion(), { client: qc });
+
+    let sendPromise!: Promise<void>;
+    await act(async () => {
+      sendPromise = result.current.startSend(sendVars);
+    });
+    // GROUND: nothing has finished yet.
+    expect(count()).toBe(0);
+
+    stream.emit({ type: "user_message", message: msg(5, "user", "stream me") });
+    stream.emit({
+      type: "done",
+      chat_id: 1,
+      model_id: "m",
+      user_message: msg(5, "user", "stream me"),
+      assistant_message: msg(6, "assistant", "Hello"),
+    });
+    stream.close();
+    await act(() => sendPromise);
+
+    expect(count()).toBe(1);
+  });
+
+  it("a stopped turn with nothing streamed is not counted", async () => {
+    const qc = createTestQueryClient();
+    qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]);
+    const stream = controlledSseResponse();
+    mockFetchWithStreams({
+      "/chats/1/complete/stream": { response: () => stream.response },
+    });
+    const { result } = renderHookWithQueryClient(
+      () => useStreamingCompletion(), { client: qc });
+
+    let sendPromise!: Promise<void>;
+    await act(async () => {
+      sendPromise = result.current.startSend(sendVars);
+    });
+    stream.emit({ type: "user_message", message: msg(5, "user", "stream me") });
+    await waitFor(() => {
+      expect(messagesInCache(qc).some((m) => m.id === 5)).toBe(true);
+    });
+    act(() => {
+      result.current.stop(1);
+    });
+    await act(() => sendPromise);
+
+    expect(count()).toBe(0);
+  });
+
+  it("a stopped turn with text streamed counts one reply", async () => {
+    // The server keeps the partial and offers it for reading.
+    const qc = createTestQueryClient();
+    qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]);
+    const stream = controlledSseResponse();
+    mockFetchWithStreams({
+      "/chats/1/complete/stream": { response: () => stream.response },
+    });
+    const { result } = renderHookWithQueryClient(
+      () => useStreamingCompletion(), { client: qc });
+
+    let sendPromise!: Promise<void>;
+    await act(async () => {
+      sendPromise = result.current.startSend(sendVars);
+    });
+    stream.emit({ type: "user_message", message: msg(5, "user", "stream me") });
+    stream.emit({ type: "delta", content: "partial tex" });
+    await waitFor(() => {
+      expect(result.current.streamingByChat.get(1)?.text).toBe("partial tex");
+    });
+    expect(count()).toBe(0);
+    act(() => {
+      result.current.stop(1);
+    });
+    await act(() => sendPromise);
+
+    expect(count()).toBe(1);
+  });
+
+  it("an error that kept the partial counts one reply", async () => {
+    const qc = createTestQueryClient();
+    qc.setQueryData<Message[]>(keys.messages(1), [seedGreeting]);
+    const stream = controlledSseResponse();
+    mockFetchWithStreams({
+      "/chats/1/complete/stream": { response: () => stream.response },
+    });
+    const { result } = renderHookWithQueryClient(
+      () => useStreamingCompletion(), { client: qc });
+
+    let sendPromise!: Promise<void>;
+    await act(async () => {
+      sendPromise = result.current.startSend(sendVars, { onError: vi.fn() });
+    });
+    stream.emit({ type: "user_message", message: msg(5, "user", "stream me") });
+    stream.emit({ type: "delta", content: "half an answer" });
+    await waitFor(() => {
+      expect(result.current.streamingByChat.get(1)?.text).toBe("half an answer");
+    });
+    expect(count()).toBe(0);
+    stream.emit({
+      type: "error",
+      status: 429,
+      code: "openrouter_rate_limited",
+      partial_saved: true,
+    });
+    stream.close();
+    await act(() => sendPromise);
+
+    expect(count()).toBe(1);
+  });
+
+  it("a regenerated reply that finishes counts one reply", async () => {
+    const qc = createTestQueryClient();
+    qc.setQueryData<Message[]>(keys.messages(1), [
+      msg(2, "user", "prompt"), msg(3, "assistant", "old answer"),
+    ]);
+    const stream = controlledSseResponse();
+    mockFetchWithStreams({
+      "/regenerate/stream": { response: () => stream.response },
+    });
+    const { result } = renderHookWithQueryClient(
+      () => useStreamingCompletion(), { client: qc });
+
+    let promise!: Promise<void>;
+    await act(async () => {
+      promise = result.current.startRegenerate({
+        chatId: 1, messageId: 3, anchor: 3, modelId: "m",
+      });
+    });
+    expect(count()).toBe(0);
+
+    stream.emit({
+      type: "done",
+      chat_id: 1,
+      model_id: "m",
+      user_message: msg(2, "user", "prompt"),
+      assistant_message: {
+        ...msg(4, "assistant", "new answer"),
+        variant_group: 3, active: true, variant_index: 1, variant_count: 2,
+      },
+      deactivated_message_id: 3,
+    });
+    stream.close();
+    await act(() => promise);
+
+    expect(count()).toBe(1);
+  });
+
+  it("an edit that finishes counts one reply", async () => {
+    const qc = createTestQueryClient();
+    qc.setQueryData<Message[]>(keys.messages(1), [
+      seedGreeting, msg(5, "user", "before"), msg(6, "assistant", "old"),
+    ]);
+    const stream = controlledSseResponse();
+    mockFetchWithStreams({
+      "/chats/1/messages/5/edit/stream": { response: () => stream.response },
+    });
+    const { result } = renderHookWithQueryClient(
+      () => useStreamingCompletion(), { client: qc });
+
+    let editPromise!: Promise<void>;
+    await act(async () => {
+      editPromise = result.current.startEdit({
+        chatId: 1, messageId: 5, message: "after", modelId: "m",
+      });
+    });
+    expect(count()).toBe(0);
+
+    stream.emit({
+      type: "done",
+      chat_id: 1,
+      model_id: "m",
+      user_message: msg(7, "user", "after"),
+      assistant_message: msg(8, "assistant", "new"),
+    });
+    stream.close();
+    await act(() => editPromise);
+
+    expect(count()).toBe(1);
+  });
+});

@@ -26,6 +26,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { keys } from "../query/keys";
 import { nextOptimisticId } from "../query/completions";
+import { useReplyFinishedStore } from "../query/notebook";
 import {
   streamChatCompletion,
   streamRegenerateMessage,
@@ -563,6 +564,10 @@ export function useStreamingCompletion() {
             // problem. With the panel closed this marks a key stale and
             // costs nothing.
             void qc.invalidateQueries({ queryKey: keys.notebookEntries(chatId) });
+            // That refresh runs before the read this reply starts, so it
+            // cannot bring the read's notes. An open Notes tab polls for the
+            // read's end and refreshes again then (58 a).
+            useReplyFinishedStore.getState().mark(chatId);
             // Same-batch teardown: the transient streaming bubble must vanish
             // in the SAME commit the cached rows land, or React paints an
             // intermediate frame showing the reply twice. The finally-block
@@ -624,6 +629,8 @@ export function useStreamingCompletion() {
         qc.invalidateQueries({ queryKey: keys.chats() });
         callbacks?.onError?.(err);
         callbacks?.onPersisted?.();
+        // The kept partial is a reply the server offers for reading (58 a).
+        useReplyFinishedStore.getState().mark(chatId);
       };
 
       // Attachments ride alongside the payload builder's output - the builder
@@ -706,6 +713,8 @@ export function useStreamingCompletion() {
             scheduleAbortResync(chatId);
             qc.invalidateQueries({ queryKey: keys.chats() });
             callbacks?.onPersisted?.();
+            // A kept partial is read like a finished reply (58 a).
+            useReplyFinishedStore.getState().mark(chatId);
           } else {
             // Nothing streamed. The server's own disconnect cleanup deletes
             // the user row, but its GeneratorExit propagates LATE - our
@@ -860,6 +869,7 @@ export function useStreamingCompletion() {
             // Same reason as the send path: a regenerated turn is another
             // turn for the extractor to read.
             void qc.invalidateQueries({ queryKey: keys.notebookEntries(chatId) });
+            useReplyFinishedStore.getState().mark(chatId);
             const deactivatedId = event.deactivated_message_id ?? null;
             const anchor =
               event.assistant_message.variant_group ??
@@ -1095,6 +1105,8 @@ export function useStreamingCompletion() {
             // came from the messages this edit replaced - and answered
             // nothing about it. The panel went on showing them.
             void qc.invalidateQueries({ queryKey: keys.notebookEntries(chatId) });
+            // And the reply that replaced them is read like any other.
+            useReplyFinishedStore.getState().mark(chatId);
             clearEntry(chatId);
             // Idle-looking chat, still-open body: see startSend's `done`.
             drainingRef.current.add(chatId);

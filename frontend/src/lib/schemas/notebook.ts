@@ -380,6 +380,11 @@ export const WorkerStatusSchema = z.object({
       batch_size: z.number().default(0),
       trigger_threshold: z.number().default(0),
     }).nullish(),
+    /** Whether the chat asked about has a read queued or out right now,
+     *  or null when no chat was asked about. The Notes tab polls it fast
+     *  after a reply and refreshes the list once it turns false (58 a).
+     *  `.nullish()` so an older backend reads as "not reading". */
+    reading: z.boolean().nullish(),
     /** The backfill job block: REQUIRED and nullable, never optional. z.object
      *  strips a key it was not told about, so an optional block would let a
      *  backend that stopped sending it look exactly like "no job" - and the
