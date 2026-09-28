@@ -32,6 +32,8 @@ from pathlib import Path
 
 import pytest
 
+from tests import _git_env
+
 REPO = Path(__file__).resolve().parents[2]
 
 #: Extensions that make a file part of the SOURCE. A stray note or screenshot
@@ -41,7 +43,8 @@ _SOURCE_SUFFIXES = {".py", ".ts", ".tsx", ".txt", ".spec", ".json"}
 
 def _git(*args: str) -> str:
     return subprocess.run(
-        ["git", *args], cwd=REPO, capture_output=True, text=True, check=True,
+        ["git", *args], cwd=REPO, env=_git_env.git_env(), capture_output=True,
+        text=True, check=True,
     ).stdout
 
 
@@ -73,7 +76,8 @@ def published_tree(tmp_path_factory) -> Path:
     archive = dest / "head.tar"
     with archive.open("wb") as fh:
         subprocess.run(
-            ["git", "archive", "HEAD"], cwd=REPO, stdout=fh, check=True,
+            ["git", "archive", "HEAD"], cwd=REPO, env=_git_env.git_env(),
+            stdout=fh, check=True,
         )
     with tarfile.open(archive) as tar:
         tar.extractall(dest)
