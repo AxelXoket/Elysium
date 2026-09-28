@@ -1409,6 +1409,21 @@ input.persona-field {
   box-shadow: 0 0 0 1px var(--color-es-primary-sage);
 }
 
+/* Every drop-down list's trigger (the shared `SelectTrigger`), under a
+   keyboard: the opaque ring token as an outline, the same one the notes
+   cards and the panel's ghost actions use. The base string asks for
+   `focus-visible:border-ring` and a 50% `ring-ring/50` halo, and neither
+   survives where it matters: `.persona-field` pins the border with
+   `!important` and its unlayered `:focus` box-shadow replaces the halo, so
+   the ring measured 1.25:1 on the Notes tab's Limits and Settings views,
+   under WCAG 1.4.11's 3:1. `.settings-voice-select` switches the outline
+   off outright. Unlayered, so it outranks the base string's `outline-none`;
+   an outline takes no room, so nothing moves. */
+[data-slot="select-trigger"]:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
 .persona-select-action {
   border: 1px solid var(--es-deep-22) !important;
   background: var(--es-sage-18) !important;
