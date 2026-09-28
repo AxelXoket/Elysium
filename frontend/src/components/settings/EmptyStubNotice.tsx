@@ -48,7 +48,7 @@ export function EmptyStubNotice() {
       <div className="flex items-center gap-2">
         <Info size={13} style={{ color: "var(--color-es-text-muted)" }} />
         <h4
-          className="text-xs font-semibold"
+          className="text-label font-semibold"
           style={{ color: "var(--color-es-text-light)" }}
         >
           A leftover file from a recovery
@@ -57,7 +57,7 @@ export function EmptyStubNotice() {
       {/* `settings-hint` and `settings-error`, painted for the dark dialog -
           `text-muted-foreground` and `persona-local-error` are the sibling
           panels' idioms on `.glass-right`. */}
-      <p data-testid="empty-stub-hint" className="text-xs leading-relaxed text-muted-foreground">
+      <p data-testid="empty-stub-hint" className="text-label leading-relaxed text-muted-foreground">
         Elysium once recovered your database after an interrupted move, and set
         the empty file it replaced aside as{" "}
         <code>app.db.empty-stub-bak</code> instead of deleting it. It is empty
@@ -82,7 +82,7 @@ export function EmptyStubNotice() {
         size="sm"
         disabled={discard.isPending}
         onClick={() => discard.mutate()}
-        className="gap-1 text-xs"
+        className="gap-1 text-label"
         style={{ color: "var(--color-es-text-muted)" }}
       >
         {discard.isPending ? (

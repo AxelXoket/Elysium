@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { ChatCanvas } from "@/components/chat/ChatCanvas";
 import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
-import { useUiStore } from "@/lib/store/uiStore";
+import { MSG_FONT_DEFAULT, useUiStore } from "@/lib/store/uiStore";
 import { mockFetch } from "../mocks/api";
 import { getErrorMessage } from "@/lib/errors/errorMessages";
 import {
@@ -18,6 +18,7 @@ import {
   completionFixture,
 } from "../mocks/fixtures";
 import type { ReactNode } from "react";
+import { TYPE_SCALE_STEPS } from "@/lib/theme/tokens";
 
 function wrapper({ children }: { children: ReactNode }) {
   return (
@@ -476,7 +477,7 @@ describe("Composer", () => {
 
   // ── v1.1 E3: composer font tracks the reader setting ─────────────────
 
-  it("E3: textarea consumes the reader font var, not a fixed text-sm", async () => {
+  it("E3: textarea consumes the reader font var, not a fixed size class", async () => {
     setupReadyState();
     mockFetch({
       "/settings": { body: settingsFixture },
@@ -489,8 +490,24 @@ describe("Composer", () => {
     });
 
     const ta = screen.getByLabelText("Message") as HTMLTextAreaElement;
-    expect(ta.className).not.toContain("text-sm");
-    expect(ta.style.fontSize).toBe("var(--msg-fs, 0.875rem)");
+    // Assembled, not spelled: Tailwind scans this file as text and would
+    // emit the utility from a literal here, which is the class this checks
+    // for the absence of. The step names come from the scale rather than a
+    // list typed here - the typed one was missing two of the seven, so two
+    // sizes could have landed on the composer without a word.
+    const steps = new RegExp(
+      "\\b" + "text-" + `(?:${[...TYPE_SCALE_STEPS, "x" + "s", "s" + "m", "b" + "ase"].join("|")})\\b`,
+    );
+    expect(ta.className, "the composer took a size class instead of the token")
+      .not.toMatch(steps);
+    // POSITIVE CONTROL: the pattern really matches a size class.
+    expect("a " + "text-" + "label b").toMatch(steps);
+    // The fallback is DERIVED from the store's own default, not retyped: the
+    // rem literal in the component is the same 15px the reader setting
+    // starts at, and writing it out here again is how the two drift apart
+    // with nothing saying so.
+    expect(ta.style.fontSize)
+      .toBe(`var(--msg-fs, ${MSG_FONT_DEFAULT / 16}rem)`);
     // jsdom never resolves min()/calc() - assert the literal formula pieces.
     expect(ta.style.maxHeight).toContain("min(11rem");
     expect(ta.style.maxHeight).toContain("0.75rem");

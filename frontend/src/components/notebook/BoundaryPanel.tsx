@@ -14,12 +14,19 @@
 import { SlideIn } from "@/components/motion/SlideIn";
 import { Collapse } from "@/components/motion/Collapse";
 import { FadeIn } from "@/components/motion/FadeIn";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Plus, Trash2, Check, X, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { SwitchRow } from "@/components/settings/SwitchRow";
 import { useUiStore } from "@/lib/store/uiStore";
 import {
   LIMIT_DRAFT_FIELDS,
@@ -39,6 +46,13 @@ import {
   useSafeword,
   useSetSafeword,
 } from "@/lib/query/notebook";
+import {
+  BOUNDARY_ON_VIOLATION_ITEMS,
+  BOUNDARY_RATING_ITEMS,
+  BOUNDARY_SCOPE_ITEMS,
+  BOUNDARY_SELECT_LABELS,
+  BOUNDARY_SEVERITY_ITEMS,
+} from "@/lib/notebook/labels";
 import type { Boundary } from "@/lib/schemas/notebook";
 
 /**
@@ -56,11 +70,65 @@ import type { Boundary } from "@/lib/schemas/notebook";
  */
 export const BOUNDARY_MAX_CHARS = 160;
 
-const SEVERITY_LABEL: Record<string, string> = {
-  hard: "never",
-  veiled: "off the page",
-  soft: "prefer not",
-};
+/**
+ * One labelled qualifier.
+ *
+ * The label wraps the trigger so clicking the words opens it, and it names
+ * the trigger through `aria-labelledby` rather than through the wrapping
+ * alone: the trigger is a `<button role="combobox">`, and whether a button
+ * takes its name from a wrapping label is engine-dependent - the fallback is
+ * the button's own contents, which here would be the chosen value. Pointing
+ * at the words removes the question. It is `aria-labelledby` and not
+ * `aria-label` for the same reason in reverse: `aria-label` would replace
+ * the words on screen with a second copy that can drift from them.
+ */
+function LimitQualifier({
+  label,
+  value,
+  items,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  items: Record<string, string>;
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  const labelId = useId();
+  return (
+    <label className="block min-w-0 space-y-1">
+      <span
+        id={labelId}
+        className="block text-ui leading-relaxed text-muted-foreground"
+      >
+        {label}
+      </span>
+      <Select
+        value={value}
+        disabled={disabled}
+        onValueChange={(v) => {
+          if (v != null) onChange(String(v));
+        }}
+        items={items}
+      >
+        <SelectTrigger
+          aria-labelledby={labelId}
+          className="persona-field h-8 w-full min-w-0 rounded-md px-2 text-ui"
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {Object.entries(items).map(([itemValue, itemLabel]) => (
+            <SelectItem key={itemValue} value={itemValue}>
+              {itemLabel}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </label>
+  );
+}
 
 export function BoundaryPanel() {
   const chatId = useUiStore((s) => s.selectedChatId);
@@ -236,7 +304,7 @@ export function BoundaryPanel() {
           the DOM, invisible on screen. The heading vocabulary of this surface
           is the one its siblings use. */}
       <h4
-        className="text-xs font-semibold"
+        className="text-label font-semibold"
         style={{ color: "var(--color-es-text-light)" }}
       >
         Limits
@@ -249,7 +317,7 @@ export function BoundaryPanel() {
           agreeing, so it says so and it goes first. */}
       <div className="persona-card space-y-1">
         <label className="block space-y-1">
-          <span className="text-xs leading-relaxed text-muted-foreground">
+          <span className="text-label leading-relaxed text-muted-foreground">
             Safeword - stops a message before it is sent
           </span>
           <Input
@@ -263,10 +331,10 @@ export function BoundaryPanel() {
               if (e.key === "Enter") void saveSafeword();
             }}
             aria-label="Safeword"
-            className="persona-field text-xs md:text-xs"
+            className="persona-field text-label"
           />
         </label>
-        <p className="text-xs leading-relaxed text-muted-foreground">
+        <p className="text-label leading-relaxed text-muted-foreground">
           Put it anywhere in a message and nothing is sent - not the message,
           not your notes, not these limits - and nothing is saved. This one is
           not a request to the model; it is checked here. Leave it empty to
@@ -287,7 +355,7 @@ export function BoundaryPanel() {
             regenerate on a chat from last week hits it, and the paragraph
             above is what would otherwise have told them it could not
             happen. */}
-        <p className="text-xs leading-relaxed text-muted-foreground">
+        <p className="text-label leading-relaxed text-muted-foreground">
           If the word is already in something older - a line further back, a
           note, a character - that turn is not stopped. The word is taken out
           of what the model is sent and the rest of the text goes. If cutting
@@ -295,119 +363,114 @@ export function BoundaryPanel() {
           Regenerating is the exception: it sends that message again, so a
           word in it stops the turn instead.
         </p>
-        <p className="text-xs leading-relaxed text-muted-foreground">
+        <p className="text-label leading-relaxed text-muted-foreground">
           Your own copy is never rewritten. The word stays in the chat, in the
           note and on screen, exactly as you typed it.
         </p>
       </div>
 
-      <p className="text-xs leading-relaxed text-muted-foreground">
+      <p className="text-label leading-relaxed text-muted-foreground">
         Sent with every message and never trimmed to make room. If they do not
         fit, nothing is sent at all.
       </p>
 
+      {/* Its own card, apart from the six controls below: this switch sets
+          every other limit aside for one chat, which is a different kind of
+          decision from writing one, and it read as a seventh control in the
+          row before. */}
       <Collapse open={chatId != null}>
-        <label className="flex items-center gap-2">
-          <Switch
+        <div className="persona-card">
+          <SwitchRow
             checked={useGlobal}
             disabled={busy}
             onCheckedChange={(v) => void handleToggleGlobal(v)}
-          />
-          <span className="text-xs leading-relaxed text-muted-foreground">Use my global limits here</span>
-        </label>
+          >
+            Use my global limits here
+          </SwitchRow>
+        </div>
       </Collapse>
 
-      <div className="flex items-center gap-2">
-        <Input
-          value={label}
-          maxLength={BOUNDARY_MAX_CHARS}
-          placeholder="Something to keep out of the story..."
-          // The placeholder was the only thing naming this box, and a
-          // placeholder stops being read out the moment there is a value -
-          // so the one control on this island announced itself by its own
-          // contents while the user typed and as nothing once they paused.
-          // Same fix, same wording pattern, as the note box next door.
-          aria-label="New limit"
-          disabled={busy}
-          onChange={(e) => setLabel(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") void handleAdd();
-          }}
-          className="persona-field text-xs md:text-xs"
-        />
-        <select
-          value={scope}
-          disabled={busy || chatId == null}
-          onChange={(e) => setScope(e.target.value as "global" | "chat")}
-          aria-label="Where this applies"
-          className="persona-field h-8 min-w-0 rounded-md px-2 text-xs"
-        >
-          <option value="global">everywhere</option>
-          <option value="chat">this chat</option>
-        </select>
-        <select
-          value={severity}
-          disabled={busy}
-          onChange={(e) => setSeverity(e.target.value)}
-          aria-label="How strict"
-          // `.persona-field` is this surface's form-control class, focus ring
-          // included. The hand-written rgba below it was a third unmanaged
-          // variant of one control, and `settings-value` also carried an 11px
-          // size that beat the `text-xs` beside it - so the same select
-          // rendered at two sizes in two sibling panels.
-          className="persona-field h-8 min-w-0 rounded-md px-2 text-xs"
-        >
-          <option value="hard">never</option>
-          <option value="veiled">off the page</option>
-          <option value="soft">prefer not</option>
-        </select>
-        <select
-          value={onViolation}
-          disabled={busy}
-          onChange={(e) => setOnViolation(e.target.value)}
-          aria-label="What to do if it happens"
-          data-testid="boundary-on-violation"
-          className="persona-field h-8 min-w-0 rounded-md px-2 text-xs"
-        >
-          <option value="pause">pause there</option>
-          <option value="rewind">go back and take it another way</option>
-          <option value="fast_forward">skip past it</option>
-          <option value="hard_stop">stop the scene</option>
-        </select>
-        <select
-          value={rating}
-          disabled={busy}
-          onChange={(e) => setRating(e.target.value)}
-          aria-label="Rating ceiling"
-          data-testid="boundary-rating"
-          className="persona-field h-8 min-w-0 rounded-md px-2 text-xs"
-        >
-          <option value="">no rating limit</option>
-          <option value="G">G</option>
-          <option value="PG">PG</option>
-          <option value="PG-13">PG-13</option>
-          <option value="R">R</option>
-        </select>
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          disabled={busy || !label.trim()}
-          onClick={() => void handleAdd()}
-          aria-label="Add limit"
-          className="persona-ghost-action h-7 w-7 p-0"
-        >
-          {create.isPending ? (
-            <Loader2 size={12} className="size-3 animate-spin" />
-          ) : (
-            <Plus size={12} className="size-3" />
-          )}
-        </Button>
+      {/* Two rows, not one. Six controls in a single flex row did not fit
+          the panel's 300px floor: the four selects were squeezed to their
+          minimum and the longest option, "go back and take it another way",
+          was clipped inside its own box. The words go on the first row with
+          the add button, and the four qualifiers take a two-column grid
+          below, each under a visible label. */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <Input
+            value={label}
+            maxLength={BOUNDARY_MAX_CHARS}
+            placeholder="Something to keep out of the story..."
+            // The placeholder was the only thing naming this box, and a
+            // placeholder stops being read out the moment there is a value -
+            // so the one control on this island announced itself by its own
+            // contents while the user typed and as nothing once they paused.
+            // Same fix, same wording pattern, as the note box next door.
+            aria-label="New limit"
+            disabled={busy}
+            onChange={(e) => setLabel(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void handleAdd();
+            }}
+            className="persona-field text-label"
+          />
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            disabled={busy || !label.trim()}
+            onClick={() => void handleAdd()}
+            aria-label="Add limit"
+            className="persona-ghost-action h-7 w-7 shrink-0 p-0"
+          >
+            {create.isPending ? (
+              <Loader2 size={12} className="size-3 animate-spin" />
+            ) : (
+              <Plus size={12} className="size-3" />
+            )}
+          </Button>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <LimitQualifier
+            label={BOUNDARY_SELECT_LABELS.scope}
+            value={scope}
+            items={BOUNDARY_SCOPE_ITEMS}
+            disabled={busy || chatId == null}
+            onChange={(v) => setScope(v === "chat" ? "chat" : "global")}
+          />
+          {/* `.persona-field` is this surface's form-control class, focus
+              ring included. The hand-written rgba below it was a third
+              unmanaged variant of one control, and `settings-value` also
+              carried an 11px size that beat the label size beside it - so
+              the same select rendered at two sizes in two sibling panels. */}
+          <LimitQualifier
+            label={BOUNDARY_SELECT_LABELS.severity}
+            value={severity}
+            items={BOUNDARY_SEVERITY_ITEMS}
+            disabled={busy}
+            onChange={setSeverity}
+          />
+          <LimitQualifier
+            label={BOUNDARY_SELECT_LABELS.onViolation}
+            value={onViolation}
+            items={BOUNDARY_ON_VIOLATION_ITEMS}
+            disabled={busy}
+            onChange={setOnViolation}
+          />
+          <LimitQualifier
+            label={BOUNDARY_SELECT_LABELS.rating}
+            value={rating}
+            items={BOUNDARY_RATING_ITEMS}
+            disabled={busy}
+            onChange={setRating}
+          />
+        </div>
       </div>
 
       <Collapse open={failed}>
         <p
-          className="text-xs leading-relaxed text-muted-foreground"
+          className="text-label leading-relaxed text-muted-foreground"
           role="status"
         >
           Limits could not be loaded. They are still saved - this panel just
@@ -416,7 +479,7 @@ export function BoundaryPanel() {
       </Collapse>
 
       <Collapse open={!failed && rows.length === 0}>
-        <p className="text-xs leading-relaxed text-muted-foreground">No limits set.</p>
+        <p className="text-label leading-relaxed text-muted-foreground">No limits set.</p>
       </Collapse>
 
       <div className="space-y-1">
@@ -515,9 +578,11 @@ function BoundaryRow({
       className="persona-card flex items-start gap-2"
     >
       <div className="min-w-0 flex-1">
-        <p className="break-words text-sm font-medium">{row.label}</p>
-        <p className="text-xs leading-relaxed text-muted-foreground">
-          {SEVERITY_LABEL[row.severity] ?? row.severity}
+        <p className="break-words text-ui font-semibold">{row.label}</p>
+        <p className="text-label leading-relaxed text-muted-foreground">
+          {BOUNDARY_SEVERITY_ITEMS[
+            row.severity as keyof typeof BOUNDARY_SEVERITY_ITEMS
+          ] ?? row.severity}
           {row.scope === "global" ? " - everywhere" : " - this chat"}
         </p>
       </div>

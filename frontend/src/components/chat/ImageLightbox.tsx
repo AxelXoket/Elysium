@@ -6,6 +6,7 @@ import {
   DialogContent,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { LIGHTBOX_CLASSES } from "@/lib/theme/dialogScale";
 import {
   fetchImageObjectUrl,
   revokeImageObjectUrl,
@@ -36,7 +37,7 @@ export function ImageLightbox({ attachment, onClose }: ImageLightboxProps) {
     >
       <DialogContent
         showCloseButton={false}
-        className="w-auto max-w-[calc(100%-2rem)] bg-transparent p-0 shadow-none ring-0 sm:max-w-3xl"
+        className={LIGHTBOX_CLASSES}
       >
         <DialogTitle className="sr-only">Attached image</DialogTitle>
         {/* Keyed by id so switching attachments remounts with a fresh
@@ -107,7 +108,7 @@ function LightboxImage({ attachment }: { attachment: Attachment }) {
         }}
       >
         <ImageOff size={28} style={{ opacity: 0.55 }} />
-        <span className="text-xs" style={{ opacity: 0.7 }}>
+        <span className="text-label" style={{ opacity: 0.7 }}>
           Image unavailable
         </span>
       </div>

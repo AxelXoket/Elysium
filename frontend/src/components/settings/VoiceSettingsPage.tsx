@@ -32,6 +32,13 @@ import { ReadingRulesSection } from "./ReadingRulesSection";
 import { useMemo, useState } from "react";
 import { Collapse } from "@/components/motion/Collapse";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   AudioLines,
   Check,
   ChevronDown,
@@ -894,30 +901,45 @@ function ParamControl({
   }
 
   if (param.type === "enum" && param.choices) {
+    // A saved value the current choices no longer contain must stay
+    // VISIBLE - a blank select silently hides what is actually stored
+    // (audit-2). It goes first, marked, so the trigger can show it.
+    const enumItems: Record<string, string> = {};
+    if (!param.choices.includes(String(value))) {
+      enumItems[String(value)] = `${String(value)} (saved)`;
+    }
+    for (const choice of param.choices) enumItems[choice] = choice;
     return (
       <div className="generation-control">
-        <label className="settings-label" htmlFor={`voice-${uid}-${param.name}`}>
+        <label
+          id={`voice-${uid}-${param.name}-label`}
+          className="settings-label"
+          htmlFor={`voice-${uid}-${param.name}`}
+        >
           {param.label}
         </label>
-        <select
-          id={`voice-${uid}-${param.name}`}
-          aria-label={param.label}
-          className="settings-voice-select"
+        <Select
           value={String(value)}
-          onChange={(event) => onChange(event.currentTarget.value)}
+          onValueChange={(next) => {
+            if (next != null) onChange(String(next));
+          }}
+          items={enumItems}
         >
-          {/* A saved value the current choices no longer contain must stay
-              VISIBLE - a blank select silently hides what is actually
-              stored (audit-2). */}
-          {!param.choices.includes(String(value)) && (
-            <option value={String(value)}>{String(value)} (saved)</option>
-          )}
-          {param.choices.map((choice) => (
-            <option key={choice} value={choice}>
-              {choice}
-            </option>
-          ))}
-        </select>
+          <SelectTrigger
+            id={`voice-${uid}-${param.name}`}
+            aria-labelledby={`voice-${uid}-${param.name}-label`}
+            className="settings-voice-select"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {Object.entries(enumItems).map(([itemValue, itemLabel]) => (
+              <SelectItem key={itemValue} value={itemValue}>
+                {itemLabel}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         {param.help && <p className="generation-helper">{param.help}</p>}
       </div>
     );
@@ -968,7 +990,17 @@ function ParamControl({
   // text / voice_ref - voice_ref stores a voice id from the section below.
   return (
     <div className="generation-control">
-      <label className="settings-label" htmlFor={`voice-${uid}-${param.name}`}>
+      {/* The id is what the voice_ref branch's SelectTrigger points its
+          aria-labelledby at. Without it the reference resolved to nothing:
+          the name survived only because the accessible-name algorithm falls
+          through a dangling aria-labelledby to the htmlFor pairing, which is
+          a validity error standing in for a binding. The enum branch above
+          writes the same id for the same reason. */}
+      <label
+        id={`voice-${uid}-${param.name}-label`}
+        className="settings-label"
+        htmlFor={`voice-${uid}-${param.name}`}
+      >
         {param.label}
       </label>
       <VoiceRefOrTextInput
@@ -997,22 +1029,36 @@ function VoiceRefOrTextInput({
 }) {
   const voices = useTtsVoicesForPicker(param.type === "voice_ref");
   if (param.type === "voice_ref") {
+    const voiceItems: Record<string, string> = {
+      "": "No cloning - the model's own voice",
+    };
+    for (const v of voices) {
+      voiceItems[v.voice_id] =
+        `${v.label}${v.has_transcript ? "" : " (no transcript yet)"}`;
+    }
     return (
-      <select
-        id={`voice-${uid}-${param.name}`}
-        className="settings-voice-select"
+      <Select
         value={value}
-        onChange={(event) => onChange(event.currentTarget.value)}
-        aria-label={param.label}
+        onValueChange={(next) => {
+          if (next != null) onChange(String(next));
+        }}
+        items={voiceItems}
       >
-        <option value="">{"No cloning - the model's own voice"}</option>
-        {voices.map((v) => (
-          <option key={v.voice_id} value={v.voice_id}>
-            {v.label}
-            {v.has_transcript ? "" : " (no transcript yet)"}
-          </option>
-        ))}
-      </select>
+        <SelectTrigger
+          id={`voice-${uid}-${param.name}`}
+          className="settings-voice-select"
+          aria-labelledby={`voice-${uid}-${param.name}-label`}
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {Object.entries(voiceItems).map(([itemValue, itemLabel]) => (
+            <SelectItem key={itemValue} value={itemValue}>
+              {itemLabel}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
     );
   }
   return (

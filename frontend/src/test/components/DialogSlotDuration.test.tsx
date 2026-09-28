@@ -10,11 +10,11 @@
  * the source text; the slot attribute is queried directly because the slot
  * IS the contract the stylesheet keys its entry/exit pair on.
  *
- * ui/select.tsx still carries one on its popup and is IP-03's to convert; it
- * renders nowhere in production today and is not rendered here. The sheet-
- * wide scan for those classes is in test/lib/motionTokens.test.ts, which is
- * also why this comment does not spell the class out: Tailwind reads every
- * source file as text and would emit the utility from the comment itself.
+ * ui/select.tsx's popup reads the same token now (BoundaryPanel.test.tsx
+ * holds it to that, T-86). The sheet-wide scan for numeric duration classes
+ * is in test/lib/motionTokens.test.ts, which is also why this comment does
+ * not spell one out: Tailwind reads every source file as text and would emit
+ * the utility from the comment itself.
  */
 import { describe, expect, it } from "vitest";
 import { render } from "@testing-library/react";

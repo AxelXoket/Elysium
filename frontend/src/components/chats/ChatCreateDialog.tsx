@@ -14,6 +14,8 @@ import { buildStartChatInput } from "@/lib/characters";
 import { parseApiError } from "@/lib/errors";
 import { MessageSquarePlus, Loader2, AlertCircle } from "lucide-react";
 import type { ReactElement } from "react";
+import { cn } from "@/lib/utils";
+import { DIALOG_MAX_HEIGHT, DIALOG_WIDTHS } from "@/lib/theme/dialogScale";
 
 interface ChatCreateDialogProps {
   trigger: ReactElement;
@@ -57,10 +59,10 @@ export function ChatCreateDialog({ trigger }: ChatCreateDialogProps) {
       }}
     >
       <DialogTrigger render={trigger} />
-      <DialogContent className="glass-dialog sidebar-dialog sm:max-w-sm">
+      <DialogContent className={cn("glass-dialog sidebar-dialog overflow-y-auto", DIALOG_MAX_HEIGHT, DIALOG_WIDTHS.base)}>
         <DialogHeader>
           <DialogTitle
-            className="flex items-center gap-2 text-base font-semibold"
+            className="flex items-center gap-2 text-title font-semibold"
             style={{ color: "var(--color-es-text-light)" }}
           >
             <MessageSquarePlus size={15} style={{ color: "rgba(200, 216, 236, 0.86)" }} />
@@ -71,7 +73,7 @@ export function ChatCreateDialog({ trigger }: ChatCreateDialogProps) {
         <div className="space-y-3">
           {selectedCharacterId == null ? (
             <p
-              className="text-xs"
+              className="text-label"
               style={{ color: "var(--color-es-text-muted)" }}
             >
               Select a character first to start a chat.
@@ -88,7 +90,7 @@ export function ChatCreateDialog({ trigger }: ChatCreateDialogProps) {
             >
               <div className="space-y-1">
                 <label
-                  className="text-xs font-medium"
+                  className="text-label font-semibold"
                   style={{ color: "var(--color-es-text-muted)" }}
                 >
                   Title (optional)
@@ -98,13 +100,13 @@ export function ChatCreateDialog({ trigger }: ChatCreateDialogProps) {
                   onChange={(e) => setTitleInput(e.target.value)}
                   placeholder="Chat title..."
                   disabled={create.isPending}
-                  className="sidebar-dialog-field text-sm"
+                  className="sidebar-dialog-field text-control"
                 />
               </div>
 
               {error && (
                 <div
-                  className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs"
+                  className="flex items-center gap-2 rounded-lg px-3 py-2 text-label"
                   role="alert"
                   style={{
                     backgroundColor: "rgba(195, 106, 114, 0.10)",
@@ -132,7 +134,7 @@ export function ChatCreateDialog({ trigger }: ChatCreateDialogProps) {
                   type="submit"
                   size="sm"
                   disabled={create.isPending}
-                  className="sidebar-dialog-action gap-1.5 text-xs"
+                  className="sidebar-dialog-action gap-1.5 text-label"
                 >
                   {create.isPending && (
                     <Loader2 size={12} className="animate-spin" />

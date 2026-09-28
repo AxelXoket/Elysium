@@ -81,13 +81,13 @@ export function OrphanedCopyNotice() {
       <div className="flex items-center gap-2">
         <AlertCircle size={13} style={{ color: "var(--color-es-danger)" }} />
         <h4
-          className="text-xs font-semibold"
+          className="text-label font-semibold"
           style={{ color: "var(--color-es-text-light)" }}
         >
           A second copy of the vault
         </h4>
       </div>
-      <p className="text-xs leading-relaxed text-muted-foreground">
+      <p className="text-label leading-relaxed text-muted-foreground">
         An interrupted move left a second, complete copy of your database on
         disk, beside the vault and named after it (
         <code>app.db.enc-tmp</code>, or <code>app.db.enc-tmp.orphan.bak-…</code>
@@ -96,14 +96,14 @@ export function OrphanedCopyNotice() {
       </p>
 
       {readable === true && (
-        <p className="text-xs leading-relaxed text-muted-foreground">
+        <p className="text-label leading-relaxed text-muted-foreground">
           It opens with your current passphrase, so it is yours and it is
           readable. Recovery left it behind because your live database was
           already healthy, which makes it a leftover rather than a rescue.
         </p>
       )}
       {readable === false && (
-        <p className="text-xs leading-relaxed text-muted-foreground">
+        <p className="text-label leading-relaxed text-muted-foreground">
           This copy does <strong>not</strong> open with your current
           passphrase. It may belong to an older one - so it could be the only
           copy of chats this vault cannot show you. Elysium will not delete it.
@@ -111,7 +111,7 @@ export function OrphanedCopyNotice() {
         </p>
       )}
       {readable == null && (
-        <p className="text-xs leading-relaxed text-muted-foreground">
+        <p className="text-label leading-relaxed text-muted-foreground">
           Unlock the vault to find out whether this copy is a duplicate or
           something only an older passphrase can open.
         </p>
@@ -133,7 +133,7 @@ export function OrphanedCopyNotice() {
           size="sm"
           disabled={discard.isPending}
           onClick={() => setConfirming(true)}
-          className="persona-danger-action gap-1 text-xs"
+          className="persona-danger-action gap-1 text-label"
         >
           <Trash2 size={12} />
           Delete the duplicate
@@ -142,7 +142,7 @@ export function OrphanedCopyNotice() {
       {readable === true && confirming && (
         <div className="flex items-center gap-2">
           <span
-            className="text-xs"
+            className="text-label"
             style={{ color: "var(--color-es-text-muted)" }}
           >
             Permanently delete it?
@@ -156,7 +156,7 @@ export function OrphanedCopyNotice() {
               setConfirming(false);
               discard.mutate();
             }}
-            className="persona-danger-action gap-1 text-xs"
+            className="persona-danger-action gap-1 text-label"
           >
             {discard.isPending ? (
               <Loader2 size={12} className="animate-spin" />
@@ -172,7 +172,7 @@ export function OrphanedCopyNotice() {
             size="sm"
             disabled={discard.isPending}
             onClick={() => setConfirming(false)}
-            className="persona-ghost-action text-xs"
+            className="persona-ghost-action text-label"
           >
             Keep
           </Button>

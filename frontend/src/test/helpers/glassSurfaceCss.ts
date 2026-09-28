@@ -138,9 +138,31 @@ export function surfaceToken(el: Element, name: string): string {
  * every helper below is shared so the four files cannot drift apart again.
  * ------------------------------------------------------------------ */
 
+/**
+ * Refuses a value that still carries a `var()`.
+ *
+ * Both readers below pull the first three numbers out of whatever they are
+ * handed. Handed `var(--es-veil-12, rgba(255, 255, 255, 0.12))` they answered
+ * white with an alpha of 255 - the fourth comma-separated part of the whole
+ * string - and a contrast ratio computed from that came out at 6639:1 against
+ * a physical ceiling of 21, with every assertion in the file green because
+ * 6640 is finite and is not 1. A measurement taken from an unresolved value is
+ * not a weaker measurement, it is a different number entirely, so it stops
+ * here. Resolve with `resolveColour()` first.
+ */
+function refuseUnresolved(raw: string, who: string): void {
+  if (raw.includes("var(")) {
+    throw new Error(
+      `${who} was handed an unresolved value: "${raw}". ` +
+        "Resolve it against the sheet first - a var() is not a colour.",
+    );
+  }
+}
+
 /** The first three channels of `#rgb`, `#rrggbb`, `rgb(...)`, `rgba(...)`, or
  *  a bare `r, g, b, a` list as captured out of a regex group. */
 export function parseRgbColour(raw: string): Rgb {
+  refuseUnresolved(raw, "parseRgbColour");
   const text = raw.trim();
   const hex = parseHex(text);
   if (hex) return hex;
@@ -175,6 +197,7 @@ export function parseRgbColour(raw: string): Rgb {
  * files reported a passing harness gate sitting on top of four NaNs.
  */
 export function alphaOf(raw: string): number {
+  refuseUnresolved(raw, "alphaOf");
   const inner = /\(([^)]*)\)/.exec(raw);
   const parts = (inner ? inner[1] : raw).split(",").map((x) => x.trim());
   if (parts.length <= 3) return 1;
@@ -230,34 +253,79 @@ export function frameColour(css: string): Rgb {
   return hex;
 }
 
+/**
+ * A colour as the browser would resolve it: a literal comes back as itself, a
+ * `var(--token)` is looked up in the sheet and resolved again, so a chain of
+ * tokens ends at paint.
+ *
+ * Needed because the gradient stops below are now tokens. Reading the literal
+ * out of the rule used to work only while the value was written at the point
+ * of use; a helper that insists on that spelling would have made tokenising
+ * the panel impossible, which is the wrong way round - the helper follows the
+ * sheet, the sheet does not hold still for the helper.
+ */
+export function resolveColour(css: string, value: string): string {
+  let current = value.trim();
+  for (let hop = 0; hop < 8; hop += 1) {
+    const m = /^var\(\s*(--[-\w]+)\s*(?:,([\s\S]*))?\)$/.exec(current);
+    if (!m) return current;
+    const name = m[1];
+    const fallback = m[2];
+    try {
+      current = declaration(css, name).trim();
+    } catch (err) {
+      if (fallback === undefined) throw err;
+      current = fallback.trim();
+    }
+  }
+  throw new Error(`${value} does not resolve to a colour in eight hops`);
+}
+
+/** The two gradient stops of `.glass-right`, resolved but NOT composited. */
+function glassRightStopValues(css: string): [string, string] {
+  const idx = css.indexOf(".glass-right {");
+  if (idx < 0) throw new Error("the .glass-right rule moved or was renamed");
+  const block = css.slice(idx, idx + 400);
+  const m = /background:\s*linear-gradient\(([^;]*?)\)\s*;/.exec(block);
+  if (!m) throw new Error("the panel gradient did not parse - was it reformatted?");
+  // Split on the commas that separate the gradient's own arguments, so a
+  // `var(--x, rgba(1, 2, 3, 1))` fallback cannot be torn in half.
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < m[1].length; i += 1) {
+    const ch = m[1][i];
+    if (ch === "(") depth += 1;
+    else if (ch === ")") depth -= 1;
+    else if (ch === "," && depth === 0) {
+      parts.push(m[1].slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(m[1].slice(start));
+  const stops = parts.slice(1).map((p) => resolveColour(css, p));
+  if (stops.length !== 2) {
+    throw new Error(`the panel gradient has ${stops.length} stops, not two`);
+  }
+  return [stops[0], stops[1]];
+}
+
 /** The two gradient stops AS WRITTEN, alpha discarded. Not a surface anybody
  *  sees; kept only so the compositing step has something to be compared
  *  against (POSITIVE CONTROL C) and so the discriminating ink below can be
  *  derived from the gap between the two readings. */
 export function rawGlassRightStops(css: string): [Rgb, Rgb] {
-  const idx = css.indexOf(".glass-right {");
-  if (idx < 0) throw new Error("the .glass-right rule moved or was renamed");
-  const block = css.slice(idx, idx + 400);
-  const m =
-    /background:\s*linear-gradient\([^,]+,\s*rgba\(([^)]+)\),\s*rgba\(([^)]+)\)/
-      .exec(block);
-  if (!m) throw new Error("the panel gradient did not parse - was it reformatted?");
-  return [parseRgbColour(m[1]), parseRgbColour(m[2])];
+  const [top, bottom] = glassRightStopValues(css);
+  return [parseRgbColour(top), parseRgbColour(bottom)];
 }
 
 /** The panel as it actually paints: both stops composited onto the frame. */
 export function glassRightStops(css: string): [Rgb, Rgb] {
-  const idx = css.indexOf(".glass-right {");
-  if (idx < 0) throw new Error("the .glass-right rule moved or was renamed");
-  const block = css.slice(idx, idx + 400);
-  const m =
-    /background:\s*linear-gradient\([^,]+,\s*rgba\(([^)]+)\),\s*rgba\(([^)]+)\)/
-      .exec(block);
-  if (!m) throw new Error("the panel gradient did not parse - was it reformatted?");
+  const [top, bottom] = glassRightStopValues(css);
   const f = frameColour(css);
   return [
-    over(parseRgbColour(m[1]), f, alphaOf(m[1])),
-    over(parseRgbColour(m[2]), f, alphaOf(m[2])),
+    over(parseRgbColour(top), f, alphaOf(top)),
+    over(parseRgbColour(bottom), f, alphaOf(bottom)),
   ];
 }
 

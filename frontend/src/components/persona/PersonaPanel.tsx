@@ -314,8 +314,8 @@ export function PersonaPanel() {
             <UserCircle size={18} strokeWidth={1.7} />
           </div>
           <div className="min-w-0 flex-1">
-            <h3 className="text-sm font-semibold">Persona</h3>
-            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            <h3 className="text-ui font-semibold">Persona</h3>
+            <p className="mt-1 text-label leading-relaxed text-muted-foreground">
               Persona represents your user identity for conversations.
             </p>
           </div>
@@ -329,7 +329,7 @@ export function PersonaPanel() {
 
       <section className="persona-card persona-card-active space-y-2">
         <div className="flex items-center justify-between gap-3">
-          <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+          <p className="text-micro font-semibold uppercase tracking-widest text-muted-foreground">
             Active Persona
           </p>
           {activePersona && <ActiveBadge />}
@@ -337,15 +337,15 @@ export function PersonaPanel() {
 
         {activePersona ? (
           <div>
-            <p className="truncate text-sm font-semibold">
+            <p className="truncate text-ui font-semibold">
               {activePersona.display_name}
             </p>
-            <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">
+            <p className="mt-1 line-clamp-2 text-label leading-relaxed text-muted-foreground">
               {activePersona.description || "No description yet."}
             </p>
           </div>
         ) : (
-          <p className="text-xs leading-relaxed text-muted-foreground">
+          <p className="text-label leading-relaxed text-muted-foreground">
             No active persona. Select one below to include it in future
             generations.
           </p>
@@ -354,14 +354,14 @@ export function PersonaPanel() {
 
       <section className="space-y-3">
         <div className="flex items-center justify-between gap-3">
-          <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+          <p className="text-micro font-semibold uppercase tracking-widest text-muted-foreground">
             Personas
           </p>
           <Button
             type="button"
             size="sm"
             variant="ghost"
-            className="persona-ghost-action h-7 gap-1.5 px-2 text-xs"
+            className="persona-ghost-action h-7 gap-1.5 px-2 text-label"
             // Wipes the boxes in BOTH directions, exactly as before. Opening
             // a form that still held the last attempt's words was never the
             // intent; what changed is only that a form left open across a
@@ -400,8 +400,8 @@ export function PersonaPanel() {
 
         {!isLoading && !safeQueryError && personas?.length === 0 && (
           <div className="persona-empty-state">
-            <p className="text-sm font-medium">No personas yet</p>
-            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            <p className="text-ui font-semibold">No personas yet</p>
+            <p className="mt-1 text-label leading-relaxed text-muted-foreground">
               Create one to define your user identity for generation.
             </p>
           </div>
@@ -494,12 +494,12 @@ function PersonaListItem({
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <p className="truncate text-sm font-semibold">
+                <p className="truncate text-ui font-semibold">
                   {persona.display_name}
                 </p>
                 {persona.is_active && <ActiveBadge />}
               </div>
-              <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">
+              <p className="mt-1 line-clamp-2 text-label leading-relaxed text-muted-foreground">
                 {persona.description || "No description yet."}
               </p>
             </div>
@@ -507,7 +507,7 @@ function PersonaListItem({
 
           {confirmingDelete ? (
             <div className="persona-confirm">
-              <p className="text-xs font-medium">Delete this persona?</p>
+              <p className="text-label font-semibold">Delete this persona?</p>
               <div className="mt-2 flex justify-end gap-1.5">
                 <Button
                   type="button"
@@ -613,8 +613,8 @@ function PersonaForm({
   const title = mode === "create" ? "Create Persona" : "Edit Persona";
   return (
     <div className="persona-card persona-form-card space-y-3">
-      <p className="text-xs font-semibold">{title}</p>
-      <label className="block space-y-1.5 text-xs font-medium text-muted-foreground">
+      <p className="text-label font-semibold">{title}</p>
+      <label className="block space-y-1.5 text-label font-semibold text-muted-foreground">
         <span>Display name</span>
         <Input
           value={form.displayName}
@@ -629,7 +629,7 @@ function PersonaForm({
           disabled={pending}
         />
       </label>
-      <label className="block space-y-1.5 text-xs font-medium text-muted-foreground">
+      <label className="block space-y-1.5 text-label font-semibold text-muted-foreground">
         <span>Description</span>
         <Textarea
           value={form.description}

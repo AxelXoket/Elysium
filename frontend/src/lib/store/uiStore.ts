@@ -14,9 +14,12 @@ import {
 type RightPanelTab = "models" | "secrets" | "persona" | "notebook";
 
 // ── Appearance defaults ────────────────────────────────────────────────────
-// Chosen to exactly match the pre-settings look (bubble text was text-sm +
-// leading-relaxed), so a user who never opens the panel sees zero change.
-export const MSG_FONT_DEFAULT = 14;
+// The message body default is the scale's body step, 15px (lib/theme/tokens.ts
+// typeScale.body): the chrome base moved to 13 and the body moved up with it
+// so prose stays a clear step above the controls around it. Until this it
+// matched the old 14px Tailwind step the bubbles were first written in. The
+// range below is the user's and does not move with the default.
+export const MSG_FONT_DEFAULT = 15;
 export const MSG_FONT_MIN = 13;
 export const MSG_FONT_MAX = 19;
 export const MSG_LINE_DEFAULT = 1.625;

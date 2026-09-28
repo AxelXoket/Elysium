@@ -126,7 +126,7 @@ function checkLine(
     <p
       data-testid={`${id}-check`}
       data-state={state}
-      className="text-xs leading-relaxed text-muted-foreground"
+      className="text-label leading-relaxed text-muted-foreground"
     >
       {state === "pending"
         ? `Checking for ${subject}…`

@@ -71,6 +71,8 @@ import {
   Sparkles,
   Type,
 } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { DIALOG_MAX_HEIGHT, DIALOG_WIDTHS } from "@/lib/theme/dialogScale";
 
 type SettingsPage =
   | "root"
@@ -167,10 +169,10 @@ export function AppSettingsDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="glass-dialog sidebar-dialog settings-dialog max-h-[85vh] overflow-y-auto sm:max-w-md">
+      <DialogContent className={cn("glass-dialog sidebar-dialog settings-dialog overflow-y-auto", DIALOG_MAX_HEIGHT, DIALOG_WIDTHS.narrow)}>
         <DialogHeader>
           <DialogTitle
-            className="flex items-center gap-2 text-base font-semibold"
+            className="flex items-center gap-2 text-title font-semibold"
             style={{ color: "var(--color-es-text-light)" }}
           >
             {page !== "root" ? (
@@ -189,7 +191,7 @@ export function AppSettingsDialog({
             {PAGE_TITLES[page]}
           </DialogTitle>
           <DialogDescription
-            className="text-xs"
+            className="text-label"
             style={{ color: "var(--color-es-text-muted)" }}
           >
             {PAGE_DESCRIPTIONS[page]}
@@ -421,7 +423,7 @@ function TextSettingsPage() {
           type="button"
           variant="ghost"
           size="sm"
-          className="sidebar-dialog-cancel text-xs"
+          className="sidebar-dialog-cancel text-label"
           disabled={isDefault}
           onClick={() => {
             setMsgFontPx(MSG_FONT_DEFAULT);
@@ -793,7 +795,7 @@ function BackgroundSettingsPage() {
         <Button
           type="button"
           size="sm"
-          className="sidebar-dialog-action text-xs"
+          className="sidebar-dialog-action text-label"
           disabled={busy}
           onClick={() => fileInputRef.current?.click()}
         >
@@ -808,7 +810,7 @@ function BackgroundSettingsPage() {
             type="button"
             variant="ghost"
             size="sm"
-            className="sidebar-dialog-cancel text-xs"
+            className="sidebar-dialog-cancel text-label"
             disabled={busy}
             onClick={() => void handleRemove()}
           >

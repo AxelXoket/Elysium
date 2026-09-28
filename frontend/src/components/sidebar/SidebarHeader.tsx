@@ -30,7 +30,7 @@ export function SidebarHeader() {
         <div className="flex min-w-0 flex-1 flex-col">
           <Wordmark size={22} tone="onDark" />
           <span
-            className="mt-1 truncate text-[11px] leading-none"
+            className="mt-1 truncate text-micro leading-none"
             style={{ color: "var(--color-es-text-muted)", opacity: 0.8 }}
           >
             Local-first · Private

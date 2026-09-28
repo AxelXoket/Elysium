@@ -29,7 +29,7 @@
  * the real store, reads the real localStorage, and reloads the real module.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { PERSISTED as UI_PERSISTED } from "@/lib/store/uiStore";
+import { MSG_FONT_DEFAULT, PERSISTED as UI_PERSISTED } from "@/lib/store/uiStore";
 
 import { LEGACY_SAMPLER_DEFAULTS, useUiStore } from "@/lib/store/uiStore";
 import { readDeviceNarration } from "@/lib/voice/narrationMigration";
@@ -259,7 +259,7 @@ describe("every preference survives a restart", () => {
   it("ignores a blob it cannot read instead of refusing to start", async () => {
     seedRawUiState("{not json at all");
 
-    expect((await relaunch()).msgFontPx).toBe(14);
+    expect((await relaunch()).msgFontPx).toBe(MSG_FONT_DEFAULT);
   });
 });
 

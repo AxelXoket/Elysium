@@ -19,7 +19,7 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { useUiStore } from "@/lib/store/uiStore";
-import { Switch } from "@/components/ui/switch";
+import { SwitchRow } from "@/components/settings/SwitchRow";
 import { SlideIn } from "@/components/motion/SlideIn";
 import { Collapse } from "@/components/motion/Collapse";
 import { FadeIn } from "@/components/motion/FadeIn";
@@ -549,31 +549,29 @@ export function WorkerPanel() {
     <SlideIn>
       <section className="space-y-3 p-4" aria-label="Background notes">
         <h4
-          className="text-xs font-semibold"
+          className="text-label font-semibold"
           style={{ color: "var(--color-es-text-light)" }}
         >
           Background notes
         </h4>
 
-        <label className="flex items-center gap-2">
-          <Switch
-            checked={auto.data?.enabled ?? true}
-            // Not operable until the stored value is known: a switch that
-            // shows a guess and accepts a click is the "you believe it is in
-            // force and it is not" failure this feature warns about.
-            disabled={setAuto.isPending || !auto.isSuccess}
-            onCheckedChange={(v) => void toggle(v)}
-          />
-          {/* No aria-label. The wrapping <label> already names this control
-              with the words on screen; an aria-label OVERRIDES those, so
-              voice control could not address the switch by what it says -
-              and here it also duplicated the name, which is worse. */}
-          <span className="text-xs leading-relaxed text-muted-foreground">
-            Keep suggestions without asking
-          </span>
-        </label>
+        {/* No aria-label. The wrapping label already names this control
+            with the words on screen; an aria-label OVERRIDES those, so
+            voice control could not address the switch by what it says -
+            and here it also duplicated the name, which is worse. SwitchRow
+            is that rule made into a component. */}
+        <SwitchRow
+          checked={auto.data?.enabled ?? true}
+          // Not operable until the stored value is known: a switch that
+          // shows a guess and accepts a click is the "you believe it is in
+          // force and it is not" failure this feature warns about.
+          disabled={setAuto.isPending || !auto.isSuccess}
+          onCheckedChange={(v) => void toggle(v)}
+        >
+          Keep suggestions without asking
+        </SwitchRow>
 
-        <p className="text-xs leading-relaxed text-muted-foreground">
+        <p className="text-label leading-relaxed text-muted-foreground">
           Off, a suggestion waits in the list until you keep it, and is not
           sent to the model meanwhile. A chat opened from an imported card
           always waits, whatever this says.
@@ -593,7 +591,7 @@ export function WorkerPanel() {
         <Collapse open={chatId != null && auto.isSuccess}>
           {auto.data && (
             <div className="space-y-1" data-testid="chat-auto-accept">
-              <p className="text-xs leading-relaxed text-muted-foreground">
+              <p className="text-label leading-relaxed text-muted-foreground">
                 In this chat, suggestions are{" "}
                 {auto.data.effective ?? auto.data.enabled
                   ? "kept without asking"
@@ -612,7 +610,7 @@ export function WorkerPanel() {
                   auto.data.overridden
                     ? null
                     : !(auto.data.effective ?? auto.data.enabled))}
-                className="persona-ghost-action h-7 px-2 text-xs"
+                className="persona-ghost-action h-7 px-2 text-label"
               >
                 {auto.data.overridden
                   ? "Follow the setting above"
@@ -627,7 +625,7 @@ export function WorkerPanel() {
         <Collapse open={body != null}>
           {body && (
             <div className="persona-card space-y-1" data-testid="worker-status">
-              <p className="text-xs leading-relaxed text-muted-foreground">
+              <p className="text-label leading-relaxed text-muted-foreground">
                 {STATE_PROSE[state] ?? state}
               </p>
               {/* A SECOND line, never a replacement for the first. The
@@ -638,13 +636,13 @@ export function WorkerPanel() {
                   over a conversation nothing will ever read. */}
               <Collapse open={!!chatState && chatState !== "closed"}>
                 <p
-                  className="text-xs leading-relaxed text-muted-foreground"
+                  className="text-label leading-relaxed text-muted-foreground"
                   data-testid="worker-chat-state"
                 >
                   {CHAT_STATE_PROSE[chatState ?? ""] ?? chatState}
                 </p>
               </Collapse>
-              <p className="text-xs leading-relaxed text-muted-foreground">
+              <p className="text-label leading-relaxed text-muted-foreground">
                 {body.stats.done} runs · {body.spend.calls} of {body.daily_cap}{" "}
                 calls today · {body.spend.cost.toFixed(5)} credits{" "}
                 {/* Same line as today's count - "beside", not below - but
@@ -686,7 +684,7 @@ export function WorkerPanel() {
                   everything never sees this line. */}
               <Collapse open={body.spend.cost_unknown > 0}>
                 <p
-                  className="text-xs leading-relaxed text-muted-foreground"
+                  className="text-label leading-relaxed text-muted-foreground"
                   data-testid="worker-cost-unknown"
                 >
                   {body.spend.cost_unknown} of the calls made today came back with
@@ -710,7 +708,7 @@ export function WorkerPanel() {
                   generated and billed, and it was landing on the "nothing was
                   lost" side of this subtraction. */}
               <Collapse open={body.stats.failed - body.stats.paid_and_lost > 0}>
-                <p className="text-xs leading-relaxed text-muted-foreground">
+                <p className="text-label leading-relaxed text-muted-foreground">
                   {body.stats.failed - body.stats.paid_and_lost} runs failed.
                   Nothing was lost - the messages they could not read stay
                   unread, not skipped.
@@ -719,7 +717,7 @@ export function WorkerPanel() {
 
               <Collapse open={body.stats.abandoned > 0}>
                 <p
-                  className="text-xs leading-relaxed text-muted-foreground"
+                  className="text-label leading-relaxed text-muted-foreground"
                   data-testid="worker-abandoned"
                 >
                   {body.stats.abandoned} runs were cut off after the request had
@@ -749,7 +747,7 @@ export function WorkerPanel() {
               {Object.entries(failures).map(([why, n]) => (
                 <p
                   key={why}
-                  className="text-xs leading-relaxed text-muted-foreground"
+                  className="text-label leading-relaxed text-muted-foreground"
                   data-testid="worker-failure-reason"
                 >
                   {/* THE DENOMINATOR IS PART OF THE SENTENCE.
@@ -769,7 +767,7 @@ export function WorkerPanel() {
               {Object.entries(skips).map(([why, n]) => (
                 <p
                   key={why}
-                  className="text-xs leading-relaxed text-muted-foreground"
+                  className="text-label leading-relaxed text-muted-foreground"
                 >
                   {n} skipped: {skipProse(why)}.
                 </p>
@@ -789,7 +787,7 @@ export function WorkerPanel() {
 
               <Collapse open={body.worker.unhandled > 0}>
                 <p
-                  className="text-xs leading-relaxed text-muted-foreground"
+                  className="text-label leading-relaxed text-muted-foreground"
                   data-testid="worker-unhandled"
                 >
                   {body.worker.unhandled} runs ended in an unexpected error
@@ -817,7 +815,7 @@ export function WorkerPanel() {
                   the third is the reader's own edit. */}
               <Collapse open={body.worker.settled_empty > 0}>
                 <p
-                  className="text-xs leading-relaxed text-muted-foreground"
+                  className="text-label leading-relaxed text-muted-foreground"
                   data-testid="worker-settled-empty"
                 >
                   {body.worker.settled_empty}{" "}
@@ -849,7 +847,7 @@ export function WorkerPanel() {
               {Object.entries(drops).map(([why, n]) => (
                 <p
                   key={why}
-                  className="text-xs leading-relaxed text-muted-foreground"
+                  className="text-label leading-relaxed text-muted-foreground"
                   data-testid="worker-dropped-note"
                 >
                   {/* Counted in words, in the idiom the backlog line above
@@ -861,7 +859,7 @@ export function WorkerPanel() {
               ))}
 
               <Collapse open={body.worker.refused_by_breaker > 0}>
-                <p className="text-xs leading-relaxed text-muted-foreground">
+                <p className="text-label leading-relaxed text-muted-foreground">
                   {body.worker.refused_by_breaker} turns were passed over while
                   it was cooling down. Their messages are still unread.
                 </p>
@@ -872,7 +870,7 @@ export function WorkerPanel() {
                   broken" read as one number, and only one of them means the
                   rest of the notebook is working. */}
               <Collapse open={body.worker.refused_by_chat_breaker > 0}>
-                <p className="text-xs leading-relaxed text-muted-foreground">
+                <p className="text-label leading-relaxed text-muted-foreground">
                   {body.worker.refused_by_chat_breaker} turns were passed over
                   in chats that keep failing on their own
                   {body.worker.tripped_chats > 0
@@ -883,7 +881,7 @@ export function WorkerPanel() {
               </Collapse>
 
               <Collapse open={body.worker.dropped_offers > 0}>
-                <p className="text-xs leading-relaxed text-muted-foreground">
+                <p className="text-label leading-relaxed text-muted-foreground">
                   {body.worker.dropped_offers} turns went unqueued while it was
                   behind. Their messages are still unread, so a later run picks
                   them up.
@@ -912,7 +910,7 @@ export function WorkerPanel() {
               disabled={sweep.isPending || (body?.worker.sweeping ?? false)}
               onClick={() => void readTheRest()}
               data-testid="worker-sweep"
-              className="persona-ghost-action h-7 gap-1.5 px-2 text-xs"
+              className="persona-ghost-action h-7 gap-1.5 px-2 text-label"
             >
               <BookOpen size={12} className="size-3" />
               Read the earlier messages here
@@ -930,7 +928,7 @@ export function WorkerPanel() {
             <Collapse open={(body?.worker.backlog.messages ?? 0) > 0}>
               {body && (
                 <p
-                  className="text-xs leading-relaxed text-muted-foreground"
+                  className="text-label leading-relaxed text-muted-foreground"
                   data-testid="worker-backlog"
                 >
                   {body!.worker.backlog.chats} chat
@@ -943,7 +941,7 @@ export function WorkerPanel() {
 
             <Collapse open={!!swept}>
               <p
-                className="text-xs leading-relaxed text-muted-foreground"
+                className="text-label leading-relaxed text-muted-foreground"
                 role="status"
                 data-testid="worker-sweep-said"
               >
@@ -968,7 +966,7 @@ export function WorkerPanel() {
               variant="ghost"
               disabled={reset.isPending}
               onClick={() => void unstick()}
-              className="persona-ghost-action h-7 gap-1.5 px-2 text-xs"
+              className="persona-ghost-action h-7 gap-1.5 px-2 text-label"
             >
               <RotateCcw size={12} className="size-3" />
               Try again now
@@ -988,7 +986,7 @@ export function WorkerPanel() {
               variant="ghost"
               disabled={reset.isPending}
               onClick={() => void unstick(chatId)}
-              className="persona-ghost-action h-7 gap-1.5 px-2 text-xs"
+              className="persona-ghost-action h-7 gap-1.5 px-2 text-label"
             >
               <RotateCcw size={12} className="size-3" />
               Try this chat again

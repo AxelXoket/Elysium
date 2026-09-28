@@ -161,13 +161,13 @@ export function PremigrateBackupNotice() {
       <div className="flex items-center gap-2">
         <AlertCircle size={13} style={{ color: "var(--color-es-danger)" }} />
         <h4
-          className="text-xs font-semibold"
+          className="text-label font-semibold"
           style={{ color: "var(--color-es-text-light)" }}
         >
           A snapshot from an old migration
         </h4>
       </div>
-      <p className="text-xs leading-relaxed text-muted-foreground">
+      <p className="text-label leading-relaxed text-muted-foreground">
         A migration that moves old upload files into the vault takes an
         encrypted copy of the whole database first, <code>app.db.premigrate.bak</code>,
         so the step that follows cannot cost you anything if it goes wrong.
@@ -175,7 +175,7 @@ export function PremigrateBackupNotice() {
       </p>
 
       {readable === true && (
-        <p className="text-xs leading-relaxed text-muted-foreground">
+        <p className="text-label leading-relaxed text-muted-foreground">
           It opens with your current passphrase, the same as the rest of the
           vault - it is not readable by anyone who does not have it. It still
           matters, because it is frozen at the moment it was taken: a message
@@ -185,14 +185,14 @@ export function PremigrateBackupNotice() {
         </p>
       )}
       {readable === false && (
-        <p className="text-xs leading-relaxed text-muted-foreground">
+        <p className="text-label leading-relaxed text-muted-foreground">
           This copy does <strong>not</strong> open with your current
           passphrase. It may belong to an older one - so it could be the only
           copy of chats this vault cannot show you. Elysium will not delete it.
         </p>
       )}
       {readable == null && (
-        <p className="text-xs leading-relaxed text-muted-foreground">
+        <p className="text-label leading-relaxed text-muted-foreground">
           Unlock the vault to find out whether this snapshot is safe to delete
           or belongs to an older passphrase.
         </p>
@@ -229,7 +229,7 @@ export function PremigrateBackupNotice() {
           size="sm"
           disabled={discard.isPending}
           onClick={() => setConfirming(true)}
-          className="persona-danger-action gap-1 text-xs"
+          className="persona-danger-action gap-1 text-label"
         >
           <Trash2 size={12} />
           Delete the snapshot
@@ -238,7 +238,7 @@ export function PremigrateBackupNotice() {
       {readable === true && confirming && (
         <div className="flex items-center gap-2">
           <span
-            className="text-xs"
+            className="text-label"
             style={{ color: "var(--color-es-text-muted)" }}
           >
             Permanently delete it?
@@ -252,7 +252,7 @@ export function PremigrateBackupNotice() {
               setConfirming(false);
               discard.mutate();
             }}
-            className="persona-danger-action gap-1 text-xs"
+            className="persona-danger-action gap-1 text-label"
           >
             {discard.isPending ? (
               <Loader2 size={12} className="animate-spin" />
@@ -268,7 +268,7 @@ export function PremigrateBackupNotice() {
             size="sm"
             disabled={discard.isPending}
             onClick={() => setConfirming(false)}
-            className="persona-ghost-action text-xs"
+            className="persona-ghost-action text-label"
           >
             Keep
           </Button>

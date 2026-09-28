@@ -354,7 +354,7 @@ export const Composer = memo(function Composer({
       {showError && errorInfo && (
         <div
           id={errorId}
-          className="mb-3 flex items-start gap-2 rounded-xl px-3 py-2.5 text-xs"
+          className="mb-3 flex items-start gap-2 rounded-xl px-3 py-2.5 text-label"
           role="alert"
           style={{
             backgroundColor: "rgba(195, 106, 114, 0.10)",
@@ -399,7 +399,7 @@ export const Composer = memo(function Composer({
       {helperText && !showError && (
         <div
           id={helperId}
-          className="mb-3 flex items-center gap-2 rounded-xl px-3 py-2 text-xs"
+          className="mb-3 flex items-center gap-2 rounded-xl px-3 py-2 text-label"
           style={{
             backgroundColor: "rgba(28, 38, 50, 0.07)",
             color: "var(--color-es-asst-bubble-text)",
@@ -484,7 +484,7 @@ export const Composer = memo(function Composer({
             aria-describedby={describedBy}
             rows={1}
             // v1.1 E3: the composer font tracks the reader's message-size
-            // setting (--msg-fs, hoisted onto <main>). py-1.5 sizes a 14px
+            // setting (--msg-fs, hoisted onto <main>). py-1.5 sizes a 15px
             // single line to the 35px icon buttons; at a larger --msg-fs a
             // single line grows taller than the buttons - accepted, the row is
             // items-end so the buttons stay base-aligned. leading-relaxed stays
@@ -492,13 +492,13 @@ export const Composer = memo(function Composer({
             className="flex-1 resize-none bg-transparent py-1.5 leading-relaxed outline-none disabled:cursor-not-allowed disabled:opacity-40"
             style={{
               color: "var(--color-es-asst-bubble-text)",
-              fontSize: "var(--msg-fs, 0.875rem)",
+              fontSize: "var(--msg-fs, 0.9375rem)",
               // 4 lines at leading-relaxed (1.625) + py (0.75rem), hard-capped
               // at 11rem. Overflow past that scrolls INSIDE - the dock never
               // grows past the cap, so the composer can never push the chat
               // off-screen.
               maxHeight:
-                "min(11rem, calc(var(--msg-fs, 0.875rem) * 1.625 * 4 + 0.75rem))",
+                "min(11rem, calc(var(--msg-fs, 0.9375rem) * 1.625 * 4 + 0.75rem))",
               overflowY: "auto",
             }}
           />

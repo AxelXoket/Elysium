@@ -280,7 +280,16 @@ describe("ErrorToastStack", () => {
     const stack = screen.getByTestId("error-toast-stack");
     expect(stack).toBeInTheDocument();
     expect(within(stack).getByText("Mounted over the chat canvas.")).toBeInTheDocument();
-    expect(stack.className).toContain("absolute");
+    // It hangs off the body, not off the shell it was rendered inside. That
+    // is the fix, not a detail of it: .elysium-stage carries a z-index and
+    // so opens a stacking context, and a child of one cannot be lifted over
+    // a dialog by any number. GROUND CONTROL below: the shell really is on
+    // the page, so "not inside it" is a finding and not an empty render.
+    expect(stack.parentElement).toBe(document.body);
+    expect(document.querySelector(".elysium-stage"), "the shell did not render")
+      .not.toBeNull();
+    expect(document.querySelector(".elysium-stage")!.contains(stack)).toBe(false);
+    expect(stack.className).toContain("fixed");
     expect(stack.className).toContain("left-1/2");
   });
 });

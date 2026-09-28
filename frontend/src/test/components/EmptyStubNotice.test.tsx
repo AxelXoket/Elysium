@@ -21,6 +21,7 @@ import {
   injectCss,
   wrapInGlassRight,
   surfaceToken,
+  resolveColour,
 } from "@/test/helpers/glassSurfaceCss";
 
 
@@ -96,10 +97,12 @@ describe("EmptyStubNotice", () => {
  * custom-property tokens rather than `.color`.
  */
 describe("EmptyStubNotice - light surface contrast", () => {
+  let sheet = "";
   let styleEl: HTMLStyleElement;
 
   beforeAll(async () => {
-    styleEl = injectCss(await loadGlassRightCss());
+    sheet = await loadGlassRightCss();
+    styleEl = injectCss(sheet);
   }, 20000);
 
   afterAll(() => styleEl.remove());
@@ -128,7 +131,7 @@ describe("EmptyStubNotice - light surface contrast", () => {
     oldHint.className = "settings-hint";
     glassRight.appendChild(oldHint);
     expect(
-      getComputedStyle(oldHint).color,
+      resolveColour(sheet, getComputedStyle(oldHint).color),
       "settings-hint's colour drifted - re-measure before trusting this ground",
     ).toBe("rgba(202, 212, 224, 0.72)");
   });
@@ -151,9 +154,23 @@ describe("EmptyStubNotice - light surface contrast", () => {
     expect(alert.className).toMatch(/persona-local-error/);
     // settings-error and persona-local-error both read the same :root-only
     // --color-es-danger token, which jsdom cannot resolve either way - see
-    // AutoLockControl's contrast tests for the same note. Font-size is the
-    // real, measured difference between the two hand-written rules.
-    expect(getComputedStyle(alert).fontSize).toBe("12px");
+    // AutoLockControl's contrast tests for the same note. Size no longer
+    // separates them: both are prose about a refusal, so the type scale puts
+    // both on --text-label (12). The box does separate them, and it is what
+    // the local-error idiom actually IS - a padded, rounded block rather than
+    // a bare line - so that is what is measured. The reading above is the
+    // one that proves the sheet is loaded; the check below is a NEGATIVE
+    // CONTROL only in the weak sense - jsdom answers "0" for an element with
+    // no padding rule and would answer the same with no sheet at all - so it
+    // separates the two classes without, on its own, proving the sheet is
+    // there. The positive reading is what does that.
+    expect(getComputedStyle(alert).padding).toBe("7px 9px");
+    expect(getComputedStyle(alert).borderRadius).toBe("3px");
+    const bare = document.createElement("p");
+    bare.className = "settings-error";
+    alert.parentElement!.appendChild(bare);
+    expect(getComputedStyle(bare).padding).not.toBe("7px 9px");
+    bare.remove();
   });
 
 

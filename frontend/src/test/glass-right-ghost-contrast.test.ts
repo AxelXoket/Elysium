@@ -101,11 +101,20 @@ const panelStops = (): [Rgb, Rgb] => glassRightStops(css);
  * The LAST declaration wins, which is the cascade: the shared block sets the
  * muted token, and a later single-class rule may override it.
  */
-function ghostDeclaration(prop: string, opts: { focus?: boolean } = {}):
-    string | null {
+function ghostDeclaration(
+  prop: string,
+  opts: { focus?: boolean; own?: boolean } = {},
+): string | null {
+  // `own` narrows to the rule whose selector is THAT CLASS AND NOTHING ELSE.
+  // Without it the shared `.persona-select-action, .persona-ghost-action, ...`
+  // block is also a match, and taking the last match meant deleting the
+  // single-class ink rule - the one the headline claim is about - left this
+  // file green on the shared muted colour, 0.05 above its own floor.
   const selector = opts.focus
     ? /\.persona-ghost-action:focus-visible[^{]*\{/g
-    : /\.persona-ghost-action(?![-:a-z])[^{]*\{/g;
+    : opts.own
+      ? /(?:^|[}\n;])\s*\.persona-ghost-action\s*\{/g
+      : /\.persona-ghost-action(?![-:a-z])[^{]*\{/g;
   let found: string | null = null;
   for (const m of css.matchAll(selector)) {
     // Skip the focus rule when asked for the resting one, and vice versa.
@@ -123,13 +132,24 @@ function ghostDeclaration(prop: string, opts: { focus?: boolean } = {}):
   return found;
 }
 
+/** A value with every var() chased out of it, panel scope first: these
+ *  declarations live inside .glass-right, and the same names carry the dark
+ *  shell's values globally. Alpha survives the trip, which matters - the
+ *  ghost button's fill is a translucent wash and compositing it needs the
+ *  whole colour, not its first three channels. */
+function resolveValue(raw: string): string {
+  let current = raw.trim();
+  for (let hop = 0; hop < 8; hop += 1) {
+    const v = /^var\(\s*(--[\w-]+)\s*\)$/.exec(current);
+    if (!v) return current;
+    current = panelToken(v[1]).trim();
+  }
+  throw new Error(`${raw} does not resolve to a colour in eight hops`);
+}
+
 /** A colour that may be a hex, an rgb()/rgba() list, or a var() reference. */
 function resolve(raw: string): Rgb {
-  const v = /var\(\s*(--[\w-]+)/.exec(raw);
-  // Panel scope first: these declarations live inside .glass-right, and
-  // the same names carry the dark shell values globally.
-  if (v) return resolve(panelToken(v[1]));
-  return parseRgbColour(raw);
+  return parseRgbColour(resolveValue(raw));
 }
 
 /** The button's own fill, over each panel stop. Two compositing steps, not
@@ -138,7 +158,8 @@ function fillStops(): [Rgb, Rgb] {
   const raw = ghostDeclaration("background");
   expect(raw, "the ghost action declares no background").not.toBeNull();
   const [top, bottom] = panelStops();
-  return [composite(raw!, top), composite(raw!, bottom)];
+  const fill = resolveValue(raw!);
+  return [composite(fill, top), composite(fill, bottom)];
 }
 
 describe("the right panel's ghost buttons", () => {
@@ -150,7 +171,7 @@ describe("the right panel's ghost buttons", () => {
     // Every assertion below is a search over a string. Without this, a
     // renamed class or a reformatted gradient turns the whole file into a
     // set of comparisons between two identical defaults, all of which pass.
-    const ink = ghostDeclaration("color");
+    const ink = ghostDeclaration("color", { own: true });
     expect(ink, "no colour declaration reached .persona-ghost-action")
       .not.toBeNull();
     const [fillTop, fillBottom] = fillStops();
@@ -205,7 +226,7 @@ describe("the right panel's ghost buttons", () => {
     // Only the bottom. The top stop reads 5.08:1 and passes; even t=0.90
     // reads 4.54:1 and passes. The miss is confined to the last few percent
     // of the gradient, and the claim is written no wider than that.
-    const ink = resolve(ghostDeclaration("color")!);
+    const ink = resolve(ghostDeclaration("color", { own: true })!);
     const [, fillBottom] = fillStops();
 
     expect(contrastRatio(ink, fillBottom))
@@ -217,7 +238,7 @@ describe("the right panel's ghost buttons", () => {
     // "anything softer than this and the two tiers stop being two tiers".
     // Darkening the secondary ink until it matches the primary would clear
     // AA and quietly delete the distinction the panel is built on.
-    const ink = resolve(ghostDeclaration("color")!);
+    const ink = resolve(ghostDeclaration("color", { own: true })!);
     const primary = resolve(panelToken("--color-es-text-light"));
     const [fillTop] = fillStops();
 

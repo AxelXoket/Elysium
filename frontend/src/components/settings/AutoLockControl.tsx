@@ -56,7 +56,7 @@ export function AutoLockControl() {
         <Lock size={13} style={{ color: "var(--color-es-text-muted)" }} />
         <h4
           data-testid="auto-lock-heading"
-          className="text-xs font-semibold"
+          className="text-label font-semibold"
           style={{ color: "var(--color-es-text-light)" }}
         >
           Lock when idle
@@ -69,7 +69,7 @@ export function AutoLockControl() {
           panels already solved this: plain hint text on this surface is
           Tailwind's `text-muted-foreground`, which resolves against
           .glass-right's own `--muted-foreground` redefinition. */}
-      <p data-testid="auto-lock-hint" className="text-xs leading-relaxed text-muted-foreground">
+      <p data-testid="auto-lock-hint" className="text-label leading-relaxed text-muted-foreground">
         While Elysium is unlocked, your chats are decrypted. This closes the
         vault again after a period with nothing happening, so a window left
         open does not leave them readable.
@@ -101,7 +101,7 @@ export function AutoLockControl() {
               aria-checked={selected}
               disabled={setAutoLock.isPending}
               onClick={() => setAutoLock.mutate(minutes)}
-              className="inline-flex h-7 items-center rounded-lg px-2.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex h-7 items-center rounded-lg px-2.5 text-label disabled:cursor-not-allowed disabled:opacity-50"
               style={
                 selected
                   ? {
@@ -139,7 +139,7 @@ export function AutoLockControl() {
         <p
           data-testid="auto-lock-state"
           data-state={settings.isPending ? "pending" : "error"}
-          className="text-xs leading-relaxed text-muted-foreground"
+          className="text-label leading-relaxed text-muted-foreground"
         >
           {settings.isPending
             ? "Checking what this is set to…"
@@ -147,7 +147,7 @@ export function AutoLockControl() {
         </p>
       )}
       {current === 0 && (
-        <p data-testid="auto-lock-off-hint" className="text-xs leading-relaxed text-muted-foreground">
+        <p data-testid="auto-lock-off-hint" className="text-label leading-relaxed text-muted-foreground">
           Off: the vault stays open until you lock it or close Elysium.
         </p>
       )}

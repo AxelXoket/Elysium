@@ -195,7 +195,7 @@ export const MessageList = memo(function MessageList({
     return (
       <div className="chat-gutter flex items-center justify-center py-8">
         <div
-          className="flex items-center gap-2 rounded-xl px-4 py-3 text-xs"
+          className="flex items-center gap-2 rounded-xl px-4 py-3 text-label"
           style={{
             backgroundColor: "rgba(195, 106, 114, 0.10)",
             color: "var(--color-es-danger)",
@@ -220,14 +220,14 @@ export const MessageList = memo(function MessageList({
           }}
         >
           <p
-            className="text-sm font-medium"
+            className="text-ui font-semibold"
             style={{ color: "var(--color-es-asst-bubble-text)" }}
           >
             {isPending ? "Sending…" : "No messages yet"}
           </p>
           {!isPending && (
             <p
-              className="mt-1.5 text-xs leading-relaxed"
+              className="mt-1.5 text-label leading-relaxed"
               style={{ color: "var(--color-es-asst-bubble-text)", opacity: 0.6 }}
             >
               Type a message below to start the conversation.
@@ -321,7 +321,7 @@ function StreamingBubble({ text, chatId }: { text: string; chatId: number }) {
     // queue up and merge into a single announcement.
     <div className="mt-4 flex justify-start" role="status" aria-live="polite">
       <div
-        className="message-bubble-shell is-assistant max-w-[75%] rounded-xl px-5 py-3 text-sm leading-relaxed"
+        className="message-bubble-shell is-assistant max-w-[75%] rounded-xl px-5 py-3 text-ui leading-relaxed"
         style={{
           backgroundColor: "var(--color-es-asst-bubble)",
           color: "var(--color-es-asst-bubble-text)",

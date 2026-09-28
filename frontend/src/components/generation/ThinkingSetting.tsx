@@ -62,7 +62,7 @@ export function ThinkingSetting({
   return (
     <div className="space-y-2" data-testid="thinking-setting">
       <div className="flex items-center justify-between gap-3">
-        <label className="text-xs font-semibold" htmlFor="thinking-toggle">
+        <label className="text-label font-semibold" htmlFor="thinking-toggle">
           {THINKING_SWITCH_LABEL}
         </label>
         <Button
@@ -74,7 +74,7 @@ export function ThinkingSetting({
           variant={usable && on ? "default" : "ghost"}
           // Not usable: the word is a state, not a greyed-out action, so it
           // keeps the full ink "Off" has in the Pictures row next to it.
-          className={usable ? "text-xs" : "text-xs disabled:cursor-default disabled:opacity-100"}
+          className={usable ? "text-label" : "text-label disabled:cursor-default disabled:opacity-100"}
           disabled={!usable}
           onClick={() => onChange(!enabled)}
         >

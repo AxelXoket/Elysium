@@ -24,6 +24,8 @@ import {
 } from "lucide-react";
 import type { Character, CharacterPatch } from "@/lib/schemas/characters";
 import type { ReactElement, ReactNode } from "react";
+import { cn } from "@/lib/utils";
+import { DIALOG_MAX_HEIGHT, DIALOG_WIDTHS } from "@/lib/theme/dialogScale";
 
 interface CharacterEditDialogProps {
   character: Character;
@@ -168,11 +170,11 @@ export function CharacterEditDialog({
     >
       <DialogTrigger render={trigger} />
       <DialogContent
-        className="glass-dialog sidebar-dialog max-h-[85vh] overflow-y-auto sm:max-w-lg"
+        className={cn("glass-dialog sidebar-dialog overflow-y-auto", DIALOG_MAX_HEIGHT, DIALOG_WIDTHS.medium)}
       >
         <DialogHeader>
           <DialogTitle
-            className="flex items-center gap-2 text-base font-semibold"
+            className="flex items-center gap-2 text-title font-semibold"
             style={{ color: "var(--color-es-text-light)" }}
           >
             <Pencil size={15} style={{ color: "rgba(200, 216, 236, 0.86)" }} />
@@ -190,7 +192,7 @@ export function CharacterEditDialog({
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Character name"
                 disabled={busy}
-                className="sidebar-dialog-field text-sm"
+                className="sidebar-dialog-field text-control"
                 aria-label="Character name"
               />
             </Field>
@@ -201,7 +203,7 @@ export function CharacterEditDialog({
                 placeholder="A brief description…"
                 disabled={busy}
                 rows={2}
-                className="sidebar-dialog-field resize-none text-sm"
+                className="sidebar-dialog-field resize-none text-control"
                 aria-label="Character description"
               />
             </Field>
@@ -211,7 +213,7 @@ export function CharacterEditDialog({
                 onChange={(e) => setTagsInput(e.target.value)}
                 placeholder="tag1, tag2, tag3"
                 disabled={busy}
-                className="sidebar-dialog-field text-sm"
+                className="sidebar-dialog-field text-control"
                 aria-label="Character tags"
               />
             </Field>
@@ -227,7 +229,7 @@ export function CharacterEditDialog({
                 placeholder="Character personality traits…"
                 disabled={busy}
                 rows={3}
-                className="sidebar-dialog-field resize-none text-sm"
+                className="sidebar-dialog-field resize-none text-control"
                 aria-label="Character personality"
               />
             </Field>
@@ -238,7 +240,7 @@ export function CharacterEditDialog({
                 placeholder="Context / scenario…"
                 disabled={busy}
                 rows={2}
-                className="sidebar-dialog-field resize-none text-sm"
+                className="sidebar-dialog-field resize-none text-control"
                 aria-label="Character scenario"
               />
             </Field>
@@ -249,7 +251,7 @@ export function CharacterEditDialog({
                 placeholder="Opening message…"
                 disabled={busy}
                 rows={2}
-                className="sidebar-dialog-field resize-none text-sm"
+                className="sidebar-dialog-field resize-none text-control"
                 aria-label="Character first message"
               />
             </Field>
@@ -260,7 +262,7 @@ export function CharacterEditDialog({
                 placeholder="Example dialogue format…"
                 disabled={busy}
                 rows={2}
-                className="sidebar-dialog-field resize-none text-sm"
+                className="sidebar-dialog-field resize-none text-control"
                 aria-label="Character example dialogue"
               />
             </Field>
@@ -272,7 +274,7 @@ export function CharacterEditDialog({
               type="button"
               onClick={() => setAdvancedOpen((o) => !o)}
               aria-expanded={advancedOpen}
-              className="flex w-full cursor-pointer items-center gap-1.5 text-xs font-medium select-none"
+              className="flex w-full cursor-pointer items-center gap-1.5 text-label font-semibold select-none"
               style={{ color: "var(--color-es-text-muted)" }}
             >
               <ChevronDown
@@ -290,7 +292,7 @@ export function CharacterEditDialog({
                     placeholder="System-level instructions…"
                     disabled={busy}
                     rows={3}
-                    className="sidebar-dialog-field resize-none text-sm"
+                    className="sidebar-dialog-field resize-none text-control"
                     aria-label="Character system prompt"
                   />
                 </Field>
@@ -301,7 +303,7 @@ export function CharacterEditDialog({
                     placeholder="Instruction after chat history…"
                     disabled={busy}
                     rows={2}
-                    className="sidebar-dialog-field resize-none text-sm"
+                    className="sidebar-dialog-field resize-none text-control"
                     aria-label="Character post-history instruction"
                   />
                 </Field>
@@ -319,7 +321,7 @@ export function CharacterEditDialog({
                 setError(null);
                 setConfirmingDelete(true);
               }}
-              className="gap-1.5 text-xs"
+              className="gap-1.5 text-label"
               style={{ color: "var(--color-es-danger)" }}
             >
               <Trash2 size={12} />
@@ -336,7 +338,7 @@ export function CharacterEditDialog({
               }}
             >
               <div
-                className="flex items-start gap-2 text-xs leading-relaxed"
+                className="flex items-start gap-2 text-label leading-relaxed"
                 style={{ color: "var(--color-es-danger)" }}
               >
                 <AlertTriangle size={13} className="mt-0.5 shrink-0" />
@@ -351,7 +353,7 @@ export function CharacterEditDialog({
                   size="sm"
                   onClick={() => setConfirmingDelete(false)}
                   disabled={busy}
-                  className="sidebar-dialog-cancel text-xs"
+                  className="sidebar-dialog-cancel text-label"
                 >
                   Cancel
                 </Button>
@@ -361,7 +363,7 @@ export function CharacterEditDialog({
                   disabled={busy}
                   onClick={handleDelete}
                   aria-describedby={cascadeWarningId}
-                  className="gap-1.5 text-xs"
+                  className="gap-1.5 text-label"
                   style={{
                     backgroundColor: "var(--color-es-danger)",
                     color: "var(--color-es-text-dark)",
@@ -378,7 +380,7 @@ export function CharacterEditDialog({
 
           {error && (
             <div
-              className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs"
+              className="flex items-center gap-2 rounded-lg px-3 py-2 text-label"
               role="alert"
               style={{
                 backgroundColor: "rgba(195, 106, 114, 0.10)",
@@ -397,7 +399,7 @@ export function CharacterEditDialog({
               size="sm"
               onClick={() => setOpen(false)}
               disabled={busy}
-              className="sidebar-dialog-cancel text-xs"
+              className="sidebar-dialog-cancel text-label"
             >
               Cancel
             </Button>
@@ -408,7 +410,7 @@ export function CharacterEditDialog({
               // would leave the box the one field a person cannot clear.
               disabled={busy}
               onClick={handleSave}
-              className="sidebar-dialog-action gap-1.5 text-xs"
+              className="sidebar-dialog-action gap-1.5 text-label"
             >
               {patch.isPending && <Loader2 size={12} className="animate-spin" />}
               Save
@@ -423,7 +425,7 @@ export function CharacterEditDialog({
 function SectionLabel({ children }: { children: ReactNode }) {
   return (
     <p
-      className="text-[11px] font-semibold uppercase tracking-widest"
+      className="text-micro font-semibold uppercase tracking-widest"
       style={{ color: "var(--color-es-accent-strong)" }}
     >
       {children}
@@ -441,7 +443,7 @@ function Field({
   return (
     <div className="space-y-1.5">
       <label
-        className="text-xs font-medium"
+        className="text-label font-semibold"
         style={{ color: "var(--color-es-text-muted)" }}
       >
         {label}

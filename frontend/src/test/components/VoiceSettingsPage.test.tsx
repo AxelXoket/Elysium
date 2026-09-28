@@ -18,6 +18,14 @@ import { TtsScanSchema } from "@/lib/schemas/tts";
 import { useErrorStore } from "@/lib/errors/errorStore";
 import { mockFetch } from "../mocks/api";
 import { delayRoute } from "../helpers/delayRoute";
+import {
+  chooseOption,
+  expectClosed,
+  expectKeyboardContract,
+  openPositioner,
+  openSelect,
+} from "../helpers/select";
+import { POPUP_COLLISION_PADDING } from "@/lib/theme/popupPositioning";
 
 
 const VOICE_MODE = { enabled: false, active: false, prompt_chars: 3200 };
@@ -191,8 +199,8 @@ describe("VoiceSettingsPage", () => {
 
     // Second edit, while the POST is still flying.
     const language = screen.getByLabelText("Language");
-    fireEvent.change(language, { target: { value: "tr" } });
-    expect(language).toHaveValue("tr");
+    await chooseOption(userEvent, language, "tr");
+    expect(language).toHaveTextContent("tr");
 
     // The response lands, carrying only what was sent (clamped, so its arrival
     // is observable on the slider).
@@ -211,7 +219,7 @@ describe("VoiceSettingsPage", () => {
     });
 
     // The edit made mid-flight survived, and is still savable.
-    expect(screen.getByLabelText("Language")).toHaveValue("tr");
+    expect(screen.getByLabelText("Language")).toHaveTextContent("tr");
     expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
   });
 
@@ -678,7 +686,10 @@ describe("audit-2 additions", () => {
     renderWithQueryClient(<VoiceSettingsPage />);
     await userEvent.click(await screen.findByLabelText("s2-pro settings"));
     const select = await screen.findByLabelText("Language");
-    expect(select).toHaveValue("legacy-choice");
+    // The trigger shows the stored value, marked; the option is in the
+    // list once it is opened.
+    expect(select).toHaveTextContent("legacy-choice (saved)");
+    await openSelect(userEvent, select);
     expect(
       screen.getByRole("option", { name: "legacy-choice (saved)" }),
     ).toBeInTheDocument();
@@ -723,7 +734,7 @@ describe("V6 install presentation", () => {
   });
 
   const PLAN = {
-    engine_id: "fish_s2", env_dir: "C:/voice/envs/fish_s2",
+    engine_id: "fish_s2", env_dir: "<env dir>",
     requirements: "fish_s2.txt", python_version: "3.12",
     download_mb: 4200, gpu_available: true,
   };
@@ -1223,4 +1234,114 @@ describe("Voice models - the scan says when it could not look everywhere", () =>
     expect(sentence).toHaveTextContent("Could not look in these folders:");
     expect(sentence).not.toHaveTextContent("this folder");
   });
+});
+
+describe("the voice page's two dropdowns are the same Select (T-18, T-75)", () => {
+  /**
+   * The voice-reference picker, which no fixture rendered.
+   *
+   * The eighth converted select is the `voice_ref` branch of
+   * `VoiceParamControl`, and the `s2-pro` schema carried a float and an enum
+   * and nothing else - so that branch was never in any test's tree, and
+   * reverting it to a native `<select>` left all 2506 tests green. T-18 and
+   * T-75 both claim eight call sites; they were walking seven.
+   */
+  const VOICE_REF_PARAM = {
+    name: "speaker", type: "voice_ref", default: "", label: "Reference voice",
+    help: "", minimum: null, maximum: null, step: null, choices: null,
+    group: "voice", advanced: false,
+  };
+
+  /** Two saved voices, so the picker has something to walk between. */
+  const VOICES = {
+    voices: [
+      { voice_id: "v-one", label: "Narrator", audio_name: "one.wav",
+        transcript: "hello", transcript_source: "user", seconds: 6,
+        needs_conversion: false, has_transcript: true },
+      { voice_id: "v-two", label: "Second reader", audio_name: "two.wav",
+        transcript: "", transcript_source: "none", seconds: 5,
+        needs_conversion: false, has_transcript: false },
+    ],
+  };
+
+  /** How many dropdowns this page must render: the enum and the voice_ref. */
+  const VOICE_DROPDOWNS = 2;
+
+  /** Opens the settings of a model whose schema carries both dropdowns. */
+  async function openVoiceSettings() {
+    // Same keys as baseRoutes, so these replace rather than shadow, and the
+    // schema route keeps its position ahead of the broader `/tts/models`.
+    mockFetch({
+      ...baseRoutes(),
+      "/tts/models/u1/schema": {
+        body: { ...SCHEMA, params: [...SCHEMA.params, VOICE_REF_PARAM] },
+      },
+      "/tts/voices": { body: VOICES },
+    });
+    renderWithQueryClient(<VoiceSettingsPage />);
+    await userEvent.click(await screen.findByLabelText("s2-pro settings"));
+    const triggers = await screen.findAllByRole("combobox");
+    // The count is PINNED, not floored. `> 0` over a query whose length is
+    // whatever the fixture happens to render is the loop-only fake: a call
+    // site can drop out of the page and every assertion below stays green,
+    // which is exactly what was happening.
+    await waitFor(() => {
+      expect(
+        screen.getAllByRole("combobox").length,
+        "the voice page no longer renders both dropdowns",
+      ).toBe(VOICE_DROPDOWNS);
+    });
+    return triggers;
+  }
+
+  it("T-18: each one keeps the whole keyboard contract", async () => {
+    const user = userEvent.setup();
+    const triggers = await openVoiceSettings();
+    expect(triggers).toHaveLength(VOICE_DROPDOWNS);
+    let typeaheadAsked = 0;
+    for (const trigger of triggers) {
+      const asked = await expectKeyboardContract(
+        user, trigger, trigger.getAttribute("id") ?? "a voice dropdown");
+      if (asked) typeaheadAsked += 1;
+    }
+    // As in the other two loops: the clause skips a list with no letter that
+    // picks exactly one other option, so it is shown reaching at least one.
+    expect(typeaheadAsked, "neither voice dropdown was asked for type-ahead")
+      .toBeGreaterThan(0);
+  }, 60_000);
+
+  it("T-76: each one is named by the visible label beside it", async () => {
+    // The voice_ref trigger pointed its `aria-labelledby` at an id no element
+    // carried: the name survived only because the accessible-name algorithm
+    // falls through a dangling reference to the `<label for>` pairing, which
+    // is a validity error standing in for a binding. Both halves are asked
+    // for - the attribute is there, and the id it names is on the page with
+    // the words in it.
+    const triggers = await openVoiceSettings();
+    for (const trigger of triggers) {
+      const idref = trigger.getAttribute("aria-labelledby");
+      expect(idref, `${trigger.id} is named by nothing it points at`)
+        .not.toBeNull();
+      const named = document.getElementById(String(idref));
+      expect(named, `${trigger.id} points at an id nothing carries`)
+        .not.toBeNull();
+      expect((named!.textContent ?? "").trim(), `${trigger.id}'s label is empty`)
+        .not.toBe("");
+      expect(trigger, `${trigger.id} carries an aria-label as well`)
+        .not.toHaveAttribute("aria-label");
+    }
+  }, 30_000);
+
+  it("T-75: both carry the shared collision padding", async () => {
+    const user = userEvent.setup();
+    const triggers = await openVoiceSettings();
+    expect(triggers).toHaveLength(VOICE_DROPDOWNS);
+    for (const trigger of triggers) {
+      const listbox = await openSelect(user, trigger);
+      expect(openPositioner()!.getAttribute("data-collision-padding"))
+        .toBe(String(POPUP_COLLISION_PADDING));
+      await user.keyboard("{Escape}");
+      await expectClosed(listbox);
+    }
+  }, 60_000);
 });

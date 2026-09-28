@@ -36,7 +36,6 @@ import type { Root } from "postcss";
 import { staggerStep } from "@/lib/motion/stagger";
 import { loadGlassRightCss } from "../helpers/glassSurfaceCss";
 import {
-  DURATION_UTILITY_EXCEPTIONS,
   NAMED_REDUCED_MOTION_EXCEPTIONS,
   POPUP_SLOTS,
   REDUCED_TRANSPARENCY,
@@ -210,7 +209,9 @@ describe("no component writes its own duration either (FIX 1, the .tsx half)", (
     // GROUND: the reader found the utilities at all, and found the SHAPE the
     // claim is about - a token-valued one - so an empty inventory below
     // reads as "nobody writes a number" rather than as "the scan is blind".
-    expect(utilities.length, "no duration utility at all; the scan is blind").toBeGreaterThan(1);
+    // One is the floor now: the second utility that used to be here was the
+    // Select popup's number, and it is gone.
+    expect(utilities.length, "no duration utility at all; the scan is blind").toBeGreaterThan(0);
     const tokenForm = utilities.filter((u) => /^var\(--duration-[a-z-]+\)$/.test(u.value));
     expect(
       tokenForm.map((u) => u.className),
@@ -221,37 +222,18 @@ describe("no component writes its own duration either (FIX 1, the .tsx half)", (
       expect(table.get(name), `${util.className} reads ${name}, which is not declared`).toBeDefined();
     }
 
+    // No exception roster: the sheet has to answer with nothing left over.
+    // The Select popup was the one component that needed an entry, it reads
+    // the token now, and an empty list is the only shape this assertion has
+    // that a new hand-written duration cannot slip through.
     const offenders = utilities
       .filter((u) => !/^var\(--duration-[a-z-]+\)$/.test(u.value))
-      .filter((u) => !(u.className in DURATION_UTILITY_EXCEPTIONS))
       .map((u) => `${u.className} -> ${u.value}`)
       .sort();
     expect(
       offenders,
       "a component writes its own duration instead of reading a token",
     ).toEqual([]);
-  });
-
-  it("every named exception is still a real call site, and still off the token", () => {
-    // The roster is load-bearing in both directions. An entry that no longer
-    // appears in the sheet is a call site somebody already converted, and
-    // leaving the name behind would shelter the next component that writes
-    // the same class; an entry that now reads a token is the same thing.
-    // Either way the exemption has to be deleted in the commit that earns
-    // it, which for the Select popup is IP-03 FIX 1.
-    const utilities = durationUtilities(root);
-    expect(
-      Object.keys(DURATION_UTILITY_EXCEPTIONS).length,
-      "the roster is empty; delete this case with the last exception",
-    ).toBeGreaterThan(0);
-    for (const [className, reason] of Object.entries(DURATION_UTILITY_EXCEPTIONS)) {
-      const found = utilities.find((u) => u.className === className);
-      expect(found, `${className} is exempted (${reason}) but nothing emits it any more`).toBeDefined();
-      expect(
-        /^var\(--duration-[a-z-]+\)$/.test(found!.value),
-        `${className} reads a token now; its exemption is spent`,
-      ).toBe(false);
-    }
   });
 });
 
@@ -611,20 +593,31 @@ describe("the three hand-written popups are one family (FIX 8, KARAR-N)", () => 
     expect([...curves][0], "no easing on the entrance").not.toBeNull();
   });
 
-  it("the two portaled chat popups are placed by ChatList, not by the sheet (FIX 8a, 8b)", () => {
+  it("the two portaled chat popups take their COORDINATES from ChatList, not the sheet (FIX 8a, 8b)", () => {
     // ChatList.tsx portals both to document.body and sets position, top or
-    // bottom, right and zIndex inline from the trigger's rect. The
-    // stylesheet kept its own copy of that geometry, which never applied and
-    // whose z-index joined the stack for nothing; and the width was a min()
-    // clamp that measured against the BODY once portaled, so it never
-    // engaged either.
+    // bottom and right inline from the trigger's rect. The stylesheet kept
+    // its own copy of that geometry, which never applied; and the width was
+    // a min() clamp that measured against the BODY once portaled, so it
+    // never engaged either.
+    //
+    // The z-index is NOT on that list any more, and the change is deliberate.
+    // It used to be written inline beside the coordinates, where the layer
+    // table could not see it: the 40 these two sat at was a number no reader
+    // of the table could find. A layer is a decision about the whole app, a
+    // coordinate is a fact about one trigger; the first belongs to the sheet
+    // and the second does not. The order itself is asserted in
+    // css-contract.test.ts, against the compiled sheet.
     for (const selector of [".chat-action-menu", ".chat-action-confirm"]) {
-      for (const prop of ["position", "right", "top", "z-index"]) {
+      for (const prop of ["position", "right", "top"]) {
         expect(
           declarationsFor(root, table, selector, prop),
           `${selector} still places itself with ${prop} in the stylesheet`,
         ).toEqual([]);
       }
+      expect(
+        declarationsFor(root, table, selector, "z-index").map((d) => d.value),
+        `${selector} takes its layer from somewhere other than the sheet`,
+      ).toEqual(["40"]);
       expect(
         declarationsFor(root, table, selector, "width").map((d) => d.value),
         `${selector} width`,

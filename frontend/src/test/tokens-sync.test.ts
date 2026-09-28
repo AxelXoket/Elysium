@@ -34,11 +34,14 @@ import path from "node:path";
 import postcss from "postcss";
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { durationSeconds, easeValues, tokens } from "@/lib/theme/tokens";
+import { durationSeconds, easeValues, tokens, typeScale } from "@/lib/theme/tokens";
 import { loadGlassRightCss } from "./helpers/glassSurfaceCss";
 import { parseBezier, parseSheet, rootTokens, timeMs } from "./helpers/compiledSheet";
 
 const SOURCE_SHEET = path.resolve(__dirname, "..", "index.css");
+
+/** The one namespace reset the @theme block carries. Not a token. */
+const NAMESPACE_RESET = "--text-*";
 
 /** The @theme block of the source sheet, parsed rather than string-matched. */
 function themeTokens(): Map<string, string> {
@@ -46,9 +49,39 @@ function themeTokens(): Map<string, string> {
   const out = new Map<string, string>();
   root.walkAtRules("theme", (at) => {
     at.each((node) => {
-      if (node.type === "decl") out.set(node.prop, node.value.trim());
+      if (node.type !== "decl") return;
+      // ONE name, not a shape. `--text-*: initial` is not a token, it is
+      // the instruction that clears Tailwind's stock steps out of that
+      // namespace before ours are declared, and asking tokens.ts to mirror a
+      // wildcard is meaningless. It is skipped BY NAME rather than by its
+      // `-*` ending, because a shape amnesty would silently swallow the next
+      // namespace reset somebody adds - which is the same argument this
+      // file's own roster makes about prefixes. fontScale.test.ts asserts
+      // the reset does its job, so this is a filter and not a blind spot.
+      if (node.prop === NAMESPACE_RESET) return;
+      out.set(node.prop, node.value.trim());
     });
   });
+  return out;
+}
+
+/**
+ * The type scale's tokens, step by step: `--text-<step>` plus the sub-tokens
+ * Tailwind reads beside it (`--line-height` always; `--letter-spacing` when
+ * the tracking is not zero; `--font-weight` when the step carries a weight
+ * of its own). Derived from typeScale so the sheet is held to the table and
+ * not to a second list typed here.
+ */
+function textTokenFields(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [step, field] of Object.entries(tokens.text)) {
+    const name = cssNameOf(field);
+    const spec = typeScale[step as keyof typeof typeScale];
+    out[step] = field;
+    out[`${step}LineHeight`] = `var(${name}--line-height)`;
+    if (spec.tracking !== "0") out[`${step}Tracking`] = `var(${name}--letter-spacing)`;
+    if (spec.weight !== null) out[`${step}Weight`] = `var(${name}--font-weight)`;
+  }
   return out;
 }
 
@@ -56,6 +89,7 @@ const FAMILIES = [
   { family: "colors", prefix: "--color-es-", fields: tokens.colors },
   { family: "duration", prefix: "--duration-", fields: tokens.duration },
   { family: "ease", prefix: "--ease-", fields: tokens.ease },
+  { family: "text", prefix: "--text-", fields: textTokenFields() },
 ] as const;
 
 /** The token a `var(--name)` field names. */
@@ -237,6 +271,25 @@ describe("names, both directions", () => {
 });
 
 describe("values, number by number", () => {
+  it("typeScale carries every --text-* step with its line height, tracking and weight", () => {
+    const px = (v: string | undefined, what: string): number => {
+      const m = /^(\d+(?:\.\d+)?)px$/.exec(v ?? "");
+      expect(m, `${what} is not a px value in @theme: ${v}`).not.toBeNull();
+      return Number(m![1]);
+    };
+    for (const [step, spec] of Object.entries(typeScale)) {
+      const name = cssNameOf(tokens.text[step as keyof typeof tokens.text]);
+      expect(px(theme.get(name), name)).toBe(spec.px);
+      expect(px(theme.get(`${name}--line-height`), `${name}--line-height`)).toBe(spec.lineHeight);
+      const tracking = theme.get(`${name}--letter-spacing`);
+      if (spec.tracking === "0") expect(tracking, `${name} carries a tracking the table does not`).toBeUndefined();
+      else expect(tracking, `${name} tracking`).toBe(spec.tracking);
+      const weight = theme.get(`${name}--font-weight`);
+      if (spec.weight === null) expect(weight, `${name} carries a weight the table does not`).toBeUndefined();
+      else expect(Number(weight), `${name} weight`).toBe(spec.weight);
+    }
+  });
+
   it("durationSeconds carries every --duration-* token as seconds", () => {
     expect(Object.keys(durationSeconds).sort()).toEqual(Object.keys(tokens.duration).sort());
     for (const [key, field] of Object.entries(tokens.duration)) {
@@ -268,13 +321,16 @@ describe("the compiled sheet ships the source values", () => {
   it("every motion token reaches the browser with the value the source declares", () => {
     // The motion tokens are all referenced, so all of them are expected to
     // be emitted; a colour token nothing references may legitimately be
-    // dropped by Tailwind and is compared only when present.
+    // dropped by Tailwind and is compared only when present. The type steps
+    // are the same: the block is `@theme inline`, so a step used only as a
+    // utility is inlined into it and reaches :root only where index.css
+    // reads it through var().
     const squash = (v: string) => v.replace(/\s+/g, "");
     for (const { prefix } of FAMILIES) {
       for (const [name, value] of theme) {
         if (!name.startsWith(prefix)) continue;
         const emitted = compiled.get(name);
-        if (prefix !== "--color-es-") {
+        if (prefix !== "--color-es-" && prefix !== "--text-") {
           expect(emitted, `${name} did not reach the compiled sheet`).toBeDefined();
         }
         if (emitted !== undefined) {

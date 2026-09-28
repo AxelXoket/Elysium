@@ -15,6 +15,8 @@ import { useUiStore } from "@/lib/store/uiStore";
 import { parseApiError } from "@/lib/errors";
 import { Plus, Loader2, AlertCircle, ChevronDown } from "lucide-react";
 import type { ReactElement, ReactNode } from "react";
+import { cn } from "@/lib/utils";
+import { DIALOG_MAX_HEIGHT, DIALOG_WIDTHS } from "@/lib/theme/dialogScale";
 
 interface CharacterCreateDialogProps {
   trigger: ReactElement;
@@ -90,11 +92,11 @@ export function CharacterCreateDialog({ trigger }: CharacterCreateDialogProps) {
     >
       <DialogTrigger render={trigger} />
       <DialogContent
-        className="glass-dialog sidebar-dialog max-h-[85vh] overflow-y-auto sm:max-w-lg"
+        className={cn("glass-dialog sidebar-dialog overflow-y-auto", DIALOG_MAX_HEIGHT, DIALOG_WIDTHS.medium)}
       >
         <DialogHeader>
           <DialogTitle
-            className="flex items-center gap-2 text-base font-semibold"
+            className="flex items-center gap-2 text-title font-semibold"
             style={{ color: "var(--color-es-text-light)" }}
           >
             <Plus size={15} style={{ color: "rgba(200, 216, 236, 0.86)" }} />
@@ -112,7 +114,7 @@ export function CharacterCreateDialog({ trigger }: CharacterCreateDialogProps) {
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Character name"
                 disabled={create.isPending}
-                className="sidebar-dialog-field text-sm"
+                className="sidebar-dialog-field text-control"
               />
             </Field>
             <Field label="Description">
@@ -122,7 +124,7 @@ export function CharacterCreateDialog({ trigger }: CharacterCreateDialogProps) {
                 placeholder="A brief description…"
                 disabled={create.isPending}
                 rows={2}
-                className="sidebar-dialog-field resize-none text-sm"
+                className="sidebar-dialog-field resize-none text-control"
               />
             </Field>
             <Field label="Tags">
@@ -131,7 +133,7 @@ export function CharacterCreateDialog({ trigger }: CharacterCreateDialogProps) {
                 onChange={(e) => setTagsInput(e.target.value)}
                 placeholder="tag1, tag2, tag3"
                 disabled={create.isPending}
-                className="sidebar-dialog-field text-sm"
+                className="sidebar-dialog-field text-control"
               />
             </Field>
           </section>
@@ -146,7 +148,7 @@ export function CharacterCreateDialog({ trigger }: CharacterCreateDialogProps) {
                 placeholder="Character personality traits…"
                 disabled={create.isPending}
                 rows={3}
-                className="sidebar-dialog-field resize-none text-sm"
+                className="sidebar-dialog-field resize-none text-control"
               />
             </Field>
             <Field label="Scenario">
@@ -156,7 +158,7 @@ export function CharacterCreateDialog({ trigger }: CharacterCreateDialogProps) {
                 placeholder="Context / scenario…"
                 disabled={create.isPending}
                 rows={2}
-                className="sidebar-dialog-field resize-none text-sm"
+                className="sidebar-dialog-field resize-none text-control"
               />
             </Field>
             <Field label="First Message">
@@ -166,7 +168,7 @@ export function CharacterCreateDialog({ trigger }: CharacterCreateDialogProps) {
                 placeholder="Opening message…"
                 disabled={create.isPending}
                 rows={2}
-                className="sidebar-dialog-field resize-none text-sm"
+                className="sidebar-dialog-field resize-none text-control"
               />
             </Field>
             <Field label="Example Dialogue">
@@ -176,7 +178,7 @@ export function CharacterCreateDialog({ trigger }: CharacterCreateDialogProps) {
                 placeholder="Example dialogue format…"
                 disabled={create.isPending}
                 rows={2}
-                className="sidebar-dialog-field resize-none text-sm"
+                className="sidebar-dialog-field resize-none text-control"
               />
             </Field>
           </section>
@@ -187,7 +189,7 @@ export function CharacterCreateDialog({ trigger }: CharacterCreateDialogProps) {
               type="button"
               onClick={() => setAdvancedOpen((o) => !o)}
               aria-expanded={advancedOpen}
-              className="flex w-full cursor-pointer items-center gap-1.5 text-xs font-medium select-none"
+              className="flex w-full cursor-pointer items-center gap-1.5 text-label font-semibold select-none"
               style={{ color: "var(--color-es-text-muted)" }}
             >
               <ChevronDown
@@ -205,7 +207,7 @@ export function CharacterCreateDialog({ trigger }: CharacterCreateDialogProps) {
                     placeholder="System-level instructions…"
                     disabled={create.isPending}
                     rows={3}
-                    className="sidebar-dialog-field resize-none text-sm"
+                    className="sidebar-dialog-field resize-none text-control"
                   />
                 </Field>
                 <Field label="Post-History Instruction">
@@ -215,7 +217,7 @@ export function CharacterCreateDialog({ trigger }: CharacterCreateDialogProps) {
                     placeholder="Instruction after chat history…"
                     disabled={create.isPending}
                     rows={2}
-                    className="sidebar-dialog-field resize-none text-sm"
+                    className="sidebar-dialog-field resize-none text-control"
                   />
                 </Field>
               </div>
@@ -224,7 +226,7 @@ export function CharacterCreateDialog({ trigger }: CharacterCreateDialogProps) {
 
           {error && (
             <div
-              className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs"
+              className="flex items-center gap-2 rounded-lg px-3 py-2 text-label"
               role="alert"
               style={{
                 backgroundColor: "rgba(195, 106, 114, 0.10)",
@@ -243,7 +245,7 @@ export function CharacterCreateDialog({ trigger }: CharacterCreateDialogProps) {
               size="sm"
               onClick={() => setOpen(false)}
               disabled={create.isPending}
-              className="sidebar-dialog-cancel text-xs"
+              className="sidebar-dialog-cancel text-label"
             >
               Cancel
             </Button>
@@ -251,7 +253,7 @@ export function CharacterCreateDialog({ trigger }: CharacterCreateDialogProps) {
               size="sm"
               disabled={create.isPending}
               onClick={handleSubmit}
-              className="sidebar-dialog-action gap-1.5 text-xs"
+              className="sidebar-dialog-action gap-1.5 text-label"
             >
               {create.isPending && (
                 <Loader2 size={12} className="animate-spin" />
@@ -268,7 +270,7 @@ export function CharacterCreateDialog({ trigger }: CharacterCreateDialogProps) {
 function SectionLabel({ children }: { children: ReactNode }) {
   return (
     <p
-      className="text-[11px] font-semibold uppercase tracking-widest"
+      className="text-micro font-semibold uppercase tracking-widest"
       style={{ color: "var(--color-es-accent-strong)" }}
     >
       {children}
@@ -286,7 +288,7 @@ function Field({
   return (
     <div className="space-y-1.5">
       <label
-        className="text-xs font-medium"
+        className="text-label font-semibold"
         style={{ color: "var(--color-es-text-muted)" }}
       >
         {label}

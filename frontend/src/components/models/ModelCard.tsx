@@ -54,14 +54,14 @@ export const ModelCard = memo(function ModelCard({ model }: ModelCardProps) {
               />
             )}
             <span
-              className="truncate text-sm font-medium"
+              className="truncate text-ui font-semibold"
               style={{ color: "var(--color-es-text-light)" }}
             >
               {model.name}
             </span>
           </div>
           <p
-            className="mt-0.5 truncate text-[11px]"
+            className="mt-0.5 truncate text-micro"
             style={{ color: "var(--color-es-text-muted)" }}
           >
             {model.id}
@@ -82,7 +82,7 @@ export const ModelCard = memo(function ModelCard({ model }: ModelCardProps) {
         {blocked && (
           <span
             id={reasonId}
-            className="inline-flex items-center gap-1 text-[10px]"
+            className="inline-flex items-center gap-1 text-micro"
             style={{ color: "var(--color-es-danger)" }}
           >
             <ShieldOff size={10} aria-hidden="true" />
@@ -92,7 +92,7 @@ export const ModelCard = memo(function ModelCard({ model }: ModelCardProps) {
         )}
         {model.context_length && (
           <span
-            className="text-[10px]"
+            className="text-micro"
             style={{ color: "var(--color-es-text-muted)" }}
           >
             ctx:{" "}
@@ -103,7 +103,7 @@ export const ModelCard = memo(function ModelCard({ model }: ModelCardProps) {
         )}
         {model.max_completion_tokens && (
           <span
-            className="text-[10px]"
+            className="text-micro"
             style={{ color: "var(--color-es-text-muted)" }}
           >
             max:{" "}

@@ -20,6 +20,7 @@ import {
   injectCss,
   wrapInGlassRight,
   surfaceToken,
+  resolveColour,
 } from "@/test/helpers/glassSurfaceCss";
 
 function mount(enabled = false) {
@@ -136,10 +137,12 @@ describe("ScreenPrivacySection", () => {
  * comes back as the browser default rather than the real declared value.
  */
 describe("ScreenPrivacySection - light surface contrast", () => {
+  let sheet = "";
   let styleEl: HTMLStyleElement;
 
   beforeAll(async () => {
-    styleEl = injectCss(await loadGlassRightCss());
+    sheet = await loadGlassRightCss();
+    styleEl = injectCss(sheet);
   }, 20000);
 
   afterAll(() => styleEl.remove());
@@ -159,7 +162,10 @@ describe("ScreenPrivacySection - light surface contrast", () => {
     });
 
     const heading = await screen.findByTestId("screen-privacy-heading");
-    const switchLabel = screen.getByTestId("screen-privacy-switch-label");
+    // Found by the words it shows, not by a test id: a `data-testid` prop on
+    // SwitchRow would be test scaffolding in a production API, and the words
+    // are what a reader sees anyway.
+    const switchLabel = screen.getByText(/hide this window from screen capture/i);
     const hint1 = screen.getByTestId("screen-privacy-hint-1");
     const hint2 = screen.getByTestId("screen-privacy-hint-2");
 
@@ -182,7 +188,7 @@ describe("ScreenPrivacySection - light surface contrast", () => {
     oldHeading.className = "settings-section-title";
     glassRight.appendChild(oldHeading);
     expect(
-      getComputedStyle(oldHeading).color,
+      resolveColour(sheet, getComputedStyle(oldHeading).color),
       "settings-section-title's colour drifted - re-measure before trusting this ground",
     ).toBe("rgba(202, 212, 224, 0.62)");
   });

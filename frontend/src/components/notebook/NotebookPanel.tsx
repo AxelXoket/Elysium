@@ -363,7 +363,7 @@ export function NotebookPanel() {
     return (
       <SlideIn>
         <section className="space-y-3 p-4">
-          <p className="text-xs leading-relaxed text-muted-foreground">
+          <p className="text-label leading-relaxed text-muted-foreground">
             Open a chat to see what it has established.
           </p>
         </section>
@@ -376,7 +376,7 @@ export function NotebookPanel() {
       <section className="space-y-3 p-4" aria-label="Notebook">
         <div className="flex items-baseline justify-between">
           <h4
-            className="text-xs font-semibold"
+            className="text-label font-semibold"
             style={{ color: "var(--color-es-text-light)" }}
           >
             Notebook
@@ -390,7 +390,7 @@ export function NotebookPanel() {
               from sent to not sent is the one event in this panel a reader
               who is not watching it must still be told about. */}
           <span
-            className="text-xs leading-relaxed text-muted-foreground"
+            className="text-label leading-relaxed text-muted-foreground"
             data-testid="notebook-sent-count"
             role="status"
           >
@@ -416,7 +416,7 @@ export function NotebookPanel() {
             data-testid="just-saved"
             role="status"
           >
-            <p className="text-xs leading-relaxed text-muted-foreground">
+            <p className="text-label leading-relaxed text-muted-foreground">
               Saved {justSaved.length === 1 ? "a note" : `${justSaved.length} notes`}{" "}
               the model wrote{justSaved.length === 1
                 ? `: "${justSaved[0].text}"`
@@ -443,7 +443,7 @@ export function NotebookPanel() {
                       aria-label={justSaved.length === 1
                         ? "Confirm delete"
                         : `Confirm deleting ${justSaved.length} notes`}
-                      className="persona-danger-action h-7 gap-1.5 px-2 text-xs"
+                      className="persona-danger-action h-7 gap-1.5 px-2 text-label"
                     >
                       <Check size={12} className="size-3" />
                       Delete {justSaved.length === 1
@@ -456,7 +456,7 @@ export function NotebookPanel() {
                       disabled={busy}
                       onClick={() => setConfirmUndo(false)}
                       aria-label="Keep note"
-                      className="persona-ghost-action h-7 px-2 text-xs"
+                      className="persona-ghost-action h-7 px-2 text-label"
                     >
                       Cancel
                     </Button>
@@ -469,7 +469,7 @@ export function NotebookPanel() {
                       variant="ghost"
                       disabled={busy}
                       onClick={() => setConfirmUndo(true)}
-                      className="persona-danger-action h-7 gap-1.5 px-2 text-xs"
+                      className="persona-danger-action h-7 gap-1.5 px-2 text-label"
                     >
                       <Undo2 size={12} className="size-3" />
                       Undo
@@ -479,7 +479,7 @@ export function NotebookPanel() {
                       size="sm"
                       variant="ghost"
                       onClick={acknowledge}
-                      className="persona-ghost-action h-7 px-2 text-xs"
+                      className="persona-ghost-action h-7 px-2 text-label"
                     >
                       Keep {justSaved.length === 1 ? "it" : "them"}
                     </Button>
@@ -505,7 +505,7 @@ export function NotebookPanel() {
               placeholder="Search notes..."
               aria-label="Search notes"
               onChange={(e) => setQuery(e.target.value)}
-              className="persona-field pl-7 text-xs md:text-xs"
+              className="persona-field pl-7 text-label"
             />
             {query !== "" && (
               <FadeIn>
@@ -541,11 +541,12 @@ export function NotebookPanel() {
               if (e.key === "Enter") void handleAdd();
             }}
             // `persona-field` like every other input on this light
-          // island, and `md:text-xs` because Input's own cva base
-          // ends in `md:text-sm` - same specificity, later in the
-          // sheet, so a bare `text-xs` loses above 768px and this
-          // panel is never narrower than that in practice.
-          className="persona-field text-xs md:text-xs"
+          // island. The size is the label step alone: Input's base string
+          // used to carry a breakpoint size of its own that beat a bare
+          // size from a call site above 768px, and every caller here
+          // repeated the override. The base reads one scale step now, and
+          // cn() knows the scale, so the call site's size wins on its own.
+          className="persona-field text-label"
           />
           <Button
             type="button"
@@ -577,7 +578,7 @@ export function NotebookPanel() {
         </div>
 
         <Collapse open={isLoading}>
-          <p className="text-xs leading-relaxed text-muted-foreground">Loading...</p>
+          <p className="text-label leading-relaxed text-muted-foreground">Loading...</p>
         </Collapse>
 
         {/* A failed load is not an empty notebook, and it used to read as
@@ -593,7 +594,7 @@ export function NotebookPanel() {
             they are rather than being taught about a third case each. */}
         <Collapse open={!isLoading && isError}>
           <p
-            className="text-xs leading-relaxed text-muted-foreground"
+            className="text-label leading-relaxed text-muted-foreground"
             role="status"
           >
             Notes could not be loaded. They are still saved - this panel just
@@ -609,7 +610,7 @@ export function NotebookPanel() {
             the reader their notes are gone. The filter decides which is
             true. */}
         <Collapse open={!isLoading && !isError && entries.length === 0 && query === ""}>
-          <p className="text-xs leading-relaxed text-muted-foreground">
+          <p className="text-label leading-relaxed text-muted-foreground">
             Nothing yet. Notes are sent with every message, so the character
             stops forgetting what you write here.
           </p>
@@ -620,7 +621,7 @@ export function NotebookPanel() {
             evidence that the notes are still there and only hidden. */}
         <Collapse open={!isLoading && !isError && entries.length === 0 && query !== ""}>
           <p
-            className="text-xs leading-relaxed text-muted-foreground"
+            className="text-label leading-relaxed text-muted-foreground"
             role="status"
           >
             No note matches that. {all.length} are still here - the search
@@ -632,7 +633,7 @@ export function NotebookPanel() {
             reader about their own language's model support every few lines,
             which is a lecture rather than a note. */}
         {entries.some((e) => e.provenance === "model") && (
-          <p className="text-xs leading-relaxed text-muted-foreground">
+          <p className="text-label leading-relaxed text-muted-foreground">
             Suggested notes are written in English - the reader is a small
             model and reads English far better. What was actually said is kept
             underneath, word for word.
@@ -734,25 +735,25 @@ function NoteRow({
       data-state={state}
     >
       <div className="min-w-0 flex-1">
-        <p className="break-words text-sm font-medium">{entry.text}</p>
+        <p className="break-words text-ui font-semibold">{entry.text}</p>
         {/* The two ways a note stops being sent read the same in a plain list
             and are not the same thing, so each says which it is. */}
         {state === "retired" && (
-          <p className="text-xs leading-relaxed text-muted-foreground">Replaced by a newer note - not sent.</p>
+          <p className="text-label leading-relaxed text-muted-foreground">Replaced by a newer note - not sent.</p>
         )}
         {state === "over" && (
-          <p className="text-xs leading-relaxed text-muted-foreground">
+          <p className="text-label leading-relaxed text-muted-foreground">
             Did not fit this turn - kept, not sent. Pin it to protect it.
           </p>
         )}
         {state === "pinned_over" && (
-          <p className="text-xs leading-relaxed text-muted-foreground">
+          <p className="text-label leading-relaxed text-muted-foreground">
             Did not fit this turn - kept, not sent. The pinned notes alone
             are over the limit, so unpin one to make room.
           </p>
         )}
         {state === "proposed" && (
-          <p className="text-xs leading-relaxed text-muted-foreground">
+          <p className="text-label leading-relaxed text-muted-foreground">
             Waiting for you - not sent until you keep it.
           </p>
         )}
@@ -764,12 +765,12 @@ function NoteRow({
             withheld: the research on review queues says an honest label
             somebody can see beats a queue nobody reads. */}
         {entry.provenance === "model" && entry.evidence_role === "assistant" && (
-          <p className="text-xs leading-relaxed text-muted-foreground">
+          <p className="text-label leading-relaxed text-muted-foreground">
             Taken from the model's own reply, not from something you wrote.
           </p>
         )}
         {entry.provenance === "model" && (
-          <p className="text-xs leading-relaxed text-muted-foreground">
+          <p className="text-label leading-relaxed text-muted-foreground">
             Written by the model.
           </p>
         )}
@@ -777,7 +778,7 @@ function NoteRow({
             said in. Without it an English paraphrase of a Turkish sentence
             cannot be checked against anything. */}
         {original && (
-          <p className="break-words text-xs leading-relaxed text-muted-foreground">
+          <p className="break-words text-label leading-relaxed text-muted-foreground">
             {TURKISH_LETTERS.test(original) ? "Türkçe aslı: " : "From: "}
             <span style={{ color: "var(--color-es-text-light)" }}>
               {"“"}{original}{"”"}

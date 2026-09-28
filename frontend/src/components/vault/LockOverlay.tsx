@@ -23,6 +23,7 @@
 import { useEffect, useRef, useState } from "react";
 import { motion as m } from "motion/react";
 import { useReducedMotion } from "@/components/motion/ReducedMotion";
+import { VAULT_STAGE_Z_INDEX } from "@/lib/theme/layers";
 import { easeValues } from "@/lib/theme/tokens";
 import { useLockAudioWarningStore } from "@/lib/query/vault";
 
@@ -309,7 +310,7 @@ export function LockOverlay({
       {holdingForWarning && (
         <m.div
           className="vault-stage"
-          style={{ position: "relative", zIndex: 1 }}
+          style={{ position: "relative", zIndex: VAULT_STAGE_Z_INDEX }}
           initial={{ opacity: 0, y: 6 }}
           animate={{ opacity: outcome === "dismissing" ? 0 : 1, y: 0 }}
           transition={{ duration: WARNING_FADE_MS / 1000, ease: EASE_SMOOTH }}

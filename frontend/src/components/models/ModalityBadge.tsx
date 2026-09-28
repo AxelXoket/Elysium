@@ -41,7 +41,7 @@ export function ModalityBadge({ modality, direction }: ModalityBadgeProps) {
       variant="outline"
       // 11px, not 10: these were the smallest text in the panel and the first
       // thing anyone asked about.
-      className="gap-0.5 text-[11px] font-normal leading-none"
+      className="gap-0.5 text-micro font-normal leading-none"
       title={`This model ${verbMap[direction]} ${label.toLowerCase()}`}
       style={{
         borderColor: out

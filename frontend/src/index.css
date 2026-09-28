@@ -16,7 +16,7 @@
 @theme inline {
     /* ── shadcn base variables (CLI-generated, kept intact) ── */
     --font-heading: var(--font-sans);
-    --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    --font-sans: system-ui, -apple-system, BlinkMacSystemFont,
                  "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
@@ -206,6 +206,56 @@
     --ease-resize:      cubic-bezier(0.4, 0, 0.6, 1);
     /* The curve of every exit and of every reduced-motion fade. */
     --ease-exit:        ease-out;
+
+    /* ── Elysium Seasonal: Type scale (KURAL 3.5) ──
+       Seven steps and a size is chosen from here or not at all; the JS
+       mirror is lib/theme/tokens.ts (typeScale) and test/tokens-sync.test.ts
+       holds the two equal. Tailwind's --text-* namespace, so each step is
+       a utility (text-micro ... text-display) as well as a var() for this
+       file. Line heights are the step's own; tracking is written where it
+       is not zero; a weight is written only where the step carries one:
+       micro, title and display at 600, and label at 400. The label's is
+       written rather than inherited on purpose - a quiet label inside a
+       semibold block would otherwise come out semibold, which is the one
+       thing a quiet label must not be. The 13/14/15 steps carry no weight
+       of their own, so an element keeps what it inherits; that is the
+       chrome steps saying "400 or 600 by the call site", and it is the one
+       place this scale does not do what REF 3.5's weight column writes.
+       The difference is in the deviation inventory in lib/theme/tokens.ts.
+       --text-ui is the chrome base (sidebar, tabs, buttons, menu items,
+       controls); --text-control is the ui/ primitives' base and dialog
+       body text and takes no new call site; --text-body is the message
+       body default and MSG_FONT_DEFAULT reads the same number.
+       The reset on the next line is what makes "chosen from here or not at
+       all" true rather than intended: without it Tailwind's own text-xs ...
+       text-9xl stay live, text-xs compiles to the same 12px as --text-label
+       and nothing says which one a line meant. Cleared first, the seven
+       below are the only sizes the namespace has, and a call site that
+       reaches for a retired one now compiles to no rule at all. */
+    --text-*: initial;
+    --text-micro: 11px;
+    --text-micro--line-height: 15px;
+    --text-micro--letter-spacing: 0.01em;
+    --text-micro--font-weight: 600;
+    --text-label: 12px;
+    --text-label--line-height: 16px;
+    --text-label--letter-spacing: 0.005em;
+
+    --text-label--font-weight: 400;
+    --text-ui: 13px;
+    --text-ui--line-height: 18px;
+    --text-control: 14px;
+    --text-control--line-height: 20px;
+    --text-body: 15px;
+    --text-body--line-height: 22px;
+    --text-title: 16px;
+    --text-title--line-height: 22px;
+    --text-title--letter-spacing: -0.005em;
+    --text-title--font-weight: 600;
+    --text-display: 20px;
+    --text-display--line-height: 26px;
+    --text-display--letter-spacing: -0.01em;
+    --text-display--font-weight: 600;
 }
 
 /* ── Elysium Seasonal dark theme (applied as :root - always dark) ── */
@@ -245,13 +295,122 @@
     --sidebar-ring: #3E72B0;
 }
 
+/* Surface tints: the colours the three heaviest families paint with.
+   Every one of them used to be written out at the point of use, which is how
+   .glass-right, persona-* and settings-* came to carry 147 of the 416 colour
+   literals this sheet declared outside a token - and those three are exactly
+   the surfaces that read as inconsistent on screen, which is not a
+   coincidence: a value that gets retyped gets retyped slightly
+   differently. They are declared once
+   here, at the value they already had, so the move is invisible on screen
+   and the next change to one of them is a change to one line.
+   The ramps are one base colour at several strengths, named by the strength
+   (--es-frost-10 is that colour at alpha 0.10); the rest are one-offs named
+   for what they paint. test/palette-guard.test.ts holds the count down. */
+:root {
+    /* frost: rgba(200, 216, 236, a) */
+    --es-frost-03: rgba(200, 216, 236, 0.03);
+    --es-frost-05: rgba(200, 216, 236, 0.05);
+    --es-frost-06: rgba(200, 216, 236, 0.06);
+    --es-frost-07: rgba(200, 216, 236, 0.07);
+    --es-frost-08: rgba(200, 216, 236, 0.08);
+    --es-frost-09: rgba(200, 216, 236, 0.09);
+    --es-frost-10: rgba(200, 216, 236, 0.10);
+    --es-frost-12: rgba(200, 216, 236, 0.12);
+    --es-frost-13: rgba(200, 216, 236, 0.13);
+    --es-frost-14: rgba(200, 216, 236, 0.14);
+    --es-frost-16: rgba(200, 216, 236, 0.16);
+    --es-frost-20: rgba(200, 216, 236, 0.20);
+    --es-frost-22: rgba(200, 216, 236, 0.22);
+    --es-frost-28: rgba(200, 216, 236, 0.28);
+    /* quiet: rgba(202, 212, 224, a) */
+    --es-quiet-55: rgba(202, 212, 224, 0.55);
+    --es-quiet-60: rgba(202, 212, 224, 0.60);
+    --es-quiet-62: rgba(202, 212, 224, 0.62);
+    --es-quiet-72: rgba(202, 212, 224, 0.72);
+    --es-quiet-78: rgba(202, 212, 224, 0.78);
+    --es-quiet-80: rgba(202, 212, 224, 0.80);
+    /* accent: rgba(94, 130, 174, a) */
+    --es-accent-10: rgba(94, 130, 174, 0.10);
+    --es-accent-16: rgba(94, 130, 174, 0.16);
+    --es-accent-18: rgba(94, 130, 174, 0.18);
+    --es-accent-22: rgba(94, 130, 174, 0.22);
+    --es-accent-28: rgba(94, 130, 174, 0.28);
+    --es-accent-75: rgba(94, 130, 174, 0.75);
+    --es-accent-92: rgba(94, 130, 174, 0.92);
+    /* sage: rgba(62, 114, 176, a) */
+    --es-sage-12: rgba(62, 114, 176, 0.12);
+    --es-sage-14: rgba(62, 114, 176, 0.14);
+    --es-sage-18: rgba(62, 114, 176, 0.18);
+    --es-sage-25: rgba(62, 114, 176, 0.25);
+    --es-sage-75: rgba(62, 114, 176, 0.75);
+    --es-sage-90: rgba(62, 114, 176, 0.90);
+    --es-sage-95: rgba(62, 114, 176, 0.95);
+    /* mist: rgba(110, 147, 196, a) */
+    --es-mist-35: rgba(110, 147, 196, 0.35);
+    --es-mist-45: rgba(110, 147, 196, 0.45);
+    --es-mist-50: rgba(110, 147, 196, 0.50);
+    --es-mist-60: rgba(110, 147, 196, 0.60);
+    --es-mist-85: rgba(110, 147, 196, 0.85);
+    /* danger: rgba(195, 106, 114, a) */
+    --es-danger-08: rgba(195, 106, 114, 0.08);
+    --es-danger-10: rgba(195, 106, 114, 0.10);
+    --es-danger-16: rgba(195, 106, 114, 0.16);
+    --es-danger-24: rgba(195, 106, 114, 0.24);
+    /* ink: rgba(28, 38, 50, a) */
+    --es-ink-10: rgba(28, 38, 50, 0.10);
+    --es-ink-12: rgba(28, 38, 50, 0.12);
+    --es-ink-14: rgba(28, 38, 50, 0.14);
+    --es-ink-16: rgba(28, 38, 50, 0.16);
+    --es-ink-18: rgba(28, 38, 50, 0.18);
+    /* deep: rgba(58, 88, 122, a) */
+    --es-deep-22: rgba(58, 88, 122, 0.22);
+    --es-deep-28: rgba(58, 88, 122, 0.28);
+    --es-deep-30: rgba(58, 88, 122, 0.30);
+    --es-deep-32: rgba(58, 88, 122, 0.32);
+    /* veil: rgba(255, 255, 255, a) */
+    --es-veil-08: rgba(255, 255, 255, 0.08);
+    --es-veil-12: rgba(255, 255, 255, 0.12);
+    --es-veil-16: rgba(255, 255, 255, 0.16);
+    --es-veil-20: rgba(255, 255, 255, 0.20);
+    --es-veil-24: rgba(255, 255, 255, 0.24);
+    --es-veil-26: rgba(255, 255, 255, 0.26);
+    --es-veil-28: rgba(255, 255, 255, 0.28);
+    --es-veil-30: rgba(255, 255, 255, 0.30);
+    --es-veil-35: rgba(255, 255, 255, 0.35);
+    /* One-off colours, named for what they paint. */
+    --es-avatar-ink: #EAF1F8;
+    --es-back-button-ink-hover: rgba(234, 240, 247, 0.96);
+    /* The inline confirm buttons' ink (.settings-voice-button.is-quiet). */
+    --es-confirm-ink: rgba(230, 236, 243, 0.84);
+    --es-control-ink-quiet: rgba(230, 236, 243, 0.72);
+    --es-control-ink-strong: rgba(238, 243, 249, 0.98);
+    --es-danger-ink: rgba(206, 146, 154, 0.92);
+    --es-field-well: rgba(20, 28, 40, 0.55);
+    --es-glass-right-bottom: rgba(238, 244, 250, 0.97);
+    --es-glass-right-top: rgba(252, 253, 255, 0.98);
+    --es-island-accent: #3A587A;
+    --es-island-action-ink: #1B2A3C;
+    --es-island-danger-ink: #96424E;
+    --es-island-ghost-ink: #596674;
+    --es-menu-from: rgba(17, 24, 33, 0.96);
+    --es-menu-item-ink: rgba(228, 235, 243, 0.85);
+    --es-menu-item-ink-active: rgba(159, 192, 232, 0.98);
+    --es-menu-item-ink-strong: rgba(241, 245, 250, 0.98);
+    --es-menu-shadow: rgba(2, 5, 8, 0.32);
+    --es-menu-to: rgba(40, 52, 66, 0.92);
+    --es-preview-bg: rgba(238, 244, 250, 0.92);
+    --es-switch-thumb: rgba(238, 243, 249, 0.95);
+    --es-switch-thumb-shadow: rgba(0, 0, 0, 0.25);
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
   }
   body {
     @apply bg-background text-foreground;
-    font-size: 15px;
+    font-size: var(--text-body);
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -376,7 +535,7 @@
   height: 28px;
   flex-shrink: 0;
   border-radius: 50%;
-  font-size: 11px;
+  font-size: var(--text-micro);
   font-weight: 600;
   line-height: 1;
   text-transform: uppercase;
@@ -461,8 +620,10 @@
    Milk veil, NO backdrop-filter (living-mist law: blur over the animated fog
    recomposites every frame). pointer-events:none keeps every drag event on
    <main> so useFileDrop's enter/leave depth counter never storms. z:30 is
-   BELOW the toast stack (z:35, H19) so an upload-error toast stays readable
-   mid-drag; contained by .warm-canvas (position:relative + isolation:isolate). */
+   BELOW the toast tier so an upload-error toast stays readable mid-drag;
+   the tiers are the layer table further down this file, and the toast sits
+   at 60 there. Contained by .warm-canvas (position:relative +
+   isolation:isolate). */
 .drop-overlay {
   position: absolute;
   inset: 0;
@@ -629,8 +790,8 @@
   width: 100%;
   padding: 0.45rem 0.6rem;
   border-radius: var(--radius-card);
-  border: 1px solid rgba(200, 216, 236, 0.1);
-  background: rgba(200, 216, 236, 0.05);
+  border: 1px solid var(--es-frost-10);
+  background: var(--es-frost-05);
   transition:
     transform var(--duration-fast) var(--ease-smooth),
     background-color var(--duration-fast) var(--ease-smooth),
@@ -638,8 +799,8 @@
 }
 
 .persona-strip:hover {
-  background: rgba(200, 216, 236, 0.09);
-  border-color: rgba(200, 216, 236, 0.16);
+  background: var(--es-frost-09);
+  border-color: var(--es-frost-16);
 }
 
 .persona-strip:active {
@@ -654,15 +815,15 @@
   height: 28px;
   flex-shrink: 0;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: var(--text-micro);
   font-weight: 600;
-  color: #EAF1F8;
-  background: rgba(94, 130, 174, 0.92);
+  color: var(--es-avatar-ink);
+  background: var(--es-accent-92);
 }
 
 .persona-strip-label {
   display: block;
-  font-size: 9px;
+  font-size: var(--text-micro);
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -674,7 +835,7 @@
   display: block;
   margin-top: 1px;
   overflow: hidden;
-  font-size: 12.5px;
+  font-size: var(--text-ui);
   font-weight: 600;
   /* Roomy line box so descenders and Turkish diacritics (ğ, ç, ı) are not
      clipped by the ellipsis overflow:hidden. */
@@ -694,12 +855,12 @@
 /* Sibling of .chat-action-menu - same Azure family: blue-dark horizontal
    gradient, hairline border, one soft elevation shadow, shared entrance. */
 .persona-menu {
-  z-index: 60;
+  z-index: 40;
   padding: 0.4rem;
   border-radius: 5px;
-  background: linear-gradient(90deg, rgba(17, 24, 33, 0.96), rgba(40, 52, 66, 0.92));
-  border: 1px solid rgba(200, 216, 236, 0.13);
-  box-shadow: 0 18px 36px rgba(2, 5, 8, 0.32);
+  background: linear-gradient(90deg, var(--es-menu-from), var(--es-menu-to));
+  border: 1px solid var(--es-frost-13);
+  box-shadow: 0 18px 36px var(--es-menu-shadow);
   backdrop-filter: blur(16px) saturate(112%);
   -webkit-backdrop-filter: blur(16px) saturate(112%);
   animation: inline-action-enter var(--duration-fast) var(--ease-smooth) both;
@@ -717,8 +878,8 @@
   width: 100%;
   padding: 0.45rem 0.5rem;
   border-radius: 3px;
-  font-size: 12.5px;
-  color: rgba(228, 235, 243, 0.85);
+  font-size: var(--text-ui);
+  color: var(--es-menu-item-ink);
   transition:
     background-color var(--duration-fast) var(--ease-smooth),
     color var(--duration-fast) var(--ease-smooth),
@@ -727,14 +888,14 @@
 
 .persona-menu-item:hover:not(:disabled),
 .persona-menu-item:focus-visible {
-  color: rgba(241, 245, 250, 0.98);
-  background: rgba(200, 216, 236, 0.09);
+  color: var(--es-menu-item-ink-strong);
+  background: var(--es-frost-09);
   transform: translateY(-1px);
 }
 
 .persona-menu-item[aria-checked="true"] {
-  color: rgba(159, 192, 232, 0.98);
-  background: rgba(94, 130, 174, 0.10);
+  color: var(--es-menu-item-ink-active);
+  background: var(--es-accent-10);
 }
 
 .persona-menu-avatar {
@@ -745,10 +906,10 @@
   height: 22px;
   flex-shrink: 0;
   border-radius: 999px;
-  font-size: 10.5px;
+  font-size: var(--text-micro);
   font-weight: 600;
-  color: #EAF1F8;
-  background: rgba(94, 130, 174, 0.75);
+  color: var(--es-avatar-ink);
+  background: var(--es-accent-75);
 }
 
 /* Footer action row ("Manage personas" / "Create one") - a real row with
@@ -757,9 +918,9 @@
   width: 100%;
   margin-top: 0.3rem;
   padding: 0.45rem 0.5rem;
-  border-top: 1px solid rgba(200, 216, 236, 0.10);
+  border-top: 1px solid var(--es-frost-10);
   border-radius: 0 0 3px 3px;
-  font-size: 11.5px;
+  font-size: var(--text-ui);
   text-align: left;
   color: var(--color-es-text-muted);
   transition:
@@ -769,15 +930,15 @@
 
 .persona-menu-manage:hover,
 .persona-menu-manage:focus-visible {
-  color: rgba(241, 245, 250, 0.98);
-  background: rgba(200, 216, 236, 0.07);
+  color: var(--es-menu-item-ink-strong);
+  background: var(--es-frost-07);
 }
 
 .persona-menu-empty {
   padding: 0.55rem 0.5rem 0.3rem;
-  font-size: 12px;
+  font-size: var(--text-label);
   line-height: 1.45;
-  color: rgba(202, 212, 224, 0.72);
+  color: var(--es-quiet-72);
 }
 
 /* ── Sidebar search field ─────────────────────────────────────────── */
@@ -802,7 +963,7 @@
   background: rgba(200, 216, 236, 0.06);
   border: 1px solid rgba(200, 216, 236, 0.12);
   color: var(--color-es-text-light);
-  font-size: 12.5px;
+  font-size: var(--text-ui);
   transition:
     border-color var(--duration-fast) var(--ease-smooth),
     background-color var(--duration-fast) var(--ease-smooth);
@@ -898,7 +1059,7 @@
  * window after `.glass-right {`, so a comment placed inside the block would
  * push it out of reach. */
 .glass-right {
-  background: linear-gradient(180deg, rgba(252, 253, 255, 0.98), rgba(238, 244, 250, 0.97));
+  background: linear-gradient(180deg, var(--es-glass-right-top), var(--es-glass-right-bottom));
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
   /* Softened with --color-es-text-light below, not left behind it. These
@@ -1028,9 +1189,9 @@
 }
 
 .glass-right .model-panel .sidebar-item {
-  border: 1px solid rgba(28, 38, 50, 0.10);
-  border-left-color: rgba(28, 38, 50, 0.10);
-  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--es-ink-10);
+  border-left-color: var(--es-ink-10);
+  background: var(--es-veil-08);
   transition:
     transform var(--duration-fast) var(--ease-smooth),
     background-color var(--duration-fast) var(--ease-smooth),
@@ -1040,8 +1201,8 @@
 
 .glass-right .model-panel .sidebar-item:hover {
   transform: translateY(-1px);
-  background: rgba(255, 255, 255, 0.20);
-  border-color: rgba(28, 38, 50, 0.16);
+  background: var(--es-veil-20);
+  border-color: var(--es-ink-16);
 }
 
 .glass-right .model-panel .sidebar-item:active {
@@ -1049,9 +1210,9 @@
 }
 
 .glass-right .model-panel .sidebar-item-selected {
-  border-color: rgba(58, 88, 122, 0.28);
-  border-left-color: rgba(58, 88, 122, 0.28);
-  background: rgba(255, 255, 255, 0.24);
+  border-color: var(--es-deep-28);
+  border-left-color: var(--es-deep-28);
+  background: var(--es-veil-24);
 }
 
 .persona-panel {
@@ -1066,17 +1227,17 @@
   align-items: center;
   justify-content: center;
   border-radius: 4px;
-  color: #3A587A;
-  background: rgba(255, 255, 255, 0.26);
-  border: 1px solid rgba(28, 38, 50, 0.12);
+  color: var(--es-island-accent);
+  background: var(--es-veil-26);
+  border: 1px solid var(--es-ink-12);
 }
 
 .persona-card {
   position: relative;
   overflow: hidden;
   border-radius: 4px;
-  border: 1px solid rgba(28, 38, 50, 0.12);
-  background: rgba(255, 255, 255, 0.20);
+  border: 1px solid var(--es-ink-12);
+  background: var(--es-veil-20);
   padding: 12px;
   transition:
     transform var(--duration-fast) var(--ease-smooth),
@@ -1088,15 +1249,15 @@
 
 .persona-card:hover {
   transform: translateY(-1px);
-  border-color: rgba(28, 38, 50, 0.18);
-  background: rgba(255, 255, 255, 0.28);
+  border-color: var(--es-ink-18);
+  background: var(--es-veil-28);
 }
 
 .persona-card-active,
 .persona-list-item.is-active {
-  border-color: rgba(58, 88, 122, 0.30);
-  background: rgba(255, 255, 255, 0.30);
-  box-shadow: 0 0 0 1px rgba(62, 114, 176, 0.12);
+  border-color: var(--es-deep-30);
+  background: var(--es-veil-30);
+  box-shadow: 0 0 0 1px var(--es-sage-12);
 }
 
 .persona-privacy-note,
@@ -1106,10 +1267,10 @@
   display: flex;
   gap: 8px;
   border-radius: 4px;
-  border: 1px solid rgba(28, 38, 50, 0.10);
-  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid var(--es-ink-10);
+  background: var(--es-veil-16);
   padding: 10px;
-  font-size: 12px;
+  font-size: var(--text-label);
   line-height: 1.5;
   color: var(--color-es-text-muted);
 }
@@ -1121,32 +1282,32 @@
 }
 
 .persona-privacy-note svg {
-  color: #3A587A;
+  color: var(--es-island-accent);
 }
 
 .persona-error,
 .persona-local-error {
   color: var(--color-es-danger);
-  background: rgba(195, 106, 114, 0.08);
-  border-color: rgba(195, 106, 114, 0.16);
+  background: var(--es-danger-08);
+  border-color: var(--es-danger-16);
 }
 
 .persona-local-error {
   border-radius: 3px;
   padding: 7px 9px;
-  font-size: 12px;
+  font-size: var(--text-label);
 }
 
 .persona-active-badge {
   height: 20px;
-  border-color: rgba(58, 88, 122, 0.30) !important;
-  color: #3A587A !important;
-  background: rgba(62, 114, 176, 0.14);
+  border-color: var(--es-deep-30) !important;
+  color: var(--es-island-accent) !important;
+  background: var(--es-sage-14);
 }
 
 .persona-field {
-  border-color: rgba(28, 38, 50, 0.14) !important;
-  background: rgba(255, 255, 255, 0.24) !important;
+  border-color: var(--es-ink-14) !important;
+  background: var(--es-veil-24) !important;
   color: var(--color-es-text-light) !important;
   transition:
     border-color var(--duration-fast) var(--ease-smooth),
@@ -1155,14 +1316,14 @@
 }
 
 .persona-field:focus {
-  border-color: rgba(58, 88, 122, 0.32) !important;
-  box-shadow: 0 0 0 3px rgba(62, 114, 176, 0.14);
+  border-color: var(--es-deep-32) !important;
+  box-shadow: 0 0 0 3px var(--es-sage-14);
 }
 
 .persona-select-action {
-  border: 1px solid rgba(58, 88, 122, 0.22) !important;
-  background: rgba(62, 114, 176, 0.18) !important;
-  color: #1B2A3C !important;
+  border: 1px solid var(--es-deep-22) !important;
+  background: var(--es-sage-18) !important;
+  color: var(--es-island-action-ink) !important;
   transition:
     transform var(--duration-fast) var(--ease-smooth),
     filter var(--duration-fast) var(--ease-smooth),
@@ -1171,8 +1332,8 @@
 
 .persona-ghost-action,
 .persona-danger-action {
-  border: 1px solid rgba(28, 38, 50, 0.10) !important;
-  background: rgba(255, 255, 255, 0.12) !important;
+  border: 1px solid var(--es-ink-10) !important;
+  background: var(--es-veil-12) !important;
   color: var(--color-es-text-muted) !important;
   transition:
     transform var(--duration-fast) var(--ease-smooth),
@@ -1223,11 +1384,11 @@
  * Still visibly lighter than `--color-es-text-light`, so the panel keeps its
  * two ink tiers. */
 .persona-ghost-action {
-  color: #596674 !important;
+  color: var(--es-island-ghost-ink) !important;
 }
 
 .persona-danger-action {
-  color: #96424E !important;
+  color: var(--es-island-danger-ink) !important;
 }
 
 .persona-select-action:hover:not(:disabled),
@@ -1389,13 +1550,13 @@
 }
 
 .vault-title {
-  font-size: 15px;
+  font-size: var(--text-title);
   font-weight: 600;
   color: var(--color-es-text-light);
 }
 
 .vault-note {
-  font-size: 12px;
+  font-size: var(--text-label);
   line-height: 1.55;
   color: var(--color-es-text-muted);
 }
@@ -1405,7 +1566,7 @@
   flex-direction: column;
   gap: 0.3rem;
   margin-top: 0.35rem;
-  font-size: 11px;
+  font-size: var(--text-ui);
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--color-es-text-muted);
@@ -1418,7 +1579,7 @@
   border-radius: var(--radius-input);
   border-width: 1px;
   border-style: solid;
-  font-size: 13px;
+  font-size: var(--text-ui);
   outline: none;
 }
 
@@ -1476,12 +1637,12 @@
 }
 
 .vault-error {
-  font-size: 12px;
+  font-size: var(--text-label);
   color: var(--color-es-danger);
 }
 
 .vault-warning {
-  font-size: 11px;
+  font-size: var(--text-label);
   line-height: 1.5;
   color: rgba(206, 146, 154, 0.92);
 }
@@ -1493,7 +1654,7 @@
   height: 34px;
   margin-top: 0.3rem;
   border-radius: var(--radius-input);
-  font-size: 12.5px;
+  font-size: var(--text-ui);
   font-weight: 600;
 }
 
@@ -1523,10 +1684,35 @@
   animation: vault-shake 340ms var(--ease-smooth);
 }
 
-/* FE-1B: central error toast stack over the warm chat canvas */
+/* ── The layer table ──
+   Four tiers, and everything that sits above the page belongs to one of
+   them. The numbers are here and nowhere else: a component that sets
+   `style={{ zIndex }}` competes with this table without appearing in it,
+   which is how the chat action menu came to paint over every surface but
+   the lock. The one inline value still allowed is written down in
+   lib/theme/layers.ts and orders children INSIDE a context its parent
+   already opened.
+
+     40  menu     .persona-menu, .chat-action-menu, .chat-action-confirm
+     50  dialog   the z-50 Tailwind utility set by ui/dialog.tsx,
+                  ui/tooltip.tsx and ui/select.tsx - not a rule in this file
+     60  toast    .error-toast-stack
+    200  lock     .lock-overlay
+
+   Two of the four moved in this commit and both were real defects. The
+   persona menu sat at 60, over dialogs, so opening a dialog from behind it
+   left it floating on top. The toast stack sat at 35 and read as "under
+   the dialog", but the number never mattered: it was inside
+   .elysium-stage, whose own z-index opens a stacking context, and nothing
+   escapes its parent's context by raising a number. It is portalled to the
+   body now, which is what actually lifts it, and 60 is what orders it once
+   it is out there. test/css-contract.test.ts reads the order back out of
+   the compiled sheet. */
+
+/* FE-1B: central error toast stack, over every surface but the lock. */
 .error-toast-stack {
   top: clamp(20px, 4vh, 42px);
-  z-index: 35;
+  z-index: 60;
 }
 
 .error-toast {
@@ -1716,7 +1902,7 @@
   background: rgba(255,255,255,0.22);
   color: rgba(30, 38, 48,0.62);
   padding: 0.15rem 0.45rem;
-  font-size: 10px;
+  font-size: var(--text-micro);
   line-height: 1;
   text-transform: uppercase;
 }
@@ -1774,7 +1960,7 @@
 .generation-summary-tile span {
   display: block;
   color: rgba(202, 212, 224, 0.58);
-  font-size: 10px;
+  font-size: var(--text-micro);
   line-height: 1.1;
 }
 
@@ -1782,8 +1968,8 @@
   display: block;
   margin-top: 0.25rem;
   color: rgba(238, 243, 249, 0.92);
-  font-size: 12px;
-  font-weight: 650;
+  font-size: var(--text-label);
+  font-weight: 700;
   line-height: 1.15;
 }
 
@@ -1797,7 +1983,7 @@
 .generation-section h3 {
   margin-bottom: 0.65rem;
   color: rgba(94, 130, 174, 0.88);
-  font-size: 11px;
+  font-size: var(--text-label);
   font-weight: 700;
   letter-spacing: 0.08em;
   line-height: 1;
@@ -1877,13 +2063,13 @@
 .generation-helper {
   margin-top: 0.35rem;
   color: rgba(202, 212, 224, 0.72);
-  font-size: 11px;
+  font-size: var(--text-label);
   line-height: 1.45;
 }
 
 .generation-support-note {
   color: rgba(31, 39, 49, 0.58);
-  font-size: 11px;
+  font-size: var(--text-label);
   line-height: 1.35;
 }
 
@@ -2261,7 +2447,7 @@
 
 /* Tiny n/m position indicator beside the bubble timestamp. */
 .variant-counter {
-  font-size: 9px;
+  font-size: var(--text-micro);
   opacity: 0.7;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.04em;
@@ -2276,7 +2462,7 @@
    variables are set on the chat scroll container (and preview blocks);
    defaults reproduce the pre-settings look exactly. */
 .message-text {
-  font-size: var(--msg-fs, 0.875rem);
+  font-size: var(--msg-fs, 0.9375rem);
   line-height: var(--msg-lh, 1.625);
 }
 
@@ -2289,8 +2475,8 @@
   padding: 0.6rem 0.7rem;
   border-radius: var(--radius-card);
   color: var(--color-es-text-light);
-  background: rgba(200, 216, 236, 0.05);
-  border: 1px solid rgba(200, 216, 236, 0.10);
+  background: var(--es-frost-05);
+  border: 1px solid var(--es-frost-10);
   transition:
     transform var(--duration-fast) var(--ease-smooth),
     background-color var(--duration-fast) var(--ease-smooth),
@@ -2299,8 +2485,8 @@
 
 .settings-category-row:hover,
 .settings-toggle-row:hover {
-  background: rgba(200, 216, 236, 0.09);
-  border-color: rgba(200, 216, 236, 0.16);
+  background: var(--es-frost-09);
+  border-color: var(--es-frost-16);
   transform: translateY(-1px);
 }
 
@@ -2317,16 +2503,16 @@
   height: 28px;
   flex-shrink: 0;
   border-radius: var(--radius-input);
-  color: var(--color-es-mist-blue, #6E93C4);
-  background: rgba(94, 130, 174, 0.10);
-  border: 1px solid rgba(94, 130, 174, 0.16);
+  color: var(--color-es-mist-blue);
+  background: var(--es-accent-10);
+  border: 1px solid var(--es-accent-16);
 }
 
 .settings-category-desc {
   display: block;
   margin-top: 1px;
-  font-size: 11px;
-  color: rgba(202, 212, 224, 0.72);
+  font-size: var(--text-label);
+  color: var(--es-quiet-72);
 }
 
 .settings-back-button {
@@ -2337,9 +2523,9 @@
   height: 24px;
   flex-shrink: 0;
   border-radius: var(--radius-icon-btn);
-  color: rgba(230, 236, 243, 0.72);
-  background: rgba(200, 216, 236, 0.06);
-  border: 1px solid rgba(200, 216, 236, 0.10);
+  color: var(--es-control-ink-quiet);
+  background: var(--es-frost-06);
+  border: 1px solid var(--es-frost-10);
   transition:
     transform var(--duration-fast) var(--ease-smooth),
     background-color var(--duration-fast) var(--ease-smooth),
@@ -2348,8 +2534,8 @@
 
 .settings-back-button:hover {
   transform: translateY(-1px);
-  color: rgba(234, 240, 247, 0.96);
-  background: rgba(200, 216, 236, 0.12);
+  color: var(--es-back-button-ink-hover);
+  background: var(--es-frost-12);
 }
 
 .settings-back-button:active {
@@ -2363,9 +2549,9 @@
   border-radius: var(--radius-card);
   /* v1.1 E2: bound to the layered surface vars so a msg-contrast-* class on
      this element makes the live preview show the actual pair. */
-  background: var(--msg-asst-bg, rgba(238, 244, 250, 0.92));
-  border: 1px solid rgba(255, 255, 255, 0.35);
-  color: var(--msg-asst-fg, var(--color-es-asst-bubble-text, #1C2632));
+  background: var(--msg-asst-bg, var(--es-preview-bg));
+  border: 1px solid var(--es-veil-35);
+  color: var(--msg-asst-fg, var(--color-es-asst-bubble-text));
 }
 
 /* Sliding pill switch (settings toggles) - sharp-scale, sage when on. */
@@ -2376,14 +2562,14 @@
   height: 19px;
   flex-shrink: 0;
   border-radius: 999px;
-  background: rgba(200, 216, 236, 0.14);
-  border: 1px solid rgba(200, 216, 236, 0.20);
+  background: var(--es-frost-14);
+  border: 1px solid var(--es-frost-20);
   transition: background-color var(--duration-fast) var(--ease-smooth);
 }
 
 .settings-switch[data-on="true"] {
-  background: rgba(62, 114, 176, 0.75);
-  border-color: rgba(62, 114, 176, 0.9);
+  background: var(--es-sage-75);
+  border-color: var(--es-sage-90);
 }
 
 .settings-switch-thumb {
@@ -2393,8 +2579,8 @@
   width: 13px;
   height: 13px;
   border-radius: 999px;
-  background: rgba(238, 243, 249, 0.95);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+  background: var(--es-switch-thumb);
+  box-shadow: 0 2px 6px var(--es-switch-thumb-shadow);
   transition: transform var(--duration-fast) var(--ease-smooth);
 }
 
@@ -2442,7 +2628,7 @@
   height: 22px;
   flex-shrink: 0;
   border-radius: var(--radius-input);
-  border: 1px solid rgba(200, 216, 236, 0.28);
+  border: 1px solid var(--es-frost-28);
   transition:
     transform var(--duration-fast) var(--ease-smooth),
     box-shadow var(--duration-fast) var(--ease-smooth),
@@ -2454,8 +2640,8 @@
 }
 
 .settings-tint-chip[data-selected="true"] {
-  border-color: rgba(62, 114, 176, 0.95);
-  box-shadow: 0 0 0 2px rgba(62, 114, 176, 0.25);
+  border-color: var(--es-sage-95);
+  box-shadow: 0 0 0 2px var(--es-sage-25);
 }
 
 .settings-tint-chip:disabled {
@@ -2532,21 +2718,21 @@
   align-items: center;
   justify-content: center;
   color: rgba(202, 212, 224, 0.55);
-  font-size: 11px;
+  font-size: var(--text-label);
 }
 
 /* A text button that sits on a control's own header row, next to its label -
    quieter than the dialog's footer buttons, which are decisions about the
    whole panel rather than about one setting. */
 .settings-inline-reset {
-  font-size: 11px;
+  font-size: var(--text-ui);
   font-weight: 600;
-  color: rgba(202, 212, 224, 0.72);
+  color: var(--es-quiet-72);
   transition: color var(--duration-fast) var(--ease-smooth);
 }
 
 .settings-inline-reset:hover:not(:disabled) {
-  color: rgba(238, 243, 249, 0.98);
+  color: var(--es-control-ink-strong);
 }
 
 .settings-inline-reset:disabled {
@@ -2559,11 +2745,11 @@
 .settings-segment-option {
   padding: 0.3rem 0.7rem;
   border-radius: var(--radius-input);
-  font-size: 11px;
+  font-size: var(--text-ui);
   font-weight: 600;
-  color: rgba(230, 236, 243, 0.72);
-  background: rgba(200, 216, 236, 0.05);
-  border: 1px solid rgba(200, 216, 236, 0.28);
+  color: var(--es-control-ink-quiet);
+  background: var(--es-frost-05);
+  border: 1px solid var(--es-frost-28);
   transition:
     transform var(--duration-fast) var(--ease-smooth),
     box-shadow var(--duration-fast) var(--ease-smooth),
@@ -2577,10 +2763,10 @@
 }
 
 .settings-segment-option[data-selected="true"] {
-  border-color: rgba(62, 114, 176, 0.95);
-  box-shadow: 0 0 0 2px rgba(62, 114, 176, 0.25);
-  color: rgba(238, 243, 249, 0.98);
-  background: rgba(62, 114, 176, 0.18);
+  border-color: var(--es-sage-95);
+  box-shadow: 0 0 0 2px var(--es-sage-25);
+  color: var(--es-control-ink-strong);
+  background: var(--es-sage-18);
 }
 
 /* v1.1 E2 - Message contrast presets (Soft / Default / High).
@@ -2714,13 +2900,16 @@
 }
 
 /* Both are portaled to document.body by ChatList.tsx, which sets position,
-   top or bottom, right and zIndex inline from the trigger's rect; the
-   geometry lives there and nothing here. 13rem flat: the old min() clamp
-   measured against the BODY width once portaled and never engaged.
-   IP-05 takes the inline zIndex out of ChatList and into the layer scale, so
-   this sentence needs its last clause revisited in that unit. */
+   top or bottom and right inline from the trigger's rect; that geometry
+   lives there and nothing here, but the LAYER does not - it is below, with
+   the rest of the table. 13rem flat: the old min() clamp measured against
+   the BODY width once portaled and never engaged. */
 .chat-action-menu,
 .chat-action-confirm {
+  /* Both portal to the body with their coordinates computed in JS; only the
+     layer belongs to the sheet, and it used to be written inline at both
+     call sites where the table could not see it. */
+  z-index: 40;
   width: 13rem;
   border-radius: 5px;
   border: 1px solid rgba(200, 216, 236, 0.13);
@@ -2738,7 +2927,7 @@
 .chat-action-confirm {
   padding: 0.6rem;
   color: rgba(232, 238, 245, 0.90);
-  font-size: 0.74rem;
+  font-size: var(--text-label);
   line-height: 1.4;
 }
 
@@ -2750,7 +2939,7 @@
   border-radius: 3px;
   padding: 0.44rem 0.5rem;
   color: rgba(228, 235, 243, 0.82);
-  font-size: 0.76rem;
+  font-size: var(--text-ui);
   transition:
     background-color var(--duration-fast) var(--ease-smooth),
     color var(--duration-fast) var(--ease-smooth),
@@ -2941,7 +3130,7 @@
   background: linear-gradient(90deg, rgba(20, 27, 36, 0.96), rgba(42, 52, 64, 0.92));
   color: rgba(236, 242, 248, 0.92);
   padding: 0.62rem;
-  font-size: 0.74rem;
+  font-size: var(--text-label);
   line-height: 1.4;
   box-shadow: 0 18px 34px rgba(4, 7, 10, 0.30);
   backdrop-filter: blur(16px) saturate(112%);
@@ -2994,14 +3183,15 @@
   background: transparent;
   color: inherit;
   /* Was font: inherit / line-height: inherit, which chained up to
-     .message-bubble-shell's FIXED Tailwind text-sm/leading-relaxed classes,
+     .message-bubble-shell's FIXED Tailwind size and leading classes
+     (text-ui since the type scale landed),
      not the reader's font-size preference. .message-text uses these two
      vars explicitly (index.css:2111-2114) - the edit box now matches it
      exactly, so toggling edit mode no longer changes the text's size.
      font-family/weight still inherit: Tailwind preflight sets `font: inherit`
      on textarea (preflight.css:242-244), so dropping the shorthand here does
      not fall back to the UA's control font. */
-  font-size: var(--msg-fs, 0.875rem);
+  font-size: var(--msg-fs, 0.9375rem);
   line-height: var(--msg-lh, 1.625);
   padding: 0.4rem 0.55rem;
   outline: none;
@@ -3021,7 +3211,7 @@
   background: rgba(200, 216, 236, 0.07);
   padding: 0.3rem 0.52rem;
   color: rgba(230, 236, 243, 0.84);
-  font-size: 0.72rem;
+  font-size: var(--text-ui);
   font-weight: 600;
   line-height: 1;
   transition:
@@ -3482,13 +3672,17 @@
 }
 
 .error-fallback-title {
-  font-size: 1.05rem;
+  font-size: var(--text-title);
   font-weight: 600;
   letter-spacing: 0.01em;
 }
 
+/* 13 and not 14: the crash screen's paragraph is chrome prose on a
+   full-screen fallback, and --text-control is closed to everything but a
+   components/ui/ primitive's base string and dialog body text (REF 3.5).
+   The button below it is already on 13, so the two now read as one block. */
 .error-fallback-text {
-  font-size: 0.85rem;
+  font-size: var(--text-ui);
   line-height: 1.5;
   color: #9DAAB8;
 }
@@ -3496,8 +3690,8 @@
 .error-fallback-button {
   margin-top: 0.35rem;
   padding: 0.45rem 1.6rem;
-  font-size: 0.85rem;
-  font-weight: 500;
+  font-size: var(--text-ui);
+  font-weight: 600;
   border-radius: 6px;
   border: 1px solid rgba(160, 190, 220, 0.28);
   background: rgba(150, 180, 215, 0.19);
@@ -3545,16 +3739,16 @@ input::-ms-clear {
    Anything smaller than 11px is reserved for the install log, which is
    machine output rather than prose. */
 .settings-section-title {
-  font-size: 12px;
+  font-size: var(--text-label);
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: rgba(202, 212, 224, 0.62);
+  color: var(--es-quiet-62);
 }
 
 .settings-label {
   display: block;
-  font-size: 12px;
+  font-size: var(--text-ui);
   font-weight: 600;
   line-height: 1.4;
 }
@@ -3562,23 +3756,23 @@ input::-ms-clear {
 .settings-hint {
   display: block;
   margin-top: 1px;
-  font-size: 11px;
+  font-size: var(--text-label);
   line-height: 1.45;
-  color: rgba(202, 212, 224, 0.72);
+  color: var(--es-quiet-72);
 }
 
 /* The live value beside a slider, and a sub-label inside a control. Same size
    as a hint, but inline - so `display: block` would break the row. */
 .settings-value {
-  font-size: 11px;
+  font-size: var(--text-label);
   line-height: 1.45;
-  color: rgba(202, 212, 224, 0.72);
+  color: var(--es-quiet-72);
 }
 
 /* A refusal or a validation failure. The colour was written inline at each
    site, which is why the sizes drifted with it. */
 .settings-error {
-  font-size: 11px;
+  font-size: var(--text-label);
   line-height: 1.45;
   color: var(--color-es-danger);
 }
@@ -3591,8 +3785,8 @@ input::-ms-clear {
   padding: 0.55rem 0.7rem;
   border-radius: var(--radius-card);
   color: var(--color-es-text-light);
-  background: rgba(200, 216, 236, 0.05);
-  border: 1px solid rgba(200, 216, 236, 0.10);
+  background: var(--es-frost-05);
+  border: 1px solid var(--es-frost-10);
 }
 
 .settings-voice-model {
@@ -3601,13 +3795,13 @@ input::-ms-clear {
   gap: 0.5rem;
   padding: 0.55rem 0.7rem;
   border-radius: var(--radius-card);
-  background: rgba(200, 216, 236, 0.05);
-  border: 1px solid rgba(200, 216, 236, 0.10);
+  background: var(--es-frost-05);
+  border: 1px solid var(--es-frost-10);
 }
 
 .settings-voice-model[data-selected="true"] {
-  border-color: rgba(110, 147, 196, 0.45);
-  background: rgba(94, 130, 174, 0.10);
+  border-color: var(--es-mist-45);
+  background: var(--es-accent-10);
 }
 
 .settings-voice-model .settings-voice-row {
@@ -3624,17 +3818,17 @@ input::-ms-clear {
   height: 18px;
   flex-shrink: 0;
   border-radius: 50%;
-  color: var(--color-es-mist-blue, #6e93c4);
-  background: rgba(200, 216, 236, 0.06);
-  border: 1px solid rgba(200, 216, 236, 0.22);
+  color: var(--color-es-mist-blue);
+  background: var(--es-frost-06);
+  border: 1px solid var(--es-frost-22);
   transition: border-color var(--duration-fast) var(--ease-smooth);
 }
 
 /* The radio is now a decorative dot INSIDE the pick button, so the checked
    state is driven by the button that carries the role. */
 .settings-voice-pick[aria-checked="true"] .settings-voice-radio {
-  border-color: rgba(110, 147, 196, 0.85);
-  background: rgba(94, 130, 174, 0.22);
+  border-color: var(--es-mist-85);
+  background: var(--es-accent-22);
 }
 
 /* The whole name row selects. It used to be an unlabelled 18px circle while
@@ -3654,11 +3848,11 @@ input::-ms-clear {
 }
 
 .settings-voice-pick:hover {
-  background: rgba(200, 216, 236, 0.06);
+  background: var(--es-frost-06);
 }
 
 .settings-voice-pick[aria-checked="true"] {
-  background: rgba(94, 130, 174, 0.10);
+  background: var(--es-accent-10);
 }
 
 /* Settings live behind their own control now, so "open the panel" and "use
@@ -3671,14 +3865,14 @@ input::-ms-clear {
   height: 26px;
   flex-shrink: 0;
   border-radius: var(--radius-input);
-  color: var(--color-es-text-muted, #9fb2cc);
+  color: var(--color-es-text-muted);
   transition:
     background var(--duration-fast) var(--ease-smooth),
     color var(--duration-fast) var(--ease-smooth);
 }
 
 .settings-voice-disclosure:hover {
-  background: rgba(200, 216, 236, 0.08);
+  background: var(--es-frost-08);
   /* --color-es-text does not exist, so the fallback was doing all the work.
      The real token is --color-es-text-light. It is defined five times and it
      is NOT one value: four of those say #EAEEF3 and the one inside
@@ -3700,21 +3894,21 @@ input::-ms-clear {
   gap: 0.35rem;
   flex-shrink: 0;
   padding: 0.3rem 0.6rem;
-  font-size: 11px;
+  font-size: var(--text-ui);
   font-weight: 600;
   cursor: pointer;
   border-radius: var(--radius-input);
   color: var(--color-es-text-light);
-  background: rgba(94, 130, 174, 0.18);
-  border: 1px solid rgba(110, 147, 196, 0.35);
+  background: var(--es-accent-18);
+  border: 1px solid var(--es-mist-35);
   transition:
     background-color var(--duration-fast) var(--ease-smooth),
     border-color var(--duration-fast) var(--ease-smooth);
 }
 
 .settings-voice-button:hover:not(:disabled) {
-  background: rgba(94, 130, 174, 0.28);
-  border-color: rgba(110, 147, 196, 0.5);
+  background: var(--es-accent-28);
+  border-color: var(--es-mist-50);
 }
 
 .settings-voice-button:disabled {
@@ -3723,13 +3917,13 @@ input::-ms-clear {
 }
 
 .settings-voice-button.is-quiet {
-  background: rgba(200, 216, 236, 0.05);
-  border-color: rgba(200, 216, 236, 0.14);
+  background: var(--es-frost-05);
+  border-color: var(--es-frost-14);
   /* The inline confirm buttons' ink. The hint ink this had before measured
      4.13 to 4.47:1 at the trailing end of the dialog, where the gradient is
      lightest (Choose file, Voice's Remove); quiet is carried by the fill and
      the edge, not by a fainter word. */
-  color: rgba(230, 236, 243, 0.84);
+  color: var(--es-confirm-ink);
 }
 
 /* The destructive answer in an inline confirm (a prompt module's Delete).
@@ -3739,8 +3933,8 @@ input::-ms-clear {
    Rose text on that button measured 3.44 to 3.62:1 at the trailing end of
    the dialog, where the gradient is lightest; light ink clears 4.5 there. */
 .settings-voice-button.is-danger {
-  background: rgba(195, 106, 114, 0.10);
-  border-color: rgba(195, 106, 114, 0.24);
+  background: var(--es-danger-10);
+  border-color: var(--es-danger-24);
   color: var(--color-es-text-light);
 }
 
@@ -3755,11 +3949,11 @@ input::-ms-clear {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-  font-size: 11px;
+  font-size: var(--text-label);
   border-radius: var(--radius-input);
-  color: rgba(206, 146, 154, 0.92);
-  background: rgba(195, 106, 114, 0.10);
-  border: 1px solid rgba(195, 106, 114, 0.24);
+  color: var(--es-danger-ink);
+  background: var(--es-danger-10);
+  border: 1px solid var(--es-danger-24);
 }
 
 /* Warnings ("it runs, just not the way you asked") get STRUCTURE, not a new
@@ -3770,19 +3964,19 @@ input::-ms-clear {
 .settings-voice-warning {
   margin: 0;
   padding-left: 0.5rem;
-  font-size: 11px;
-  color: rgba(202, 212, 224, 0.78);
-  border-left: 2px solid var(--color-es-mist-blue, #6e93c4);
+  font-size: var(--text-label);
+  color: var(--es-quiet-78);
+  border-left: 2px solid var(--color-es-mist-blue);
 }
 
 .settings-voice-ok {
-  color: var(--color-es-mist-blue, #6e93c4);
+  color: var(--color-es-mist-blue);
   flex-shrink: 0;
 }
 
 .settings-voice-variant {
   font-weight: 400;
-  color: rgba(202, 212, 224, 0.6);
+  color: var(--es-quiet-60);
 }
 
 /* Section rhythm: four stacked sections with no separation read as one long
@@ -3790,7 +3984,7 @@ input::-ms-clear {
    spine without adding boxes-inside-boxes. */
 .settings-voice-section + .settings-voice-section {
   padding-top: 0.75rem;
-  border-top: 1px solid rgba(200, 216, 236, 0.08);
+  border-top: 1px solid var(--es-frost-08);
 }
 
 /* Install progress. uv emits no byte counts through a redirected pipe (it
@@ -3804,7 +3998,7 @@ input::-ms-clear {
   margin-top: 0.4rem;
   overflow: hidden;
   border-radius: 999px;
-  background: rgba(200, 216, 236, 0.10);
+  background: var(--es-frost-10);
 }
 
 .settings-voice-progress::after {
@@ -3816,7 +4010,7 @@ input::-ms-clear {
   background: linear-gradient(
     90deg,
     transparent,
-    var(--color-es-mist-blue, #6e93c4),
+    var(--color-es-mist-blue),
     transparent
   );
   animation: voice-progress-sweep 1.6s var(--ease-smooth) infinite;
@@ -3839,9 +4033,9 @@ input::-ms-clear {
 .settings-voice-log {
   display: block;
   margin-top: 0.25rem;
-  font-size: 10px;
+  font-size: var(--text-micro);
   font-variant-numeric: tabular-nums;
-  color: rgba(202, 212, 224, 0.55);
+  color: var(--es-quiet-55);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3852,7 +4046,7 @@ input::-ms-clear {
   flex-direction: column;
   gap: 0.65rem;
   padding-top: 0.25rem;
-  border-top: 1px solid rgba(200, 216, 236, 0.08);
+  border-top: 1px solid var(--es-frost-08);
 }
 
 .settings-voice-select,
@@ -3860,11 +4054,11 @@ input::-ms-clear {
 .settings-voice-textarea {
   width: 100%;
   padding: 0.4rem 0.55rem;
-  font-size: 12px;
+  font-size: var(--text-ui);
   border-radius: var(--radius-input);
   color: var(--color-es-text-light);
-  background: rgba(20, 28, 40, 0.55);
-  border: 1px solid rgba(200, 216, 236, 0.14);
+  background: var(--es-field-well);
+  border: 1px solid var(--es-frost-14);
   outline: none;
   transition: border-color var(--duration-fast) var(--ease-smooth);
 }
@@ -3872,7 +4066,7 @@ input::-ms-clear {
 .settings-voice-select:focus-visible,
 .settings-voice-input:focus-visible,
 .settings-voice-textarea:focus-visible {
-  border-color: rgba(110, 147, 196, 0.6);
+  border-color: var(--es-mist-60);
 }
 
 .settings-voice-textarea {
@@ -3887,7 +4081,7 @@ input::-ms-clear {
   border: 1px solid var(--color-es-hairline);
   border-radius: var(--radius-input);
   padding: 3px 8px;
-  font-size: 11px;
+  font-size: var(--text-ui);
   line-height: 1.4;
   /* `--color-es-asst-bubble-text` is the ink for a LIGHT message bubble; these
      controls sit on the DARK settings dialog, where it renders near-invisible
@@ -3901,7 +4095,7 @@ input::-ms-clear {
 }
 
 .settings-segment-button:hover {
-  background-color: rgba(200, 216, 236, 0.08);
+  background-color: var(--es-frost-08);
 }
 
 .settings-segment-button[data-active="true"] {
@@ -3915,7 +4109,7 @@ input::-ms-clear {
      A dead var() is a trap either way - the day somebody declares that token,
      every one of these borders changes without a diff that mentions them. */
   border-color: currentColor;
-  background-color: rgba(200, 216, 236, 0.16);
+  background-color: var(--es-frost-16);
   font-weight: 600;
 }
 
@@ -3925,10 +4119,10 @@ input::-ms-clear {
   border: 1px solid var(--color-es-hairline);
   border-radius: var(--radius-input);
   padding: 5px 8px;
-  font-size: 12px;
+  font-size: var(--text-ui);
   /* Same correction as the segment buttons above: dialog ink on a dialog. */
   color: var(--color-es-text-light);
-  background-color: rgba(200, 216, 236, 0.06);
+  background-color: var(--es-frost-06);
 }
 
 .settings-text-input:focus {
@@ -4010,36 +4204,18 @@ input::-ms-clear {
   }
 }
 
-/* ── Origin-aware entrances (V10) ───────────────────────────────────────────
-   Everything scaled from its own centre until now, which is the small thing
-   that makes a menu feel like it appeared rather than like it OPENED. A
-   surface anchored to a trigger should grow FROM that trigger; only a modal,
-   which belongs to the whole window rather than to any one control, is
-   correctly centred.
+/* ── Origin-aware entrances ─────────────────────────────────────────────────
+   A surface anchored to a trigger grows FROM that trigger. The origin is
+   Base UI's own `--transform-origin`, computed after collision flipping, and
+   the popup components read it with the `origin-(--transform-origin)`
+   utility (ui/select.tsx, ui/tooltip.tsx). Nothing here overrides it: a set
+   of unlayered rules used to bind the four popup slots to `--radix-*`
+   variables that no dependency in this repo ever publishes, so every one of
+   them fell to its `top` fallback and, being unlayered, beat the utility
+   that carried the right value. Those rules are gone; with the first Select
+   call sites in the app, the utility is what wins.
 
-   Radix/base-ui already publish the anchor as `--radix-*-content-transform-
-   origin`, computed after collision flipping - so a menu that flipped upwards
-   grows downward-from-its-trigger correctly, which a hand-written `top left`
-   would get exactly backwards. Using their value rather than guessing is the
-   whole point. The fallbacks only apply if the variable is absent. */
-[data-slot="menu-content"],
-[data-slot="dropdown-menu-content"] {
-  transform-origin: var(--radix-dropdown-menu-content-transform-origin, top);
-}
-
-[data-slot="select-content"] {
-  transform-origin: var(--radix-select-content-transform-origin, top);
-}
-
-[data-slot="popover-content"] {
-  transform-origin: var(--radix-popover-content-transform-origin, top);
-}
-
-[data-slot="tooltip-content"] {
-  transform-origin: var(--radix-tooltip-content-transform-origin, top);
-}
-
-/* Dialogs stay centred ON PURPOSE - they are not anchored to anything, and
+   Dialogs stay centred ON PURPOSE - they are not anchored to anything, and
    growing one from a corner reads as a glitch rather than as an origin. */
 [data-slot="dialog-content"] {
   transform-origin: center;
@@ -4090,7 +4266,7 @@ input::-ms-clear {
   margin-bottom: 0.75rem;
   padding: 0.45rem 0.75rem;
   border-radius: var(--radius-panel);
-  font-size: 12px;
+  font-size: var(--text-label);
   line-height: 1.45;
   background: rgba(28, 38, 50, 0.07);
   color: var(--color-es-asst-bubble-text);
@@ -4215,8 +4391,8 @@ button.settings-toggle-row:not(:disabled),
 div.settings-toggle-row:hover,
 div.settings-toggle-row:active {
   transform: none;
-  background: rgba(200, 216, 236, 0.05);
-  border-color: rgba(200, 216, 236, 0.10);
+  background: var(--es-frost-05);
+  border-color: var(--es-frost-10);
 }
 
 /* 3. The press states. Twelve of sixteen clickable classes had a hover and
@@ -4383,7 +4559,7 @@ div.settings-toggle-row:active {
 
 .settings-voice-params .generation-control {
   border-color: transparent;
-  background: rgba(200, 216, 236, 0.03);
+  background: var(--es-frost-03);
   padding: 0.5rem 0.6rem;
 }
 
@@ -4394,7 +4570,7 @@ div.settings-toggle-row:active {
    consistent than before. Same treatment, same scope. */
 .settings-voice-params .settings-toggle-row {
   border-color: transparent;
-  background: rgba(200, 216, 236, 0.03);
+  background: var(--es-frost-03);
   padding: 0.5rem 0.6rem;
 }
 
@@ -4404,8 +4580,8 @@ div.settings-toggle-row:active {
    the pointer with no colour change at all. Restated at the flattened
    weights. */
 .settings-voice-params .settings-toggle-row:hover {
-  background: rgba(200, 216, 236, 0.09);
-  border-color: rgba(200, 216, 236, 0.16);
+  background: var(--es-frost-09);
+  border-color: var(--es-frost-16);
 }
 
 /* The one row that must keep an edge is the inert one. .settings-param-
@@ -4414,7 +4590,7 @@ div.settings-toggle-row:active {
    that cannot be touched should look like. Quieted to match. */
 .settings-voice-params .settings-param-disabled {
   border-style: solid;
-  border-color: rgba(200, 216, 236, 0.10);
+  border-color: var(--es-frost-10);
 }
 
 /* Section spacing. Rows sat 0.5rem apart and sections 1rem apart, so the
@@ -4455,7 +4631,7 @@ div.settings-toggle-row:active {
   padding: 0.4rem 0.1rem;
   margin-top: 0.15rem;
   border: 0;
-  border-top: 1px solid rgba(200, 216, 236, 0.08);
+  border-top: 1px solid var(--es-frost-08);
   border-radius: 0;
   background: none;
   color: inherit;
@@ -4466,7 +4642,7 @@ div.settings-toggle-row:active {
 }
 
 .settings-param-group-toggle:hover {
-  border-top-color: rgba(200, 216, 236, 0.16);
+  border-top-color: var(--es-frost-16);
 }
 
 /* `rotate`, not `transform`. Tailwind v4 compiles rotate-180 to the
@@ -4690,7 +4866,7 @@ div.settings-toggle-row:active {
   .settings-voice-progress::after {
     animation: none;
     width: 100%;
-    background: rgba(110, 147, 196, 0.35);
+    background: var(--es-mist-35);
   }
   /* A steady dim reads as "not yet" just as well, and a blinking control is
      exactly what somebody who asked for less motion is avoiding. The

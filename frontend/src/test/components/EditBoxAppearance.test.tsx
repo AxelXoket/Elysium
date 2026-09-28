@@ -23,7 +23,7 @@
  *   What jsdom genuinely cannot do is substitute `var()`. That costs nothing,
  *   because nothing below asks for a resolved pixel value: every assertion
  *   compares the edit box against the read-only paragraph it replaced, and an
- *   unresolved `var(--msg-fs, 0.875rem)` on both sides is exactly the equality
+ *   unresolved `var(--msg-fs, 0.9375rem)` on both sides is exactly the equality
  *   this is about. A literal on either side breaks it.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -186,7 +186,7 @@ describe("edit box wears the bubble, not its own window", () => {
 
   it("re-measures its height when the reader changes the font size", async () => {
     // The defect this closes was CREATED by making the box follow --msg-fs.
-    // While it inherited a fixed `text-sm`, a pinned height stayed correct
+    // While it inherited a fixed 14px class, a pinned height stayed correct
     // forever. Now the slider reflows the text, and the textarea is
     // `resize: none` + `overflow: hidden`, so a stale height clips the lines
     // with no scrollbar and no handle to get them back.

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { AlertCircle, X } from "lucide-react";
 import { useErrorStore } from "@/lib/errors";
 import type { ErrorEvent } from "@/lib/errors";
@@ -58,9 +59,25 @@ export function ErrorToastStack() {
     [dismiss],
   );
 
-  return (
+  /*
+   * Portalled to the body, and that is the whole fix.
+   *
+   * The stack used to render inside .elysium-stage, which declares a
+   * z-index of its own and so opens a stacking context. Nothing escapes its
+   * parent's stacking context by raising a number, so the stack sat under
+   * every dialog no matter what the sheet said - and the sheet said 35,
+   * which read like a deliberate choice to put it there. Out here it is a
+   * direct child of the body, beside the dialog's own portal, and the layer
+   * table in index.css orders the two.
+   *
+   * `fixed` rather than `absolute` for the same reason: the offsets have no
+   * positioned ancestor to measure from any more. The width follows: it is
+   * the window's, not the canvas's, so the band is centred on the screen
+   * the way a dialog is.
+   */
+  return createPortal(
     <div
-      className="error-toast-stack pointer-events-none absolute left-1/2 flex w-[min(680px,calc(100%-3rem))] -translate-x-1/2 flex-col items-center gap-2"
+      className="error-toast-stack pointer-events-none fixed left-1/2 flex w-[min(680px,calc(100vw-3rem))] -translate-x-1/2 flex-col items-center gap-2"
       data-testid="error-toast-stack"
       aria-live="polite"
       aria-relevant="additions text"
@@ -73,7 +90,8 @@ export function ErrorToastStack() {
           onClose={closeToast}
         />
       ))}
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -170,7 +188,7 @@ function ErrorToast({
       </span>
       {/* Wraps. `truncate` put the fix off-screen and left it reachable only
           by a mouse hover on a toast that expires in a few seconds. */}
-      <span className="min-w-0 flex-1 text-xs font-medium">
+      <span className="min-w-0 flex-1 text-label font-semibold">
         {error.message}
       </span>
       <button

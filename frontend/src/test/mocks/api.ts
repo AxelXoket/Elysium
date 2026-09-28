@@ -1,4 +1,14 @@
-import { vi } from "vitest";
+import { afterAll, afterEach, expect, vi } from "vitest";
+
+import { API_BASE } from "@/lib/api/base";
+import { sentinelLog, type EgressRecord } from "@/test/sentinels";
+import {
+  characterFixture,
+  chatFixture,
+  modelListFixture,
+  proxyHealthFixture,
+  settingsFixture,
+} from "./fixtures";
 
 /** HTTP verbs recognized as a method prefix in route patterns. */
 const HTTP_METHODS = [
@@ -86,4 +96,85 @@ export function mockFetch(
 
   vi.stubGlobal("fetch", mock);
   return mock;
+}
+
+/**
+ * Every request that reached the REAL transport instead of a mock.
+ *
+ * The two regimes, because the difference is the whole point. `mockFetch`
+ * installs its mock with `vi.stubGlobal("fetch", ...)`, which replaces the
+ * egress sentinel's own wrapper - so while a mock is installed the sentinel
+ * records nothing and nothing can leave. With no mock installed the sentinel
+ * is still there, and its host whitelist contains `127.0.0.1` on purpose (the
+ * app's backend binds a random loopback port), so it RECORDS the call and
+ * then forwards it to the real transport. A render of a query-driven tree
+ * with no mock therefore sends real GETs to `http://127.0.0.1:8787/api/v1`,
+ * which is the running application's own API in front of a live vault.
+ *
+ * So the sentinel's log IS the escape counter, and an empty one is the proof.
+ * It is cleared before every test by sentinels.ts, so this only ever answers
+ * for the test that is running.
+ *
+ * Pure in its argument so a test can hand it a synthetic record and show that
+ * it reports: an assertion that something is empty proves nothing until the
+ * reader has been seen finding something.
+ */
+export function apiEscapes(
+  records: ReadonlyArray<EgressRecord> = sentinelLog().egress,
+): string[] {
+  return records
+    .filter((record) => record.url.includes(API_BASE))
+    .map((record) => `${record.kind} ${record.url}`);
+}
+
+/**
+ * Registers the whole-file escape net: nothing in this file may reach the
+ * real transport, whether or not the test that did it thought to ask.
+ *
+ * `apiEscapes()` asserted at the end of a test is a net with one strand per
+ * test that remembered to tie one. It is also the strand most likely to be
+ * skipped, because a render with no stub usually dies BEFORE it: the data
+ * never arrives, `findBy*` times out after five seconds, and the run reports
+ * a missing element while the request it needed has already gone out to the
+ * application's own API. Measured that way - the stub was removed from a
+ * shell render and the failure read `Unable to find an element with the text`
+ * with no mention of the nine requests that left.
+ *
+ * So the check is registered once for the file. The collector runs after each
+ * test, while the sentinel's log still holds that test's records (sentinels.ts
+ * clears it in `beforeEach`), and names the test beside the URL. The assertion
+ * runs once at the end, so the report is one list of escapes rather than a
+ * failure bolted onto whichever test happened to be last, and a test added
+ * later inherits it instead of having to remember it.
+ */
+export function guardAgainstApiEscapes(): void {
+  const escaped: string[] = [];
+  afterEach(() => {
+    const name = expect.getState().currentTestName ?? "(unnamed test)";
+    for (const line of apiEscapes()) escaped.push(`${name} :: ${line}`);
+  });
+  afterAll(() => {
+    expect(escaped, "a render in this file reached the real transport")
+      .toEqual([]);
+  });
+}
+
+/**
+ * The routes the app shell asks for on mount.
+ *
+ * `AppShell` mounts `useStaleSelectionReconciliation`, which fires the chat,
+ * character, model and settings queries in one go; the sidebar adds personas
+ * and the proxy health check. A render of the shell with any of them missing
+ * falls through to a 404 from the mock, which is fine - what is NOT fine is a
+ * render with no mock at all, which is what this exists to make cheap.
+ */
+export function shellRoutes(): Record<string, { status?: number; body: unknown }> {
+  return {
+    "/settings/proxy/health": { body: proxyHealthFixture },
+    "/settings": { body: settingsFixture },
+    "/characters": { body: [characterFixture] },
+    "/models/openrouter": { body: modelListFixture },
+    "/personas": { body: [] },
+    "/chats": { body: [chatFixture] },
+  };
 }

@@ -125,7 +125,7 @@ export function ActiveContextPreviewCard() {
           onClick={() => setOpen((current) => !current)}
         >
           <span
-            className="text-xs font-semibold"
+            className="text-label font-semibold"
             style={{ color: "var(--color-es-text-light)" }}
           >
             Active Context Preview
@@ -141,12 +141,12 @@ export function ActiveContextPreviewCard() {
           <div className="space-y-3 px-3 pb-3">
             <section className="space-y-1.5">
               <h4
-                className="text-xs font-semibold"
+                className="text-label font-semibold"
                 style={{ color: "var(--color-es-text-light)" }}
               >
                 Next request includes
               </h4>
-              <div className="space-y-1 text-xs">
+              <div className="space-y-1 text-label">
                 <PreviewRow
                   label="Model"
                   value={included.model?.displayName ?? "No model selected"}
@@ -190,7 +190,7 @@ export function ActiveContextPreviewCard() {
 
             <section className="space-y-1.5">
               <h4
-                className="text-xs font-semibold"
+                className="text-label font-semibold"
                 style={{ color: "var(--color-es-text-light)" }}
               >
                 Not included
@@ -199,7 +199,7 @@ export function ActiveContextPreviewCard() {
                 {preview.notIncluded.map((item) => (
                   <li
                     key={item}
-                    className="text-[11px]"
+                    className="text-micro"
                     style={{ color: "var(--color-es-text-muted)" }}
                   >
                     {item}

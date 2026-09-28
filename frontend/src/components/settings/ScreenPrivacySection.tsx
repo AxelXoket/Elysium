@@ -18,7 +18,7 @@
  */
 import { MonitorOff } from "lucide-react";
 
-import { Switch } from "@/components/ui/switch";
+import { SwitchRow } from "@/components/settings/SwitchRow";
 import { useSettings, useSetScreenPrivacy } from "@/lib/query/settings";
 
 export function ScreenPrivacySection() {
@@ -35,42 +35,36 @@ export function ScreenPrivacySection() {
           heading on `.glass-right`: an `h4` in `--color-es-text-light`. */}
       <h4
         data-testid="screen-privacy-heading"
-        className="text-xs font-semibold"
+        className="text-label font-semibold"
         style={{ color: "var(--color-es-text-light)" }}
       >
         Screen privacy
       </h4>
 
-      <label className="flex items-center gap-2">
-        <Switch
-          checked={enabled}
-          // Not operable until the stored value is known. A protection switch
-          // that shows a guess and accepts a click is the worst kind: the
-          // user believes it is on.
-          disabled={save.isPending || !settings.isSuccess}
-          onCheckedChange={(v) => save.mutate(v)}
-        />
-        {/* Same defect as the two paragraphs below, on the one line that
-            names the control. `text-muted-foreground` is the sibling
-            panels' hint idiom - it reads `--muted-foreground`, which
-            `.glass-right` redefines for this surface. */}
-        <span
-          data-testid="screen-privacy-switch-label"
-          className="flex items-center gap-1.5 text-xs leading-relaxed text-muted-foreground"
-        >
-          <MonitorOff size={13} className="shrink-0" />
-          Hide this window from screen capture
-        </span>
-      </label>
+      {/* `text-muted-foreground` on the words is the sibling panels' hint
+          idiom - it reads `--muted-foreground`, which `.glass-right`
+          redefines for this surface. SwitchRow carries it. */}
+      <SwitchRow
+        checked={enabled}
+        // Not operable until the stored value is known. A protection switch
+        // that shows a guess and accepts a click is the worst kind: the
+        // user believes it is on.
+        disabled={save.isPending || !settings.isSuccess}
+        onCheckedChange={(v) => save.mutate(v)}
+        labelClassName="flex items-center gap-1.5"
+      >
+        <MonitorOff size={13} className="shrink-0" />
+        Hide this window from screen capture
+      </SwitchRow>
 
-      <p data-testid="screen-privacy-hint-1" className="text-xs leading-relaxed text-muted-foreground">
+      <p data-testid="screen-privacy-hint-1" className="text-label leading-relaxed text-muted-foreground">
         Screenshots, screen recording and screen sharing see a blank window
         instead of your conversation. It is not applied while the vault is
         locked - there is nothing on that screen to protect - and it comes
         back the moment you unlock.
       </p>
 
-      <p data-testid="screen-privacy-hint-2" className="text-xs leading-relaxed text-muted-foreground">
+      <p data-testid="screen-privacy-hint-2" className="text-label leading-relaxed text-muted-foreground">
         A layer, not a guarantee: it stops the ordinary Windows capture paths,
         not every possible way a screen can be read. Off by default, so your
         own screenshots keep working until you say otherwise.

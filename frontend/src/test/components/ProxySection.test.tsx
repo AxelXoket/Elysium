@@ -302,7 +302,7 @@ describe("Proxy Section Tests", () => {
 
     renderWithQueryClient(<ProxySection />, { wrapper });
 
-    const toggle = screen.getByLabelText("Proxy required toggle");
+    const toggle = screen.getByRole("switch", { name: "Require proxy" });
     await waitFor(() => {
       expect(toggle).toBeChecked();
     });
@@ -326,7 +326,7 @@ describe("Proxy Section Tests", () => {
     renderWithQueryClient(<ProxySection />, { wrapper });
 
     await waitFor(() => {
-      expect(screen.getByLabelText("Proxy required toggle")).toBeChecked();
+      expect(screen.getByRole("switch", { name: "Require proxy" })).toBeChecked();
     });
 
     // Change ONLY the URL; do not touch the toggle
@@ -366,14 +366,14 @@ describe("Proxy Section Tests", () => {
 
     renderWithQueryClient(<ProxySection />, { wrapper });
 
-    const toggle = screen.getByLabelText("Proxy required toggle");
+    const toggle = screen.getByRole("switch", { name: "Require proxy" });
     await waitFor(() => {
       expect(toggle).not.toBeChecked();
     });
     // The switch is closed until the answer lands; wait for it to open rather
     // than let the pointer delay outrun the fetch.
     await waitFor(() =>
-      expect(screen.getByLabelText("Proxy required toggle")).not.toHaveAttribute(
+      expect(screen.getByRole("switch", { name: "Require proxy" })).not.toHaveAttribute(
         ...SWITCH_CLOSED,
       ),
     );
@@ -433,7 +433,7 @@ describe("Proxy Section Tests", () => {
 
     renderWithQueryClient(<ProxySection />, { wrapper });
     await waitFor(() => {
-      expect(screen.getByLabelText("Proxy required toggle")).not.toBeChecked();
+      expect(screen.getByRole("switch", { name: "Require proxy" })).not.toBeChecked();
     });
 
     const save = screen.getByRole("button", { name: /save proxy/i });
@@ -441,12 +441,12 @@ describe("Proxy Section Tests", () => {
     // The switch is closed until the answer lands; wait for it to open rather
     // than let the pointer delay outrun the fetch.
     await waitFor(() =>
-      expect(screen.getByLabelText("Proxy required toggle")).not.toHaveAttribute(
+      expect(screen.getByRole("switch", { name: "Require proxy" })).not.toHaveAttribute(
         ...SWITCH_CLOSED,
       ),
     );
 
-    await user.click(screen.getByLabelText("Proxy required toggle"));
+    await user.click(screen.getByRole("switch", { name: "Require proxy" }));
     expect(save).toBeEnabled(); // URL box still empty - this is the whole fix
 
     mock.mockResolvedValueOnce(
@@ -488,16 +488,16 @@ describe("Proxy Section Tests", () => {
 
     renderWithQueryClient(<ProxySection />, { wrapper });
     await waitFor(() => {
-      expect(screen.getByLabelText("Proxy required toggle")).toBeInTheDocument();
+      expect(screen.getByRole("switch", { name: "Require proxy" })).toBeInTheDocument();
     });
     // The switch is closed until the answer lands; wait for it to open rather
     // than let the pointer delay outrun the fetch.
     await waitFor(() =>
-      expect(screen.getByLabelText("Proxy required toggle")).not.toHaveAttribute(
+      expect(screen.getByRole("switch", { name: "Require proxy" })).not.toHaveAttribute(
         ...SWITCH_CLOSED,
       ),
     );
-    await user.click(screen.getByLabelText("Proxy required toggle"));
+    await user.click(screen.getByRole("switch", { name: "Require proxy" }));
     expect(screen.getByRole("button", { name: /save proxy/i })).toBeDisabled();
   });
 
@@ -1057,7 +1057,7 @@ describe("the kill-switch while the server's answer is not in hand", () => {
       ),
     );
 
-    const toggle = screen.getByLabelText("Proxy required toggle");
+    const toggle = screen.getByRole("switch", { name: "Require proxy" });
     expect(toggle).toHaveAttribute(...SWITCH_CLOSED);
     await user.type(
       screen.getByLabelText("Proxy URL input"),
@@ -1094,7 +1094,7 @@ describe("the kill-switch while the server's answer is not in hand", () => {
       "data-state",
       "pending",
     );
-    const toggle = screen.getByLabelText("Proxy required toggle");
+    const toggle = screen.getByRole("switch", { name: "Require proxy" });
     expect(toggle).toHaveAttribute(...SWITCH_CLOSED);
 
     release();
@@ -1122,7 +1122,7 @@ describe("the kill-switch while the server's answer is not in hand", () => {
       wrapper,
     });
     const line = screen.getByTestId("proxy-required");
-    const toggle = screen.getByLabelText("Proxy required toggle");
+    const toggle = screen.getByRole("switch", { name: "Require proxy" });
     const save = screen.getByRole("button", { name: /save proxy/i });
     await waitFor(() => expect(toggle).not.toHaveAttribute(...SWITCH_CLOSED));
     expect(toggle).toBeChecked();
@@ -1179,7 +1179,7 @@ describe("the kill-switch while the server's answer is not in hand", () => {
       wrapper,
     });
     const line = screen.getByTestId("proxy-required");
-    const toggle = screen.getByLabelText("Proxy required toggle");
+    const toggle = screen.getByRole("switch", { name: "Require proxy" });
     await waitFor(() => expect(line).toHaveAttribute("data-state", "required"));
     expect(toggle).toBeChecked();
 
@@ -1204,7 +1204,7 @@ describe("the kill-switch while the server's answer is not in hand", () => {
       wrapper,
     });
     const line = screen.getByTestId("proxy-required");
-    const toggle = screen.getByLabelText("Proxy required toggle");
+    const toggle = screen.getByRole("switch", { name: "Require proxy" });
     await waitFor(() => expect(line).toHaveAttribute("data-state", "optional"));
     expect(toggle).not.toBeChecked();
 
@@ -1237,7 +1237,7 @@ describe("the kill-switch while the server's answer is not in hand", () => {
       wrapper,
     });
     const line = screen.getByTestId("proxy-required");
-    const toggle = screen.getByLabelText("Proxy required toggle");
+    const toggle = screen.getByRole("switch", { name: "Require proxy" });
     const save = screen.getByRole("button", { name: /save proxy/i });
     await waitFor(() => expect(line).toHaveAttribute("data-state", "required"));
     await user.type(
@@ -1273,7 +1273,7 @@ describe("the kill-switch while the server's answer is not in hand", () => {
       },
     });
     renderWithQueryClient(<ProxySection />, { wrapper });
-    const toggle = screen.getByLabelText("Proxy required toggle");
+    const toggle = screen.getByRole("switch", { name: "Require proxy" });
     await waitFor(() => expect(toggle).not.toHaveAttribute(...SWITCH_CLOSED));
     expect(toggle).not.toBeChecked();
 
@@ -1310,7 +1310,7 @@ describe("the kill-switch while the server's answer is not in hand", () => {
       },
     });
     renderWithQueryClient(<ProxySection />, { wrapper });
-    const toggle = screen.getByLabelText("Proxy required toggle");
+    const toggle = screen.getByRole("switch", { name: "Require proxy" });
     // Waits on the ANSWER arriving, the same state the dirty-switch test
     // waits on, not on the switch opening. A switch that is never closed is
     // already open at mount, and waiting on that read the toggle before the

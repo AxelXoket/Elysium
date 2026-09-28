@@ -120,10 +120,16 @@ describe("Character Edit Dialog Tests", () => {
     // other field's assignment sits behind an `if (changed)` that never runs,
     // so writing `payload.scenario = personality.trim()` left all 1315 tests
     // in the frontend suite green. One edit of everything closes it.
+    //
+    // `delay: null` on the session: eight fields of prose is about 160
+    // keystrokes, and userEvent's default frame between them puts this case
+    // over vitest's 5000 ms budget whenever the machine is busy. What is
+    // measured is which fields reach the PATCH body, not how fast they are
+    // typed.
     const fetchMock = mockFetch({
       "/characters/1": { body: { ...characterFixture, name: "Everything" } },
     });
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     renderWithQueryClient(
       <CharacterEditDialog
         character={characterFixture}

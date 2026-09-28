@@ -2,7 +2,7 @@
  * ExtractionSettings - who proposes notes, and in which language.
  *
  * Two choices and nothing else: which cheap model reads the last few turns,
- * and whether its instructions are written in English or Turkce. Both are
+ * and whether its instructions are written in English or Turkish. Both are
  * saved the moment they are picked; there is no Save button to forget.
  *
  * Nothing here is chosen automatically. It is the user's API key: picking a
@@ -21,8 +21,18 @@
  * of this panel is the one its siblings use: an `h4` in `--color-es-text-light`,
  * `persona-field` for controls, `persona-local-error` for refusals.
  */
+import { useId } from "react";
+
 import { SlideIn } from "@/components/motion/SlideIn";
 import { Collapse } from "@/components/motion/Collapse";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { INSTRUCTION_LANGUAGE_LABELS } from "@/lib/notebook/labels";
 import { useUiStore } from "@/lib/store/uiStore";
 import { useErrorStore } from "@/lib/errors/errorStore";
 import {
@@ -32,6 +42,8 @@ import {
 } from "@/lib/query/notebook";
 
 export function ExtractionSettings() {
+  const modelLabelId = useId();
+  const languageLabelId = useId();
   const chatId = useUiStore((s) => s.selectedChatId);
   const models = useExtractionModels();
   const settings = useExtractSettings();
@@ -46,6 +58,17 @@ export function ExtractionSettings() {
   const language = settings.data?.prompt_language ?? "en";
   const busy = save.isPending;
 
+  // The trigger shows the label of whatever is chosen, so every value the
+  // select can hold has to have one, the empty choice included.
+  const modelLabels: Record<string, string> = {
+    "": loaded ? "Not chosen - suggestions are off" : "Loading...",
+  };
+  for (const m of models.data?.models ?? []) {
+    modelLabels[m.id] =
+      `$${m.prompt_price.toFixed(3)}/M` +
+      `${m.endpoints === 1 ? " (1 provider)" : ""} - ${m.id}`;
+  }
+
   async function pick(next: Partial<{ model_id: string; prompt_language: string }>) {
     try {
       await save.mutateAsync([next]);
@@ -58,42 +81,52 @@ export function ExtractionSettings() {
     <SlideIn>
       <section className="space-y-3 p-4" aria-label="Note suggestions">
         <h4
-          className="text-xs font-semibold"
+          className="text-label font-semibold"
           style={{ color: "var(--color-es-text-light)" }}
         >
           Note suggestions
         </h4>
 
-        <p className="text-xs leading-relaxed text-muted-foreground">
+        <p className="text-label leading-relaxed text-muted-foreground">
           A cheap model can read the last few turns and propose notes. It runs
           on your own API key, so nothing is chosen for you.
         </p>
 
         <label className="block space-y-1">
-          <span className="text-xs leading-relaxed text-muted-foreground">
+          {/* The words on screen are unchanged - the wording of this
+              panel belongs to IP-02, not here - and they are now also the
+              accessible name, through aria-labelledby on the trigger. The
+              trigger used to carry an aria-label saying something else, so
+              the screen and a screen reader named the same control two
+              different ways and voice control could reach it by neither. */}
+          <span
+            id={modelLabelId}
+            className="text-label leading-relaxed text-muted-foreground"
+          >
             Model
           </span>
-          <select
+          <Select
             value={chosen}
             disabled={busy || !loaded || models.isLoading}
-            onChange={(e) => void pick({ model_id: e.target.value })}
-            aria-label="Extraction model"
-            className="persona-field h-8 w-full min-w-0 rounded-md px-2 text-xs"
+            onValueChange={(v) => {
+              if (v != null) void pick({ model_id: String(v) });
+            }}
+            items={modelLabels}
           >
-            <option value="">
-              {loaded ? "Not chosen - suggestions are off" : "Loading..."}
-            </option>
-            {(models.data?.models ?? []).map((m) => (
-              <option key={m.id} value={m.id}>
-                {/* Price first, then the id: a native select CLIPS rather
-                    than wraps, and at the panel's 300px floor the tail of a
-                    long vendor slug was eating both the price and the
-                    single-provider warning - the two things the line is for. */}
-                ${m.prompt_price.toFixed(3)}/M
-                {m.endpoints === 1 ? " (1 provider)" : ""} - {m.id}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger
+              aria-labelledby={modelLabelId}
+              className="persona-field h-8 w-full min-w-0 rounded-md px-2 text-ui"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {Object.entries(modelLabels).map(([value, label]) => (
+                <SelectItem key={value} value={value}>
+                  {label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </label>
 
         {/* A silent empty picker cannot be told apart from "no model
@@ -104,7 +137,7 @@ export function ExtractionSettings() {
             reason that has nothing to do with which models qualify.
           </p>
         ) : (
-          <p className="text-xs leading-relaxed text-muted-foreground">
+          <p className="text-label leading-relaxed text-muted-foreground">
             Only models that keep no copy of what they read and can return a
             strict schema are listed. A model with one provider stops working
             when that provider does.
@@ -119,22 +152,37 @@ export function ExtractionSettings() {
         </Collapse>
 
         <label className="block space-y-1">
-          <span className="text-xs leading-relaxed text-muted-foreground">
+          <span
+            id={languageLabelId}
+            className="text-label leading-relaxed text-muted-foreground"
+          >
             Instructions written in
           </span>
-          <select
+          <Select
             value={language}
             disabled={busy || !loaded}
-            onChange={(e) => void pick({ prompt_language: e.target.value })}
-            aria-label="Instruction language"
-            className="persona-field h-8 w-full min-w-0 rounded-md px-2 text-xs"
+            onValueChange={(v) => {
+              if (v != null) void pick({ prompt_language: String(v) });
+            }}
+            items={INSTRUCTION_LANGUAGE_LABELS}
           >
-            <option value="en">English</option>
-            <option value="tr">Turkce</option>
-          </select>
+            <SelectTrigger
+              aria-labelledby={languageLabelId}
+              className="persona-field h-8 w-full min-w-0 rounded-md px-2 text-ui"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {Object.entries(INSTRUCTION_LANGUAGE_LABELS).map(([value, label]) => (
+                <SelectItem key={value} value={value}>
+                  {label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </label>
 
-        <p className="text-xs leading-relaxed text-muted-foreground">
+        <p className="text-label leading-relaxed text-muted-foreground">
           Notes are written in English either way. Try both and keep whichever
           reads your messages better.
         </p>

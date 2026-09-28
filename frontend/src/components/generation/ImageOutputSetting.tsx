@@ -56,7 +56,7 @@ export function ImageOutputSetting({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-3">
-        <label className="text-xs font-semibold" htmlFor="image-output-toggle">
+        <label className="text-label font-semibold" htmlFor="image-output-toggle">
           Let replies include pictures
         </label>
         <Button
@@ -67,7 +67,7 @@ export function ImageOutputSetting({
           aria-busy={busy || undefined}
           size="sm"
           variant={enabled ? "default" : "ghost"}
-          className="text-xs"
+          className="text-label"
           disabled={busy}
           onClick={() => onChange(!enabled)}
         >

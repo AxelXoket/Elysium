@@ -31,6 +31,8 @@ import { ThinkingSetting } from "./ThinkingSetting";
 import { FadeIn } from "@/components/motion/FadeIn";
 import type { Model } from "@/lib/schemas/models";
 import { SlidersHorizontal, X } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { DIALOG_MAX_HEIGHT, DIALOG_WIDTHS } from "@/lib/theme/dialogScale";
 
 type NumericSettingKey = Exclude<keyof GenerationSettingsValues, "seed">;
 type SamplerSettingKey = keyof typeof SAMPLER_UNSET_DISPLAY;
@@ -144,11 +146,11 @@ export function GenerationSettingsDialog({
           >
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <span className="flex items-center gap-2 text-xs font-semibold">
+                <span className="flex items-center gap-2 text-label font-semibold">
                   <SlidersHorizontal size={13} />
                   Generation Settings
                 </span>
-                <span className="mt-1 block truncate text-[11px]">
+                <span className="mt-1 block truncate text-micro">
                   {isCustom ? "Custom sampling and context" : "Default sampling and context"}
                 </span>
               </div>
@@ -166,21 +168,21 @@ export function GenerationSettingsDialog({
       />
 
       <DialogContent
-        className="glass-dialog sidebar-dialog generation-dialog max-h-[88vh] overflow-y-auto sm:max-w-2xl"
+        className={cn("glass-dialog sidebar-dialog generation-dialog overflow-y-auto", DIALOG_MAX_HEIGHT, DIALOG_WIDTHS.wide)}
         initialFocus={titleRef}
       >
         <DialogHeader>
           <DialogTitle
             ref={titleRef}
             tabIndex={-1}
-            className="flex items-center gap-2 text-base font-semibold outline-none"
+            className="flex items-center gap-2 text-title font-semibold outline-none"
             style={{ color: "var(--color-es-text-light)" }}
           >
             <SlidersHorizontal size={15} />
             Generation Settings
           </DialogTitle>
           <DialogDescription
-            className="truncate text-xs"
+            className="truncate text-label"
             style={{ color: "var(--color-es-text-muted)" }}
           >
             {selectedModel?.id ?? "No model selected"}
@@ -333,13 +335,13 @@ export function GenerationSettingsDialog({
             type="button"
             variant="ghost"
             size="sm"
-            className="sidebar-dialog-cancel text-xs"
+            className="sidebar-dialog-cancel text-label"
             onClick={() => resetAll(selectedModel)}
           >
             Reset all
           </Button>
           <DialogClose
-            render={<Button type="button" size="sm" className="sidebar-dialog-action text-xs" />}
+            render={<Button type="button" size="sm" className="sidebar-dialog-action text-label" />}
           >
             Close
           </DialogClose>
@@ -420,7 +422,7 @@ function RangeSetting({
   return (
     <div className={`generation-control ${disabled ? "is-disabled" : ""}`}>
       <div className="flex items-center justify-between gap-3">
-        <label className="text-xs font-semibold">{label}</label>
+        <label className="text-label font-semibold">{label}</label>
         <span className="flex shrink-0 items-center gap-1.5">
           {/* A fixed slot, so the number box does not jump sideways when the
               clear button comes and goes. */}
@@ -587,9 +589,9 @@ function StopSequencesSetting({
   return (
     <div className="generation-control">
       <div className="flex items-center justify-between gap-3">
-        <label className="text-xs font-semibold">Stop sequences</label>
+        <label className="text-label font-semibold">Stop sequences</label>
         <span
-          className="text-[11px]"
+          className="text-micro"
           style={{ color: "rgba(202, 212, 224, 0.72)" }}
           data-testid="stop-sequence-count"
         >
@@ -603,7 +605,7 @@ function StopSequencesSetting({
             return (
               <span
                 key={sequence}
-                className="inline-flex max-w-[12rem] items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[11px]"
+                className="inline-flex max-w-[12rem] items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-micro"
                 style={{
                   borderColor: "rgba(200, 216, 236, 0.16)",
                   backgroundColor: "rgba(200, 216, 236, 0.08)",
@@ -637,7 +639,7 @@ function StopSequencesSetting({
           disabled={atCap}
           maxLength={STOP_SEQUENCE_MAX_LENGTH}
           placeholder={atCap ? "Limit reached" : "Add a sequence"}
-          className="sidebar-dialog-field h-8 flex-1 text-xs"
+          className="sidebar-dialog-field h-8 flex-1 text-label"
           onChange={(event) => setDraft(event.currentTarget.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
@@ -649,7 +651,7 @@ function StopSequencesSetting({
         <Button
           type="button"
           size="sm"
-          className="sidebar-dialog-action text-xs"
+          className="sidebar-dialog-action text-label"
           disabled={atCap}
           onClick={commitDraft}
         >
@@ -678,7 +680,7 @@ function SeedSetting({
   return (
     <div className={`generation-control ${disabled ? "is-disabled" : ""}`}>
       <div className="flex items-center justify-between gap-3">
-        <label className="text-xs font-semibold">Seed</label>
+        <label className="text-label font-semibold">Seed</label>
         <Input
           type="number"
           aria-label="Seed value"

@@ -9,16 +9,28 @@
  * postcss, because reading selectors out of raw lines is how it went blind.
  * The T-89 block at the end goes one step further and puts its questions to
  * that compiled sheet about elements the components have actually rendered.
+ *
+ * The layer, stacking-context, geometry and font-stack sections at the
+ * bottom are newer and read the COMPILED sheet throughout, because a rule
+ * that does not survive the build is not a rule. Two of their claims are
+ * about the tree rather than the sheet - where the toast portals to, and
+ * which nodes carry an inline layer - so those render. That is why this file
+ * pulls in React: the claim decided the method, not the other way round.
  */
-import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterEach, vi, beforeEach } from "vitest";
 import { readFileSync, readdirSync, statSync } from "fs";
 import path from "path";
 import { createElement, type ReactNode } from "react";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Root } from "postcss";
 import { renderWithQueryClient } from "./helpers/renderWithQueryClient";
-import { mockFetch } from "./mocks/api";
+import {
+  mockFetch,
+  apiEscapes,
+  guardAgainstApiEscapes,
+  shellRoutes,
+} from "./mocks/api";
 import {
   characterFixture,
   chatFixture,
@@ -27,6 +39,7 @@ import {
   modelListFixture,
   proxyHealthFixture,
   settingsFixture,
+  attachmentFixture,
 } from "./mocks/fixtures";
 import {
   composite,
@@ -68,7 +81,7 @@ import {
   type Rgb,
 } from "@/lib/appearance/contrast";
 import { CHAT_BG_DARK_CHROME_BELOW } from "@/lib/appearance/chatBackground";
-import { tokens } from "@/lib/theme/tokens";
+import { tokens, SYSTEM_FONT_GENERIC, TYPE_SCALE_STEPS } from "@/lib/theme/tokens";
 import { Providers } from "@/app/providers";
 import { AppShell } from "@/components/layout/AppShell";
 import { PanelMist } from "@/components/backdrop/MistCanvas";
@@ -103,6 +116,33 @@ import { Button } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { queryClient } from "@/lib/query/queryClient";
 import { useUiStore } from "@/lib/store/uiStore";
+import { CharacterImportDialog } from "@/components/characters/CharacterImportDialog";
+import { ChatCreateDialog } from "@/components/chats/ChatCreateDialog";
+import { ImageLightbox } from "@/components/chat/ImageLightbox";
+import { ChatList } from "@/components/sidebar/ChatList";
+import { ErrorToastStack } from "@/components/errors/ErrorToastStack";
+import { LockOverlay } from "@/components/vault/LockOverlay";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { useErrorStore } from "@/lib/errors";
+import { useLockAudioWarningStore } from "@/lib/query/vault";
+import {
+  DIALOG_MAX_HEIGHT,
+  DIALOG_WIDTHS,
+  LIGHTBOX_CLASSES,
+} from "@/lib/theme/dialogScale";
+import { INLINE_Z_INDEX_EXCEPTIONS, VAULT_STAGE_Z_INDEX } from "@/lib/theme/layers";
+import { cn } from "@/lib/utils";
+import {
+  PERSISTENT_CONTEXT_COUNTS,
+  PERSISTENT_STACKING_CONTEXTS,
+  UTILITY_STACKING_CONTEXTS,
+} from "./helpers/stackingContexts";
+import { API_BASE } from "@/lib/api/base";
+
+// The whole-file escape net, registered once: this file mounts the app shell
+// and six dialogs, and a render that lost its stub would otherwise report a
+// missing element rather than the requests that left. See mocks/api.ts.
+guardAgainstApiEscapes();
 
 /**
  * The wallpaper hook, switchable per test. jsdom has no image pipeline, so
@@ -1461,8 +1501,8 @@ describe("the scrollbar look is granted by name, not by page scope (T-89)", () =
        * The bound is the GATE's, not this reader's, and it is a bound on the
        * image's average: a picture whose channels sit apart, or one that is
        * dark overall with a bright patch under the bar, passes the same gate
-       * and paints lighter there. That is a limit of the gate and is on the
-       * record in this unit's report rather than papered over here. */
+       * and paints lighter there. That is a limit of the GATE rather than
+       * of this reader, and it is written here rather than papered over. */
       const f = frameColour(css);
       const admitted = Math.round(CHAT_BG_DARK_CHROME_BELOW * 255);
       return {
@@ -2196,13 +2236,12 @@ describe("the scrollbar look is granted by name, not by page scope (T-89)", () =
   it("the sidebar's glow and sheen are not cut out of any column", async () => {
     /* Nothing in the app is cut to make room for a scrollbar.
      *
-     * An earlier round bought the sidebar's contrast by clipping
-     * `.glass-dark`'s glow and its 46px sheen off the panel's right edge.
-     * Rendered, that column and the bar's column turned out not to touch at
-     * all - the bar runs a dozen pixels inboard of the edge the clip cut -
-     * so the cut removed a visible stripe of the panel's boundary and moved
-     * the contrast under the bar by nothing. The decoration paints its whole
-     * box again, and this case is what keeps it that way: no clip, no mask,
+     * Clipping `.glass-dark`'s glow and its 46px sheen off the panel's
+     * right edge buys no contrast under the bar. The two columns do not
+     * touch: the bar runs a dozen pixels inboard of the edge such a clip
+     * cuts, so the cut removes a visible stripe of the panel's boundary and
+     * moves the contrast under the bar by nothing. The decoration paints its
+     * whole box, and this case is what keeps it that way: no clip, no mask,
      * in either spelling.
      *
      * The contrast under the bar is carried by the column the bands are
@@ -2251,8 +2290,8 @@ describe("the scrollbar look is granted by name, not by page scope (T-89)", () =
       "a layer behind the sidebar's bar is clipped",
     ).toEqual([]);
 
-    // And the decoration really does paint IN the bar's column now, which is
-    // the thing the round before this one removed. Both pseudo-elements
+    // And the decoration really does paint IN the bar's column, which is
+    // what a clip at the panel's edge takes away. Both pseudo-elements
     // named, so losing either is red.
     const inset = insetRightPx(root, scroller, painted.surface, rem, table);
     for (const box of SIDEBAR_BOXES) {
@@ -2301,8 +2340,9 @@ describe("the scrollbar look is granted by name, not by page scope (T-89)", () =
         "padding is not reaching the reader",
     ).toBeGreaterThan(0);
 
-    // The cells span exactly the bar's own column, and they do NOT reach the
-    // surface's edge - which is what every earlier round measured.
+    // The cells span exactly the bar's own column, and they do NOT reach
+    // the surface's edge, which is where a band sized from the panel's width
+    // instead of the scroller's box would put them.
     const box = SIDEBAR_BOXES[0];
     const cells = barCells(box, BANDS[0], inset);
     expect(Math.max(...cells.map((c) => c.x1))).toBeCloseTo((box.w - inset) / box.w, 10);
@@ -2342,7 +2382,17 @@ describe("the scrollbar look is granted by name, not by page scope (T-89)", () =
       const probe = wrapper.firstElementChild as HTMLElement;
       const atPx3 = insetRightPx(root, probe, host, rem, table);
       expect(atPx3, "the probe tree's px-3 wrapper is not being read").toBe(inset);
-      wrapper.className = "px-6";
+      /* The doubled step is written as an inline style, not as a second
+       * Tailwind class. Tailwind scans this file as raw text, so a class
+       * name spelled here is emitted into the SHIPPED stylesheet whether or
+       * not anything renders it, and a dead padding rule rode out to users
+       * on the strength of this one line. The value is still the sheet's own
+       * spacing token doubled rather than a pixel count chosen here, and
+       * `insetRightPx` resolves an inline declaration through the same token
+       * table, so the leg is unchanged: double the padding, double the
+       * inset. */
+      wrapper.className = "";
+      wrapper.setAttribute("style", "padding-inline: calc(var(--spacing) * 6)");
       const atPx6 = insetRightPx(root, probe, host, rem, table);
       expect(
         atPx6,
@@ -2356,6 +2406,7 @@ describe("the scrollbar look is granted by name, not by page scope (T-89)", () =
       );
       // GROUND: with no wrapper padding at all the scroller IS flush, so the
       // reader is not simply always answering "inboard".
+      wrapper.removeAttribute("style");
       wrapper.className = "";
       expect(insetRightPx(root, probe, host, rem, table)).toBe(0);
     } finally {
@@ -2401,7 +2452,7 @@ describe("the scrollbar look is granted by name, not by page scope (T-89)", () =
   }, 25_000);
 
   it("the bar keeps to its own column: the gutter reserves it and nothing paints over it", async () => {
-    /* Area hygiene, the third of my three rules: no overflow and no
+    /* Area hygiene, the third rule this step is held to: no overflow and no
      * area violation. Two halves.
      *
      * (a) Where the sheet reserves a gutter, the scroller's content box
@@ -2410,6 +2461,17 @@ describe("the scrollbar look is granted by name, not by page scope (T-89)", () =
      * bar is drawn over the content - which is why the three page scrollers
      * carry `stable` and the portalled pair, whose scroller IS their own
      * box, do not need it.
+     *
+     * (a)'s `content[1] === bar[0]` is an identity inside this file's MODEL
+     * of the box, not a measurement: jsdom computes no layout, `clientWidth`
+     * is 0 on every element here, and both sides of that equality subtract
+     * SCROLLBAR_THIN_PX from the same modelled width, so the line cannot go
+     * red while the declaration above it passes. The load-bearing half is
+     * that declaration - each mounted scroller's winning `scrollbar-gutter`,
+     * read off the compiled sheet - and the real guard is the mutation that
+     * drops the gutter from `.generation-dialog`, which turns this case red.
+     * The identity is kept because it states the geometry a reserved strip
+     * is for; it is not evidence on its own.
      *
      * (b) Nothing decorative is stacked above the content, so no layer of
      * the panel paints over the bar. */
@@ -2761,15 +2823,24 @@ describe("the scrollbar look is granted by name, not by page scope (T-89)", () =
       const field = await screen.findByLabelText(/description/i);
       return { field, scroller: scrollerAround([field], "the persona field") };
     }],
-    // A native `select` and a native `input`, both live inside a scroller
-    // that carries a thumb colour. The field rule lists three tag names and
-    // only one of them had a case; `select` in particular is the member a
-    // reader would call decorative, and these two panels put four and two of
-    // them inside the right panel's own scroller.
-    ["the notebook tab's extraction select", async () => {
+    // Two native `input`s, each inside a scroller that carries a thumb
+    // colour. This pair was a `select` and an `input` while the notebook tab
+    // still drew native selects; IP-03 replaced all eight of them with the
+    // Base UI Select, whose popup is a div, so the app renders no native
+    // `select` anywhere now. The `select` member of the field rule keeps its
+    // guard in the next test, which plants a real one under every surface
+    // that carries a colour.
+    ["the notebook tab's new-limit field", async () => {
       const scroller = await notebookTabScroller();
-      const field = scroller.querySelector("select");
-      if (!field) throw new Error("the notebook tab rendered no native select");
+      const field = await screen.findByLabelText("New limit");
+      if (field.tagName.toLowerCase() !== "input") {
+        throw new Error(
+          `the notebook tab's new-limit field is a ${field.tagName.toLowerCase()}`,
+        );
+      }
+      if (!scroller.contains(field)) {
+        throw new Error("the new-limit field is outside the notebook tab's scroller");
+      }
       return { field, scroller };
     }],
     ["the persona display name field", async () => {
@@ -2828,10 +2899,10 @@ describe("the scrollbar look is granted by name, not by page scope (T-89)", () =
      * app DID render. It is still the sheet's cascade against a real
      * element in the real document; only the element is mine.
      *
-     * Without this a rule member can be deleted with the suite green, which
-     * is not theoretical: the right panel's notebook tab has four native
-     * selects inside a scroller that carries a thumb colour, and losing the
-     * `select` member would give every one of them the platform's bar. */
+     * Without this a rule member can be deleted with the suite green, and
+     * `select` is now exactly that member: IP-03 converted the notebook
+     * tab's four native selects to the Base UI Select, so the app renders no
+     * native one and only the planted control asks that member anything. */
     mountShell();
     await screen.findAllByText(characterFixture.name);
     const dialog = await characterCreateDialog();
@@ -3133,4 +3204,968 @@ describe("the scrollbar look is granted by name, not by page scope (T-89)", () =
       [],
     );
   });
+});
+
+/**
+ * T-51, T-84, T-88 and the dead-variable check.
+ *
+ * Four claims about the sheet the browser is actually handed, so all four
+ * read the COMPILED text rather than index.css: a rule that never survives
+ * the build is not a rule, and a variable nothing declares is not a value.
+ * The two that are about what the page DOES - where the toast ends up, and
+ * which nodes carry an inline layer - render instead, because those are
+ * facts about the tree and not about the stylesheet.
+ */
+describe("the layer table (T-51)", () => {
+  let sheet = "";
+  let root: Root;
+
+  beforeAll(async () => {
+    const { loadGlassRightCss } = await import("./helpers/glassSurfaceCss");
+    sheet = await loadGlassRightCss();
+    root = parseSheet(sheet);
+  }, 60_000);
+
+  /**
+   * The z-index a selector declares, read out of the compiled sheet by
+   * PARSING it.
+   *
+   * It used to slice the text between `selector + " {"` and the next `}`,
+   * which is the shape this file's own docstring calls "how it went blind".
+   * Two ways that lies: the first `}` closes a NESTED rule rather than the
+   * block, so a later declaration in the same rule is never seen, and
+   * `indexOf` takes the first occurrence, so an override for the same
+   * selector further down the sheet is invisible. Parsed, the rule is found
+   * by its RESOLVED selector - nesting folded in by walking parents - and the
+   * answer is the declaration that WINS: `!important` first, then the last
+   * one, which is what the browser reads.
+   */
+  function layerOf(selector: string): number {
+    const found: { value: number; important: boolean }[] = [];
+    root.walkRules((rule) => {
+      if (!resolvedSelectors(rule).includes(selector)) return;
+      rule.each((node) => {
+        if (node.type !== "decl" || node.prop.toLowerCase() !== "z-index") return;
+        const value = Number(node.value.trim());
+        if (Number.isNaN(value)) return;
+        found.push({ value, important: node.important === true });
+      });
+    });
+    expect(found.length, `no rule declares a z-index for "${selector}"`)
+      .toBeGreaterThan(0);
+    const important = found.filter((d) => d.important);
+    const winners = important.length > 0 ? important : found;
+    return winners[winners.length - 1].value;
+  }
+
+  /**
+   * The layer utility a real `DialogContent` renders with.
+   *
+   * Reading `.z-50` by name was half a test. The number came out of the
+   * sheet, which is right, but nothing tied that rule to the dialog - and
+   * `.z-50` is still emitted by five other call sites (the overlay, the two
+   * select slots, the tooltip's two), so `ui/dialog.tsx` could be moved to
+   * `z-10` and the ordering assertion would go on reading 50 and passing
+   * while every dialog painted under the menus, under the toast, and under
+   * its own overlay. The tier is taken off the rendered node instead, and
+   * the sheet is then asked what THAT utility means.
+   */
+  async function dialogTier(): Promise<string> {
+    render(
+      createElement(
+        Dialog,
+        { open: true },
+        createElement(DialogContent, null, createElement(DialogTitle, null, "Tier")),
+      ),
+    );
+    await screen.findByRole("dialog");
+    const node = document.querySelector<HTMLElement>('[data-slot="dialog-content"]');
+    expect(node, "no dialog rendered to read a tier from").not.toBeNull();
+    const tiers = [...node!.classList].filter((cls) => /^z-\d+$/.test(cls));
+    expect(tiers, "the dialog renders no layer utility of its own")
+      .toHaveLength(1);
+    cleanup();
+    return tiers[0];
+  }
+
+  it("orders menu under dialog under toast under lock", async () => {
+    // The whole table in one line, and every number comes from the sheet.
+    // The dialog's is a Tailwind utility rather than a rule of ours, which
+    // is exactly why it has to be read rather than assumed: the primitive
+    // could change it without touching index.css at all.
+    const menu = Math.max(
+      layerOf(".persona-menu"),
+      layerOf(".chat-action-menu"),
+      layerOf(".chat-action-confirm"),
+    );
+    const dialog = layerOf("." + await dialogTier());
+    const toast = layerOf(".error-toast-stack");
+    const lock = layerOf(".lock-overlay");
+    // A LOWER number paints UNDER, so each message names what the tier above
+    // is allowed to cover. The three used to say the opposite of what they
+    // assert, and the last one named the precise defect this guard exists to
+    // prevent - a toast painting over the lock screen.
+    expect(menu, "a dialog no longer paints over menus").toBeLessThan(dialog);
+    expect(dialog, "an error toast no longer paints over dialogs")
+      .toBeLessThan(toast);
+    expect(toast, "the lock screen no longer paints over the toasts")
+      .toBeLessThan(lock);
+  }, 30_000);
+
+  it("GROUND: the reader returns real, different numbers", async () => {
+    // Without this the ordering above would pass just as well on a reader
+    // that answered 0 for everything.
+    const values = [
+      layerOf(".persona-menu"),
+      layerOf("." + await dialogTier()),
+      layerOf(".error-toast-stack"),
+      layerOf(".lock-overlay"),
+    ];
+    expect(new Set(values).size, "the reader is answering one number for everything")
+      .toBe(4);
+    expect(Math.min(...values)).toBeGreaterThan(0);
+  }, 30_000);
+
+  it("GROUND: the reader takes the LAST declaration, not the first it finds", () => {
+    // The whole reason this stopped being a substring search. Handed a sheet
+    // where the selector is declared twice, a reader that takes the first
+    // match reports the losing number; handed one where the rule nests, a
+    // reader that slices to the first `}` never reaches the declaration at
+    // all. Both shapes go through the real function, over a synthetic tree.
+    const twice = parseSheet(
+      ".probe-layer { z-index: 5; }\n.probe-layer { z-index: 9; }");
+    const nested = parseSheet(
+      ".probe-nest { &:hover { color: red; } z-index: 7; }");
+    const readFrom = (tree: Root, selector: string): number => {
+      const saved = root;
+      root = tree;
+      try {
+        return layerOf(selector);
+      } finally {
+        root = saved;
+      }
+    };
+    expect(readFrom(twice, ".probe-layer"), "the first rule won").toBe(9);
+    expect(readFrom(nested, ".probe-nest"), "a nested rule cut the block short")
+      .toBe(7);
+  });
+
+  it("leaves the lock no isolating ancestor, which is what makes 200 beat 60", () => {
+    // The number only wins if both surfaces land in the SAME stacking
+    // context. Before this unit the toast could not reach the lock for two
+    // reasons - 35 < 200, and it rendered inside `.elysium-page`, whose
+    // `isolation: isolate` imprisons everything under it, so no number could
+    // have lifted it. Portalling it to the body removed that barrier and left
+    // arithmetic holding the order alone, which makes "nothing above either
+    // of them opens a context" the assumption the whole table now rests on.
+    //
+    // The lock is a child of the unstyled `div#root`; so is the app. So the
+    // claim to hold is that the elements ABOVE them stay unstyled. A rule
+    // for `#root`, or an `isolation` on `body` or `html`, would silently make
+    // every number in the table meaningless.
+    const above = new Set(["html", "body", "#root", ":root", "*"]);
+    const offenders: string[] = [];
+    root.walkRules((rule) => {
+      for (const selector of resolvedSelectors(rule)) {
+        if (!above.has(selector)) continue;
+        rule.each((node) => {
+          if (node.type !== "decl") return;
+          const prop = node.prop.toLowerCase();
+          const value = node.value.replace(/!important$/i, "").trim().toLowerCase();
+          const opens =
+            (prop === "isolation" && value !== "auto") ||
+            (prop === "filter" && value !== "none") ||
+            (prop === "backdrop-filter" && value !== "none") ||
+            (prop === "contain" && value !== "none") ||
+            (prop === "mix-blend-mode" && value !== "normal") ||
+            (prop === "transform" && value !== "none") ||
+            (prop === "perspective" && value !== "none");
+          if (opens) offenders.push(`${selector} { ${prop}: ${value} }`);
+        });
+      }
+    });
+    expect(
+      offenders,
+      "something above the lock opens a stacking context - the layer numbers no longer order anything",
+    ).toEqual([]);
+    // POSITIVE CONTROL: the same walk over a sheet that DOES style the root
+    // reports it, so the empty list above is a reading.
+    const probe = parseSheet("#root { isolation: isolate; }");
+    const seen: string[] = [];
+    probe.walkRules((rule) => {
+      for (const selector of resolvedSelectors(rule)) {
+        if (above.has(selector)) seen.push(selector);
+      }
+    });
+    expect(seen, "the walk cannot see a rule for the root at all").toEqual(["#root"]);
+  });
+
+  it("puts the toast stack beside the dialog in the body, not inside the page", () => {
+    // The half a number cannot express. A dialog and a toast are open at the
+    // same time; both are direct children of the body, and the toast comes
+    // after, which is the order the browser paints in when the layers tie.
+    // jsdom carries no paint order, but it carries portal order, and that is
+    // what is measured.
+    useErrorStore.getState().pushErrorDirect("custom_error", "Over the dialog.");
+    render(
+      createElement(
+        Dialog,
+        { open: true },
+        createElement(
+          DialogContent,
+          null,
+          createElement(DialogTitle, null, "A dialog"),
+          createElement(ErrorToastStack),
+        ),
+      ),
+    );
+
+    const toast = screen.getByTestId("error-toast-stack");
+    const dialog = document.querySelector('[data-slot="dialog-content"]');
+    expect(dialog, "the dialog did not render").not.toBeNull();
+    expect(toast.parentElement).toBe(document.body);
+    const children = [...document.body.children];
+    const dialogHost = children.find((c) => c.contains(dialog!));
+    expect(dialogHost, "the dialog is not a child of the body").toBeDefined();
+    expect(children.indexOf(toast)).toBeGreaterThan(children.indexOf(dialogHost!));
+  });
+
+  it("GROUND: the stack is a child of the body with no dialog open at all", () => {
+    useErrorStore.getState().pushErrorDirect("custom_error", "On its own.");
+    render(createElement(ErrorToastStack));
+    expect(screen.getByTestId("error-toast-stack").parentElement).toBe(document.body);
+  });
+
+  /** Every node on the page carrying an inline layer it is not allowed. */
+  function inlineLayerOffenders(): string[] {
+    const allowed = new Set(INLINE_Z_INDEX_EXCEPTIONS.map((e) => e.selector));
+    const offenders: string[] = [];
+    for (const el of document.querySelectorAll<HTMLElement>("[style]")) {
+      if (!el.style.zIndex) continue;
+      if ([...allowed].some((sel) => el.matches(sel))) continue;
+      offenders.push(`${el.tagName.toLowerCase()}.${el.className}: ${el.style.zIndex}`);
+    }
+    return offenders;
+  }
+
+  it("POSITIVE CONTROL: the escape reader reports a request that got out", () => {
+    // Six assertions in this file and one next door say `apiEscapes()` is
+    // empty, and an empty list proves nothing until the reader has been seen
+    // finding something. It is pure in its argument for exactly this, so the
+    // same function is handed records rather than the live log.
+    //
+    // The two regimes behind it, because they are the whole point. `mockFetch`
+    // installs its mock with `vi.stubGlobal("fetch", ...)`, which REPLACES the
+    // egress sentinel's own wrapper - so while a mock is installed the
+    // sentinel records nothing and nothing can leave. With no mock the
+    // sentinel is still there, and its host list holds 127.0.0.1 on purpose
+    // (the app's backend binds a random loopback port), so it records the
+    // call and forwards it to the real transport. An empty log while a render
+    // is on screen is therefore "the mock took it", and a non-empty one is
+    // "the running application answered it".
+    const escaped = apiEscapes([
+      { kind: "fetch", url: `${API_BASE}/chats`, stack: "", headers: {} },
+    ]);
+    expect(escaped, "the reader cannot see a request that reached the wire")
+      .toEqual([`fetch ${API_BASE}/chats`]);
+    // And it does NOT report something aimed somewhere else, so an empty list
+    // is a statement about this app's API rather than about traffic in
+    // general.
+    expect(
+      apiEscapes([{ kind: "image", url: "blob:local-object", stack: "" }]),
+      "the reader counts anything at all as an escape",
+    ).toEqual([]);
+  });
+
+  it("carries no inline zIndex outside the named exception list", async () => {
+    // A number written in a style attribute competes with the table without
+    // appearing in it, which is where the chat action menu's 40 sat, written
+    // at its two call sites where no reader of the table could see it. The
+    // list is imported, never retyped.
+    //
+    // The shell is query-driven, so the transport is stubbed BEFORE it
+    // mounts. Without that, `useStaleSelectionReconciliation` fires the chat,
+    // character, model and settings queries against the real base URL and the
+    // egress sentinel forwards a loopback call rather than refusing it, so
+    // the suite talks to the running application's own API.
+    mockFetch(shellRoutes());
+    render(createElement(Providers, null, createElement(AppShell)));
+    // Waited for on purpose, and on a node that only appears once the
+    // character query has ANSWERED: rendering and reading in the same tick
+    // sweeps a shell whose data has not arrived, and leaves React logging an
+    // update outside act() on the way out.
+    await screen.findByText(String(characterFixture.name));
+    // GROUND: the sweep saw style attributes at all. On a shell that rendered
+    // nothing with one, "no inline layer" is green for the wrong reason.
+    expect(
+      document.querySelectorAll("[style]").length,
+      "nothing on the page carries a style attribute, so the sweep is vacuous",
+    ).toBeGreaterThan(0);
+    expect(inlineLayerOffenders(), "an inline z-index outside the exception list")
+      .toEqual([]);
+    expect(apiEscapes(), "the shell reached the real transport").toEqual([]);
+  }, 30_000);
+
+  it("including the popup the defect was actually in", async () => {
+    // The shell alone never opens the chat action menu, so the two values
+    // this unit took out of ChatList sat outside the sweep above: putting
+    // one back left it green. The menu is opened here, and it is the one
+    // that portals to the body with its coordinates written inline - the
+    // exact shape the rule is about.
+    const user = userEvent.setup();
+    useUiStore.setState({ selectedCharacterId: 1, selectedChatId: null });
+    mockFetch({ "/chats": { body: [chatFixture] } });
+    renderWithQueryClient(createElement(ChatList));
+    await screen.findByText(String(chatFixture.title));
+    await user.click(
+      screen.getByRole("button", { name: /open chat actions for/i }),
+    );
+    // GROUND: the menu really opened, and it really is placed inline - so a
+    // green sweep means "no layer there" and not "nothing was rendered".
+    const menu = await screen.findByRole("menu");
+    expect(menu.style.position, "the menu is not placed inline at all")
+      .toBe("fixed");
+    expect(inlineLayerOffenders(), "the chat action menu writes its own layer")
+      .toEqual([]);
+    expect(apiEscapes(), "the chat list reached the real transport").toEqual([]);
+  }, 30_000);
+
+  it("GROUND: the one node on the exception list really renders, and is found", () => {
+    // Without this the sweep above could pass on an app that renders nothing
+    // with a style attribute at all, and the exception list could be emptied
+    // without anything noticing.
+    expect(INLINE_Z_INDEX_EXCEPTIONS.length, "the exception list is empty")
+      .toBeGreaterThan(0);
+    vi.useFakeTimers();
+    try {
+      useLockAudioWarningStore.setState({ pending: false, audioLeft: [] });
+      render(createElement(LockOverlay, { onCommit: vi.fn(), onDone: vi.fn() }));
+      act(() => {
+        vi.advanceTimersByTime(900);
+      });
+      act(() => {
+        useLockAudioWarningStore.getState().settle(["reply_3f2a1c9d.wav"]);
+      });
+      act(() => {
+        vi.advanceTimersByTime(2000);
+      });
+      const stage = document.querySelector<HTMLElement>(".vault-stage");
+      expect(stage, "the exception's own node did not render").not.toBeNull();
+      expect(stage!.style.zIndex).toBe(String(VAULT_STAGE_Z_INDEX));
+      expect(
+        INLINE_Z_INDEX_EXCEPTIONS.some((e) => stage!.matches(e.selector)),
+        "the node that renders is not the one the list names",
+      ).toBe(true);
+    } finally {
+      vi.runOnlyPendingTimers();
+      vi.useRealTimers();
+      useLockAudioWarningStore.setState({ pending: false, audioLeft: [] });
+    }
+  });
+});
+
+describe("permanent stacking contexts (T-84)", () => {
+  let sheet = "";
+
+  beforeAll(async () => {
+    const { loadGlassRightCss } = await import("./helpers/glassSurfaceCss");
+    sheet = await loadGlassRightCss();
+  }, 60_000);
+
+  /**
+   * Every rule in `tree` that opens a PERMANENT stacking context.
+   *
+   * The tree is a parameter so the GROUND below can feed it a sheet whose
+   * answer is known. It used to close over the module's own `sheet`, which
+   * made that control unable to fail: it parsed a probe, threw it away, and
+   * then asked the real sheet a question the function cannot answer "yes" to
+   * whatever it is handed.
+   */
+  function openers(tree: Root): { selector: string; how: string }[] {
+    const out: { selector: string; how: string }[] = [];
+    tree.walkRules((rule) => {
+      for (let p: unknown = rule.parent; p; p = (p as { parent?: unknown }).parent) {
+        const node = p as { type?: string; name?: string };
+        if (node.type === "atrule" && /keyframes/.test(node.name ?? "")) return;
+      }
+      let position: string | null = null;
+      let zIndex: string | null = null;
+      const hits: string[] = [];
+      rule.each((n) => {
+        if (n.type !== "decl") return;
+        const prop = n.prop.toLowerCase();
+        const value = n.value.replace(/!important$/i, "").trim().toLowerCase();
+        if (prop === "position") position = value;
+        if (prop === "z-index") zIndex = value;
+        if ((prop === "backdrop-filter" || prop === "-webkit-backdrop-filter") && value !== "none") hits.push(prop);
+        else if (prop === "filter" && value !== "none") hits.push(prop);
+        else if (prop === "isolation" && value !== "auto") hits.push(prop);
+        else if (prop === "contain" && value !== "none") hits.push(prop);
+        else if (prop === "will-change" && value !== "auto") hits.push(prop);
+        else if (prop === "mix-blend-mode" && value !== "normal") hits.push(prop);
+        else if (prop === "content-visibility") hits.push(prop);
+      });
+      if (zIndex && zIndex !== "auto" && position !== "static") {
+        hits.push(position ? `position:${position} + z-index` : "z-index (position: TSX)");
+      }
+      for (const how of hits) out.push({ selector: rule.selector, how });
+    });
+    return out;
+  }
+
+  it("every surface that opens one is written down", () => {
+    const known = new Set(
+      [...PERSISTENT_STACKING_CONTEXTS, ...UTILITY_STACKING_CONTEXTS]
+        .map(([selector, how]) => `${selector} :: ${how}`),
+    );
+    const surprises = openers(parseSheet(sheet))
+      .map((o) => `${o.selector} :: ${o.how}`)
+      .filter((row) => !known.has(row));
+    expect(
+      surprises,
+      "a new permanent stacking context was opened without going into the table",
+    ).toEqual([]);
+  });
+
+  it("and everything written down is still there", () => {
+    // The other direction: a row deleted from the constant to make the check
+    // above pass would leave the table describing a sheet that moved on.
+    const live = new Set(
+      openers(parseSheet(sheet)).map((o) => `${o.selector} :: ${o.how}`));
+    const stale = [...PERSISTENT_STACKING_CONTEXTS, ...UTILITY_STACKING_CONTEXTS]
+      .map(([selector, how]) => `${selector} :: ${how}`)
+      .filter((row) => !live.has(row));
+    expect(stale, "the table names a context the sheet no longer opens").toEqual([]);
+  });
+
+  it("counts what the audit counted", () => {
+    // OLCUM item 17's permanent-context figures, so the table cannot quietly
+    // grow or shrink while both directions above stay green together.
+    const authored = PERSISTENT_STACKING_CONTEXTS;
+    expect(authored.length).toBe(PERSISTENT_CONTEXT_COUNTS.declarations);
+    expect(new Set(authored.map(([s]) => s)).size)
+      .toBe(PERSISTENT_CONTEXT_COUNTS.selectors);
+  });
+
+  it("GROUND: transform and a faded opacity do NOT make a member", () => {
+    // The criterion's own dividing line. Both are usually a keyframe step or
+    // a transition state, so the context they open is temporary; a checker
+    // that counted them would report a list several times this size.
+    //
+    // The probe is what the reader is RUN OVER, which is the whole control.
+    // Written the other way - parse a probe, then ask the real sheet - the
+    // assertion was structurally green: `openers` never emits "transform" or
+    // "opacity" for any input at all, so it could not have reported one.
+    const probe = parseSheet(
+      ".probe { transform: translateY(-1px); opacity: 0.5; }\n" +
+      ".probe-real { isolation: isolate; }");
+    expect(openers(probe).map((o) => `${o.selector} :: ${o.how}`))
+      .toEqual([".probe-real :: isolation"]);
+  });
+});
+
+describe("the body font stack (T-88)", () => {
+  let sheet = "";
+
+  beforeAll(async () => {
+    const { loadGlassRightCss } = await import("./helpers/glassSurfaceCss");
+    sheet = await loadGlassRightCss();
+  }, 60_000);
+
+  /** The declared value of a token, from the compiled sheet. */
+  function tokenValue(name: string): string {
+    const table = rootTokens(parseSheet(sheet));
+    const value = table.get(name);
+    expect(value, `the sheet declares no ${name}`).toBeDefined();
+    return resolveVars(value!, table).trim();
+  }
+
+  it("starts with a generic keyword, not a family somebody named", () => {
+    // KARAR-V: the app renders in the reader's own Windows font, so the
+    // stack opens with the generic that asks for it and pins nothing. The
+    // expected value is imported; a font name typed here would be the exact
+    // copied constant that keeps a test green after the stack moves.
+    const first = tokenValue("--font-sans").split(",")[0].trim();
+    expect(first, "the stack no longer opens with a generic keyword")
+      .toBe(SYSTEM_FONT_GENERIC);
+    expect(first.startsWith('"'), "a quoted family name is first").toBe(false);
+  });
+
+  it("GROUND: the heading stack resolves through the same first member", () => {
+    // --font-heading is `var(--font-sans)`, so reading it through the same
+    // resolver must land on the same member. If it does not, the reader is
+    // not resolving anything and the assertion above is reading text.
+    expect(tokenValue("--font-heading").split(",")[0].trim())
+      .toBe(SYSTEM_FONT_GENERIC);
+  });
+
+  it("POSITIVE CONTROL: a pinned family name would be caught", () => {
+    const pinned = '"Segoe UI", system-ui, sans-serif'.split(",")[0].trim();
+    expect(pinned).not.toBe(SYSTEM_FONT_GENERIC);
+    expect(pinned.startsWith('"')).toBe(true);
+  });
+
+  it("keeps the tail that the system-ui regression needs", () => {
+    // The stack's tail is not decoration: it is the fix for a known
+    // system-ui regression (the VS Code / Tahoma case). Dropping the dead
+    // first member must not become an excuse to prune the rest.
+    const members = tokenValue("--font-sans").split(",").map((m) => m.trim());
+    expect(members.length, "the stack lost its fallbacks").toBeGreaterThan(5);
+    expect(members[members.length - 1]).toBe("sans-serif");
+  });
+});
+
+describe("no rule reads a variable nothing declares", () => {
+  let sheet = "";
+
+  beforeAll(async () => {
+    const { loadGlassRightCss } = await import("./helpers/glassSurfaceCss");
+    sheet = await loadGlassRightCss();
+  }, 60_000);
+
+  it("the Radix variables are gone, name and reader together", () => {
+    // Four rules bound the popup slots' transform-origin to --radix-*
+    // variables. Nothing in this app is Radix - it is Base UI - so nothing
+    // ever declared them, and each rule fell to its `top` fallback. Being
+    // unlayered, that fallback beat the utility carrying the origin Base UI
+    // computes, so every popup grew from its top edge wherever it opened,
+    // while the rules read as deliberate positioning. Deleted with this unit.
+    expect(sheet, "a rule still reads a --radix-* variable").not.toMatch(/--radix-/);
+  });
+
+  it("GROUND: the popup slots the deleted rules named are still in the sheet", () => {
+    // Without this, "no --radix-" would pass just as well on a sheet where
+    // the slots themselves had been deleted, which would be a far bigger
+    // change hiding behind a green test.
+    expect(sheet).toMatch(/\[data-slot="dialog-content"\]/);
+    expect(sheet).toMatch(/\[data-slot="select-content"\]/);
+  });
+});
+
+/**
+ * T-85: dialog geometry, over all seven DialogContents.
+ *
+ * Six take a width from the scale and the one height; ImageLightbox is the
+ * named exception and is excluded BY NAME, with its own classes asserted so
+ * the exception is a record rather than a gap.
+ *
+ * Each dialog is opened the way a person opens it, and the class list is read
+ * off the rendered node. The alternative - reading the className out of the
+ * source - would pass on a component that never renders, and would be the
+ * source-as-proxy the house rules forbid.
+ */
+describe("dialog geometry (T-85)", () => {
+  const WIDTHS = new Set<string>(Object.values(DIALOG_WIDTHS));
+  let sheet = "";
+
+  /**
+   * KURAL 4.3's table, in pixels.
+   *
+   * These four numbers are the claim, so they are written here rather than
+   * imported: `DIALOG_WIDTHS` holds the class NAMES, and a test that checked
+   * the names against themselves would be comparing the scale with itself -
+   * which is what let `medium` move from 512 to 576 with the whole suite
+   * green. The names come from the constant; the pixels come from the design
+   * reference; the sheet is asked what the names actually resolve to.
+   */
+  const REF_WIDTH_PX: Record<keyof typeof DIALOG_WIDTHS, number> = {
+    base: 384,
+    narrow: 448,
+    medium: 512,
+    wide: 672,
+  };
+
+  /**
+   * KURAL 4.3's height, as a value.
+   *
+   * The reference's row reads, with the utility's name broken so this file
+   * emits no candidate of its own: "Yukseklik | `max-h-` + `[85vh]` | - |
+   * Tek deger. Baska bir vh degeri yazilmaz." One value, and no second vh
+   * value is written.
+   *
+   * Here for the same reason the four widths are here, and the gap it closes
+   * is the one the widths had: `DIALOG_MAX_HEIGHT` holds the class NAME, and
+   * the assertions above ask each dialog to carry that name - so the six
+   * dialogs stay on ONE height whatever it is, and changing the constant
+   * moves all six to a second vh value in a single line with the whole suite
+   * green. The name comes from the constant; the value comes from the design
+   * reference; the sheet is asked what the name resolves to.
+   *
+   * Written as the VALUE and never as the class: Tailwind scans test files as
+   * raw text, so spelling the utility here would keep emitting it from this
+   * file after production stopped asking for it, and the reading below would
+   * go on finding a rule nothing renders.
+   */
+  const REF_MAX_HEIGHT = "85vh";
+
+  beforeAll(async () => {
+    const { loadGlassRightCss } = await import("./helpers/glassSurfaceCss");
+    sheet = await loadGlassRightCss();
+  }, 60_000);
+
+  beforeEach(() => {
+    useUiStore.setState({ selectedCharacterId: 1, selectedChatId: null });
+  });
+
+  /** The rendered DialogContent node, whatever opened it. */
+  function content(): HTMLElement {
+    const node = document.querySelector<HTMLElement>('[data-slot="dialog-content"]');
+    expect(node, "no dialog rendered").not.toBeNull();
+    return node!;
+  }
+
+  /**
+   * Every size class on `root` or under it that is not one of the seven steps.
+   *
+   * The class-closure half of IP-05 FIX 1, run where the shell cannot reach.
+   * A RETIRED stock class emits no rule at all once the `--text-*` namespace
+   * is cleared, so the compiled-sheet net in test/lib/fontScale.test.ts
+   * cannot see one; that file's render sweep walks only what `AppShell`
+   * paints on first render, and a dialog is not in it. These seven dialogs
+   * are the surfaces outside both nets, and they are already open here.
+   *
+   * The retired names are BUILT rather than written: Tailwind scans test
+   * files as raw text, so spelling one here would emit the very utility this
+   * says is gone.
+   */
+  function offScaleSizeClasses(root: HTMLElement): string[] {
+    const allowed = new Set(TYPE_SCALE_STEPS.map((s) => `text-${s}`));
+    const retired = new Set(["x" + "s", "s" + "m", "b" + "ase", "l" + "g",
+                             "x" + "l", "2x" + "l", "3x" + "l"]);
+    const out: string[] = [];
+    for (const el of [root, ...root.querySelectorAll<HTMLElement>("*")]) {
+      for (const cls of el.classList) {
+        // Variants stripped FIRST. Anchored at the start of the raw class,
+        // this sweep could not see a retired step behind a breakpoint or a
+        // state prefix - which is the likeliest form there is, and the exact
+        // one KURAL 3.6 is about: putting a breakpoint variant of a retired
+        // step back on a ui/ primitive's base string left every net green.
+        const bare = cls.split(":").pop() ?? cls;
+        if (allowed.has(bare)) continue;
+        if (!bare.startsWith("text-")) continue;
+        const step = bare.slice(5);
+        if (retired.has(step) || /^(\d|\[)/.test(step)) out.push(cls);
+      }
+    }
+    return out;
+  }
+
+  it("GROUND: the size-class sweep reports what it is looking for", () => {
+    // Same predicate over a node that carries the two shapes it hunts, so an
+    // empty list on each dialog below is a reading and not a broken matcher.
+    const probe = document.createElement("div");
+    const hunted = ["text-" + "sm", "text-" + "[10px]", "md:" + "text-" + "sm"];
+    probe.className = [...hunted, `text-${TYPE_SCALE_STEPS[1]}`,
+                       `md:text-${TYPE_SCALE_STEPS[2]}`].join(" ");
+    expect(offScaleSizeClasses(probe).sort(), "the dialog sweep went blind")
+      .toEqual([...hunted].sort());
+  });
+
+  function assertOnScale(node: HTMLElement, name: string) {
+    const classes = new Set(node.classList);
+    expect(classes.size, `${name} rendered with no classes`).toBeGreaterThan(0);
+    expect(offScaleSizeClasses(node), `${name} carries a size class off the scale`)
+      .toEqual([]);
+    const widths = [...classes].filter((c) => c.startsWith("sm:max-w-"));
+    expect(widths, `${name} declares more than one width`).toHaveLength(1);
+    expect(WIDTHS.has(widths[0]), `${name} width ${widths[0]} is off the scale`)
+      .toBe(true);
+    expect(classes.has(DIALOG_MAX_HEIGHT), `${name} is not on the one height`)
+      .toBe(true);
+    const heights = [...classes].filter((c) => c.startsWith("max-h-"));
+    expect(heights, `${name} declares a second height`).toEqual([DIALOG_MAX_HEIGHT]);
+  }
+
+  it("the chat create dialog is on the scale", async () => {
+    const user = userEvent.setup();
+    mockFetch({ "/chats": { body: chatFixture } });
+    renderWithQueryClient(
+      createElement(ChatCreateDialog, {
+        trigger: createElement(Button, null, "Open"),
+      }),
+    );
+    await user.click(screen.getByText("Open"));
+    await screen.findByRole("dialog");
+    assertOnScale(content(), "ChatCreateDialog");
+  }, 30_000);
+
+  it("the character create dialog is on the scale", async () => {
+    const user = userEvent.setup();
+    mockFetch({ "/characters": { body: characterFixture } });
+    renderWithQueryClient(
+      createElement(CharacterCreateDialog, {
+        trigger: createElement(Button, null, "Open"),
+      }),
+    );
+    await user.click(screen.getByText("Open"));
+    await screen.findByRole("dialog");
+    assertOnScale(content(), "CharacterCreateDialog");
+  }, 30_000);
+
+  it("the character edit dialog is on the scale", async () => {
+    const user = userEvent.setup();
+    mockFetch({ "/characters/1": { body: characterFixture } });
+    renderWithQueryClient(
+      createElement(CharacterEditDialog, {
+        character: characterFixture,
+        trigger: createElement(Button, null, "Open"),
+      }),
+    );
+    await user.click(screen.getByText("Open"));
+    await screen.findByRole("dialog");
+    assertOnScale(content(), "CharacterEditDialog");
+  }, 30_000);
+
+  it("the character import dialog is on the scale, height included", async () => {
+    // This one and the chat create dialog had NO height class at all before
+    // this unit, which is not "shorter" - it is "as tall as its content", so
+    // a long paste ran past the top and bottom of the window. The page
+    // itself never scrolls, so the part that did not fit could not be
+    // reached at all.
+    const user = userEvent.setup();
+    mockFetch({ "/characters/import": { body: characterFixture } });
+    renderWithQueryClient(
+      createElement(CharacterImportDialog, {
+        trigger: createElement(Button, null, "Open"),
+      }),
+    );
+    await user.click(screen.getByText("Open"));
+    await screen.findByRole("dialog");
+    assertOnScale(content(), "CharacterImportDialog");
+  }, 30_000);
+
+  it("the app settings dialog is on the scale", async () => {
+    // Stubbed before it mounts: this dialog fires the tag-preference and
+    // active-voice queries, and an unstubbed render forwards them through the
+    // egress sentinel to the app's real backend.
+    mockFetch({ ...shellRoutes(), "/tts": { body: {} } });
+    renderWithQueryClient(
+      createElement(AppSettingsDialog, { open: true, onOpenChange: vi.fn() }),
+    );
+    await screen.findByRole("dialog");
+    assertOnScale(content(), "AppSettingsDialog");
+    expect(apiEscapes(), "the settings dialog reached the real transport")
+      .toEqual([]);
+  }, 30_000);
+
+  it("the generation settings dialog is on the scale, at the one height", async () => {
+    // The 88vh outlier. Its reason was never written down anywhere, and a
+    // second vh value is a second answer to one question.
+    const user = userEvent.setup();
+    mockFetch({ "/settings": { body: settingsFixture } });
+    renderWithQueryClient(
+      createElement(
+        GenerationSettingsProvider,
+        null,
+        createElement(GenerationSettingsDialog, { selectedModel: modelFixture }),
+      ),
+    );
+    await user.click(await screen.findByRole("button", { name: /sampling/i }));
+    await screen.findByRole("dialog");
+    assertOnScale(content(), "GenerationSettingsDialog");
+    expect(apiEscapes(), "the generation dialog reached the real transport")
+      .toEqual([]);
+  }, 30_000);
+
+  it("the lightbox is the named exception, and carries nothing the exception does not name", async () => {
+    // POSITIVE CONTROL for the exclusion. Excluding a dialog by name is only
+    // honest if the thing excluded is bounded on BOTH sides. This used to
+    // assert a subset - every class of LIGHTBOX_CLASSES is present - which is
+    // exactly what the second mutation for this row walks through: adding
+    // `glass` leaves all of them in place and takes the chrome with it.
+    //
+    // Two assertions now, because one mutation lives at each end. The class
+    // list is compared for EQUALITY, which catches a class added at the call
+    // site; and the chrome the exception exists to avoid is asserted absent
+    // by name, which catches a class added to the constant itself - where
+    // equality alone would move with the mutation and stay green.
+    //
+    // The expected list is DERIVED, never typed: the primitive's own base
+    // string is read off a bare DialogContent rendered here and merged with
+    // LIGHTBOX_CLASSES through the app's own `cn`, which is what
+    // ui/dialog.tsx does. So this follows the primitive and pins the
+    // difference rather than a copy of the whole string.
+    render(
+      createElement(
+        Dialog,
+        { open: true },
+        createElement(DialogContent, null, createElement(DialogTitle, null, "Bare")),
+      ),
+    );
+    await screen.findByRole("dialog");
+    const bare = content().className;
+    // GROUND for the absence below: an ordinary dialog DOES render the
+    // primitive's close button, and it is the one with no `aria-label` of its
+    // own (it names itself with an sr-only span instead). Both halves matter,
+    // because the lightbox renders a close control of its OWN and the two
+    // carry the same `data-slot`.
+    const bareCloses = document.querySelectorAll('[data-slot="dialog-close"]');
+    expect(
+      bareCloses.length,
+      "an ordinary dialog no longer renders the primitive's close button",
+    ).toBe(1);
+    expect(
+      bareCloses[0].getAttribute("aria-label"),
+      "the primitive's close button grew an aria-label, so the two are no longer distinguishable",
+    ).toBeNull();
+    cleanup();
+
+    const objectUrl = "blob:lightbox-probe";
+    const realCreate = URL.createObjectURL;
+    URL.createObjectURL = vi.fn(() => objectUrl);
+    try {
+      mockFetch({ "/uploads/images/1": { body: {} } });
+      renderWithQueryClient(
+        createElement(ImageLightbox, {
+          attachment: attachmentFixture,
+          onClose: vi.fn(),
+        }),
+      );
+      await screen.findByRole("dialog");
+      const classes = [...content().classList];
+      expect(
+        [...classes].sort(),
+        "the lightbox carries a class the exception does not name",
+      ).toEqual(cn(bare, LIGHTBOX_CLASSES).split(" ").sort());
+      // The chrome, by name. These are index.css classes with no production
+      // export to import, and the names ARE the claim: a test that read them
+      // off the component would go green the moment the component took them
+      // on, which is the mutation.
+      for (const chrome of ["glass", "glass-dialog", "sidebar-dialog"]) {
+        expect(classes, `the lightbox took on the dialog chrome: ${chrome}`)
+          .not.toContain(chrome);
+      }
+      expect(classes, "the lightbox joined the scale's one height")
+        .not.toContain(DIALOG_MAX_HEIGHT);
+      // `showCloseButton={false}` is the other half of what IP-05 FIX 5
+      // names, and nothing held it: putting the primitive's close button back
+      // left this file green. "No close button" is the wrong question - the
+      // lightbox has one of its own, a solid-backed control pinned to the
+      // picture's corner so it never disappears into the image. The right
+      // question is whether the primitive's is there BESIDE it, which is what
+      // a second node with the same slot means.
+      const closes = content().querySelectorAll('[data-slot="dialog-close"]');
+      expect(
+        closes.length,
+        "the primitive's close button is back, beside the lightbox's own",
+      ).toBe(1);
+      expect(
+        closes[0].getAttribute("aria-label"),
+        "the one close control on the lightbox is not the lightbox's own",
+      ).toBe("Close");
+      // And it really is off the scale, which is why it is excluded above.
+      const widths = classes.filter((c) => c.startsWith("sm:max-w-"));
+      expect(widths).toHaveLength(1);
+      expect(WIDTHS.has(widths[0]), "the lightbox is on the scale after all")
+        .toBe(false);
+      expect(apiEscapes(), "the lightbox reached the real transport").toEqual([]);
+    } finally {
+      URL.createObjectURL = realCreate;
+    }
+  }, 30_000);
+
+  it("the scale itself is four widths and one height", () => {
+    // The shape of the scale, so a fifth width cannot be added without the
+    // decision being made here rather than at a call site.
+    expect(Object.keys(DIALOG_WIDTHS)).toHaveLength(4);
+    expect(new Set(Object.values(DIALOG_WIDTHS)).size).toBe(4);
+    expect(DIALOG_MAX_HEIGHT.startsWith("max-h-")).toBe(true);
+  });
+
+  /**
+   * What `property` resolves to for the utility class `utility`, read out of
+   * the tree it is handed.
+   *
+   * Takes the TREE rather than closing over `sheet`, so the grounds below can
+   * run this same function over a probe whose answer is known. A reader that
+   * can only be pointed at the real sheet is a reader nobody has ever seen
+   * report anything.
+   */
+  const declOf = (tree: Root, utility: string, property: string): string | null => {
+    const tokens = rootTokens(tree);
+    // A class selector as the sheet spells it, with CSS's own escapes taken
+    // back off: Tailwind writes `sm:max-w-sm` as `.sm\:max-w-sm`, and a hand
+    // built escape on this side is a spelling contest rather than a reading.
+    const unescaped = (selector: string): string =>
+      selector.split(String.fromCharCode(92)).join("");
+    let value: string | null = null;
+    tree.walkRules((rule) => {
+      const names = resolvedSelectors(rule).map(unescaped);
+      if (!names.includes("." + utility)) return;
+      // walkDecls rather than each: Tailwind writes the breakpoint as a
+      // media query NESTED inside the utility rule, so the declaration is
+      // a grandchild and a direct-children scan finds nothing at all.
+      rule.walkDecls(property, (node) => {
+        value = resolveVars(node.value, tokens).trim();
+      });
+    });
+    return value;
+  };
+
+  it("and the one height is the height REF 4.3 tabulates", () => {
+    // The presence assertions above hold every dialog to the SAME height and
+    // cannot tell which height that is: moving the constant one step takes
+    // all six with it and leaves them agreeing with each other. The class
+    // name is asked what it resolves to in the compiled sheet, and the answer
+    // is compared with the value the design reference wrote down.
+    const resolved = declOf(parseSheet(sheet), DIALOG_MAX_HEIGHT, "max-height");
+    expect(resolved, `the sheet emits no max-height for ${DIALOG_MAX_HEIGHT}`)
+      .not.toBeNull();
+    expect(resolved, `${DIALOG_MAX_HEIGHT} is not REF 4.3's one height`)
+      .toBe(REF_MAX_HEIGHT);
+    // GROUND: the same reader, over a probe carrying a DIFFERENT height, so
+    // the match above is a reading rather than a function that agrees with
+    // whatever it is handed. The probe's rule is built here rather than taken
+    // from the sheet, because the sheet has only the one height in it - which
+    // is the claim.
+    const other = String(Number(REF_MAX_HEIGHT.replace("vh", "")) + 3) + "vh";
+    const probe = parseSheet(`.probe-height{max-height:${other}}`);
+    expect(declOf(probe, "probe-height", "max-height"),
+      "the height reader cannot report a second value").toBe(other);
+    // And it answers nothing for a utility the tree does not carry, so a
+    // missing rule cannot read as a match.
+    expect(declOf(probe, "probe-absent", "max-height")).toBeNull();
+  }, 60_000);
+
+  it("and the four widths are the four widths REF 4.3 tabulates", () => {
+    // The shape alone pins nothing: `medium` could move from 512 to 576 with
+    // every assertion above still green, because a fifth width is impossible
+    // while a WRONG width is free. Each class name is asked what it resolves
+    // to in the compiled sheet, and the answer is compared with the number
+    // the design reference wrote down.
+    const widthOf = (utility: string): number => {
+      const value = declOf(parseSheet(sheet), utility, "max-width");
+      expect(value, `the sheet emits no max-width for ${utility}`).not.toBeNull();
+      const m = /^([\d.]+)rem$/.exec(value!);
+      expect(m, `${utility} resolves to ${value}, which is not a rem length`)
+        .not.toBeNull();
+      return Number(m![1]) * 16;
+    };
+    for (const [name, utility] of Object.entries(DIALOG_WIDTHS)) {
+      expect(widthOf(utility), `${name} (${utility}) is not REF 4.3's width`)
+        .toBe(REF_WIDTH_PX[name as keyof typeof DIALOG_WIDTHS]);
+    }
+    // GROUND: the reader can report a number that is NOT on the table, so
+    // the four matches above are readings rather than a function that agrees
+    // with whatever it is handed. The lightbox's own width is the one
+    // off-scale utility this app compiles, and it is 768.
+    const lightboxWidth = LIGHTBOX_CLASSES.split(" ")
+      .find((c) => c.startsWith("sm:max-w-"))!;
+    expect(Object.values(REF_WIDTH_PX)).not.toContain(widthOf(lightboxWidth));
+  }, 60_000);
+
+  it("the primitive's own default is the scale's base", async () => {
+    // A scale that leaves the primitive's default out declares its own
+    // component off-scale: every DialogContent that sets no width takes it.
+    render(
+      createElement(
+        Dialog,
+        { open: true },
+        createElement(DialogContent, null, createElement(DialogTitle, null, "Bare")),
+      ),
+    );
+    await screen.findByRole("dialog");
+    const widths = [...content().classList].filter((c) => c.startsWith("sm:max-w-"));
+    expect(widths).toEqual([DIALOG_WIDTHS.base]);
+  }, 30_000);
 });

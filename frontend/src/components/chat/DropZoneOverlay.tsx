@@ -31,13 +31,13 @@ export function DropZoneOverlay() {
           aria-hidden="true"
         />
         <p
-          className="text-base font-medium"
+          className="text-title font-semibold"
           style={{ color: "var(--color-es-text-dark)" }}
         >
           Drop your image here
         </p>
         <p
-          className="text-xs"
+          className="text-label"
           style={{ color: "var(--color-es-text-dark)", opacity: 0.65 }}
         >
           {`PNG, JPEG or WebP - up to ${MAX_ATTACHMENTS} per message`}

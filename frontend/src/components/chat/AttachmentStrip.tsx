@@ -96,7 +96,7 @@ export function AttachmentStrip({
       ))}
 
       <span
-        className="text-[10px]"
+        className="text-micro"
         style={{ color: "var(--color-es-asst-bubble-text)", opacity: 0.55 }}
       >
         {inactive ? (

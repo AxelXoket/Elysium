@@ -219,7 +219,7 @@ export function ModelPanel() {
         {/* Header */}
         <div className="flex items-center justify-between">
           <h3
-            className="text-sm font-medium"
+            className="text-ui font-semibold"
             style={{ color: "var(--color-es-text-light)" }}
           >
             Models
@@ -244,7 +244,7 @@ export function ModelPanel() {
           <div className="flex flex-wrap items-center gap-1.5">
             <Badge
               variant="outline"
-              className="text-[10px]"
+              className="text-micro"
               data-testid="model-source-badge"
               style={{
                 borderColor: "var(--color-es-primary-sage-deep)",
@@ -256,7 +256,7 @@ export function ModelPanel() {
             {data.cached && (
               <Badge
                 variant="outline"
-                className="text-[10px]"
+                className="text-micro"
                 style={{
                   borderColor: "var(--color-es-glass-border-dark)",
                   color: "var(--color-es-text-muted)",
@@ -266,7 +266,7 @@ export function ModelPanel() {
               </Badge>
             )}
             <span
-              className="text-[10px]"
+              className="text-micro"
               style={{ color: "var(--color-es-text-muted)" }}
             >
               {search.trim()
@@ -280,7 +280,7 @@ export function ModelPanel() {
         {/* Fallback reason */}
         {data?.fallback_reason && (
           <div
-            className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs"
+            className="flex items-center gap-2 rounded-lg px-3 py-2 text-label"
             data-testid="fallback-reason"
             style={{
               backgroundColor: "rgba(94, 130, 174, 0.08)",
@@ -307,7 +307,7 @@ export function ModelPanel() {
         {data && settings && (
           settings.api_key_set ? (
             <div
-              className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs"
+              className="flex items-center gap-2 rounded-lg px-3 py-2 text-label"
               data-testid="model-key-ready"
               style={{
                 backgroundColor: "rgba(255,255,255,0.34)",
@@ -324,7 +324,7 @@ export function ModelPanel() {
                repaints text-light/text-muted; the dark shell's classes land
                near 1.2:1 here). */
             <div
-              className="flex items-start gap-2 rounded-lg px-3 py-2 text-xs"
+              className="flex items-start gap-2 rounded-lg px-3 py-2 text-label"
               data-testid="model-key-missing"
               style={{
                 backgroundColor: "rgba(94, 130, 174, 0.08)",
@@ -345,7 +345,7 @@ export function ModelPanel() {
           <div className="space-y-4">
             <section className="space-y-2">
               <h4
-                className="text-xs font-semibold"
+                className="text-label font-semibold"
                 style={{ color: "var(--color-es-text-light)" }}
               >
                 Selected Model
@@ -360,13 +360,13 @@ export function ModelPanel() {
                 <div className="flex flex-col items-center gap-2">
                   <div className="min-w-0 max-w-full">
                     <p
-                      className="truncate text-sm font-semibold"
+                      className="truncate text-ui font-semibold"
                       style={{ color: "var(--color-es-text-light)" }}
                     >
                       {selectedModel?.id ?? "No model selected"}
                     </p>
                     <p
-                      className="mt-1 text-xs"
+                      className="mt-1 text-label"
                       style={{ color: "var(--color-es-text-muted)" }}
                     >
                       {contextLabel === "-" ? "Text" : `${contextLabel} context · Text`}
@@ -377,7 +377,7 @@ export function ModelPanel() {
                   )}
                   {selectedModel && selectedChatId == null && (
                     <p
-                      className="w-full text-[11px]"
+                      className="w-full text-micro"
                       style={{ color: "var(--color-es-text-muted)" }}
                       data-testid="context-usage-empty"
                     >
@@ -386,7 +386,7 @@ export function ModelPanel() {
                   )}
                   <Badge
                     variant="outline"
-                    className="shrink-0 text-[10px]"
+                    className="shrink-0 text-micro"
                     style={{
                       borderColor: "rgba(28, 38, 50,0.18)",
                       color: "var(--color-es-text-muted)",
@@ -422,7 +422,7 @@ export function ModelPanel() {
                 className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left"
               >
                 <span
-                  className="text-xs font-semibold"
+                  className="text-label font-semibold"
                   style={{ color: "var(--color-es-text-light)" }}
                 >
                   Model Source
@@ -434,7 +434,7 @@ export function ModelPanel() {
                 />
               </button>
               <Collapse open={sourceOpen}>
-                <div className="space-y-2 px-3 pb-3 text-xs">
+                <div className="space-y-2 px-3 pb-3 text-label">
                   <InfoRow label="Source" value={data.source} />
                   <InfoRow label="Cached" value={data.cached ? "yes" : "no"} />
                   <InfoRow
@@ -475,7 +475,7 @@ export function ModelPanel() {
               // wins and the class silently deletes the only indicator a
               // keyboard user has for where they are in a list of hundreds.
               // Leaving the outline alone is what lets the house ring draw.
-              className="min-w-0 flex-1 bg-transparent text-xs"
+              className="min-w-0 flex-1 bg-transparent text-label"
               style={{ color: "var(--color-es-text-light)" }}
             />
             {search && (
@@ -506,7 +506,7 @@ export function ModelPanel() {
         {/* Selected model chip - shown when filtered out of results */}
         {selectedIsFiltered && selectedModel && (
           <div
-            className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs"
+            className="flex items-center gap-2 rounded-lg px-3 py-2 text-label"
             style={{
               backgroundColor: "rgba(62, 114, 176, 0.08)",
               color: "var(--color-es-primary-sage)",
@@ -514,7 +514,7 @@ export function ModelPanel() {
             }}
           >
             <span className="opacity-70">Selected:</span>
-            <span className="truncate font-medium">{selectedModel.name}</span>
+            <span className="truncate font-semibold">{selectedModel.name}</span>
           </div>
         )}
 
@@ -534,7 +534,7 @@ export function ModelPanel() {
         {/* Error */}
         {error && (
           <div
-            className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs"
+            className="flex items-center gap-2 rounded-lg px-3 py-2 text-label"
             style={{
               backgroundColor: "rgba(195, 106, 114, 0.08)",
               color: "var(--color-es-danger)",
@@ -582,7 +582,7 @@ export function ModelPanel() {
         {/* Empty search result */}
         {data && filteredModels.length === 0 && search.trim().length > 0 && (
           <p
-            className="py-4 text-center text-xs"
+            className="py-4 text-center text-label"
             style={{ color: "var(--color-es-text-muted)" }}
             data-testid="model-search-empty"
           >
@@ -598,7 +598,7 @@ export function ModelPanel() {
           search.trim().length === 0 &&
           data.models.length > 0 && (
             <p
-              className="py-4 text-center text-xs"
+              className="py-4 text-center text-label"
               style={{ color: "var(--color-es-text-muted)" }}
               data-testid="model-filter-empty"
             >
@@ -609,7 +609,7 @@ export function ModelPanel() {
         {/* No models at all */}
         {data && data.models.length === 0 && search.trim().length === 0 && (
           <p
-            className="py-4 text-center text-xs"
+            className="py-4 text-center text-label"
             style={{ color: "var(--color-es-text-muted)" }}
           >
             No models available
@@ -683,7 +683,7 @@ function ContextUsageMeter({ usage }: { usage: ContextUsageEstimate }) {
         />
       </div>
       <p
-        className="mt-1 text-[11px]"
+        className="mt-1 text-micro"
         style={{ color: "var(--color-es-text-muted)" }}
       >
         {label}
@@ -703,7 +703,7 @@ function ContextUsageMeter({ usage }: { usage: ContextUsageEstimate }) {
       {usage.willRefuse && (
         <p
           role="status"
-          className="mt-1 text-[11px]"
+          className="mt-1 text-micro"
           data-testid="context-usage-refusal"
           style={{ color: METER_COLORS.danger }}
         >

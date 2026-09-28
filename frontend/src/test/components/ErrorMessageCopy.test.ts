@@ -23,6 +23,7 @@ import {
   getErrorMessage,
   knownErrorCodes,
 } from "@/lib/errors/errorMessages";
+import { INSTRUCTION_LANGUAGE_LABELS } from "@/lib/notebook/labels";
 
 /** Codes the audit found naming a control that does not exist by that name. */
 describe("sentences name controls that exist", () => {
@@ -46,7 +47,7 @@ describe("sentences name controls that exist", () => {
     expect(msg).not.toMatch(/\ba name\b/i);
   });
 
-  // BoundaryPanel's severity is a <select> that starts on "hard" and has no
+  // BoundaryPanel's severity is a Select that starts on "hard" and has no
   // empty option, so it cannot be unset and cannot be "chosen" as a fix.
   it("boundary_invalid does not ask for a severity that is already set", () => {
     expect(getErrorMessage("boundary_invalid")).not.toMatch(/how strict/i);
@@ -82,12 +83,19 @@ describe("sentences state limits at their real size", () => {
   });
 
   // routers/notebook.py accepts exactly "en" and "tr"; the select in
-  // ExtractionSettings.tsx offers "English" and "Turkce". Naming the count
-  // without naming the two left the reader to go and look.
+  // ExtractionSettings.tsx offers "English" and the Turkish endonym. Naming
+  // the count without naming the two left the reader to go and look. The
+  // sentence is English end to end, so it names the language in English.
   it("notebook_language_unknown names both languages", () => {
     const msg = getErrorMessage("notebook_language_unknown");
-    expect(msg).toContain("English");
-    expect(msg).toContain("Turkce");
+    // The English name is the dropdown's own label, imported. The Turkish
+    // one is NOT the dropdown's label and deliberately so: the option reads
+    // the endonym because it names a language on a control, and this
+    // sentence is English end to end, so it names the language in English.
+    expect(msg).toContain(INSTRUCTION_LANGUAGE_LABELS.en);
+    expect(msg).toContain("Turkish");
+    expect(msg, "the English sentence picked up the endonym")
+      .not.toContain(INSTRUCTION_LANGUAGE_LABELS.tr);
   });
 });
 

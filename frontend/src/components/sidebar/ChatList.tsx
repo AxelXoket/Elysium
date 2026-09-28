@@ -63,13 +63,13 @@ export function ChatList() {
     return (
       <div className="px-3 py-3">
         <p
-          className="px-1 text-[11px] font-semibold uppercase tracking-widest"
+          className="px-1 text-micro font-semibold uppercase tracking-widest"
           style={{ color: "var(--color-es-text-muted)", opacity: 0.75 }}
         >
           Chats
         </p>
         <div
-          className="mt-2 rounded-xl p-4 text-center text-xs"
+          className="mt-2 rounded-xl p-4 text-center text-label"
           style={{
             backgroundColor: "rgba(255,255,255,0.03)",
             color: "var(--color-es-text-muted)",
@@ -85,7 +85,7 @@ export function ChatList() {
     <div className="flex h-full min-h-0 flex-col overflow-hidden px-3 py-3">
       {/* Header - the New Chat action now lives at the section foot */}
       <p
-        className="mb-2 shrink-0 px-1 text-[11px] font-semibold uppercase tracking-widest"
+        className="mb-2 shrink-0 px-1 text-micro font-semibold uppercase tracking-widest"
         style={{ color: "var(--color-es-text-muted)", opacity: 0.75 }}
       >
         Chats
@@ -111,7 +111,7 @@ export function ChatList() {
         {/* Error */}
         {error && (
           <p
-            className="mt-1 rounded-xl px-3 py-2 text-xs"
+            className="mt-1 rounded-xl px-3 py-2 text-label"
             style={{
               backgroundColor: "rgba(195, 106, 114, 0.08)",
               color: "var(--color-es-danger)",
@@ -142,7 +142,7 @@ export function ChatList() {
         {/* Empty */}
         {!isLoading && !error && chats.length === 0 && (
           <div
-            className="mt-1 rounded-xl p-4 text-center text-xs"
+            className="mt-1 rounded-xl p-4 text-center text-label"
             style={{
               backgroundColor: "rgba(255,255,255,0.03)",
               color: "var(--color-es-text-muted)",
@@ -163,7 +163,7 @@ export function ChatList() {
             trigger={
               <Button
                 type="button"
-                className="sidebar-primary-action h-9 w-full gap-2 rounded-lg text-xs"
+                className="sidebar-primary-action h-9 w-full gap-2 rounded-lg text-label"
                 style={{ color: "var(--color-es-text-light)" }}
               >
                 <Plus size={14} />
@@ -497,7 +497,7 @@ function ChatListItem({
             onKeyDown={handleEditKeyDown}
             onBlur={handleEditBlur}
             aria-label={`Rename chat ${title}`}
-            className="w-full rounded-lg px-2 py-1 text-sm outline-none"
+            className="w-full rounded-lg px-2 py-1 text-ui outline-none"
             style={{
               backgroundColor: "rgba(200, 216, 236, 0.07)",
               border: "1px solid rgba(200, 216, 236, 0.20)",
@@ -528,7 +528,7 @@ function ChatListItem({
               }}
             />
             <span
-              className="truncate text-sm"
+              className="truncate text-ui"
               style={{ color: "var(--color-es-text-light)" }}
             >
               {title}
@@ -536,13 +536,13 @@ function ChatListItem({
           </div>
           <div className="mt-0.5 flex items-center gap-2 pl-[18px]">
             <span
-              className="text-[10px]"
+              className="text-micro"
               style={{ color: "var(--color-es-text-muted)", opacity: 0.65 }}
             >
               {chat.message_count} msg
             </span>
             <span
-              className="text-[10px]"
+              className="text-micro"
               style={{ color: "var(--color-es-text-muted)", opacity: 0.65 }}
             >
               {parseServerDate(chat.updated_at).toLocaleDateString()}
@@ -579,12 +579,14 @@ function ChatListItem({
           className="chat-action-menu"
           role="menu"
           onKeyDown={handleMenuKeyDown}
+          // The layer is the sheet's (index.css, the layer table); only the
+          // coordinates are computed here, because only they depend on where
+          // the trigger ended up.
           style={{
             position: "fixed",
             top: popupPos.top,
             bottom: popupPos.bottom,
             right: popupPos.right,
-            zIndex: 40,
           }}
         >
           <button
@@ -645,12 +647,14 @@ function ChatListItem({
           className="chat-action-confirm"
           role="dialog"
           aria-label={confirmAction === "clear" ? "Confirm clear chat" : "Confirm delete chat"}
+          // The layer is the sheet's (index.css, the layer table); only the
+          // coordinates are computed here, because only they depend on where
+          // the trigger ended up.
           style={{
             position: "fixed",
             top: popupPos.top,
             bottom: popupPos.bottom,
             right: popupPos.right,
-            zIndex: 40,
           }}
         >
           <p>

@@ -15,7 +15,16 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
+import {
+  chooseOption,
+  expectClosed,
+  expectKeyboardContract,
+  openPositioner,
+  openSelect,
+} from "@/test/helpers/select";
 import { ExtractionSettings } from "@/components/notebook/ExtractionSettings";
+import { INSTRUCTION_LANGUAGE_LABELS } from "@/lib/notebook/labels";
+import { POPUP_COLLISION_PADDING } from "@/lib/theme/popupPositioning";
 import { mockFetch } from "../mocks/api";
 import { useUiStore } from "@/lib/store/uiStore";
 
@@ -55,8 +64,14 @@ describe("ExtractionSettings", () => {
                                               prompt_language: "en" } },
     });
     renderWithQueryClient(<ExtractionSettings />);
-    expect(await screen.findByText(/lonely\/two/))
+    // The options live in the popup, so the list is opened first.
+    const trigger = await screen.findByLabelText(/^Model$/);
+    await waitFor(() => expect(trigger).toBeEnabled());
+    await openSelect(userEvent.setup(), trigger);
+    expect(screen.getByRole("option", { name: /\(1 provider\) - lonely\/two/ }))
       .toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /cheap\/one/ }).textContent)
+      .not.toMatch(/1 provider/);
   });
 
   it("spends nothing on its own, even with a model chosen", async () => {
@@ -77,8 +92,8 @@ describe("ExtractionSettings", () => {
     renderWithQueryClient(<ExtractionSettings />);
 
     await waitFor(() =>
-      expect(screen.getByLabelText(/extraction model/i))
-        .toHaveValue("cheap/one"));
+      expect(screen.getByLabelText(/^Model$/))
+        .toHaveTextContent("cheap/one"));
 
     const urls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
       .map((c: unknown[]) => String(c[0]));
@@ -105,9 +120,9 @@ describe("ExtractionSettings", () => {
 
     // Inert until the saved choice is known - see the test below for why
     // that matters more here than it looks.
-    const select = await screen.findByLabelText(/instruction language/i);
+    const select = await screen.findByLabelText(/instructions written in/i);
     await waitFor(() => expect(select).toBeEnabled());
-    await user.selectOptions(select, "tr");
+    await chooseOption(user, select, INSTRUCTION_LANGUAGE_LABELS.tr);
 
     await waitFor(() => {
       const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
@@ -152,8 +167,8 @@ describe("ExtractionSettings", () => {
 
     release();
     await waitFor(() =>
-      expect(screen.getByLabelText(/extraction model/i))
-        .toHaveValue("cheap/one"));
+      expect(screen.getByLabelText(/^Model$/))
+        .toHaveTextContent("cheap/one"));
   });
 
   it("says so when the list could not be fetched", async () => {
@@ -168,5 +183,148 @@ describe("ExtractionSettings", () => {
     renderWithQueryClient(<ExtractionSettings />);
     expect((await screen.findByRole("alert")).textContent)
       .toMatch(/could not be fetched/i);
+  });
+});
+
+describe("the language select spells the Turkish option as its speakers do (T-20)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({ selectedChatId: 7 });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  function mount() {
+    mockFetch({
+      "/notebook/extract/models": { body: MODELS },
+      "/notebook/extract/settings": { body: { model_id: "cheap/one",
+                                              prompt_language: "en" } },
+    });
+    renderWithQueryClient(<ExtractionSettings />);
+  }
+
+  it("offers the endonym, with its accents, and nowhere the unaccented spelling", async () => {
+    // The spelling IS the claim, so it is written out here rather than
+    // imported: a test that read the label from the component would turn
+    // green again the moment the component dropped the accents.
+    const user = userEvent.setup();
+    mount();
+    const select = await screen.findByLabelText(/instructions written in/i);
+    await waitFor(() => expect(select).toBeEnabled());
+    // POSITIVE CONTROL: the English option is found by the same query, so
+    // an empty list cannot pass the absence below.
+    await openSelect(user, select);
+    expect(screen.getByRole("option", { name: "English" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "T\u00fcrk\u00e7e" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Turkce" })).toBeNull();
+    expect(document.body.textContent).not.toContain("Turkce");
+  });
+
+  it("puts the chosen endonym on the trigger and sends the router its code", async () => {
+    const user = userEvent.setup();
+    mockFetch({
+      "POST /notebook/extract/settings": { body: { ok: true } },
+      "/notebook/extract/models": { body: MODELS },
+      "/notebook/extract/settings": { body: { model_id: "cheap/one",
+                                              prompt_language: "tr" } },
+    });
+    renderWithQueryClient(<ExtractionSettings />);
+    const select = await screen.findByLabelText(/instructions written in/i);
+    await waitFor(() => expect(select).toHaveTextContent("T\u00fcrk\u00e7e"));
+    await chooseOption(user, select, "English");
+    await waitFor(() => {
+      const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+        .find((c: unknown[]) =>
+          String(c[0]).includes("/extract/settings")
+          && (c[1] as RequestInit | undefined)?.method === "POST");
+      expect(call).toBeTruthy();
+      expect(JSON.parse(String((call![1] as RequestInit).body)))
+        .toEqual({ prompt_language: "en" });
+    });
+  });
+
+  it("T-18: both dropdowns keep the whole keyboard contract", async () => {
+    // The same five clauses the other six call sites are held to, including
+    // the two that were being taken on trust: opened from the trigger's own
+    // key path rather than by a click, and COMMITTED with Enter.
+    //
+    // The commit is read off the REQUEST rather than off the trigger: both of
+    // these dropdowns are controlled by the settings query, so the words on
+    // the trigger go back to whatever the server last said while the mock
+    // keeps answering with the old value. What the keyboard did is what went
+    // out on the wire.
+    const user = userEvent.setup();
+    mount();
+    const sentValueFor = async (optionName: string) => {
+      await waitFor(() => {
+        // The LAST such POST, not the first: this loop drives two dropdowns
+        // in a row, and the first match is the one the previous iteration
+        // sent.
+        const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+          .filter((c: unknown[]) =>
+            String(c[0]).includes("/extract/settings")
+            && (c[1] as RequestInit | undefined)?.method === "POST")
+          .at(-1);
+        expect(call, "Enter sent nothing to the server").toBeTruthy();
+        const body = JSON.parse(String((call![1] as RequestInit).body)) as
+          Record<string, string>;
+        const value = String(Object.values(body)[0]);
+        // The language select sends a code and shows an endonym; the model
+        // select sends the id and shows it inside a priced label. Both are
+        // answered by asking what the option the keyboard was on is called.
+        const shown = INSTRUCTION_LANGUAGE_LABELS[
+          value as keyof typeof INSTRUCTION_LANGUAGE_LABELS
+        ] ?? value;
+        expect(optionName, "the value sent is not the option Enter was on")
+          .toContain(shown);
+      });
+    };
+    let typeaheadAsked = 0;
+    for (const name of [/instructions written in/i, /^Model$/]) {
+      const trigger = await screen.findByLabelText(name);
+      await waitFor(() => expect(trigger).toBeEnabled());
+      if (await expectKeyboardContract(user, trigger, String(name), sentValueFor)) {
+        typeaheadAsked += 1;
+      }
+    }
+    // As in the qualifier loop: the clause skips a list with no letter that
+    // picks exactly one other option, so it is shown reaching at least one.
+    expect(typeaheadAsked, "neither dropdown was asked for type-ahead")
+      .toBeGreaterThan(0);
+  }, 60_000);
+
+  it("names both dropdowns with an aria-labelledby of their own", async () => {
+    // The file's own comment says the accessible name comes THROUGH
+    // aria-labelledby on the trigger, and nothing held that: deleting the
+    // attribute leaves `findByLabelText` working, because the trigger sits
+    // inside a `<label>` and a button is a labelable element, so the wrapper
+    // supplies the name instead. The distinction is deliberate - an explicit
+    // binding survives the day the markup around it changes - so it is asked
+    // for by name.
+    mount();
+    for (const name of [/instructions written in/i, /^Model$/]) {
+      const trigger = await screen.findByLabelText(name);
+      const idref = trigger.getAttribute("aria-labelledby");
+      expect(idref, `${String(name)} is named by its wrapper alone`).not.toBeNull();
+      // And the id it points at is really on the page, carrying the words.
+      // A dangling IDREF names nothing and reads as a binding.
+      const named = document.getElementById(String(idref));
+      expect(named, `${String(name)} points at an id nothing carries`).not.toBeNull();
+      expect(named!.textContent ?? "", `${String(name)}'s label has no words`)
+        .toMatch(name);
+    }
+  }, 30_000);
+
+  it("both popups keep the shared collision padding (T-75, the notebook's two call sites)", async () => {
+    const user = userEvent.setup();
+    mount();
+    for (const name of [/instructions written in/i, /^Model$/]) {
+      const trigger = await screen.findByLabelText(name);
+      await waitFor(() => expect(trigger).toBeEnabled());
+      const listbox = await openSelect(user, trigger);
+      expect(openPositioner()!.getAttribute("data-collision-padding"))
+        .toBe(String(POPUP_COLLISION_PADDING));
+      await user.keyboard("{Escape}");
+      await expectClosed(listbox);
+    }
   });
 });

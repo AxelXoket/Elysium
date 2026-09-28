@@ -17,7 +17,7 @@ export function SettingsPanel() {
             value stays "secrets": renaming it would cost a persist version
             bump and buy nothing. */}
         <h3
-          className="text-sm font-semibold"
+          className="text-ui font-semibold"
           /* This heading had NO colour, so it inherited the value body
              computed once from :root (#EAEEF3, the DARK theme text) and
              painted it on the app's one LIGHT panel: about 1.08:1, which
@@ -72,7 +72,7 @@ export function SettingsPanel() {
         <div
           role="note"
           aria-label="Privacy note"
-          className="flex items-start gap-2 rounded-xl px-3 py-2.5 text-xs leading-relaxed"
+          className="flex items-start gap-2 rounded-xl px-3 py-2.5 text-label leading-relaxed"
           style={{
             backgroundColor: "rgba(62, 114, 176, 0.07)",
             color: "var(--color-es-text-muted)",

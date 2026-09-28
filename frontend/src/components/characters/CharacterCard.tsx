@@ -45,14 +45,14 @@ export function CharacterCard({ character }: CharacterCardProps) {
           </span>
           <div className="min-w-0 flex-1">
             <p
-              className="truncate text-sm font-medium"
+              className="truncate text-ui font-semibold"
               style={{ color: "var(--color-es-text-light)" }}
             >
               {character.name}
             </p>
             {character.description && (
               <p
-                className="truncate text-[11px]"
+                className="truncate text-micro"
                 style={{ color: "var(--color-es-text-muted)" }}
               >
                 {character.description}

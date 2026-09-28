@@ -93,7 +93,7 @@ export function VaultSection() {
       <div className="flex items-center gap-2">
         <KeyRound size={13} style={{ color: "var(--color-es-primary-sage)" }} />
         <h4
-          className="text-xs font-semibold"
+          className="text-label font-semibold"
           style={{ color: "var(--color-es-text-light)" }}
         >
           Vault passphrase
@@ -126,7 +126,7 @@ export function VaultSection() {
           the wallpaper was not, added the wallpaper, and stopped there. */}
       {/* `settings-hint` again - see ScreenPrivacySection for the measured
           numbers. `text-muted-foreground` is the sibling panels' idiom. */}
-      <p data-testid="vault-disclosure-hint" className="text-xs leading-relaxed text-muted-foreground">
+      <p data-testid="vault-disclosure-hint" className="text-label leading-relaxed text-muted-foreground">
         Everything on disk is encrypted with this passphrase, with three
         exceptions. Spoken replies are written as plain audio files, your
         conversation in audible form, and are wiped at every lock, launch and
@@ -142,14 +142,14 @@ export function VaultSection() {
           redefined token never gets a chance to apply. Measured at
           1.05-1.14:1 here - effectively invisible. There is no
           `persona-label` counterpart, so this borrows the nearest idiom
-          that IS proven on this surface: the same `text-xs font-semibold`
+          that IS proven on this surface: the same `text-label font-semibold`
           + explicit `--color-es-text-light` the sibling panels use for
           their headings, applied to the caption span instead of an h4. */}
       <form className="space-y-2" onSubmit={submit}>
         <label className="block space-y-1">
           <span
             data-testid="vault-label-current"
-            className="text-xs font-semibold"
+            className="text-label font-semibold"
             style={{ color: "var(--color-es-text-light)" }}
           >
             Current passphrase
@@ -161,14 +161,14 @@ export function VaultSection() {
             onChange={(e) => setOldPass(e.target.value)}
             autoComplete="current-password"
             disabled={change.isPending}
-            className="vault-secrets-input h-8 w-full rounded-lg px-2.5 text-xs"
+            className="vault-secrets-input h-8 w-full rounded-lg px-2.5 text-label"
             style={inputStyle}
           />
         </label>
         <label className="block space-y-1">
           <span
             data-testid="vault-label-new"
-            className="text-xs font-semibold"
+            className="text-label font-semibold"
             style={{ color: "var(--color-es-text-light)" }}
           >
             New passphrase
@@ -180,14 +180,14 @@ export function VaultSection() {
             onChange={(e) => setNewPass(e.target.value)}
             autoComplete="new-password"
             disabled={change.isPending}
-            className="vault-secrets-input h-8 w-full rounded-lg px-2.5 text-xs"
+            className="vault-secrets-input h-8 w-full rounded-lg px-2.5 text-label"
             style={inputStyle}
           />
         </label>
         <label className="block space-y-1">
           <span
             data-testid="vault-label-repeat"
-            className="text-xs font-semibold"
+            className="text-label font-semibold"
             style={{ color: "var(--color-es-text-light)" }}
           >
             Repeat new passphrase
@@ -199,7 +199,7 @@ export function VaultSection() {
             onChange={(e) => setConfirm(e.target.value)}
             autoComplete="new-password"
             disabled={change.isPending}
-            className="vault-secrets-input h-8 w-full rounded-lg px-2.5 text-xs"
+            className="vault-secrets-input h-8 w-full rounded-lg px-2.5 text-label"
             style={inputStyle}
           />
         </label>
@@ -214,7 +214,7 @@ export function VaultSection() {
             `settings-hint` (see above) underneath its own inline override -
             the inline `color` here already wins the cascade, since neither
             rule uses `!important`, so this swap is about the size/line-height
-            the class also carried, not the colour. `text-xs leading-relaxed`
+            the class also carried, not the colour. `text-label leading-relaxed`
             is the sibling panels' base for a line of this kind. */}
         {/* `role="status"` and nothing wider. The outcome of re-encrypting the
             whole database is worth hearing; the disclosure paragraph, the
@@ -227,7 +227,7 @@ export function VaultSection() {
           <p
             data-testid="vault-success-message"
             role="status"
-            className="text-xs leading-relaxed font-semibold"
+            className="text-label leading-relaxed font-semibold"
             style={{ color: "var(--color-es-primary-sage-deep)" }}
           >
             Passphrase changed.
@@ -266,25 +266,25 @@ export function VaultSection() {
             <div className="flex items-center gap-2">
               <AlertCircle size={13} style={{ color: "var(--color-es-danger)" }} />
               <h4
-                className="text-xs font-semibold"
+                className="text-label font-semibold"
                 style={{ color: "var(--color-es-text-light)" }}
               >
                 A copy still opens with the old passphrase
               </h4>
             </div>
-            <p data-testid="vault-unrevoked-hint-1" className="text-xs leading-relaxed text-muted-foreground">
+            <p data-testid="vault-unrevoked-hint-1" className="text-label leading-relaxed text-muted-foreground">
               Changing your passphrase should close every copy under the old
               one. One full copy of your vault could not be re-encrypted, so
               it is still readable with the passphrase you just replaced.
             </p>
-            <p data-testid="vault-unrevoked-hint-2" className="text-xs leading-relaxed text-muted-foreground">
+            <p data-testid="vault-unrevoked-hint-2" className="text-label leading-relaxed text-muted-foreground">
               Elysium cannot rewrite it automatically. Delete it yourself, or
               move it somewhere safe, from the Elysium data folder:
             </p>
             <ul className="space-y-1">
               {unrevoked.map((name) => (
                 <li key={name}>
-                  <code data-testid={`vault-unrevoked-name-${name}`} className="text-xs leading-relaxed text-muted-foreground">{name}</code>
+                  <code data-testid={`vault-unrevoked-name-${name}`} className="text-label leading-relaxed text-muted-foreground">{name}</code>
                 </li>
               ))}
             </ul>
@@ -298,7 +298,7 @@ export function VaultSection() {
             newPass.length === 0 ||
             confirm.length === 0
           }
-          className="generation-trigger inline-flex h-8 items-center justify-center rounded-lg px-3 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+          className="generation-trigger inline-flex h-8 items-center justify-center rounded-lg px-3 text-label font-semibold disabled:cursor-not-allowed disabled:opacity-50"
         >
           {change.isPending ? (
             <Loader2 size={13} className="animate-spin" />

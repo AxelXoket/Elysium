@@ -12,6 +12,8 @@ import { useImportCharacter } from "@/lib/query/characters";
 import { parseApiError } from "@/lib/errors";
 import { FileJson, Loader2, AlertCircle } from "lucide-react";
 import type { ReactElement } from "react";
+import { cn } from "@/lib/utils";
+import { DIALOG_MAX_HEIGHT, DIALOG_WIDTHS } from "@/lib/theme/dialogScale";
 
 interface CharacterImportDialogProps {
   trigger: ReactElement;
@@ -64,10 +66,10 @@ export function CharacterImportDialog({ trigger }: CharacterImportDialogProps) {
       }}
     >
       <DialogTrigger render={trigger} />
-      <DialogContent className="glass-dialog sidebar-dialog sm:max-w-lg">
+      <DialogContent className={cn("glass-dialog sidebar-dialog overflow-y-auto", DIALOG_MAX_HEIGHT, DIALOG_WIDTHS.medium)}>
         <DialogHeader>
           <DialogTitle
-            className="flex items-center gap-2 text-base font-semibold"
+            className="flex items-center gap-2 text-title font-semibold"
             style={{ color: "var(--color-es-text-light)" }}
           >
             <FileJson size={15} style={{ color: "rgba(200, 216, 236, 0.86)" }} />
@@ -78,7 +80,7 @@ export function CharacterImportDialog({ trigger }: CharacterImportDialogProps) {
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-2">
             <p
-              className="text-xs leading-relaxed"
+              className="text-label leading-relaxed"
               style={{ color: "var(--color-es-text-muted)" }}
             >
               Paste a Character Card V2 JSON, or pick a .json file.
@@ -86,7 +88,7 @@ export function CharacterImportDialog({ trigger }: CharacterImportDialogProps) {
             <Button
               variant="ghost"
               size="sm"
-              className="sidebar-dialog-cancel gap-1.5 text-xs"
+              className="sidebar-dialog-cancel gap-1.5 text-label"
               disabled={importChar.isPending}
               onClick={() => fileInputRef.current?.click()}
             >
@@ -108,13 +110,13 @@ export function CharacterImportDialog({ trigger }: CharacterImportDialogProps) {
             placeholder='{"name": "Character", "description": "...", ...}'
             disabled={importChar.isPending}
             rows={10}
-            className="sidebar-dialog-field resize-none font-mono text-xs leading-relaxed"
+            className="sidebar-dialog-field resize-none font-mono text-label leading-relaxed"
             aria-label="Character JSON input"
           />
 
           {error && (
             <div
-              className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs"
+              className="flex items-center gap-2 rounded-lg px-3 py-2 text-label"
               role="alert"
               style={{
                 backgroundColor: "rgba(195, 106, 114, 0.10)",
@@ -141,7 +143,7 @@ export function CharacterImportDialog({ trigger }: CharacterImportDialogProps) {
               size="sm"
               disabled={importChar.isPending || !jsonText.trim()}
               onClick={handleImport}
-              className="sidebar-dialog-action gap-1.5 text-xs"
+              className="sidebar-dialog-action gap-1.5 text-label"
             >
               {importChar.isPending && (
                 <Loader2 size={12} className="animate-spin" />

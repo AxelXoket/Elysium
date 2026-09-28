@@ -15,7 +15,7 @@ export function SidebarSearch({ value, onChange }: SidebarSearchProps) {
   return (
     <div className="px-3 pt-2 pb-3">
       <p
-        className="mb-1.5 px-1 text-[11px] font-semibold uppercase tracking-widest"
+        className="mb-1.5 px-1 text-micro font-semibold uppercase tracking-widest"
         style={{ color: "var(--color-es-text-muted)", opacity: 0.75 }}
       >
         Search

@@ -47,7 +47,7 @@ export function RotationBackupNotice() {
       <div className="flex items-center gap-2">
         <AlertCircle size={13} style={{ color: "var(--color-es-danger)" }} />
         <h4
-          className="text-xs font-semibold"
+          className="text-label font-semibold"
           style={{ color: "var(--color-es-text-light)" }}
         >
           A copy from before a passphrase change
@@ -56,14 +56,14 @@ export function RotationBackupNotice() {
       {/* `settings-hint` painted for the dark dialog, same as everywhere
           else in this folder - `text-muted-foreground` is the sibling
           panels' idiom on `.glass-right`. */}
-      <p data-testid="rotation-hint-1" className="text-xs leading-relaxed text-muted-foreground">
+      <p data-testid="rotation-hint-1" className="text-label leading-relaxed text-muted-foreground">
         A passphrase change that was interrupted left a complete copy of your
         database beside the vault. It is encrypted, but with the{" "}
         <strong>previous</strong> passphrase - so anyone who knows the old one
         can still open it, and changing your passphrase again will not close
         that.
       </p>
-      <p data-testid="rotation-hint-2" className="text-xs leading-relaxed text-muted-foreground">
+      <p data-testid="rotation-hint-2" className="text-label leading-relaxed text-muted-foreground">
         Elysium will not delete it, because it cannot read it and it may be the
         only copy of something. Delete it yourself, or move it somewhere safe,
         from the Elysium data folder:
@@ -71,7 +71,7 @@ export function RotationBackupNotice() {
       <ul className="space-y-1">
         {names.map((name) => (
           <li key={name}>
-            <code data-testid={`rotation-name-${name}`} className="text-xs leading-relaxed text-muted-foreground">{name}</code>
+            <code data-testid={`rotation-name-${name}`} className="text-label leading-relaxed text-muted-foreground">{name}</code>
           </li>
         ))}
       </ul>

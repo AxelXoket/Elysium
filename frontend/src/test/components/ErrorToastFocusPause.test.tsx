@@ -18,7 +18,7 @@
  * it. A hand-copied 4500 would keep this file green long after the reading
  * allowance had moved.
  */
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -60,6 +60,10 @@ describe("a toast somebody is holding with the keyboard", () => {
     useErrorStore.getState().clearAll();
     vi.runOnlyPendingTimers();
     vi.useRealTimers();
+    // Unmount BEFORE the body is wiped. The stack portals into the body, so
+    // emptying it first pulls the portal's node out from under React and its
+    // own cleanup then fails on a node that is no longer anybody's child.
+    cleanup();
     document.body.innerHTML = "";
   });
 
@@ -186,6 +190,10 @@ describe("the source axis, with the pause in place", () => {
     useErrorStore.getState().clearAll();
     vi.runOnlyPendingTimers();
     vi.useRealTimers();
+    // Unmount BEFORE the body is wiped. The stack portals into the body, so
+    // emptying it first pulls the portal's node out from under React and its
+    // own cleanup then fails on a node that is no longer anybody's child.
+    cleanup();
     document.body.innerHTML = "";
   });
 

@@ -26,7 +26,7 @@ export function CharacterList({ query = "" }: CharacterListProps) {
     <div className="flex h-full flex-col overflow-hidden px-3 py-3">
       {/* Section header - actions moved to the pinned footer below */}
       <p
-        className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-widest"
+        className="mb-2 px-1 text-micro font-semibold uppercase tracking-widest"
         style={{ color: "var(--color-es-text-muted)", opacity: 0.75 }}
       >
         Characters
@@ -49,7 +49,7 @@ export function CharacterList({ query = "" }: CharacterListProps) {
         {/* Error */}
         {error && (
           <p
-            className="mt-1 rounded-xl px-3 py-2 text-xs"
+            className="mt-1 rounded-xl px-3 py-2 text-label"
             style={{
               backgroundColor: "rgba(195, 106, 114, 0.08)",
               color: "var(--color-es-danger)",
@@ -73,7 +73,7 @@ export function CharacterList({ query = "" }: CharacterListProps) {
         {/* Empty - distinguishes "no matches" from "no characters at all" */}
         {characters && characters.length > 0 && filtered?.length === 0 && (
           <div
-            className="mt-1 rounded-xl p-4 text-center text-xs"
+            className="mt-1 rounded-xl p-4 text-center text-label"
             style={{
               backgroundColor: "rgba(255,255,255,0.03)",
               color: "var(--color-es-text-muted)",
@@ -84,7 +84,7 @@ export function CharacterList({ query = "" }: CharacterListProps) {
         )}
         {characters && characters.length === 0 && (
           <div
-            className="mt-1 rounded-xl p-4 text-center text-xs"
+            className="mt-1 rounded-xl p-4 text-center text-label"
             style={{
               backgroundColor: "rgba(255,255,255,0.03)",
               color: "var(--color-es-text-muted)",
@@ -101,7 +101,7 @@ export function CharacterList({ query = "" }: CharacterListProps) {
           trigger={
             <Button
               type="button"
-              className="sidebar-primary-action h-9 flex-1 gap-2 rounded-lg text-xs"
+              className="sidebar-primary-action h-9 flex-1 gap-2 rounded-lg text-label"
               style={{ color: "var(--color-es-text-light)" }}
             >
               <Plus size={14} />

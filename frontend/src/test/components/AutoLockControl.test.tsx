@@ -18,6 +18,7 @@ import {
   injectCss,
   wrapInGlassRight,
   surfaceToken,
+  resolveColour,
 } from "@/test/helpers/glassSurfaceCss";
 // The one number the hint prints, pinned on the backend side to
 // auto_lock.DEFAULT_MINUTES (backend/tests/test_auto_lock.py), so the
@@ -230,10 +231,12 @@ describe("AutoLockControl", () => {
  * through the project's own build pipeline, not a hand-copied excerpt.
  */
 describe("AutoLockControl - light surface contrast", () => {
+  let sheet = "";
   let styleEl: HTMLStyleElement;
 
   beforeAll(async () => {
-    styleEl = injectCss(await loadGlassRightCss());
+    sheet = await loadGlassRightCss();
+    styleEl = injectCss(sheet);
   }, 20000);
 
   afterAll(() => styleEl.remove());
@@ -279,7 +282,7 @@ describe("AutoLockControl - light surface contrast", () => {
     oldHint.className = "settings-hint";
     glassRight.appendChild(oldHint);
     expect(
-      getComputedStyle(oldHint).color,
+      resolveColour(sheet, getComputedStyle(oldHint).color),
       "settings-hint's colour drifted - re-measure the defect before trusting this ground",
     ).toBe("rgba(202, 212, 224, 0.72)");
   });
@@ -307,7 +310,8 @@ describe("AutoLockControl - light surface contrast", () => {
     const oldHint = document.createElement("p");
     oldHint.className = "settings-hint";
     glassRight.appendChild(oldHint);
-    expect(getComputedStyle(oldHint).color).toBe("rgba(202, 212, 224, 0.72)");
+    expect(resolveColour(sheet, getComputedStyle(oldHint).color))
+      .toBe("rgba(202, 212, 224, 0.72)");
 
     settingsQuery.isPending = false;
   });
@@ -323,12 +327,25 @@ describe("AutoLockControl - light surface contrast", () => {
     const alert = await screen.findByRole("alert");
     expect(alert.className).not.toMatch(/settings-error/);
     expect(alert.className).toMatch(/persona-local-error/);
-    // settings-error and persona-local-error both read the SAME
-    // --color-es-danger token, declared only at :root - which jsdom does not
-    // resolve through getPropertyValue (confirmed by hand), so colour cannot
-    // distinguish the two classes here. Font-size can, and is real: 11px is
-    // settings-error's own declared size, 12px is persona-local-error's.
-    expect(getComputedStyle(alert).fontSize).toBe("12px");
+    // settings-error and persona-local-error both read the same :root-only
+    // --color-es-danger token, which jsdom cannot resolve either way - see
+    // AutoLockControl's contrast tests for the same note. Size no longer
+    // separates them: both are prose about a refusal, so the type scale puts
+    // both on --text-label (12). The box does separate them, and it is what
+    // the local-error idiom actually IS - a padded, rounded block rather than
+    // a bare line - so that is what is measured. The reading above is the
+    // one that proves the sheet is loaded; the check below is a NEGATIVE
+    // CONTROL only in the weak sense - jsdom answers "0" for an element with
+    // no padding rule and would answer the same with no sheet at all - so it
+    // separates the two classes without, on its own, proving the sheet is
+    // there. The positive reading is what does that.
+    expect(getComputedStyle(alert).padding).toBe("7px 9px");
+    expect(getComputedStyle(alert).borderRadius).toBe("3px");
+    const bare = document.createElement("p");
+    bare.className = "settings-error";
+    alert.parentElement!.appendChild(bare);
+    expect(getComputedStyle(bare).padding).not.toBe("7px 9px");
+    bare.remove();
 
     mutationState.isError = false;
   });

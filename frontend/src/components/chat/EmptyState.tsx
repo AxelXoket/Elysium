@@ -22,7 +22,7 @@ export function EmptyState() {
         </span>
         <span className="mb-1 flex items-baseline gap-1.5">
           <span
-            className="text-base font-semibold"
+            className="text-display font-semibold"
             style={{ color: "var(--color-es-asst-bubble-text)" }}
           >
             Welcome to
@@ -30,7 +30,7 @@ export function EmptyState() {
           <Wordmark size={19} tone="onLight" />
         </span>
         <p
-          className="mt-1 text-sm leading-relaxed"
+          className="mt-1 text-ui leading-relaxed"
           style={{ color: "var(--color-es-asst-bubble-text)", opacity: 0.6 }}
         >
           Select a character and start a chat to begin.

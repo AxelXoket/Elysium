@@ -635,9 +635,11 @@ const ERROR_MESSAGES: Record<string, string> = {
     "Your limits do not fit in this model's context, so nothing was sent. Shorten them, or choose a model with more room.",
   // "One of the two available" named a count and not the two. The router
   // accepts "en" and "tr"; the select in ExtractionSettings offers exactly
-  // English and Turkce, so the sentence can simply say which.
+  // English and the Turkish endonym, so the sentence can simply say which.
+  // This sentence is English from end to end, so the language is named the
+  // English way here; the endonym belongs on the option label, not in it.
   notebook_language_unknown:
-    "The notebook's instructions come in English or Turkce only. Pick one of those two.",
+    "The notebook's instructions come in English or Turkish only. Pick one of those two.",
   // The only limit in this app that is enforced rather than requested. The
   // sentence says so, because a user who reaches for it deserves to know it
   // worked rather than hoping the model listened.

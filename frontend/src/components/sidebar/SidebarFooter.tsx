@@ -14,7 +14,7 @@ export function SidebarFooter() {
       <button
         type="button"
         onClick={() => setSettingsOpen(true)}
-        className="sidebar-item flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs"
+        className="sidebar-item flex w-full items-center gap-2 rounded-lg px-3 py-2 text-label"
         style={{ color: "var(--color-es-text-muted)" }}
         aria-label="Open settings"
       >
@@ -22,7 +22,7 @@ export function SidebarFooter() {
         <span>Settings</span>
       </button>
       <span
-        className="mt-1 block px-3 text-[10px]"
+        className="mt-1 block px-3 text-micro"
         style={{ color: "var(--color-es-text-muted)", opacity: 0.45 }}
       >
         v{__APP_VERSION__} · Local-first

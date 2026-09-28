@@ -91,7 +91,7 @@ export function PlaintextBackupNotice() {
     absent:
       removed > 0 ? (
         <p
-          className="text-xs font-semibold"
+          className="text-label font-semibold"
           style={{ color: "var(--color-es-primary-sage-deep)" }}
         >
           Unencrypted copy deleted.
@@ -116,13 +116,13 @@ export function PlaintextBackupNotice() {
       <div className="flex items-center gap-2">
         <AlertCircle size={13} style={{ color: "var(--color-es-danger)" }} />
         <h4
-          className="text-xs font-semibold"
+          className="text-label font-semibold"
           style={{ color: "var(--color-es-text-light)" }}
         >
           Unencrypted copy on disk
         </h4>
       </div>
-      <p className="text-xs leading-relaxed text-muted-foreground">
+      <p className="text-label leading-relaxed text-muted-foreground">
         {one
           ? "A copy of your database from before the vault is still on disk."
           : `${backups.length} copies of your database from before the vault are still on disk.`}{" "}
@@ -131,7 +131,7 @@ export function PlaintextBackupNotice() {
         went wrong - remove {one ? "it" : "them"} once you are sure your chats
         are all there.
       </p>
-      <ul className="text-xs leading-relaxed text-muted-foreground space-y-0.5 font-mono">
+      <ul className="text-label leading-relaxed text-muted-foreground space-y-0.5 font-mono">
         {backups.map((name) => (
           <li key={name}>{name}</li>
         ))}
@@ -168,7 +168,7 @@ export function PlaintextBackupNotice() {
           size="sm"
           disabled={discard.isPending}
           onClick={() => setConfirming(true)}
-          className="persona-danger-action gap-1 text-xs"
+          className="persona-danger-action gap-1 text-label"
         >
           <Trash2 size={12} />
           Delete the unencrypted {one ? "copy" : "copies"}
@@ -177,7 +177,7 @@ export function PlaintextBackupNotice() {
       {confirming && (
         <div className="flex items-center gap-2">
           <span
-            className="text-xs"
+            className="text-label"
             style={{ color: "var(--color-es-text-muted)" }}
           >
             Permanently delete {one ? "it" : "them"}?
@@ -191,7 +191,7 @@ export function PlaintextBackupNotice() {
               setConfirming(false);
               discard.mutate();
             }}
-            className="persona-danger-action gap-1 text-xs"
+            className="persona-danger-action gap-1 text-label"
           >
             {discard.isPending ? (
               <Loader2 size={12} className="animate-spin" />
@@ -207,7 +207,7 @@ export function PlaintextBackupNotice() {
             size="sm"
             disabled={discard.isPending}
             onClick={() => setConfirming(false)}
-            className="persona-ghost-action text-xs"
+            className="persona-ghost-action text-label"
           >
             Keep
           </Button>

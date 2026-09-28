@@ -45,7 +45,7 @@ function Chip({
       aria-label={described}
       onClick={onClick}
       title={described}
-      className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] leading-none transition-colors"
+      className="flex items-center gap-1 rounded-lg px-2 py-1 text-micro leading-none transition-colors"
       style={{
         backgroundColor: active ? "rgba(62, 114, 176, 0.16)" : "transparent",
         border: `1px solid ${
@@ -122,7 +122,7 @@ export function ModelFilters({
              strength the token reads about 4.9 to 5.05:1 where this row
              sits. The sidebar instances have the same defect on their own
              surface and are NOT fixed here; that is a separate change. */
-          className="text-[11px] font-semibold uppercase tracking-widest"
+          className="text-micro font-semibold uppercase tracking-widest"
           style={{ color: "var(--color-es-text-muted)" }}
         >
           Can
@@ -152,7 +152,7 @@ export function ModelFilters({
             type="button"
             onClick={() => onFilterChange(EMPTY_FILTER)}
             aria-label="Clear capability filters"
-            className="ml-auto flex shrink-0 items-center gap-1 text-[10px] opacity-60 transition-opacity hover:opacity-100"
+            className="ml-auto flex shrink-0 items-center gap-1 text-micro opacity-60 transition-opacity hover:opacity-100"
             style={{ color: "var(--color-es-text-muted)" }}
           >
             <X size={10} />
@@ -163,7 +163,7 @@ export function ModelFilters({
 
       <div className="flex items-center justify-between gap-2">
         <span
-          className="text-[10px]"
+          className="text-micro"
           style={{ color: "var(--color-es-text-muted)" }}
         >
           {active
@@ -182,7 +182,7 @@ export function ModelFilters({
               ? "Showing the most capable models first"
               : "Showing the catalogue's own order"
           }
-          className="rounded-lg px-2 py-1 text-[10px] leading-none transition-colors"
+          className="rounded-lg px-2 py-1 text-micro leading-none transition-colors"
           style={{
             backgroundColor:
               sort === "capable" ? "rgba(62, 114, 176, 0.16)" : "transparent",

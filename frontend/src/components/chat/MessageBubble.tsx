@@ -436,7 +436,7 @@ export const MessageBubble = memo(function MessageBubble({
     ta.style.height = "auto";
     ta.style.height = `${ta.scrollHeight}px`;
     // msgFontPx/msgLineHeight are in the deps and nowhere in the body on
-    // purpose. The box used to inherit a fixed `text-sm leading-relaxed` from
+    // purpose. The box used to inherit a fixed `text-ui leading-relaxed` from
     // the shell, so the reader's settings could not change its metrics and a
     // pinned height stayed correct forever. It now follows --msg-fs/--msg-lh,
     // so moving either slider while the box is OPEN reflows the text under a
@@ -660,7 +660,7 @@ export const MessageBubble = memo(function MessageBubble({
         )}
 
         <div
-          className={`message-bubble-shell max-w-[75%] rounded-xl px-5 py-3 text-sm leading-relaxed ${
+          className={`message-bubble-shell max-w-[75%] rounded-xl px-5 py-3 text-ui leading-relaxed ${
             isUser ? "is-user" : "is-assistant"
           } ${isPersisted ? "has-actions" : ""} ${editing ? "is-editing" : ""}`}
           // One message, one unit. `article` and not `listitem`: nothing above
@@ -997,7 +997,7 @@ export const MessageBubble = memo(function MessageBubble({
 
           <span className="mt-1.5 flex items-center gap-2">
             <time
-              className="msg-chrome block text-[9px] opacity-70"
+              className="msg-chrome block text-micro opacity-70"
               dateTime={serverDateTimeAttr(shownMessage.created_at)}
             >
               {parseServerDate(shownMessage.created_at).toLocaleTimeString([], {
@@ -1026,7 +1026,7 @@ export const MessageBubble = memo(function MessageBubble({
                 THAT variant's own truncation state, not the active row's. */}
             {!isUser && shownMessage.truncated && (
               <span
-                className="msg-chrome flex items-center gap-1 text-[9px] opacity-70"
+                className="msg-chrome flex items-center gap-1 text-micro opacity-70"
                 title="This reply was cut off by the token limit"
               >
                 <Scissors size={13} aria-hidden="true" />
@@ -1202,7 +1202,7 @@ function AttachmentThumbnail({
           }}
         >
           <ImageOff size={18} style={{ opacity: 0.5 }} />
-          <span className="text-[10px]" style={{ opacity: 0.6 }}>
+          <span className="text-micro" style={{ opacity: 0.6 }}>
             Image unavailable
           </span>
         </span>

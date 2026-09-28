@@ -69,20 +69,20 @@ export function RightPanel() {
             border: "1px solid var(--color-es-glass-border-dark)",
           }}
         >
-          {/* text-xs on each TRIGGER, not on the list. The shared trigger
-              hardcodes text-sm in its cva base, which beats a class on the
-              parent - so at the panel's 300px floor a fourth column leaves
-              about 52px of label space for a 14px "Security" that needs 57,
-              and `whitespace-nowrap` with no truncate means it runs into its
-              neighbour rather than eliding. */}
-          <TabsTrigger value="models" className="text-xs">Models</TabsTrigger>
+          {/* text-label on each TRIGGER, not on the list. The shared trigger
+              writes text-control into its own base string, which beats a
+              class on the parent - so at the panel's 300px floor a fourth
+              column leaves about 52px of label space for a 14px "Security"
+              that needs 57, and `whitespace-nowrap` with no truncate means it
+              runs into its neighbour rather than eliding. */}
+          <TabsTrigger value="models" className="text-label">Models</TabsTrigger>
           {/* LABEL only. The stored value stays "secrets": renaming it would
               cost a persist version bump and a normalizeTab entry, and buy
               nothing - the panel now holds the switches that protect the
               secrets as well as the secrets themselves. */}
-          <TabsTrigger value="secrets" className="text-xs">Security</TabsTrigger>
-          <TabsTrigger value="persona" className="text-xs">Persona</TabsTrigger>
-          <TabsTrigger value="notebook" className="text-xs">Notes</TabsTrigger>
+          <TabsTrigger value="secrets" className="text-label">Security</TabsTrigger>
+          <TabsTrigger value="persona" className="text-label">Persona</TabsTrigger>
+          <TabsTrigger value="notebook" className="text-label">Notes</TabsTrigger>
         </TabsList>
 
         {/* Panels remount per switch ON PURPOSE: the model-list cascade is a

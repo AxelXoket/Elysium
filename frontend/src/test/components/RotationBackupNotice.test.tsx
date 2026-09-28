@@ -22,6 +22,7 @@ import {
   injectCss,
   wrapInGlassRight,
   surfaceToken,
+  resolveColour,
 } from "@/test/helpers/glassSurfaceCss";
 
 const BASE = { initialized: true, unlocked: true };
@@ -94,10 +95,12 @@ describe("RotationBackupNotice", () => {
  * why these tests read custom-property tokens rather than `.color`.
  */
 describe("RotationBackupNotice - light surface contrast", () => {
+  let sheet = "";
   let styleEl: HTMLStyleElement;
 
   beforeAll(async () => {
-    styleEl = injectCss(await loadGlassRightCss());
+    sheet = await loadGlassRightCss();
+    styleEl = injectCss(sheet);
   }, 20000);
 
   afterAll(() => styleEl.remove());
@@ -136,7 +139,7 @@ describe("RotationBackupNotice - light surface contrast", () => {
     oldHint.className = "settings-hint";
     glassRight.appendChild(oldHint);
     expect(
-      getComputedStyle(oldHint).color,
+      resolveColour(sheet, getComputedStyle(oldHint).color),
       "settings-hint's colour drifted - re-measure before trusting this ground",
     ).toBe("rgba(202, 212, 224, 0.72)");
   });

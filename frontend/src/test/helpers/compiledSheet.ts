@@ -604,34 +604,14 @@ export interface DurationUtility {
   value: string;
 }
 
-/**
- * The `duration-*` classes a component may keep while the motion language is
- * one set of tokens, with the reason each one is still here.
- *
- * Empty is the goal. An entry is a dated exemption, not a blanket: the test
- * that reads this roster also fails when a name on it stops being emitted,
- * so the exemption disappears from the sheet and from this table in the same
- * commit rather than outliving the call site.
+/*
+ * There is no roster of exempted `duration-*` classes, and the scanner below
+ * tolerates nothing: `ui/select.tsx` reads `--duration-fast`, which was the
+ * last numeric duration in the tree and the only thing a roster was ever
+ * holding. A component that needs a number again does not get an exemption
+ * back, it gets a token - an exemption list is a place for the next one to
+ * hide, and this reader is the only thing that would have caught it.
  */
-/**
- * The millisecond number ui/select.tsx:86 still writes on the Select popup.
- *
- * The class is ASSEMBLED from it rather than spelled out, here and
- * everywhere else in the suite, and that is load-bearing: Tailwind's scanner
- * reads every source file under `src/` as plain text, test files included,
- * so a comment or a string literal carrying the class emits the utility into
- * the compiled sheet all by itself. Spelled out, this roster would keep its
- * own exemption alive after IP-03 removed the real call site, and the
- * staleness check below could never fire.
- */
-const SELECT_POPUP_MS = 100;
-
-export const DURATION_UTILITY_EXCEPTIONS: Readonly<Record<string, string>> = {
-  // Converting the Select popup is IP-03 FIX 1's job, not this unit's, so it
-  // is named here instead of being fixed here. When IP-03 lands, this line
-  // goes with it.
-  [`duration-${SELECT_POPUP_MS}`]: "ui/select.tsx:86, converted to the token by IP-03 FIX 1",
-};
 
 /**
  * Every `duration-*` utility Tailwind emitted into the compiled sheet.

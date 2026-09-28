@@ -1,6 +1,6 @@
 import type { Settings, ProxyHealth } from "@/lib/schemas/settings";
 import type { Character } from "@/lib/schemas/characters";
-import type { Chat, Message } from "@/lib/schemas/chats";
+import type { Attachment, Chat, Message } from "@/lib/schemas/chats";
 import type { Model, ModelList } from "@/lib/schemas/models";
 import type { CompletionResponse } from "@/lib/schemas/completions";
 import type { Persona } from "@/lib/schemas/personas";
@@ -110,6 +110,16 @@ export const completionFixture: CompletionResponse = {
     content: "Hi! How can I help you?",
     created_at: "2026-01-01T00:01:01",
   },
+};
+
+/** One image attachment, typed by the schema rather than cast past it. A
+ *  cast is how a fixture goes on compiling after the shape it stands for
+ *  moves, and the lightbox reads every one of these four fields. */
+export const attachmentFixture: Attachment = {
+  id: 1,
+  mime: "image/png",
+  width: 640,
+  height: 480,
 };
 
 export const personaFixture: Persona = {

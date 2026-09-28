@@ -35,6 +35,7 @@ import {
   glassRightStops,
   parseRgbColour,
   rawGlassRightStops,
+  resolveColour,
 } from "@/test/helpers/glassSurfaceCss";
 
 import {
@@ -112,6 +113,26 @@ describe("glass-right danger token - contrast", () => {
     const m = /--color-es-danger:\s*([^;]+);/.exec(block);
     expect(m, "-color-es-danger is no longer declared at :root").not.toBeNull();
     return m![1].trim();
+  }
+
+  /** A value as the DARK shell resolves it: var() chased through the sheet's
+   *  global declarations. */
+  const globalResolve = (value: string) => resolveColour(compiledCss, value);
+
+  /** The same value as THIS PANEL resolves it: .glass-right's own
+   *  redeclarations first, the global ones for everything it inherits. */
+  function panelResolve(value: string): string {
+    const idx = compiledCss.indexOf(".glass-right {");
+    expect(idx, "the .glass-right rule moved or was renamed").toBeGreaterThan(-1);
+    const block = compiledCss.slice(idx, compiledCss.indexOf("}", idx));
+    let current = value.trim();
+    for (let hop = 0; hop < 8; hop += 1) {
+      const m = /^var\(\s*(--[-\w]+)\s*\)$/.exec(current);
+      if (!m) return current;
+      const local = new RegExp(`${m[1]}:\\s*([^;]+);`).exec(block);
+      current = local ? local[1].trim() : resolveColour(compiledCss, current);
+    }
+    throw new Error(`${value} does not resolve in eight hops`);
   }
 
   it("the stylesheet actually compiled (guards the guard)", () => {
@@ -300,19 +321,35 @@ describe("glass-right danger token - contrast", () => {
     glassRight.remove();
   });
 
-  it("the persona-error background tint and border stay literal, not tied to the token", () => {
-    // .persona-error / .persona-local-error paint their background tint and
-    // border from hardcoded rgba(195, 106, 114, ...) literals, not
-    // var(--color-es-danger) - so darkening the token cannot turn that tint
-    // into a solid block. This pins that down: if a later edit switches
-    // these to the variable, this fails and forces a re-check of the tint
-    // against the darkened value instead of silently drifting.
+  it("the persona-error background tint and border do not follow the panel's danger override", () => {
+    // .persona-error / .persona-local-error paint their tint and border from
+    // a colour of their own, not from var(--color-es-danger) - so darkening
+    // that token for this panel cannot turn the tint into a solid block.
+    // What that "of their own" is spelled as stopped mattering when the tint
+    // moved onto a token: the claim is about the CASCADE, so the cascade is
+    // what is measured. Both values are resolved twice, once globally and
+    // once as .glass-right redeclares things, and the two readings must be
+    // the same reading. The danger token itself is the POSITIVE CONTROL for
+    // that method: it really does differ between the two scopes, so a
+    // resolver that ignored panel scope would fail this line first.
     const idx = compiledCss.indexOf(".persona-error,");
     expect(idx, "the persona-error rule moved").toBeGreaterThan(-1);
     const block = compiledCss.slice(idx, compiledCss.indexOf("}", idx));
-    expect(block).toMatch(/background:\s*rgba\(195,\s*106,\s*114,\s*0\.08\)/);
-    expect(block).toMatch(/border-color:\s*rgba\(195,\s*106,\s*114,\s*0\.16\)/);
+    const declared = (prop: string) => {
+      const m = new RegExp(`${prop}:\\s*([^;]+)`).exec(block);
+      expect(m, `persona-error declares no ${prop}`).not.toBeNull();
+      return m![1].trim();
+    };
+    expect(panelResolve(declared("background"))).toBe("rgba(195, 106, 114, 0.08)");
+    expect(globalResolve(declared("background"))).toBe("rgba(195, 106, 114, 0.08)");
+    expect(panelResolve(declared("border-color"))).toBe("rgba(195, 106, 114, 0.16)");
+    expect(globalResolve(declared("border-color"))).toBe("rgba(195, 106, 114, 0.16)");
     expect(block).not.toMatch(/background:\s*var\(--color-es-danger\)/);
+    // POSITIVE CONTROL for the two resolvers: the token the tint refuses to
+    // use DOES read differently in the two scopes, so "same in both" above
+    // is a finding and not an artefact of a resolver that never looks.
+    expect(panelResolve("var(--color-es-danger)"))
+      .not.toBe(globalResolve("var(--color-es-danger)"));
   });
 
   it("the persona danger ACTION colour clears AA on this surface too", () => {
@@ -328,20 +365,26 @@ describe("glass-right danger token - contrast", () => {
     // (whose `color` is a var) and once for its own literal ink. Scan every
     // block of that selector for a hex rather than taking the first `color:`,
     // which is the var and would make this measure the wrong thing.
+    // ONLY the rule whose selector is that class and nothing else. The
+    // shared block `.persona-ghost-action, .persona-danger-action { ... }`
+    // also contains the name, and taking the last match meant deleting the
+    // single-class rule - the one this file was written to defend - left the
+    // test green, quietly measuring the shared muted ink instead.
     const blocks = [
       ...compiledCss.matchAll(
-        /\.persona-danger-action\s*\{([^}]*)\}/g),
+        /(?:^|[}\n;])\s*\.persona-danger-action\s*\{([^}]*)\}/g),
     ];
     expect(blocks.length, "the .persona-danger-action rule moved or was renamed")
       .toBeGreaterThan(0);
-    let hex: string | null = null;
+    let own: string | null = null;
     for (const b of blocks) {
-      const found = /color:\s*(#[0-9a-fA-F]{6})/.exec(b[1]);
-      if (found) hex = found[1];
+      const found = /(?:^|;)\s*color:\s*([^;!]+)/.exec(b[1]);
+      if (found) own = found[1].trim();
     }
-    expect(hex, "persona-danger-action no longer paints a literal colour").not.toBeNull();
+    expect(own, "persona-danger-action no longer paints an ink of its own")
+      .not.toBeNull();
 
-    const ink = parseRgbColour(hex!);
+    const ink = parseRgbColour(panelResolve(own!));
     const [top, bottom] = stops();
     // The class paints a white wash over the panel, so the ink sits on that
     // rather than on the panel directly - and the panel underneath is itself
@@ -351,9 +394,19 @@ describe("glass-right danger token - contrast", () => {
     // ratio for a paint that no longer exists the moment somebody edits the
     // stylesheet, and a private copy of the blend is how this file drifted
     // away from the other three in the first place.
-    const washed = blocks.map((b) => b[1]).join(" ").match(/background:\s*(rgba\(\s*255\s*,\s*255\s*,\s*255\s*,\s*[0-9.]+\s*\))/);
-    expect(washed, "persona-danger-action no longer paints a white wash").not.toBeNull();
-    const wash = washed![1];
+    // The wash is declared in the SHARED rule, so it is read from the wider
+    // scope on purpose; only the ink above belongs to the single-class rule.
+    const shared = [
+      ...compiledCss.matchAll(/\.persona-danger-action(?![-:a-z])[^{]*\{([^}]*)\}/g),
+    ];
+    expect(shared.length, "nothing names .persona-danger-action any more")
+      .toBeGreaterThan(0);
+    const washDecl = shared.map((b) => b[1]).join(" ").match(/background:\s*([^;!]+)/);
+    expect(washDecl, "persona-danger-action no longer paints a background")
+      .not.toBeNull();
+    const wash = panelResolve(washDecl![1].trim());
+    expect(wash, "persona-danger-action no longer paints a white wash")
+      .toMatch(/^rgba\(\s*255\s*,\s*255\s*,\s*255\s*,/);
     const alpha = alphaOf(wash);
     expect(alpha, "the wash stopped being a wash").toBeGreaterThan(0);
     expect(alpha, "the wash went opaque and the panel no longer shows through")

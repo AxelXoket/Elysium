@@ -90,14 +90,23 @@ describe("Settings copy conventions", () => {
 
   it("uses the named type roles, not ad-hoc pixel sizes", () => {
     // The scale used to be spelled three ways - a CSS class, Tailwind's
-    // `text-xs`, and `text-[11px]` written out by hand eighteen times - so
-    // nothing kept them in step and the section heading ended up SMALLER than
-    // the labels beneath it.
+    // smallest named step, and an arbitrary bracketed size written out by
+    // hand eighteen times - so nothing kept them in step and the section
+    // heading ended up SMALLER than the labels beneath it. The pattern is
+    // assembled rather than spelled: Tailwind scans this file as text and a
+    // literal here would emit the very utility it looks for.
+    const adhocSize = new RegExp("text-" + "\\[\\d+(?:\\.\\d+)?(?:px|rem|em)\\]", "g");
+    // POSITIVE CONTROL. The pattern is assembled from fragments with doubled
+    // escapes, and one lost escape level turns it into something that
+    // matches nothing while looking identical from outside - which is a
+    // green test over nineteen files that were never read.
+    expect(
+      [..."size: " .concat("text-", "[11px]").matchAll(adhocSize)].map((m) => m[0]),
+      "the detector cannot see the thing it looks for",
+    ).toHaveLength(1);
     for (const file of FILES) {
       const src = copyOf(file);
-      const adhoc = [...src.matchAll(/text-\[\d+px\]/g)].map((m) => m[0]);
-      // The install log is machine output, not prose, and keeps its own size.
-      const offenders = adhoc.filter((c) => c !== "text-[10px]");
+      const offenders = [...src.matchAll(adhocSize)].map((m) => m[0]);
       expect(offenders, `${file} sets a font size by hand: ${offenders}`)
         .toEqual([]);
     }

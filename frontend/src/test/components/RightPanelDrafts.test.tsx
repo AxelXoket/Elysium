@@ -32,6 +32,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
+import { chooseOption } from "@/test/helpers/select";
 import { RightPanel } from "@/components/layout/RightPanel";
 import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
 import { mockFetch } from "../mocks/api";
@@ -48,6 +49,7 @@ import {
   personaEditDraftKey,
   useDraftStore,
 } from "@/lib/store/draftStore";
+import { BOUNDARY_SELECT_LABELS } from "@/lib/notebook/labels";
 
 const CHAT_ID = 7;
 /** The conversation the chat-scope cases walk to, and the one `9` below. */
@@ -568,24 +570,26 @@ describe("right panel text across a tab switch", () => {
       await screen.findByRole("textbox", { name: "New limit" }),
       "no hospitals",
     );
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "Where this applies" }),
-      "chat",
+    await chooseOption(
+      user,
+      screen.getByRole("combobox", { name: BOUNDARY_SELECT_LABELS.scope }),
+      "this chat",
     );
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "How strict" }),
-      "soft",
+    await chooseOption(
+      user,
+      screen.getByRole("combobox", { name: BOUNDARY_SELECT_LABELS.severity }),
+      "prefer not",
     );
     await roundTrip(user, "Notes", "Models");
 
     expect(
-      await screen.findByRole("combobox", { name: "Where this applies" }),
+      await screen.findByRole("combobox", { name: BOUNDARY_SELECT_LABELS.scope }),
       "the limit's scope snapped back while its words were restored",
-    ).toHaveValue("chat");
+    ).toHaveTextContent("this chat");
     expect(
-      screen.getByRole("combobox", { name: "How strict" }),
+      screen.getByRole("combobox", { name: BOUNDARY_SELECT_LABELS.severity }),
       "the limit's strictness snapped back while its words were restored",
-    ).toHaveValue("soft");
+    ).toHaveTextContent("prefer not");
 
     // And what is stored is what was on screen, which is the only version of
     // this claim the user can be harmed by.
@@ -620,26 +624,28 @@ describe("right panel text across a tab switch", () => {
       await screen.findByRole("textbox", { name: "New limit" }),
       "no hospitals",
     );
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "What to do if it happens" }),
-      "hard_stop",
+    await chooseOption(
+      user,
+      screen.getByRole("combobox", { name: BOUNDARY_SELECT_LABELS.onViolation }),
+      "stop the scene",
     );
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "Rating ceiling" }),
+    await chooseOption(
+      user,
+      screen.getByRole("combobox", { name: BOUNDARY_SELECT_LABELS.rating }),
       "PG-13",
     );
     await roundTrip(user, "Notes", "Models");
 
     expect(
       await screen.findByRole("combobox", {
-        name: "What to do if it happens",
+        name: BOUNDARY_SELECT_LABELS.onViolation,
       }),
       "what to do about the limit snapped back while its words were restored",
-    ).toHaveValue("hard_stop");
+    ).toHaveTextContent("stop the scene");
     expect(
-      screen.getByRole("combobox", { name: "Rating ceiling" }),
+      screen.getByRole("combobox", { name: BOUNDARY_SELECT_LABELS.rating }),
       "the rating ceiling snapped back while its words were restored",
-    ).toHaveValue("PG-13");
+    ).toHaveTextContent("PG-13");
 
     // And what is stored is what was on screen. The rating is the one field
     // the panel OMITS when it is empty, so a ceiling that never reached the

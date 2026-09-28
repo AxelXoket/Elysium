@@ -1191,12 +1191,21 @@ describe("clipsAndMasksOn finds anything taking a bite out of a box", () => {
 });
 
 describe("insetRightPx walks a scroller's column out of the rendered tree", () => {
+  /* The probe sheet. Two of these class names are deliberately not
+   * Tailwind's. Tailwind scans this file as raw text and emits a rule for
+   * every utility name it reads, so the doubled-padding and right-margin
+   * probes, written as Tailwind names, put two rules nothing renders into
+   * the stylesheet users download. `px-3` stays because the app carries it;
+   * the two that were dead are spelled `probe-*`, which Tailwind generates
+   * nothing for, and this sheet declares them itself, so the reader is asked
+   * exactly the same question. Their Tailwind spellings are not written
+   * anywhere in this file, or the rules would come straight back. */
   const SHEET =
     ":root { --spacing: 0.25rem; }\n" +
     ".px-3 { padding-inline: calc(var(--spacing) * 3); }\n" +
-    ".px-6 { padding-inline: calc(var(--spacing) * 6); }\n" +
+    ".probe-pad-6 { padding-inline: calc(var(--spacing) * 6); }\n" +
     ".pad-box { padding: 1px 7px 1px 2px; }\n" +
-    ".mr-1 { margin-right: 5px; }\n" +
+    ".probe-mr-5 { margin-right: 5px; }\n" +
     ".edge { border-right: 2px solid #000; }\n" +
     ".hairline-no-style { border-right-width: 9px; }\n";
 
@@ -1223,7 +1232,7 @@ describe("insetRightPx walks a scroller's column out of the rendered tree", () =
   it("follows the padding rather than reporting a number of its own", () => {
     // The sensitivity that makes this a measurement: the same tree with a
     // wider wrapper answers wider, by exactly the difference.
-    const { host, leaf } = tree("surface", "px-6", "scroller");
+    const { host, leaf } = tree("surface", "probe-pad-6", "scroller");
     expect(insetRightPx(root(), leaf, host, 16, table())).toBeCloseTo(24, 10);
   });
 
@@ -1235,7 +1244,7 @@ describe("insetRightPx walks a scroller's column out of the rendered tree", () =
   });
 
   it("adds margins and borders, and takes the right side of a box shorthand", () => {
-    const { host, leaf } = tree("surface pad-box", "px-3 edge", "scroller mr-1");
+    const { host, leaf } = tree("surface pad-box", "px-3 edge", "scroller probe-mr-5");
     // 5 (the scroller's own margin) + 12 (px-3) + 2 (the wrapper's border)
     // + 7 (the surface's padding, right side of a four-part shorthand).
     expect(insetRightPx(root(), leaf, host, 16, table())).toBeCloseTo(26, 10);

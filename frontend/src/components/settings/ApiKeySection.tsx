@@ -288,7 +288,7 @@ export function ApiKeySection() {
       <div className="flex items-center gap-2">
         <Key size={14} style={{ color: "var(--color-es-primary-sage)" }} />
         <h3
-          className="text-sm font-medium"
+          className="text-ui font-semibold"
           style={{ color: "var(--color-es-text-light)" }}
         >
           OpenRouter API key
@@ -300,7 +300,7 @@ export function ApiKeySection() {
           included) can tell "we do not know yet" apart from "no key is set"
           without parsing English. */}
       <div
-        className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs"
+        className="flex items-center gap-2 rounded-lg px-3 py-2 text-label"
         data-state={keyStatus}
         style={{ backgroundColor: "var(--color-es-surface-elevated)" }}
       >
@@ -350,7 +350,7 @@ export function ApiKeySection() {
           value={keyInput}
           onChange={(e) => setKeyInput(e.target.value)}
           disabled={busy}
-          className="flex-1 text-xs"
+          className="flex-1 text-label"
           aria-label="API key input"
           // Keep the browser password manager out: this is an API key field,
           // not a login - no fill offers, no save-password prompts.
@@ -400,7 +400,7 @@ export function ApiKeySection() {
           size="sm"
           disabled={busy}
           onClick={handleCheck}
-          className="gap-1 text-xs"
+          className="gap-1 text-label"
         >
           {checking ? (
             <Loader2 size={12} className="animate-spin" />
@@ -421,7 +421,7 @@ export function ApiKeySection() {
           size="sm"
           disabled={busy}
           onClick={() => setConfirmDelete(true)}
-          className="gap-1 text-xs"
+          className="gap-1 text-label"
           style={{ color: "var(--color-es-danger)" }}
         >
           <Trash2 size={12} />
@@ -430,7 +430,7 @@ export function ApiKeySection() {
       )}
       {settings?.api_key_set && confirmDelete && (
         <div className="flex items-center gap-2">
-          <span className="text-xs" style={{ color: "var(--color-es-text-muted)" }}>
+          <span className="text-label" style={{ color: "var(--color-es-text-muted)" }}>
             Remove the stored key?
           </span>
           {/* variant="ghost" like the trigger one branch up. Without it the
@@ -446,7 +446,7 @@ export function ApiKeySection() {
             size="sm"
             disabled={busy}
             onClick={handleDelete}
-            className="gap-1 text-xs"
+            className="gap-1 text-label"
             style={{ color: "var(--color-es-danger)" }}
           >
             {deleteApiKey.isPending ? (
@@ -462,7 +462,7 @@ export function ApiKeySection() {
             size="sm"
             disabled={busy}
             onClick={cancelDelete}
-            className="text-xs"
+            className="text-label"
           >
             Cancel
           </Button>
@@ -472,7 +472,7 @@ export function ApiKeySection() {
       {/* Feedback */}
       {feedback && (
         <div
-          className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs"
+          className="flex items-center gap-2 rounded-lg px-3 py-2 text-label"
           ref={feedbackRef}
           // Announced, because this line is the entire answer to a button
           // press and it appears somewhere the eye is not: a screen reader

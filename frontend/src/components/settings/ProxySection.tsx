@@ -6,7 +6,7 @@ import {
 } from "@/lib/store/draftStore";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
+import { SwitchRow } from "@/components/settings/SwitchRow";
 import {
   useSettings,
   useSetProxy,
@@ -298,7 +298,7 @@ export function ProxySection() {
       <div className="flex items-center gap-2">
         <Shield size={14} style={{ color: "var(--color-es-mist-blue)" }} />
         <h3
-          className="text-sm font-medium"
+          className="text-ui font-semibold"
           style={{ color: "var(--color-es-text-light)" }}
         >
           Proxy
@@ -307,7 +307,7 @@ export function ProxySection() {
 
       {/* Status */}
       <div
-        className="space-y-1 rounded-lg px-3 py-2 text-xs"
+        className="space-y-1 rounded-lg px-3 py-2 text-label"
         style={{ backgroundColor: "var(--color-es-surface-elevated)" }}
       >
         <div className="flex items-center gap-2" data-state={configuredStatus}>
@@ -374,7 +374,7 @@ export function ProxySection() {
       {/* Proxy health */}
       {settings?.proxy_configured && (
         <div
-          className="flex items-center justify-between rounded-lg px-3 py-2 text-xs"
+          className="flex items-center justify-between rounded-lg px-3 py-2 text-label"
           style={{ backgroundColor: "var(--color-es-surface-elevated)" }}
         >
           <div className="flex items-center gap-2" data-state={healthStatus}>
@@ -438,7 +438,7 @@ export function ProxySection() {
           value={urlInput}
           onChange={(e) => setUrlInput(e.target.value)}
           disabled={busy}
-          className="text-xs"
+          className="text-label"
           aria-label="Proxy URL input"
         />
         <Input
@@ -448,33 +448,32 @@ export function ProxySection() {
           // No dirty flag to raise: writing the buffer IS what raises it.
           onChange={(e) => setAliasInput(e.target.value)}
           disabled={busy}
-          className="text-xs"
+          className="text-label"
           aria-label="Proxy alias input"
         />
-        <div className="flex items-center gap-2">
-          <Switch
-            checked={requiredToggle}
-            onCheckedChange={handleRequiredChange}
-            // Closed, not merely unchecked, while the server's answer is not
-            // in hand: the "Required:" line above says "checking" or
-            // "unknown" at that moment, and a live switch beside it would let
-            // the user believe a change was made that cannot be sent. The
-            // test is `answerUnknown`, the one term the line and the Save
-            // button read too, and never the value on show: a switch the
-            // user has moved keeps that value through a failed refetch, and
-            // a gate read off the value left exactly that switch live beside
-            // a closed button. The value stays in view; the control does not
-            // stay open.
-            disabled={busy || answerUnknown}
-            aria-label="Proxy required toggle"
-          />
-          <span
-            className="text-xs"
-            style={{ color: "var(--color-es-text-muted)" }}
-          >
-            Require proxy
-          </span>
-        </div>
+        {/* Named by the words beside it, and only by them. This row used to
+            be a div with an aria-label that said something other than the
+            text on screen, so clicking "Require proxy" did nothing and voice
+            control could not reach the switch by what it says. The words'
+            colour is the muted foreground token, which is the same value
+            the old inline `--color-es-text-muted` resolved to. */}
+        <SwitchRow
+          checked={requiredToggle}
+          onCheckedChange={handleRequiredChange}
+          // Closed, not merely unchecked, while the server's answer is not
+          // in hand: the "Required:" line above says "checking" or
+          // "unknown" at that moment, and a live switch beside it would let
+          // the user believe a change was made that cannot be sent. The
+          // test is `answerUnknown`, the one term the line and the Save
+          // button read too, and never the value on show: a switch the
+          // user has moved keeps that value through a failed refetch, and
+          // a gate read off the value left exactly that switch live beside
+          // a closed button. The value stays in view; the control does not
+          // stay open.
+          disabled={busy || answerUnknown}
+        >
+          Require proxy
+        </SwitchRow>
         <Button
           size="sm"
           // Closed on `answerUnknown`, the switch's own term: both writes
@@ -516,7 +515,7 @@ export function ProxySection() {
           size="sm"
           disabled={busy}
           onClick={handleDelete}
-          className="gap-1 text-xs"
+          className="gap-1 text-label"
           style={{ color: "var(--color-es-danger)" }}
         >
           {deleteProxy.isPending ? (
@@ -531,7 +530,7 @@ export function ProxySection() {
       {/* Feedback */}
       {feedback && (
         <div
-          className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs"
+          className="flex items-center gap-2 rounded-lg px-3 py-2 text-label"
           // Announced, the same way and for the same reason as the sibling
           // ApiKeySection's line: this box is the entire answer to arming a
           // kill-switch, and a switch whose result is silent leaves somebody
