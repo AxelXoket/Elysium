@@ -26,6 +26,14 @@ user's disk.
 One exception, under decision KARAR-V2-10: a new table created with CREATE
 TABLE IF NOT EXISTS (nothing altered, nothing an older build would write into)
 may re-record the CURRENT version's row instead of bumping the version.
+
+A second, named exception, under decision 59 a (27 Sep 2026): range
+reading's whole schema lands in ONE record under the same stamp, and the
+version 6 row is re-recorded for it exactly ONCE. The value it replaced is
+kept below as `FINGERPRINT_6_BEFORE_RANGE_READING` rather than in a comment,
+because the migration test imports it to prove its fixture is that shape.
+Any further change under 6 is a bump or a new, separately decided exception
+(63 a: Baslik 7.1 and 7.2 each record their own), never a quiet re-record.
 """
 from __future__ import annotations
 
@@ -69,8 +77,24 @@ FINGERPRINTS: dict[int, str] = {
     # and the backfill job table with its two columns above (recorded alone
     # as 24cdb902209f5c588c261fed602f668981bdb2798f0ff75fc53478bfed5f0cb7).
     # The combined value is the one this gate printed on the merged schema.
-    6: "de6cdc00c46e97550c1124532deda3813a4072f0f6f26a1d0a56027fb4c10be1",
+    # RE-RECORDED ONCE MORE, by decision 59 a: range reading's single schema
+    # record (`database._migrate_range_reading`: four `notebook_entries`
+    # columns, `notebook_extractions.reader_model`, two tables, two indexes)
+    # stays under 6. Pasted from what this gate printed when it went red on
+    # that record, not computed by hand. The value it replaced is
+    # FINGERPRINT_6_BEFORE_RANGE_READING below. The record's two tables
+    # carry ON DELETE CASCADE on `chat_id` and a hex-only digest CHECK; both
+    # are part of the same one record, so this is still the one re-record
+    # against the previous commit that 59 a allows, not a second one.
+    6: "0a460f16472c2b69b43b66ec725d17f5ff4407c4777aee085a705169e48fab47",
 }
+
+#: Version 6 as it stood before the 59 a record, i.e. the row above's
+#: previous value. Not a live expectation: it is the identity of the shape
+#: `tests/fixtures/schema6_before_range_reading.sql` must reproduce, so the
+#: migration test can prove it starts from the real previous schema.
+FINGERPRINT_6_BEFORE_RANGE_READING = (
+    "de6cdc00c46e97550c1124532deda3813a4072f0f6f26a1d0a56027fb4c10be1")
 
 
 def _fingerprint(con) -> str:
@@ -167,6 +191,23 @@ class TestTheStampDescribesTheShape:
         assert "unmarked_in_source" in entry_cols, (
             "notebook_entries.unmarked_in_source is gone; it lands with the "
             "job table in one migration")
+        # And the 59 a record, same reason: the row was re-recorded for
+        # exactly these, so each one's absence must fail by name.
+        for name, _decl in database._RANGE_READING_ENTRY_COLUMNS:
+            assert name in entry_cols, f"notebook_entries.{name} is gone"
+        with database.get_db() as con:
+            extraction_cols = {r[1] for r in con.execute(
+                "PRAGMA table_info(notebook_extractions)").fetchall()}
+            indexes = {r[0] for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            ).fetchall()}
+        for name, _decl in database._RANGE_READING_EXTRACTION_COLUMNS:
+            assert name in extraction_cols, (
+                f"notebook_extractions.{name} is gone")
+        for table in database._RANGE_READING_TABLES:
+            assert table in tables, f"{table} is gone"
+        for index in database._RANGE_READING_INDEXES:
+            assert index in indexes, f"{index} is gone"
 
     def test_the_fingerprint_notices_a_new_column(self, db) -> None:
         """The gate can go red.

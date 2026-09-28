@@ -138,7 +138,15 @@ class TestTheBackfillAdditionsAreGuarded:
         # add would leave `== []` green for the wrong reason. Here the three
         # are taken back off - in the order `database.py`'s own rollback
         # note gives - and the SAME filter has to find all three going in.
+        #
+        # Range reading's record (59 a) now sits AFTER these three, so the
+        # rollback takes it off first: newest addition first. Dropping only
+        # the three would re-add them after the newer columns, and
+        # `rebuilt == before` would then compare two column orders - a
+        # rollback done out of order, not a migration that failed.
+        from tests.test_range_reading_schema import undo_range_reading
         with database.get_db() as con:
+            undo_range_reading(con)
             con.execute("BEGIN IMMEDIATE")
             con.execute("DROP TABLE notebook_backfill_jobs")
             con.execute(

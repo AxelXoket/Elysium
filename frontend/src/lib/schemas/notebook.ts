@@ -36,6 +36,13 @@ export const NotebookEntrySchema = z.object({
    *  construction. Marked rather than acted on: at the measured fabrication
    *  rate a review queue would be almost entirely correct notes. */
   evidence_role: z.string().nullish(),
+  /** Set when the note's TEXT was changed by hand (decision 15 a). A pin, a
+   *  reorder or an accept never sets it, so it is the exact answer to "did
+   *  the reader correct this", where `updated_at` is only a guess. */
+  edited_at: z.string().nullish(),
+  /** Set when a proposal was accepted by hand, the Keep button (decision
+   *  60 a). Approval, not authorship: it does not mean edited. */
+  hand_accepted_at: z.string().nullish(),
   created_at: z.string(),
   updated_at: z.string(),
 });

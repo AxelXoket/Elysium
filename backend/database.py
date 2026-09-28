@@ -376,6 +376,16 @@ def _migrate(con: sqlite3.Connection) -> None:
 #: silence it, and would have handed a v1.1.6 build a file it could open and
 #: write unlabeled rows into - the same hole this constant exists to close,
 #: for the third time.
+#:
+#: 6 ALSO carries range reading's single schema record (`_migrate_range_
+#: reading`) WITHOUT a bump, by decision 59 a: the stamp stays 6 and the
+#: version 6 fingerprint row is re-recorded once. A 6-build from before the
+#: record opens this file and leaves the new columns and tables alone: it
+#: writes neither mark, so a note it edits or keeps stays NULL in both
+#: (nothing can fill them later). Its chat deletes still work, because both
+#: new tables' `chat_id` keys are ON DELETE CASCADE: the old build's
+#: `DELETE FROM chats` takes their rows with it instead of being refused by
+#: a key it does not know about.
 _SCHEMA_VERSION = 6
 
 
@@ -801,6 +811,169 @@ def notebook_ever_flag_audit(con: sqlite3.Connection) -> dict[str, int]:
     return counts
 
 
+#: The four `notebook_entries` columns range reading adds, in the order
+#: `_migrate_range_reading` adds them. Named once so the migration, its
+#: rollback note and the tests cannot drift apart.
+#:
+#:   edited_at           decision 15 a: the note's TEXT was changed by hand.
+#:                       Written by `notebook_store.update_entry` only when a
+#:                       PATCH really changes the text; an accept, a pin or a
+#:                       reorder never writes it.
+#:   hand_accepted_at    decision 60 a: a proposal was accepted by hand (the
+#:                       Keep button). Written by `update_entry` on the one
+#:                       move from 'proposed' to 'accepted'. Approval, not
+#:                       authorship: it is NOT the edited mark.
+#:   evidence_message_id decision 50 a: the message the quote was found in.
+#:                       No foreign key, like `supersedes_id`: a key would be
+#:                       one more way a paid reply's row could refuse to save.
+#:   replaced_by_job_id  decisions 47 a / 49 a: the re-read that retired this
+#:                       note. `retired_at` set with this set is the "not sent,
+#:                       changed by a re-read" state; `retired_at` with this
+#:                       NULL stays what it was, a model's supersession.
+_RANGE_READING_ENTRY_COLUMNS = (
+    ("edited_at", "TEXT"),
+    ("hand_accepted_at", "TEXT"),
+    ("evidence_message_id", "INTEGER"),
+    ("replaced_by_job_id", "INTEGER"),
+)
+
+#: Decision 55 a: which model read. On the per-call read record; NULL is
+#: "reader not recorded", which is the only honest value for every read made
+#: before this column existed (the model is inside `work_key`'s hash and
+#: cannot be read back out of it).
+_RANGE_READING_EXTRACTION_COLUMNS = (("reader_model", "TEXT"),)
+
+#: The two new tables. Both belong to a chat and both go with it
+#: (`notebook_store.delete_for_chats` and the orphan sweep below).
+_RANGE_READING_TABLES = ("notebook_chunk_reads", "notebook_deleted_traces")
+
+#: The two new indexes. Guarded by name like the tables, so a second launch
+#: runs no DDL at all.
+_RANGE_READING_INDEXES = {
+    # Step 5 deletes a note with the message it quotes; without this every
+    # message delete would scan the whole notes table under a write lock.
+    "idx_notebook_evidence_v1":
+        "CREATE INDEX idx_notebook_evidence_v1 "
+        "ON notebook_entries(evidence_message_id)",
+    "idx_chunk_reads_chat_v1":
+        "CREATE INDEX idx_chunk_reads_chat_v1 "
+        "ON notebook_chunk_reads(chat_id, chunk_no, state)",
+}
+
+
+def _migrate_range_reading(con: sqlite3.Connection) -> None:
+    """Range reading's whole schema, in ONE record (decision 59 a).
+
+    Every new field and table of Baslik 8 lands here at once, so the version 6
+    fingerprint is re-recorded exactly once (59 a: the stamp stays 6). Each
+    addition sits behind its own guard - PRAGMA table_info for a column,
+    sqlite_master for a table or an index - and none of them reads the
+    stamp: a second launch finds all of them and runs no DDL.
+
+    FILLS NOTHING FROM OLD DATA, and that is measured rather than lazy. Every
+    candidate was checked against what the disk can prove:
+      * `edited_at`, `hand_accepted_at`: the only old evidence is
+        `updated_at > created_at`, which an edit, an accept, a pin and a
+        reorder all produce. That guess is the defect 15 a and 60 a exist to
+        replace; copying it in would make the exact field inexact on day one.
+      * `reader_model`: inside `work_key`'s SHA-256, not recoverable.
+        NULL reads as "reader not recorded" (55 a).
+      * `evidence_message_id`: recoverable by matching the quote, but that is
+        step 5's rule (which of two matching messages wins) and step 10's
+        fill; doing it here would decide their question for them.
+      * `replaced_by_job_id`, chunk reads, traces: nothing on disk ever
+        recorded them.
+
+    ROLLBACK, by hand, in this order: drop the two indexes, then the four
+    entry columns and `reader_model`, then the two tables. An indexed column
+    cannot be dropped (`evidence_message_id` has one), which is why the
+    indexes go first. Nothing here stamps a version, so there is none to
+    lower, and the guards read a rolled-back file as never migrated.
+    """
+    entry_cols = {r[1] for r in con.execute(
+        "PRAGMA table_info(notebook_entries)").fetchall()}
+    for name, decl in _RANGE_READING_ENTRY_COLUMNS:
+        if name not in entry_cols:
+            con.execute(
+                f"ALTER TABLE notebook_entries ADD COLUMN {name} {decl}")
+    extraction_cols = {r[1] for r in con.execute(
+        "PRAGMA table_info(notebook_extractions)").fetchall()}
+    # A LITERAL, not built from `_RANGE_READING_EXTRACTION_COLUMNS` like the
+    # entry columns above. tests/test_skip_reason_gate_under_O.py rebuilds
+    # this table in a subprocess from this file's own text and replays every
+    # quoted ALTER on this table it finds, so a formatted one would reach it
+    # with the braces still in and refuse to parse. The
+    # tuple still names the column for the tests; the two are one entry.
+    if "reader_model" not in extraction_cols:
+        con.execute(
+            "ALTER TABLE notebook_extractions ADD COLUMN reader_model TEXT")
+
+    present = {r[0] for r in con.execute(
+        "SELECT name FROM sqlite_master WHERE type IN ('table','index')"
+    ).fetchall()}
+    if "notebook_chunk_reads" not in present:
+        # One row per READING of one fixed chunk (42 a: twenty messages in
+        # message order, twenty-one when the chat opens with a greeting).
+        # This is the permanent read history 42 a asks for, separate from
+        # `notebook_extractions`, which an edit rolls back on purpose.
+        #
+        # Kept, never deleted, when a later read replaces it (47 a): the old
+        # row turns 'changed' and says when and by which job, and an undo of
+        # that job turns it back. The CHECK ties the word to its evidence so
+        # neither can be written without the other.
+        #
+        # `chunk_no` and both message ids are stored together because the
+        # number is the reader's handle and the ids are what the number
+        # meant on the day it was read. `job_id` is NULL for the automatic
+        # reader. No foreign keys to messages or jobs, like `supersedes_id`:
+        # a paid reading must never fail to record because a message went.
+        con.execute("""
+CREATE TABLE notebook_chunk_reads (
+          id                INTEGER PRIMARY KEY AUTOINCREMENT,
+          chat_id           INTEGER NOT NULL REFERENCES chats(id)
+                            ON DELETE CASCADE,
+          chunk_no          INTEGER NOT NULL CHECK (chunk_no >= 1),
+          from_message_id   INTEGER NOT NULL,
+          to_message_id     INTEGER NOT NULL,
+          job_id            INTEGER,
+          reader_model      TEXT,
+          state             TEXT    NOT NULL DEFAULT 'current'
+                            CHECK (state IN ('current','changed')),
+          changed_at        TEXT,
+          changed_by_job_id INTEGER,
+          read_at           TEXT    NOT NULL DEFAULT (datetime('now')),
+          CHECK (from_message_id <= to_message_id),
+          CHECK ((state = 'changed') = (changed_at IS NOT NULL))
+        )
+        """)
+    if "notebook_deleted_traces" not in present:
+        # Decision 70 a: a note deleted BY HAND leaves a keyed digest so the
+        # same sentence is not written back by a later read. No text, no
+        # note id, no position: `digest` is HMAC-SHA256 under a secret that
+        # lives only in this vault (`notebook_store.deleted_note_digest`),
+        # over the note normalised for case and whitespace. Outside the vault
+        # the digest cannot even be checked against a guess. The CHECK makes
+        # "never the text" a fact of the schema: 64 lower-case hex digits and
+        # nothing else, so not even a 64-character sentence fits.
+        #
+        # Belongs to the chat and goes with it. UNIQUE because a second
+        # deletion of the same sentence has nothing new to say.
+        con.execute("""
+CREATE TABLE notebook_deleted_traces (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          chat_id     INTEGER NOT NULL REFERENCES chats(id)
+                      ON DELETE CASCADE,
+          digest      TEXT    NOT NULL CHECK (length(digest) = 64
+                                             AND digest NOT GLOB '*[^0-9a-f]*'),
+          created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+          UNIQUE (chat_id, digest)
+        )
+        """)
+    for name, ddl in _RANGE_READING_INDEXES.items():
+        if name not in present:
+            con.execute(ddl)
+
+
 def _migrate_notebook(con: sqlite3.Connection) -> None:
     """The notebook, the boundaries, and their bookkeeping.
 
@@ -1074,6 +1247,10 @@ CREATE TABLE IF NOT EXISTS notebook_spend_calls (
     # and nothing else, over the whole of `notebook_entries`, so an index
     # there is a natural optimisation; whoever adds one drops the index
     # before the column.
+    #
+    # And range reading's record (`_migrate_range_reading`) is newer than
+    # these three, so an undo of these starts by undoing that one - newest
+    # first, or the three come back after its columns in a different order.
     job_cols = {r[1] for r in con.execute(
         "PRAGMA table_info(notebook_backfill_jobs)").fetchall()}
     if not job_cols:
@@ -1264,6 +1441,8 @@ CREATE TABLE notebook_backfill_jobs (
     # flag rather than by the column's absence.
     _migrate_notebook_backfill(con)
 
+    _migrate_range_reading(con)
+
 
     # Orphan sweep BEFORE the indexes. An older build restored from
     # app.db.premigrate.bak can carry rows whose chat is gone, and foreign keys
@@ -1282,6 +1461,14 @@ CREATE TABLE notebook_backfill_jobs (
         "DELETE FROM boundaries "
         "WHERE scope = 'chat' AND chat_id NOT IN (SELECT id FROM chats)"
     )
+    # The two range-reading tables belong to a chat the same way. Their keys
+    # cascade, so a chat deleted with foreign keys ON takes their rows along
+    # in any build; this sweep is for a file whose chat was deleted with
+    # foreign keys OFF (this connection does not turn them on), which leaves
+    # exactly this behind.
+    for table in _RANGE_READING_TABLES:
+        con.execute(
+            f"DELETE FROM {table} WHERE chat_id NOT IN (SELECT id FROM chats)")
 
     # Self-heal before the unique index, same reasoning as the variant-group
     # one above: duplicate positions would abort the CREATE on every boot with

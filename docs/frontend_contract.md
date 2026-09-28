@@ -1177,6 +1177,22 @@ withhold it - at the measured rate of fabrication a queue of these would be
 almost entirely correct notes, and a queue nobody reads is worse than a label
 somebody can see.
 
+Every note also carries two exact marks on `GET /notebook/{chat_id}` (and on
+the rows `PATCH /notebook/entries/{id}` and `POST .../accept` return), both
+`null` or a UTC `YYYY-MM-DD HH:MM:SS` stamp. **`edited_at`** is set when a
+PATCH changes the note's `text`: any change counts, letter case and
+punctuation included, except whitespace alone (both sides are trimmed and
+runs of whitespace collapsed before comparing; the new text is still stored).
+Invisible characters (zero-width space, joiners, byte-order mark) do not
+count either. The duplicate check keeps its own looser comparison. A pin, a
+kind, an importance, a reorder or an accept never sets it, and sending the
+same words back does not either. **`hand_accepted_at`** is set when the
+accept route moves a proposal to `accepted`; pressing it again does not
+restamp, a note the app accepted on its own never gets one, and editing a
+proposal's text does not set it. Notes from before these
+fields existed carry `null` in both: `updated_at` moving past `created_at`
+was the old guess, and it is not copied in.
+
 `GET /notebook/extract/models` passes `enforce_proxy_gate()` first, like every
 outbound path. Extraction calls are claimed against `NOTEBOOK_DAILY_CALL_CAP`
 *before* the request rather than counted after it; see

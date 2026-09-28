@@ -24,12 +24,16 @@ formally intact while doing nothing.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
+import secrets as _secrets
 import unicodedata
 from collections import Counter
 from typing import Any
 
 import config
 import default_names
+import secrets_service
 # The DRIVER's exception, not the stdlib's. SQLCipher raises its own
 # IntegrityError, and catching sqlite3.IntegrityError here caught nothing at
 # all - the duplicate-key path that makes this idempotent never ran.
@@ -223,6 +227,7 @@ def list_entries(chat_id: int, *, include_retired: bool = True) -> list[dict]:
             f"SELECT id, chat_id, position, kind, text, evidence, durability, "
             f"importance, pinned, retired_at, superseded_by, excluded_reason, "
             f"status, provenance, source_message_id, evidence_role, "
+            f"edited_at, hand_accepted_at, "
             f"created_at, updated_at "
             f"FROM notebook_entries WHERE {where} "
             "ORDER BY position ASC, id ASC", (chat_id,)).fetchall()
@@ -303,6 +308,23 @@ def update_entry(entry_id: int, chat_id: int | None = None, **fields) -> dict:
         fields["pinned"] = 1 if fields["pinned"] else 0
 
     sets = ", ".join(f"{k} = ?" for k in fields)
+    params: list = list(fields.values())
+    # THE TWO EXACT MARKS (decisions 15 a and 60 a), written here because
+    # this function is the only door both hand actions come through: PATCH
+    # for an edit, the accept route for Keep. Nothing else calls it.
+    #
+    # `hand_accepted_at` is a CASE, and SQLite evaluates it against the row
+    # as it was BEFORE this statement, so "was it still a proposal" is
+    # asked of the note the reader acted on. `edited_at` is decided in
+    # Python inside the transaction below (`_spaced`: only whitespace and
+    # invisible characters do not count).
+    if fields.get("status") == STATUS_ACCEPTED:
+        # Only the move out of 'proposed'. Pressing Keep twice does not
+        # restamp, and an auto-accepted note - inserted as 'accepted' by
+        # `commit_extraction` - never passes through here, so it stays NULL.
+        sets += (", hand_accepted_at = CASE WHEN status = ? "
+                 "THEN datetime('now') ELSE hand_accepted_at END")
+        params.append(STATUS_PROPOSED)
     # `updated_at` is stamped AT LEAST one second past `created_at`, not
     # merely "now". Both default to the same second-resolution clock, so an
     # edit inside the second a note was written in left the two equal and
@@ -323,10 +345,29 @@ def update_entry(entry_id: int, chat_id: int | None = None, **fields) -> dict:
             # reader looking for the wrong thing. The accept route already
             # answers this way for the identical situation.
             raise NotebookError("notebook_entry_not_found")
+        edited = ""
+        if "text" in fields:
+            # ANY CHANGE THE READER SAVES, EXCEPT WHITESPACE. Both sides
+            # are trimmed and every run of whitespace is collapsed to one
+            # space; after that a changed letter, a capital or a full stop
+            # counts. So a Save that sends the same words back, or the same
+            # words re-spaced, is not an edit, and a case-only fix is. The
+            # duplicate check keeps its own, looser rule (`_dedup_key`);
+            # the two answer different questions. A pin, a kind or a
+            # reorder never reaches this line.
+            # Read in the same transaction as the write, so the answer is
+            # about the row this write changes.
+            con.execute("BEGIN IMMEDIATE")
+            old = con.execute(
+                "SELECT text FROM notebook_entries WHERE id = ?",
+                (entry_id,)).fetchone()
+            if old is not None and (_spaced(old[0])
+                                    != _spaced(fields["text"])):
+                edited = ", edited_at = datetime('now')"
         con.execute(
-            f"UPDATE notebook_entries SET {sets}, updated_at = "
+            f"UPDATE notebook_entries SET {sets}{edited}, updated_at = "
             "MAX(datetime('now'), datetime(created_at, '+1 second')) "
-            "WHERE id = ?", (*fields.values(), entry_id))
+            "WHERE id = ?", (*params, entry_id))
         row = con.execute(
             "SELECT * FROM notebook_entries WHERE id = ?", (entry_id,)).fetchone()
     if row is None:
@@ -470,6 +511,18 @@ def retire_superseded(con, chat_id: int, target_id: int,
          PROV_MODEL, STATUS_ACCEPTED)).rowcount
 
 
+def _spaced(text: str) -> str:
+    """Text with whitespace made irrelevant and nothing else: trimmed, each
+    run of whitespace one space. What `edited_at` compares."""
+    return " ".join(str(text or "").translate(_INVISIBLE).split())
+
+
+#: Characters that draw nothing: zero-width space, non-joiner, joiner, word
+#: joiner and the byte-order mark. Adding or removing one changes no word a
+#: reader can see, so it is not an edit.
+_INVISIBLE = {ord(c): None for c in "\u200b\u200c\u200d\u2060\ufeff"}
+
+
 def _dedup_key(text: str) -> str:
     """What makes two notes the same note, for the purpose of not writing the
     second one.
@@ -489,6 +542,46 @@ def _dedup_key(text: str) -> str:
     """
     folded = " ".join(str(text or "").split()).casefold()
     return folded.rstrip(".!?,;: ")
+
+
+#: The row in `vault_secrets` holding the key for `deleted_note_digest`.
+#: Inside the SQLCipher file like the API key, never logged, never returned.
+TRACE_KEY_SECRET = "notebook_trace_key"
+
+
+def deleted_note_digest(con, text: str) -> str:
+    """What `notebook_deleted_traces.digest` holds: the ONLY form in which a
+    hand-deleted note may outlive its row (decision 70 a).
+
+    HMAC-SHA256, not a bare hash: a plain SHA-256 of a
+    short sentence is checkable by anyone holding the file and a guess,
+    while this needs a secret that exists only inside this vault. The text
+    is normalised exactly as the duplicate check normalises it,
+    `_dedup_key(_flat(text))` - the same rule that already decides "these
+    two notes are the same note", line breaks included - so a trace matches
+    exactly what the duplicate check would call identical, and a changed
+    space, a line break or a capital letter does not slip past it.
+
+    The key is minted on first use (32 random bytes) and stored in the
+    vault; nothing is written until a caller actually needs a digest. The
+    caller passes its connection so the key and the trace can land in one
+    transaction. MINTED ATOMICALLY: insert-if-absent, then read back. Two
+    first uses that both found no key both try to insert, the first wins,
+    and both then read the winner, so no trace is ever written under a key
+    that a second mint replaced.
+
+    SCHEMA ONLY IN THIS STEP: no route writes a trace yet. Writing one on a
+    hand delete changes what the vault keeps after a deletion, which the
+    locked SECURITY text lists, so it lands with its sentence (61 b).
+    """
+    key_hex = secrets_service.get_secret(TRACE_KEY_SECRET, conn=con)
+    if not key_hex:
+        secrets_service.set_secret_if_absent(
+            TRACE_KEY_SECRET, _secrets.token_hex(32), conn=con)
+        key_hex = secrets_service.get_secret(TRACE_KEY_SECRET, conn=con)
+    return hmac.new(bytes.fromhex(key_hex),
+                    _dedup_key(_flat(text)).encode("utf-8"),
+                    hashlib.sha256).hexdigest()
 
 
 def retire_entry(entry_id: int, superseded_by: int | None = None) -> bool:
@@ -871,6 +964,15 @@ def delete_for_chats(con, chat_ids) -> None:
             f"DELETE FROM notebook_entries WHERE chat_id IN ({marks})", chunk)
         con.execute(
             f"DELETE FROM notebook_extractions WHERE chat_id IN ({marks})",
+            chunk)
+        # Range reading's two tables go with the chat too: the chunk read
+        # history, and the deleted-note traces (70 a: "removed with the
+        # chat"). Same foreign key, same reason as every line here.
+        con.execute(
+            f"DELETE FROM notebook_chunk_reads WHERE chat_id IN ({marks})",
+            chunk)
+        con.execute(
+            f"DELETE FROM notebook_deleted_traces WHERE chat_id IN ({marks})",
             chunk)
         # AFTER the entries, because `notebook_entries.job_id` points here
         # and the foreign key is enforced on this connection. Same reason

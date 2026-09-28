@@ -53,6 +53,22 @@ def set_secret(name: str, value: str, *, conn: sqlite3.Connection | None = None)
         con.execute(sql, (name, value))
 
 
+def set_secret_if_absent(name: str, value: str, *,
+                         conn: sqlite3.Connection | None = None) -> None:
+    """Insert the secret only if no row by that name exists; never
+    overwrite. For a value minted on first use: two callers that both found
+    it missing both try, the first insert wins, the second changes nothing,
+    and a read back afterwards gives both the same value. `set_secret`'s
+    upsert would let the second replace the first."""
+    sql = ("INSERT INTO vault_secrets (name, value) VALUES (?, ?) "
+           "ON CONFLICT(name) DO NOTHING")
+    if conn is not None:
+        conn.execute(sql, (name, value))
+        return
+    with get_db() as con:
+        con.execute(sql, (name, value))
+
+
 def delete_secret(name: str, *, conn: sqlite3.Connection | None = None) -> None:
     """Delete the secret if present (no-op otherwise)."""
     sql = "DELETE FROM vault_secrets WHERE name = ?"
