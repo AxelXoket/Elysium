@@ -102,10 +102,11 @@ elsewhere; not this file's to fix.
 from __future__ import annotations
 
 import re
-import subprocess
 from pathlib import Path
 
 import pytest
+
+from tests import _git_env
 
 _ROOT = Path(__file__).resolve().parents[2]
 
@@ -270,8 +271,8 @@ _THIS_FILE = "backend/tests/test_no_attribution_prose.py"
 
 
 def _tracked() -> list[Path]:
-    out = subprocess.run(["git", "ls-files"], cwd=_ROOT, capture_output=True,
-                         text=True, encoding="utf-8", errors="replace")
+    out = _git_env.run_git("ls-files", cwd=_ROOT, capture_output=True,
+                           text=True, encoding="utf-8", errors="replace")
     if out.returncode != 0:                              # pragma: no cover
         pytest.skip("not a git checkout")
     return [_ROOT / f for f in out.stdout.split()
@@ -386,8 +387,8 @@ class TestNobodyIsQuotedInThisRepository:
         # Whatever else lives under docs/, the sweep sees exactly the
         # tracked files and nothing more. Asked of git rather than of a
         # hand-written list, so a tenth document needs no edit here.
-        out = subprocess.run(["git", "ls-files", "docs/"], cwd=_ROOT,
-                             capture_output=True, text=True,
+        out = _git_env.run_git("ls-files", "docs/", cwd=_ROOT,
+                               capture_output=True, text=True,
                              encoding="utf-8", errors="replace")
         tracked_docs = {f for f in out.stdout.split()
                         if not f.endswith(_SKIP_EXT)}

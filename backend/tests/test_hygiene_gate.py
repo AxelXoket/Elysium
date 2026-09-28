@@ -17,11 +17,12 @@ The gate scans this file like any other and must stay silent on it.
 from __future__ import annotations
 
 import importlib.util
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from tests import _git_env
 
 # Loaded by path rather than imported, because backend/verify is not a package
 # and putting it on sys.path used to make `verify_elysium_full` importable too -
@@ -456,11 +457,13 @@ def repo(tmp_path, monkeypatch):
     where the "two modes read different content" claim either holds or does
     not, and neither had a single test until an adversarial pass said so.
     """
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.email", "t@example.invalid"],
-                   cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path,
-                   check=True)
+    # Every git call here and inside the gate runs under _git_env. This
+    # fixture used to inherit the environment, and from a pre-push hook that
+    # environment carried GIT_DIR: the `git init` below then re-initialised
+    # the real repository, and the identity and the commits of the tests below
+    # landed in it. test_git_hook_isolation.py replays that and holds it shut.
+    _git_env.isolate_process(monkeypatch)
+    _git_env.init_scratch_repo(tmp_path)
     monkeypatch.setattr(hygiene, "REPO_ROOT", str(tmp_path))
     return tmp_path
 
@@ -472,8 +475,7 @@ def write(repo: Path, name: str, text: str) -> None:
 
 
 def git(repo: Path, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=repo, check=True,
-                   capture_output=True)
+    _git_env.run_git(*args, cwd=repo, check=True, capture_output=True)
 
 
 class TestTheWorkingTreeMode:
@@ -794,7 +796,7 @@ class TestAFileTheGateCannotReadIsNeverSilent:
         """
         (repo / "notes.md").write_bytes(
             ("a sentence " + EM_DASH + " broken\n").encode("utf-16"))
-        subprocess.run(["git", "add", "notes.md"], cwd=repo, check=True)
+        _git_env.run_git("add", "notes.md", cwd=repo, check=True)
 
         problems: list[str] = []
         files = dict(hygiene.worktree_files(problems))
@@ -816,7 +818,7 @@ class TestAFileTheGateCannotReadIsNeverSilent:
         (repo / "notes.md").write_bytes(
             ("a sentence " + EM_DASH + " broken, and long enough to have a "
              "shape\n").encode("utf-16-le"))
-        subprocess.run(["git", "add", "notes.md"], cwd=repo, check=True)
+        _git_env.run_git("add", "notes.md", cwd=repo, check=True)
 
         problems: list[str] = []
         files = dict(hygiene.worktree_files(problems))
@@ -831,7 +833,7 @@ class TestAFileTheGateCannotReadIsNeverSilent:
         (repo / "notes.md").write_bytes(
             ("a sentence " + EM_DASH + " broken, and long enough to have a "
              "shape\n").encode("utf-16-be"))
-        subprocess.run(["git", "add", "notes.md"], cwd=repo, check=True)
+        _git_env.run_git("add", "notes.md", cwd=repo, check=True)
 
         problems: list[str] = []
         list(hygiene.worktree_files(problems))
@@ -842,7 +844,7 @@ class TestAFileTheGateCannotReadIsNeverSilent:
         # to tell a document from a coincidence, and a check that guesses
         # anyway is how binaries start getting reported as documents.
         (repo / "tiny.dat").write_bytes(b"\x01\x00\x02\x00")
-        subprocess.run(["git", "add", "tiny.dat"], cwd=repo, check=True)
+        _git_env.run_git("add", "tiny.dat", cwd=repo, check=True)
 
         problems: list[str] = []
         list(hygiene.worktree_files(problems))
@@ -859,7 +861,7 @@ class TestAFileTheGateCannotReadIsNeverSilent:
         binary format and the complaints would stop being read.
         """
         (repo / "blob.dat").write_bytes(bytes(range(64)) * 4)
-        subprocess.run(["git", "add", "blob.dat"], cwd=repo, check=True)
+        _git_env.run_git("add", "blob.dat", cwd=repo, check=True)
 
         problems: list[str] = []
         list(hygiene.worktree_files(problems))
@@ -873,7 +875,7 @@ class TestAFileTheGateCannotReadIsNeverSilent:
         the UTF-16 one above would go past too.
         """
         (repo / "logo.png").write_bytes(bytes([0x89]) + b"PNG" + bytes(64))
-        subprocess.run(["git", "add", "logo.png"], cwd=repo, check=True)
+        _git_env.run_git("add", "logo.png", cwd=repo, check=True)
 
         problems: list[str] = []
         list(hygiene.worktree_files(problems))

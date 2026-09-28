@@ -44,6 +44,8 @@ from pathlib import Path
 
 import pytest
 
+from tests import _git_env
+
 # Loaded by path rather than imported, because backend/verify is not a package.
 # The sharper reason has expired: importing it used to make
 # `verify_elysium_full` importable as well, and importing THAT ran an entire
@@ -101,8 +103,8 @@ def test_git_is_how_this_gate_reads_the_tree():
     the entire problem this file was written to solve, so this one is asked
     first and answered loudly.
     """
-    proc = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"],
-                          cwd=hygiene.REPO_ROOT, capture_output=True)
+    proc = _git_env.run_git("rev-parse", "--is-inside-work-tree",
+                            cwd=hygiene.REPO_ROOT, capture_output=True)
     assert proc.returncode == 0 and proc.stdout.strip() == b"true", (
         f"git cannot read {hygiene.REPO_ROOT} as a work tree, so the sweep in "
         f"this file read nothing and proves nothing. Run the suite from a "
@@ -235,6 +237,11 @@ LIVE_VERIFY_TOOLS = {
     # cannot see, and that gap is where four installer defects sat unseen.
     "verify_tts_resolve.py",
     "verify_tts_install.py",
+    # Added with the hook-isolation fix. Not a tool and not a retired script:
+    # it is the list of git variables a hook exports that point a child's git
+    # at the real repository, imported by run_gates.py and by the suite's
+    # tests/_git_env.py so both strip the same list.
+    "git_env.py",
 }
 
 
@@ -298,7 +305,7 @@ def test_every_name_crypto_writes_beside_the_vault_is_ignored():
     control = "backend/main.py"
     proc = subprocess.run(
         ["git", "check-ignore", "--stdin", "-v"],
-        cwd=hygiene.REPO_ROOT, capture_output=True,
+        cwd=hygiene.REPO_ROOT, env=_git_env.git_env(), capture_output=True,
         input="\n".join(names + [control]).encode(),
     )
     ignored = {

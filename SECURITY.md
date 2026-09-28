@@ -797,7 +797,7 @@ file, and only the warnings among them reach the console.
 Both kinds have been found here. The name kind is closed, and the end of this
 section says how. The other kind, a value out of your text reaching a log
 line, is open and measured, and is the next paragraph. What keeps the rest
-closed is a gate that reads every logging call in the shipped tree - 90 files,
+closed is a gate that reads every logging call in the shipped tree - 91 files,
 and that number is checked rather than remembered - and fails the build on a
 value that can carry content or a name: an exception's own message, which
 nothing stops from being built out of your text; anything derived from one; a

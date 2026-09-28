@@ -69,6 +69,8 @@ from pathlib import Path
 
 import pytest
 
+from tests import _git_env
+
 REPO = Path(__file__).resolve().parent.parent.parent
 
 #: The one-file build the repository ships. The spec writes backend/dist and a
@@ -223,7 +225,7 @@ def forbidden_in(names) -> list[str]:
 def _git_epoch_or_none(pathspec: list[str]) -> int | None:
     done = subprocess.run(
         ["git", "log", "-1", "--format=%ct", "--", *pathspec],
-        cwd=REPO, capture_output=True, text=True,
+        cwd=REPO, env=_git_env.git_env(), capture_output=True, text=True,
     )
     out = done.stdout.strip()
     return int(out) if out.isdigit() else None

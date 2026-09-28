@@ -17,7 +17,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests import egress_guard, error_wire_recorder, fs_guard
+from tests import _git_env, egress_guard, error_wire_recorder, fs_guard
+
+# Also at import time, and before any test can start git. Inside a hook the
+# environment names the repository the hook runs for, and a git command that
+# inherits it writes there whatever directory it was started in. run_gates.py
+# already strips these from the pytest it starts and every git call in the
+# suite goes through _git_env; this covers pytest started from a hook some
+# other way, and a new test that forgets.
+_git_env.strip_process_redirects()
 
 # At import time, not inside a fixture, and deliberately.
 #

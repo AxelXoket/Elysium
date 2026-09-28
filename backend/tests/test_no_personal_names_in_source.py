@@ -31,10 +31,11 @@ remember to update.
 from __future__ import annotations
 
 import os
-import subprocess
 from pathlib import Path
 
 import pytest
+
+from tests import _git_env
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -73,8 +74,8 @@ def tracked_files(root: Path) -> list[Path]:
     point: the question this gate asks is what got PUBLISHED, and that is
     exactly the tracked set.
     """
-    out = subprocess.run(["git", "ls-files", "-z"], cwd=str(root),
-                         capture_output=True, check=True)
+    out = _git_env.run_git("ls-files", "-z", cwd=root,
+                           capture_output=True, check=True)
     return [root / name.decode("utf-8", "replace")
             for name in out.stdout.split(_NUL) if name]
 

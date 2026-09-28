@@ -85,6 +85,7 @@ REPO_ROOT = BACKEND.parent
 FRONTEND = REPO_ROOT / "frontend"
 
 sys.path.insert(0, str(HERE))
+import git_env  # noqa: E402
 import verify_hygiene  # noqa: E402
 
 #: The interpreter this file is running under. The hook already chose it, and
@@ -125,6 +126,30 @@ def _resolve(program: str) -> str:
     return found
 
 
+def child_environment(env: dict[str, str] | None = None) -> dict[str, str]:
+    """What every process this lane starts gets: `env` minus git's redirects.
+
+    `env` defaults to this process's own environment. Inside a hook that
+    environment carries GIT_DIR, and from a linked worktree GIT_COMMON_DIR and
+    GIT_INDEX_FILE too. A child that inherits them runs every git command it
+    starts against this repository, whatever directory it runs that command
+    in. The suite once did exactly that from a pre-push hook: a test's
+    `git init` in tmp_path re-initialised the real repository, its
+    `git config` wrote a test identity into it, and its commits landed on the
+    branch being pushed.
+
+    Every test that calls git is supposed to scrub the environment itself
+    (backend/tests/_git_env.py). This is the second wall, for the test that
+    forgets. Stripping is safe for the children: none of them is meant to
+    read the hook's index, and without GIT_DIR git finds the repository from
+    the child's working directory, which for a worktree is the same one.
+
+    Not applied to this process. verify_hygiene --staged runs in it and needs
+    GIT_INDEX_FILE to read a partial commit's temporary index.
+    """
+    return git_env.without_redirects(env)
+
+
 def _run(label: str, argv: list[str], cwd: Path,
          env: dict[str, str] | None = None) -> bool:
     """One step. Streams its output, reports how long it took.
@@ -140,8 +165,8 @@ def _run(label: str, argv: list[str], cwd: Path,
     print(f"\n  ---- {label} ----", flush=True)
     started = time.monotonic()
     completed = subprocess.run(
-        [_resolve(argv[0]), *argv[1:]], cwd=str(cwd), env=env,
-        shell=False, check=False)
+        [_resolve(argv[0]), *argv[1:]], cwd=str(cwd),
+        env=child_environment(env), shell=False, check=False)
     elapsed = time.monotonic() - started
     verdict = "ok" if completed.returncode == 0 else "FAILED"
     print(f"  ---- {label}: {verdict} in {elapsed:.1f}s ----", flush=True)
@@ -387,7 +412,7 @@ def _selftest(exe: Path, built_after: float) -> bool:
     # from, and hardens the ACL on the real vault folder.
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="elysium-selftest-") as sandbox:
-        env = dict(os.environ)
+        env = child_environment()
         env["ELYSIUM_SELFTEST"] = "1"
         env["ELYSIUM_DATA_DIR"] = sandbox
         try:

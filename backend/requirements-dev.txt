@@ -42,3 +42,11 @@ ruff>=0.16.3
 # is the quiet failure this file exists to prevent.
 pytest>=8.0
 anyio>=4.0
+
+# The tokenizer the prompt-layer eval prices its prompts with (o200k_base).
+# Pinned the same as evals/prompt_layer/requirements.txt, which is the list
+# that eval installs from; keep the two floors equal. Without it
+# tests/test_eval_g3lite_harness.py::TestFixtures::test_real_token_counts_fit_the_caps
+# cannot count real tokens against the caps: it skips on an ordinary run and
+# fails in the push lane, where a missing prerequisite is not allowed to skip.
+tiktoken>=0.9

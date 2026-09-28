@@ -408,7 +408,12 @@ replaces the shipped exe. The hooks themselves are versioned at
 `backend/verify/hooks/`, because `.git/hooks` is neither tracked nor cloned;
 install each with `cp backend/verify/hooks/<name> .git/hooks/<name>`, and
 `verify_hygiene.py` reports when what is installed differs from what is
-tracked. Five tools are run by hand, each doing something no test can:
+tracked. A hook exports `GIT_DIR` and friends, and a child that inherited them
+would run its git commands against this repository wherever it ran them, so
+every process the lanes start gets them stripped (`git_env.py`), and every
+git call in the suite goes through `backend/tests/_git_env.py`, which strips
+them too and keeps the machine's own git config out of the tests.
+Five tools are run by hand, each doing something no test can:
 `verify_hygiene.py` (the source scanner, which is also the pre-commit lane),
 `verify_image_output.py` (a live request with your own key),
 `verify_tts_latency.py` (measures real hardware), `verify_tts_resolve.py`

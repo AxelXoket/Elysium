@@ -70,7 +70,7 @@ def _swept() -> list[tuple[str, str]]:
 
 
 #: Floors, not targets (same reasoning as test_tree_hygiene._SWEEP_FLOOR):
-#: measured at 90 files on 2026-09-26 (the file count is bound to this
+#: measured at 91 files on 2026-09-28 (the file count is bound to this
 #: comment by test_locked_numbers.py; the LINE count deliberately is
 #: not - it moves on every ordinary edit, so pinning it would be a
 #: chore rather than a guard, and _LINE_FLOOR already catches a sweep
