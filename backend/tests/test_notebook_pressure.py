@@ -139,7 +139,10 @@ class TestOnlyTheBatchMovesUnderPressure:
         monkeypatch.setattr(notebook_worker, "_plan_work", spy)
 
         # The unread count is read back rather than assumed from `count`.
-        chat_b = seed(client, count=config.NOTEBOOK_EXTRACT_EVERY_TURNS - 2)
+        # No greeting: since decision 29 a a greeting chat waits for one
+        # more, and this test is about the threshold, not the greeting.
+        chat_b = seed(client, count=config.NOTEBOOK_EXTRACT_EVERY_TURNS - 1,
+                      greeting=False)
         assert len(message_ids(chat_b)) == (
             config.NOTEBOOK_EXTRACT_EVERY_TURNS - 1), "ground: nineteen unread"
         await w._prepare(chat_b)
@@ -162,7 +165,8 @@ class TestOnlyTheBatchMovesUnderPressure:
         import database
 
         pending = config.NOTEBOOK_EXTRACT_EVERY_TURNS
-        chat_id = seed(client, count=pending - 1)
+        # No greeting (decision 29 a): see the test above.
+        chat_id = seed(client, count=pending, greeting=False)
         ids = message_ids(chat_id)
         assert len(ids) == pending, "ground: enough to trigger, not a backlog"
         database.set_setting(config.SETTING_NOTEBOOK_MODEL, MODEL)

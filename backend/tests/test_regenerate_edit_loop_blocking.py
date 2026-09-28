@@ -22,6 +22,7 @@ and a heartbeat coroutine counting how often the loop got control meanwhile.
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 
 import pytest
@@ -106,19 +107,68 @@ async def test_regenerating_does_not_freeze_the_loop(
     )
 
 
+#: How long a gated database open waits for the loop to free it. Only a
+#: FAILING run ever waits this long: a call made off the loop is freed on
+#: the loop's next turn, and a call made on the loop can never be, because
+#: the coroutine that would free it cannot run. No threshold sits between
+#: those two outcomes, so load cannot move the verdict.
+GATE_TIMEOUT_S = 5.0
+
+
+@pytest.fixture()
+def gated_db(monkeypatch):
+    """Every connection the handler opens waits until the LOOP frees it.
+
+    A counted fact instead of a wall-clock gap (this test
+    flaked at 0.060 s against the 0.05 s ceiling under a full-suite load).
+    Each open parks on its own event and a coroutine on the loop sets every
+    parked event it sees. An open made on the loop thread blocks the one
+    thread that could set its event, so it times out and is recorded as not
+    freed; an open made on a worker thread is freed on the loop's next turn.
+    """
+    real = cr.get_db
+    parked: list[threading.Event] = []
+    freed: list[bool] = []
+
+    def gated():
+        gate = threading.Event()
+        parked.append(gate)
+        freed.append(gate.wait(timeout=GATE_TIMEOUT_S))
+        return real()
+
+    monkeypatch.setattr(cr, "get_db", gated)
+    return parked, freed
+
+
+async def _run_with_the_loop_freeing(coro, parked):
+    async def free():
+        while True:
+            for gate in list(parked):
+                gate.set()
+            await asyncio.sleep(0)
+
+    freer = asyncio.ensure_future(free())
+    try:
+        return await coro
+    finally:
+        freer.cancel()
+
+
 @pytest.mark.anyio
 async def test_editing_does_not_freeze_the_loop(
-    anyio_backend, client, fake_provider, slow_db
+    anyio_backend, client, fake_provider, gated_db
 ):
+    parked, freed = gated_db
     chat_id, user_id = _seed(client)
     body = cr.EditRequest(model_id="test/model-1", message="a different question")
-    freeze, out = await _longest_freeze(
-        cr.edit_message(chat_id, user_id, body)
-    )
+    out = await _run_with_the_loop_freeing(
+        cr.edit_message(chat_id, user_id, body), parked)
     assert out["user_message"]["content"] == "a different question"
-    assert freeze < MAX_FREEZE_S, (
-        f"the loop was frozen for {freeze:.3f}s during an edit"
-    )
+    # GROUND: the handler really opened the vault through the gate.
+    assert freed, "the edit opened no connection through routers.completions"
+    assert all(freed), (
+        f"{freed.count(False)} of {len(freed)} database opens ran on the "
+        "event loop during an edit: the loop could not free them")
 
 
 # ── and the flows still behave ───────────────────────────────────────────────

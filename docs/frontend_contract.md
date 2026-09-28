@@ -968,7 +968,9 @@ when it has twenty unread messages, a chat with no notes included: from its
 first message while it holds at most forty unread messages
 (`notebook_worker.from_start_edge()`), and from its newest twenty when it holds
 more, so the first automatic read of a long history deliberately starts at the
-present (3.27). Nothing reads a whole history by itself any more; the worker
+present (3.27). A chat that opens with the character's greeting waits
+for one more on its first read and reads the greeting and twenty in one call,
+so that read ends on the reply rather than on the reader's message (29 a). Nothing reads a whole history by itself any more; the worker
 used to start a job on a chat's first offer, and decisions 30 a and 31 a
 removed that. The older history is read only by a job the reader starts from
 the Notebook panel, after the preview. Both go through the same `_handle` -

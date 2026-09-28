@@ -4384,9 +4384,9 @@ class TestTheReviewQueueGateOnTheAutomaticDoor:
     #: A quote has to be INSIDE the read that makes it - every proposal is
     #: checked against the messages that read covered - so the second
     #: read's evidence names a line from its own range. Read one is the
-    #: greeting plus lines 0..18; read two is lines 19..38, where line 20
-    #: is the reader's and line 21 the model's (both writers alternate by
-    #: parity). The line number rides in the note's own text because it is
+    #: greeting plus lines 0..19, twenty-one in one call (decision 29 a);
+    #: read two is lines 20..39, where line 20 is the reader's and line 21
+    #: the model's (both writers alternate by parity). The line number rides in the note's own text because it is
     #: an anchor: `_is_anchored` wants the note to keep one untranslatable
     #: word of its quote, and the number is one.
     USER_QUOTE_2 = "line 20: her brother owns the mill"
@@ -4397,7 +4397,7 @@ class TestTheReviewQueueGateOnTheAutomaticDoor:
                               replacement: str) -> int:
         """The automatic door over a chat with no notes: the first offer
         writes a note, the second proposes one that names it."""
-        chat_id = seed(client, count=BATCH - 1)
+        chat_id = seed(client, count=BATCH)
         choose(chat_id)
         assert notebook.list_entries(chat_id) == [], "ground: no notes yet"
 
@@ -4412,7 +4412,7 @@ class TestTheReviewQueueGateOnTheAutomaticDoor:
 
         await offer_and_drain(w, chat_id)
         with get_db() as con:
-            for i in range(BATCH - 1, 2 * BATCH - 1):
+            for i in range(BATCH, 2 * BATCH):
                 con.execute(
                     "INSERT INTO messages (chat_id, role, content, active) "
                     "VALUES (?,?,?,1)",

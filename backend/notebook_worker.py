@@ -995,8 +995,25 @@ class Worker:
         #
         # Checked and taken in the same breath - no `await` between them -
         # so the two coroutines cannot both pass.
+        #
+        # THE CHAT, NOT ONLY THE KEY. The key hashes the exact range, and
+        # since 29 a the two doors plan different ranges over the same
+        # messages on a greeting chat: the ordinary reader takes the
+        # greeting and twenty, a job unit takes twenty. Keyed on the range
+        # alone, the second door saw a key nobody held and paid again for
+        # twenty messages already out. One read per chat at a time is the
+        # rule the ranges were only standing in for.
+        #
+        # And which door yields is not left to the race. The ordinary
+        # reader asked `_job_holds` at the top, before the awaits above; a
+        # job that started during them owns the chat now (3.12), so it is
+        # asked again here, in the same breath as the claim. A job that
+        # finds an ordinary read already out waits for it instead of being
+        # refused (`_run_backfill`).
+        if job_id is None and self._job_holds(chat_id):
+            return None
         work_key = plan["work_key"]
-        if work_key in self._active:
+        if work_key in self._active or chat_id in self._active_chats:
             # SILENT, and the silence is correct here.
             #
             # This tried to write a `skipped` row and could not: the row for
@@ -2263,6 +2280,22 @@ class Worker:
                 if cursor is None:
                     state = "done"
                     break
+                # AN ORDINARY READ OF THIS CHAT ALREADY OUT IS WAITED FOR,
+                # not raced. It claimed before this job's row existed (the
+                # window between the press and the row), and `_prepare`
+                # refuses a second read of a chat while one is out, so a
+                # unit sent now would come back refused and close the job
+                # `failed` having read nothing. The read is shielded and
+                # bounded; when it lands the cursor below already counts it.
+                ordinary = self._reading
+                if (ordinary is not None and not ordinary.done()
+                        and chat_id in self._active_chats):
+                    await asyncio.wait({ordinary})
+                    cursor = await anyio.to_thread.run_sync(
+                        partial(self._backfill_cursor, job))
+                    if cursor is None:
+                        state = "done"
+                        break
                 # A TRACKED, SHIELDED TASK: `quiesce()` cancels THIS loop
                 # and then waits for the unit, so a call already paid for
                 # lands before the key is cleared. Removing either half
@@ -3535,6 +3568,20 @@ def _plan_work(chat_id: int, model_id: str, language: str,
         # downward, and only for their own request.
         if pending < (min_new if min_new is not None else threshold):
             return None
+        # THE GREETING IS A MESSAGE, AND THE READ ENDS ON THE REPLY (29 a).
+        # A chat that opens with the character's greeting has the reader's
+        # own message at twenty, and the reply that crossed the threshold at
+        # twenty-one. A plain LIMIT read one to twenty and left the reply for
+        # the next read, and the same shift came back on every read after
+        # it. So while the greeting is still unread, the ordinary reader
+        # waits for one more message and reads one more: greeting and twenty
+        # in one call, no extra call, and every later read starts after it.
+        # The counting rule is unchanged. A job (`min_new`/`after_id`) reads
+        # its own chunks and is not asked here.
+        greeting_ahead = (min_new is None and after_id is None
+                          and _greeting_is_unread(con, chat_id, last))
+        if greeting_ahead and pending < threshold + 1:
+            return None
 
         # LIMIT, and the range is what was actually READ. Without it a long
         # backlog was selected whole, `to_id` named the last of five hundred
@@ -3593,7 +3640,7 @@ def _plan_work(chat_id: int, model_id: str, language: str,
         else:
             bound = "" if until_id is None else " AND id <= ?"
             args = ([chat_id, last] + ([] if until_id is None else [until_id])
-                    + [max(1, limit)])
+                    + [max(1, limit) + (1 if greeting_ahead else 0)])
             rows = con.execute(
                 "SELECT id, role, content FROM messages "
                 f"WHERE chat_id = ? AND active = 1 AND id > ?{bound} "
@@ -3856,6 +3903,21 @@ def _plan_work(chat_id: int, model_id: str, language: str,
         "work_key": notebook_extract.work_key(
             chat_id, rows[0]["id"], rows[-1]["id"], model_id, language),
     }
+
+
+def _greeting_is_unread(con, chat_id: int, last: int) -> bool:
+    """True when the chat's oldest active message is the character's
+    greeting and it is still above the cursor `last`.
+
+    The greeting is the chat's first row with the role `assistant`: that is
+    how `routers/chats.py` seeds it, and a chat that opens with the reader's
+    own message has none. One indexed row, asked only once the threshold is
+    already met. See `_plan_work` (29 a)."""
+    row = con.execute(
+        "SELECT id, role FROM messages WHERE chat_id = ? AND active = 1 "
+        "ORDER BY id LIMIT 1", (chat_id,)).fetchone()
+    return (row is not None and row["id"] > last
+            and row["role"] == "assistant")
 
 
 def _budget_from_oldest(pairs, ceiling):

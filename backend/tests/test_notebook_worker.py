@@ -31,9 +31,14 @@ def fresh_worker():
     return w
 
 
-def seed(client, count: int = 4) -> int:
-    """A chat with `count` real messages in it."""
-    chat_id = make_chat(client, make_character(client))
+def seed(client, count: int = 4, *, greeting: bool = True) -> int:
+    """A chat with `count` real messages in it, after the character's
+    greeting unless `greeting=False`. A test about the threshold itself
+    passes `greeting=False`: since decision 29 a the greeting makes the
+    first read wait for one more message, which is `_plan_work`'s own
+    rule and is tested in `test_notebook_greeting_chunk.py`."""
+    chat_id = make_chat(client, make_character(
+        client, first_mes="Hello there!" if greeting else ""))
     with get_db() as con:
         for i in range(count):
             con.execute(
@@ -794,7 +799,8 @@ class TestAFailedReadIsTriedOnTheNextReply:
 
         database.set_setting(config.SETTING_NOTEBOOK_MODEL, "vendor/cheap")
         calls = self._provider(monkeypatch, [False, True])
-        chat_id = seed(client, config.NOTEBOOK_EXTRACT_EVERY_TURNS - 1)
+        chat_id = seed(client, config.NOTEBOOK_EXTRACT_EVERY_TURNS,
+                       greeting=False)
         w = notebook_worker.Worker()
 
         assert await w._handle(chat_id) == "settled"
@@ -822,7 +828,7 @@ class TestAFailedReadIsTriedOnTheNextReply:
         database.set_setting(config.SETTING_NOTEBOOK_MODEL, "vendor/cheap")
         self._provider(monkeypatch, [False, True])
         batch = config.NOTEBOOK_EXTRACT_EVERY_TURNS
-        chat_id = seed(client, batch - 1)
+        chat_id = seed(client, batch, greeting=False)
         w = notebook_worker.Worker()
 
         def sizes() -> list[int]:
@@ -853,7 +859,8 @@ class TestAFailedReadIsTriedOnTheNextReply:
 
         database.set_setting(config.SETTING_NOTEBOOK_MODEL, "vendor/cheap")
         calls = self._provider(monkeypatch, [True])
-        chat_id = seed(client, config.NOTEBOOK_EXTRACT_EVERY_TURNS - 1)
+        chat_id = seed(client, config.NOTEBOOK_EXTRACT_EVERY_TURNS,
+                       greeting=False)
         w = notebook_worker.Worker()
 
         await w._handle(chat_id)
@@ -871,7 +878,8 @@ class TestAFailedReadIsTriedOnTheNextReply:
 
         database.set_setting(config.SETTING_NOTEBOOK_MODEL, "vendor/cheap")
         calls = self._provider(monkeypatch, [False])
-        chat_id = seed(client, config.NOTEBOOK_EXTRACT_EVERY_TURNS - 1)
+        chat_id = seed(client, config.NOTEBOOK_EXTRACT_EVERY_TURNS,
+                       greeting=False)
         w = notebook_worker.Worker()
 
         for _ in range(notebook_worker.TRIP_AFTER):
