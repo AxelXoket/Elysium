@@ -1289,7 +1289,7 @@ describe("every button in the Notes tab is named by the words it shows", () => {
     const user = userEvent.setup();
     mountNotesTab();
     await settleNotesTab();
-    const tab = screen.getByRole("tabpanel");
+    const tab = screen.getAllByRole("tabpanel")[0];
     const worded = () => [...tab.querySelectorAll("button")]
       .filter((b) => isButton(b) && flat(b.textContent) !== "");
     // GROUND: the tab shows buttons with words, so the check reads some.

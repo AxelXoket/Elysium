@@ -3,11 +3,14 @@ import { PanelMist } from "@/components/backdrop/MistCanvas";
 import { useUiStore } from "@/lib/store/uiStore";
 import { ModelPanel } from "@/components/models/ModelPanel";
 import { SettingsPanel } from "@/components/settings/SettingsPanel";
-import { ExtractionSettings } from "@/components/notebook/ExtractionSettings";
-import { WorkerPanel } from "@/components/notebook/WorkerPanel";
-import { BoundaryPanel } from "@/components/notebook/BoundaryPanel";
-import { Separator } from "@/components/ui/separator";
-import { NotebookPanel } from "@/components/notebook/NotebookPanel";
+import { NotesTab } from "@/components/notebook/NotesTab";
+import { notesTabName } from "@/components/notebook/notesTabProse";
+import {
+  useNotesFollowRuns,
+  useNotesToReview,
+  useNotesViewStore,
+} from "@/components/notebook/notesTabState";
+import { useLayoutEffect, useRef } from "react";
 import { PersonaPanel } from "@/components/persona/PersonaPanel";
 
 /**
@@ -24,12 +27,50 @@ export function RightPanel() {
   const activeTab = useUiStore((s) => s.activeRightPanelTab);
   const setActiveTab = useUiStore((s) => s.setActiveRightPanelTab);
   const collapsed = useUiStore((s) => s.rightPanelCollapsed);
+  const chatId = useUiStore((s) => s.selectedChatId);
+  // The Notes tab says, from any tab, that something waits there.
+  // The refresh that lets it notice a note written in the background is
+  // owned here, by the frame, because the panels under it come and go.
+  useNotesFollowRuns(chatId);
+  const toReview = useNotesToReview(chatId);
+
+  // THE KEYBOARD HAND-OFF. A "Not read" line's button
+  // asks for the control that fixes the problem: the API key field or the
+  // proxy on the Security tab, the note model picker, a Try again, the
+  // worker card. Served here, the one parent of every tab and view, in a
+  // layout effect: the pressed button is hidden or unmounted by the same
+  // commit, and a later effect would leave the keyboard on the page for a
+  // frame. Served once the tab it was meant for is the open one. A target
+  // inside a hidden view or an inert (shut) Collapse cannot take focus and
+  // is skipped; with none left, the open view's own tab takes it, never
+  // nothing.
+  const focusRequest = useNotesViewStore((s) => s.focusTarget);
+  const notesView = useNotesViewStore((s) => s.view);
+  const asideRef = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    if (!focusRequest || focusRequest.tab !== activeTab) return;
+    useNotesViewStore.getState().clearFocusTarget();
+    const root = asideRef.current;
+    if (!root) return;
+    const el = [...root.querySelectorAll<HTMLElement>(
+      `[data-notes-target="${focusRequest.target}"]`)]
+      .find((e) => !e.closest("[hidden], [inert]") && !(e as HTMLButtonElement).disabled);
+    el?.focus();
+    if (el && document.activeElement === el) {
+      // jsdom has no scrollIntoView; a browser always does.
+      if (typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "nearest" });
+      return;
+    }
+    const open = root.querySelectorAll<HTMLElement>('[role="tab"][aria-selected="true"]');
+    open[open.length - 1]?.focus();
+  }, [focusRequest, activeTab, notesView]);
 
   return (
     <aside
       className={`glass-right es-side-panel relative flex h-full flex-col${
         collapsed ? "" : " border-l"
       }`}
+      ref={asideRef}
       id="es-right-panel"
       aria-label="Models, security and notes"
       data-collapsed={collapsed}
@@ -81,7 +122,22 @@ export function RightPanel() {
               secrets as well as the secrets themselves. */}
           <TabsTrigger value="secrets" className="text-label">Security</TabsTrigger>
           <TabsTrigger value="persona" className="text-label">Persona</TabsTrigger>
-          <TabsTrigger value="notebook" className="text-label">Notes</TabsTrigger>
+          {/* The count: model notes not yet seen plus suggestions waiting,
+              in this chat. None when there are none. Its name keeps the
+              visible "Notes 3" whole, then says what the number is. */}
+          <TabsTrigger
+            value="notebook"
+            className="gap-1 text-label"
+            aria-label={toReview > 0 ? notesTabName(toReview) : undefined}
+            data-testid="notes-tab-trigger"
+          >
+            Notes
+            {toReview > 0 && (
+              <span className="notes-count-badge" data-testid="notes-tab-count">
+                {toReview}
+              </span>
+            )}
+          </TabsTrigger>
         </TabsList>
 
         {/* Panels remount per switch ON PURPOSE: the model-list cascade is a
@@ -141,24 +197,11 @@ export function RightPanel() {
           <PersonaPanel />
         </TabsContent>
 
-        {/* Four sibling panels with nothing between them read as one
-            column: four peer h4 headings were the only landmarks across
-            roughly 1600px of scroll, and there was no signal at all for
-            where one idea ended. At full token strength rather than
-            SettingsPanel's opacity-15: --border inside .glass-right is
-            rgba(30,45,62,0.16), and multiplying that by 0.15 lands at about
-            0.024 alpha, which is five values of 255 away from the panel it
-            sits on. A landmark nobody can see is not a landmark. The
-            sub-section rules inside SettingsPanel can stay faint because
-            they divide parts of one idea; these divide four features. */}
+        {/* The Notes tab holds three views of its own (NotesTab.tsx): the
+            notes, the limits, and the settings that write notes. They were
+            four panels in one scroll of up to 6197 px. */}
         <TabsContent value="notebook" className="flex-1 overflow-y-auto">
-          <NotebookPanel />
-          <Separator />
-          <BoundaryPanel />
-          <Separator />
-          <ExtractionSettings />
-          <Separator />
-          <WorkerPanel />
+          <NotesTab />
         </TabsContent>
       </Tabs>
       </div>

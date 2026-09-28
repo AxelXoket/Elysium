@@ -423,6 +423,12 @@ export const WorkerStatusSchema = z.object({
     /** Later parts given up: final, said on the card. */
     unread: z.number().default(0),
   }).nullish(),
+  /** How many of the SELECTED chat's messages no read has covered, counted
+   *  on this poll, or null (no chat asked for, or the count failed). The
+   *  Notes tab says "Up to date." only on a zero here: `worker.backlog` is
+   *  counted once at unlock over every chat. `.nullish()` so an older
+   *  backend reads as "not known", never as zero. */
+  chat_unread: z.number().nullish(),
 });
 
 export type WorkerStatus = z.infer<typeof WorkerStatusSchema>;

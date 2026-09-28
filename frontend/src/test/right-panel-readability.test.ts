@@ -458,7 +458,7 @@ describe("the words the right panel paints", () => {
 
   /** The panel the open tab is on. */
   const panelOf = (): HTMLElement => {
-    const panel = screen.getByRole("tabpanel").closest<HTMLElement>(".glass-right");
+    const panel = screen.getAllByRole("tabpanel")[0].closest<HTMLElement>(".glass-right");
     expect(panel, "the tab is not on the right panel").not.toBeNull();
     return panel!;
   };
@@ -603,7 +603,9 @@ describe("the words the right panel paints", () => {
     // the panel's text token, and the reader answers the value the panel's
     // own rule declares for it, not the root's, both read off the parsed
     // sheet.
-    const heading = screen.getByRole("heading", { name: /^notebook$/i });
+    // A heading that names the panel's text token: the worker card's, in
+    // the Settings view (mounted, hidden while the Notes view is open).
+    const heading = screen.getByRole("heading", { name: /^background notes$/i, hidden: true });
     const token = "--color-es-text-light";
     const onPanel = declarationOnSelector(root, ".glass-right", new RegExp(`^${token}$`));
     const atRoot = rootTokens(root).get(token);
@@ -958,7 +960,7 @@ describe("the words the right panel paints", () => {
     // POSITIVE CONTROLS, one probe per way a line fails or is let off, each
     // added to the open tab and read by the same sweep.
     const panel = panelOf();
-    const tabPanel = screen.getByRole("tabpanel");
+    const tabPanel = screen.getAllByRole("tabpanel")[0];
     const probeOf = (host: Element, style: string | null): HTMLParagraphElement => {
       const p = document.createElement("p");
       p.textContent = "a probe line";
@@ -1081,7 +1083,7 @@ describe("the Security tab's danger actions", () => {
       const { queryClient } = mountRightPanel({ proxyConfigured: true });
       await screen.findAllByRole("tab");
       await openRightPanelTab(user, "Security", queryClient);
-      const panel = screen.getByRole("tabpanel");
+      const panel = screen.getAllByRole("tabpanel")[0];
       const test = within(panel).getByRole("button", { name: /^test stored key$/i });
       const removeKey = within(panel).getByRole("button", { name: /^remove api key$/i });
       const removeProxy = within(panel).getByRole("button", { name: /^remove proxy$/i });
@@ -1162,7 +1164,7 @@ describe("the Security tab's danger actions", () => {
     const { queryClient } = mountRightPanel({ proxyConfigured: true });
     await screen.findAllByRole("tab");
     await openRightPanelTab(user, "Security", queryClient);
-    const tab = screen.getByRole("tabpanel");
+    const tab = screen.getAllByRole("tabpanel")[0];
     const panel = tab.closest<HTMLElement>(".glass-right");
     expect(panel, "the tab is not on the right panel").not.toBeNull();
     const test = within(tab).getByRole("button", { name: /^test stored key$/i });
@@ -1312,7 +1314,7 @@ describe("the lines the right panel cuts short", () => {
     const read: { when: string; words: string; faults: string[] }[] = [];
     for (const tab of rightPanelTabNames()) {
       await openRightPanelTab(user, tab, queryClient);
-      const panel = screen.getByRole("tabpanel").closest<HTMLElement>(".glass-right")!;
+      const panel = screen.getAllByRole("tabpanel")[0].closest<HTMLElement>(".glass-right")!;
       read.push(...cutShort(root, panel).map((r) => ({ when: tab, ...r })));
       if (within(panel).queryByRole("textbox", { name: "Search models" })) {
         // The generation card with a model of unknown parameters chosen.
@@ -1333,7 +1335,7 @@ describe("the lines the right panel cuts short", () => {
     await openRightPanelTab(user, "Models", custom.queryClient);
     const trigger = await screen.findByTestId("generation-settings-trigger");
     await waitFor(() => expect(trigger).toHaveTextContent(/^.*custom sampling and context/i));
-    const customPanel = screen.getByRole("tabpanel").closest<HTMLElement>(".glass-right")!;
+    const customPanel = screen.getAllByRole("tabpanel")[0].closest<HTMLElement>(".glass-right")!;
     read.push(...cutShort(root, customPanel).map((r) => ({ when: "Models, custom", ...r })));
     // GROUND: the sweep met cut-short lines, the generation card's among them,
     // in both of its wordings.
@@ -1349,11 +1351,11 @@ describe("the lines the right panel cuts short", () => {
 
     // POSITIVE CONTROL: a box the sheet truncates with no title is reported,
     // and the same box with its words as a title is not.
-    const panel = screen.getByRole("tabpanel").closest(".glass-right")!;
+    const panel = screen.getAllByRole("tabpanel")[0].closest(".glass-right")!;
     const probe = document.createElement("span");
     probe.className = "truncate";
     probe.textContent = "a probe line cut short";
-    screen.getByRole("tabpanel").appendChild(probe);
+    screen.getAllByRole("tabpanel")[0].appendChild(probe);
     try {
       expect(cutShort(root, panel).filter((r) => r.faults.length > 0).map((r) => r.words))
         .toEqual(["a probe line cut short"]);

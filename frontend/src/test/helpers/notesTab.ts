@@ -23,7 +23,9 @@
 import { UNDO_RUN_CONFIRM } from "@/components/notebook/backfillProse";
 import { NOTE_ROW_WORDS } from "@/components/notebook/noteProse";
 import { createElement } from "react";
-import { screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
+import { NOTES_VIEW_WORDS, type NotesView } from "@/components/notebook/notesTabProse";
+import { useNotesViewStore } from "@/components/notebook/notesTabState";
 import { RightPanel } from "@/components/layout/RightPanel";
 import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
 import { useUiStore } from "@/lib/store/uiStore";
@@ -166,11 +168,16 @@ export function notesTabRoutes(
   };
 }
 
-/** Opens the tab. Returns the fetch mock with the render result. */
+/** The tab's three views, in the order their tabs show them. */
+export const NOTES_TAB_VIEWS: readonly NotesView[] = ["notes", "limits", "settings"];
+
+/** Opens the tab. Returns the fetch mock with the render result. It opens
+ *  on the Notes view, as a new session does. */
 export function mountNotesTab(options: NotesTabOptions = {}) {
   useUiStore.setState({
     selectedChatId: NOTES_TAB_CHAT, activeRightPanelTab: "notebook", rightPanelCollapsed: false,
   });
+  useNotesViewStore.setState({ view: "notes", focusTarget: null });
   const fetchMock = mockFetch(notesTabRoutes(options));
   const rendered = renderWithQueryClient(createElement(RightPanel), {
     wrapper: GenerationSettingsProvider,
@@ -186,10 +193,35 @@ export const NOTES_TAB_SETTLED_BY: readonly RegExp[] = [
 ];
 
 /** Waits until the whole tab has drawn: the buttons above, and the worker
- *  card's per-chat button, which arrives with the last answer it waits on. */
+ *  card's per-chat button, which arrives with the last answer it waits on.
+ *  The three views are all mounted (only one is shown), so a button in a
+ *  view that is not open is waited for as well. */
 export async function settleNotesTab(): Promise<void> {
-  for (const name of NOTES_TAB_SETTLED_BY) await screen.findByRole("button", { name });
+  for (const name of NOTES_TAB_SETTLED_BY) {
+    await screen.findByRole("button", { name, hidden: true });
+  }
   await screen.findByTestId("chat-auto-accept-toggle");
+}
+
+/** The Notes tab's own panel (the outer one): every view is inside it. */
+export function notesTabPanel(): HTMLElement {
+  const panel = document.querySelector<HTMLElement>(
+    '#es-right-panel [role="tabpanel"][data-slot="tabs-content"]');
+  if (!panel) throw new Error("the Notes tab is not open");
+  return panel;
+}
+
+/** Opens one of the tab's views by pressing its tab, and waits for it. */
+export async function openNotesView(
+  user: { click: (element: Element) => Promise<void> },
+  view: NotesView,
+): Promise<void> {
+  // Inside the views' own list: the outer strip has a "Notes" tab too.
+  const list = screen.getByRole("tablist", { name: NOTES_VIEW_WORDS.list });
+  // Its word, then nothing, a count ("Notes 3 to review") or a reason.
+  const name = new RegExp(`^${NOTES_VIEW_WORDS[view]}(,| |$)`, "i");
+  await user.click(within(list).getByRole("tab", { name }));
+  await within(list).findByRole("tab", { name, selected: true });
 }
 
 /** The four confirms the tab shows once each first press is made, by the
@@ -214,8 +246,13 @@ export async function armNotesTabConfirms(
   await screen.findByText(NOTES_TAB_CONFIRMS.run, { selector: "button" });
   await user.click(screen.getByRole("button", { name: /^undo$/i }));
   await screen.findByText(NOTES_TAB_CONFIRMS.saved, { selector: "button" });
+  // The limit is in the Limits view. Its question stays armed while the
+  // view is hidden again (the views stay mounted), so every confirm is in
+  // the tab at once afterwards.
+  await openNotesView(user, "limits");
   await user.click(screen.getByRole("button", { name: /^delete limit$/i }));
   await screen.findByRole("button", { name: NOTES_TAB_CONFIRMS.limit });
+  await openNotesView(user, "notes");
   await user.click(screen.getAllByRole("button", { name: /^delete note$/i })[0]);
   await screen.findByRole("button", { name: NOTES_TAB_CONFIRMS.note });
 }
@@ -225,6 +262,7 @@ export function closeNotesTab() {
   useUiStore.setState({
     selectedChatId: null, activeRightPanelTab: "models", rightPanelCollapsed: false,
   });
+  useNotesViewStore.setState({ view: "notes", focusTarget: null });
 }
 
 /** Which block of the tab a node sits in, by the landmark or test id each
@@ -232,12 +270,13 @@ export function closeNotesTab() {
 export function notesTabBlockOf(node: Element): string {
   return node.closest('[data-testid="backfill-strip"]') ? "the strip"
     : node.closest('[data-testid="just-saved"]') ? "the saved notes"
+    : node.closest('[role="tablist"]') ? "the view tabs"
       : node.closest("section[aria-label]")?.getAttribute("aria-label")
         ?? "outside every block";
 }
 
 /** The blocks of the tab, as `notesTabBlockOf` names them. */
 export const NOTES_TAB_BLOCKS = [
-  "the strip", "the saved notes", "Notebook", "Limits", "Note suggestions",
-  "Background notes",
+  "the strip", "the saved notes", "the view tabs", "Notebook", "Limits",
+  "Note suggestions", "Background notes",
 ] as const;

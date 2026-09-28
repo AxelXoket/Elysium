@@ -396,6 +396,64 @@ class TestTheStatusRouteSaysWhichChatIsStopped:
         assert b in w.chat_breakers, "it reset more than it was asked to"
 
 
+class TestTheStatusRouteCountsThisChatsUnread:
+    """The Notes tab says "Up to date." only on a live count of
+    THIS chat's unread messages. `worker.backlog` is counted once at unlock
+    over every chat, so it cannot say that. Expected numbers are read from
+    the messages table itself (a new chat can carry a greeting), never
+    retyped."""
+
+    @staticmethod
+    def _ids(chat_id: int) -> list[int]:
+        with get_db() as con:
+            return [r[0] for r in con.execute(
+                "SELECT id FROM messages WHERE chat_id = ? AND active = 1 "
+                "ORDER BY id", (chat_id,)).fetchall()]
+
+    @staticmethod
+    def _unread(client, chat_id: int):
+        return client.get(
+            f"/api/v1/notebook/worker?chat_id={chat_id}").json()["chat_unread"]
+
+    def test_counts_this_chats_unread_messages(self, client) -> None:
+        chat_id = seed(client, 4)
+        other = seed(client, 7)
+        assert self._unread(client, chat_id) == len(self._ids(chat_id))
+        # POSITIVE CONTROL: the other chat's own count, not a sum, and the
+        # two differ, so a sum or a swap would be caught.
+        assert self._unread(client, other) == len(self._ids(other))
+        assert len(self._ids(other)) != len(self._ids(chat_id)), "ground"
+
+    def test_a_read_range_is_not_counted(self, client) -> None:
+        chat_id = seed(client, 4)
+        ids = self._ids(chat_id)
+        assert self._unread(client, chat_id) == len(ids), "ground"
+        with get_db() as con:
+            con.execute(
+                "INSERT INTO notebook_extractions (work_key, chat_id, "
+                "from_message_id, to_message_id, status) "
+                "VALUES (?,?,?,?,'done')",
+                (f"range-{chat_id}", chat_id, ids[0], ids[2]))
+        assert self._unread(client, chat_id) == len(ids) - 3
+
+    def test_the_count_follows_a_new_message(self, client) -> None:
+        """The failure the field exists for: the backlog stays as it was at
+        unlock, this count does not."""
+        chat_id = seed(client, 2)
+        before = self._unread(client, chat_id)
+        assert before == len(self._ids(chat_id)), "ground"
+        with get_db() as con:
+            con.execute(
+                "INSERT INTO messages (chat_id, role, content, active) "
+                "VALUES (?,?,?,1)", (chat_id, "user", "one more line"))
+        assert self._unread(client, chat_id) == before + 1
+
+    def test_without_a_chat_id_the_field_is_null(self, client) -> None:
+        """GROUND: present and null, never absent, like `chat_refusal`."""
+        body = client.get("/api/v1/notebook/worker").json()
+        assert "chat_unread" in body and body["chat_unread"] is None
+
+
 class TestTheReadButtonSaysWhyItRefused:
     """The refusals the old sweep button gave, asked of the door that is left.
 

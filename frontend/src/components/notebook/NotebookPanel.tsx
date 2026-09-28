@@ -36,14 +36,22 @@ import {
   NOTES_UNREAD,
   saveFailedProse,
 } from "@/components/notebook/noteProse";
+import { CHAT_READ_WORDS, WAITING_WORDS } from "@/components/notebook/notesTabProse";
+import {
+  justSavedOf,
+  useChatRead,
+  useNotesViewStore,
+  waitingOf,
+} from "@/components/notebook/notesTabState";
 import { PendingButton } from "@/components/notebook/PendingButton";
 import { focusHandoff } from "@/components/notebook/focusHandoff";
 import { settledAt } from "@/components/notebook/useRetryPress";
 import { SettingUnread } from "@/components/notebook/SettingUnread";
+import { useHeldValue } from "@/components/settings/useHeldValue";
 import { isApiError } from "@/lib/api/client";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
-  Pin, PinOff, Plus, Trash2, X, Check, Loader2, Undo2, Search, Pencil,
+  Pin, PinOff, Plus, Trash2, X, Check, Loader2, Undo2, Search, Pencil, Settings2,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -316,10 +324,34 @@ export function NotebookPanel() {
   const seen = useSeenNotesStore((s) =>
     chatId == null ? undefined : s.byChat[chatId]);
   const markSeen = useSeenNotesStore((s) => s.markSeen);
-  const justSaved = all.filter(
-    (e) => e.provenance === "model" && e.status === "accepted"
-      && !e.retired_at && !e.hand_accepted_at && !e.edited_at && !e.pinned
-      && !(seen ?? []).includes(e.id));
+  // One definition, shared with the count on the Notes tab button.
+  const justSaved = justSavedOf(all, seen);
+
+  // WAITING FIRST. Suggestions wait unsent until the reader
+  // answers them, so they are the part of this list that needs a person:
+  // counted, grouped at the top, and answerable in one press each way. The
+  // search does not reach them: it sits under the group and filters the
+  // notes, and a suggestion hidden by a word typed there would be one the
+  // count, the tab's number and "Keep all" disagree about. A discarded one
+  // keeps its place (with its Undo) in the group until the panel leaves
+  // the chat.
+  const isWaiting = (e: NotebookEntry) => e.status === "proposed" && !e.retired_at;
+  const waitingRows = all.filter(isWaiting);
+  const keptAll = all.filter((e) => !isWaiting(e));
+  const keptRows = entries.filter((e) => !isWaiting(e));
+  const waiting = waitingOf(waitingRows, discarded);
+  // The ids the last "Discard all" held, so "Undo all" brings back that
+  // batch and nothing the reader discarded one by one.
+  const [discardBatch, setDiscardBatch] = useState<number[]>([]);
+  const batchHeld = discardBatch.filter((id) => discarded.includes(id));
+  // The line keeps its last number while it closes (KURAL 5.5).
+  const shownBatch = useHeldValue(batchHeld.length > 0 ? batchHeld.length : null) ?? 0;
+  const batchLineRef = useRef<HTMLParagraphElement>(null);
+  const waitingHeadRef = useRef<HTMLParagraphElement>(null);
+  const read = useChatRead(chatId);
+  // Not read, or read only by a billed test call: the line takes the danger
+  // ink and offers the way to the reason.
+  const alarm = read.kind === "not" || read.kind === "test";
 
   /** "Keep it" / "Keep them": a hand keep, written on the server
    *  (`hand_accepted_at`), so "Undo this run" keeps these notes and the
@@ -376,6 +408,71 @@ export function NotebookPanel() {
     }
   }
 
+  /** "Keep all": the same Keep, once per waiting row, so each is written
+   *  as the reader's own keep (`hand_accepted_at`) exactly as a single press
+   *  writes it. Stops at the first failure and says so; what was kept stays
+   *  kept, and the rest stay waiting with the button still under the
+   *  keyboard. Once every one is kept the group leaves, and the new-note
+   *  field takes the keyboard. */
+  async function handleKeepAll() {
+    if (chatId == null || busy) return;
+    const ids = waiting.map((e) => e.id);
+    let kept = 0;
+    try {
+      for (const id of ids) {
+        await accept.mutateAsync([id, chatId]);
+        kept += 1;
+      }
+    } catch (err) {
+      pushError(err, "error", { chatId });
+    }
+    if (kept === ids.length) focusTarget.current = "new";
+  }
+
+  /** "Discard all": every waiting row is held exactly as a single Discard
+   *  holds it, and the batch stands as one line with one Undo that takes
+   *  the batch back. Nothing is sent until the panel leaves the chat. */
+  function handleDiscardAll() {
+    if (chatId == null) return;
+    const ids = waiting.map((e) => e.id);
+    handoff.want("undo-all", waitingHeadRef.current);
+    // Added to the batch, not in place of it: an earlier Discard all whose
+    // rows are still held stays takeable back by the same Undo all.
+    setDiscardBatch((was) => [...was.filter((id) => discarded.includes(id)), ...ids]);
+    const held = useHeldDiscards.getState();
+    for (const id of ids) held.hold(chatId, id);
+  }
+
+  function handleUndoAll() {
+    if (chatId == null) return;
+    handoff.want("discard-all", batchLineRef.current);
+    const held = useHeldDiscards.getState();
+    for (const id of batchHeld) held.release(chatId, id);
+    setDiscardBatch([]);
+  }
+
+  /** "Open Settings" / "Open Security" beside a "Not read" line: to the
+   *  control that fixes it, in the tab's Settings view or on the panel's
+   *  Security tab. RightPanel puts the keyboard on it once it is drawn. */
+  function openFix() {
+    if (read.kind !== "not" && read.kind !== "test") return;
+    const views = useNotesViewStore.getState();
+    if (read.fix.where === "security") {
+      views.requestFocus(read.fix.target, "secrets");
+      useUiStore.getState().setActiveRightPanelTab("secrets");
+    } else {
+      views.openAt("settings", read.fix.target);
+    }
+  }
+
+  /** "Show progress": the reading strip, after the list, and its Stop. */
+  function showProgress() {
+    const stop = document.querySelector<HTMLElement>(
+      '[data-testid="backfill-progress"] button');
+    stop?.scrollIntoView({ block: "nearest" });
+    stop?.focus({ preventScroll: true });
+  }
+
   async function handleAdd() {
     const text = draft.trim();
     if (!text || chatId == null) return;
@@ -420,8 +517,10 @@ export function NotebookPanel() {
   const newNoteRef = useRef<HTMLInputElement>(null);
   const focusTarget = useRef<number | "new" | null>(null);
   function focusAfterRemoving(id: number) {
-    const at = entries.findIndex((e) => e.id === id);
-    const neighbour = entries[at + 1] ?? entries[at - 1];
+    // In the order on screen: the waiting group, then the list.
+    const shown = [...waitingRows, ...keptRows];
+    const at = shown.findIndex((e) => e.id === id);
+    const neighbour = shown[at + 1] ?? shown[at - 1];
     return () => { focusTarget.current = neighbour ? neighbour.id : "new"; };
   }
   // Moved on the first render that is no longer busy: the new-note field is
@@ -437,6 +536,20 @@ export function NotebookPanel() {
         `[data-testid="note-${target}"] button:not([disabled])`);
     (row ?? newNoteRef.current)?.focus();
     focusTarget.current = null;
+  });
+  // A single Keep: the row leaves the waiting group for the list once the
+  // refetch says it is kept, and is drawn anew there. Its Pin takes the
+  // keyboard in that same commit (the row did this itself while it stayed
+  // in place). Until then the Keep button, still in the old row, holds it.
+  const keptMoves = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const id = keptMoves.current;
+    if (id == null) return;
+    const row = document.querySelector<HTMLElement>(`[data-testid="note-${id}"]`);
+    if (!row) { keptMoves.current = null; return; }
+    if (row.dataset.state === "proposed") return;
+    keptMoves.current = null;
+    row.querySelector<HTMLElement>(`[data-testid="note-${id}-pin-slot"] button`)?.focus();
   });
 
   /** Declining a suggestion: one press, no question, and not silent - the
@@ -479,6 +592,44 @@ export function NotebookPanel() {
     }
   }
 
+  /** One row, where it is drawn: a discarded suggestion stands in its own
+   *  place with its Undo, anything else is a note row. A kept suggestion
+   *  moves from the waiting group into the list, which draws it anew, so
+   *  its Pin (where a single Keep hands the keyboard) is found there. */
+  function renderRow(entry: NotebookEntry) {
+    return discarded.includes(entry.id) ? (
+      <DiscardedRow
+        key={`discarded-${entry.id}`}
+        entry={entry}
+        takeFocus={handoff.take}
+        onUndo={() => handleUndoDiscard(entry.id)}
+      />
+    ) : (
+      <NoteRow
+        key={entry.id}
+        entry={entry}
+        busy={busy}
+        confirming={confirmDeleteId === entry.id}
+        onSave={(text) => handleSave(entry, text)}
+        onPin={() => void handlePin(entry)}
+        onAccept={() => {
+          // Armed before the request: the refetch that moves the row can
+          // land before this promise's own callback runs.
+          keptMoves.current = entry.id;
+          return handleAccept(entry.id).then((ok) => {
+            if (!ok && keptMoves.current === entry.id) keptMoves.current = null;
+            return ok;
+          });
+        }}
+        onDiscard={() => handleDiscard(entry.id)}
+        onAskDelete={() => setConfirmDeleteId(entry.id)}
+        onCancelDelete={() => setConfirmDeleteId(null)}
+        onDelete={() => void handleDelete(entry.id)}
+        takeFocus={handoff.take}
+      />
+    );
+  }
+
   if (chatId == null) {
     return (
       <SlideIn>
@@ -494,13 +645,29 @@ export function NotebookPanel() {
   return (
     <SlideIn>
       <section className="space-y-3 p-4" aria-label="Notebook">
-        <div className="flex items-baseline justify-between">
-          <h4
-            className="text-label font-semibold"
-            style={{ color: "var(--color-es-text-light)" }}
+        {/* THIS CHAT'S STATE, FIRST. The count beside it used to
+            be the whole header, and "3 of 3 sent" looked healthy while the
+            chat was not being read at all; the reason sat on the Background
+            notes card, screens further down. Now the first words of the tab
+            say whether this chat is read, and a "Not read" line is drawn in
+            the panel's danger ink with the way to its reason under it. The
+            view's tab already names it Notes, so the heading that said
+            "Notebook" gave its row to this line. */}
+        <div className="flex items-baseline justify-between gap-3">
+          <p
+            className="min-w-0 text-label leading-relaxed"
+            data-testid="chat-read-line"
+            data-read={read.kind}
+            role="status"
+            style={{
+              color: alarm
+                ? "var(--es-island-danger-ink)"
+                : "var(--muted-foreground)",
+              fontWeight: alarm ? 600 : undefined,
+            }}
           >
-            Notebook
-          </h4>
+            {read.text}
+          </p>
           {/* Persistent, not a toast. errorStore merges by code and chat, so a
               per-turn count would announce itself once and then go quiet just
               as the ceiling starts biting every turn. */}
@@ -510,19 +677,115 @@ export function NotebookPanel() {
               from sent to not sent is the one event in this panel a reader
               who is not watching it must still be told about. */}
           <span
-            className="text-label leading-relaxed text-muted-foreground"
+            className="shrink-0 whitespace-nowrap text-label leading-relaxed text-muted-foreground"
             data-testid="notebook-sent-count"
             role="status"
           >
             {sent} of {total} sent
           </span>
         </div>
+        {/* The way to the reason (Settings) or to the Stop of a reading in
+            progress (the strip after the list). Only when there is one. */}
+        <Collapse open={alarm || read.kind === "reading"} className="min-w-0">
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            data-testid="chat-read-action"
+            onClick={alarm ? openFix : showProgress}
+            className="persona-ghost-action h-7 gap-1.5 px-2 text-ui"
+          >
+            {alarm && <Settings2 size={12} className="size-3" aria-hidden />}
+            {read.kind === "reading" ? CHAT_READ_WORDS.showProgress
+              : alarm && read.fix.where === "security" ? CHAT_READ_WORDS.openSecurity
+                : CHAT_READ_WORDS.openSettings}
+          </Button>
+        </Collapse>
 
-        {/* THE WAY BACK, at the top, where the notes are written. Reading
-            a chat's earlier messages is a job with a price, a preview, a
-            stop and an undo, and it lives here rather than on the worker
-            card so there is one door to it and one screen of progress. */}
-        <BackfillStrip chatId={chatId} />
+        {/* THE WAITING GROUP: counted, first, and answerable all
+            at once. The count is its own line at the top of the list; the
+            two buttons act on exactly the rows under it. */}
+        <Collapse open={waitingRows.length > 0} className="min-w-0">
+          <div className="space-y-1" role="group" aria-labelledby="notes-waiting-head">
+            <Collapse open={waiting.length > 0} className="min-w-0">
+              <div className="space-y-1">
+                <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                  <p
+                    ref={waitingHeadRef}
+                    id="notes-waiting-head"
+                    tabIndex={-1}
+                    className="text-label font-semibold outline-none"
+                    style={{ color: "var(--color-es-text-light)" }}
+                    data-testid="notes-waiting-count"
+                  >
+                    {WAITING_WORDS.count(waiting.length)}
+                  </p>
+                  <span className="flex flex-wrap items-center justify-end gap-2">
+                    <PendingButton
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      pending={busy}
+                      onClick={() => void handleKeepAll()}
+                      className="persona-ghost-action h-7 gap-1.5 px-2 text-ui"
+                    >
+                      <Check size={12} className="size-3" />
+                      {WAITING_WORDS.keepAll}
+                    </PendingButton>
+                    <PendingButton
+                      ref={handoff.take("discard-all")}
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      pending={busy}
+                      onClick={handleDiscardAll}
+                      className="persona-ghost-action h-7 gap-1.5 px-2 text-ui"
+                    >
+                      <X size={12} className="size-3" />
+                      {WAITING_WORDS.discardAll}
+                    </PendingButton>
+                  </span>
+                </div>
+                <p className="text-label leading-relaxed text-muted-foreground">
+                  {WAITING_WORDS.hint}
+                </p>
+              </div>
+            </Collapse>
+            {/* ONE LINE FOR ONE DISCARD ALL: the batch
+                stands as a single row with a single Undo, not a row and an
+                Undo per suggestion beside a second Undo for all of them.
+                A suggestion discarded on its own keeps its own row. */}
+            <Collapse open={batchHeld.length > 0} className="min-w-0">
+              <div
+                className="persona-card flex items-center gap-2"
+                data-testid="notes-discarded-batch"
+              >
+                <p
+                  ref={batchLineRef}
+                  tabIndex={-1}
+                  className="min-w-0 flex-1 text-label leading-relaxed text-muted-foreground outline-none"
+                  role="status"
+                >
+                  {WAITING_WORDS.discarded(shownBatch)}
+                </p>
+                <Button
+                  ref={handoff.take("undo-all")}
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={handleUndoAll}
+                  className="persona-ghost-action h-7 shrink-0 gap-1.5 px-2 text-ui"
+                >
+                  <Undo2 size={12} className="size-3" />
+                  {WAITING_WORDS.undoAll}
+                </Button>
+              </div>
+            </Collapse>
+            <div className="space-y-1">
+              {waitingRows.filter((e) => !batchHeld.includes(e.id)).map((entry) => renderRow(entry))}
+            </div>
+          </div>
+        </Collapse>
 
         {/* A35. With auto-accept ON there is no review step, so a note the
             model wrote reaches the prompt having been seen by nobody - and
@@ -743,7 +1006,7 @@ export function NotebookPanel() {
             here." The two contradict each other, and one of them is telling
             the reader their notes are gone. The filter decides which is
             true. */}
-        <Collapse open={!isLoading && !isError && entries.length === 0 && query === ""} className="min-w-0">
+        <Collapse open={!isLoading && !isError && all.length === 0 && query === ""} className="min-w-0">
           <p className="text-label leading-relaxed text-muted-foreground">
             {NOTES_EMPTY}
           </p>
@@ -752,52 +1015,38 @@ export function NotebookPanel() {
         {/* `role="status"`: the list empties out under the reader's own
             typing, and for anyone not watching the rows the count is the only
             evidence that the notes are still there and only hidden. */}
-        <Collapse open={!isLoading && !isError && entries.length === 0 && query !== ""} className="min-w-0">
+        <Collapse open={!isLoading && !isError && keptRows.length === 0 && query !== ""} className="min-w-0">
           <p
             className="text-label leading-relaxed text-muted-foreground"
             role="status"
           >
             {/* Two short sentences: the second used to run to 16
                 words explaining what the search covers. */}
-            No note matches that. {all.length} {all.length === 1 ? "is" : "are"} still
+            No note matches that. {keptAll.length} {keptAll.length === 1 ? "is" : "are"} still
             here, hidden by the search.
           </p>
         </Collapse>
 
-        {/* Once, not on every row. The per-row version told a Turkish-speaking
-            reader about their own language's model support every few lines,
-            which is a lecture rather than a note. */}
-        {entries.some((e) => e.provenance === "model") && (
+        <div className="space-y-1">
+          {keptRows.map((entry) => renderRow(entry))}
+        </div>
+
+        {/* Once, not on every row, and after the list: it explains the rows,
+            so it is read after them rather than standing between the reader
+            and the first one. */}
+        {[...waitingRows, ...keptRows].some((e) => e.provenance === "model") && (
           <p className="text-label leading-relaxed text-muted-foreground">
             {NOTES_IN_ENGLISH}
           </p>
         )}
 
-        <div className="space-y-1">
-          {entries.map((entry) => discarded.includes(entry.id) ? (
-            <DiscardedRow
-              key={`discarded-${entry.id}`}
-              entry={entry}
-              takeFocus={handoff.take}
-              onUndo={() => handleUndoDiscard(entry.id)}
-            />
-          ) : (
-            <NoteRow
-              key={entry.id}
-              entry={entry}
-              busy={busy}
-              confirming={confirmDeleteId === entry.id}
-              onSave={(text) => handleSave(entry, text)}
-              onPin={() => void handlePin(entry)}
-              onAccept={() => handleAccept(entry.id)}
-              onDiscard={() => handleDiscard(entry.id)}
-              onAskDelete={() => setConfirmDeleteId(entry.id)}
-              onCancelDelete={() => setConfirmDeleteId(null)}
-              onDelete={() => void handleDelete(entry.id)}
-              takeFocus={handoff.take}
-            />
-          ))}
-        </div>
+        {/* THE WAY BACK to a chat's earlier messages: a job with a price, a
+            preview, a stop and an undo, and still the one door to it. AFTER
+            the list: reading history is occasional, the notes are
+            what the tab is for. While a reading runs, the line at the top
+            says so and "Show progress" brings the keyboard to its Stop; a
+            pick made in the chat scrolls the strip into view itself. */}
+        <BackfillStrip chatId={chatId} />
       </section>
     </SlideIn>
   );
@@ -1099,11 +1348,8 @@ function NoteRow({
             {NOTE_STATE_WORDS.pinnedOver}
           </p>
         )}
-        {state === "proposed" && (
-          <p className="text-label leading-relaxed text-muted-foreground">
-            {NOTE_STATE_WORDS.proposed}
-          </p>
-        )}
+        {/* A suggestion's "not sent until you keep it" is said once, by the
+            waiting group it sits in, not on every row of it. */}
         {entry.provenance === "model" && entry.evidence_role === "assistant" && (
           <p className="text-label leading-relaxed text-muted-foreground">
             {NOTE_STATE_WORDS.fromReply}

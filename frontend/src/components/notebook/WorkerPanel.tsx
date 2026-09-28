@@ -1,4 +1,3 @@
-import { useEffect, useRef } from "react";
 /**
  * WorkerPanel - what the background extractor has been doing with your money.
  *
@@ -15,13 +14,13 @@ import { useEffect, useRef } from "react";
  * follow the vocabulary its siblings use, not the dark settings dialog's.
  */
 import { RotateCcw } from "lucide-react";
-import { useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { useUiStore } from "@/lib/store/uiStore";
 import { SwitchRow } from "@/components/settings/SwitchRow";
 import { settledAt } from "@/components/notebook/useRetryPress";
 import { SettingUnread } from "@/components/notebook/SettingUnread";
+import { NOTES_TARGET } from "@/components/notebook/notesTabProse";
 import { PendingButton } from "@/components/notebook/PendingButton";
 import { AUTO_ACCEPT_OFF, SETTING_LOADING } from "@/components/notebook/noteProse";
 import { useHeldValue } from "@/components/settings/useHeldValue";
@@ -34,7 +33,6 @@ import { useErrorStore } from "@/lib/errors/errorStore";
 // colon, and the file below is where every code the backend can put in front
 // of a person keeps its English.
 import { getErrorMessage, isKnownErrorCode } from "@/lib/errors/errorMessages";
-import { keys } from "@/lib/query/keys";
 import { REASON, REASON_TAIL, REASON_WHY } from "@/components/notebook/reasonProse";
 import { Disclosure } from "@/components/notebook/Disclosure";
 import { DISCLOSURE_WORDS } from "@/components/notebook/limitsProse";
@@ -512,7 +510,6 @@ export function sweepProse(reason: string | undefined): string {
 
 export function WorkerPanel() {
   const chatId = useUiStore((s) => s.selectedChatId);
-  const qc = useQueryClient();
   // The chat is part of the QUESTION, not just of the answer: the worker's
   // per-chat breaker is only reported for the chat that was asked about.
   const status = useWorkerStatus(chatId);
@@ -585,54 +582,11 @@ export function WorkerPanel() {
     empty: body.worker.settled_empty,
   }) : null;
 
-  /* WHAT THE POLL IS FOR ON THE OTHER SIDE OF THIS TAB.
-   *
-   * The note list has no clock of its own. The only thing that ever
-   * invalidated it was a mutation the READER made, so notes the background
-   * extractor wrote while they sat reading stayed off the screen until they
-   * clicked away to another tab and back - money spent on notes the person
-   * who paid for them could not see. The status poll above is already the one
-   * signal that a run happened, so the refresh rides on it: no second timer,
-   * no shorter interval, and nothing that refetches the list on a clock.
-   *
-   * The whole `notebook` prefix, like every mutation in query/notebook.ts:
-   * a settled run moves the entries AND `notebook_chars`, and naming one key
-   * is how the other goes stale. The direction is one way, status -> notes,
-   * so the rule the worker key exists for is untouched: a note mutation still
-   * cannot drag a status poll along with it.
-   *
-   * CHANGED, not increased. `done` is a COUNT over `notebook_extractions`
-   * across every chat, and nothing keeps those rows: deleting or clearing a
-   * chat, deleting a character, and deleting or editing a message all remove
-   * them, so the number goes DOWN as readily as up. A trigger written as
-   * "higher than last time" would go blind for every run that lands after a
-   * delete, which is exactly the quiet miss this record is about. Any
-   * movement means the extractor settled something.
-   *
-   * It can also move when nothing was written - a run that found nothing, or
-   * one whose every proposal deduplicated - so this can cost one local
-   * request that changes no pixel. That is the price of the only signal there
-   * is, it goes to this machine rather than to a provider, and the opposite
-   * mistake is the defect.
-   *
-   * The COUNT is the dependency, not the response. `status.data` is a fresh
-   * object on every poll, so depending on it would run this on every tick
-   * and put the note list back on a twenty-second timer under another name.
-   * The ref is here for the other half: the first count to arrive is not a
-   * change, it is the starting point.
-   */
-  const doneCount = status.data?.stats.done;
-  const lastDoneCount = useRef(doneCount);
-  useEffect(() => {
-    if (doneCount === undefined) return;
-    const seenBefore = lastDoneCount.current !== undefined;
-    lastDoneCount.current = doneCount;
-    // The first status to arrive is not news. The note list was fetched on
-    // the same mount and is already as fresh as this number, so treating it
-    // as a change would buy a duplicate round trip every time the tab opens.
-    if (!seenBefore) return;
-    void qc.invalidateQueries({ queryKey: keys.notebook() });
-  }, [doneCount, qc]);
+  /* The refresh that rode on this card's poll (a settled run invalidates
+   * the note list) moved to the panel frame: this card now lives in the
+   * Settings view, and the list and the Notes tab's count must follow a
+   * run whichever view or tab is open. See useNotesFollowRuns in
+   * notesTabState.ts. */
 
   async function toggle(next: boolean) {
     try {
@@ -788,7 +742,15 @@ export function WorkerPanel() {
 
         <Collapse open={body != null} className="min-w-0">
           {body && (
-            <div className="persona-card space-y-1" data-testid="worker-status">
+            <div
+              className="persona-card space-y-1"
+              data-testid="worker-status"
+              // "Open Settings" under a "Not read" line lands here when the
+              // reason has no button of its own (a stopped reader, the
+              // day's cap): the card says why, and holds the keyboard.
+              data-notes-target={NOTES_TARGET.workerCard}
+              tabIndex={-1}
+            >
               {/* THE STATE, unless the reader is dead. A dead worker used to
                   sit under "Running.", two status sentences contradicting
                   each other on one card; now the alert takes the
@@ -1094,6 +1056,7 @@ export function WorkerPanel() {
               variant="ghost"
               disabled={reset.isPending}
               onClick={() => void unstick()}
+              data-notes-target={NOTES_TARGET.tryAll}
               className="persona-ghost-action h-7 gap-1.5 px-2 text-ui"
             >
               <RotateCcw size={12} className="size-3" />
@@ -1114,6 +1077,7 @@ export function WorkerPanel() {
               variant="ghost"
               disabled={reset.isPending}
               onClick={() => void unstick(chatId)}
+              data-notes-target={NOTES_TARGET.tryChat}
               className="persona-ghost-action h-7 gap-1.5 px-2 text-ui"
             >
               <RotateCcw size={12} className="size-3" />

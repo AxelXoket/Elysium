@@ -19,6 +19,7 @@ import { useUiStore } from "@/lib/store/uiStore";
 import { useDraftStore, editDraftKey } from "@/lib/store/draftStore";
 import { messageAnchor } from "@/lib/chat/chatActions";
 import { NOTE_RANGE_WORDS, useNoteRangeStore } from "@/lib/chat/noteRange";
+import { useNotesViewStore } from "@/components/notebook/notesTabState";
 import { bubbleSurface } from "@/lib/appearance/bubbleSurface";
 import {
   fetchImageObjectUrl,
@@ -213,6 +214,8 @@ export const MessageBubble = memo(function MessageBubble({
     // reader cannot see is a silent action, so the tab comes forward.
     const ui = useUiStore.getState();
     ui.setActiveRightPanelTab("notebook");
+    // The strip is in the tab's Notes view; another view may be open.
+    useNotesViewStore.getState().setView("notes");
     if (ui.rightPanelCollapsed) ui.toggleRightPanel();
   };
   // Who is speaking was carried by alignment and bubble colour alone, and a

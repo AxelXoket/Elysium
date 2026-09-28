@@ -98,7 +98,8 @@ export const NOTE_STATE_WORDS = {
   over: "Did not fit this turn - kept, not sent. Pin it to protect it.",
   pinnedOver: "Did not fit this turn - kept, not sent. Pinned notes alone are"
     + " over the limit. Unpin one to make room.",
-  proposed: "Not sent until you keep it.",
+  // A suggestion's "not sent" is said once by its waiting group
+  // (WAITING_WORDS.hint), not on every row.
   fromReply: "Taken from the model's reply, not from your words.",
 } as const;
 

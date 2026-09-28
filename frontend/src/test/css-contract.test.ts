@@ -687,7 +687,9 @@ describe("the scrollbar look is granted by name, not by page scope (T-89)", () =
   async function notebookTabScroller(): Promise<Element> {
     useUiStore.setState({ activeRightPanelTab: "notebook" });
     mountShell();
-    const panel = await screen.findByRole("tabpanel");
+    // The first panel is the tab's own; the Notes tab holds its three views
+    // as panels inside it.
+    const panel = (await screen.findAllByRole("tabpanel"))[0];
     return scrollerAround([panel], "the notebook tab");
   }
 
@@ -4637,11 +4639,13 @@ describe("the Notes tab keeps to the panel's 300 px floor (KURAL 4.4)", () => {
     mountNotesTab({ autoAccept: AUTO_ACCEPT.held });
     // The wording that did not fit, and the strip's preview opened, so the
     // Collapses that only a preview renders are in the sweep too.
+    // In the Settings view, which is mounted and hidden: the sheet reads
+    // it all the same.
     const toggle = await screen.findByRole("button",
-      { name: /^keep this chat's suggestions without asking$/i });
+      { name: /^keep this chat's suggestions without asking$/i, hidden: true });
     await user.click(await screen.findByRole("button", { name: /^read the earlier messages$/i }));
     await screen.findByTestId("backfill-plan");
-    const panel = screen.getByRole("tabpanel");
+    const panel = screen.getAllByRole("tabpanel")[0];
     const inners = [...panel.querySelectorAll(".es-collapse-inner")];
 
     // GROUND: each one is a Collapse's own inner, in a grid, so the minimum
@@ -4658,7 +4662,8 @@ describe("the Notes tab keeps to the panel's 300 px floor (KURAL 4.4)", () => {
     }
     expect([...new Set(inners.map(notesTabBlockOf))], "a block's Collapses were not swept")
       .toEqual(expect.arrayContaining(
-        NOTES_TAB_BLOCKS.filter((block) => block !== "the saved notes")));
+        // The view tabs hold no Collapse, only their three tabs.
+        NOTES_TAB_BLOCKS.filter((block) => block !== "the saved notes" && block !== "the view tabs")));
     const heldInner = screen.getByTestId("chat-auto-accept").parentElement!;
     expect(inners, "the per-chat block's Collapse was not swept").toContain(heldInner);
     expect(heldInner.contains(toggle)).toBe(true);
@@ -4924,7 +4929,8 @@ describe("the Notes tab keeps to the panel's 300 px floor (KURAL 4.4)", () => {
       [AUTO_ACCEPT.overridden, /^follow the setting above$/i],
     ] as const) {
       mountNotesTab({ autoAccept: answer });
-      const button = await screen.findByRole("button", { name: wording });
+      // In the Settings view, mounted and hidden.
+      const button = await screen.findByRole("button", { name: wording, hidden: true });
       const words = (button.textContent ?? "").trim();
       // GROUND: this is the per-chat button, in the card's own markup.
       expect(button.getAttribute("data-testid"), `"${words}" is not the per-chat button`)

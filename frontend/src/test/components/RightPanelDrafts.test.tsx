@@ -33,6 +33,9 @@
  * depending on which tab was open. All four scroll on their own body now, and
  * that block is what holds them to one appearance.
  */
+import { rightPanelTab, rightPanelTabNames } from "@/test/helpers/rightPanelTabs";
+import { openNotesView } from "@/test/helpers/notesTab";
+import { useNotesViewStore } from "@/components/notebook/notesTabState";
 import { NEW_LIMIT_PROMPT } from "@/components/notebook/limitsProse";
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import { act, screen, waitFor, within } from "@testing-library/react";
@@ -308,7 +311,7 @@ async function openTab(
   user: ReturnType<typeof userEvent.setup>,
   name: string,
 ): Promise<void> {
-  await user.click(screen.getByRole("tab", { name }));
+  await user.click(rightPanelTab(name));
 }
 
 /**
@@ -336,6 +339,7 @@ describe("right panel text across a tab switch", () => {
     // one fixture change away from silent bleed between tests.
     useSeenNotesStore.setState({ byChat: {} });
     useContextNotesStore.setState({ byChat: {} });
+    useNotesViewStore.setState({ view: "notes", focusTarget: null });
     localStorage.clear();
     sessionStorage.clear();
     useUiStore.setState({
@@ -539,6 +543,8 @@ describe("right panel text across a tab switch", () => {
     renderWithQueryClient(<RightPanel />, { wrapper });
 
     await openTab(user, "Notes");
+    // The limits are the tab's Limits view.
+    await openNotesView(user, "limits");
     await user.type(
       await screen.findByRole("textbox", { name: "New limit" }),
       "no hospitals",
@@ -578,6 +584,8 @@ describe("right panel text across a tab switch", () => {
     renderWithQueryClient(<RightPanel />, { wrapper });
 
     await openTab(user, "Notes");
+    // The limits are the tab's Limits view.
+    await openNotesView(user, "limits");
     await user.type(
       await screen.findByRole("textbox", { name: "New limit" }),
       "no hospitals",
@@ -632,6 +640,8 @@ describe("right panel text across a tab switch", () => {
     renderWithQueryClient(<RightPanel />, { wrapper });
 
     await openTab(user, "Notes");
+    // The limits are the tab's Limits view.
+    await openNotesView(user, "limits");
     await user.type(
       await screen.findByRole("textbox", { name: "New limit" }),
       "no hospitals",
@@ -1484,7 +1494,7 @@ describe("one scrollbar across the right panel's tabs (T-21)", () => {
    * scroller the user never touches.
    */
   function scrollerOfOpenTab(): HTMLElement {
-    const panel = screen.getByRole("tabpanel");
+    const panel = screen.getAllByRole("tabpanel")[0];
     if (panel.classList.contains("overflow-y-auto")) return panel;
     const inner = panel.querySelector<HTMLElement>(".overflow-y-auto");
     if (inner) return inner;
@@ -1525,14 +1535,13 @@ describe("one scrollbar across the right panel's tabs (T-21)", () => {
     mockPanelApi();
     renderInPage();
     await screen.findByRole("textbox", { name: "Search models" });
-    const tabs = screen.getAllByRole("tab")
-      .map((t) => (t.textContent ?? "").trim());
+    const tabs = rightPanelTabNames();
     expect(tabs.length, "the panel rendered fewer tabs than it has")
       .toBeGreaterThanOrEqual(MIN_TABS);
     for (const tab of tabs) {
       await openTab(user, tab);
       await waitFor(() => {
-        expect(screen.getByRole("tab", { name: tab })).toHaveAttribute(
+        expect(rightPanelTab(tab)).toHaveAttribute(
           "aria-selected",
           "true",
         );

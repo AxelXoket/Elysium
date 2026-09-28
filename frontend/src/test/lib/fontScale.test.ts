@@ -629,7 +629,7 @@ describe("every button in the Notes tab is on the chrome step", () => {
     const user = userEvent.setup();
     // Settled: each wait is a button only its own block renders.
     await settleNotesTab();
-    const panel = screen.getByRole("tabpanel");
+    const panel = screen.getAllByRole("tabpanel")[0];
 
     const nameOf = (b: Element): string =>
       (b.getAttribute("aria-label") ?? "").trim() || (b.textContent ?? "").trim()

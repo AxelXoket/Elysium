@@ -246,6 +246,23 @@ async def worker_status(chat_id: int | None = None) -> dict:
                            chat_id, type(exc).__name__)
             return None
 
+    def _chat_unread(con) -> int | None:
+        """How many of THIS chat's messages no read has covered, or None.
+        The Notes tab's first line says "Up to date." only on this number:
+        `worker.backlog` is counted once at unlock and covers every chat,
+        so a zero there goes stale the moment the reader sends a message.
+        One COUNT over one chat's messages, the same predicate as the
+        backlog (`unread_count`). A failure costs this field only, like
+        `chat_refusal`; the panel then never claims "Up to date."."""
+        if chat_id is None:
+            return None
+        try:
+            return notebook.unread_count(con, chat_id)
+        except Exception as exc:  # noqa: BLE001 - degrade, never fail the poll
+            logger.warning("chat_unread unavailable for chat %d: %s",
+                           chat_id, type(exc).__name__)
+            return None
+
     def _read() -> dict:
         from database import get_db
         with get_db() as con:
@@ -266,6 +283,7 @@ async def worker_status(chat_id: int | None = None) -> dict:
                 "backfill": notebook_worker.worker.backfill_block(con, chat_id),
                 "chat_refusal": _chat_refusal(con),
                 "long_message": _long_message(con),
+                "chat_unread": _chat_unread(con),
             }
 
     body = await anyio.to_thread.run_sync(_read)

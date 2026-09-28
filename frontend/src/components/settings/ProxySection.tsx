@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { NOTES_TARGET } from "@/components/notebook/notesTabProse";
 import {
   PANEL_DRAFT_KEYS,
   useDraftStore,
@@ -435,6 +436,9 @@ export function ProxySection() {
         <Input
           type="url"
           placeholder="https://proxy.example.com"
+          // Where "Open Security" lands from the Notes tab's "Not read: the
+          // required proxy is not working."
+          data-notes-target={NOTES_TARGET.proxy}
           value={urlInput}
           onChange={(e) => setUrlInput(e.target.value)}
           disabled={busy}

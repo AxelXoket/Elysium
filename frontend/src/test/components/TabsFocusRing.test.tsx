@@ -52,7 +52,7 @@ function Basic({ contentClassName }: { contentClassName?: string }) {
 describe("the open tabpanel's focus ring", () => {
   it("pairs outline-none with a visible focus-visible ring", () => {
     render(<Basic />);
-    const panel = screen.getByRole("tabpanel");
+    const panel = screen.getAllByRole("tabpanel")[0];
 
     expect(panel.className).toContain("outline-none");
     // A `for` over an empty array asserts nothing and passes. This is the
@@ -81,7 +81,7 @@ describe("the open tabpanel's focus ring", () => {
     // reads that variable back. The panel's visible indicator is the ring,
     // and the outline utility was decoration that could be mistaken for one.
     render(<Basic />);
-    const panel = screen.getByRole("tabpanel");
+    const panel = screen.getAllByRole("tabpanel")[0];
 
     expect(panel.className).toContain("outline-none");
     expect(panel.className).not.toMatch(/focus-visible:outline-\d/);
@@ -96,7 +96,7 @@ describe("the open tabpanel's focus ring", () => {
 
   it("is a real tab stop that can actually hold focus", () => {
     render(<Basic />);
-    const panel = screen.getByRole("tabpanel");
+    const panel = screen.getAllByRole("tabpanel")[0];
 
     expect(panel).toHaveAttribute("tabindex", "0");
     panel.focus();
@@ -114,7 +114,7 @@ describe("the open tabpanel's focus ring", () => {
     // since none of these callers pass their own outline/ring utilities.
     for (const contentClassName of ["flex-1 overflow-hidden", "flex-1 overflow-y-auto"]) {
       const { unmount } = render(<Basic contentClassName={contentClassName} />);
-      const panel = screen.getByRole("tabpanel");
+      const panel = screen.getAllByRole("tabpanel")[0];
 
       expect(panel.className).toContain(contentClassName);
       for (const cls of RING_CLASSES) {

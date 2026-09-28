@@ -26,9 +26,9 @@ import userEvent from "@testing-library/user-event";
 import { StrictMode, type ComponentType, type ReactNode } from "react";
 
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
-import { WorkerPanel } from "@/components/notebook/WorkerPanel";
-import { NotebookPanel } from "@/components/notebook/NotebookPanel";
-import { ExtractionSettings } from "@/components/notebook/ExtractionSettings";
+import { RightPanel } from "@/components/layout/RightPanel";
+import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
+import { settingsFixture } from "../mocks/fixtures";
 import { WORKER_POLL_MS } from "@/lib/query/notebook";
 import { useDraftStore } from "@/lib/store/draftStore";
 import { mockFetch } from "../mocks/api";
@@ -78,10 +78,11 @@ const MODELS = {
  *
  * The route bodies are the SAME objects the mock serialises on every
  * request, so mutating `notes` or `worker` here is the server changing its
- * mind between two polls - which is the thing being tested. The panels are
- * the real ones and they are mounted together because that is how RightPanel
- * mounts them: one tab, one query client, the note list and the worker card
- * on screen at the same time.
+ * mind between two polls - which is the thing being tested. Mounted through
+ * RightPanel itself, because since the three views the refresh belongs to the panel's
+ * frame (useNotesFollowRuns): the worker card sits in the tab's Settings
+ * view, and the note list must follow a run whichever view is open. One
+ * query client, the note list on screen, the worker card mounted beside it.
  */
 function openTheNotesTab(wrapper?: ComponentType<{ children: ReactNode }>) {
   const notes: { entries: unknown[]; notebook_chars: number } = {
@@ -101,22 +102,32 @@ function openTheNotesTab(wrapper?: ComponentType<{ children: ReactNode }>) {
     // Before the bare key below, because the first match in insertion order
     // wins and a POST to the same path must come back as ONE entry.
     [`POST /notebook/${CHAT}`]: { body: entry(2, SECOND) },
+    [`/notebook/${CHAT}/boundaries`]: { body: { boundaries: [], use_global: true } },
+    "/notebook/boundaries": { body: { boundaries: [], use_global: true } },
+    "/notebook/safeword": { body: { word: "" } },
     [`/notebook/${CHAT}`]: { body: notes },
+    [`/chats/${CHAT}/messages`]: { body: [] },
+    // Asked for by the generation-settings provider the shell wraps the
+    // panel in. Last: as a substring it would answer the extract settings.
+    "/settings": { body: settingsFixture },
   });
-  const view = renderWithQueryClient(
-    <>
-      <NotebookPanel />
-      <ExtractionSettings />
-      <WorkerPanel />
-    </>,
-    { wrapper },
+  const Strict = wrapper;
+  const Frame = ({ children }: { children: ReactNode }) => (
+    Strict
+      ? <Strict><GenerationSettingsProvider>{children}</GenerationSettingsProvider></Strict>
+      : <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
   );
-  /** Every GET this component tree has sent whose URL ends in `path`. */
+  const view = renderWithQueryClient(<RightPanel />, { wrapper: Frame });
+  /** Every GET this component tree has sent whose URL's PATH ends in
+   *  `path`. Ends in, not contains: the tab now also asks for
+   *  `/notebook/7/boundaries` (the Limits view is mounted), and a substring
+   *  match counted that as a second read of the note list. */
   function callsTo(path: string): number {
     return fetchMock.mock.calls.filter((c) => {
       const url = String(c[0] as RequestInfo | URL);
       const init = c[1] as RequestInit | undefined;
-      return (init?.method ?? "GET") === "GET" && url.includes(path);
+      return (init?.method ?? "GET") === "GET"
+        && new URL(url, "http://127.0.0.1").pathname.endsWith(path);
     }).length;
   }
   return { notes, worker, view, callsTo };
@@ -133,7 +144,7 @@ describe("WorkerPanel keeps the note list honest about background work", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    useUiStore.setState({ selectedChatId: CHAT });
+    useUiStore.setState({ selectedChatId: CHAT, activeRightPanelTab: "notebook", rightPanelCollapsed: false });
     // The new-note buffer outlives a component, so it outlives a test too.
     useDraftStore.getState().forgetChat(CHAT);
   });

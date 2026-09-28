@@ -15,7 +15,7 @@
  */
 import { createElement } from "react";
 import type { QueryClient } from "@tanstack/react-query";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import { expect } from "vitest";
 import { RightPanel } from "@/components/layout/RightPanel";
 import { GenerationSettingsProvider } from "@/components/generation/GenerationSettingsContext";
@@ -147,13 +147,13 @@ export async function openRightPanelTab(
   name: string,
   client: QueryClient,
 ): Promise<void> {
-  await user.click(screen.getByRole("tab", { name }));
+  await user.click(rightPanelTab(name));
   await waitFor(() => {
-    expect(screen.getByRole("tab", { name })).toHaveAttribute("aria-selected", "true");
+    expect(rightPanelTab(name)).toHaveAttribute("aria-selected", "true");
   });
   await waitFor(() => expect(client.isFetching(), `the ${name} tab is still fetching`).toBe(0));
-  if (isNotesTab(screen.getByRole("tabpanel"))) await settleNotesTab();
-  await motionAtRest(screen.getByRole("tabpanel"));
+  if (isNotesTab(screen.getAllByRole("tabpanel")[0])) await settleNotesTab();
+  await motionAtRest(screen.getAllByRole("tabpanel")[0]);
 }
 
 /** The opacity each element in `within` carries in its style attribute,
@@ -173,9 +173,30 @@ export async function motionAtRest(within: Element): Promise<void> {
   });
 }
 
+/** The panel's own strip of tabs: the first list. The Notes tab has a
+ *  list of its own inside it (its three views), so "every tab" on
+ *  the page is not the panel's tabs any more. */
+export function rightPanelTabList(): HTMLElement {
+  return screen.getAllByRole("tablist")[0];
+}
+
+/** A trigger's word, without the count the Notes tab can carry ("Notes 3"
+ *  shows the word and a number; the number is not part of its name here). */
+export function rightPanelTabWord(tab: Element): string {
+  return (tab.textContent ?? "").replace(/\d+$/, "").trim();
+}
+
+/** The panel's trigger whose word is `name`. */
+export function rightPanelTab(name: string): HTMLElement {
+  const found = within(rightPanelTabList()).getAllByRole("tab")
+    .filter((t) => rightPanelTabWord(t) === name);
+  if (found.length !== 1) throw new Error(`${found.length} panel tabs read "${name}"`);
+  return found[0];
+}
+
 /** The tabs the panel renders, by the words on their triggers. */
 export function rightPanelTabNames(): string[] {
-  const names = screen.getAllByRole("tab").map((t) => (t.textContent ?? "").trim());
+  const names = within(rightPanelTabList()).getAllByRole("tab").map(rightPanelTabWord);
   expect(names.length, "the panel rendered fewer tabs than it has")
     .toBeGreaterThanOrEqual(RIGHT_PANEL_MIN_TABS);
   return names;

@@ -27,6 +27,8 @@ import {
 } from "@/components/notebook/backfillProse";
 import { EXCERPT_MAX, NOTE_RANGE_WORDS, excerpt } from "@/lib/chat/noteRange";
 import { SETTING_RETRY } from "@/components/notebook/noteProse";
+import { NotesTab } from "@/components/notebook/NotesTab";
+import { useNotesViewStore } from "@/components/notebook/notesTabState";
 import { useUiStore } from "@/lib/store/uiStore";
 import type { Message } from "@/lib/schemas/chats";
 import type { BackfillPlan } from "@/lib/schemas/notebook";
@@ -150,6 +152,7 @@ describe("picking the notes range from the chat", () => {
     useUiStore.setState({
       selectedChatId: CHAT, activeRightPanelTab: "models", rightPanelCollapsed: true,
     });
+    useNotesViewStore.setState({ view: "notes", focusTarget: null });
     serve();
   });
   afterEach(() => vi.restoreAllMocks());
@@ -199,6 +202,29 @@ describe("picking the notes range from the chat", () => {
     expect(within(bubble(7)).getByTestId("note-range-mark").textContent)
       .toBe(NOTE_RANGE_WORDS.markTo);
     expect(screen.getAllByTestId("note-range-mark")).toHaveLength(2);
+  });
+
+  it("a pick made while the tab shows another view brings the Notes view forward", async () => {
+    // The strip lives in the tab's Notes view. A pick made while the
+    // reader was looking at Limits must not land in a hidden view.
+    useNotesViewStore.setState({ view: "limits", focusTarget: null });
+    const user = userEvent.setup();
+    // The tab's own three views, with the chat beside them.
+    renderWithQueryClient(
+      <div>
+        <div data-testid="chat">
+          {SEVEN.map((m) => (
+            <MessageBubble key={m.id} chatId={CHAT} message={m} messages={SEVEN} />
+          ))}
+        </div>
+        <NotesTab />
+      </div>,
+    );
+    // GROUND: the strip is out of reach while Limits is shown.
+    expect(hiddenFromReaders(await screen.findByTestId("backfill-strip"))).toBe(true);
+    await user.click(rangeButton(3));
+    await waitFor(() => expect(useNotesViewStore.getState().view).toBe("notes"));
+    await waitFor(() => expect(hiddenFromReaders(screen.getByTestId("backfill-preview"))).toBe(false));
   });
 
   it("shows each end as its place and first words, and never an id", async () => {

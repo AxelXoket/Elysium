@@ -1981,7 +1981,11 @@ describe("its place in the Notebook panel", () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
-  it("sits under the title row and above the just-saved strip", async () => {
+  it("sits after the notes: the chat's line, the saved strip and the rows come first", async () => {
+    // Reading a chat's history is an occasional, paid job; the
+    // notes are what the tab is for. The strip used to open the tab and push
+    // the first note under the fold of a 720 px window. It now follows the
+    // list, and the line at the top says when a reading is running.
     mockFetch({
       [`/notebook/${CHAT}`]: { body: { entries: [{
         id: 5, chat_id: CHAT, position: 0, kind: "fact",
@@ -1995,13 +1999,16 @@ describe("its place in the Notebook panel", () => {
     });
     renderWithQueryClient(<NotebookPanel />);
     const strip = await screen.findByTestId("backfill-strip");
-    const title = screen.getByRole("heading", { name: /notebook/i });
+    const line = screen.getByTestId("chat-read-line");
     const saved = await screen.findByTestId("just-saved");
+    const row = await screen.findByTestId("note-5");
     // DOCUMENT_POSITION_FOLLOWING (4): the argument comes after the node.
-    expect(title.compareDocumentPosition(strip) & Node.DOCUMENT_POSITION_FOLLOWING)
-      .toBeTruthy();
-    expect(strip.compareDocumentPosition(saved) & Node.DOCUMENT_POSITION_FOLLOWING)
-      .toBeTruthy();
+    const after = (a: Node, b: Node) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    expect(after(line, saved), "the saved strip is above the chat's line").toBe(true);
+    expect(after(saved, row), "the note row is above the saved strip").toBe(true);
+    expect(after(row, strip), "the reading strip is not after the notes").toBe(true);
+    // GROUND: the reader is not trivially true; the reverse order reads false.
+    expect(after(strip, row)).toBe(false);
   });
 });
 

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { NOTES_TARGET } from "@/components/notebook/notesTabProse";
 import { z } from "zod/v4";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -347,6 +348,9 @@ export function ApiKeySection() {
         <Input
           type="password"
           placeholder="sk-or-v1-..."
+          // Where "Open Security" lands from the Notes tab's "Not read: no
+          // API key is set." (NotebookPanel.tsx, served by RightPanel).
+          data-notes-target={NOTES_TARGET.apiKey}
           value={keyInput}
           onChange={(e) => setKeyInput(e.target.value)}
           disabled={busy}

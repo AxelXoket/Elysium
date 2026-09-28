@@ -26,6 +26,7 @@ import { useId } from "react";
 import { SlideIn } from "@/components/motion/SlideIn";
 import { settledAt } from "@/components/notebook/useRetryPress";
 import { SettingUnread } from "@/components/notebook/SettingUnread";
+import { NOTES_TARGET } from "@/components/notebook/notesTabProse";
 import { CHOICE_UNREAD, EXTRACTION_WORDS } from "@/components/notebook/noteProse";
 import {
   Select,
@@ -152,6 +153,9 @@ export function ExtractionSettings() {
             items={modelLabels}
           >
             <SelectTrigger
+              // Where "Open Settings" lands from "Not read: no note model
+              // picked." and from a note model that cannot write notes.
+              data-notes-target={NOTES_TARGET.noteModel}
               aria-labelledby={modelLabelId}
               aria-describedby={CHAT_MODEL_PRICE_WARNING_ID}
               className="persona-field h-8 w-full min-w-0 rounded-md px-2 text-ui"

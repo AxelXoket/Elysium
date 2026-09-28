@@ -26,11 +26,18 @@ export function useSettings() {
   });
 }
 
-export function useProxyHealth() {
+export function useProxyHealth(enabled = true, pollMs?: number) {
   return useQuery({
     queryKey: keys.proxyHealth(),
     queryFn: getProxyHealth,
     staleTime: 15_000,
+    // Off for the Notes tab's reading line unless a proxy is both required
+    // and set up: only then can its health stop the note reader
+    // (`proxy_gate`). That line asks on the worker poll's clock, so a proxy
+    // that goes down or comes back changes it without a remount; the server
+    // answers from its own cache, so this adds no probe of its own.
+    enabled,
+    refetchInterval: enabled && pollMs ? pollMs : false,
   });
 }
 

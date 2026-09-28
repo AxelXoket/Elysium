@@ -123,7 +123,7 @@ describe("who is allowed to carry the pairing", () => {
     // that lost a member while the floor stayed at three would fail on the
     // count before it ever looked at a class name.
     const suspects = [
-      screen.getByRole("tabpanel"),
+      screen.getAllByRole("tabpanel")[0],
       screen.getAllByRole("tab")[0],
     ];
     expect(suspects.length).toBeGreaterThanOrEqual(2);

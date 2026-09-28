@@ -1340,6 +1340,36 @@
   background: var(--es-sage-14);
 }
 
+/* A card that takes the keyboard from a "Not read" line's button (the
+   worker card) shows it: the opaque ring token, the same
+   one the panel's ghost actions use for focus (4.58:1 on this panel). */
+.persona-card[data-notes-target]:focus-visible,
+.persona-field[data-notes-target]:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* The count on the Notes tab button: the active badge's fill,
+   at the counter size (--text-micro is "rozet, sayac"), and the one round
+   thing the language allows. No border: it sits inside a 26 px tab. The
+   ink is the panel's strong one, not the badge's accent: 11 px is not large
+   text, and the accent read 4.45:1 on this fill in the Notes tab and 4.01:1
+   in the tab strip (right-panel-readability). */
+.notes-count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: var(--radius-badge);
+  font-size: var(--text-micro);
+  font-weight: 600;
+  line-height: 1;
+  color: var(--color-es-text-light);
+  background: var(--es-sage-14);
+}
+
 .persona-field {
   border-color: var(--es-ink-14) !important;
   background: var(--es-veil-24) !important;
