@@ -70,6 +70,20 @@
     --color-es-warm-canvas-soft: #FBFCFE;
     --color-es-border-warm:      #D3DDE7;
 
+    /* Scrollbar thumbs, one per surface family, named for the surface they
+       sit ON rather than for their own lightness. T-89 measures both against
+       every painted layer of every surface they reach, at WCAG 1.4.11's 3:1
+       floor for non-text, and prints the number per band of the bar. The
+       light value is the family hue the app already used for a thumb, at a
+       higher alpha than the one it shipped at, because at the old one it
+       missed the floor on the right panel's darkest stop; the
+       dark one is opaque white and deliberately outside the ink family,
+       because the sidebar lights the whole top of its right side and the
+       bar runs down it a dozen pixels inboard, where no ink-family value
+       clears the floor. */
+    --color-es-scrollbar-on-light: rgba(66, 82, 100, 0.85);
+    --color-es-scrollbar-on-dark:  #FFFFFF;
+
     --color-es-primary-sage:      #3E72B0;
     --color-es-primary-sage-deep: #2B5384;
     /* CTA ink - the send button's pressed-in depth. One step past deep so a
@@ -1707,10 +1721,14 @@
   text-transform: uppercase;
 }
 
+/* The gutter this box used to declare here is now in the one rule that owns
+   `scrollbar-gutter` for the whole app, beside the other two flow scrollers.
+   Two declarations of the same value on the same element is a thing to keep
+   in sync for no gain, and a selector-keyed edit to one of them would have
+   silently left the other behind. */
 .generation-dialog {
   width: min(42rem, calc(100vw - 2rem));
   gap: 1rem;
-  scrollbar-gutter: stable;
 }
 
 /* Every Base UI popup opens at --duration-fast and closes at --duration-exit,
@@ -1874,11 +1892,97 @@
   color: rgba(214, 224, 236, 0.58);
 }
 
+/* Membership in the standard scrollbar look is by NAME in this list, not by
+   sitting inside .elysium-page: the dialogs and the Select popup are portalled
+   to document.body and inherit nothing from the page. The gutter is a
+   separate rule below, carrying only the three selectors whose scroller is in
+   the page's own flow, because a reserved strip is a layout cost and only
+   those three have a layout shift to spend it on. T-89 asserts the VALUE as
+   well as the match, on both rules: `auto` leaves the standard properties
+   half-applied and `none` hides every bar in the app. */
+.elysium-page .overflow-y-auto,
+.elysium-page [data-slot="scroll-area-viewport"],
+.generation-dialog,
+.sidebar-dialog,
+[data-slot="select-content"] {
+  scrollbar-width: thin;
+}
+
+/* The thumb colour is per SURFACE, in the two palette tokens named above:
+   one value cannot serve grounds that run from the app frame to white.
+
+   Each value sits on the SCROLLERS of its surface, never on the surface box.
+   scrollbar-color inherits, and a non-auto value makes Chromium drop the
+   whole ::-webkit-scrollbar family for whatever element carries it, so a
+   value on `.warm-canvas` would also land on the composer's message box,
+   which scrolls on itself outside the chat scroller, and cost it the bar
+   @layer base gives it. On the scrollers it reaches only scrollers. T-89
+   asserts the surfaces themselves declare nothing, `@media` included.
+
+   The dark-wallpaper chat scroller matches the light list too: both
+   selectors are 0-2-0, so the tie falls to source order and this rule has to
+   stay BELOW the light one. T-89's dark-wallpaper case fails if it moves.
+
+   The arithmetic is T-89's and is not restated here: it composites every
+   painted layer behind the bar - the panel mist and its veil, the ::before
+   at its own opacity, the screen-blended ::after - over the bar's own
+   band, region by region, and prints the ratio for each, with the fog on
+   and with it off. The band is the column the bar is really drawn in: the
+   guard walks the scroller's own box out to the panel it sits on, so the
+   wrappers' padding puts the band inboard of the panel's lit edge rather
+   than on it. The dark thumb is opaque white because no value in the dark
+   panels' ink family clears the floor over that column. Nothing is cut out
+   of the panel's decoration to make room for the bar; the glow and the
+   sheen paint their whole box, and T-89 asserts they still do. */
+.warm-canvas .overflow-y-auto,
+.glass-right .overflow-y-auto,
+.glass-right [data-slot="scroll-area-viewport"] {
+  scrollbar-color: var(--color-es-scrollbar-on-light) transparent;
+}
+
+.glass-dark .overflow-y-auto,
+.sidebar-dialog,
+[data-slot="select-content"],
+.elysium-page .chat-bg-dark {
+  scrollbar-color: var(--color-es-scrollbar-on-dark) transparent;
+}
+
+/* A field is never a scrollbar we style. Every selector above hands its
+   colour to descendants as well as to the scroller itself - the portalled
+   surfaces because they ARE their own scroller and the colour cannot be
+   moved down, the page scrollers because a field can sit inside one. Any
+   field that ends up with a non-auto value loses the bar @layer base
+   gives it and paints the browser's default one, so the inheritance is cut
+   for the whole family rather than case by case: which fields scroll is a
+   moving target, and the dialogs' are spared today only by
+   `field-sizing-content`, one class away from changing. T-89 renders the
+   live ones and asserts each computes `auto`, conditionals included.
+
+   An INHERITED value loses to the element's own declaration whatever the
+   weights are, which is why `:where()` can keep this rule out of the
+   specificity argument. That holds for inheritance only: a field that
+   carried `overflow-y-auto` in its own class list would be matched by the
+   0-2-0 scroller rules above and would outrank this 0-1-0 one. None does,
+   and a field with a scroller's class would be a mistake on its own terms.
+   `select` is in the list because native ones sit under these surfaces; its
+   dropdown is drawn by the platform, so this costs nothing and removes the
+   question.
+
+   ADIM 2 note: when the webkit families go, every element pinned here has
+   NEITHER standard property left and falls to the platform bar with arrow
+   buttons. The field family needs its own width and colour pair in that
+   step; it is not covered by the name list above. */
+.warm-canvas :where(textarea, input, select),
+.glass-right :where(textarea, input, select),
+.glass-dark :where(textarea, input, select),
+.sidebar-dialog :where(textarea, input, select),
+[data-slot="select-content"] :where(textarea, input, select) {
+  scrollbar-color: auto;
+}
+
 .elysium-page .overflow-y-auto,
 .elysium-page [data-slot="scroll-area-viewport"],
 .generation-dialog {
-  scrollbar-color: rgba(66, 82, 100, 0.58) transparent;
-  scrollbar-width: thin;
   scrollbar-gutter: stable;
 }
 

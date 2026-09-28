@@ -28,6 +28,8 @@ export const tokens = {
     warmCanvas: "var(--color-es-warm-canvas)",
     warmCanvasSoft: "var(--color-es-warm-canvas-soft)",
     borderWarm: "var(--color-es-border-warm)",
+    scrollbarOnLight: "var(--color-es-scrollbar-on-light)",
+    scrollbarOnDark: "var(--color-es-scrollbar-on-dark)",
     primarySage: "var(--color-es-primary-sage)",
     primarySageDeep: "var(--color-es-primary-sage-deep)",
     primaryInk: "var(--color-es-primary-ink)",

@@ -21,6 +21,7 @@ import { getErrorMessage } from "@/lib/errors/errorMessages";
 import { getChatBgBlob } from "@/lib/store/chatBgDb";
 import {
   buildBgLayers,
+  CHAT_BG_DARK_CHROME_BELOW,
   computeEff,
   resolveTint,
 } from "@/lib/appearance/chatBackground";
@@ -225,6 +226,6 @@ export function useChatBackground(
   if (layers == null) return { style: null, dark: false };
   return {
     style: layers as CSSProperties,
-    dark: computeEff(lum, contrast, resolved) < 0.5,
+    dark: computeEff(lum, contrast, resolved) < CHAT_BG_DARK_CHROME_BELOW,
   };
 }

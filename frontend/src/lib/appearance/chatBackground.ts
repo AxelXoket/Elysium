@@ -56,8 +56,14 @@ export function resolveTint(tint: string, lum: number): string {
   return tint;
 }
 
-/** Effective brightness under the scrim; < 0.5 means bare-canvas chrome
- * must switch to its light (chat-bg-dark) variants. */
+/** The effective brightness at or above which bare-canvas chrome keeps its
+ * dark variants. Below it the chrome switches to light and the scroller
+ * takes .chat-bg-dark, so this is also the LIGHTEST ground that class ever
+ * sits on, which is what the scrollbar contrast guard measures against. */
+export const CHAT_BG_DARK_CHROME_BELOW = 0.5;
+
+/** Effective brightness under the scrim; below CHAT_BG_DARK_CHROME_BELOW the
+ * bare-canvas chrome must switch to its light (chat-bg-dark) variants. */
 export function computeEff(lum: number, contrast: number, tintHex: string): number {
   return lum * (1 - contrast) + hexLum(tintHex) * contrast;
 }
