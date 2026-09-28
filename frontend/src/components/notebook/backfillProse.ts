@@ -10,11 +10,8 @@
  * Every sentence here is written from the body's own fields; none of them
  * echoes a token a person did not type.
  */
-import {
-  SWEEP_PROSE,
-  echoable,
-  sweepProse,
-} from "@/components/notebook/WorkerPanel";
+import { SWEEP_PROSE, echoable } from "@/components/notebook/WorkerPanel";
+import { REASON, REASON_TAIL } from "@/components/notebook/reasonProse";
 import type { BackfillScope } from "@/lib/api/notebook";
 import type {
   BackfillPlan,
@@ -42,8 +39,8 @@ export const SCOPE_ORDER = ["all", "next", "range"] as const;
  *  option text out of the same record is what keeps the closed field and
  *  the open list from ever saying two different things. */
 export const SCOPE_LABELS: Record<BackfillScope, string> = {
-  all: "Everything that is still unread",
-  next: "The next unread stretch only",
+  all: "Every message not yet read for notes",
+  next: "Only the next part not yet read",
   range: "A range of messages, read again",
 };
 
@@ -96,51 +93,40 @@ export function rangeSummary(
 /** Why the preview says a run cannot start, per `blocked_by` token.
  *
  *  SIX KEYS, one per member of the backend's `_BLOCKER_REFUSALS`, and the
- *  test walks all six. Three of them share a token with `SWEEP_PROSE` and
- *  still say something different, which is deliberate and is not the
- *  duplicate section 5.0 forbids: these are FRAGMENTS of a state, joined
- *  into "It cannot start: a; b." and read before anything is pressed;
- *  `SWEEP_PROSE`'s are whole sentences about a press that was refused, in
- *  the past tense, ending in "so nothing was sent". Putting one table's
- *  strings in the other's place produces "It cannot start: Nothing here is
- *  unread - it has all been looked at.". Both tables are exported and both
- *  are walked against the backend's own set, which is what section 5.0
- *  actually asks for: one vocabulary, not one wording for two moments.
+ *  test walks all six. Each is a whole short sentence, and the three this
+ *  table shares with `SWEEP_PROSE` and `SKIP_PROSE` (nothing unread, a model
+ *  that cannot write notes, a model list out of reach) are the SAME
+ *  sentence, imported from reasonProse.ts. What differs is only the
+ *  moment's own tail: this table is read before anything is pressed, so it
+ *  never says "nothing was sent"; `blockedProse` puts "It cannot start."
+ *  in front of it.
  *
- *  (The reason recorded here before was that `blocked_by` "is not a closed
- *  vocabulary the client can check ahead of time". That was false -
- *  `_BLOCKER_REFUSALS` is a closed tuple, six now, and section 5 enumerates
- *  the same tokens by name - and a false reason is worse than none, because it
- *  argues the walk away.) */
+ *  (The reason once recorded here for a separate wording was that
+ *  `blocked_by` "is not a closed vocabulary the client can check ahead of
+ *  time". That was false - `_BLOCKER_REFUSALS` is a closed tuple, six now,
+ *  and section 5 enumerates the same tokens by name.) */
 export const BLOCKED_PROSE: Record<string, string> = {
-  no_character: "this chat has no character",
-  no_chat_model: "no model is chosen for this chat yet - send one message first",
-  no_extract_model: "no note model is chosen (see Note suggestions, below)",
-  model_not_extractable:
-    "the model this chat uses cannot answer in the strict form notes need, or"
-    + " is not on the list of endpoints that keep no copy of your words - pick"
-    + " a note model from the list, or chat with a model that is on it",
-  // Not the model's fault, so not a word about the model: the provider's
-  // list of models that can write notes could not be fetched, and the note
-  // model is the chat's own, which nothing has vetted without that list.
-  model_list_unavailable:
-    "the list of models that can write notes could not be fetched from the"
-    + " provider, and this chat's note model is its chat model, which only"
-    + " that list can vouch for - nothing can be checked until that list is"
-    + " fetched again, so try again when the provider can be reached",
-  nothing_unread: "nothing here is unread",
+  no_character: "This chat has no character.",
+  no_chat_model: "This chat has no model yet. Send one message first.",
+  no_extract_model: "No note model is chosen. Pick one under Note suggestions.",
+  model_not_extractable: REASON.modelNotExtractable,
+  // Not the model's fault, so not a word about the model, and no
+  // list is pointed at: the picker is fed by the same list.
+  model_list_unavailable: `${REASON.modelListUnavailable} ${REASON_TAIL.tryLater}`,
+  nothing_unread: REASON.nothingUnread,
 };
 
-/** The blocking reasons in words. A token nobody wrote a sentence for still
- *  gets one, and it rides along in brackets only when `echoable` allows it -
- *  the same guard `outcomeProse` puts on `last_error`, for the same reason.
- *  The vocabulary is closed today, so the fallback is for the version skew a
- *  packaged build lives with: a backend one release ahead sends a sixth
- *  token, and the screen says "it is blocked" rather than printing it. */
+/** The blocking reasons in words: "It cannot start." and one sentence per
+ *  reason. A token nobody wrote a sentence for still gets one, and it rides
+ *  along in brackets only when `echoable` allows it - the same guard
+ *  `outcomeProse` puts on `last_error`, for the same reason. The vocabulary
+ *  is closed today, so the fallback is for the version skew a packaged
+ *  build lives with: a backend one release ahead sends a seventh token, and
+ *  the screen says "it is blocked" rather than printing it. */
 export function blockedProse(tokens: string[]): string {
   const parts = tokens.map((t) => BLOCKED_PROSE[t]
-    ?? `it is blocked${echoable(t) ? ` (${t})` : ""}`);
-  return `It cannot start: ${parts.join("; ")}.`;
+    ?? `It is blocked${echoable(t) ? ` (${t})` : ""}.`);
+  return [REASON_TAIL.cannotStart, ...parts].join(" ");
 }
 
 /** What the strip says when the preview could not be worked out and the
@@ -187,8 +173,8 @@ export function planProse(plan: BackfillPlan): string {
   const cost = plan.cost_estimate == null
     ? "at a price this app does not know"
     : `up to $${plan.cost_estimate.toFixed(5)}`;
-  return `${what}: ${calls}, ${cost}. ${plan.calls_spent_today} of `
-    + `${counted(plan.backfill_cap, "call", "calls")} for reading history used today.`;
+  return `${what}: ${calls}, ${cost}. History reading used today: `
+    + `${plan.calls_spent_today} of ${counted(plan.backfill_cap, "call", "calls")}.`;
 }
 
 /** What the cap means for THIS run, said before the button, or "" when it
@@ -202,17 +188,20 @@ export function capProse(plan: BackfillPlan): string {
     // the shape a reader meets: the Notes tab says 50 of 60 and this says
     // no. Those two are only contradictory until the reserve is named, so
     // it is named here rather than left as a wire field nobody reads.
-    const held = plan.live_reserve > 0
-      ? ` The last ${plan.live_reserve === 1 ? "one" : plan.live_reserve} of the day's `
-        + `${counted(plan.daily_cap, "call", "calls")} `
-        + `${plan.live_reserve === 1 ? "is" : "are"} kept for your own conversations.`
-      : "";
-    return "Today's calls for reading history are already used, so this "
-      + `cannot start until tomorrow.${held}`;
+    return [REASON.historyCapUsed, REASON_TAIL.tryTomorrow,
+      ...(plan.live_reserve > 0 ? [reserveProse(plan)] : [])].join(" ");
   }
   return `Only ${left} of those ${counted(plan.calls_planned, "call", "calls")} `
-    + `${left === 1 ? "fits" : "fit"} today: it will stop at today's limit and the `
-    + "rest waits for tomorrow.";
+    + `${left === 1 ? "fits" : "fit"} today. It stops at the limit; the rest `
+    + "waits for tomorrow.";
+}
+
+/** The live reader's reserve, named: "The last 10 of 60 daily calls are
+ *  kept for notes on new replies." (NOTEBOOK_LIVE_RESERVE, config.py) */
+export function reserveProse(plan: BackfillPlan): string {
+  const n = plan.live_reserve;
+  return `The last ${n === 1 ? "one" : n} of ${plan.daily_cap} daily `
+    + `${plan.daily_cap === 1 ? "call" : "calls"} ${n === 1 ? "is" : "are"} kept for notes on new replies.`;
 }
 
 /** How a finished job ended, in one sentence, from its row.
@@ -228,25 +217,33 @@ export function outcomeProse(job: BackfillStatus): string {
   const left = job.messages_left === 1
     ? "1 message is still unread"
     : `${job.messages_left} messages are still unread`;
+  // Short sentences: what stopped it, what it did, what is left. The
+  // failure's class name is not in the sentence; `outcomeToken` hands it to
+  // the line's title for a bug report.
   if (job.state === "done") return `Finished reading: ${did}.`;
-  if (job.state === "failed") {
-    const why = job.last_error && echoable(job.last_error)
-      ? ` (${job.last_error})` : "";
-    return `Stopped after a failure${why}: ${did}; ${left}.`;
-  }
+  if (job.state === "failed") return `Stopped after a failure. ${did}. ${left}.`;
   switch (job.last_error) {
     case "daily_cap_reached":
-      return `Stopped at today's limit: ${did}; ${left} and wait for tomorrow.`;
+      return `Stopped at today's limit. ${did}. ${left}; they wait for tomorrow.`;
+    // The chat's own sentence, not the refusal's: a job that stopped here
+    // HAD sent calls, so "Nothing was sent." would be false in front of it.
     case "chat_paused":
+      return `${REASON.chatPaused} Stopped after ${did}. ${left}.`;
     case "chat_stopped":
-      return `${sweepProse(job.last_error)} ${did}; ${left}.`;
+      return `${REASON.chatStopped} Stopped after ${did}. ${left}.`;
     case "interrupted":
     case "vault_locked":
-      return `Interrupted before it finished - the vault locked or the app `
-        + `closed: ${did}; ${left}.`;
+      return `Interrupted: the vault locked or the app closed. ${did}. ${left}.`;
     default:
-      return `Stopped: ${did}; ${left}.`;
+      return `Stopped. ${did}. ${left}.`;
   }
+}
+
+/** A failed job's error class, for the outcome line's title, only when
+ *  `echoable` allows it (the same guard as before, one rule, one place). */
+export function outcomeToken(job: BackfillStatus): string | undefined {
+  return job.state === "failed" && job.last_error && echoable(job.last_error)
+    ? job.last_error : undefined;
 }
 
 /** The undo question, before anything is removed: what goes and what
@@ -300,4 +297,16 @@ export function undoProse(out: BackfillUndo): string {
   if (kept === 0) return removed;
   if (why.length === 1) return `${removed} Kept ${why[0].alone(out[why[0].key])}.`;
   return `${removed} Kept ${kept}: ${why.map((w) => `${out[w.key]} ${w.word}`).join(", ")}.`;
+}
+
+/** After the generic or the catalogue's failure sentence: nothing started,
+ *  and the price is not known either. */
+export const PREVIEW_FAILED_TAIL = "Nothing was started, and the cost is unknown.";
+
+/** A whole range picked in the chat while the strip is closed. */
+export function pickWaitingProse(first: number, last: number): string {
+  const what = first === last
+    ? `Message ${first} picked.`
+    : `Messages ${first} to ${last} picked.`;
+  return `${what} Read the earlier messages to start.`;
 }

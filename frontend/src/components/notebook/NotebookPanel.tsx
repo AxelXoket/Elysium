@@ -29,6 +29,10 @@ import {
   EDIT_EMPTY,
   MODEL_NOTE_WORDS,
   NOTE_ROW_WORDS,
+  NEW_NOTE_PROMPT,
+  NOTE_STATE_WORDS,
+  NOTES_EMPTY,
+  NOTES_IN_ENGLISH,
   NOTES_UNREAD,
   saveFailedProse,
 } from "@/components/notebook/noteProse";
@@ -175,7 +179,6 @@ function noteState(
 const NO_IDS: number[] = [];
 
 /** What the empty field asks for; its placeholder and its title. */
-const NEW_NOTE_PROMPT = "Something this story has established...";
 
 export function NotebookPanel() {
   const chatId = useUiStore((s) => s.selectedChatId);
@@ -742,8 +745,7 @@ export function NotebookPanel() {
             true. */}
         <Collapse open={!isLoading && !isError && entries.length === 0 && query === ""} className="min-w-0">
           <p className="text-label leading-relaxed text-muted-foreground">
-            Nothing yet. Notes are sent with every message, so the character
-            stops forgetting what you write here.
+            {NOTES_EMPTY}
           </p>
         </Collapse>
 
@@ -767,9 +769,7 @@ export function NotebookPanel() {
             which is a lecture rather than a note. */}
         {entries.some((e) => e.provenance === "model") && (
           <p className="text-label leading-relaxed text-muted-foreground">
-            Suggested notes are written in English - the reader is a small
-            model and reads English far better. What was actually said is kept
-            underneath, word for word.
+            {NOTES_IN_ENGLISH}
           </p>
         )}
 
@@ -886,8 +886,21 @@ function NoteRow({
   // its place to Cancel. Enter (with or without Shift) saves - a note is
   // one line - Escape cancels and puts the words back, and focus returns to
   // the pencil. Nothing happens on blur.
-  const [editing, setEditing] = useState(false);
-  const [draftText, setDraftText] = useState("");
+  // THE BOX'S WORDS LIVE IN THE DRAFT STORE, keyed by chat and note, so
+  // they outlive the lock screen's remount and a tab switch (my rule: no
+  // silent loss). The entry existing is what holds the box open. In memory
+  // only, like every draft (draftStore.ts), and dropped on Save or Cancel.
+  const editKey = chatScopedPanelDraftKey(
+    PANEL_DRAFT_KEYS.noteEdit, entry.chat_id, String(entry.id));
+  const held = useDraftStore((s) => s.panel[editKey]);
+  const setPanelDraft = useDraftStore((s) => s.setPanelDraft);
+  const clearPanelDraft = useDraftStore((s) => s.clearPanelDraft);
+  const editing = held != null;
+  const draftText = held?.text ?? "";
+  const setDraftText = (text: string) => { setPanelDraft(editKey, text); };
+  // A box that was already open when the row mounted (after an unlock, or
+  // back from another tab) does not take the keyboard by itself.
+  const openAtMount = useRef(editing);
   const [saving, setSaving] = useState(false);
   /** Why the last save did not land, or null. */
   const [saveFailed, setSaveFailed] = useState<string | null>(null);
@@ -908,6 +921,10 @@ function NoteRow({
     if (editing) {
       wasEditing.current = true;
       giveFocusBack.current = false;
+      if (openAtMount.current) {
+        openAtMount.current = false;
+        return;
+      }
       const field = fieldRef.current;
       if (field) {
         field.focus();
@@ -935,14 +952,13 @@ function NoteRow({
 
   function beginEdit() {
     if (confirming) onCancelDelete();
-    setDraftText(entry.text);
     setSaveFailed(null);
-    setEditing(true);
+    setPanelDraft(editKey, entry.text);
   }
 
   function cancelEdit() {
     setSaveFailed(null);
-    setEditing(false);
+    clearPanelDraft(editKey);
   }
 
   async function saveEdit() {
@@ -957,7 +973,7 @@ function NoteRow({
     setSaveFailed(null);
     const why = await onSave(text);
     setSaving(false);
-    if (why == null) setEditing(false);
+    if (why == null) clearPanelDraft(editKey);
     else setSaveFailed(why);
   }
 
@@ -1071,27 +1087,26 @@ function NoteRow({
           </p>
         </Collapse>
         {state === "retired" && (
-          <p className="text-label leading-relaxed text-muted-foreground">Replaced by a newer note - not sent.</p>
+          <p className="text-label leading-relaxed text-muted-foreground">{NOTE_STATE_WORDS.retired}</p>
         )}
         {state === "over" && (
           <p className="text-label leading-relaxed text-muted-foreground">
-            Did not fit this turn - kept, not sent. Pin it to protect it.
+            {NOTE_STATE_WORDS.over}
           </p>
         )}
         {state === "pinned_over" && (
           <p className="text-label leading-relaxed text-muted-foreground">
-            Did not fit this turn - kept, not sent. The pinned notes alone
-            are over the limit, so unpin one to make room.
+            {NOTE_STATE_WORDS.pinnedOver}
           </p>
         )}
         {state === "proposed" && (
           <p className="text-label leading-relaxed text-muted-foreground">
-            Waiting for you - not sent until you keep it.
+            {NOTE_STATE_WORDS.proposed}
           </p>
         )}
         {entry.provenance === "model" && entry.evidence_role === "assistant" && (
           <p className="text-label leading-relaxed text-muted-foreground">
-            Taken from the model's own reply, not from something you wrote.
+            {NOTE_STATE_WORDS.fromReply}
           </p>
         )}
         {/* Who wrote it, truthfully after an edit too. `provenance` stays

@@ -60,7 +60,10 @@
  * Only the box actually typed in is written, and an untouched form leaves
  * nothing behind; but from that first keystroke the map holds text that came
  * out of the vault, in a buffer that sits outside it and outlives a lock.
- * The note and limit boxes start empty, so they never carry stored text in.
+ * The new-note and new-limit boxes start empty, so they carry no stored
+ * text in. A note's EDIT box does: it opens holding the note's saved words,
+ * the same case as the persona boxes above, and for the same reason (an
+ * edit the lock screen ate is the loss this file exists to stop).
  * Written down here so it is read rather than rediscovered from a call site.
  *
  * MEMORY. Two ceilings, both counted in UTF-8 bytes rather than UTF-16 code
@@ -203,6 +206,13 @@ export const PANEL_DRAFT_KEYS = {
    */
   newNote: "notes.new-note",
   newLimit: "notes.new-limit",
+  /**
+   * Notes tab: a note's EDIT box, one per note (the note's id is the field).
+   * Its entry existing is what holds the box open, so an edit survives the
+   * lock screen's remount the way the message edit box does: my rule
+   * is no silent loss. Chat-scoped like the two above.
+   */
+  noteEdit: "notes.note-edit",
 } as const;
 
 /**
@@ -235,6 +245,7 @@ export const LIMIT_DRAFT_FIELDS = {
 const CHAT_SCOPED_PANEL_PREFIXES = [
   PANEL_DRAFT_KEYS.newNote,
   PANEL_DRAFT_KEYS.newLimit,
+  PANEL_DRAFT_KEYS.noteEdit,
 ] as const;
 
 /**

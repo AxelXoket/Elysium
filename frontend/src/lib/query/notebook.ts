@@ -18,6 +18,7 @@ import {
   createNote,
   patchNote,
   deleteNote,
+  discardNote,
   acceptNote,
   keepNote,
   getWorkerStatus,
@@ -120,7 +121,10 @@ export async function sendHeldDiscards(
   const stillSuggested = ids.filter((id) =>
     list?.entries.find((e) => e.id === id)?.status === "proposed");
   if (stillSuggested.length === 0) return;
-  await Promise.allSettled(stillSuggested.map((id) => deleteNote(id, chatId)));
+  // The server checks again, in the same transaction as the delete: a note
+  // kept, pinned or edited since (from another tab, say) is left alone and
+  // the answer says `kept`; the refetch below then shows it where it is.
+  await Promise.allSettled(stillSuggested.map((id) => discardNote(id, chatId)));
   await qc.invalidateQueries({ queryKey: keys.notebook() });
 }
 

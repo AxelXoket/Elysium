@@ -12,6 +12,7 @@ import {
   BoundarySchema,
   BoundaryListSchema,
   NotebookOkSchema,
+  DiscardOkSchema,
   UseGlobalSchema,
   ExtractionModelListSchema,
   ExtractSettingsSchema,
@@ -98,6 +99,15 @@ export function deleteNote(id: number, chatId: number) {
     `/notebook/entries/${id}?chat_id=${chatId}`, NotebookOkSchema, {
     method: "DELETE",
   });
+}
+
+/** A HELD discard: the server deletes the note only while it is still a
+ *  suggestion (not kept, pinned or edited since), and answers `kept: true`
+ *  when it left it alone. */
+export function discardNote(id: number, chatId: number) {
+  return request(
+    `/notebook/entries/${id}?chat_id=${chatId}&only_suggestion=true`,
+    DiscardOkSchema, { method: "DELETE" });
 }
 
 export function reorderNotes(chatId: number, orderedIds: number[]) {

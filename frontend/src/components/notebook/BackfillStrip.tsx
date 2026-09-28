@@ -50,6 +50,7 @@ import { FadeIn } from "@/components/motion/FadeIn";
 import { SWEEP_PROSE, sweepProse } from "@/components/notebook/WorkerPanel";
 import {
   PREVIEW_FAILED,
+  PREVIEW_FAILED_TAIL,
   UNDO_RUN_ASK,
   UNDO_RUN_CONFIRM,
   RANGE_WORDS,
@@ -59,12 +60,18 @@ import {
   capProse,
   noSuchMessage,
   outcomeProse,
+  outcomeToken,
+  pickWaitingProse,
   planProse,
   rangeSummary,
   stopProse,
   undoProse,
 } from "@/components/notebook/backfillProse";
 import { useReducedMotion } from "@/components/motion/ReducedMotion";
+import { Disclosure } from "@/components/notebook/Disclosure";
+import { DISCLOSURE_WORDS } from "@/components/notebook/limitsProse";
+import { backlogHowProse, backlogProse } from "@/components/notebook/workerProse";
+import { REASON_WHY } from "@/components/notebook/reasonProse";
 import { durationSeconds } from "@/lib/theme/tokens";
 import { useMessages } from "@/lib/query/chats";
 import {
@@ -498,18 +505,20 @@ export function BackfillStrip({ chatId }: { chatId: number }) {
           a figure typed here. */}
       <Collapse open={(backlog?.messages ?? 0) > 0} className="min-w-0">
         {backlog && (
-          <p
-            className="text-label leading-relaxed text-muted-foreground"
-            data-testid="worker-backlog"
-          >
-            {backlog.chats} chat{backlog.chats === 1 ? " has" : "s have"}{" "}
-            {backlog.messages} unread message{backlog.messages === 1 ? "" : "s"}.
-            The background reader reads a chat by itself
-            {threshold > 0 ? ` every ${threshold} new messages` : " as new messages arrive"},
-            and a new chat from its start only while it is short;
-            everything older waits for you to ask here. Either way it costs
-            calls.
-          </p>
+          // ONE LINE AND A DOOR. The count and the fact that
+          // reading costs calls stay on screen (3.31: spend that happens
+          // without asking is said); what reads without being asked, and
+          // when, is one press away.
+          <div className="space-y-1" data-testid="worker-backlog">
+            <p className="text-label leading-relaxed text-muted-foreground">
+              {backlogProse(backlog.chats, backlog.messages)}
+            </p>
+            <Disclosure label={DISCLOSURE_WORDS.whenRead} testId="worker-backlog-details">
+              <p className="text-label leading-relaxed text-muted-foreground">
+                {backlogHowProse(threshold).join(" ")}
+              </p>
+            </Disclosure>
+          </div>
         )}
       </Collapse>
 
@@ -560,6 +569,7 @@ export function BackfillStrip({ chatId }: { chatId: number }) {
             <p
               ref={outcomeRef}
               tabIndex={-1}
+              title={outcomeToken(job)}
               className="text-label leading-relaxed text-muted-foreground outline-none"
             >
               {outcomeProse(job)}
@@ -668,6 +678,17 @@ export function BackfillStrip({ chatId }: { chatId: number }) {
       {/* THE BUTTON, behind the preview. Pressing "Read" opens the preview
           and spends nothing; "Start reading" is what spends, and it is
           disabled until the preview has arrived and says it can. */}
+      {/* A PICK THAT WAITS IS SAID. A reader who comes back to a chat with
+          a whole range picked meets the strip closed (the pick was already
+          answered), and the marks in the chat were the only sign of it. */}
+      <Collapse open={!running && !open && fromAt != null && toAt != null} className="min-w-0">
+        <p
+          className="text-label leading-relaxed text-muted-foreground"
+          data-testid="backfill-pick-waiting"
+        >
+          {fromAt != null && toAt != null ? pickWaitingProse(fromAt, toAt) : ""}
+        </p>
+      </Collapse>
       {!running && !open && (
         <FadeIn>
           <Button
@@ -907,8 +928,7 @@ export function BackfillStrip({ chatId }: { chatId: number }) {
               {isApiError(plan.error) && isKnownErrorCode(plan.error.detail)
                 ? getErrorMessage(plan.error.detail)
                 : PREVIEW_FAILED}{" "}
-              Nothing was started, and nothing is known about what this
-              would cost.
+              {PREVIEW_FAILED_TAIL}
             </p>
           </Collapse>
           <Collapse open={preview != null} className="min-w-0">
@@ -937,6 +957,13 @@ export function BackfillStrip({ chatId }: { chatId: number }) {
                   >
                     {blockedProse(preview.blocked_by)}
                   </p>
+                  {preview.blocked_by.includes("model_not_extractable") && (
+                    <Disclosure label={DISCLOSURE_WORDS.whyModel} testId="backfill-blocked-why" className="mt-1">
+                      <p className="text-label leading-relaxed text-muted-foreground">
+                        {REASON_WHY.modelNotExtractable.join(" ")}
+                      </p>
+                    </Disclosure>
+                  )}
                 </Collapse>
               </div>
             )}
@@ -989,6 +1016,9 @@ export function BackfillStrip({ chatId }: { chatId: number }) {
               onClick={() => {
                 cancelled.current = true;
                 setOpen(false);
+                // And back to the default scope: reopening after Cancel
+                // used to show "range" with two empty fields.
+                setScope("all");
                 // Cancel lets go of the range too, so the two messages stop
                 // carrying marks for a read nobody is going to start.
                 setTyped({});

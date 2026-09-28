@@ -4,7 +4,7 @@
  * A Discard does not send the delete at once: the row says "Suggestion
  * discarded." with an Undo, and Undo can only put a suggestion back while
  * it still exists. The Notes panel sends the held deletes when it leaves
- * the chat, unmounts, or the page goes away. Kept in a store rather than in
+ * the chat or unmounts. Kept in a store rather than in
  * the panel because the run's "Undo this run" (BackfillStrip) must send them
  * first too: otherwise its answer counted a note the reader had already
  * discarded among the ones it removed.

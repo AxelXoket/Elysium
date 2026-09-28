@@ -7,6 +7,15 @@
  * because both look like a working limit list otherwise.
  */
 import { LIMITS_UNREAD } from "@/components/notebook/noteProse";
+import {
+  DISCLOSURE_WORDS,
+  SAFEWORD_HOW,
+  SAFEWORD_LINE,
+  SAFEWORD_OFF,
+  LIMITS_LINE,
+  NEW_LIMIT_PROMPT,
+} from "@/components/notebook/limitsProse";
+import { says } from "@/test/helpers/prose";
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -91,7 +100,8 @@ describe("BoundaryPanel", () => {
     // wording ever softens, the refusal behind it stops being explained.
     mockFetch({ "/notebook/7/boundaries": { body: { boundaries: [], use_global: true } } });
     renderWithQueryClient(<BoundaryPanel />);
-    expect(await screen.findByText(/never trimmed/i)).toBeInTheDocument();
+    expect(await screen.findByText(LIMITS_LINE)).toBeInTheDocument();
+    expect(LIMITS_LINE).toMatch(/limits go with every message, in full/i);
   });
 
   it("shows a limit with its strictness and where it applies", async () => {
@@ -127,7 +137,7 @@ describe("BoundaryPanel", () => {
     });
     renderWithQueryClient(<BoundaryPanel />);
 
-    await user.type(await screen.findByPlaceholderText(/keep out of the story/i),
+    await user.type(await screen.findByPlaceholderText(NEW_LIMIT_PROMPT),
                     "no gore");
     await user.click(screen.getByRole("button", { name: /add limit/i }));
 
@@ -331,13 +341,53 @@ describe("the safeword", () => {
     return renderWithQueryClient(<BoundaryPanel />);
   }
 
-  it("says it is checked here, not asked of the model", async () => {
+  it("says it is checked by the app, not asked of the model, behind How it works", async () => {
     // The whole reason it exists. Every other line on this panel is a request
     // to a model; this one is not, and a user reaching for it in a bad moment
     // needs to know which kind it is.
+    const user = userEvent.setup();
     mount();
-    expect(await screen.findByText(/it is checked here, not asked of the model/i))
-      .toBeInTheDocument();
+    const where = await screen.findByText(says(SAFEWORD_HOW.where));
+    const door = screen.getByRole("button", { name: DISCLOSURE_WORDS.how });
+    // Closed at first: the detail is there for nobody yet.
+    expect(door).toHaveAttribute("aria-expanded", "false");
+    expect(hiddenFromReaders(where)).toBe(true);
+    await user.click(door);
+    expect(door).toHaveAttribute("aria-expanded", "true");
+    expect(hiddenFromReaders(where)).toBe(false);
+  });
+
+  it("keeps one line on screen and every other promise one press away", async () => {
+    const user = userEvent.setup();
+    mount();
+    await screen.findByLabelText(/^safeword$/i);
+    // GROUND: the promise a reader needs before typing is on screen as is.
+    const line = screen.getByText(says(SAFEWORD_LINE));
+    expect(hiddenFromReaders(line)).toBe(false);
+    // The only way to switch it off is on screen too, not behind the door.
+    expect(line.textContent).toContain(SAFEWORD_OFF);
+    const door = screen.getByRole("button", { name: DISCLOSURE_WORDS.how });
+    // The door names what it opens, and what it opens is a real element.
+    const body = document.getElementById(door.getAttribute("aria-controls") ?? "");
+    expect(body).not.toBeNull();
+    for (const sentence of Object.values(SAFEWORD_HOW)) {
+      expect(hiddenFromReaders(screen.getByText(says(sentence))), sentence).toBe(true);
+    }
+    // From the keyboard: Enter opens it, and the keyboard stays on the door.
+    door.focus();
+    await user.keyboard("{Enter}");
+    expect(door).toHaveFocus();
+    expect(door).toHaveAttribute("aria-expanded", "true");
+    for (const sentence of Object.values(SAFEWORD_HOW)) {
+      const node = screen.getByText(says(sentence));
+      expect(hiddenFromReaders(node), sentence).toBe(false);
+      expect(body!.contains(node), sentence).toBe(true);
+    }
+    // And closes again the same way.
+    await user.keyboard("{Enter}");
+    expect(door).toHaveAttribute("aria-expanded", "false");
+    expect(hiddenFromReaders(screen.getByText(says(SAFEWORD_HOW.regenerate)))).toBe(true);
+    expect(door).toHaveFocus();
   });
 
   it("shows the stored word", async () => {
@@ -533,7 +583,7 @@ describe("the length a limit is allowed to be", () => {
     // not the typing speed.
     const user = userEvent.setup({ delay: null });
     mountEmpty();
-    const box = await screen.findByPlaceholderText(/keep out of the story/i);
+    const box = await screen.findByPlaceholderText(NEW_LIMIT_PROMPT);
     await user.type(box, "x".repeat(BOUNDARY_MAX_CHARS + 40));
     expect((box as HTMLInputElement).value).toHaveLength(BOUNDARY_MAX_CHARS);
   });
@@ -545,7 +595,7 @@ describe("the length a limit is allowed to be", () => {
     // `delay: null` for the same reason as the case above: 160 keystrokes.
     const user = userEvent.setup({ delay: null });
     mountEmpty();
-    const box = await screen.findByPlaceholderText(/keep out of the story/i);
+    const box = await screen.findByPlaceholderText(NEW_LIMIT_PROMPT);
     const atTheCap = "x".repeat(BOUNDARY_MAX_CHARS);
     await user.type(box, atTheCap);
     await user.click(screen.getByRole("button", { name: /add limit/i }));
@@ -564,7 +614,7 @@ describe("the length a limit is allowed to be", () => {
     // the app cannot type. Matching is the whole point - the field is a
     // convenience in front of create_boundary, not a second rule.
     mountEmpty();
-    const box = await screen.findByPlaceholderText(/keep out of the story/i);
+    const box = await screen.findByPlaceholderText(NEW_LIMIT_PROMPT);
     expect(box).toHaveAttribute("maxLength", String(BOUNDARY_MAX_CHARS));
   });
 });
@@ -678,7 +728,7 @@ describe("what to do when a limit is crossed", () => {
     renderWithQueryClient(<BoundaryPanel />);
 
     await userEvent.type(
-      await screen.findByPlaceholderText(/keep out of the story/i), "no gore");
+      await screen.findByPlaceholderText(NEW_LIMIT_PROMPT), "no gore");
     // Found by the words that name them, not by a test id. A `data-testid`
     // prop on LimitQualifier would be test scaffolding in the public
     // interface of a production component, and the visible labels reach the
@@ -708,7 +758,7 @@ describe("what to do when a limit is crossed", () => {
     renderWithQueryClient(<BoundaryPanel />);
 
     await userEvent.type(
-      await screen.findByPlaceholderText(/keep out of the story/i), "no gore");
+      await screen.findByPlaceholderText(NEW_LIMIT_PROMPT), "no gore");
     await userEvent.click(screen.getByLabelText("Add limit"));
 
     await waitFor(() => {

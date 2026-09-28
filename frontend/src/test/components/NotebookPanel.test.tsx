@@ -7,6 +7,7 @@
  * that a note never disappears, so none of them is hidden - which means the
  * mark is the only thing separating "working" from "silently not sent".
  */
+import { MODEL_NOTE_WORDS, NEW_NOTE_PROMPT, NOTE_STATE_WORDS, NOTES_IN_ENGLISH } from "@/components/notebook/noteProse";
 import { UNDO_RUN_CONFIRM } from "@/components/notebook/backfillProse";
 import { NOTES_UNREAD, NOTE_ROW_WORDS } from "@/components/notebook/noteProse";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -151,7 +152,7 @@ describe("NotebookPanel", () => {
       },
     });
     renderWithQueryClient(<NotebookPanel />);
-    expect(await screen.findByText(/written by the model/i))
+    expect(await screen.findByText(MODEL_NOTE_WORDS.wrote))
       .toBeInTheDocument();
   });
 
@@ -169,7 +170,7 @@ describe("NotebookPanel", () => {
       },
     });
     renderWithQueryClient(<NotebookPanel />);
-    expect(await screen.findByText(/model's own reply/i)).toBeInTheDocument();
+    expect(await screen.findByText(NOTE_STATE_WORDS.fromReply)).toBeInTheDocument();
   });
 
   it("does not say it when the quote came from something you wrote", async () => {
@@ -187,8 +188,8 @@ describe("NotebookPanel", () => {
     });
     renderWithQueryClient(<NotebookPanel />);
     // Positive control: the panel did render this note, badge and all.
-    expect(await screen.findByText(/written by the model/i)).toBeInTheDocument();
-    expect(screen.queryByText(/model's own reply/i)).not.toBeInTheDocument();
+    expect(await screen.findByText(MODEL_NOTE_WORDS.wrote)).toBeInTheDocument();
+    expect(screen.queryByText(NOTE_STATE_WORDS.fromReply)).not.toBeInTheDocument();
   });
 
   it("keeps the mark off notes the user typed", async () => {
@@ -202,7 +203,7 @@ describe("NotebookPanel", () => {
     });
     renderWithQueryClient(<NotebookPanel />);
     expect(await screen.findByText(/Mira is her sister/)).toBeInTheDocument();
-    expect(screen.queryByText(/model's own reply/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(NOTE_STATE_WORDS.fromReply)).not.toBeInTheDocument();
   });
 
   it("adds a note", async () => {
@@ -219,7 +220,7 @@ describe("NotebookPanel", () => {
     });
     renderWithQueryClient(<NotebookPanel />);
 
-    const box = await screen.findByPlaceholderText(/established/i);
+    const box = await screen.findByPlaceholderText(NEW_NOTE_PROMPT);
     await user.type(box, "she keeps her word");
     await user.click(screen.getByRole("button", { name: /add note/i }));
 
@@ -557,9 +558,9 @@ describe("what the model wrote, and taking it back", () => {
       notebook_chars: 10 } } });
     renderWithQueryClient(<NotebookPanel />);
     await screen.findByTestId("note-5");
-    expect(screen.getAllByText(/reads English far better/i)).toHaveLength(1);
+    expect(screen.getAllByText(NOTES_IN_ENGLISH)).toHaveLength(1);
     expect((await screen.findByTestId("note-5")).textContent)
-      .not.toMatch(/reads English far better/i);
+      .not.toContain(NOTES_IN_ENGLISH);
   });
 
   it("does not repeat the quote when it is already the note", async () => {
@@ -1041,13 +1042,13 @@ describe("what a screen reader is told", () => {
     const user = userEvent.setup();
     mockFetch({ "/notebook/7": { body: { entries: [], notebook_chars: 0 } } });
     renderWithQueryClient(<NotebookPanel />);
-    const box = await screen.findByPlaceholderText(/established/i);
+    const box = await screen.findByPlaceholderText(NEW_NOTE_PROMPT);
     await user.type(box, "she keeps her word");
 
     expect(box).toHaveAccessibleName("New note");
     // Ground: the hint text is not what names it.
     expect(box).not
-      .toHaveAccessibleName("Something this story has established...");
+      .toHaveAccessibleName(NEW_NOTE_PROMPT);
   });
 
   it("the search box was already named, and stays named", async () => {

@@ -1,4 +1,6 @@
-import { memo, useEffect, useId, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { isApiError } from "@/lib/api/client";
+import { dropEmptyStateFocus, wantEmptyStateFocus } from "@/lib/chat/deleteFocus";
 import type { Attachment, Message } from "@/lib/schemas/chats";
 import { FadeIn } from "@/components/motion/FadeIn";
 import { VariantCarousel } from "@/components/motion/VariantCarousel";
@@ -289,6 +291,14 @@ export const MessageBubble = memo(function MessageBubble({
   // button, like ChatList's inline confirm), Escape-close with focus return,
   // and outside-click close.
   const deleteTriggerRef = useRef<HTMLButtonElement>(null);
+  // A failed delete that had nowhere else to put the keyboard puts it back
+  // here, once the confirm has closed and the trigger is drawn again.
+  const focusTriggerAfterFailure = useRef(false);
+  useLayoutEffect(() => {
+    if (!focusTriggerAfterFailure.current) return;
+    focusTriggerAfterFailure.current = false;
+    deleteTriggerRef.current?.focus();
+  });
   const confirmPanelRef = useRef<HTMLDivElement>(null);
   const confirmDeleteButtonRef = useRef<HTMLButtonElement>(null);
 
@@ -376,19 +386,33 @@ export const MessageBubble = memo(function MessageBubble({
     const shells = [...document.querySelectorAll<HTMLElement>(".message-bubble-shell")];
     const before = shell ? shells[shells.indexOf(shell as HTMLElement) - 1] : undefined;
     const composer = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
-    const canvas = document.querySelector<HTMLElement>("main.warm-canvas");
-    if (canvas && !canvas.hasAttribute("tabindex")) canvas.tabIndex = -1;
+    // With neither, this was the first message and the chat will be empty:
+    // the keyboard stays on this Delete button (it is aria-disabled, not
+    // disabled, while the request is out) and the chat's empty state takes
+    // it once it mounts (lib/chat/deleteFocus.ts). Never the sidebar, never
+    // the unnamed `main`. If the delete fails the ask is dropped and the
+    // keyboard goes back to this message's Delete button.
     const land = before?.querySelector<HTMLElement>(".message-action-button:not([disabled])")
-      ?? (composer && !composer.disabled ? composer : null)
-      ?? canvas;
-    land?.focus({ preventScroll: true });
+      ?? (composer && !composer.disabled ? composer : null);
+    if (land) land.focus({ preventScroll: true });
+    else wantEmptyStateFocus(chatId);
     deleteMessage.mutate(
       { chatId, messageId: message.id },
       // onSettled, not onSuccess (v1.1 D2): a 404 must ALSO close the panel -
       // the mutation's own onError already dropped the ghost row from the
       // cache, and a panel stuck open on a vanished bubble was the reported
       // "kargacık burgacık" end state.
-      { onSettled: () => setConfirmDelete(false) },
+      {
+        onSettled: () => setConfirmDelete(false),
+        onError: (err) => {
+          // A 404 is the deletion the reader asked for: the rows are already
+          // gone (the hook drops them from the list), so the empty state
+          // still takes the keyboard. Only a real failure goes back.
+          if (land || (isApiError(err) && err.status === 404)) return;
+          dropEmptyStateFocus();
+          focusTriggerAfterFailure.current = true;
+        },
+      },
     );
   };
 

@@ -75,3 +75,8 @@ export const INSTRUCTION_LANGUAGE_LABELS = {
   en: "English",
   tr: "Türkçe",
 } as const;
+
+/** The note-model option that follows the chat's own model. Named here once:
+ *  the picker shows it, and every sentence that names the option (the price
+ *  warning, the refusal for a model that cannot write notes) quotes it. */
+export const CHAT_MODEL_OPTION_LABEL = "Use the model I am chatting with";

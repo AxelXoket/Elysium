@@ -579,12 +579,23 @@ async def patch_entry(entry_id: int, chat_id: int, body: EntryPatch) -> dict:
 
 
 @router.delete("/entries/{entry_id}")
-async def delete_entry(entry_id: int, chat_id: int) -> dict:
+async def delete_entry(entry_id: int, chat_id: int,
+                       only_suggestion: bool = False) -> dict:
+    """Delete a note. With `only_suggestion` (the Notes tab's held discard)
+    a note that is no longer a suggestion - kept, pinned or edited since the
+    Discard - is left alone, and the answer says so: `{"ok": true, "kept":
+    true}`. The note is still there, so this is not a 404."""
     try:
         removed = await anyio.to_thread.run_sync(
-            notebook.delete_entry, entry_id, chat_id)
+            lambda: notebook.delete_entry(entry_id, chat_id,
+                                          only_suggestion=only_suggestion))
     except notebook.NotebookError as exc:
         _refuse(exc)
+    if not removed and only_suggestion:
+        exists = await anyio.to_thread.run_sync(
+            lambda: any(e["id"] == entry_id for e in notebook.list_entries(chat_id)))
+        if exists:
+            return {"ok": True, "kept": True}
     if not removed:
         raise HTTPException(404, "notebook_entry_not_found")
     logger.info("Notebook entry removed: id=%d", entry_id)

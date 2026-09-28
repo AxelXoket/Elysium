@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useMessages } from "@/lib/query/chats";
 import { MessageBubble } from "./MessageBubble";
 import { MessageText } from "./MessageText";
@@ -10,6 +10,39 @@ import { parseApiError } from "@/lib/errors";
 import { messageAnchor, isMessageActive } from "@/lib/chat";
 import { AlertCircle } from "lucide-react";
 import type { Message } from "@/lib/schemas/chats";
+import { takeEmptyStateFocus } from "@/lib/chat/deleteFocus";
+
+/** The empty state's heading, which names the card. */
+const EMPTY_CHAT_HEADING = "chat-empty-heading";
+
+/** The empty chat's card. It takes the keyboard when a delete emptied the
+ *  chat and nothing else could (lib/chat/deleteFocus.ts): focusable by
+ *  script only (tabIndex -1), named by its heading, and its ring is drawn
+ *  inside its own box (`.chat-empty-card:focus-visible`, index.css) so no
+ *  ancestor's overflow can cut it. */
+function EmptyChatCard({ chatId, children }: { chatId: number; children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (takeEmptyStateFocus(chatId)) ref.current?.focus({ preventScroll: true });
+  }, [chatId]);
+  return (
+    <div
+      ref={ref}
+      tabIndex={-1}
+      role="region"
+      aria-labelledby={EMPTY_CHAT_HEADING}
+      data-testid="chat-empty-state"
+      className="chat-empty-card rounded-xl px-8 py-10 text-center"
+      style={{
+        backgroundColor: "rgba(28, 38, 50, 0.07)",
+        maxWidth: "340px",
+        border: "1px solid rgba(28, 38, 50, 0.10)",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
 import type { StreamingEntry } from "@/lib/chat/useStreamingCompletion";
 
 /** Upper bound for the stable-key map - old swaps stop mattering long before
@@ -211,15 +244,9 @@ export const MessageList = memo(function MessageList({
   if (!messages || messages.length === 0) {
     return (
       <div className="flex h-full items-center justify-center p-8">
-        <div
-          className="rounded-xl px-8 py-10 text-center"
-          style={{
-            backgroundColor: "rgba(28, 38, 50, 0.07)",
-            maxWidth: "340px",
-            border: "1px solid rgba(28, 38, 50, 0.10)",
-          }}
-        >
+        <EmptyChatCard chatId={chatId}>
           <p
+            id={EMPTY_CHAT_HEADING}
             className="text-ui font-semibold"
             style={{ color: "var(--color-es-asst-bubble-text)" }}
           >
@@ -233,7 +260,7 @@ export const MessageList = memo(function MessageList({
               Type a message below to start the conversation.
             </p>
           )}
-        </div>
+        </EmptyChatCard>
       </div>
     );
   }

@@ -22,6 +22,9 @@ import { hiddenFromReaders } from "@/test/helpers/accessibility";
 import { BoundaryPanel } from "@/components/notebook/BoundaryPanel";
 import { WorkerPanel } from "@/components/notebook/WorkerPanel";
 import { SETTING_RETRY, SETTING_UNREAD } from "@/components/notebook/noteProse";
+import { AUTO_ACCEPT_OFF } from "@/components/notebook/noteProse";
+import { SAFEWORD_OFF } from "@/components/notebook/limitsProse";
+import { says } from "@/test/helpers/prose";
 import { useUiStore } from "@/lib/store/uiStore";
 import { mockFetch } from "../mocks/api";
 import { delayRoute } from "@/test/helpers/delayRoute";
@@ -66,7 +69,7 @@ describe("the safeword box when the saved word cannot be read", () => {
     await waitFor(() => expect(hiddenFromReaders(line)).toBe(false));
     expect(screen.queryByLabelText(/^safeword$/i)).toBeNull();
     // No box, so no instruction about leaving it empty.
-    expect(screen.queryByText(/leave it empty to turn it off/i)).toBeNull();
+    expect(screen.queryByText(says(SAFEWORD_OFF))).toBeNull();
   });
 
   it("Try again from the keyboard reads it, and the box arrives with the keyboard on it", async () => {
@@ -122,7 +125,7 @@ describe("the safeword box when the saved word cannot be read", () => {
     await waitFor(() => expect(box).toHaveValue("mor"));
     expect(hiddenFromReaders(screen.getByText(SETTING_UNREAD))).toBe(true);
     // POSITIVE CONTROL for the absence above: beside a box, it is said.
-    expect(screen.getByText(/leave it empty to turn it off/i)).toBeTruthy();
+    expect(screen.getByText(says(SAFEWORD_OFF))).toBeTruthy();
   });
 });
 
@@ -163,7 +166,7 @@ describe("the auto-accept switch when its saved value cannot be read", () => {
     const line = await screen.findByText(SETTING_UNREAD);
     await waitFor(() => expect(hiddenFromReaders(line)).toBe(false));
     expect(theSwitch()).toBeNull();
-    expect(hiddenFromReaders(screen.getByText(/^off, a suggestion waits/i))).toBe(true);
+    expect(hiddenFromReaders(screen.getByText(AUTO_ACCEPT_OFF))).toBe(true);
   });
 
   it("Try again from the keyboard reads it, and the switch arrives with the keyboard on it", async () => {
@@ -177,7 +180,7 @@ describe("the auto-accept switch when its saved value cannot be read", () => {
     await user.keyboard("{Enter}");
     await waitFor(() => expect(theSwitch()).toHaveAttribute("aria-checked", "true"));
     await waitFor(() => expect(theSwitch()).toHaveFocus());
-    expect(hiddenFromReaders(screen.getByText(/^off, a suggestion waits/i))).toBe(false);
+    expect(hiddenFromReaders(screen.getByText(AUTO_ACCEPT_OFF))).toBe(false);
   });
 
   it("GROUND: a value that was read draws the switch and no line", async () => {

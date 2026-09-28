@@ -33,6 +33,7 @@
  * depending on which tab was open. All four scroll on their own body now, and
  * that block is what holds them to one appearance.
  */
+import { NEW_LIMIT_PROMPT } from "@/components/notebook/limitsProse";
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -475,14 +476,14 @@ describe("right panel text across a tab switch", () => {
 
     await openTab(user, "Notes");
     const limit = await screen.findByPlaceholderText(
-      "Something to keep out of the story...",
+      NEW_LIMIT_PROMPT,
     );
     await user.type(limit, "no hospitals");
     await roundTrip(user, "Notes", "Models");
 
     expect(
       await screen.findByPlaceholderText(
-        "Something to keep out of the story...",
+        NEW_LIMIT_PROMPT,
       ),
       "the unsent limit was destroyed by a tab switch",
     ).toHaveValue("no hospitals");

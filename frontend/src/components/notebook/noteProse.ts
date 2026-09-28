@@ -44,7 +44,9 @@ export const EDIT_FAILED_WHY: Readonly<Record<string, string>> = {
   notebook_entry_too_long: "This is too long to save. Shorten it, then save.",
   notebook_entry_empty: "Write something, or press Escape to keep the old note.",
   // The edit box does not survive the lock screen, so this says so.
-  vault_locked: "The vault locked. Copy your words before you unlock.",
+  // The edit box's words are held in the draft store, which outlives a
+  // lock (draftStore.ts), and the row reopens with them after unlock.
+  vault_locked: "The vault locked. Your edit is kept; save it after unlocking.",
 };
 
 /** The sentence for a failed save, from the server's reason code. */
@@ -57,7 +59,7 @@ export function saveFailedProse(code: string | null): string {
  *  handing the note to either one. `edited` shows exactly when the store
  *  has written `edited_at`. */
 export const MODEL_NOTE_WORDS = {
-  wrote: "Written by the model.",
+  wrote: "By the model.",
   edited: "Model wrote it, you edited it.",
 } as const;
 
@@ -77,3 +79,41 @@ export const NOTES_UNREAD = "Could not load the notes. They are still saved.";
 export const LIMITS_UNREAD = "Could not load the limits. They are still saved.";
 export const CHOICE_UNREAD =
   "Could not read your saved choice. Nothing was changed.";
+
+/** The new-note box's placeholder and title. Short enough to show whole in
+ *  the field at the panel's 300 px floor. */
+export const NEW_NOTE_PROMPT = "A fact this story set up...";
+
+/** The empty notebook. */
+export const NOTES_EMPTY =
+  "Nothing yet. Notes go with every message, so the character remembers them.";
+
+/** Said once over the list when any note is the model's. */
+export const NOTES_IN_ENGLISH =
+  "Suggested notes are in English. What each came from is shown under it.";
+
+/** A note row's state line, by state. */
+export const NOTE_STATE_WORDS = {
+  retired: "Replaced by a newer note - not sent.",
+  over: "Did not fit this turn - kept, not sent. Pin it to protect it.",
+  pinnedOver: "Did not fit this turn - kept, not sent. Pinned notes alone are"
+    + " over the limit. Unpin one to make room.",
+  proposed: "Not sent until you keep it.",
+  fromReply: "Taken from the model's reply, not from your words.",
+} as const;
+
+/** The Note suggestions section. */
+export const EXTRACTION_WORDS = {
+  intro: "A cheap model suggests notes from recent turns, on your API key."
+    + " With no model picked, it is off.",
+  listNote: "Listed models keep no copy of your words. They use a strict"
+    + " format. One-provider models stop when that provider does.",
+  listFailed: "The list of models could not be fetched. The empty list says"
+    + " nothing about models.",
+  languageNote: "Notes are in English either way. Keep whichever reads better.",
+} as const;
+
+/** Under the auto-accept switch, once its value is read. */
+export const AUTO_ACCEPT_OFF =
+  "Off: suggestions wait unsent until you keep them. Imported-card chats"
+  + " always wait.";

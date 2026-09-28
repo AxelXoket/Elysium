@@ -6,11 +6,22 @@
  * are about the second - every counter here exists because without it a
  * refused run and a quiet week look identical.
  */
+import { actFailureProse, failureOfProse, skippedProse } from "@/components/notebook/workerProse";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { cleanup, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
+import { REASON, REASON_TAIL } from "@/components/notebook/reasonProse";
+import { DISCLOSURE_WORDS } from "@/components/notebook/limitsProse";
+import {
+  CENSUS,
+  WORKER_DEAD,
+  lifetimeProse,
+  todayProse,
+  troubleProse,
+  unpricedProse,
+} from "@/components/notebook/workerProse";
 import { hiddenFromReaders, readableText } from "@/test/helpers/accessibility";
 import {
   CHAT_STATE_PROSE,
@@ -20,13 +31,17 @@ import {
   SKIP_PROSE,
   CHAT_SCOPED_SKIPS,
   STATE_PROSE,
+  WORKER_WORDS,
+  failureAsksToAct,
   WorkerPanel,
   echoable,
+} from "@/components/notebook/WorkerPanel";
+import {
   readCallsProse,
   PARTS_PENDING_PROSE,
   PARTS_FAILED_PROSE,
   PARTS_UNREAD_PROSE,
-} from "@/components/notebook/WorkerPanel";
+} from "@/components/notebook/workerProse";
 import { getErrorMessage } from "@/lib/errors/errorMessages";
 import { mockFetch } from "../mocks/api";
 import { useUiStore } from "@/lib/store/uiStore";
@@ -87,16 +102,28 @@ function mount(
   return renderWithQueryClient(<WorkerPanel />);
 }
 
+/** Opens "Show details" on the card, as a reader would, and hands back the
+ *  card. The census sits behind it; a test that reads a census line
+ *  as a reader reads it has to open the door first. */
+async function openDetails(): Promise<HTMLElement> {
+  const box = await screen.findByTestId("worker-status");
+  const door = within(box).getByRole("button", { name: DISCLOSURE_WORDS.details });
+  if (door.getAttribute("aria-expanded") !== "true") fireEvent.click(door);
+  return box;
+}
+
 describe("WorkerPanel", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.restoreAllMocks());
 
   it("says what it has done and what it cost", async () => {
     mount();
-    const box = await screen.findByTestId("worker-status");
-    expect(box.textContent).toMatch(/3 runs/);
-    expect(box.textContent).toMatch(/3 of 60 calls today/);
-    expect(box.textContent).toMatch(/0\.00040 credits/);
+    const box = await openDetails();
+    expect(readableText(box)).toContain(lifetimeProse(3, 3, 0.0004));
+    expect(readableText(box)).toContain(todayProse(3, 60, 0.0004));
+    // Dollars, the unit the reading strip says, not "credits".
+    expect(readableText(box)).toMatch(/\$0\.00040/);
+    expect(readableText(box)).not.toMatch(/credits/);
   });
 
   it("the card carries no live region any more, the strip is the answer",
@@ -132,9 +159,9 @@ describe("WorkerPanel", () => {
       spend: { calls: 0, tokens_in: 0, tokens_out: 0, cost: 0 },
       spend_lifetime: { calls: 0, tokens_in: 0, tokens_out: 0, cost: 0 },
     });
-    const box = await screen.findByTestId("worker-status");
-    expect(box.textContent).toMatch(/0 of 60 calls today/);
-    expect(box.textContent).toMatch(/0 calls, 0\.00000 credits lifetime/);
+    const box = await openDetails();
+    expect(readableText(box)).toContain(todayProse(0, 60, 0));
+    expect(readableText(box)).toContain(lifetimeProse(0, 0, 0));
   });
 
   it("shows the lifetime total beside today's, and the two can differ",
@@ -147,10 +174,10 @@ describe("WorkerPanel", () => {
       spend_lifetime: { calls: 47, tokens_in: 9000, tokens_out: 400,
                         cost: 0.0091 },
     });
-    const box = await screen.findByTestId("worker-status");
-    expect(box.textContent).toMatch(/3 of 60 calls today/);
-    expect(box.textContent).toMatch(/47 calls, 0\.00910 credits lifetime/);
-    expect(box.textContent).not.toMatch(/47 of 60 calls today/);
+    const box = await openDetails();
+    expect(readableText(box)).toContain(todayProse(3, 60, 0.0004));
+    expect(readableText(box)).toContain(lifetimeProse(3, 47, 0.0091));
+    expect(readableText(box)).not.toContain(todayProse(47, 60, 0.0091));
   });
 
   it("shows the lifetime MONEY, not only the lifetime call count", async () => {
@@ -165,9 +192,9 @@ describe("WorkerPanel", () => {
       spend_lifetime: { calls: 47, tokens_in: 9000, tokens_out: 400,
                         cost: 0.0091 },
     });
-    const box = await screen.findByTestId("worker-status");
-    expect(box.textContent).toMatch(/0\.00040 credits/);          // today's
-    expect(box.textContent).toMatch(/0\.00910 credits lifetime/); // lifetime's
+    const box = await openDetails();
+    expect(readableText(box)).toMatch(/\$0\.00040/); // today's
+    expect(readableText(box)).toMatch(/\$0\.00910/); // lifetime's
   });
 
   it("says when part of today's credit figure is missing", async () => {
@@ -180,7 +207,9 @@ describe("WorkerPanel", () => {
                cost_unknown: 2 },
     });
     const note = await screen.findByTestId("worker-cost-unknown");
-    expect(note.textContent).toMatch(/2 of the calls made today came back with no price/);
+    expect(note.textContent).toBe(unpricedProse(2));
+    // Beside the figure it qualifies: on screen, not behind the door.
+    expect(hiddenFromReaders(note)).toBe(false);
   });
 
   it("says nothing about missing prices when none are missing", async () => {
@@ -201,7 +230,7 @@ describe("WorkerPanel", () => {
     mount({ stats: { done: 0, failed: 0, skipped: 12,
                      skip_reasons: { notebook_daily_cap_reached: 12 } } });
     const box = await screen.findByTestId("worker-status");
-    expect(box.textContent).toMatch(/12 skipped: today's call limit/i);
+    expect(box.textContent).toContain(`${skippedProse(12)} ${SKIP_PROSE.notebook_daily_cap_reached}`);
     expect(box.textContent).not.toMatch(/notebook_daily_cap_reached/);
   });
 
@@ -210,9 +239,9 @@ describe("WorkerPanel", () => {
     // that distinction is the point of the whole design - so it is said out
     // loud rather than left for the user to worry about.
     mount({ stats: { done: 1, failed: 4, skipped: 0, skip_reasons: {} } });
-    const box = await screen.findByTestId("worker-status");
-    expect(box.textContent).toMatch(/4 runs failed/i);
-    expect(box.textContent).toMatch(/stay unread, not skipped/i);
+    const box = await openDetails();
+    expect(readableText(box)).toContain(CENSUS.failedFree(4));
+    expect(readableText(box)).toMatch(/nothing was lost/i);
   });
 
   it("does not print the breaker's internal vocabulary", async () => {
@@ -236,7 +265,9 @@ describe("WorkerPanel", () => {
     // restarting the whole application after fixing it.
     mount({ worker: { state: "stopped", total_failures: 20 } });
     const box = await screen.findByTestId("worker-status");
-    expect(box.textContent).toMatch(/will not try again until you say so/i);
+    expect(box.textContent).toContain(STATE_PROSE.stopped);
+    // It names the way out, the button below it.
+    expect(STATE_PROSE.stopped).toContain(WORKER_WORDS.tryAll);
     expect(await screen.findByRole("button", { name: /try again now/i }))
       .toBeEnabled();
   });
@@ -256,9 +287,8 @@ describe("WorkerPanel", () => {
 
   it("reports turns that went unqueued and what happens to them", async () => {
     mount({ worker: { state: "closed", dropped_offers: 7 } });
-    const box = await screen.findByTestId("worker-status");
-    expect(box.textContent).toMatch(/7 turns went unqueued/i);
-    expect(box.textContent).toMatch(/a later run picks them up/i);
+    const box = await openDetails();
+    expect(readableText(box)).toContain(CENSUS.busyTurns(7));
   });
 
   it("shows the auto-accept switch in its stored position", async () => {
@@ -284,6 +314,115 @@ describe("WorkerPanel", () => {
       expect(JSON.parse(String((call![1] as RequestInit).body)))
         .toEqual({ enabled: false });
     });
+  });
+});
+
+/**
+ * The census behind one line and a door.
+ *
+ * In the stress state the card was 724 words, and the one line that needed
+ * the reader sat among ten that did not. Now: the state, today's spend, one
+ * summary of what went wrong, and "Show details" for the rest. A line that
+ * asks the reader to act is never behind the door.
+ */
+describe("the card's one-line summary and its details", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({ selectedChatId: 7 });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({ selectedChatId: null });
+  });
+
+  const STRESS = {
+    stats: { done: 4, failed: 3, paid_and_lost: 1, abandoned: 1, skipped: 5,
+             skip_reasons: { proxy_gate: 2, api_key_not_set: 3 },
+             error_types: { truncated: 3 } },
+    worker: { dropped: { too_long: 2 }, settled_empty: 1, unhandled: 1,
+              refused_by_breaker: 1, dropped_offers: 1 },
+    chat_refusal: "model_not_extractable",
+  };
+
+  it("says the counts in one line and keeps the census behind the door", async () => {
+    const user = userEvent.setup();
+    mount(STRESS);
+    const summary = await screen.findByTestId("worker-trouble");
+    // The summary adds up the census lines it stands for: 3 failed (the
+    // census's own denominator) and 1 unexpected error apart; 1 paused + 1 busy (the key's 3 and the proxy's 2 stay
+    // out, they ask the reader to act and have their own lines); 2
+    // dropped; 1 empty reply.
+    expect(summary.textContent).toBe(troubleProse({ failed: 3, unexpected: 1, skipped: 2, dropped: 2, empty: 1 }));
+    expect(hiddenFromReaders(summary)).toBe(false);
+    const door = screen.getByRole("button", { name: DISCLOSURE_WORDS.details });
+    expect(door).toHaveAttribute("aria-expanded", "false");
+    // Closed: the census is there for nobody.
+    for (const id of ["worker-abandoned", "worker-unhandled", "worker-settled-empty",
+                      "worker-failure-reason", "worker-dropped-note"]) {
+      expect(hiddenFromReaders(screen.getByTestId(id)), id).toBe(true);
+    }
+    // Open, from the keyboard: all of it, and the keyboard stays on the door.
+    door.focus();
+    await user.keyboard("{Enter}");
+    expect(door).toHaveAttribute("aria-expanded", "true");
+    expect(door).toHaveFocus();
+    for (const id of ["worker-abandoned", "worker-unhandled", "worker-settled-empty",
+                      "worker-failure-reason", "worker-dropped-note"]) {
+      expect(hiddenFromReaders(screen.getByTestId(id)), id).toBe(false);
+    }
+  });
+
+  it("keeps every line that asks the reader to act outside the door", async () => {
+    mount({ ...STRESS, worker: { ...STRESS.worker, alive: false, died: "RuntimeError" } });
+    await screen.findByTestId("worker-trouble");
+    // No API key: the reader has to add one.
+    // No API key, and a required proxy that is down: each needs a fix.
+    const acts = (await screen.findAllByTestId("worker-key-skip")).map((p) => p.textContent);
+    expect(acts).toEqual([`${skippedProse(2)} ${SKIP_PROSE.proxy_gate}`,
+      `${skippedProse(3)} ${SKIP_PROSE.api_key_not_set}`]);
+    for (const line of screen.getAllByTestId("worker-key-skip")) {
+      expect(hiddenFromReaders(line)).toBe(false);
+    }
+    // This chat's refusal: the reader has to pick a model.
+    const chatLine = screen.getByTestId("worker-chat-refusal");
+    await waitFor(() => expect(hiddenFromReaders(chatLine)).toBe(false));
+    // The reader has stopped: the reader has to restart the app.
+    const dead = screen.getByRole("alert");
+    expect(dead.textContent).toBe(WORKER_DEAD);
+    expect(hiddenFromReaders(dead)).toBe(false);
+    // POSITIVE CONTROL: the key's line is not in the census as well.
+    const census = Array.from(screen.getByTestId("worker-status").querySelectorAll("p"))
+      .map((p) => p.textContent ?? "")
+      .filter((t) => t.includes(SKIP_PROSE.api_key_not_set));
+    expect(census).toHaveLength(1);
+  });
+
+  it("a dead reader replaces the state line instead of sitting under Running.", async () => {
+    // "Running." above "has stopped" was two statuses at war.
+    mount({ worker: { state: "closed", alive: false, died: "RuntimeError" } });
+    const box = await screen.findByTestId("worker-status");
+    const running = within(box).getByText(STATE_PROSE.closed);
+    expect(hiddenFromReaders(running)).toBe(true);
+    const dead = within(box).getByRole("alert");
+    expect(dead.textContent).toBe(WORKER_DEAD);
+    // The exception's name is for a bug report: a title, not the sentence.
+    expect(dead.getAttribute("title")).toBe("RuntimeError");
+    expect(dead.textContent).not.toMatch(/RuntimeError/);
+    cleanup();
+    // GROUND: alive, the state line is on screen and no alert is.
+    mount({ worker: { state: "closed" } });
+    const alive = await screen.findByTestId("worker-status");
+    expect(hiddenFromReaders(within(alive).getByText(STATE_PROSE.closed))).toBe(false);
+    expect(within(alive).queryByRole("alert")).toBeNull();
+  });
+
+  it("GROUND: a healthy card has no trouble line", async () => {
+    mount();
+    await screen.findByTestId("worker-status");
+    expect(hiddenFromReaders(screen.queryByTestId("worker-trouble"))).toBe(true);
+    expect(troubleProse({ failed: 0, unexpected: 0, skipped: 0, dropped: 0, empty: 0 })).toBeNull();
+    // The door is still there: the lifetime line lives behind it.
+    expect(screen.getByRole("button", { name: DISCLOSURE_WORDS.details })).toBeInTheDocument();
   });
 });
 
@@ -366,7 +505,8 @@ describe("runs that were paid for and lost", () => {
     mount({ worker: { state: "half_open" } });
     const box = await screen.findByTestId("worker-status");
     expect(box.textContent).not.toMatch(/^Paused after repeated failures/);
-    expect(box.textContent).toMatch(/one trial call/i);
+    expect(box.textContent).toContain(STATE_PROSE.half_open);
+    expect(box.textContent).toMatch(/one test call/i);
     expect(box.textContent).toMatch(/billed/i);
   });
 
@@ -385,7 +525,7 @@ describe("runs that were paid for and lost", () => {
                      skip_reasons: { plan_invalidated: 1 } } });
     const box = await screen.findByTestId("worker-status");
     expect(box.textContent).not.toMatch(/plan_invalidated/);
-    expect(box.textContent).toMatch(/wording you had already replaced/i);
+    expect(box.textContent).toContain(SKIP_PROSE.plan_invalidated);
   });
 
   // -------------------------------------------------------------------
@@ -409,7 +549,7 @@ describe("runs that were paid for and lost", () => {
     const box = await screen.findByTestId("worker-status");
     // Rewriting is the only action that reaches this reason: the message
     // survives, so the stretch is genuinely read again.
-    expect(box.textContent).toMatch(/rewrote/i);
+    expect(box.textContent).toMatch(/edited a message/i);
     expect(box.textContent).toMatch(/read again/i);
     // The claim that put this reason on a delete. A delete removes the
     // message, which is the other reason entirely.
@@ -435,7 +575,8 @@ describe("runs that were paid for and lost", () => {
     expect(box.textContent).not.toMatch(/regenerat/i);
     // And the old claim that this range has nothing left in it at all. Only
     // the removed messages are gone; the rest of the stretch is re-read.
-    expect(box.textContent).toMatch(/whatever survives/i);
+    expect(box.textContent).toMatch(/still there are read again/i);
+    expect(box.textContent).toContain(SKIP_PROSE.range_cleared);
   });
 
   it("tells the two rollback reasons apart on screen", async () => {
@@ -446,9 +587,27 @@ describe("runs that were paid for and lost", () => {
     const box = await screen.findByTestId("worker-status");
     const lines = Array.from(box.querySelectorAll("p"))
       .map((p) => p.textContent ?? "")
-      .filter((t) => t.includes("skipped:"));
+      .filter((t) => /^\s*\d+ turns? skipped\. \S/.test(t));
     expect(lines).toHaveLength(2);
     expect(lines[0]).not.toEqual(lines[1]);
+  });
+
+  it("the card says a shared reason in the strip's own sentence", async () => {
+    // The chat line for a model that cannot write notes, and the census
+    // line for a list out of reach: each contains the one sentence the
+    // reading strip also renders (BackfillStrip.test), not a third wording.
+    mount({ stats: { done: 0, failed: 0, skipped: 1, abandoned: 0,
+                     skip_reasons: { model_list_unavailable: 1 } },
+            chat_refusal: "model_not_extractable" });
+    const chatLine = await screen.findByTestId("worker-chat-refusal");
+    await waitFor(() => expect(chatLine.textContent).toContain(REASON.modelNotExtractable));
+    expect(chatLine.textContent).toContain(REASON_TAIL.notSpent);
+    const box = screen.getByTestId("worker-status");
+    const census = Array.from(box.querySelectorAll("p"))
+      .map((p) => p.textContent ?? "")
+      .find((t) => /^\s*\d+ turns? skipped\. \S/.test(t)) ?? "";
+    expect(census).toContain(REASON.modelListUnavailable);
+    expect(census).toContain(REASON_TAIL.checkedAgain);
   });
 
   it("the agreed vocabulary is not empty", () => {
@@ -489,7 +648,7 @@ describe("runs that were paid for and lost", () => {
         ? (await screen.findByTestId("worker-chat-refusal")).textContent ?? ""
         : Array.from(box.querySelectorAll("p"))
           .map((p) => p.textContent ?? "")
-          .find((t) => t.includes("skipped:")) ?? "";
+          .find((t) => /^\s*\d+ turns? skipped\. \S/.test(t)) ?? "";
       // The fallback sentence. It is the right answer for a reason from a
       // newer backend, and the wrong one for a reason we have committed to
       // having words for - which is every reason in the contract.
@@ -593,12 +752,12 @@ describe("runs that were paid for and lost", () => {
     const box = await screen.findByTestId("worker-status");
     const line = Array.from(box.querySelectorAll("p"))
       .map((p) => p.textContent ?? "")
-      .find((t) => t.includes("skipped:")) ?? "";
+      .find((t) => /^\s*\d+ turns? skipped\. \S/.test(t)) ?? "";
     expect(line).toMatch(/no words for/i);
     // Not merely "the token appeared somewhere": the line must not BE the
     // token, which is what the old fallback rendered.
     expect(line.replace(/\s+/g, " ").trim())
-      .not.toEqual(`1 skipped: ${unknown}.`);
+      .not.toEqual(`${skippedProse(1)} ${unknown}`);
   });
 });
 
@@ -718,15 +877,37 @@ describe("why the failures failed", () => {
                      paid_and_lost: 0, skip_reasons: {},
                      error_types: { "OpenRouterError:openrouter_timeout": 2 } } });
     // Scoped to the LINE, not to the whole card: a sentence that escaped
-    // its own paragraph would satisfy an assertion against the card.
-    const line = await screen.findByTestId("worker-failure-reason");
+    // its own paragraph would satisfy an assertion against the card. A
+    // catalogue code's sentence names what to do, so the line is on screen
+    // rather than behind "Show details".
+    const line = await screen.findByTestId("worker-failure-act");
+    expect(hiddenFromReaders(line)).toBe(false);
     // The denominator is asserted with it: without a total on the card the
     // census lines invite being added against "3 runs failed" above, which
     // is a SUBSET of `failed` and does not reconcile.
-    expect(line.textContent).toMatch(/2 of 2 failures/);
+    expect(line.textContent).toContain(actFailureProse(2));
+    // No denominator on screen: it would not match the summary's count.
+    expect(line.textContent).not.toMatch(/of 2 failures/);
     // Imported, not retyped. The sentence belongs to the code catalogue,
     // and a copy here would go on passing after the real one changed.
     expect(line.textContent).toContain(getErrorMessage("openrouter_timeout"));
+  });
+
+  it("keeps a failure that names an action on screen, and a bare class behind the door", async () => {
+    mount({ stats: { done: 0, failed: 3, skipped: 0, abandoned: 0,
+                     paid_and_lost: 0, skip_reasons: {},
+                     error_types: { "OpenRouterError:api_key_not_set": 1, truncated: 2 } } });
+    const act = await screen.findByTestId("worker-failure-act");
+    expect(act.textContent).toContain(getErrorMessage("api_key_not_set"));
+    expect(hiddenFromReaders(act)).toBe(false);
+    // GROUND: the reply-shape failure asks nothing of the reader, so it is
+    // census, behind the door until it is opened.
+    const census = screen.getByTestId("worker-failure-reason");
+    expect(census.textContent).toContain(FAILURE_PROSE.truncated);
+    expect(hiddenFromReaders(census)).toBe(true);
+    expect(failureAsksToAct("OpenRouterError:api_key_not_set")).toBe(true);
+    expect(failureAsksToAct("truncated")).toBe(false);
+    expect(failureAsksToAct("RuntimeError")).toBe(false);
   });
 
   it("GROUND: says nothing about reasons when there are none", async () => {
@@ -737,6 +918,7 @@ describe("why the failures failed", () => {
                      paid_and_lost: 0, skip_reasons: {}, error_types: {} } });
     await screen.findByTestId("worker-status");
     expect(screen.queryByTestId("worker-failure-reason")).toBeNull();
+    expect(screen.queryByTestId("worker-failure-act")).toBeNull();
   });
 
   it("borrows the sentence a reason code already has, rather than writing "
@@ -749,7 +931,7 @@ describe("why the failures failed", () => {
     mount({ stats: { done: 0, failed: 1, skipped: 0, abandoned: 0,
                      paid_and_lost: 0, skip_reasons: {},
                      error_types: { "OpenRouterError:api_key_not_set": 1 } } });
-    const line = await screen.findByTestId("worker-failure-reason");
+    const line = await screen.findByTestId("worker-failure-act");
     expect(line.textContent).toContain(getErrorMessage("api_key_not_set"));
     expect(line.textContent).not.toMatch(/OpenRouterError/);
   });
@@ -769,7 +951,7 @@ describe("why the failures failed", () => {
     const write = lines.find((t) => t.includes("write_RuntimeError")) ?? "";
     const prompt = lines.find((t) => t.includes("prompt_KeyError")) ?? "";
     expect(write).toMatch(/was paid for/i);
-    expect(prompt).toMatch(/nothing was sent and nothing was spent/i);
+    expect(prompt).toMatch(/nothing was sent or spent/i);
   });
 
   it("every reason it has words for reaches the screen as words", async () => {
@@ -807,7 +989,7 @@ describe("why the failures failed", () => {
     const line = await screen.findByTestId("worker-failure-reason");
     expect(line.textContent).toMatch(/no words for/i);
     expect((line.textContent ?? "").replace(/\s+/g, " ").trim())
-      .not.toEqual(`1 of 1 failure: ${unknown}`);
+      .not.toEqual(`${failureOfProse(1, 1)} ${unknown}`);
   });
 
   it("refuses to echo a value that is not a plain token", async () => {
@@ -823,7 +1005,7 @@ describe("why the failures failed", () => {
                      paid_and_lost: 0, skip_reasons: {},
                      error_types: { [leaky]: 1 } } });
     const line = await screen.findByTestId("worker-failure-reason");
-    expect(line.textContent).toMatch(/1 of 1 failure:/);
+    expect(line.textContent).toContain(failureOfProse(1, 1));
     expect(line.textContent).toMatch(/no words for/i);
     expect(line.textContent).not.toContain("Marta");
     expect(line.textContent).not.toContain("vault");
@@ -885,12 +1067,11 @@ describe("what the reader paid for and did not get", () => {
     // nothing rather than a gate that was too strict.
     mount({ worker: { dropped: { unanchored: 4 } } });
     const line = await screen.findByTestId("worker-dropped-note");
-    expect(line.textContent).toMatch(/4 suggestions were thrown away/i);
-    expect(line.textContent).toMatch(/no name and no number/i);
-    // The count is plural, so the reason may not be a sentence about one of
-    // them: "4 suggestions were thrown away: nothing in IT" was the reading.
-    expect(line.textContent).not.toMatch(/away: nothing in it/i);
-    expect(line.textContent).toMatch(/one true note in five/i);
+    expect(line.textContent).toContain(CENSUS.dropped(4));
+    // The count is plural, so the reason is said after "Why:" with no
+    // subject of its own to match against it.
+    expect(line.textContent).toContain(`${CENSUS.dropped(4)} ${DROP_PROSE.unanchored}`);
+    expect(line.textContent).toMatch(/1 true note in 5/i);
     expect(line.textContent).not.toMatch(/unanchored/);
   });
 
@@ -923,7 +1104,7 @@ describe("what the reader paid for and did not get", () => {
     // line must not BE the token, which is what the old fallback rendered.
     expect(line.textContent).toContain("(" + unknown + ")");
     expect((line.textContent ?? "").replace(/\s+/g, " ").trim())
-      .not.toEqual(`1 suggestion was thrown away: ${unknown}.`);
+      .not.toEqual(`${CENSUS.dropped(1)} ${unknown}`);
   });
 
   it("says when a paid reply landed nothing at all", async () => {
@@ -933,8 +1114,7 @@ describe("what the reader paid for and did not get", () => {
     // like a quiet week.
     mount({ worker: { settled_empty: 9 } });
     const line = await screen.findByTestId("worker-settled-empty");
-    expect(line.textContent).toMatch(/9 replies were paid for/i);
-    expect(line.textContent).toMatch(/produced no notes/i);
+    expect(line.textContent).toContain(CENSUS.settledEmpty(9));
   });
 
   it("GROUND: says nothing when every reply landed something", async () => {
@@ -967,7 +1147,7 @@ describe("a reply that was paid for and landed nothing", () => {
   it("names the reason the most recent one landed nothing", async () => {
     mount({ worker: { settled_empty: 3, last_error: "settled_chat_gone" } });
     const line = await screen.findByTestId("worker-settled-empty");
-    expect(line.textContent).toMatch(/3 replies were paid for/i);
+    expect(line.textContent).toContain(CENSUS.settledEmpty(3));
     expect(line.textContent).toMatch(/most recent/i);
     expect(line.textContent).toContain(EMPTY_PROSE.settled_chat_gone);
     expect(line.textContent).not.toMatch(/settled_chat_gone/);
@@ -980,7 +1160,7 @@ describe("a reply that was paid for and landed nothing", () => {
     mount({ worker: { settled_empty: 3, last_error: null } });
     const line = await screen.findByTestId("worker-settled-empty");
     expect(line.textContent).not.toMatch(/most recent/i);
-    expect(line.textContent).toMatch(/a retry arrived first/i);
+    expect(line.textContent).toContain(CENSUS.settledEmptyWhy);
   });
 
   it("refuses a reason that belongs to the other signal", async () => {
@@ -1014,7 +1194,7 @@ describe("a reply that was paid for and landed nothing", () => {
     const line = await screen.findByTestId("worker-settled-empty");
     expect(line.textContent).toMatch(/no words for/i);
     expect(line.textContent).toContain("(" + unknown + ")");
-    expect(line.textContent).toMatch(/1 reply was paid for/i);
+    expect(line.textContent).toContain(CENSUS.settledEmpty(1));
   });
 
   it("does not lend the empty reason to the unexpected-error line",
@@ -1025,8 +1205,9 @@ describe("a reply that was paid for and landed nothing", () => {
     mount({ worker: { unhandled: 2, settled_empty: 1,
                       last_error: "settled_chat_gone" } });
     const line = await screen.findByTestId("worker-unhandled");
-    expect(line.textContent).toMatch(/2 runs ended in an unexpected error/i);
+    expect(line.textContent).toContain(CENSUS.unhandled(2));
     expect(line.textContent).not.toMatch(/settled_chat_gone/);
+    expect(line.getAttribute("title") ?? "").not.toMatch(/settled_chat_gone/);
   });
 
   it("POSITIVE CONTROL: it still names a real unexpected error", async () => {
@@ -1036,7 +1217,9 @@ describe("a reply that was paid for and landed nothing", () => {
     mount({ worker: { unhandled: 2, settled_empty: 0,
                       last_error: "RuntimeError" } });
     const line = await screen.findByTestId("worker-unhandled");
-    expect(line.textContent).toMatch(/\(RuntimeError\)/);
+    // Carried for a bug report as the line's title, not in the sentence.
+    expect(line.getAttribute("title")).toBe("RuntimeError");
+    expect(line.textContent).toBe(CENSUS.unhandled(2));
   });
 });
 
@@ -1121,13 +1304,14 @@ describe("a chat that stopped on its own", () => {
   it("counts the per-chat refusals apart from the global ones", async () => {
     mount({ worker: { refused_by_breaker: 0, refused_by_chat_breaker: 4,
                       tripped_chats: 2 } });
-    const box = await screen.findByTestId("worker-status");
-    expect(box.textContent).toMatch(/4 turns were passed over/i);
-    expect(box.textContent).toMatch(/2 chats are failing right now/i);
-    expect(box.textContent).toMatch(/every other chat kept running/i);
+    const box = await openDetails();
+    expect(readableText(box)).toContain(CENSUS.failingChatTurns(4));
+    expect(readableText(box)).toContain(CENSUS.failingNow(2));
+    expect(readableText(box)).toContain(CENSUS.otherChatsRan);
     // GROUND for the line above: the global sentence is a different one and
-    // is not printed when its own counter is zero.
-    expect(readableText(box)).not.toMatch(/while it was cooling down/i);
+    // is not printed when its own counter is zero. Read with the door OPEN,
+    // so the absence is not the door's.
+    expect(readableText(box)).not.toContain(CENSUS.pausedTurns(4));
   });
 
   it("asks the backend about the chat that is on screen", async () => {
@@ -1155,7 +1339,7 @@ describe("the reset button covers every state that is stuck", () => {
      async () => {
     mount({ worker: { state: "half_open" } });
     const box = await screen.findByTestId("worker-status");
-    expect(box.textContent).toMatch(/one trial call/i);
+    expect(box.textContent).toContain(STATE_PROSE.half_open);
     expect(await screen.findByRole("button", { name: /try again now/i }))
       .toBeEnabled();
   });
@@ -1201,7 +1385,7 @@ describe("every count the worker card shows, at 0, 1 and 2", () => {
       "/notebook/auto-accept": { body: { enabled: true, effective: true, overridden: false } },
     });
     renderWithQueryClient(<WorkerPanel />);
-    return visibleText(await screen.findByTestId("worker-status"));
+    return visibleText(await openDetails());
   }
 
   const failureKey = Object.keys(FAILURE_PROSE)[0];
@@ -1219,71 +1403,56 @@ describe("every count the worker card shows, at 0, 1 and 2", () => {
     marker: RegExp;
   }[] = [
     { name: "the runs done", body: (n) => statusBody({ stats: { done: n } }),
-      says: ["0 runs \u00b7", "1 run \u00b7", "2 runs \u00b7"], marker: / \u00b7 \d+ of \d+ calls? today/ },
+      says: [lifetimeProse(0, 3, 0.0004), lifetimeProse(1, 3, 0.0004), lifetimeProse(2, 3, 0.0004)],
+      marker: /All time:/ },
     { name: "the calls the day allows", body: (n) => ({ ...statusBody({ spend: { calls: 0 } }), daily_cap: n }),
-      says: ["0 of 0 calls today", "0 of 1 call today", "0 of 2 calls today"], marker: /calls? today/ },
+      says: [todayProse(0, 0, 0.0004), todayProse(0, 1, 0.0004), todayProse(0, 2, 0.0004)], marker: /Today:/ },
     { name: "the calls made in all", body: (n) => statusBody({ spend_lifetime: { calls: n } }),
-      says: ["(0 calls,", "(1 call,", "(2 calls,"], marker: /credits lifetime\)/ },
+      says: [lifetimeProse(3, 0, 0.0004), lifetimeProse(3, 1, 0.0004), lifetimeProse(3, 2, 0.0004)],
+      marker: /All time:/ },
     { name: "the calls that came back with no price",
       body: (n) => statusBody({ spend: { cost_unknown: n } }),
-      says: [null, "1 of the calls made today came back with no price - the credit figure above "
-        + "leaves it out rather than counting it as free.",
-      "2 of the calls made today came back with no price - the credit figure above leaves "
-        + "them out rather than counting them as free."], marker: /came back with no price/ },
+      says: [null, unpricedProse(1), unpricedProse(2)], marker: /had no price/ },
     { name: "the runs that failed with nothing lost",
       body: (n) => statusBody({ stats: { failed: n, paid_and_lost: 0 } }),
-      says: [null, "1 run failed. Nothing was lost - the messages it could not read stay unread, "
-        + "not skipped.", "2 runs failed. Nothing was lost - the messages they could not read "
-        + "stay unread, not skipped."], marker: /failed\. Nothing was lost/ },
+      says: [null, CENSUS.failedFree(1), CENSUS.failedFree(2)], marker: /failed\. Nothing was lost/ },
     { name: "the runs cut off after they were paid for",
       body: (n) => statusBody({ stats: { failed: n, paid_and_lost: n, abandoned: n } }),
-      says: [null, "1 run was cut off after the request had already been sent, so it was paid "
-        + "for. Elysium does not send that stretch again, which is why the notes for it are "
-        + "missing rather than duplicated.", "2 runs were cut off after the request had already "
-        + "been sent, so they were paid for. Elysium does not send those stretches again, which "
-        + "is why the notes for them are missing rather than duplicated."],
-      marker: /cut off after the request/ },
+      says: [null, CENSUS.abandoned(1), CENSUS.abandoned(2)], marker: /cut off after sending/ },
     { name: "the failures a reason accounts for",
       body: (n) => statusBody({ stats: { failed: n, paid_and_lost: n,
         error_types: n > 0 ? { [failureKey]: n } : {} } }),
-      says: [null, "1 of 1 failure:", "2 of 2 failures:"], marker: /of \d+ failures?:/ },
+      says: [null, failureOfProse(1, 1), failureOfProse(2, 2)], marker: /of \d+ failures?\./ },
     { name: "the turns skipped for a reason",
       body: (n) => statusBody({ stats: { skipped: n, skip_reasons: n > 0 ? { [skipKey]: n } : {} } }),
-      says: [null, "1 skipped:", "2 skipped:"], marker: /\d+ skipped:/ },
+      says: [null, `${skippedProse(1)} ${SKIP_PROSE[skipKey]}`, `${skippedProse(2)} ${SKIP_PROSE[skipKey]}`],
+      marker: /\d+ turns? skipped\./ },
     { name: "the runs that ended in an unexpected error",
       body: (n) => statusBody({ worker: { unhandled: n } }),
-      says: [null, "1 run ended in an unexpected error. Those messages stay unread.",
-        "2 runs ended in an unexpected error. Those messages stay unread."],
-      marker: /ended in an unexpected error/ },
+      says: [null, CENSUS.unhandled(1), CENSUS.unhandled(2)], marker: /ended in an unexpected error/ },
     { name: "the replies paid for that produced no notes",
       body: (n) => statusBody({ worker: { settled_empty: n } }),
-      says: [null, "1 reply was paid for and produced no notes",
-        "2 replies were paid for and produced no notes"], marker: /paid for and produced no notes/ },
+      says: [null, CENSUS.settledEmpty(1), CENSUS.settledEmpty(2)], marker: /paid for but gave no notes/ },
     { name: "the suggestions thrown away",
       body: (n) => statusBody({ worker: { dropped: n > 0 ? { [dropKey]: n } : {} } }),
-      says: [null, "1 suggestion was thrown away:", "2 suggestions were thrown away:"],
-      marker: /thrown away:/ },
+      says: [null, `${CENSUS.dropped(1)} ${DROP_PROSE[dropKey]}`, `${CENSUS.dropped(2)} ${DROP_PROSE[dropKey]}`],
+      marker: /suggested notes? dropped\./ },
     { name: "the turns passed over while it cooled down",
       body: (n) => statusBody({ worker: { refused_by_breaker: n } }),
-      says: [null, "1 turn was passed over while it was cooling down. Its messages are still "
-        + "unread.", "2 turns were passed over while it was cooling down. Their messages are "
-        + "still unread."], marker: /while it was cooling down/ },
+      says: [null, CENSUS.pausedTurns(1), CENSUS.pausedTurns(2)], marker: /while reading was paused/ },
     { name: "the turns passed over in chats that keep failing",
       body: (n) => statusBody({ worker: { refused_by_chat_breaker: n } }),
-      says: [null, "1 turn was passed over in a chat that keeps failing on its own.",
-        "2 turns were passed over in chats that keep failing on their own."],
-      marker: /that keeps? failing on/ },
+      says: [null, CENSUS.failingChatTurns(1), CENSUS.failingChatTurns(2)],
+      marker: /in chats that keep failing/ },
     { name: "the chats failing right now",
       body: (n) => statusBody({ worker: { refused_by_chat_breaker: 1, tripped_chats: n } }),
-      says: ["keeps failing on its own. Every other chat kept running.",
-        "keeps failing on its own (1 chat is failing right now). Every other chat kept running.",
-        "keeps failing on its own (2 chats are failing right now). Every other chat kept running."],
+      says: [`${CENSUS.failingChatTurns(1)} ${CENSUS.otherChatsRan}`,
+        `${CENSUS.failingChatTurns(1)} ${CENSUS.failingNow(1)} ${CENSUS.otherChatsRan}`,
+        `${CENSUS.failingChatTurns(1)} ${CENSUS.failingNow(2)} ${CENSUS.otherChatsRan}`],
       marker: /Every other chat kept running/ },
     { name: "the turns that went unqueued",
       body: (n) => statusBody({ worker: { dropped_offers: n } }),
-      says: [null, "1 turn went unqueued while it was behind. Its messages are still unread, so a "
-        + "later run picks them up.", "2 turns went unqueued while it was behind. Their "
-        + "messages are still unread, so a later run picks them up."], marker: /went unqueued/ },
+      says: [null, CENSUS.busyTurns(1), CENSUS.busyTurns(2)], marker: /while the note reader was busy/ },
   ];
 
   it.each(WORDINGS.map((w) => [w.name, w] as const))("%s", async (_name, wording) => {
@@ -1373,8 +1542,8 @@ describe("WorkerPanel - no \"Nothing was lost\" over a failed part", () => {
     mount({ stats: { done: 3, failed: 1, skipped: 0, abandoned: 0,
                      paid_and_lost: 0, skip_reasons: {} },
             long_message: { pending: 1, failed: 1 } });
-    const box = await screen.findByTestId("worker-status");
-    await waitFor(() => expect(readableText(box)).toMatch(/1 run failed\./));
+    const box = await openDetails();
+    await waitFor(() => expect(readableText(box)).toContain(CENSUS.failedPartRetried(1)));
     expect(readableText(box)).not.toMatch(/Nothing was lost/i);
     expect(readableText(box)).toMatch(/tried again/i);
   });
@@ -1383,8 +1552,8 @@ describe("WorkerPanel - no \"Nothing was lost\" over a failed part", () => {
     mount({ stats: { done: 3, failed: 1, skipped: 0, abandoned: 0,
                      paid_and_lost: 0, skip_reasons: {} },
             long_message: { pending: 0, failed: 0 } });
-    const box = await screen.findByTestId("worker-status");
-    await waitFor(() => expect(readableText(box)).toMatch(/Nothing was lost/i));
+    const box = await openDetails();
+    await waitFor(() => expect(readableText(box)).toContain(CENSUS.failedFree(1)));
   });
 });
 
@@ -1400,7 +1569,8 @@ describe("WorkerPanel - a part given up", () => {
     expect(line.textContent).toBe(PARTS_UNREAD_PROSE);
     await waitFor(() => expect(hiddenFromReaders(line)).toBe(false));
     expect(PARTS_UNREAD_PROSE.split(/\s+/).length).toBeLessThanOrEqual(12);
-    const box = await screen.findByTestId("worker-status");
+    const box = await openDetails();
+    await waitFor(() => expect(readableText(box)).toContain(CENSUS.failedPartUnread(1)));
     expect(readableText(box)).not.toMatch(/Nothing was lost/i);
     expect(readableText(box)).not.toMatch(/tried again/i);
   });

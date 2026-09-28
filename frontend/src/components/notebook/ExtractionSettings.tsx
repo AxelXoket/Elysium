@@ -26,7 +26,7 @@ import { useId } from "react";
 import { SlideIn } from "@/components/motion/SlideIn";
 import { settledAt } from "@/components/notebook/useRetryPress";
 import { SettingUnread } from "@/components/notebook/SettingUnread";
-import { CHOICE_UNREAD } from "@/components/notebook/noteProse";
+import { CHOICE_UNREAD, EXTRACTION_WORDS } from "@/components/notebook/noteProse";
 import {
   Select,
   SelectContent,
@@ -34,7 +34,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { INSTRUCTION_LANGUAGE_LABELS } from "@/lib/notebook/labels";
+import {
+  CHAT_MODEL_OPTION_LABEL,
+  INSTRUCTION_LANGUAGE_LABELS,
+} from "@/lib/notebook/labels";
 import { useUiStore } from "@/lib/store/uiStore";
 import { useErrorStore } from "@/lib/errors/errorStore";
 import {
@@ -55,10 +58,8 @@ import { CHAT_MODEL_BINDING } from "@/lib/schemas/notebook";
  *  option, stays on screen whatever is chosen, and is the picker's own
  *  accessible description so a reader meets it before opening the list. */
 export const CHAT_MODEL_PRICE_WARNING =
-  "\"Use the model I am chatting with\" reads with whatever model the chat "
-  + "is using at the time, at that model's price - usually many times a "
-  + "cheap extractor's, on every read, and it follows every change of chat "
-  + "model.";
+  `"${CHAT_MODEL_OPTION_LABEL}" costs your chat model's price.`
+  + " Often many times a note model's, on every read.";
 
 /** The id the picker points at with `aria-describedby`. Exported for the
  *  same reason the sentence is: the test asks the accessible DESCRIPTION of
@@ -93,7 +94,7 @@ export function ExtractionSettings() {
   // not optional and is this picker's accessible description.
   const modelLabels: Record<string, string> = {
     "": loaded ? "Not chosen - suggestions are off" : "Loading...",
-    [CHAT_MODEL_BINDING]: "Use the model I am chatting with",
+    [CHAT_MODEL_BINDING]: CHAT_MODEL_OPTION_LABEL,
   };
   // Price first, then the id: at the panel's 300px floor the tail of a long
   // vendor slug is what gets cut, and the price and the single-provider
@@ -123,8 +124,7 @@ export function ExtractionSettings() {
         </h4>
 
         <p className="text-label leading-relaxed text-muted-foreground">
-          A cheap model can read the last few turns and propose notes. It runs
-          on your own API key, so nothing is chosen for you.
+          {EXTRACTION_WORDS.intro}
         </p>
 
         <label className="block space-y-1">
@@ -203,14 +203,11 @@ export function ExtractionSettings() {
             qualifies", and those mean opposite things. */}
         {models.isError ? (
           <p className="persona-local-error" role="alert">
-            The list of models could not be fetched, so this is empty for a
-            reason that has nothing to do with which models qualify.
+            {EXTRACTION_WORDS.listFailed}
           </p>
         ) : (
           <p className="text-label leading-relaxed text-muted-foreground">
-            Only models that keep no copy of what they read and can return a
-            strict schema are listed. A model with one provider stops working
-            when that provider does.
+            {EXTRACTION_WORDS.listNote}
           </p>
         )}
 
@@ -254,8 +251,7 @@ export function ExtractionSettings() {
         </label>
 
         <p className="text-label leading-relaxed text-muted-foreground">
-          Notes are written in English either way. Try both and keep whichever
-          reads your messages better.
+          {EXTRACTION_WORDS.languageNote}
         </p>
       </section>
     </SlideIn>

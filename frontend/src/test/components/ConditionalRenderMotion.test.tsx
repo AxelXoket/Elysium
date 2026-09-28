@@ -25,12 +25,15 @@
  * inline note labels (`state === "retired"` and friends inside a row),
  * the Pin/PinOff icon swap, and the model-note paragraph that IP-02 wraps.
  */
+import { CENSUS, WORKER_DEAD } from "@/components/notebook/workerProse";
+import { DISCLOSURE_WORDS } from "@/components/notebook/limitsProse";
+import { says } from "@/test/helpers/prose";
 import { UNDO_RUN_CONFIRM } from "@/components/notebook/backfillProse";
 import {
   CHOICE_UNREAD, LIMITS_UNREAD, NOTES_UNREAD, NOTE_ROW_WORDS,
 } from "@/components/notebook/noteProse";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect, useState } from "react";
 
@@ -359,15 +362,15 @@ describe("WorkerPanel", () => {
       ["the per-chat auto-accept block", screen.queryByTestId("chat-auto-accept")],
       ["the chat-state line", screen.queryByTestId("worker-chat-state")],
       ["the missing-prices line", screen.queryByTestId("worker-cost-unknown")],
-      ["the failed-runs line", paragraphInDom(/runs failed/i)],
+      ["the failed-runs line", paragraphInDom(says(CENSUS.failedFree(0)))],
       ["the abandoned line", screen.queryByTestId("worker-abandoned")],
-      ["the reader-stopped alert", paragraphInDom(/background reader has stopped/i)],
+      ["the reader-stopped alert", paragraphInDom(says(WORKER_DEAD))],
       ["the unhandled line", screen.queryByTestId("worker-unhandled")],
       ["the chat-refusal line", screen.queryByTestId("worker-chat-refusal")],
       ["the settled-empty line", screen.queryByTestId("worker-settled-empty")],
-      ["the breaker line", paragraphInDom(/while it was cooling down/i)],
-      ["the chat-breaker line", paragraphInDom(/that keeps? failing on/i)],
-      ["the dropped-offers line", paragraphInDom(/went unqueued/i)],
+      ["the breaker line", paragraphInDom(says(CENSUS.pausedTurns(0)))],
+      ["the chat-breaker line", paragraphInDom(says(CENSUS.failingChatTurns(0)))],
+      ["the dropped-offers line", paragraphInDom(says(CENSUS.busyTurns(0)))],
     ] as const) {
       expectHeldClosed(node, what);
     }
@@ -391,21 +394,24 @@ describe("WorkerPanel", () => {
       spend: { calls: 3, tokens_in: 900, tokens_out: 40, cost: 0.0004, cost_unknown: 1 },
       chat_refusal: "model_not_extractable",
     });
-    await screen.findByTestId("worker-status");
+    const card = await screen.findByTestId("worker-status");
+    // The census sits behind "Show details": opened as a reader
+    // opens it, so every line below is asked inside an OPEN collapse.
+    fireEvent.click(within(card).getByRole("button", { name: DISCLOSURE_WORDS.details }));
 
     for (const [what, locate] of [
       ["the per-chat auto-accept block", () => screen.queryByTestId("chat-auto-accept")],
       ["the chat-state line", () => screen.queryByTestId("worker-chat-state")],
       ["the missing-prices line", () => screen.queryByTestId("worker-cost-unknown")],
-      ["the failed-runs line", () => paragraph(/runs failed/i)],
+      ["the failed-runs line", () => paragraph(says(CENSUS.failedFree(2)))],
       ["the abandoned line", () => screen.queryByTestId("worker-abandoned")],
       ["the reader-stopped alert", () => screen.queryByRole("alert")],
       ["the unhandled line", () => screen.queryByTestId("worker-unhandled")],
       ["the chat-refusal line", () => screen.queryByTestId("worker-chat-refusal")],
       ["the settled-empty line", () => screen.queryByTestId("worker-settled-empty")],
-      ["the breaker line", () => paragraph(/while it was cooling down/i)],
-      ["the chat-breaker line", () => paragraph(/that keeps? failing on/i)],
-      ["the dropped-offers line", () => paragraph(/went unqueued/i)],
+      ["the breaker line", () => paragraph(says(CENSUS.pausedTurns(3)))],
+      ["the chat-breaker line", () => paragraph(says(CENSUS.failingChatTurns(1)))],
+      ["the dropped-offers line", () => paragraph(says(CENSUS.busyTurns(4)))],
     ] as const) {
       await waitFor(() => expectShownInside(locate(), "collapse", what));
     }

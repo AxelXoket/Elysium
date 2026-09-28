@@ -96,6 +96,13 @@ export const BoundaryListSchema = z.object({
 
 export const NotebookOkSchema = z.object({ ok: z.boolean() });
 
+/** A held discard's answer: `kept` when the note stopped being a
+ *  suggestion before the delete arrived, and was left where it is. */
+export const DiscardOkSchema = z.object({
+  ok: z.boolean(),
+  kept: z.boolean().optional().default(false),
+});
+
 export const UseGlobalSchema = z.object({
   ok: z.boolean(),
   use_global: z.boolean(),

@@ -24,6 +24,8 @@
  * (see helpers/glassSurfaceCss.ts), so a real edit to index.css is a real
  * red test rather than a fixture that quietly stopped matching.
  */
+import { NEW_LIMIT_PROMPT } from "@/components/notebook/limitsProse";
+import { WORKER_DEAD } from "@/components/notebook/workerProse";
 import { CHOICE_UNREAD } from "@/components/notebook/noteProse";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -671,10 +673,11 @@ describe("the words the right panel paints", () => {
     const lines = [
       await screen.findByText(/^the list of models could not be fetched/i),
       await screen.findByText(CHOICE_UNREAD),
-      await screen.findByText(/^the background reader has stopped/i),
+      await screen.findByText(WORKER_DEAD),
     ];
-    // GROUND: the stopped reader's line is the fixture's, with its reason.
-    expect(lines[2].textContent).toContain(`(${NOTES_TAB_WORKER_DIED})`);
+    // GROUND: the stopped reader's line is the fixture's; its reason rides
+    // in the title for a bug report, not in the sentence.
+    expect(lines[2].getAttribute("title")).toBe(NOTES_TAB_WORKER_DIED);
     await motionAtRest(panel);
     const read = sweep(root, panel, "with its error lines", true);
     for (const line of lines) {
@@ -1339,7 +1342,7 @@ describe("the lines the right panel cuts short", () => {
       "the generation card's subtitle was not read").toBe(true);
     expect(read.some((r) => /^custom sampling and context$/i.test(r.words)),
       "the generation card's subtitle was not read with custom settings").toBe(true);
-    expect(read.some((r) => /keep out of the story/i.test(r.words)),
+    expect(read.some((r) => r.words.includes(NEW_LIMIT_PROMPT)),
       "the new limit's placeholder was not read").toBe(true);
     expect(read.filter((r) => r.faults.length > 0)
       .map((r) => `${r.when}: "${r.words.slice(0, 60)}" ${r.faults.join("; ")}`)).toEqual([]);

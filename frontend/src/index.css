@@ -2891,6 +2891,16 @@ input.persona-field {
   --shadow-bubble: 0 2px 10px rgba(0, 0, 0, 0.28);
 }
 
+/* The empty chat's card takes the keyboard after a delete empties the chat
+   (MessageList EmptyChatCard). Its ring is drawn INSIDE its own box, so the
+   chat area's clipping ancestors cannot cut it, in the bubble ink, which is
+   far above 3:1 on the card's light ground. */
+.chat-empty-card:focus-visible,
+.chat-empty-card:focus {
+  outline: 2px solid var(--color-es-asst-bubble-text);
+  outline-offset: -4px;
+}
+
 /* FE-5B: compact chat/message action controls */
 .chat-list-item {
   position: relative;

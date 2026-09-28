@@ -222,13 +222,19 @@ export const useNoteRangeStore = create<NoteRangeState>((set) => ({
   setEnd: (chatId, end, anchor) =>
     set((s) => {
       const range = s.byChat[chatId] ?? EMPTY_RANGE;
+      const set = { ...range, [end]: anchor, swapped: false };
+      // A cleared end is the one the book sets next, so the message
+      // button's name ("from here" / "to here") matches the hint. With BOTH
+      // ends cleared the next press starts a range from the top (applyPick
+      // sets `from` whatever `next` says), so the name says "from" too:
+      // clearing the first field and then the last used to leave it
+      // reading "to here" over a press that set the start.
+      const next: RangeEnd | undefined = set.from == null && set.to == null
+        ? "from" : anchor == null ? end : undefined;
       return {
         byChat: {
           ...s.byChat,
-          // A cleared end is the one the book sets next, so the message
-          // button's name ("from here" / "to here") matches the hint.
-          [chatId]: { ...range, [end]: anchor, swapped: false,
-            ...(anchor == null ? { next: end } : {}) },
+          [chatId]: { ...set, ...(next ? { next } : {}) },
         },
       };
     }),

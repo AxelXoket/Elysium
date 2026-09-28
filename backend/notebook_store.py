@@ -416,16 +416,34 @@ def _in_chat(con, entry_id: int, chat_id: int) -> bool:
     return row is not None
 
 
-def delete_entry(entry_id: int, chat_id: int | None = None) -> bool:
+def delete_entry(entry_id: int, chat_id: int | None = None,
+                 only_suggestion: bool = False) -> bool:
     """Remove a note you asked to remove.
 
     A hard delete, unlike supersession. The distinction matters: retirement is
     the app deciding a fact stopped being true, so the row stays visible and
     auditable. This is the person saying they never wanted it - and leaving
     behind a row they asked to be gone would be the app overruling them.
+
+    `only_suggestion` is the Notes tab's HELD discard. A Discard is sent
+    later (when the panel leaves the chat), and the reader may have kept,
+    pinned or edited the note in between - from this tab or another. Then
+    the discard no longer stands, so the note is kept and this returns
+    False. Checked inside the same transaction as the DELETE, so nothing
+    can change the row between the check and the removal.
     """
     with get_db() as con:
         con.execute("BEGIN IMMEDIATE")
+        if only_suggestion:
+            row = con.execute(
+                "SELECT status, pinned, edited_at, hand_accepted_at "
+                "FROM notebook_entries WHERE id = ?", (entry_id,)).fetchone()
+            if row is not None and (
+                    row[0] != STATUS_PROPOSED or row[1]
+                    or row[2] is not None or row[3] is not None):
+                if chat_id is not None and not _in_chat(con, entry_id, chat_id):
+                    raise NotebookError("notebook_entry_not_found")
+                return False
         if chat_id is not None and not _in_chat(con, entry_id, chat_id):
             # Not this chat's note. Refused rather than ignored: answering
             # "deleted: false" would read as "it was already gone".

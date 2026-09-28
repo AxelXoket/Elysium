@@ -44,6 +44,7 @@
  * `fontWeights` in lib/theme/tokens.ts, which tokens-sync.test.ts holds
  * equal to index.css in both directions.
  */
+import { AUTO_ACCEPT_OFF } from "@/components/notebook/noteProse";
 import { createElement } from "react";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -684,7 +685,7 @@ describe("every button in the Notes tab is on the chrome step", () => {
     // POSITIVE CONTROL: the same reader, on the same tab, reports a size
     // off the chrome step where there is one - the worker card's prose is
     // on the label step - so the empty list above is a reading.
-    const prose = screen.getByText(/a suggestion waits in the list until you keep it/i);
+    const prose = screen.getByText(AUTO_ACCEPT_OFF);
     expect(fontSizePx(root, tokenTable, rem, prose),
       "the reader did not see the label step on the worker card's prose")
       .toBe(typeScale.label.px);

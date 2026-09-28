@@ -9,6 +9,10 @@
  * source text; every sentence is checked against the numbers in the body
  * the mock served, and every constant is imported.
  */
+import { REASON_WHY } from "@/components/notebook/reasonProse";
+import { backlogHowProse, backlogProse } from "@/components/notebook/workerProse";
+import { DISCLOSURE_WORDS } from "@/components/notebook/limitsProse";
+import { says } from "@/test/helpers/prose";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -47,6 +51,7 @@ import { BackfillStrip } from "@/components/notebook/BackfillStrip";
 import { NotebookPanel } from "@/components/notebook/NotebookPanel";
 import { Select, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SKIP_PROSE, SWEEP_PROSE, sweepProse } from "@/components/notebook/WorkerPanel";
+import { REASON, REASON_TAIL } from "@/components/notebook/reasonProse";
 import { getErrorMessage } from "@/lib/errors/errorMessages";
 import type { BackfillStatus } from "@/lib/schemas/notebook";
 import {
@@ -58,6 +63,7 @@ import {
   blockedProse,
   rangeSummary,
   capProse,
+  reserveProse,
   outcomeProse,
   planProse,
   stopProse,
@@ -295,15 +301,25 @@ describe("the backlog offer (KARAR-J)", () => {
     // at its threshold, and the line now says so, with the worker's own
     // number off the poll. 17 rather than 20 so a figure typed into the
     // component cannot pass for the one the worker sent.
+    const user = userEvent.setup();
     mount({ backlog: { chats: 3, messages: 512 }, trigger_threshold: 17 });
     const note = await screen.findByTestId("worker-backlog");
     await waitFor(() => expect(hiddenFromReaders(note)).toBe(false));
-    const said = (note.textContent ?? "").replace(/\s+/g, " ");
-    expect(said).toMatch(/3 chats have 512 unread messages/);
-    expect(said).toMatch(/reads a chat by itself every 17 new messages/);
-    // The sentence that makes it an offer rather than a warning.
-    expect(said).toMatch(/everything older waits for you to ask here/i);
-    expect(said).toMatch(/costs calls/i);
+    // ON SCREEN: the counts, and that reading happens by itself at a cost
+    // (3.31: spend nobody asked for is said, not hidden behind a door).
+    const line = within(note).getByText(backlogProse(3, 512));
+    expect(hiddenFromReaders(line)).toBe(false);
+    expect(line.textContent).toMatch(/read automatically, at a cost/);
+    // BEHIND THE DOOR: when, with the worker's own number, and the offer.
+    const how = backlogHowProse(17);
+    expect(how[0]).toMatch(/every 17 new messages/);
+    const door = within(note).getByRole("button", { name: DISCLOSURE_WORDS.whenRead });
+    const detail = within(note).getByText(says(how[2]));
+    expect(hiddenFromReaders(detail)).toBe(true);
+    await user.click(door);
+    expect(door).toHaveAttribute("aria-expanded", "true");
+    expect(hiddenFromReaders(detail)).toBe(false);
+    expect(detail.textContent).toBe(how.join(" "));
   });
 
   it("says one chat and one message in the singular", async () => {
@@ -311,15 +327,16 @@ describe("the backlog offer (KARAR-J)", () => {
     // state read, and one message read "1 unread messages". Each count
     // takes its own number, so the three mixed cases are each asked.
     for (const [chats, messages, said] of [
-      [1, 1, "1 chat has 1 unread message."],
-      [1, 40, "1 chat has 40 unread messages."],
-      [2, 1, "2 chats have 1 unread message."],
+      [1, 1, "1 chat has 1 message "],
+      [1, 40, "1 chat has 40 messages "],
+      [2, 1, "2 chats have 1 message "],
     ] as const) {
       mount({ backlog: { chats, messages } });
       const note = await screen.findByTestId("worker-backlog");
       await waitFor(() => expect(hiddenFromReaders(note)).toBe(false));
       expect((note.textContent ?? "").replace(/\s+/g, " "), `${chats} and ${messages}`)
-        .toMatch(new RegExp(`^${said.replace(/\./g, "\\.")} The background reader`));
+        .toMatch(new RegExp(`^${said}`));
+      expect(note.textContent).toContain(backlogProse(chats, messages));
       cleanup();
     }
   });
@@ -337,9 +354,9 @@ describe("the backlog offer (KARAR-J)", () => {
     const said = (note.textContent ?? "").replace(/\s+/g, " ");
     // GROUND: the line is there and carries its counts, so the absences
     // below are about its words and not about an empty render.
-    expect(said).toMatch(/3 chats have 512 unread messages/);
+    expect(said).toContain(backlogProse(3, 512));
     // POSITIVE CONTROL for the same query: the new clause is found.
-    expect(said).toMatch(/a new chat from its start only while it is short/);
+    expect(said).toContain(backlogHowProse(20)[1]);
     expect(said).not.toMatch(/read once on its own/i);
     expect(said).not.toMatch(/except a chat that has no notes/i);
     expect(said).not.toMatch(/the first time it comes up/i);
@@ -352,7 +369,8 @@ describe("the backlog offer (KARAR-J)", () => {
     const note = await screen.findByTestId("worker-backlog");
     await waitFor(() => expect(hiddenFromReaders(note)).toBe(false));
     const said = (note.textContent ?? "").replace(/\s+/g, " ");
-    expect(said).toMatch(/reads a chat by itself as new messages arrive/);
+    expect(said).toContain(backlogHowProse(0)[0]);
+    expect(said).toMatch(/as new messages arrive/);
     expect(said).not.toMatch(/every 0/);
   });
 
@@ -808,15 +826,16 @@ describe("the preview comes before the button acts", () => {
     const { calls } = mount({}, {}, { body: plan });
     await openPreview(user);
     const cap = await screen.findByTestId("backfill-cap");
-    expect(cap.textContent).toMatch(/cannot start until tomorrow/i);
+    expect(cap.textContent).toContain(REASON.historyCapUsed);
+    expect(cap.textContent).toContain(REASON_TAIL.tryTomorrow);
     // WHY it is used up while the day's own counter still has room. The
     // reader meets "50 of 60 used" in the Notes tab and a refusal here,
     // and those two only stop contradicting each other once the reserve
     // is named. Both numbers come from the body the mock served.
     expect(cap.textContent).toBe(capProse(plan));
     expect(cap.textContent).toMatch(
-      new RegExp(`last ${plan.live_reserve} of the day's ${plan.daily_cap}`, "i"));
-    expect(cap.textContent).toMatch(/kept for your own conversations/i);
+      new RegExp(`last ${plan.live_reserve} of ${plan.daily_cap} daily calls`, "i"));
+    expect(cap.textContent).toContain(reserveProse(plan));
     const start = screen.getByRole("button", { name: /start reading/i });
     await waitFor(() => expect(start).toBeDisabled());
     // The button names the sentence that explains it, so a reader who
@@ -878,10 +897,11 @@ describe("the preview comes before the button acts", () => {
     // positive control sits beside it so this is about the zero arm and
     // not about the clause having quietly disappeared for everyone.
     const none = planBody({ fits_today: false, calls_spent_today: 50, live_reserve: 0 });
-    expect(capProse(none)).toMatch(/cannot start until tomorrow/i);
-    expect(capProse(none)).not.toMatch(/kept for your own conversations/i);
+    expect(capProse(none)).toContain(REASON.historyCapUsed);
+    expect(capProse(none)).not.toMatch(/kept for/i);
     expect(capProse({ ...none, live_reserve: 10 }))
-      .toMatch(/kept for your own conversations/i);
+      .toContain(reserveProse({ ...none, live_reserve: 10 }));
+    expect(capProse({ ...none, live_reserve: 10 })).toMatch(/kept for/i);
   });
 
   it("a blocked preview disables the run and says what is missing", async () => {
@@ -936,27 +956,91 @@ describe("the preview comes before the button acts", () => {
     ]);
   });
 
-  it("the preview's words and a refusal's words are different sentences on purpose", () => {
-    // Section 5.0 forbids one state wearing two names. These two tables
-    // share three tokens and still differ, and the reason is the moment
-    // each is read at: `BLOCKED_PROSE` holds FRAGMENTS of a state, joined
-    // into "It cannot start: a; b." before anything is pressed;
-    // `SWEEP_PROSE` holds whole past-tense sentences about a press that
-    // was refused. Swapping them produces "It cannot start: Nothing here
-    // is unread - it has all been looked at.".
-    for (const shared of ["nothing_unread", "model_not_extractable",
-                          "model_list_unavailable"]) {
-      expect(BLOCKED_PROSE[shared]).not.toBe(SWEEP_PROSE[shared]);
-      // A fragment, so: no capital at the front and no full stop at the
-      // end, which is what makes it joinable.
-      expect(BLOCKED_PROSE[shared]).toMatch(/^[a-z]/);
-      expect(BLOCKED_PROSE[shared]).not.toMatch(/\.$/);
-      expect(SWEEP_PROSE[shared]).toMatch(/^[A-Z]/);
+  it("one reason, one sentence: the preview, the refusal and the card share it", () => {
+    // Section 5.0: one state, one name. The three tables used to carry
+    // three wordings of each shared reason, 52 to 59 words each. Each now
+    // CONTAINS the one sentence reasonProse.ts holds, and adds only its own
+    // moment's tail. GROUND: the sentence is not empty, so containment is
+    // not satisfied by anything.
+    const shared: Array<[string, string]> = [
+      ["nothing_unread", REASON.nothingUnread],
+      ["model_not_extractable", REASON.modelNotExtractable],
+      ["model_list_unavailable", REASON.modelListUnavailable],
+    ];
+    for (const [token, sentence] of shared) {
+      expect(sentence.length, token).toBeGreaterThan(10);
+      expect(BLOCKED_PROSE[token], token).toContain(sentence);
+      expect(SWEEP_PROSE[token], token).toContain(sentence);
     }
-    // And the preview's version of the hardest one keeps BOTH halves the
-    // refusal gives: why it cannot, and what to do instead.
-    expect(BLOCKED_PROSE.model_not_extractable).toMatch(/keep no copy/i);
-    expect(BLOCKED_PROSE.model_not_extractable).toMatch(/pick a note model/i);
+    for (const token of ["model_not_extractable", "model_list_unavailable"]) {
+      const sentence = token === "model_list_unavailable"
+        ? REASON.modelListUnavailable : REASON.modelNotExtractable;
+      expect(SKIP_PROSE[token], token).toContain(sentence);
+    }
+    // Before a press nothing was sent, so the preview never says it did;
+    // after one, the refusal does.
+    expect(blockedProse(["model_not_extractable"])).toContain(REASON_TAIL.cannotStart);
+    expect(BLOCKED_PROSE.model_not_extractable).not.toContain(REASON_TAIL.notSent);
+    expect(SWEEP_PROSE.model_not_extractable).toContain(REASON_TAIL.notSent);
+    // And the hardest one keeps both halves: why it cannot, and what to do.
+    expect(REASON_WHY.modelNotExtractable.join(" ")).toMatch(/keep no copy/i);
+    expect(REASON.modelNotExtractable).toMatch(/pick a note model/i);
+  });
+
+  it.each([
+    ["model_not_extractable", REASON.modelNotExtractable],
+    ["model_list_unavailable", REASON.modelListUnavailable],
+  ])("the strip says %s the same way before and after a press", async (token, sentence) => {
+    // Before: the preview's blocked line. After: the answer to Start. Both
+    // render the one sentence reasonProse.ts holds; WorkerPanel.test holds
+    // the card to the same constant.
+    const user = userEvent.setup();
+    mount({}, {}, { body: planBody({ ready: false, blocked_by: [token] }) });
+    await openPreview(user);
+    const why = await screen.findByTestId("backfill-blocked");
+    await waitFor(() => expect(hiddenFromReaders(why)).toBe(false));
+    expect(why.textContent).toContain(sentence);
+    expect(why.textContent).toContain(REASON_TAIL.cannotStart);
+    cleanup();
+
+    const again = userEvent.setup();
+    mount({}, { [`POST /notebook/extract/run/${CHAT}`]: { body: { started: false, reason: token } } });
+    await openPreview(again);
+    const start = screen.getByRole("button", { name: /start reading/i });
+    await waitFor(() => expect(start).toBeEnabled());
+    await again.click(start);
+    const said = await screen.findByTestId("backfill-said");
+    await waitFor(() => expect(said.textContent).toContain(sentence));
+    expect(said.textContent).toContain(REASON_TAIL.notSent);
+  });
+
+  it("a job stopped by the chat's own pause says so without claiming nothing was sent", () => {
+    // It HAD sent calls before the chat paused, so the refusal's "Nothing
+    // was sent." in front of its count would be false. GROUND: the refusal
+    // itself does carry that tail.
+    expect(SWEEP_PROSE.chat_paused).toContain(REASON_TAIL.notSent);
+    for (const [why, sentence] of [["chat_paused", REASON.chatPaused],
+                                   ["chat_stopped", REASON.chatStopped]] as const) {
+      const said = outcomeProse(job({ state: "stopped", last_error: why, calls_spent: 4 }));
+      expect(said, why).toContain(sentence);
+      expect(said, why).not.toContain(REASON_TAIL.notSent);
+      expect(said, why).toMatch(/4 calls/);
+    }
+  });
+
+  it("the preview's refusal is action first, its why behind a door", async () => {
+    const user = userEvent.setup();
+    mount({}, {}, { body: planBody({ ready: false, blocked_by: ["model_not_extractable"] }) });
+    await openPreview(user);
+    const why = await screen.findByTestId("backfill-blocked");
+    await waitFor(() => expect(hiddenFromReaders(why)).toBe(false));
+    expect(why.textContent).toBe(`${REASON_TAIL.cannotStart} ${REASON.modelNotExtractable}`);
+    const door = within(screen.getByTestId("backfill-blocked-why"))
+      .getByRole("button", { name: DISCLOSURE_WORDS.whyModel });
+    const detail = screen.getByText(REASON_WHY.modelNotExtractable.join(" "));
+    expect(hiddenFromReaders(detail)).toBe(true);
+    await user.click(door);
+    expect(hiddenFromReaders(detail)).toBe(false);
   });
 
   it("a list that could not be fetched is never said as the model's fault", () => {
@@ -1469,7 +1553,10 @@ describe("a finished job and its undo", () => {
     mount({ backfill: failed });
     const out = await screen.findByTestId("backfill-outcome");
     await waitFor(() => expect(hiddenFromReaders(out)).toBe(false));
-    expect(out.textContent).toContain("ReadTimeout");
+    // Carried as the line's title for a bug report, not in the sentence.
+    const line = out.querySelector("p")!;
+    expect(line.getAttribute("title")).toBe("ReadTimeout");
+    expect(out.textContent).not.toContain("ReadTimeout");
   });
 
   it("undo asks first, then sends one POST with the chat, and says what stayed", async () => {
@@ -2239,7 +2326,11 @@ describe("the strip's Select sits on the house primitive (KURAL 7.4, T-19)", () 
       cleanup();
     }
 
-    // THE STRIP'S SHARE of the count the inventory row names, measured:
+    // THE STRIP'S SHARE of the count the inventory row names, measured.
+    // One more control than the row counts: the backlog's disclosure door
+    // is NEW, born on the chrome step, not one of the sixteen
+    // `text-xs` call sites the row converted, so it is listed here and the
+    // row's count is unchanged.
     // seven buttons and the scope trigger here, and the ninth is the span
     // that names the trigger, asserted above. The row's other seven are the
     // saved-notes block's four buttons, held where that block renders - two
@@ -2258,7 +2349,8 @@ describe("the strip's Select sits on the house primitive (KURAL 7.4, T-19)", () 
         "Stop reading",
         "Undo this run",
         "backfill-scope-label",
-      ]);
+        DISCLOSURE_WORDS.whenRead,
+      ].sort());
   }, 60_000);
 
   it("T-19: all three scopes render whole, and the check mark has a column "
@@ -2495,20 +2587,20 @@ describe("every count the strip says, at 0, 1 and 2", () => {
       says: [": 0 calls,", ": 1 call,", ": 2 calls,"] },
     { name: "the calls reading history may use today",
       say: (n) => planProse(planBody({ calls_spent_today: 0, backfill_cap: n })),
-      says: ["0 of 0 calls for reading history used today.",
-        "0 of 1 call for reading history used today.",
-        "0 of 2 calls for reading history used today."] },
+      says: ["History reading used today: 0 of 0 calls.",
+        "History reading used today: 0 of 1 call.",
+        "History reading used today: 0 of 2 calls."] },
     { name: "the calls kept for conversations",
       say: (n) => capProse(planBody({ fits_today: false, calls_spent_today: 50, backfill_cap: 50,
         live_reserve: n, daily_cap: 60 })),
-      says: ["cannot start until tomorrow.",
-        "The last one of the day's 60 calls is kept for your own conversations.",
-        "The last 2 of the day's 60 calls are kept for your own conversations."] },
+      says: [REASON_TAIL.tryTomorrow,
+        "The last one of 60 daily calls is kept",
+        "The last 2 of 60 daily calls are kept"] },
     { name: "the calls that fit today",
       say: (n) => capProse(planBody({ fits_today: false, calls_planned: 21, calls_spent_today: 48 - n,
         backfill_cap: 48 })),
-      says: ["already used, so this cannot start until tomorrow.",
-        "Only 1 of those 21 calls fits today:", "Only 2 of those 21 calls fit today:"] },
+      says: [REASON.historyCapUsed,
+        "Only 1 of those 21 calls fits today.", "Only 2 of those 21 calls fit today."] },
     { name: "the calls a finished run spent",
       say: (n) => outcomeProse(job({ calls_spent: n })),
       says: ["Finished reading: 0 calls,", "Finished reading: 1 call,", "Finished reading: 2 calls,"] },
@@ -2562,9 +2654,9 @@ describe("every count the strip says, at 0, 1 and 2", () => {
     const said = [];
     for (const n of [0, 1, 2]) said.push(await backlogAt(n, 5));
     expect(said).toEqual([
-      expect.stringMatching(/^0 chats have 5 unread messages\./),
-      expect.stringMatching(/^1 chat has 5 unread messages\./),
-      expect.stringMatching(/^2 chats have 5 unread messages\./),
+      expect.stringMatching(/^0 chats have 5 messages not yet read/),
+      expect.stringMatching(/^1 chat has 5 messages not yet read/),
+      expect.stringMatching(/^2 chats have 5 messages not yet read/),
     ]);
   }, 30_000);
 
@@ -2574,8 +2666,8 @@ describe("every count the strip says, at 0, 1 and 2", () => {
     // At 0 the line is not shown; at 1 the same reader finds it.
     expect(said).toEqual([
       null,
-      expect.stringMatching(/^1 chat has 1 unread message\./),
-      expect.stringMatching(/^1 chat has 2 unread messages\./),
+      expect.stringMatching(/^1 chat has 1 message not yet read/),
+      expect.stringMatching(/^1 chat has 2 messages not yet read/),
     ]);
   }, 30_000);
 

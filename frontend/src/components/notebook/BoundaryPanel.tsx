@@ -30,6 +30,17 @@ import { SwitchRow } from "@/components/settings/SwitchRow";
 import { settledAt } from "@/components/notebook/useRetryPress";
 import { SettingUnread } from "@/components/notebook/SettingUnread";
 import { LIMITS_UNREAD, SETTING_LOADING } from "@/components/notebook/noteProse";
+import { Disclosure } from "@/components/notebook/Disclosure";
+import {
+  DISCLOSURE_WORDS,
+  SAFEWORD_HOW,
+  SAFEWORD_LABEL,
+  SAFEWORD_LINE,
+  SAFEWORD_OFF,
+  SAFEWORD_PROMPT,
+  LIMITS_LINE,
+  NEW_LIMIT_PROMPT,
+} from "@/components/notebook/limitsProse";
 import { useUiStore } from "@/lib/store/uiStore";
 import {
   LIMIT_DRAFT_FIELDS,
@@ -151,8 +162,6 @@ function LimitQualifier({
   );
 }
 
-/** What the empty field asks for; its placeholder and its title. */
-const NEW_LIMIT_PROMPT = "Something to keep out of the story...";
 
 export function BoundaryPanel() {
   const chatId = useUiStore((s) => s.selectedChatId);
@@ -343,7 +352,7 @@ export function BoundaryPanel() {
       <div className="persona-card space-y-1">
         <label className="block space-y-1">
           <span className="text-label leading-relaxed text-muted-foreground">
-            Safeword - stops a message before it is sent
+            {SAFEWORD_LABEL}
           </span>
           {/* NO BOX UNTIL THE SAVED WORD IS KNOWN. An empty box reads as
               "no safeword", which is a value, and a guess. Until the word
@@ -355,8 +364,8 @@ export function BoundaryPanel() {
               autoComplete="off"
               value={shown}
               maxLength={64}
-              placeholder="A word you would never write by accident..."
-              title="A word you would never write by accident..."
+              placeholder={SAFEWORD_PROMPT}
+              title={SAFEWORD_PROMPT}
               disabled={busy}
               onChange={(e) => setSafeword(e.target.value)}
               onBlur={() => void saveSafeword()}
@@ -383,48 +392,40 @@ export function BoundaryPanel() {
           onRetry={() => void safewordQuery.refetch()}
           focusAfter={() => document.getElementById(SAFEWORD_FIELD)}
         />
-        <p className="text-label leading-relaxed text-muted-foreground">
-          {/* Short sentences: this used to be one 23-word sentence. */}
-          Put it in a message and nothing is sent or saved. That covers the
-          message, your notes and these limits. It is checked here, not asked
-          of the model.
-          {/* Only beside a box there is: with the saved word unread, no box
-              is drawn and there is nothing to leave empty. */}
-          {safewordQuery.isSuccess && " Leave it empty to turn it off."}
-        </p>
-        {/* The second half, and it has to be here rather than left unsaid.
-            The sentence above is true about the message being SENT and only
-            about that. A copy of the word sitting in something older travels
-            on turns the reader asked for now, and stopping those would turn
-            one word into a permanent stop with nothing on screen to explain
-            it - so that copy is cut out instead. Saying only the first half
-            would promise a silence the app does not keep.
+        {/* ONE LINE ON SCREEN, THE REST ONE PRESS AWAY. The line
+            is the promise a reader needs before typing a word; the details
+            behind "How it works" keep every other promise the three old
+            paragraphs made (limitsProse.ts lists them), only shorter.
 
-            Regenerate is named because it is the one place the two halves
-            meet and the answer is the surprising one: it re-sends the stored
-            user message as the turn being sent, so a word in THAT line takes
-            the stop branch. A reader who armed the word today and reaches for
-            regenerate on a chat from last week hits it, and the paragraph
-            above is what would otherwise have told them it could not
-            happen. */}
+            The second half has to be said rather than left out. The line
+            above is true about the message being SENT and only about that.
+            A copy of the word in something older travels on turns the
+            reader asked for now, and stopping those would turn one word
+            into a permanent stop with nothing on screen to explain it, so
+            that copy is cut out instead. Regenerate is named because it is
+            where the two halves meet and the answer is the surprising one:
+            it re-sends the stored user message as the turn being sent, so a
+            word in THAT line takes the stop branch. */}
         <p className="text-label leading-relaxed text-muted-foreground">
-          If the word is already in something older - a line further back, a
-          note, a character - that turn is not stopped. The word is taken out
-          of what the model is sent and the rest of the text goes. If cutting
-          it leaves a line with nothing in it, that line is not sent at all.
-          Regenerating is the exception: it sends that message again, so a
-          word in it stops the turn instead.
+          {SAFEWORD_LINE}
+          {/* Only beside a box there is: with the saved word unread, no
+              box is drawn and there is nothing to leave empty. */}
+          {safewordQuery.isSuccess && ` ${SAFEWORD_OFF}`}
         </p>
-        <p className="text-label leading-relaxed text-muted-foreground">
-          Your own copy is never rewritten. The word stays in the chat, in the
-          note and on screen, exactly as you typed it.
-        </p>
+        <Disclosure label={DISCLOSURE_WORDS.how} testId="safeword-how">
+          <p className="text-label leading-relaxed text-muted-foreground">
+            {SAFEWORD_HOW.covers} {SAFEWORD_HOW.where}
+          </p>
+          <p className="text-label leading-relaxed text-muted-foreground">
+            {SAFEWORD_HOW.older} {SAFEWORD_HOW.cut}{" "}
+            {SAFEWORD_HOW.emptyLine} {SAFEWORD_HOW.regenerate}
+          </p>
+          <p className="text-label leading-relaxed text-muted-foreground">
+            {SAFEWORD_HOW.ownCopy} {SAFEWORD_HOW.ownCopyWhere}
+          </p>
+        </Disclosure>
       </div>
 
-      <p className="text-label leading-relaxed text-muted-foreground">
-        Sent with every message and never trimmed to make room. If they do not
-        fit, nothing is sent at all.
-      </p>
 
       {/* Its own card, apart from the six controls below: this switch sets
           every other limit aside for one chat, which is a different kind of
@@ -528,6 +529,12 @@ export function BoundaryPanel() {
           />
         </div>
       </div>
+
+      {/* WITH THE LIMITS, not under the safeword: said right above their
+          list, it cannot be read as being about the safeword. */}
+      <p className="text-label leading-relaxed text-muted-foreground" data-testid="limits-line">
+        {LIMITS_LINE}
+      </p>
 
       <SettingUnread
         open={failed}
