@@ -266,6 +266,125 @@ class TestASweepDoesNotBuyWhatIsAlreadyPaidFor:
         assert plan["to_id"] == fresh[-1]
 
 
+class TestReadingThePastCannotDeleteTheFuture:
+    """Q-44 #E485178, the first step of IP-01.
+
+    `_plan_work` showed the model EVERY live note whatever range it was
+    reading, so a backward read of messages 2 to 4 saw a note distilled
+    from message 13, called it stale, and named it in `supersedes` -
+    measured five times out of five. A read that ends at message N is now
+    shown only the notes from messages up to N. The reader's own notes
+    (no source message) stay on the list in every mode and are refused by
+    `retire_superseded` in every mode.
+    """
+
+    def _chat(self, client) -> tuple[int, list[int], dict, dict]:
+        chat_id = seed(client, count=20)
+        ids = message_ids(chat_id)
+        future = notebook.create_entry(
+            chat_id, "Her brother sold the mill.",
+            provenance=notebook.PROV_MODEL, source_message_id=ids[12])
+        mine = notebook.create_entry(chat_id, "Written by the reader.")
+        return chat_id, ids, future, mine
+
+    def _retire_through(self, chat_id: int, plan: dict, target_id: int,
+                        key: str) -> bool:
+        """Drive `commit_extraction` with a proposal naming `target_id`
+        by its INDEX in this plan's lists, the way the model answers."""
+        idx = plan["existing_ids"].index(target_id)
+        with get_db() as con:
+            con.execute("BEGIN IMMEDIATE")
+            notebook.commit_extraction(
+                con, work_key=key, chat_id=chat_id,
+                from_id=plan["from_id"], to_id=plan["to_id"],
+                proposals=[{"text": "Her brother owns the mill again.",
+                            "evidence": "her brother owns the mill",
+                            "kind": "fact", "durability": "permanent",
+                            "importance": 2, "supersedes": idx}],
+                existing_ids=plan["existing_ids"])
+        with get_db() as con:
+            return con.execute(
+                "SELECT retired_at FROM notebook_entries WHERE id = ?",
+                (target_id,)).fetchone()[0] is not None
+
+    def test_a_backward_read_cannot_name_a_note_from_its_future(self, client):
+        """T-11."""
+        chat_id, ids, future, mine = self._chat(client)
+
+        plan = notebook_worker._plan_work(
+            chat_id, MODEL, "en", 4, 3, min_new=1, after_id=ids[0])
+
+        assert plan["to_id"] == ids[3], "ground: the read ends at message 4"
+        assert future["id"] not in plan["existing_ids"]
+        assert mine["id"] in plan["existing_ids"], (
+            "the reader's own note left the list")
+        assert len(plan["existing"]) == len(plan["existing_ids"]) == 1, (
+            "the two lists came apart")
+        # And with no index to name it by, nothing can retire it.
+        assert not self._retire_through(chat_id, plan, mine["id"], "back-mine")
+        with get_db() as con:
+            assert con.execute(
+                "SELECT retired_at FROM notebook_entries WHERE id = ?",
+                (future["id"],)).fetchone()[0] is None
+
+    def test_a_forward_read_still_can(self, client) -> None:
+        """T-11z, the ZEMIN: the ordinary turn covering message 13 sees the
+        note and a `supersedes` retires it, so the filter did not break
+        the path that needs no filter."""
+        chat_id, ids, future, mine = self._chat(client)
+
+        plan = notebook_worker._plan_work(chat_id, MODEL, "en", 4, 20)
+
+        assert plan["to_id"] == ids[-1]
+        assert future["id"] in plan["existing_ids"]
+        assert mine["id"] in plan["existing_ids"]
+        assert self._retire_through(chat_id, plan, future["id"], "fwd-future")
+
+    def test_the_readers_own_note_is_never_retired_on_either_path(self, client):
+        """The second ground: no source message, on the list both ways,
+        refused both ways."""
+        chat_id, ids, _future, mine = self._chat(client)
+        forward = notebook_worker._plan_work(chat_id, MODEL, "en", 4, 20)
+        assert mine["id"] in forward["existing_ids"]
+        assert not self._retire_through(chat_id, forward, mine["id"], "fwd-mine")
+
+    def test_a_model_note_whose_message_is_gone_is_hidden_from_a_short_read(
+            self, client) -> None:
+        """The Q-44 residue, closed.
+
+        "No source message" is not only "the reader wrote it":
+        `commit_extraction` writes NULL for a MODEL note when the message it
+        came from was deleted or edited away during the provider call, so
+        the provenance guard does not cover it. A read that stops short of
+        the present cannot see where such a note came from and therefore
+        cannot judge it stale - so it is not shown one, and with no index to
+        name it by, nothing can retire it. A read that reaches the present
+        is shown it and may, because that read can see everything there is.
+        """
+        chat_id, ids, _future, mine = self._chat(client)
+        orphan = notebook.create_entry(
+            chat_id, "Something the transcript no longer holds.",
+            provenance=notebook.PROV_MODEL, source_message_id=None)
+
+        backward = notebook_worker._plan_work(
+            chat_id, MODEL, "en", 4, 3, min_new=1, after_id=ids[0])
+        forward = notebook_worker._plan_work(chat_id, MODEL, "en", 4, 20)
+
+        assert backward["to_id"] == ids[3], "ground: the read stops short"
+        assert orphan["id"] not in backward["existing_ids"], (
+            "a read that cannot see the source was shown the note anyway")
+        # GROUND for the absence: the reader's own note, equally
+        # source-less, IS on that same list - so the backward read is not
+        # simply empty and the drop is about provenance plus range.
+        assert mine["id"] in backward["existing_ids"]
+        assert len(backward["existing"]) == len(backward["existing_ids"])
+        # POSITIVE CONTROL: a read that reaches the present is shown it and
+        # can retire it, so "hidden" above is this read's range and not a
+        # note that fell out of the list everywhere.
+        assert orphan["id"] in forward["existing_ids"]
+        assert self._retire_through(chat_id, forward, orphan["id"], "fwd-orph")
+
+
 class TestCoverageAndTheWorkKeyAreDifferentQuestions:
     def test_a_new_model_does_not_reopen_a_swept_range(self, client) -> None:
         """`work_key` carries the model on purpose: a different model is a
@@ -458,10 +577,17 @@ class _NoHalving(notebook_worker.Worker):
 
 
 async def _grind(client, monkeypatch, *, halving: bool, outcomes) -> dict:
-    """Sweep one chat until nothing is left, or the day's budget stops it.
+    """Read one chat one unit at a time until nothing is left, or the day's
+    budget stops it.
 
     The daily block is real and is part of the measurement: it is what turns
     "more calls" into "less work", because the calls run out first.
+
+    Each unit is a `scope=next` reading job, one press of "the next unread
+    stretch only". It used to be one press of the sweep route, which did the
+    same single unit through the same `_handle`; that route is gone
+    (decision 69 a), and the job is the door that is left. Its ceiling is
+    the job's, sixty minus the live reserve, which both arms share.
     """
     import database
 
@@ -469,13 +595,19 @@ async def _grind(client, monkeypatch, *, halving: bool, outcomes) -> dict:
         con.execute("DELETE FROM notebook_spend")
     chat_id = seed(client, count=BACKLOG - 1)
     database.set_setting(config.SETTING_NOTEBOOK_MODEL, MODEL)
+    # A job wants a chat model chosen (the `not_ready` gate); the sweep it
+    # replaces did not ask.
+    with get_db() as con:
+        con.execute("UPDATE chats SET model_id = ? WHERE id = ?",
+                    (MODEL, chat_id))
     provider = _scripted(monkeypatch, outcomes)
 
     w = (notebook_worker.Worker if halving else _NoHalving)()
     w.queue = asyncio.Queue(maxsize=8)
     for _ in range(config.NOTEBOOK_DAILY_CALL_CAP + 5):
-        if not (await w.sweep(chat_id))["started"]:
+        if not (await w.backfill(chat_id, "next"))["started"]:
             break
+        await w.wait_for_backfill()
 
     return {"calls": provider["calls"], "read": _messages_read(chat_id)}
 
@@ -513,7 +645,11 @@ class TestWhatHalvingTheBatchCosts:
         assert off.batch_size_for(1) == config.NOTEBOOK_EXTRACT_EVERY_TURNS
         assert off.trigger_threshold_for(1) == config.NOTEBOOK_EXTRACT_EVERY_TURNS
         assert on.batch_size_for(1) < off.batch_size_for(1)
-        assert on.trigger_threshold_for(1) < off.trigger_threshold_for(1)
+        # Decision 28 a: the threshold no longer halves at all, so the two
+        # arms now differ in the batch alone. This line said `<` while the
+        # threshold halved with the batch; the arm is still a real control
+        # because of the line above.
+        assert on.trigger_threshold_for(1) == off.trigger_threshold_for(1)
 
     @pytest.mark.anyio
     async def test_a_healthy_provider_costs_exactly_the_same(
@@ -540,19 +676,10 @@ class TestWhatHalvingTheBatchCosts:
         one reads, because it spends the day's calls on two-message batches.
         In the regime the mechanism exists for it pays more and does less.
 
-        THE TRIGGER THRESHOLD NOW HALVES ALONGSIDE THE BATCH, and this test
-        did NOT go red - which is the finding, and it is why the sentence
-        that used to stand here ("the day that decision lands, this goes RED
-        and is rewritten as `on["read"] >= off["read"] / 2`") had to go. A
-        reader who found it still here would conclude the decision had never
-        landed. It has: see `Worker.trigger_threshold`.
-
-        It changed nothing because the halved threshold is only in force
-        while the breaker has consecutive failures, and a failed extraction
-        does not advance the cursor - so the backlog in front of the gate is
-        already above the UNHALVED threshold every time the halved one is
-        asked. `read` stays where it was. The shortfall is the BATCH's, and
-        it is still here, so this pin is still the thing that measures it.
+        The trigger threshold does not come into it: these units are one
+        press each (`min_new=1`), and since decision 28 a the threshold does
+        not halve anyway. The shortfall is the BATCH's, and it is still
+        here, so this pin is still the thing that measures it.
         """
         off = await _grind(client, monkeypatch,
                            halving=False, outcomes=FOUR_TO_ONE)
@@ -561,6 +688,75 @@ class TestWhatHalvingTheBatchCosts:
 
         assert off["read"] > 0, "ground: the unhalved arm did real work"
         assert on["read"] < off["read"] / 2, (
-            "the productivity shortfall this pin exists for is gone - if the "
-            "trigger threshold now halves too, replace this with the budget "
-            "in the docstring")
+            "the productivity shortfall this pin exists for is gone - "
+            "replace this with a budget on what is read")
+
+
+# -- The figures SECURITY.md and `Worker.batch_size` quote -------------------
+#
+# They used to be "measured once by hand", while the trigger threshold still
+# halved with the batch and the grind still pressed the one-press sweep.
+# Both changed (decisions 28 a and 69 a), so they are measured here, by the
+# same `_grind`, and the test holds them. The harness is deterministic: the
+# provider walks a fixed outcome sequence and no clock decides anything, so
+# the same run gives the same counts every time. The one figure stated as a
+# range is the fifty percent provider, and the range is not noise: whether
+# its FIRST call fails or lands moves the count, 1.94x one way and 2.00x
+# the other, and both are asserted.
+#
+# To re-measure: from backend/, run
+#   python -m pytest tests/test_notebook_planner_budget.py -k TheFiguresTheDocumentsQuote -s
+# and read the MEASURED lines.
+
+#: How far a measured call ratio may sit from the figure the documents
+#: quote before the documents are wrong. The counts are exact; the prose
+#: quotes each ratio to two decimals and this holds it within 0.01 of that.
+FIGURE_TOLERANCE = 0.01
+
+#: regime -> (outcome sequence, calls ratio halving ON / OFF, as quoted).
+QUOTED_FIGURES: dict[str, tuple[tuple[bool, ...], float]] = {
+    "every call lands": ((True,), 1.00),
+    "one failure, then every call lands": ((False,) + (True,) * 400, 1.10),
+    "three failures, then every call lands":
+        ((False, False, False) + (True,) * 400, 1.08),
+    "fifty percent, first call lands": ((True, False), 1.94),
+    "fifty percent, first call fails": ((False, True), 2.00),
+    "four failures to one landing": (FOUR_TO_ONE, 1.11),
+}
+
+#: Of the backlog, what the halved run reads at four failures to one
+#: landing, against the unhalved run's whole backlog: 20 of 180.
+QUOTED_FOUR_TO_ONE_READ = 20
+
+
+class TestTheFiguresTheDocumentsQuote:
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("regime", list(QUOTED_FIGURES))
+    async def test_the_call_ratio_is_the_one_quoted(
+            self, client, monkeypatch, regime) -> None:
+        outcomes, quoted = QUOTED_FIGURES[regime]
+        off = await _grind(client, monkeypatch,
+                           halving=False, outcomes=outcomes)
+        on = await _grind(client, monkeypatch,
+                          halving=True, outcomes=outcomes)
+        ratio = on["calls"] / off["calls"]
+        print(f"MEASURED {regime}: off {off} on {on} ratio {ratio:.3f}")
+
+        assert off["calls"] > 0 and on["calls"] > 0, "ground: both arms ran"
+        assert abs(ratio - quoted) <= FIGURE_TOLERANCE, (
+            f"{regime}: halving costs {ratio:.3f}x the calls "
+            f"({on['calls']} against {off['calls']}), the documents say "
+            f"{quoted:.2f}x")
+
+    @pytest.mark.anyio
+    async def test_the_four_to_one_shortfall_is_the_one_quoted(
+            self, client, monkeypatch) -> None:
+        off = await _grind(client, monkeypatch,
+                           halving=False, outcomes=FOUR_TO_ONE)
+        on = await _grind(client, monkeypatch,
+                          halving=True, outcomes=FOUR_TO_ONE)
+
+        assert off["read"] == BACKLOG, "ground: the unhalved run read it all"
+        assert on["read"] == QUOTED_FOUR_TO_ONE_READ, (
+            f"the halved run read {on['read']} of {BACKLOG}, the documents "
+            f"say {QUOTED_FOUR_TO_ONE_READ}")

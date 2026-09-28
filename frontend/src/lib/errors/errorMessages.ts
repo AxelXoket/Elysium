@@ -689,6 +689,21 @@ const ERROR_MESSAGES: Record<string, string> = {
     "There is no API key saved yet. Open Security and add one before the notebook can read anything.",
   notebook_entry_not_found:
     "That note is no longer there. It may have been removed in another window.",
+  // The three real failures of the backfill routes. A refusal such as
+  // "not ready" or "today's calls are used" is NOT here: it answers 200
+  // with a reason and WorkerPanel's SWEEP_PROSE has its sentence. These
+  // are 4xx answers to a request that could not be honoured as asked.
+  //
+  // One sentence for "no such job" and "not this chat's job", on purpose:
+  // the backend answers both the same way so another chat's job ids
+  // cannot be counted from here, and a sentence that told them apart
+  // would undo that.
+  notebook_job_not_found:
+    "That run is not here to undo. It may belong to another chat, or its notes were already removed.",
+  notebook_backfill_running:
+    "That run is still reading. Stop it first, then undo it.",
+  notebook_range_invalid:
+    "That range is not inside this chat. Pick a first and a last message that are both here, in that order.",
   // Says WHY, not just no. A refusal the reader cannot explain to themselves
   // reads as a bug, and this one is a deliberate promise: the chat came from
   // somebody else's card, so its notes are reviewed whatever the general

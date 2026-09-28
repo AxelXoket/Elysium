@@ -738,3 +738,146 @@ class TestTheSkipVocabularyHasSentences:
         vocabulary that had never heard of the other writer's reason."""
         assert notebook_worker.SKIP_REASONS is notebook.SKIP_REASONS
         assert "plan_invalidated" in notebook.SKIP_REASONS
+
+
+class TestAFailedReadIsTriedOnTheNextReply:
+    """Decision 33 a. A reply that comes back unusable does not move the
+    cursor, because the cursor counts `done` (and `abandoned_in_flight`)
+    and nothing else - so the very next reply in that chat plans the same
+    stretch again, on a batch the failure has halved. The locked document
+    said "on the next threshold", twenty messages later, and was wrong; the
+    code was right and is kept."""
+
+    @pytest.fixture
+    def anyio_backend(self):
+        return "asyncio"
+
+    @staticmethod
+    def _provider(monkeypatch, outcomes: list[bool]) -> list[int]:
+        """True answers with a note, False with a body that is not JSON."""
+        import json
+
+        import openrouter
+
+        calls: list[int] = []
+
+        async def reply(*a, **kw):
+            ok = outcomes[min(len(calls), len(outcomes) - 1)]
+            calls.append(1)
+            content = (json.dumps({"facts": [fact()]}) if ok
+                       else "this is not the schema")
+            return {"id": f"gen-{len(calls)}", "choices": [{
+                "finish_reason": "stop", "message": {"content": content}}],
+                "usage": {"tokens_in": 10, "tokens_out": 5, "cost": 0.0001}}
+
+        monkeypatch.setattr(openrouter, "complete", reply)
+        return calls
+
+    @staticmethod
+    def _ranges(chat_id: int) -> list[tuple]:
+        with get_db() as con:
+            return [tuple(r) for r in con.execute(
+                "SELECT status, from_message_id FROM notebook_extractions "
+                "WHERE chat_id = ? ORDER BY rowid", (chat_id,)).fetchall()]
+
+    @staticmethod
+    def _one_more(chat_id: int) -> None:
+        with get_db() as con:
+            con.execute("INSERT INTO messages (chat_id, role, content, active) "
+                        "VALUES (?, 'assistant', 'one more reply', 1)",
+                        (chat_id,))
+
+    @pytest.mark.anyio
+    async def test_a_failed_read_is_tried_again_on_the_very_next_reply(
+            self, client, monkeypatch) -> None:
+        import database
+
+        database.set_setting(config.SETTING_NOTEBOOK_MODEL, "vendor/cheap")
+        calls = self._provider(monkeypatch, [False, True])
+        chat_id = seed(client, config.NOTEBOOK_EXTRACT_EVERY_TURNS - 1)
+        w = notebook_worker.Worker()
+
+        assert await w._handle(chat_id) == "settled"
+        first = self._ranges(chat_id)
+        assert [r[0] for r in first] == ["failed"], "ground: the reply failed"
+
+        self._one_more(chat_id)
+        await w._handle(chat_id)
+
+        assert len(calls) == 2, (
+            "one new message after a failed read did not bring the retry")
+        ranges = self._ranges(chat_id)
+        assert ranges[-1][0] == "done"
+        assert ranges[-1][1] == first[0][1], (
+            "the retry did not start where the failed read did")
+
+    @pytest.mark.anyio
+    async def test_the_retry_reads_a_piece_the_failure_has_halved(
+            self, client, monkeypatch) -> None:
+        """The other half of the sentence: the retry is not the same read
+        again, it is a smaller one. The failed read covered a whole batch;
+        the retry at the next reply covers the batch one failure halves."""
+        import database
+
+        database.set_setting(config.SETTING_NOTEBOOK_MODEL, "vendor/cheap")
+        self._provider(monkeypatch, [False, True])
+        batch = config.NOTEBOOK_EXTRACT_EVERY_TURNS
+        chat_id = seed(client, batch - 1)
+        w = notebook_worker.Worker()
+
+        def sizes() -> list[int]:
+            with get_db() as con:
+                return [con.execute(
+                    "SELECT COUNT(*) FROM messages WHERE chat_id = ? "
+                    "AND id BETWEEN ? AND ?", (chat_id, lo, hi)).fetchone()[0]
+                    for lo, hi in con.execute(
+                        "SELECT from_message_id, to_message_id FROM "
+                        "notebook_extractions WHERE chat_id = ? "
+                        "ORDER BY rowid", (chat_id,)).fetchall()]
+
+        await w._handle(chat_id)
+        assert sizes() == [batch], "ground: the failed read took a batch"
+        self._one_more(chat_id)
+        await w._handle(chat_id)
+
+        halved = notebook_worker._pressured(batch, 1)
+        assert halved < batch, "ground: one failure does halve the batch"
+        assert sizes() == [batch, halved], (
+            f"the retry read {sizes()[-1:]} messages, not the {halved} "
+            "one failure leaves")
+
+    @pytest.mark.anyio
+    async def test_GROUND_after_a_success_one_new_message_is_not_a_read(
+            self, client, monkeypatch) -> None:
+        import database
+
+        database.set_setting(config.SETTING_NOTEBOOK_MODEL, "vendor/cheap")
+        calls = self._provider(monkeypatch, [True])
+        chat_id = seed(client, config.NOTEBOOK_EXTRACT_EVERY_TURNS - 1)
+        w = notebook_worker.Worker()
+
+        await w._handle(chat_id)
+        assert len(calls) == 1 and self._ranges(chat_id)[0][0] == "done"
+        self._one_more(chat_id)
+        await w._handle(chat_id)
+        assert len(calls) == 1, "one message after a success was read"
+
+    @pytest.mark.anyio
+    async def test_five_failures_in_a_row_pause_the_retries(
+            self, client, monkeypatch) -> None:
+        """POSITIVE CONTROL for "every reply": the chat's breaker is what
+        bounds it. Five failures, and the sixth reply sends nothing."""
+        import database
+
+        database.set_setting(config.SETTING_NOTEBOOK_MODEL, "vendor/cheap")
+        calls = self._provider(monkeypatch, [False])
+        chat_id = seed(client, config.NOTEBOOK_EXTRACT_EVERY_TURNS - 1)
+        w = notebook_worker.Worker()
+
+        for _ in range(notebook_worker.TRIP_AFTER):
+            await w._handle(chat_id)
+            self._one_more(chat_id)
+        assert len(calls) == notebook_worker.TRIP_AFTER, (
+            "ground: every reply retried until the breaker tripped")
+        await w._handle(chat_id)
+        assert len(calls) == notebook_worker.TRIP_AFTER

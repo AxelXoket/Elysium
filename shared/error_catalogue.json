@@ -448,6 +448,15 @@
       ]
     },
     {
+      "code": "notebook_backfill_running",
+      "statuses": [
+        409
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
       "code": "notebook_daily_cap_reached",
       "statuses": [],
       "channels": [
@@ -501,6 +510,15 @@
       ]
     },
     {
+      "code": "notebook_job_not_found",
+      "statuses": [
+        404
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
       "code": "notebook_language_unknown",
       "statuses": [
         400
@@ -520,6 +538,15 @@
     },
     {
       "code": "notebook_model_id_too_long",
+      "statuses": [
+        400
+      ],
+      "channels": [
+        "http"
+      ]
+    },
+    {
+      "code": "notebook_range_invalid",
       "statuses": [
         400
       ],

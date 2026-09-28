@@ -60,6 +60,7 @@ function statusBody(done: number) {
     worker: {
       state: "closed", failures: 0, total_failures: 0,
       queued: 0, dropped_offers: 0, runs: done, batch_size: 20,
+      backfill: null,
     },
     daily_cap: 60,
   };

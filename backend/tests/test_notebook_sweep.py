@@ -13,9 +13,12 @@
     suggestions from the reader's own writing;
   * raw voice tags went into the notebook's prompt and into stored evidence.
 
-They compound: each one makes the next harder to see. The sweep is the piece
-that makes the first three recoverable rather than permanent, and it goes
-through the worker's own door - one claim, one cursor, one accounting.
+They compound: each one makes the next harder to see. Reading below the
+cursor (`_plan_work(after_id=...)`) is the piece that makes the first three
+recoverable rather than permanent, and it goes through the worker's own door
+- one claim, one cursor, one accounting. It used to be reached by a one-press
+sweep route as well as by a reading job; decision 69 a removed the route, and
+the job from the reading strip is the one way in now.
 """
 from __future__ import annotations
 
@@ -202,68 +205,35 @@ class TestTheHistoryIsReachableAgain:
         assert plan["from_id"] == message_ids(chat_id)[0]
 
 
-class TestTheSweepRoute:
-    @pytest.mark.anyio
-    async def test_one_press_runs_one_unit_of_work(self, client, monkeypatch):
-        chat_id = seed(client, count=200)
-        set_setting(config.SETTING_NOTEBOOK_MODEL, "vendor/cheap")
-        calls: list[int] = []
+class TestTheOldSweepRouteIsGone:
+    """Decision 69 a (3.18). `POST /notebook/sweep/{chat_id}` read a stretch
+    of history with no preview and could spend the ten calls the live
+    reader keeps for the day's conversations; no screen called it any more.
+    It is removed, route and method, and the reading strip's `next` job is
+    the door that is left."""
 
-        async def good(*a, **kw):
-            calls.append(1)
-            return {"id": f"gen-{len(calls)}", "choices": [{
-                "finish_reason": "stop",
-                "message": {"content": json.dumps({"facts": [fact()]})}}],
-                "usage": {"tokens_in": 10, "tokens_out": 5, "cost": 0.0001}}
-
-        monkeypatch.setattr(openrouter, "complete", good)
-        notebook_worker.worker.breaker.reset()
-
-        out = await notebook_worker.worker.sweep(chat_id)
-
-        assert out["started"] is True
-        assert len(calls) == 1, "one press, one call"
-        with get_db() as con:
-            assert notebook.spend_today(con)["calls"] == 1
-
-    @pytest.mark.anyio
-    async def test_a_second_press_while_it_runs_is_refused(self, client):
-        """Not a lock on the chat - a lock on the button. Somebody pressing
-        three times has asked for one thing, and three claims against the
-        daily cap is not it."""
-        chat_id = seed(client, count=20)
-        notebook_worker.worker._sweeping = True
-        try:
-            out = await notebook_worker.worker.sweep(chat_id)
-        finally:
-            notebook_worker.worker._sweeping = False
-
-        assert out == {"started": False, "reason": "already_running"}
-
-    @pytest.mark.anyio
-    async def test_a_fully_read_chat_is_refused_with_a_reason(self, client):
-        chat_id = seed(client, count=6)
-        ids = message_ids(chat_id)
-        with get_db() as con:
-            con.execute("BEGIN IMMEDIATE")
-            notebook.commit_extraction(
-                con, work_key="done-all", chat_id=chat_id,
-                from_id=ids[0], to_id=ids[-1], proposals=[])
-
-        out = await notebook_worker.worker.sweep(chat_id)
-
-        assert out == {"started": False, "reason": "nothing_unread"}
-
-    def test_the_route_is_reachable_and_not_swallowed_by_the_chat_id_route(
-            self, client) -> None:
-        """TUZAK 1. A single-segment literal declared BELOW `/{chat_id}`
-        never matches: the parameter route wins and answers 422."""
+    def test_the_old_sweep_route_is_gone(self, client) -> None:
         chat_id = seed(client, count=6)
 
         r = client.post(f"/api/v1/notebook/sweep/{chat_id}")
 
-        assert r.status_code == 200, r.text
-        assert "started" in r.json()
+        assert r.status_code in (404, 405), (
+            f"the sweep route still answers: {r.status_code} {r.text}")
+        # POSITIVE CONTROL: the same client, the same chat, the door that
+        # is left. It answers 200 - started or refused with a reason, both
+        # are ordinary answers - so the 404 above is about the old path and
+        # not about a router that answers nothing.
+        ok = client.post(f"/api/v1/notebook/extract/run/{chat_id}",
+                         json={"scope": "next"})
+        assert ok.status_code == 200, ok.text
+        assert "started" in ok.json()
+
+    def test_the_worker_has_no_second_door(self) -> None:
+        """The method went with the route. A `sweep` left on the worker is
+        a door any later route could wire up again without a preview."""
+        assert not hasattr(notebook_worker.Worker, "sweep")
+        # GROUND: the attribute check does see the worker's real doors.
+        assert hasattr(notebook_worker.Worker, "backfill")
 
 
 class TestWhatTheModelIsShown:

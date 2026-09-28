@@ -1,6 +1,9 @@
 import { request } from "./client";
 import {
-  SweepSchema,
+  BackfillPlanSchema,
+  BackfillRunSchema,
+  BackfillStopSchema,
+  BackfillUndoSchema,
   NotebookEntrySchema,
   WorkerStatusSchema,
   AutoAcceptSchema,
@@ -173,14 +176,65 @@ export function resetWorker(chatId?: number | null) {
   });
 }
 
-/** Ask the worker to read this chat's unread history.
- *
- *  One work unit per press, claimed against the same daily cap as an
- *  ordinary turn. The chat's older history is otherwise unreachable: the
- *  worker's cursor is a maximum and a first read of a long chat starts at
- *  the present on purpose. */
-export function sweepChat(chatId: number) {
-  return request(`/notebook/sweep/${chatId}`, SweepSchema, { method: "POST" });
+// ── Backfill jobs: reading a chat whole, or a chosen stretch, on request ──
+//
+// Four routes, one job at a time. `plan` spends nothing and is what the
+// strip shows BEFORE the button acts; `run` starts the job and answers at
+// once (progress rides on `getWorkerStatus`, whose `worker.backfill` block
+// is this job); `stop` lets the unit in flight finish and starts no more;
+// `undo` removes exactly what one job wrote. A refusal (`started: false`,
+// `stopped: false`) is a 200 with a reason, the same shape the old sweep
+// button answered with, and never an error.
+
+export type BackfillScope = "next" | "all" | "range";
+
+export type BackfillRange = { from_message_id: number; to_message_id: number };
+
+function rangeQuery(scope: BackfillScope, range?: BackfillRange | null) {
+  const q = new URLSearchParams({ scope });
+  if (scope === "range" && range) {
+    q.set("from_message_id", String(range.from_message_id));
+    q.set("to_message_id", String(range.to_message_id));
+  }
+  return q.toString();
+}
+
+export function getBackfillPlan(
+  chatId: number, scope: BackfillScope, range?: BackfillRange | null,
+) {
+  return request(
+    `/notebook/extract/plan/${chatId}?${rangeQuery(scope, range)}`,
+    BackfillPlanSchema,
+  );
+}
+
+export function runBackfill(
+  chatId: number, scope: BackfillScope, range?: BackfillRange | null,
+) {
+  const body: Record<string, unknown> = { scope };
+  if (scope === "range" && range) {
+    body.from_message_id = range.from_message_id;
+    body.to_message_id = range.to_message_id;
+  }
+  return request(`/notebook/extract/run/${chatId}`, BackfillRunSchema, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function stopBackfill(chatId: number) {
+  return request(`/notebook/extract/stop/${chatId}`, BackfillStopSchema, {
+    method: "POST",
+  });
+}
+
+/** `chatId` is required on the wire: the backend answers 404 for a job that
+ *  is not this chat's, the same 404 as for one that does not exist. */
+export function undoBackfill(jobId: number, chatId: number) {
+  return request(
+    `/notebook/extract/undo/${jobId}?chat_id=${chatId}`, BackfillUndoSchema, {
+    method: "POST",
+  });
 }
 
 export function getAutoAccept(chatId?: number | null) {

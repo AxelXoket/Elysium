@@ -18,8 +18,8 @@ import {
   EMPTY_PROSE,
   FAILURE_PROSE,
   SKIP_PROSE,
+  CHAT_SCOPED_SKIPS,
   STATE_PROSE,
-  SWEEP_PROSE,
   WorkerPanel,
   echoable,
 } from "@/components/notebook/WorkerPanel";
@@ -42,6 +42,10 @@ function statusBody(over: Record<string, unknown> = {}) {
   const worker = {
     state: "closed", failures: 0, total_failures: 0,
     queued: 0, dropped_offers: 0, runs: 3, batch_size: 20,
+    // Required and nullable on the wire: the block is what says a job is
+    // running, so a backend that stopped sending it must fail the parse
+    // rather than read as "no job".
+    backfill: null,
     ...((over.worker as object) ?? {}),
   };
   const stats = {
@@ -49,6 +53,8 @@ function statusBody(over: Record<string, unknown> = {}) {
     ...((over.stats as object) ?? {}),
   };
   return {
+    ...(over.chat_refusal !== undefined
+      ? { chat_refusal: over.chat_refusal } : {}),
     stats,
     spend: { calls: 3, tokens_in: 900, tokens_out: 40, cost: 0.0004,
              ...((over.spend as object) ?? {}) },
@@ -85,6 +91,33 @@ describe("WorkerPanel", () => {
     expect(box.textContent).toMatch(/3 runs/);
     expect(box.textContent).toMatch(/3 of 60 calls today/);
     expect(box.textContent).toMatch(/0\.00040 credits/);
+  });
+
+  it("the card carries no live region any more, the strip is the answer",
+     async () => {
+    // The one node here that declared `role="status"` was the paragraph
+    // answering a sweep press (`worker-sweep-said`). The press moved to
+    // the strip and the answer moved with it, role included, because a
+    // press whose refusal is announced to nobody is worse than a tidy
+    // count.
+    //
+    // So the Notes tab's live-region count is UNCHANGED by this unit: one
+    // left here, one arrived there. The recorded measurement expects a
+    // drop - "Notes sekmesinin tamaminda 1; bugun alti (IP-01 sonrasi
+    // bes)" - and that drop does not happen. IP-02 inherits exactly the
+    // consolidation it was always going to do, and it inherits it as a
+    // measured number rather than as a prediction. The other half of the
+    // move is pinned in BackfillStrip.test.tsx, "the answer to a press is
+    // a live region, and the ticking counter is not".
+    mount();
+    const box = await screen.findByTestId("worker-status");
+    // GROUND: the card rendered its own sentences, so this counts over
+    // something rather than over an empty tree.
+    expect(readableText(box)).not.toBe("");
+    // POSITIVE CONTROL for the absence: role queries do reach this render
+    // - the same screen finds the card's own heading by role.
+    expect(screen.getAllByRole("heading").length).toBeGreaterThan(0);
+    expect(screen.queryAllByRole("status")).toHaveLength(0);
   });
 
   it("a fresh vault shows a lifetime total of zero, not blank", async () => {
@@ -316,8 +349,8 @@ describe("runs that were paid for and lost", () => {
     mount({ stats: { done: 1, failed: 4, skipped: 0, abandoned: 1,
                      paid_and_lost: 3, skip_reasons: {} } });
     const box = await screen.findByTestId("worker-status");
-    // 4 - 3, not 4 - 1.
-    expect(box.textContent).toMatch(/1 runs failed/);
+    // 4 - 3, not 4 - 1, and one run is one run.
+    expect(box.textContent).toMatch(/(^|\D)1 run failed\./);
   });
 
   it("does not say Paused while a billed trial call is going out", async () => {
@@ -438,12 +471,19 @@ describe("runs that were paid for and lost", () => {
     const reasons = Array.from(
       new Set([...BACKEND_SKIP_REASONS, ...Object.keys(SKIP_PROSE)]));
     for (const reason of reasons) {
+      // A chat-scoped reason reaches the screen through `chat_refusal`, the
+      // backend's answer about the chat on screen, and never through the
+      // install-wide count; the next test holds that split.
+      const scoped = CHAT_SCOPED_SKIPS.has(reason);
       mount({ stats: { done: 0, failed: 0, skipped: 1, abandoned: 0,
-                       skip_reasons: { [reason]: 1 } } });
+                       skip_reasons: { [reason]: 1 } },
+              ...(scoped ? { chat_refusal: reason } : {}) });
       const box = await screen.findByTestId("worker-status");
-      const line = Array.from(box.querySelectorAll("p"))
-        .map((p) => p.textContent ?? "")
-        .find((t) => t.includes("skipped:")) ?? "";
+      const line = scoped
+        ? (await screen.findByTestId("worker-chat-refusal")).textContent ?? ""
+        : Array.from(box.querySelectorAll("p"))
+          .map((p) => p.textContent ?? "")
+          .find((t) => t.includes("skipped:")) ?? "";
       // The fallback sentence. It is the right answer for a reason from a
       // newer backend, and the wrong one for a reason we have committed to
       // having words for - which is every reason in the contract.
@@ -456,6 +496,75 @@ describe("runs that were paid for and lost", () => {
       expect(line, reason).not.toMatch(new RegExp(reason));
       cleanup();
     }
+  });
+
+  it("says the unfit-model sentence about this chat only, never from the install-wide count",
+     async () => {
+    // 3.8. `stats.skip_reasons` counts every chat, and the
+    // sentence says "the note model this chat uses". Shown from the count,
+    // a chat on a working model was told its model was broken because
+    // another chat's was. The backend now says it per chat, in
+    // `chat_refusal`, and the count is not rendered for it at all.
+    const reason = "model_not_extractable";
+    expect(CHAT_SCOPED_SKIPS.has(reason)).toBe(true);
+
+    // Another chat was refused; this one was not.
+    mount({ stats: { done: 0, failed: 0, skipped: 2, abandoned: 0,
+                     skip_reasons: { [reason]: 1, proxy_gate: 1 } },
+            chat_refusal: null });
+    const box = await screen.findByTestId("worker-status");
+    // GROUND: the install-wide list is rendered, so the absence below is
+    // about this reason and not an empty card.
+    expect(box.textContent).toContain(SKIP_PROSE.proxy_gate);
+    expect(box.textContent).not.toContain(SKIP_PROSE[reason]);
+    // The line is held closed in its Collapse (KURAL 5.5), so absent means
+    // out of the accessibility tree and saying nothing.
+    const closed = screen.queryByTestId("worker-chat-refusal");
+    expect(hiddenFromReaders(closed)).toBe(true);
+    expect(closed?.textContent ?? "").toBe("");
+    cleanup();
+
+    // POSITIVE CONTROL: this chat's own standing refusal is said, once,
+    // with no count in front of it.
+    mount({ stats: { done: 0, failed: 0, skipped: 1, abandoned: 0,
+                     skip_reasons: { [reason]: 7 } },
+            chat_refusal: reason });
+    const said = await screen.findByTestId("worker-chat-refusal");
+    await waitFor(() => expect(hiddenFromReaders(said)).toBe(false));
+    expect(said.textContent).toContain(SKIP_PROSE[reason]);
+    expect(said.textContent).not.toMatch(/\d+ skipped/);
+    const all = (await screen.findByTestId("worker-status")).textContent ?? "";
+    expect(all.split(SKIP_PROSE[reason]).length - 1).toBe(1);
+  });
+
+  it("keeps the refusal's words while its line closes", async () => {
+    // The line closes through a Collapse, which animates
+    // its content's height down, so the content has to still be there
+    // while it closes; `useHeldValue` keeps the last reason after the poll
+    // answers null. Without it the words vanish first and the box snaps
+    // shut. Held only by a headless browser run until this test.
+    const reason = "model_not_extractable";
+    const { queryClient } = mount({ chat_refusal: reason });
+    const line = await screen.findByTestId("worker-chat-refusal");
+    // GROUND: the line is open and says the sentence.
+    await waitFor(() => expect(hiddenFromReaders(line)).toBe(false));
+    expect(line.textContent).toContain(SKIP_PROSE[reason]);
+
+    // The poll now answers that nothing stands.
+    mockFetch({
+      "/notebook/worker/reset": { body: { ok: true } },
+      "/notebook/worker": { body: statusBody({ chat_refusal: null }) },
+      "/notebook/auto-accept": {
+        body: { enabled: true, effective: true, overridden: false },
+      },
+    });
+    await queryClient.invalidateQueries();
+
+    // Closing: out of the accessibility tree at once (the Collapse), and
+    // the words are still inside it for the animation to carry down.
+    const closing = screen.getByTestId("worker-chat-refusal");
+    await waitFor(() => expect(hiddenFromReaders(closing)).toBe(true));
+    expect(closing.textContent).toContain(SKIP_PROSE[reason]);
   });
 
   it("has no sentence for a reason no writer can produce", () => {
@@ -487,91 +596,11 @@ describe("runs that were paid for and lost", () => {
   });
 });
 
-/**
- * The way back to a chat's own history.
- *
- * The worker's cursor is a maximum, and the first read of a chat that
- * already had a long history starts at the PRESENT on purpose - a notebook
- * describing a conversation four hundred messages ago is worse than an empty
- * one. That was a decision with no undo. This button is the undo, and the
- * two ways it can decline are ordinary answers rather than errors: there may
- * be nothing unread, or a sweep may already be running.
- */
-describe("reading a chat's earlier messages", () => {
-  beforeEach(() => {
-    vi.restoreAllMocks();
-    useUiStore.setState({ selectedChatId: 7 });
-  });
-  afterEach(() => {
-    vi.restoreAllMocks();
-    useUiStore.setState({ selectedChatId: null });
-  });
-
-  it("is not offered with no chat open", async () => {
-    // GROUND CONTROL: there is nothing to read, so there is nothing to
-    // press. A button that is always there invites pressing it at random.
-    useUiStore.setState({ selectedChatId: null });
-    mount();
-    await screen.findByTestId("worker-status");
-    expect(hiddenFromReaders(screen.queryByTestId("worker-sweep"))).toBe(true);
-  });
-
-  it("says it started when there was something unread", async () => {
-    mount({}, true, {
-      "POST /notebook/sweep/7": { body: { started: true, after_id: 0 } },
-    });
-    await userEvent.click(await screen.findByTestId("worker-sweep"));
-    // The answer line is a Collapse: mounted before it has anything to
-    // say, so the words are awaited rather than read on first sight.
-    await waitFor(() =>
-      expect(screen.getByTestId("worker-sweep-said").textContent)
-        .toMatch(/reading the earlier part/i));
-  });
-
-  it("says nothing is unread, and does not read as a failure", async () => {
-    mount({}, true, {
-      "POST /notebook/sweep/7": {
-        body: { started: false, reason: "nothing_unread" },
-      },
-    });
-    await userEvent.click(await screen.findByTestId("worker-sweep"));
-    await waitFor(() =>
-      expect(screen.getByTestId("worker-sweep-said").textContent)
-        .toMatch(/nothing here is unread/i));
-  });
-
-  it("offers the backlog rather than reading it", async () => {
-    mount({ worker: { backlog: { chats: 3, messages: 512 } } });
-    const note = await screen.findByTestId("worker-backlog");
-    expect(note.textContent).toMatch(/3 chats have 512 unread messages/);
-    // The sentence that makes it an offer rather than a warning.
-    expect(note.textContent).toMatch(/nothing is read without you asking/i);
-  });
-
-  it("says nothing when there is no backlog", async () => {
-    // GROUND CONTROL: a line that is always there is not an offer.
-    mount({ worker: { backlog: { chats: 0, messages: 0 } } });
-    await screen.findByTestId("worker-status");
-    expect(hiddenFromReaders(screen.queryByTestId("worker-backlog"))).toBe(true);
-  });
-
-  it("is disabled while a sweep is already running", async () => {
-    mount({ worker: { sweeping: true } });
-    // The button renders before the status query resolves, so waiting for
-    // the button is not waiting for the answer that disables it.
-    await screen.findByTestId("worker-status");
-    await waitFor(() => {
-      expect(screen.getByTestId("worker-sweep")).toBeDisabled();
-    });
-  });
-
-  it("is pressable when one is not", async () => {
-    // POSITIVE CONTROL for the line above: a button disabled unconditionally
-    // would satisfy it and remove the feature.
-    mount({ worker: { sweeping: false } });
-    expect(await screen.findByTestId("worker-sweep")).not.toBeDisabled();
-  });
-});
+// The way back to a chat's own history and the sweep's refusals used to be
+// tested here, on the worker card's "Read the earlier messages here" button.
+// That button is gone: one job at a time means one door, and the door is
+// the strip at the top of the Notebook panel. Every claim those tests made
+// lives on in BackfillStrip.test.tsx against the strip's own routes.
 
 /**
  * What THIS chat will do, which is not always what the switch says.
@@ -772,7 +801,7 @@ describe("why the failures failed", () => {
     const line = await screen.findByTestId("worker-failure-reason");
     expect(line.textContent).toMatch(/no words for/i);
     expect((line.textContent ?? "").replace(/\s+/g, " ").trim())
-      .not.toEqual(`1 of 1 failures: ${unknown}`);
+      .not.toEqual(`1 of 1 failure: ${unknown}`);
   });
 
   it("refuses to echo a value that is not a plain token", async () => {
@@ -788,7 +817,7 @@ describe("why the failures failed", () => {
                      paid_and_lost: 0, skip_reasons: {},
                      error_types: { [leaky]: 1 } } });
     const line = await screen.findByTestId("worker-failure-reason");
-    expect(line.textContent).toMatch(/1 of 1 failures/);
+    expect(line.textContent).toMatch(/1 of 1 failure:/);
     expect(line.textContent).toMatch(/no words for/i);
     expect(line.textContent).not.toContain("Marta");
     expect(line.textContent).not.toContain("vault");
@@ -1088,7 +1117,7 @@ describe("a chat that stopped on its own", () => {
                       tripped_chats: 2 } });
     const box = await screen.findByTestId("worker-status");
     expect(box.textContent).toMatch(/4 turns were passed over/i);
-    expect(box.textContent).toMatch(/2 of them right now/i);
+    expect(box.textContent).toMatch(/2 chats are failing right now/i);
     expect(box.textContent).toMatch(/every other chat kept running/i);
     // GROUND for the line above: the global sentence is a different one and
     // is not printed when its own counter is zero.
@@ -1103,80 +1132,6 @@ describe("a chat that stopped on its own", () => {
         .find((c: unknown[]) => String(c[0]).includes("/notebook/worker?"));
       expect(String(call?.[0])).toContain("chat_id=7");
     });
-  });
-});
-
-/**
- * The sweep's refusals were translated by an inline ternary whose last arm
- * was a catch-all reading "It is already reading." The worker now refuses a
- * paused chat, and that arm would have told the reader the exact opposite of
- * what was happening.
- */
-describe("why the sweep refused", () => {
-  beforeEach(() => {
-    vi.restoreAllMocks();
-    useUiStore.setState({ selectedChatId: 7 });
-  });
-  afterEach(() => {
-    vi.restoreAllMocks();
-    useUiStore.setState({ selectedChatId: null });
-  });
-
-  it("a paused chat is not told it is already reading", async () => {
-    mount({}, true, {
-      "POST /notebook/sweep/7": {
-        body: { started: false, reason: "chat_paused" },
-      },
-    });
-    await userEvent.click(await screen.findByTestId("worker-sweep"));
-    const said = (await screen.findByTestId("worker-sweep-said")).textContent;
-    expect(said).toContain(SWEEP_PROSE.chat_paused);
-    expect(said).not.toMatch(/already reading/i);
-    expect(said).not.toMatch(/chat_paused/);
-  });
-
-  it("a stopped chat is told what to press", async () => {
-    mount({}, true, {
-      "POST /notebook/sweep/7": {
-        body: { started: false, reason: "chat_stopped" },
-      },
-    });
-    await userEvent.click(await screen.findByTestId("worker-sweep"));
-    const said = (await screen.findByTestId("worker-sweep-said")).textContent;
-    expect(said).toContain(SWEEP_PROSE.chat_stopped);
-    expect(said).not.toMatch(/already reading/i);
-  });
-
-  it("every refusal in the table reaches the screen as words", async () => {
-    expect(Object.keys(SWEEP_PROSE).length).toBeGreaterThanOrEqual(5);
-    for (const reason of Object.keys(SWEEP_PROSE)) {
-      mount({}, true, {
-        "POST /notebook/sweep/7": { body: { started: false, reason } },
-      });
-      await userEvent.click(await screen.findByTestId("worker-sweep"));
-      const said =
-        (await screen.findByTestId("worker-sweep-said")).textContent ?? "";
-      expect(SWEEP_PROSE[reason], reason).toBeTruthy();
-      expect(said, reason).toContain(SWEEP_PROSE[reason]);
-      expect(said, reason).not.toMatch(new RegExp(reason));
-      cleanup();
-    }
-  });
-
-  it("a refusal nobody wrote words for is named, not printed raw",
-     async () => {
-    // The fallback. It is the right answer for a reason from a newer
-    // backend; what it may not be is the catch-all sentence about a chat
-    // that is already reading.
-    mount({}, true, {
-      "POST /notebook/sweep/7": {
-        body: { started: false, reason: "some_future_reason" },
-      },
-    });
-    await userEvent.click(await screen.findByTestId("worker-sweep"));
-    const said = (await screen.findByTestId("worker-sweep-said")).textContent;
-    expect(said).toMatch(/did not start/i);
-    expect(said).not.toMatch(/already reading/i);
   });
 });
 
@@ -1205,4 +1160,138 @@ describe("the reset button covers every state that is stuck", () => {
     expect(screen.queryByRole("button", { name: /try again now/i }))
       .not.toBeInTheDocument();
   });
+});
+
+describe("every count the worker card shows, at 0, 1 and 2", () => {
+  // A number on this card is followed by a noun or a verb that has to agree
+  // with it: "1 runs failed" is the reading a reader trips over, and the
+  // card read it that way for one run, one call, one turn. Each row renders
+  // the card with the count at 0, 1 and 2 and reads the words that are ON
+  // SCREEN: text in a shut Collapse is mounted and is on no screen. Where a
+  // line only exists for a count above 0, the row at 0 says it is not shown
+  // and the row at 1 is what proves the same reader finds it.
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  /** The card's words a reader can see, whitespace collapsed. */
+  const visibleText = (card: Element): string => {
+    let out = "";
+    const walker = document.createTreeWalker(card, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (node.parentElement?.closest('[data-slot="collapse"][data-open="false"]')) continue;
+      out += node.textContent ?? "";
+    }
+    return out.replace(/\s+/g, " ").trim();
+  };
+
+  /** The card for one body, the whole status body given, so the cap too. */
+  async function cardFor(body: ReturnType<typeof statusBody>): Promise<string> {
+    cleanup();
+    mockFetch({
+      "/notebook/worker": { body },
+      "/notebook/auto-accept": { body: { enabled: true, effective: true, overridden: false } },
+    });
+    renderWithQueryClient(<WorkerPanel />);
+    return visibleText(await screen.findByTestId("worker-status"));
+  }
+
+  const failureKey = Object.keys(FAILURE_PROSE)[0];
+  const skipKey = Object.keys(SKIP_PROSE)[0];
+  const dropKey = Object.keys(DROP_PROSE)[0];
+
+  /** One wording: the body at a count, and what the card says at 0, 1 and
+   *  2, or null where the line is not on screen at that count. `marker`
+   *  finds the line whatever its count says, for the rows that expect it
+   *  gone. */
+  const WORDINGS: {
+    name: string;
+    body: (n: number) => ReturnType<typeof statusBody>;
+    says: [string | null, string, string];
+    marker: RegExp;
+  }[] = [
+    { name: "the runs done", body: (n) => statusBody({ stats: { done: n } }),
+      says: ["0 runs \u00b7", "1 run \u00b7", "2 runs \u00b7"], marker: / \u00b7 \d+ of \d+ calls? today/ },
+    { name: "the calls the day allows", body: (n) => ({ ...statusBody({ spend: { calls: 0 } }), daily_cap: n }),
+      says: ["0 of 0 calls today", "0 of 1 call today", "0 of 2 calls today"], marker: /calls? today/ },
+    { name: "the calls made in all", body: (n) => statusBody({ spend_lifetime: { calls: n } }),
+      says: ["(0 calls,", "(1 call,", "(2 calls,"], marker: /credits lifetime\)/ },
+    { name: "the calls that came back with no price",
+      body: (n) => statusBody({ spend: { cost_unknown: n } }),
+      says: [null, "1 of the calls made today came back with no price - the credit figure above "
+        + "leaves it out rather than counting it as free.",
+      "2 of the calls made today came back with no price - the credit figure above leaves "
+        + "them out rather than counting them as free."], marker: /came back with no price/ },
+    { name: "the runs that failed with nothing lost",
+      body: (n) => statusBody({ stats: { failed: n, paid_and_lost: 0 } }),
+      says: [null, "1 run failed. Nothing was lost - the messages it could not read stay unread, "
+        + "not skipped.", "2 runs failed. Nothing was lost - the messages they could not read "
+        + "stay unread, not skipped."], marker: /failed\. Nothing was lost/ },
+    { name: "the runs cut off after they were paid for",
+      body: (n) => statusBody({ stats: { failed: n, paid_and_lost: n, abandoned: n } }),
+      says: [null, "1 run was cut off after the request had already been sent, so it was paid "
+        + "for. Elysium does not send that stretch again, which is why the notes for it are "
+        + "missing rather than duplicated.", "2 runs were cut off after the request had already "
+        + "been sent, so they were paid for. Elysium does not send those stretches again, which "
+        + "is why the notes for them are missing rather than duplicated."],
+      marker: /cut off after the request/ },
+    { name: "the failures a reason accounts for",
+      body: (n) => statusBody({ stats: { failed: n, paid_and_lost: n,
+        error_types: n > 0 ? { [failureKey]: n } : {} } }),
+      says: [null, "1 of 1 failure:", "2 of 2 failures:"], marker: /of \d+ failures?:/ },
+    { name: "the turns skipped for a reason",
+      body: (n) => statusBody({ stats: { skipped: n, skip_reasons: n > 0 ? { [skipKey]: n } : {} } }),
+      says: [null, "1 skipped:", "2 skipped:"], marker: /\d+ skipped:/ },
+    { name: "the runs that ended in an unexpected error",
+      body: (n) => statusBody({ worker: { unhandled: n } }),
+      says: [null, "1 run ended in an unexpected error. Those messages stay unread.",
+        "2 runs ended in an unexpected error. Those messages stay unread."],
+      marker: /ended in an unexpected error/ },
+    { name: "the replies paid for that produced no notes",
+      body: (n) => statusBody({ worker: { settled_empty: n } }),
+      says: [null, "1 reply was paid for and produced no notes",
+        "2 replies were paid for and produced no notes"], marker: /paid for and produced no notes/ },
+    { name: "the suggestions thrown away",
+      body: (n) => statusBody({ worker: { dropped: n > 0 ? { [dropKey]: n } : {} } }),
+      says: [null, "1 suggestion was thrown away:", "2 suggestions were thrown away:"],
+      marker: /thrown away:/ },
+    { name: "the turns passed over while it cooled down",
+      body: (n) => statusBody({ worker: { refused_by_breaker: n } }),
+      says: [null, "1 turn was passed over while it was cooling down. Its messages are still "
+        + "unread.", "2 turns were passed over while it was cooling down. Their messages are "
+        + "still unread."], marker: /while it was cooling down/ },
+    { name: "the turns passed over in chats that keep failing",
+      body: (n) => statusBody({ worker: { refused_by_chat_breaker: n } }),
+      says: [null, "1 turn was passed over in a chat that keeps failing on its own.",
+        "2 turns were passed over in chats that keep failing on their own."],
+      marker: /that keeps? failing on/ },
+    { name: "the chats failing right now",
+      body: (n) => statusBody({ worker: { refused_by_chat_breaker: 1, tripped_chats: n } }),
+      says: ["keeps failing on its own. Every other chat kept running.",
+        "keeps failing on its own (1 chat is failing right now). Every other chat kept running.",
+        "keeps failing on its own (2 chats are failing right now). Every other chat kept running."],
+      marker: /Every other chat kept running/ },
+    { name: "the turns that went unqueued",
+      body: (n) => statusBody({ worker: { dropped_offers: n } }),
+      says: [null, "1 turn went unqueued while it was behind. Its messages are still unread, so a "
+        + "later run picks them up.", "2 turns went unqueued while it was behind. Their "
+        + "messages are still unread, so a later run picks them up."], marker: /went unqueued/ },
+  ];
+
+  it.each(WORDINGS.map((w) => [w.name, w] as const))("%s", async (_name, wording) => {
+    for (const n of [0, 1, 2] as const) {
+      const text = await cardFor(wording.body(n));
+      const says = wording.says[n];
+      if (says === null) {
+        expect(text, `at ${n} the line is on screen`).not.toMatch(wording.marker);
+      } else {
+        expect(text, `at ${n}`).toContain(says);
+        // GROUND for the rows that expect a line gone: the marker finds the
+        // line wherever it is shown.
+        expect(text, `the marker does not find the line at ${n}`).toMatch(wording.marker);
+      }
+    }
+  }, 30_000);
 });

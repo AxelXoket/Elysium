@@ -87,6 +87,97 @@ class TestTheShapeArrives:
                 "SELECT text FROM notebook_entries").fetchone()[0] == "survives"
 
 
+class TestTheBackfillAdditionsAreGuarded:
+    """T-72. Three additions under one version (KARAR-V2-10), each behind
+    its own PRAGMA table_info guard: the job table, `notebook_entries.job_id`
+    and `notebook_entries.unmarked_in_source`. Run twice, the migration
+    must raise nothing, change nothing, and fire no DDL for any of the
+    three; the stamp stays where it was."""
+
+    def _shape(self, con) -> tuple[str, list[str], list[str]]:
+        from tests.test_schema_fingerprint import _fingerprint
+        entries = [r[1] for r in con.execute(
+            "PRAGMA table_info(notebook_entries)").fetchall()]
+        jobs = [r[1] for r in con.execute(
+            "PRAGMA table_info(notebook_backfill_jobs)").fetchall()]
+        return _fingerprint(con), entries, jobs
+
+    def test_running_it_again_fires_no_ddl_for_the_three(self, db) -> None:
+        with database.get_db() as con:
+            before = self._shape(con)
+            stamped = con.execute("PRAGMA user_version").fetchone()[0]
+        # GROUND: the three are there after the first run, so "nothing
+        # changed" is not "nothing was there".
+        assert "job_id" in before[1] and "unmarked_in_source" in before[1]
+        assert before[2], "the job table is missing"
+        assert stamped == database._SCHEMA_VERSION == 6
+
+        database.init_db()          # the second unlock
+
+        statements: list[str] = []
+        with database.get_db() as con:
+            con.set_trace_callback(statements.append)
+            database._migrate_notebook(con)   # and a third, traced
+            con.set_trace_callback(None)
+            after = self._shape(con)
+            assert (con.execute("PRAGMA user_version").fetchone()[0]
+                    == database._SCHEMA_VERSION)
+
+        assert after == before, "the second run changed the shape"
+        assert after[1].count("job_id") == 1
+        assert after[1].count("unmarked_in_source") == 1
+        assert _ddl_for_the_three(statements) == [], (
+            "DDL ran on a database that already had it: "
+            f"{_ddl_for_the_three(statements)}")
+        # POSITIVE CONTROL for the trace: the migration did run statements.
+        assert any("PRAGMA table_info(notebook_backfill_jobs)" in s
+                   for s in statements)
+        # POSITIVE CONTROL FOR THE FILTER, which is the assertion above and
+        # not the trace. An empty list is also what a filter that matches
+        # nothing returns, so renaming the table or respelling the column
+        # add would leave `== []` green for the wrong reason. Here the three
+        # are taken back off - in the order `database.py`'s own rollback
+        # note gives - and the SAME filter has to find all three going in.
+        with database.get_db() as con:
+            con.execute("BEGIN IMMEDIATE")
+            con.execute("DROP TABLE notebook_backfill_jobs")
+            con.execute(
+                "ALTER TABLE notebook_entries DROP COLUMN unmarked_in_source")
+            con.execute("ALTER TABLE notebook_entries DROP COLUMN job_id")
+            con.execute("COMMIT")
+            fresh: list[str] = []
+            con.set_trace_callback(fresh.append)
+            database._migrate_notebook(con)
+            con.set_trace_callback(None)
+            rebuilt = self._shape(con)
+
+        assert len(_ddl_for_the_three(fresh)) == 3, (
+            "the filter found "
+            f"{_ddl_for_the_three(fresh)} on a database that had none of "
+            "the three, so it matches nothing and the assertion above is "
+            "vacuous")
+        assert rebuilt == before, "the migration did not put them back"
+
+
+def _ddl_for_the_three(statements: list[str]) -> list[str]:
+    """The statements that CREATE the job table or ADD either column.
+
+    One definition, used by the absence assertion and by its positive
+    control, because two copies of a filter is two chances for one of them
+    to stop matching quietly.
+
+    Parenthesised on purpose: the CREATE test belongs to the table arm
+    alone. Leaning on `and` binding tighter than `or` reads as though it
+    applied to all three, and the edit that "tidies" it is the edit that
+    makes this list match every statement.
+    """
+    return [s for s in statements
+            if ("notebook_backfill_jobs" in s
+                and s.lstrip().upper().startswith("CREATE"))
+            or "ADD COLUMN job_id" in s
+            or "ADD COLUMN unmarked_in_source" in s]
+
+
 class TestTheEngineRefusesWhatCodeCouldForget:
     """These are CHECK constraints, not helper functions, and that is the point:
     a rule enforced in one write path is a rule the next write path can skip."""

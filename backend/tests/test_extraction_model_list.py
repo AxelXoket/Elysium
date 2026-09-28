@@ -146,6 +146,35 @@ class TestWhatThePickerNeedsToShow:
         _serve(monkeypatch, {"data": [endpoint(pricing={})]})
         got = await openrouter.fetch_extraction_models()
         assert got[0]["prompt_price"] == 0.0
+        assert got[0]["completion_price"] == 0.0
+
+    @pytest.mark.anyio
+    async def test_the_reply_price_is_read_in_the_same_unit(self, monkeypatch):
+        """3.17. The reading job's preview prices the reply too, so the list
+        carries the completion price, per million like the prompt price.
+        GROUND: the two halves are read from their own fields, so a row
+        with different prices reports different numbers."""
+        _serve(monkeypatch, {"data": [endpoint(
+            pricing={"prompt": "0.00000006", "completion": "0.0000002"})]})
+        got = await openrouter.fetch_extraction_models()
+        assert got[0]["completion_price"] == pytest.approx(0.2)
+        assert got[0]["prompt_price"] == pytest.approx(0.06)
+
+    @pytest.mark.anyio
+    async def test_the_cheaper_endpoint_brings_its_own_reply_price(
+            self, monkeypatch):
+        """The row that represents a model is its cheapest endpoint, and it
+        brings that endpoint's reply price with it rather than keeping the
+        first one seen."""
+        _serve(monkeypatch, {"data": [
+            endpoint(provider_name="Dear",
+                     pricing={"prompt": "0.0000009", "completion": "0.000003"}),
+            endpoint(provider_name="Cheap",
+                     pricing={"prompt": "0.00000006", "completion": "0.0000002"}),
+        ]})
+        got = await openrouter.fetch_extraction_models()
+        assert got[0]["provider"] == "Cheap"
+        assert got[0]["completion_price"] == pytest.approx(0.2)
 
     @pytest.mark.anyio
     async def test_endpoints_are_counted_so_a_pinned_model_is_visible(

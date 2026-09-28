@@ -26,8 +26,9 @@
  * the Pin/PinOff icon swap, and the model-note paragraph that IP-02 wraps.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useEffect, useState } from "react";
 
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
 import { hiddenFromReaders } from "@/test/helpers/accessibility";
@@ -36,9 +37,13 @@ import { useUiStore } from "@/lib/store/uiStore";
 import { NotebookPanel } from "@/components/notebook/NotebookPanel";
 import { BoundaryPanel } from "@/components/notebook/BoundaryPanel";
 import { WorkerPanel } from "@/components/notebook/WorkerPanel";
+import { BackfillStrip } from "@/components/notebook/BackfillStrip";
 import { ExtractionSettings } from "@/components/notebook/ExtractionSettings";
+import { CrossFade } from "@/components/motion/CrossFade";
+import { durationSeconds } from "@/lib/theme/tokens";
+import type { BackfillStatus } from "@/lib/schemas/notebook";
 
-type Wrapper = "collapse" | "fade-in";
+type Wrapper = "collapse" | "fade-in" | "cross-fade";
 
 /** The block is on screen, reachable, and inside the wrapper the criterion picked. */
 function expectShownInside(node: HTMLElement | null, wrapper: Wrapper, what: string) {
@@ -202,7 +207,7 @@ describe("NotebookPanel", () => {
 
     await user.click(undo);
     // mode="wait": the confirm pane mounts once the undo pane has left.
-    const confirm = await screen.findByRole("button", { name: /confirm delete/i });
+    const confirm = await screen.findByRole("button", { name: /^remove it$/i });
     expect(confirm.closest('[data-slot="cross-fade"]')).toHaveAttribute("data-pane", "confirm");
     expect(screen.queryByRole("button", { name: /^undo$/i })).toBeNull();
   });
@@ -299,6 +304,7 @@ function statusBody(over: Record<string, unknown> = {}) {
     queued: 0, dropped_offers: 0, runs: 3, batch_size: 20,
     unhandled: 0, settled_empty: 0, refused_by_breaker: 0,
     refused_by_chat_breaker: 0, backlog: { chats: 0, messages: 0 },
+    backfill: null,
     ...((over.worker as object) ?? {}),
   };
   const stats = {
@@ -312,6 +318,7 @@ function statusBody(over: Record<string, unknown> = {}) {
     spend_lifetime: { calls: 3, tokens_in: 900, tokens_out: 40, cost: 0.0004 },
     worker,
     daily_cap: 60,
+    chat_refusal: (over.chat_refusal as string | null | undefined) ?? null,
   };
 }
 
@@ -346,23 +353,23 @@ describe("WorkerPanel", () => {
       ["the abandoned line", screen.queryByTestId("worker-abandoned")],
       ["the reader-stopped alert", paragraphInDom(/background reader has stopped/i)],
       ["the unhandled line", screen.queryByTestId("worker-unhandled")],
+      ["the chat-refusal line", screen.queryByTestId("worker-chat-refusal")],
       ["the settled-empty line", screen.queryByTestId("worker-settled-empty")],
       ["the breaker line", paragraphInDom(/while it was cooling down/i)],
-      ["the chat-breaker line", paragraphInDom(/keep failing on their own/i)],
+      ["the chat-breaker line", paragraphInDom(/that keeps? failing on/i)],
       ["the dropped-offers line", paragraphInDom(/went unqueued/i)],
-      ["the way-back block", screen.queryByTestId("worker-sweep")],
-      ["the backlog line", screen.queryByTestId("worker-backlog")],
-      ["the sweep answer", screen.queryByTestId("worker-sweep-said")],
     ] as const) {
       expectHeldClosed(node, what);
     }
-    for (const name of [/read the earlier messages/i, /try again now/i, /try this chat again/i]) {
+    // The way-back block, the backlog line and the sweep answer are not on
+    // this card any more; the strip at the top of the Notebook panel
+    // carries them (BackfillStrip.test.tsx).
+    for (const name of [/try again now/i, /try this chat again/i]) {
       expect(screen.queryByRole("button", { name })).toBeNull();
     }
   });
 
   it("with everything to report and a chat open: every conditional line opens inside its collapse, every button fades in", async () => {
-    const user = userEvent.setup();
     useUiStore.setState({ selectedChatId: 7 });
     mountWorker({
       worker: {
@@ -372,7 +379,8 @@ describe("WorkerPanel", () => {
       },
       stats: { done: 3, failed: 2, abandoned: 1, paid_and_lost: 0, skipped: 0, skip_reasons: {} },
       spend: { calls: 3, tokens_in: 900, tokens_out: 40, cost: 0.0004, cost_unknown: 1 },
-    }, { "POST /notebook/sweep/7": { body: { started: true, after_id: 0 } } });
+      chat_refusal: "model_not_extractable",
+    });
     await screen.findByTestId("worker-status");
 
     for (const [what, locate] of [
@@ -383,26 +391,230 @@ describe("WorkerPanel", () => {
       ["the abandoned line", () => screen.queryByTestId("worker-abandoned")],
       ["the reader-stopped alert", () => screen.queryByRole("alert")],
       ["the unhandled line", () => screen.queryByTestId("worker-unhandled")],
+      ["the chat-refusal line", () => screen.queryByTestId("worker-chat-refusal")],
       ["the settled-empty line", () => screen.queryByTestId("worker-settled-empty")],
       ["the breaker line", () => paragraph(/while it was cooling down/i)],
-      ["the chat-breaker line", () => paragraph(/keep failing on their own/i)],
+      ["the chat-breaker line", () => paragraph(/that keeps? failing on/i)],
       ["the dropped-offers line", () => paragraph(/went unqueued/i)],
-      ["the backlog line", () => screen.queryByTestId("worker-backlog")],
     ] as const) {
       await waitFor(() => expectShownInside(locate(), "collapse", what));
     }
-    const sweep = screen.getByRole("button", { name: /read the earlier messages/i });
-    expectShownInside(sweep, "collapse", "the way-back block");
     expectShownInside(
       screen.getByRole("button", { name: /try again now/i }), "fade-in", "the reset button");
     expectShownInside(
       screen.getByRole("button", { name: /try this chat again/i }), "fade-in", "the per-chat reset");
+  });
+});
 
-    // The sweep answer opens once there is an answer.
-    expectHeldClosed(screen.queryByTestId("worker-sweep-said"), "the sweep answer");
-    await user.click(sweep);
+/** The block `GET /notebook/worker` carries for a reading job. */
+function backfillJob(over: Partial<BackfillStatus> = {}): BackfillStatus {
+  return {
+    job_id: 17, chat_id: 7, state: "done", scope: "all",
+    calls_planned: 21, calls_spent: 21, notes_written: 14, messages_left: 0,
+    last_error: null, ...over,
+  };
+}
+
+/** A preview the plan route would answer with. */
+const PLAN = {
+  ready: true, blocked_by: [], scope: "all",
+  messages_total: 412, messages_unread: 412, chunks: 21, calls_planned: 21,
+  daily_cap: 60, backfill_cap: 50, live_reserve: 10,
+  calls_spent_today: 3, fits_today: true,
+  prompt_price: 0.06, cost_estimate: 0.014,
+  model_id: "vendor/slug", model_is_chat_bind: false,
+};
+
+function mountStrip(
+  worker: Record<string, unknown> = {},
+  extra: Record<string, { status?: number; body: unknown }> = {},
+) {
+  mockFetch({
+    ...extra,
+    "GET /notebook/extract/plan/7": { body: PLAN },
+    "/notebook/worker": { body: statusBody({ worker }) },
+  });
+  return renderWithQueryClient(<BackfillStrip chatId={7} />);
+}
+
+/** Which pane of a swap the node is in, or null when it is in no swap at
+ *  all - which is the shape a bare ternary has and the thing this block
+ *  exists to refuse. */
+function paneOf(node: HTMLElement | null): string | null {
+  return node?.closest('[data-slot="cross-fade"]')?.getAttribute("data-pane") ?? null;
+}
+
+describe("BackfillStrip", () => {
+  // The strip took the way-back block, the backlog line and the sweep
+  // answer off the worker card, and with them the three cases this file
+  // used to hold under WorkerPanel. It also added a gesture the card never
+  // had: an Undo trigger REPLACED in place by its confirmation, and the
+  // pair replaced again by the line that says what the undo removed. A
+  // replacement is neither a Collapse nor a FadeIn - KURAL 5.5 names it
+  // and names the fix - so it goes through `CrossFade`, the same primitive
+  // the just-saved strip in NotebookPanel uses for the identical gesture.
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({ selectedChatId: 7 });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({ selectedChatId: null });
+  });
+
+  it("idle: the offer fades in, and every block that has nothing to say is held closed", async () => {
+    mountStrip({ backlog: { chats: 2, messages: 340 } });
+    expectShownInside(
+      await screen.findByRole("button", { name: /read the earlier messages/i }),
+      "fade-in", "the Read button");
+    await waitFor(() => expectShownInside(
+      screen.queryByTestId("worker-backlog"), "collapse", "the backlog line"));
+    for (const [what, node] of [
+      ["the preview block", screen.queryByTestId("backfill-preview")],
+      ["the answer line", screen.queryByTestId("backfill-said")],
+    ] as const) {
+      expectHeldClosed(node, what);
+    }
+    // The two job blocks are a NULL NARROWING inside their collapse rather
+    // than a closed one: with no job there is nothing to say and nothing
+    // to keep mounted, and the component says so at both sites. The
+    // collapses themselves are there and shut, which is what the rows
+    // below measure once a job exists.
+    expect(screen.queryByTestId("backfill-progress")).toBeNull();
+    expect(screen.queryByTestId("backfill-outcome")).toBeNull();
+  });
+
+  it("GROUND: with nothing unread the backlog line is held closed too", async () => {
+    mountStrip({ backlog: { chats: 0, messages: 0 } });
+    await screen.findByRole("button", { name: /read the earlier messages/i });
     await waitFor(() =>
-      expectShownInside(paragraph(/reading the earlier part/i), "collapse", "the sweep answer"));
+      expectHeldClosed(screen.queryByTestId("worker-backlog"), "the backlog line"));
+  });
+
+  it("the preview: the pending line opens inside a collapse and closes when the plan lands", async () => {
+    // The line that says "working out what this would read and cost" used
+    // to be a bare `&&`: it appeared in one frame and, worse, was removed
+    // with no exit at all in the frame the numbers arrived.
+    const user = userEvent.setup();
+    // The plan request is held open, then answered by hand, so both edges
+    // of the line can be looked at rather than only the settled state.
+    const answered = mockFetch({
+      "GET /notebook/extract/plan/7": { body: PLAN },
+      "/notebook/worker": { body: statusBody() },
+    });
+    let release: (() => void) | null = null;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("/notebook/extract/plan/")) await held;
+      return answered(input, init);
+    }));
+    renderWithQueryClient(<BackfillStrip chatId={7} />);
+    await user.click(
+      await screen.findByRole("button", { name: /read the earlier messages/i }));
+    await waitFor(() => expectShownInside(
+      screen.queryByTestId("backfill-pending"), "collapse", "the pending line"));
+
+    release!();
+    await waitFor(() => expectShownInside(
+      screen.queryByTestId("backfill-plan"), "collapse", "the plan line"));
+    // And it LEAVES through the same collapse rather than being unmounted.
+    expectHeldClosed(screen.queryByTestId("backfill-pending"), "the pending line");
+  });
+
+  it("the range fields open inside a collapse only for the range scope", async () => {
+    const user = userEvent.setup();
+    mountStrip();
+    await user.click(
+      await screen.findByRole("button", { name: /read the earlier messages/i }));
+    await screen.findByTestId("backfill-plan");
+    expectHeldClosed(screen.queryByLabelText(/first message/i), "the first-message field");
+
+    await user.click(screen.getByRole("combobox", { name: /what to read/i }));
+    await user.click(await screen.findByRole("option", { name: /a range of messages/i }));
+    await waitFor(() => expectShownInside(
+      screen.queryByLabelText(/first message/i), "collapse", "the first-message field"));
+  });
+
+  it("a finished run: Undo cross-fades into its confirmation, and the confirm pair is one pane", async () => {
+    const user = userEvent.setup();
+    mountStrip({ backfill: backfillJob({ notes_written: 14 }) });
+    const undo = await screen.findByRole("button", { name: /undo this run/i });
+    expectShownInside(undo, "cross-fade", "the undo trigger");
+    expect(paneOf(undo)).toBe("undo");
+
+    await user.click(undo);
+    // mode="wait": the confirm pane mounts once the undo pane has left.
+    const confirm = await screen.findByRole("button", { name: /^remove all 14$/i });
+    expectShownInside(confirm, "cross-fade", "the confirm button");
+    expect(paneOf(confirm)).toBe("confirm");
+    const keep = screen.getByRole("button", { name: /^cancel$/i });
+    // ONE pane for the pair, so the row keeps its layout across the swap.
+    expect(confirm.closest('[data-slot="cross-fade"]'))
+      .toBe(keep.closest('[data-slot="cross-fade"]'));
+    expect(screen.queryByRole("button", { name: /undo this run/i })).toBeNull();
+
+    // And back: "Cancel" returns the trigger through the same swap.
+    await user.click(keep);
+    const again = await screen.findByRole("button", { name: /undo this run/i });
+    expect(paneOf(again)).toBe("undo");
+  });
+
+  it("the undo answer replaces the pair through the same swap", async () => {
+    const user = userEvent.setup();
+    mountStrip({ backfill: backfillJob({ notes_written: 14 }) }, {
+      "POST /notebook/extract/undo/17": { body: {
+        job_id: 17, removed: 12, kept_pinned: 2, kept_edited: 0 } },
+    });
+    await user.click(await screen.findByRole("button", { name: /undo this run/i }));
+    await user.click(
+      await screen.findByRole("button", { name: /^remove all 14$/i }));
+    const undone = await screen.findByTestId("backfill-undone");
+    expectShownInside(undone, "cross-fade", "the undo answer");
+    expect(paneOf(undone)).toBe("undone");
+  });
+
+  it("GROUND: a run that wrote nothing offers no undo, and the swap is held closed", async () => {
+    mountStrip({ backfill: backfillJob({ notes_written: 0 }) });
+    await screen.findByTestId("backfill-outcome");
+    // The outcome sentence is reachable; the swap under it is not.
+    expect(screen.queryByRole("button", { name: /undo this run/i })).toBeNull();
+    await waitFor(() => expectHeldClosed(
+      screen.queryByRole("button", { name: /undo this run/i, hidden: true }),
+      "the undo trigger"));
+  });
+
+  it("a job in flight: the progress block opens and the offer is gone", async () => {
+    mountStrip({ backfill: backfillJob({ state: "running", messages_left: 200 }) });
+    await waitFor(() => expectShownInside(
+      screen.queryByTestId("backfill-progress"), "collapse", "the progress block"));
+    expectShownInside(
+      screen.getByRole("button", { name: /stop reading/i }), "collapse", "the Stop button");
+    // The Read offer is a FadeIn, so it is simply absent.
+    expect(screen.queryByRole("button", { name: /read the earlier messages/i })).toBeNull();
+    expectHeldClosed(screen.queryByTestId("backfill-outcome"), "the outcome block");
+  });
+
+  it("a finished job: the progress block is held closed rather than unmounted", async () => {
+    // The other direction of the row above, and the reason the children
+    // are narrowed on `job` alone and never on `running` as well: a child
+    // that disappears in the render that closes the box animates an empty
+    // box shut.
+    mountStrip({ backfill: backfillJob({ notes_written: 14 }) });
+    await screen.findByTestId("backfill-outcome");
+    expectHeldClosed(screen.queryByTestId("backfill-progress"), "the progress block");
+  });
+
+  it("the answer to a press opens inside its collapse", async () => {
+    const user = userEvent.setup();
+    mountStrip({}, {
+      "POST /notebook/extract/run/7": { body: { started: false, reason: "nothing_unread" } },
+    });
+    await user.click(
+      await screen.findByRole("button", { name: /read the earlier messages/i }));
+    await screen.findByTestId("backfill-plan");
+    await user.click(screen.getByRole("button", { name: /start reading/i }));
+    await waitFor(() => expectShownInside(
+      screen.queryByTestId("backfill-said"), "collapse", "the answer line"));
   });
 });
 
@@ -436,5 +648,256 @@ describe("ExtractionSettings", () => {
     await screen.findByText(/suggestions are off/i);
     expectHeldClosed(paragraphInDom(/saved choice could not be read/i), "the settings alert");
     expect(within(document.body).queryByRole("alert")).toBeNull();
+  });
+});
+
+describe("CrossFade", () => {
+  // The swap primitive under both notebook swaps, asked on its own: three
+  // moves of `pane` in a row, the way the strip's undo makes them - to a
+  // second pane, back to the first, then on to a third.
+
+  /** One swap whose pane the test moves, inside a box the test can read. */
+  function Swap({ expose }: { expose: (move: (pane: string) => void) => void }) {
+    const [pane, setPane] = useState("x");
+    useEffect(() => expose(setPane), [expose]);
+    return (
+      <div data-testid="swap">
+        <CrossFade pane={pane}>
+          <span>{`pane ${pane}`}</span>
+        </CrossFade>
+      </div>
+    );
+  }
+
+  function mountSwap() {
+    const moves: { to: (pane: string) => void } = { to: () => {} };
+    renderWithQueryClient(<Swap expose={(move) => { moves.to = move; }} />);
+    return moves;
+  }
+
+  /** How many panes the box holds right now. */
+  const panesIn = (box: HTMLElement) =>
+    box.querySelectorAll('[data-slot="cross-fade"]').length;
+
+  /**
+   * THE SHAPE: the second pane is leaving, the first is waiting to come
+   * back, and the third arrives in the very render that finishes the
+   * second's exit. The first is then mounted already leaving. Left to itself
+   * that pane never exits - it was never present - and its key has left once
+   * before, so the presence would wait on it for good: the swap stops on an
+   * inert pane and the third never mounts. The third is moved in from the
+   * second's last exit frame, so this is the shape on every run and not when
+   * timing happens to line up.
+   *
+   * What the swap did after that move is recorded on every observer callback:
+   * whether the superseded pane was ever added, how many callbacks found the
+   * box holding no pane at all, and the opacity the third pane had when it
+   * was first seen.
+   */
+  async function supersedeOnTheLastExitFrame() {
+    const moves = mountSwap();
+    await screen.findByText("pane x");
+    act(() => moves.to("y"));
+    const y = await screen.findByText("pane y");
+    // Fully arrived before it is sent away, so its exit is a whole fade and
+    // its last frame is a frame of its own.
+    await waitFor(() => expect(
+      y.closest<HTMLElement>('[data-slot="cross-fade"]')?.style.opacity).toBe("1"));
+    const box = screen.getByTestId("swap");
+    const seen = {
+      fired: false,
+      supersededShown: false,
+      callbacks: 0,
+      empty: 0,
+      zFirstOpacity: null as string | null,
+    };
+    const watch = new MutationObserver((records) => {
+      if (seen.fired) {
+        seen.callbacks += 1;
+        for (const r of records) {
+          r.addedNodes.forEach((n) => {
+            if (n instanceof HTMLElement && n.dataset.pane === "x") seen.supersededShown = true;
+          });
+        }
+        if (panesIn(box) === 0) seen.empty += 1;
+        const z = box.querySelector<HTMLElement>('[data-slot="cross-fade"][data-pane="z"]');
+        if (z && seen.zFirstOpacity === null) seen.zFirstOpacity = z.style.opacity;
+      }
+      const leaving = document.querySelector<HTMLElement>(
+        '[data-slot="cross-fade"][data-pane="y"][inert]');
+      if (!seen.fired && leaving?.style.opacity === "0") {
+        seen.fired = true;
+        moves.to("z");
+      }
+    });
+    watch.observe(document.body, {
+      subtree: true, childList: true, attributes: true,
+      attributeFilter: ["style", "inert"],
+    });
+    try {
+      act(() => moves.to("x"));
+      // GROUND: the third move really landed on the second pane's last exit
+      // frame, so the render that finishes the exit is the one it is in.
+      await waitFor(() => expect(seen.fired, "the second pane never finished leaving")
+        .toBe(true));
+      const z = await screen.findByText("pane z");
+      // The pane the swap ends on has finished arriving before the record is
+      // handed back, so every frame of that arrival was observed.
+      await waitFor(() => expect(
+        z.closest<HTMLElement>('[data-slot="cross-fade"]')?.style.opacity,
+        "the pane the swap ends on never finished arriving").toBe("1"));
+      return { z, seen };
+    } finally {
+      watch.disconnect();
+    }
+  }
+
+  it("a pane that arrives already superseded does not stop the swap", async () => {
+    const { z, seen } = await supersedeOnTheLastExitFrame();
+    expectShownInside(z, "cross-fade", "the pane the swap ends on");
+    // Nothing left behind that nobody can press. The ground found the
+    // leaving pane by this same selector, so it sees an inert pane when
+    // there is one.
+    await waitFor(() => expect(
+      document.querySelectorAll('[data-slot="cross-fade"][inert]'),
+      "an inert pane is still in the swap",
+    ).toHaveLength(0));
+    // And the pane that was superseded before it was ever present was
+    // never put on screen at all: there was nothing to show.
+    expect(seen.supersededShown, "a pane that was never present was put on screen")
+      .toBe(false);
+  });
+
+  it("the pane a restarted swap ends on fades in, as every arriving pane does",
+     async () => {
+    // KURAL 5.5: whatever opens is animated, and a swap's panes cross-fade.
+    // The restart could mount the newest pane at full opacity, the way the
+    // FIRST mount of a swap is still - and the reader, who has just watched
+    // the confirm fade out, would see the next line pop in. Read off the
+    // first frame the observer sees the pane in, and off its last.
+    const { seen } = await supersedeOnTheLastExitFrame();
+    // GROUND: the pane was seen, so the opacity below is a reading.
+    expect(seen.zFirstOpacity, "the pane the swap ends on was never seen arriving")
+      .not.toBeNull();
+    expect(seen.zFirstOpacity, "the pane a restart mounts popped in instead of fading")
+      .toBe("0");
+  });
+
+  it("a restarted swap never leaves the box empty in between", async () => {
+    // The superseded pane renders nothing and the swap restarts under a new
+    // key. Were the restart to wait for a passive effect, the render in
+    // which the box holds no pane would be its own commit, painted before
+    // the restart: one frame with nothing in the swap and the block
+    // collapsing. The restart runs in a layout effect, so no observer
+    // callback - each of which runs after a commit - finds the box empty.
+    const { seen } = await supersedeOnTheLastExitFrame();
+    // GROUND: callbacks really ran after the move, so zero is a count.
+    expect(seen.callbacks, "no callback ran after the move").toBeGreaterThan(0);
+    expect(seen.empty, "a callback found the swap holding no pane at all").toBe(0);
+    // POSITIVE CONTROL for the count: the same reader, over a box that
+    // really is emptied, counts it.
+    const probe = document.createElement("div");
+    const pane = document.createElement("div");
+    pane.dataset.slot = "cross-fade";
+    probe.appendChild(pane);
+    document.body.appendChild(probe);
+    let emptied = 0;
+    const control = new MutationObserver(() => {
+      if (panesIn(probe) === 0) emptied += 1;
+    });
+    control.observe(probe, { childList: true });
+    try {
+      pane.remove();
+      await waitFor(() => expect(emptied, "the reader never saw an empty box")
+        .toBeGreaterThan(0));
+    } finally {
+      control.disconnect();
+      probe.remove();
+    }
+  });
+
+  it("a swap's first pane is there whole from its first frame, with no fade", async () => {
+    // The first presence mounts still: the pane is already there when the
+    // block opens, so it has nothing to arrive from, and a fade here would
+    // double the Collapse that usually wraps a swap. Its opacity is read on
+    // every observer callback from the render that puts it in the document
+    // until twice a fade's length has passed, so a fade that started late
+    // would be seen as well.
+    /** Every opacity the pane `name` is seen with, in order. */
+    const recorder = (name: string) => {
+      const readings: string[] = [];
+      const watch = new MutationObserver(() => {
+        const pane = document.querySelector<HTMLElement>(
+          `[data-slot="cross-fade"][data-pane="${name}"]`);
+        if (pane) readings.push(pane.style.opacity);
+      });
+      watch.observe(document.body, {
+        subtree: true, childList: true, attributes: true, attributeFilter: ["style"],
+      });
+      return { readings, stop: () => watch.disconnect() };
+    };
+    const first = recorder("x");
+    const moves = mountSwap();
+    try {
+      await screen.findByText("pane x");
+      await new Promise((resolve) => setTimeout(resolve, durationSeconds.exit * 1000 * 2));
+    } finally {
+      first.stop();
+    }
+    // GROUND: the pane was seen, from the render that put it in.
+    expect(first.readings.length, "the first pane was never seen").toBeGreaterThan(0);
+    expect(first.readings[0], "the first pane faded in instead of being there")
+      .toBe("1");
+    expect(first.readings.filter((opacity) => opacity !== "1"),
+      "the first pane was drawn below whole").toEqual([]);
+
+    // POSITIVE CONTROL: the same recorder, on the pane a move brings in,
+    // sees the fade every later pane arrives with, so "1" above is a reading.
+    const second = recorder("y");
+    try {
+      act(() => moves.to("y"));
+      const y = await screen.findByText("pane y");
+      await waitFor(() => expect(
+        y.closest<HTMLElement>('[data-slot="cross-fade"]')?.style.opacity).toBe("1"));
+    } finally {
+      second.stop();
+    }
+    expect(second.readings[0], "the recorder did not see a pane arrive from nothing")
+      .toBe("0");
+  });
+
+  it("POSITIVE CONTROL: the same three moves, spaced out, end on the last pane too", async () => {
+    // The ordinary path, so the rows above are about the shape and not about
+    // three moves in themselves: here the first pane is back and live before
+    // the third move, and it is SHOWN, which is what the first row says the
+    // superseded one never is. The added-node reader that row uses is run
+    // here too, and it sees the first pane put back.
+    const moves = mountSwap();
+    await screen.findByText("pane x");
+    act(() => moves.to("y"));
+    await screen.findByText("pane y");
+    let xAdded = false;
+    const watch = new MutationObserver((records) => {
+      for (const r of records) {
+        r.addedNodes.forEach((n) => {
+          if (n instanceof HTMLElement && n.dataset.pane === "x") xAdded = true;
+        });
+      }
+    });
+    watch.observe(document.body, { subtree: true, childList: true });
+    try {
+      act(() => moves.to("x"));
+      const x = await screen.findByText("pane x");
+      await waitFor(() => expectShownInside(x, "cross-fade", "the first pane, back"));
+      expect(xAdded, "the added-node reader did not see the first pane put back")
+        .toBe(true);
+    } finally {
+      watch.disconnect();
+    }
+    act(() => moves.to("z"));
+    const z = await screen.findByText("pane z");
+    await waitFor(() => expectShownInside(z, "cross-fade", "the pane the swap ends on"));
+    await waitFor(() => expect(
+      document.querySelectorAll('[data-slot="cross-fade"][inert]')).toHaveLength(0));
   });
 });

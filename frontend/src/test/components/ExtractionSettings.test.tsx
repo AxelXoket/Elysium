@@ -11,10 +11,11 @@
  * from an unanswered query on every tab switch.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
+import { hiddenFromReaders } from "@/test/helpers/accessibility";
 import {
   chooseOption,
   expectClosed,
@@ -22,11 +23,20 @@ import {
   openPositioner,
   openSelect,
 } from "@/test/helpers/select";
-import { ExtractionSettings } from "@/components/notebook/ExtractionSettings";
+import {
+  CHAT_MODEL_PRICE_WARNING,
+  CHAT_MODEL_PRICE_WARNING_ID,
+  ExtractionSettings,
+} from "@/components/notebook/ExtractionSettings";
 import { INSTRUCTION_LANGUAGE_LABELS } from "@/lib/notebook/labels";
+import { CHAT_MODEL_BINDING } from "@/lib/schemas/notebook";
 import { POPUP_COLLISION_PADDING } from "@/lib/theme/popupPositioning";
 import { mockFetch } from "../mocks/api";
 import { useUiStore } from "@/lib/store/uiStore";
+// The one string that is not a model id, as both suites agree on it: the
+// backend asserts notebook_extract.CHAT_MODEL_BINDING against this file,
+// this side asserts the frontend's constant against it.
+import bindingContract from "../../../../shared/notebook_chat_model_binding.json";
 
 const MODELS = {
   models: [
@@ -169,6 +179,145 @@ describe("ExtractionSettings", () => {
     await waitFor(() =>
       expect(screen.getByLabelText(/^Model$/))
         .toHaveTextContent("cheap/one"));
+  });
+
+  it("offers the chat's own model first, and saves the binding as sent", async () => {
+    // KARAR-V2-04b: a standing choice, not a model. The option sits at the
+    // head of the list, and choosing it sends the marker itself - the
+    // backend resolves it on every read, so nothing is resolved here.
+    const user = userEvent.setup();
+    mockFetch({
+      "POST /notebook/extract/settings": { body: { ok: true } },
+      "/notebook/extract/models": { body: MODELS },
+      "/notebook/extract/settings": { body: { model_id: "cheap/one",
+                                              prompt_language: "en" } },
+    });
+    renderWithQueryClient(<ExtractionSettings />);
+    // The options live in a portalled listbox, so the list is opened before
+    // its order can be read. Base UI puts no value attribute on an option,
+    // so the ORDER is read off the words a reader sees and the VALUE off the
+    // request the choice sends, which is where the marker has to be exact.
+    const trigger = await screen.findByLabelText(/^Model$/);
+    await waitFor(() => expect(trigger).toBeEnabled());
+    const listbox = await openSelect(user, trigger);
+    const options = within(listbox).getAllByRole("option");
+    // GROUND: the list is the real one, not an empty popup - the two mocked
+    // models are in it beside the two standing entries.
+    expect(options.map((o) => (o.textContent ?? "").trim())).toEqual([
+      "Not chosen - suggestions are off",
+      "Use the model I am chatting with",
+      "$0.060/M - cheap/one",
+      "$0.050/M (1 provider) - lonely/two",
+    ]);
+
+    // First after the "not chosen" option, before any listed model.
+    await user.click(options[1]);
+
+    await expectClosed(listbox);
+    await waitFor(() => {
+      const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+        .find((c: unknown[]) =>
+          String(c[0]).includes("/extract/settings")
+          && (c[1] as RequestInit | undefined)?.method === "POST");
+      expect(call).toBeTruthy();
+      expect(JSON.parse(String((call![1] as RequestInit).body)))
+        .toEqual({ model_id: CHAT_MODEL_BINDING });
+    });
+  });
+
+  it("the binding is the same string on both sides of the wall", () => {
+    expect(CHAT_MODEL_BINDING).toBe(bindingContract.model_id);
+  });
+
+  it("warns about the price whenever the binding is the saved choice", async () => {
+    // Mandatory beside that choice: a chat model is many times a cheap
+    // extractor's price and the choice follows every change of chat model.
+    mockFetch({
+      "/notebook/extract/models": { body: MODELS },
+      "/notebook/extract/settings": { body: { model_id: CHAT_MODEL_BINDING,
+                                              prompt_language: "en" } },
+    });
+    renderWithQueryClient(<ExtractionSettings />);
+    const warning = await screen.findByTestId("chat-model-price-warning");
+    await waitFor(() => expect(hiddenFromReaders(warning)).toBe(false));
+    expect(warning.textContent).toBe(CHAT_MODEL_PRICE_WARNING);
+  });
+
+  it("the picker itself carries the warning as its description", async () => {
+    // A mandatory warning that is only a paragraph NEAR the control is not
+    // announced at all to somebody sitting on the control: they hear its
+    // name and its value, spend, and meet the sentence afterwards if they
+    // ever walk past it. `aria-describedby` is what makes the warning part
+    // of the thing it warns about, and the accessible DESCRIPTION is how a
+    // reader meets it, so that is what is asked here rather than the
+    // attribute alone.
+    mockFetch({
+      "/notebook/extract/models": { body: MODELS },
+      "/notebook/extract/settings": { body: { model_id: null,
+                                              prompt_language: "en" } },
+    });
+    renderWithQueryClient(<ExtractionSettings />);
+    const picker = await screen.findByLabelText(/^Model$/);
+    await waitFor(() =>
+      expect(picker).toHaveTextContent("Not chosen - suggestions are off"));
+    expect(picker).toHaveAccessibleDescription(CHAT_MODEL_PRICE_WARNING);
+    // The description is that NODE, not a string that happens to match:
+    // the id on the paragraph is what the picker points at, and both come
+    // from the one exported constant.
+    expect(picker.getAttribute("aria-describedby"))
+      .toBe(CHAT_MODEL_PRICE_WARNING_ID);
+    expect(screen.getByTestId("chat-model-price-warning").id)
+      .toBe(CHAT_MODEL_PRICE_WARNING_ID);
+    // GROUND: the description is the price warning and not whatever else
+    // sits under the picker (the "only models that keep no copy" line).
+    expect(picker)
+      .not.toHaveAccessibleDescription(/only models that keep no copy/i);
+  });
+
+  it("says the price before anything is picked, not after", async () => {
+    // The claim the sentence makes about itself: it is there while the
+    // reader is DECIDING. Nothing is chosen in this fixture, which is the
+    // state a reader meeting the option for the first time is in.
+    mockFetch({
+      "/notebook/extract/models": { body: MODELS },
+      "/notebook/extract/settings": { body: { model_id: null,
+                                              prompt_language: "en" } },
+    });
+    renderWithQueryClient(<ExtractionSettings />);
+    // GROUND: the picker really rendered, so "the sentence is there" is
+    // not "an empty component is there".
+    const trigger = await screen.findByLabelText(/^Model$/);
+    await waitFor(() =>
+      expect(trigger).toHaveTextContent("Not chosen - suggestions are off"));
+    // The option is reachable without choosing it: the popup is opened and
+    // closed again, so nothing is saved and the warning is read in the state
+    // a reader meeting the option for the first time is in.
+    const user = userEvent.setup();
+    const listbox = await openSelect(user, trigger);
+    expect(within(listbox).getByRole("option",
+      { name: /model I am chatting with/i })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    await expectClosed(listbox);
+    const warning = screen.getByTestId("chat-model-price-warning");
+    expect(hiddenFromReaders(warning)).toBe(false);
+    expect(warning.textContent).toBe(CHAT_MODEL_PRICE_WARNING);
+  });
+
+  it("keeps saying it once a listed model is the choice", async () => {
+    // The sentence is about the OPTION, so it does not vanish when some
+    // other model is selected; it names itself instead of relying on
+    // context the reader no longer has.
+    mockFetch({
+      "/notebook/extract/models": { body: MODELS },
+      "/notebook/extract/settings": { body: { model_id: "cheap/one",
+                                              prompt_language: "en" } },
+    });
+    renderWithQueryClient(<ExtractionSettings />);
+    await waitFor(() =>
+      expect(screen.getByLabelText(/^Model$/)).toHaveTextContent("cheap/one"));
+    const warning = screen.getByTestId("chat-model-price-warning");
+    expect(hiddenFromReaders(warning)).toBe(false);
+    expect(warning.textContent).toBe(CHAT_MODEL_PRICE_WARNING);
   });
 
   it("says so when the list could not be fetched", async () => {

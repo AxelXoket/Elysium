@@ -11,6 +11,20 @@
  */
 import { expect } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
+import type { Root } from "postcss";
+
+import {
+  BASE_UI_COLLISION_PADDING,
+  POPUP_COLLISION_PADDING,
+} from "@/lib/theme/popupPositioning";
+import { typeScale } from "@/lib/theme/tokens";
+import {
+  lengthPx,
+  remPx,
+  resolveVars,
+  rootTokens,
+  winningDeclaration,
+} from "@/test/helpers/compiledSheet";
 
 /** Either a `userEvent.setup()` instance or the default export: both click. */
 export type Clicker = { click: (element: Element) => Promise<unknown> };
@@ -252,14 +266,155 @@ export async function expectKeyboardContract(
 }
 
 /**
- * The positioner behind the open popup: the node that carries the real
- * collision padding AND the attribute that proves it got it.
+ * The positioner behind the open popup, found by the `data-collision-padding`
+ * attribute the shared positioning props put on it.
  *
- * The attribute used to sit on the popup while the prop went to the
- * positioner, so a test reading it could not tell the two apart and deleting
- * the prop left the assertion green. They travel together now, on this node.
+ * The attribute says what the positioner was TOLD, and on its own it proves
+ * nothing more: the prop could be dropped on the way while the attribute went
+ * on reporting it. What Base UI actually did with the prop is read by
+ * `placedCollisionPadding` below, off the library's own output, and
+ * `expectPlacedCollisionPadding` holds the two to each other.
  */
 export function openPositioner(): HTMLElement | null {
   const popup = openPopup();
   return popup?.closest<HTMLElement>("[data-collision-padding]") ?? null;
+}
+
+/**
+ * The step the words inside a popup option are on: `SelectItem`'s own.
+ *
+ * Typed as a key of the imported scale, so a renamed step is a compile error
+ * rather than a class that matches nothing, and its pixel value is read off
+ * the scale rather than written here. KURAL 3.5 gives the components/ui/
+ * primitives 14, and that number is written down once: the pin row beside
+ * the option reader's ground in BoundaryPanel.test.tsx holds this step to
+ * it. Every popup row is held to the step, and the step to the 14.
+ */
+export const OPTION_STEP: keyof typeof typeScale = "control";
+
+/**
+ * Every option in an open popup is on the option step.
+ *
+ * Two ways to fail and both are real: an option whose class is not the
+ * step's, and - handed the compiled sheet - a rule that sizes the options off
+ * the step's pixel value over the class (a slot selector, a descendant rule
+ * on a panel), which a class check cannot see. The class half needs no sheet
+ * and runs everywhere; the sheet half is asked where a call site already has
+ * the sheet parsed. The step's own value moving is the pin row's to catch.
+ */
+export function expectOptionsOnTheOptionStep(
+  listbox: HTMLElement, where: string, sheet?: Root,
+): void {
+  const px = typeScale[OPTION_STEP].px;
+  const options = within(listbox).getAllByRole("option");
+  // GROUND: a popup with no options would pass a loop over nothing.
+  expect(options.length, `${where}: the popup rendered no options to read`)
+    .toBeGreaterThan(0);
+  const table = sheet ? rootTokens(sheet) : null;
+  const rem = sheet ? remPx(sheet) : 0;
+  for (const option of options) {
+    const words = (option.textContent ?? "").trim();
+    expect(
+      [...option.classList],
+      `${where}: "${words}" is not on the option step`,
+    ).toContain(`text-${OPTION_STEP}`);
+    if (!sheet || !table) continue;
+    const won = winningDeclaration(sheet, option, /^font-size$/);
+    expect(won, `${where}: no rule in the sheet sizes "${words}" at all`)
+      .not.toBeNull();
+    expect(
+      lengthPx(resolveVars(won!.value, table), rem),
+      `${where}: the sheet sizes "${words}" off the option step's ${px}px`,
+    ).toBe(px);
+  }
+}
+
+/**
+ * The element Base UI positions for the popup `node` sits in: the nearest
+ * one, `node` included, that carries the `--available-width` Base UI's size
+ * middleware writes on the element it places. Found by what the LIBRARY
+ * wrote rather than by any attribute of ours, so it is found the same way
+ * whether or not our own props reached it.
+ */
+function positionerOf(node: HTMLElement): HTMLElement | null {
+  for (let el: HTMLElement | null = node; el; el = el.parentElement) {
+    if (el.style.getPropertyValue("--available-width") !== "") return el;
+  }
+  return null;
+}
+
+/**
+ * The collision padding Base UI really placed the open popup with, in px.
+ *
+ * Base UI does not write the padding it is handed anywhere: it passes it to
+ * the positioning middleware. What the middleware DOES write, on the
+ * positioner, is `--available-width` - the width it clipped the popup to,
+ * which is the document's width (`documentElement.clientWidth`, what the
+ * middleware clips against when no ancestor clips first) with the padding
+ * taken off both sides. So the padding comes back out of the library's own
+ * output as (width - available) / 2, and a positioner that never received the
+ * prop reads back as the library's default, whatever any attribute of ours
+ * says. The Select's positioner and the tooltip's write it the same way, so
+ * `popup` is either one's popup, or any node inside it.
+ *
+ * jsdom lays nothing out, so the document is 0px wide and the available
+ * width comes back negative: -16px for 8. The arithmetic does not care, and
+ * the T-75 ground row in BoundaryPanel.test.tsx gives the document a real
+ * width to show the reader answers the same over one.
+ */
+export async function placedCollisionPadding(
+  popup: HTMLElement, where: string,
+): Promise<number> {
+  let positioner: HTMLElement | null = null;
+  // The size middleware runs after the popup mounts, so the property is
+  // waited for rather than read on the first tick.
+  await waitFor(() => {
+    positioner = positionerOf(popup);
+    expect(positioner, `${where}: Base UI wrote no available width to read`)
+      .not.toBeNull();
+  });
+  const available = Number.parseFloat(
+    positioner!.style.getPropertyValue("--available-width"));
+  expect(Number.isFinite(available), `${where}: the available width is not a length`)
+    .toBe(true);
+  return (document.documentElement.clientWidth - available) / 2;
+}
+
+/**
+ * The padding the open popup was really positioned with, held to the shared
+ * constant the component reads.
+ *
+ * The constant is IMPORTED, as T-75 asks, and one row in
+ * BoundaryPanel.test.tsx pins it to T-75's 8. What this adds is the popup
+ * itself, in three questions. First what BASE UI placed the popup with, read
+ * off the library's own output: that is the half no attribute can fake, so a
+ * prop dropped on the way to the positioner, the shared function returning
+ * nothing, or a padding written after the shared spread all come out here
+ * as a number that is not the constant. Then that the placement is not the
+ * library's own default: placed with that, a popup cannot be told apart from
+ * one that never got the prop, so a constant that fell back to it is refused
+ * here as well as by the pin. Last, whether the `data-collision-padding`
+ * attribute the other rows read agrees with what was placed, so the
+ * attribute cannot go on reporting a padding the popup was not placed with.
+ */
+export async function expectPlacedCollisionPadding(
+  popup: HTMLElement, where: string,
+): Promise<void> {
+  const placed = await placedCollisionPadding(popup, where);
+  expect(
+    placed,
+    `${where}: Base UI placed the popup with ${placed}px of collision padding, `
+      + `not the shared ${POPUP_COLLISION_PADDING}px`,
+  ).toBe(POPUP_COLLISION_PADDING);
+  expect(
+    placed,
+    `${where}: the popup was placed with Base UI's own default of `
+      + `${BASE_UI_COLLISION_PADDING}px, so nothing shows the shared padding reached it`,
+  ).not.toBe(BASE_UI_COLLISION_PADDING);
+  const marked = positionerOf(popup)?.closest<HTMLElement>("[data-collision-padding]");
+  expect(
+    marked?.getAttribute("data-collision-padding") ?? null,
+    `${where}: the attribute the other rows read disagrees with the padding `
+      + "the popup was placed with",
+  ).toBe(String(placed));
 }

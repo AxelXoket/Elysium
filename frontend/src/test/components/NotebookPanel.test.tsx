@@ -8,7 +8,7 @@
  * mark is the only thing separating "working" from "silently not sent".
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
@@ -18,6 +18,21 @@ import { mockFetch } from "../mocks/api";
 import { useUiStore } from "@/lib/store/uiStore";
 import { useSeenNotesStore } from "@/lib/chat/seenNotes";
 import { useContextNotesStore } from "@/lib/chat/contextNotes";
+import {
+  PANEL_DRAFT_KEYS,
+  chatScopedPanelDraftKey,
+  useDraftStore,
+} from "@/lib/store/draftStore";
+import { typeScale } from "@/lib/theme/tokens";
+import { loadGlassRightCss } from "@/test/helpers/glassSurfaceCss";
+import { nearestDeclaration, parseSheet } from "@/test/helpers/compiledSheet";
+import {
+  NOTES_TAB_CONFIRMS,
+  armNotesTabConfirms,
+  closeNotesTab,
+  mountNotesTab,
+  settleNotesTab,
+} from "@/test/helpers/notesTab";
 
 /** The text of every live region on screen, in document order. */
 function announced(): string[] {
@@ -273,6 +288,39 @@ describe("what the model wrote, and taking it back", () => {
     expect(strip.textContent).toContain("Her brother owns the mill.");
   });
 
+  it("breaks a quoted note inside a word when the word will not fit the card", async () => {
+    // A note that is one long word was quoted whole on the saved line, which
+    // held it to one run: measured headless at the panel's floor it went past
+    // the card and was cut by the card's clip. The note's own row below
+    // breaks the same word, so the line quoting it has to as well.
+    // `overflow-wrap` inherits, so it is read on the line or the nearest
+    // box above it that sets it, through the compiled sheet.
+    const root = parseSheet(await loadGlassRightCss());
+    const text = "She calls it Muvaffakiyetsizlestiricilestiriveremeyebileceklerimizdenmissinizcesine";
+    mockFetch({ "/notebook/7": { body: { entries: [modelNote({ text })], notebook_chars: 10 } } });
+    renderWithQueryClient(<NotebookPanel />);
+    const strip = await screen.findByTestId("just-saved");
+    await waitFor(() => expect(strip.textContent).toContain(text));
+    const breaking = (el: Element): string | null =>
+      nearestDeclaration(root, el, /^overflow-wrap$/)?.declaration.value ?? null;
+    // GROUND: the line read is the one that quotes the note.
+    const line = [...strip.querySelectorAll("p")].find((p) => (p.textContent ?? "").includes(text));
+    expect(line, "no line on the strip quotes the note").toBeTruthy();
+    expect(["break-word", "anywhere"], "the saved line holds a long word to one run")
+      .toContain(breaking(line!));
+    // POSITIVE CONTROL: the reader finds the break where the note's row
+    // declares it, and finds none on a line that declares nothing.
+    expect(["break-word", "anywhere"]).toContain(
+      breaking(within(screen.getByTestId("note-5")).getByText(text)));
+    const bare = document.createElement("p");
+    document.body.appendChild(bare);
+    try {
+      expect(breaking(bare), "the reader found a break where nothing sets one").toBeNull();
+    } finally {
+      bare.remove();
+    }
+  }, 60_000);
+
   it("does not announce the user's own notes", async () => {
     // Ground: the user knows what they typed.
     mockFetch({ "/notebook/7": { body: { entries: [entry()],
@@ -308,7 +356,7 @@ describe("what the model wrote, and taking it back", () => {
 
     // The confirm pane mounts once the Undo pane has faded out
     // (AnimatePresence, mode="wait"), so it is awaited.
-    await user.click(await screen.findByLabelText("Confirm delete"));
+    await user.click(await screen.findByRole("button", { name: /^remove it$/i }));
 
     await waitFor(() => {
       expect(deleteCalls().some((c) =>
@@ -333,9 +381,78 @@ describe("what the model wrote, and taking it back", () => {
     await user.click(await screen.findByRole("button", { name: /^undo$/i }));
     expect(deleteCalls()).toHaveLength(0);
 
-    await user.click(await screen.findByLabelText(/confirm deleting 2 notes/i));
+    await user.click(await screen.findByRole("button", { name: /^remove all 2$/i }));
 
     await waitFor(() => expect(deleteCalls()).toHaveLength(2));
+  });
+
+  it("the saved-notes controls are on the chrome step, both before and after "
+     + "the confirm swaps them", async () => {
+    // The four buttons on this block are the same buttons the backfill strip
+    // renders a few hundred pixels above it in the same tab - a danger
+    // action and a ghost action, side by side, inside a `CrossFade`. They
+    // took the label step while the strip's took chrome, so one panel drew
+    // the identical control at 12 and 13 at once. The role rule settles it:
+    // text inside a control takes chrome.
+    //
+    // BOTH PANES, because the swap is where a step goes missing: the confirm
+    // pair is a different pair of buttons from the trigger pair, and only
+    // one of them is on screen at a time.
+    const user = userEvent.setup();
+    mockFetch({
+      "/notebook/7": {
+        body: {
+          entries: [modelNote(), modelNote({ id: 6, text: "A second one." })],
+          notebook_chars: 20,
+        },
+      },
+    });
+    renderWithQueryClient(<NotebookPanel />);
+
+    // Both names are taken BY NAME off the imported scale and typed as its
+    // keys, so a renamed step is a compile error rather than a class that
+    // matches nothing.
+    const uiStep: keyof typeof typeScale = "ui";
+    const labelStep: keyof typeof typeScale = "label";
+    const UI = `text-${uiStep}`;
+    const LABEL = `text-${labelStep}`;
+    // GROUND for the names: they are the 13 and the 12 the rule means.
+    expect(typeScale[uiStep].px).toBe(13);
+    expect(typeScale[labelStep].px).toBe(12);
+    const STEPS = Object.keys(typeScale).map((k) => `text-${k}`);
+    const stepOf = (el: Element): string | null =>
+      [...el.classList].filter((c) => STEPS.includes(c))[0] ?? null;
+
+    const strip = await screen.findByTestId("just-saved");
+    // The block is a Collapse: mounted shut and hidden from readers until
+    // the notes arrive, so the first pane is AWAITED rather than read on
+    // sight. Without this the sweep runs over a pane nobody can see yet.
+    await screen.findByRole("button", { name: /^undo$/i });
+    for (const pane of ["undo", "confirm"]) {
+      if (pane === "confirm") {
+        await user.click(screen.getByRole("button", { name: /^undo$/i }));
+        await screen.findByRole("button", { name: /^remove all 2$/i });
+      }
+      // GROUND for this pane: the buttons it is named for are really here,
+      // so the sweep below cannot pass on an empty swap.
+      const buttons = [...strip.querySelectorAll("button")]
+        .filter((b) => !hiddenFromReaders(b));
+      const names = buttons.map((b) =>
+        `${(b.textContent ?? "").trim()} ${b.getAttribute("aria-label") ?? ""}`);
+      expect(names.some((n) => (pane === "confirm" ? /^Remove all 2/ : /^Undo/).test(n)),
+        `${pane}: the pane's own button is not on screen`).toBe(true);
+      expect(buttons.length, `${pane}: the pair is not a pair`).toBe(2);
+      expect(buttons.filter((b) => stepOf(b) !== UI)
+        .map((b) => `${pane}: ${(b.textContent ?? "").trim()} -> ${stepOf(b) ?? "no step"}`),
+        "a control on the saved-notes block sizes its words off the chrome step")
+        .toEqual([]);
+    }
+
+    // THE OTHER DIRECTION, so "put everything on 13" cannot pass: the line
+    // that says what was saved is prose, and stays on the label step.
+    const prose = strip.querySelector("p");
+    expect(prose, "the saved-notes line rendered no paragraph").not.toBeNull();
+    expect(stepOf(prose!), "the saved-notes line left the label step").toBe(LABEL);
   });
 
   it("cancelling deletes nothing and keeps announcing", async () => {
@@ -349,7 +466,7 @@ describe("what the model wrote, and taking it back", () => {
     renderWithQueryClient(<NotebookPanel />);
 
     await user.click(await screen.findByRole("button", { name: /^undo$/i }));
-    await user.click(await screen.findByLabelText("Keep note"));
+    await user.click(await screen.findByRole("button", { name: /^cancel$/i }));
 
     expect(deleteCalls()).toHaveLength(0);
     expect(await screen.findByRole("button", { name: /^undo$/i }))
@@ -376,7 +493,7 @@ describe("what the model wrote, and taking it back", () => {
       renderWithQueryClient(<NotebookPanel />);
 
       await user.click(await screen.findByRole("button", { name: /^undo$/i }));
-      await user.click(await screen.findByLabelText(/confirm deleting 2 notes/i));
+      await user.click(await screen.findByRole("button", { name: /^remove all 2$/i }));
 
       // The strip is still there, because nothing was actually removed.
       expect(await screen.findByRole("button", { name: /^undo$/i }))
@@ -1003,13 +1120,214 @@ describe("the confirm question does not follow the reader", () => {
 
     await user.click(await screen.findByRole("button", { name: /^undo$/i }));
     // GROUND: it really is armed in this chat.
-    expect(await screen.findByLabelText(/confirm deleting/i)).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /^remove (it|all \d+)$/i })).toBeInTheDocument();
 
     act(() => useUiStore.setState({ selectedChatId: 8 }));
 
     expect(await screen.findByRole("button", { name: /^undo$/i }))
       .toBeInTheDocument();
-    expect(screen.queryByLabelText(/confirm deleting/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /^remove (it|all \d+)$/i })).toBeNull();
   });
 });
 
+
+describe("every count the notebook says, at 0, 1 and 2", () => {
+  // The same rule as the worker card's and the strip's rows: a number is
+  // followed by words that agree with it. "Keep note" was the name of the
+  // button that keeps two notes, and "1 are still here" the count of one.
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({ selectedChatId: 7 });
+    useSeenNotesStore.setState({ byChat: {} });
+    useContextNotesStore.setState({ byChat: {} });
+    useDraftStore.getState().clearAll();
+  });
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    useDraftStore.getState().clearAll();
+  });
+
+  const flat = (text: string | null | undefined): string => (text ?? "").replace(/\s+/g, " ").trim();
+  const saved = (n: number) => Array.from({ length: n }, (_, i) =>
+    entry({ id: 40 + i, text: `saved note ${i}`, provenance: "model" }));
+
+  it("the notes the model saved, and the undo that takes them back", async () => {
+    const user = userEvent.setup();
+    for (const n of [0, 1, 2] as const) {
+      cleanup();
+      useSeenNotesStore.setState({ byChat: {} });
+      mockFetch({
+        "/notebook/7": { body: { entries: [entry({ id: 1 }), ...saved(n)], notebook_chars: 10 } },
+      });
+      renderWithQueryClient(<NotebookPanel />);
+      await screen.findByText("Mira is her sister.");
+      const strip = screen.getByTestId("just-saved");
+      if (n === 0) {
+        // Nothing saved, nothing announced; the row at 1 is where the same
+        // reader finds it.
+        expect(hiddenFromReaders(strip), "an announcement with nothing saved").toBe(true);
+        continue;
+      }
+      await waitFor(() => expect(hiddenFromReaders(strip)).toBe(false));
+      const line = strip.querySelector("p");
+      const [said, keep, remove] = n === 1
+        ? ['Saved a note the model wrote: "saved note 0"', "Keep it", "Remove it"]
+        : ["Saved 2 notes the model wrote.", "Keep them", "Remove all 2"];
+      expect(flat(line?.textContent), `at ${n}`).toBe(said);
+      expect(within(strip).getByRole("button", { name: keep }), `at ${n}`).toBeInTheDocument();
+      await user.click(within(strip).getByRole("button", { name: /^undo$/i }));
+      // Each confirm button is named by the words it shows (WCAG 2.5.3).
+      const confirm = await within(strip).findByRole("button", { name: remove });
+      expect(flat(confirm.textContent), `at ${n}`).toBe(remove);
+      expect(within(strip).getByRole("button", { name: "Cancel" }), `at ${n}`).toBeInTheDocument();
+    }
+  }, 30_000);
+
+  it("the notes still there when nothing matches the search", async () => {
+    // The search box opens at six notes, but the word in it outlives that:
+    // it is the chat's own draft, so an undo that takes the notebook below
+    // six leaves the filter in place with fewer notes behind it.
+    const said: string[] = [];
+    for (const n of [0, 1, 2]) {
+      cleanup();
+      useDraftStore.getState().setPanelDraft(
+        chatScopedPanelDraftKey(PANEL_DRAFT_KEYS.newNote, 7, "filter"), "nothing matches this");
+      mockFetch({ "/notebook/7": { body: {
+        entries: Array.from({ length: n }, (_, i) => entry({ id: 60 + i, text: `kept note ${i}` })),
+        notebook_chars: 10 } } });
+      renderWithQueryClient(<NotebookPanel />);
+      const line = await screen.findByText(/no note matches that/i);
+      // Settled: the line opens once the notes have arrived.
+      await waitFor(() => expect(hiddenFromReaders(line)).toBe(false));
+      said.push(flat(line.textContent));
+    }
+    expect(said).toEqual([
+      expect.stringMatching(/^No note matches that\. 0 are still here /),
+      expect.stringMatching(/^No note matches that\. 1 is still here /),
+      expect.stringMatching(/^No note matches that\. 2 are still here /),
+    ]);
+  }, 30_000);
+
+  it("the notes sent against the notes there are", async () => {
+    // A count with no noun of its own: "N of M sent" reads at every count.
+    for (const n of [0, 1, 2]) {
+      cleanup();
+      mockFetch({ "/notebook/7": { body: {
+        entries: Array.from({ length: n }, (_, i) => entry({ id: 80 + i, text: `sent note ${i}` })),
+        notebook_chars: 10 } } });
+      renderWithQueryClient(<NotebookPanel />);
+      await waitFor(() =>
+        expect(flat(screen.getByTestId("notebook-sent-count").textContent)).toBe(`${n} of ${n} sent`));
+    }
+  }, 30_000);
+});
+
+describe("every button in the Notes tab is named by the words it shows", () => {
+  // WCAG 2.5.3, Label in Name: a control that shows words carries them in
+  // its accessible name, so a reader who says what they see reaches it. The
+  // saved notes' confirm showed "Cancel" and was named "Keep notes", and
+  // its partner showed "Delete it" and was named "Confirm delete"; the
+  // strip's showed "Remove all 16" and was named "Confirm removing 16
+  // notes". A button that shows no words (an icon) is named by its label
+  // alone, and is not held to this.
+  afterEach(() => {
+    cleanup();
+    closeNotesTab();
+    vi.restoreAllMocks();
+  });
+
+  const flat = (text: string | null | undefined): string =>
+    (text ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+
+  /** The accessible name a button gets from its own markup: the elements
+   *  it is labelled by, else its label, else its words. */
+  const nameOf = (el: Element): string => {
+    const by = el.getAttribute("aria-labelledby");
+    if (by) {
+      return flat(by.split(/\s+/).map((id) => document.getElementById(id)?.textContent).join(" "));
+    }
+    return flat(el.getAttribute("aria-label") ?? el.textContent);
+  };
+
+  /** Every button on screen whose name does not carry the words it shows.
+   *  A select's trigger is a `<button>` with the role of a combobox, and the
+   *  words it shows are its value, not its label, so it is not asked. */
+  const isButton = (b: Element): boolean => (b.getAttribute("role") ?? "button") === "button";
+  const mismatches = (within: Element): string[] =>
+    [...within.querySelectorAll<HTMLElement>('button, [role="button"]')]
+      .filter((b) => isButton(b) && !b.closest("[inert]") && flat(b.textContent) !== "")
+      .filter((b) => !nameOf(b).includes(flat(b.textContent)))
+      .map((b) => `"${flat(b.textContent)}" is named "${nameOf(b)}"`);
+
+  it("at rest and with every confirm armed", async () => {
+    const user = userEvent.setup();
+    mountNotesTab();
+    await settleNotesTab();
+    const tab = screen.getByRole("tabpanel");
+    const worded = () => [...tab.querySelectorAll("button")]
+      .filter((b) => isButton(b) && flat(b.textContent) !== "");
+    // GROUND: the tab shows buttons with words, so the check reads some.
+    expect(worded().length).toBeGreaterThan(5);
+    expect(mismatches(tab), "at rest").toEqual([]);
+    await armNotesTabConfirms(user);
+    // GROUND: the two confirms with words of their own are on screen, found
+    // by the words they show and not by their names, which are the question.
+    for (const words of [/^remove all \d+$/, /^cancel$/]) {
+      expect(worded().filter((b) => words.test(flat(b.textContent))).length, `${words}`)
+        .toBeGreaterThan(1);
+    }
+    expect(mismatches(tab), "with every confirm armed").toEqual([]);
+
+    // POSITIVE CONTROL: a button that shows one thing and is named another
+    // is reported; one whose name carries its words, and one that shows
+    // only an icon, are not.
+    const probe = (label: string | null, words: string): HTMLButtonElement => {
+      const b = document.createElement("button");
+      if (label !== null) b.setAttribute("aria-label", label);
+      b.textContent = words;
+      tab.appendChild(b);
+      return b;
+    };
+    const wrong = probe("Keep notes", "Cancel");
+    const right = probe("Remove all 2 notes", "Remove all 2");
+    const icon = probe("Confirm delete", "");
+    try {
+      expect(mismatches(tab)).toEqual(['"cancel" is named "keep notes"']);
+    } finally {
+      wrong.remove();
+      right.remove();
+      icon.remove();
+    }
+  }, 60_000);
+
+  it("the two confirms with words of their own speak one pattern: \"Remove\" and a count, "
+     + "beside \"Cancel\"", async () => {
+    // The strip's undo said "Remove all 16" beside "Keep them" while the
+    // saved notes' said "Delete all 2" beside "Cancel", 150 px apart, for
+    // the same act: taking back notes the model wrote.
+    const user = userEvent.setup();
+    mountNotesTab();
+    await settleNotesTab();
+    await armNotesTabConfirms(user);
+    /** The words on each button of the pair a confirm sits in. */
+    const pairOf = (confirm: Element): string[] => {
+      const pane = confirm.closest('[data-slot="cross-fade"]');
+      expect(pane, `${flat(confirm.textContent)} is not in a cross-fade`).not.toBeNull();
+      return [...pane!.querySelectorAll("button")].filter((b) => !b.closest("[inert]"))
+        .map((b) => flat(b.textContent));
+    };
+    const pairs = [NOTES_TAB_CONFIRMS.run, NOTES_TAB_CONFIRMS.saved]
+      .map((name) => pairOf(screen.getByRole("button", { name })));
+    // GROUND: both confirms are on screen, each as a pair.
+    expect(pairs.map((p) => p.length)).toEqual([2, 2]);
+    const PATTERN = [/^remove (it|all \d+)$/, /^cancel$/];
+    const offPattern = (pair: string[]): boolean =>
+      !(pair.length === PATTERN.length && pair.every((words, i) => PATTERN[i].test(words)));
+    expect(pairs.filter(offPattern), "a confirm pair in the Notes tab speaks another pattern")
+      .toEqual([]);
+    // POSITIVE CONTROL: the saved notes' old pair is off the pattern.
+    expect(offPattern(["delete all 2", "cancel"])).toBe(true);
+    expect(offPattern(["remove all 16", "keep them"])).toBe(true);
+  }, 60_000);
+});

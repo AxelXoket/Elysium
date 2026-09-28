@@ -101,6 +101,38 @@ class TestWhatReachesTheModel:
         # merely ahead of the model's half.
         assert idx["user wrote this"] < len(msgs) - 1
 
+    def test_user_notes_ride_in_system_and_model_notes_in_the_user_turn(
+            self, db, chat):
+        """KARAR-V2-13 as I changed it on 26 Sep 2026 (C3 a, ledger
+        Q-126), and as SECURITY.md now states it: what the user wrote rides in
+        the one `system` message, what a model wrote rides in the LAST `user`
+        message, after the user's own text, under its "unverified notes"
+        header. Measured on the payload rather than taken from the decision,
+        so the sentence that states it goes red the day the placement changes
+        without it."""
+        notebook.create_entry(chat, "user wrote this")
+        notebook.create_entry(chat, "model wrote this",
+                              provenance=notebook.PROV_MODEL)
+        msgs, _, _ = _payload(chat)
+        carrying = [m for m in msgs
+                    if "user wrote this" in m["content"]
+                    or "model wrote this" in m["content"]]
+        assert len(carrying) == 2, "ground: both blocks reached the payload"
+        user_half = next(m for m in carrying
+                         if "user wrote this" in m["content"])
+        model_half = next(m for m in carrying
+                          if "model wrote this" in m["content"])
+        assert user_half["role"] == "system"
+        assert model_half["role"] == "user"
+        # The model's block is in the last message (KARAR-V2-14's tail), and
+        # after the user's own words, never ahead of them.
+        assert model_half is msgs[-1]
+        text = str(model_half["content"])
+        assert text.index("hello") < text.index("model wrote this")
+        # Positive control: no model-written note reaches the system message.
+        assert not any("model wrote this" in str(m["content"])
+                       for m in msgs if m["role"] == "system")
+
     def test_the_block_says_it_is_data(self, db, chat) -> None:
         """A note is quoted material and the wrapper says so out loud.
 

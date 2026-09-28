@@ -333,6 +333,81 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "tests/test_tts_worker.py::TestAWorkersOwnWordsDoNotReachTheLog"
         "::test_a_reference_clip_name_does_not_survive_a_detail",
     )),
+    # The two sentences the activity tracker (IP-07) and the reading job
+    # (IP-01) changed inside the locked section, registered here as prose
+    # because they are clauses of paragraphs, not bullets. The activity
+    # clause is proven by the ping route moving the clock and a locked vault
+    # not moving it; the "on your request" clause by one press reading a
+    # whole chat through the same sender the policy test already pins.
+    ("real input - a click, a key, a wheel, a touch, focus arriving", (
+        "tests/test_activity_ping.py::TestThePingMovesTheClock"
+        "::test_it_answers_204_with_no_body_and_resets_the_idle_clock",
+        "tests/test_activity_ping.py::TestALockedVaultIsNotKeptAwake"
+        "::test_it_answers_423_and_the_clock_does_not_move",
+    )),
+    ("on your request when you ask it to read a chat's earlier messages", (
+        "tests/test_notebook_backfill.py::TestOnePressReadsTheWholeChat"
+        "::test_scope_all_covers_everything_in_one_press",
+        "tests/test_privacy_promises.py::TestEverySenderCarriesTheSamePolicy"
+        "::test_the_note_reader_sends_the_policy_and_its_model_alone",
+    )),
+    # THE UNASKED HALF, and it is registered separately because it is a
+    # separate promise about the reader's money. The sentence above proves
+    # what ONE PRESS does; this one is what happens with nobody pressing
+    # anything. It said "on a timer" (there is no timer: 3.19) and "once
+    # on its own for a chat that has no notes yet, the first time that
+    # chat comes up" (mode 1, a whole-chat job the worker started by
+    # itself, removed by decisions 30 a and 31 a). What is left is one
+    # rule, and the proofs are its three edges: nineteen unread messages
+    # send nothing and the twentieth sends one call, a long chat with no
+    # notes starts no job by itself, and another chat's failures do not
+    # make a chat read on fewer than twenty (decision 28 a).
+    ("by itself when a chat has twenty new messages since it last read there "
+     "or since the chat began", (
+        "tests/test_notebook_backfill.py::TestModeOneIsGone"
+        "::test_a_new_noteless_chat_is_read_by_the_ordinary_reader_at_twenty",
+        "tests/test_notebook_backfill.py::TestModeOneIsGone"
+        "::test_a_long_noteless_chat_starts_no_job_by_itself",
+        "tests/test_notebook_pressure.py::TestOnlyTheBatchMovesUnderPressure"
+        "::test_a_failing_chat_does_not_make_another_chat_read_sooner",
+        "tests/test_notebook_worker.py::TestAFailedReadIsTriedOnTheNextReply"
+        "::test_GROUND_after_a_success_one_new_message_is_not_a_read",
+    )),
+    # 33 a in the same sentence: the one read that does not wait for twenty.
+    # It used to say only "twenty messages it has not read yet", which a
+    # long chat's older, never-read history made untrue and which left the
+    # retry out.
+    ("and again at the next reply after a read there failed", (
+        "tests/test_notebook_worker.py::TestAFailedReadIsTriedOnTheNextReply"
+        "::test_a_failed_read_is_tried_again_on_the_very_next_reply",
+        "tests/test_notebook_worker.py::TestAFailedReadIsTriedOnTheNextReply"
+        "::test_five_failures_in_a_row_pause_the_retries",
+    )),
+    # Decision 34 a, the other clause of the locking bullet: an ordinary
+    # read already under way gets the same up to five seconds a reading job's
+    # unit gets, is written if it lands inside them, and is cancelled -
+    # its request closed, its range not bought twice - if it does not.
+    ("A read already under way is not cut off at once", (
+        "tests/test_notebook_shutdown_defects.py"
+        "::TestDecision34aANormalReadGetsUpToFiveSeconds"
+        "::test_a_normal_read_that_answers_inside_the_locks_grace_is_written",
+        "tests/test_notebook_shutdown_defects.py"
+        "::TestDecision34aANormalReadGetsUpToFiveSeconds"
+        "::test_a_normal_read_still_open_when_the_grace_runs_out_is_cancelled_and_not_paid_twice",
+    )),
+    # The OTHER half of the locked sentence at README:151, and the reason
+    # this entry exists separately: the line gained two promises in one
+    # change, the substring match reads a bullet as covered once any
+    # marker hits it, and a second promise inside the locked region with
+    # no proof is exactly what this file exists to refuse. This one is
+    # about the reading job: it does not hold the vault open, and the lock
+    # stands it down.
+    ("and a reading job you started, do not count as activity", (
+        "tests/test_notebook_backfill.py::TestTheVaultLocksMidJob"
+        "::test_quiesce_waits_and_the_paid_reply_lands",
+        "tests/test_notebook_backfill.py::TestTheVaultLocksMidJob"
+        "::test_a_lock_while_the_call_is_open_does_not_discard_it",
+    )),
     # The proxy note was the one prose claim in this section with no proof
     # registered against it, and it had gone false: the sentence said the
     # download refuses when the setting cannot be read, and only the 25 MB uv
@@ -382,7 +457,67 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
 #: test would notice. This closes that by refusing ANY change to the section
 #: until somebody comes here, decides what the change claims, and registers a
 #: proof for it. Updating this constant is the deliberate act.
-SECTION_DIGEST = "e2e1c4638b1e4f0b94a6f3f4a98555314f3e52240fdab58764a424a98bc1c6cb"
+#:
+#: Renewed once, for the locked package IP-01 carries, and recorded only
+#: after the section was final. What this value covers, and why each
+#: sentence under it says what it says:
+#:
+#: 1. The `response_format` bullet names the ways the note reader sends a
+#:    conversation: by itself, and a read you ask for. The unasked half was
+#:    missing, so the section described an app that asks permission it does
+#:    not ask; both halves are registered in PROSE_CLAIMS above. (I first
+#:    wrote it as three ways, a timer and mode 1's whole-chat read
+#:    among them; point 4 below is why neither is there.)
+#: 2. The locking bullet carries IP-07's definition of activity, and says
+#:    "focused, visible" rather than "the focused window": the gate is
+#:    four-part and SECURITY.md had it right all along, so the shorter
+#:    wording promised less than the code does.
+#: 3. The same bullet says a reading job does not count as activity and
+#:    that the lock stands it down, which is this unit's own behaviour.
+#:
+#: The digest chain this renewal joins is U-03 -> U-49 -> U-46 -> U-75, and
+#: the three MEDIUM records that touch this section - #D05C6C3, #7D8E484,
+#: #21A12B2 - are counted into it here.
+#:
+#: Previous value, the one in git history at 3ba546c, which is the section
+#: this commit started from, and the line this commit removes:
+#: 7163501156f63df25f37d7c77925d2b5d59068a64987bec7573e48ff46155e22
+#: `git show 3ba546c:backend/tests/test_privacy_contract.py` is the whole
+#: of the check, and it is the point of writing the value down at all.
+#: No intermediate value is recorded, deliberately: a hash taken from a
+#: working tree that was never committed cannot be checked against history
+#: by anybody, which makes it worse than no note at all. Every hash in this
+#: block is a value `git show` prints, and that is the whole of the rule.
+#:
+#: Rebased onto prompt-layer (5fd50ee), 27 Sep 2026. That branch renewed
+#: this constant for its own bullets (the refused web-search models, the hex
+#: salt line, the key scrub, `reasoning` and the samplers) and for the
+#: prompt-module sentences in the "At rest" paragraph, all registered in
+#: CLAIMS and PROSE_CLAIMS above. The `response_format` bullet keeps both
+#: halves: the notebook's three sending paths, then prompt-layer's two sentences
+#: after it. Value at 5fd50ee, the base this rebase starts from:
+#: e2e1c4638b1e4f0b94a6f3f4a98555314f3e52240fdab58764a424a98bc1c6cb
+#:
+#: The reading decisions of 23 September, answered 27 September, land in
+#: this same package (IP-01, the first of the two renewals decision 61 b
+#: allows; the second is the release commit's). Only sentences whose
+#: behaviour lands here were written:
+#:
+#: 4. The `response_format` bullet no longer says the reader sends "on a
+#:    timer" (it never had one, 3.19) or "once on its own for a chat that
+#:    has no notes yet" (that read is gone, decisions 30 a and 31 a). It
+#:    says the rule that is left: twenty new messages since the reader last
+#:    read the chat, or since the chat began, and the very next reply after
+#:    a read there failed (33 a), until five failures in a row pause that
+#:    chat (the pause the SECURITY paragraph names too). An earlier wording
+#:    in this package, "twenty messages it has not read yet", was untrue
+#:    of a long chat's older history and left the retry out. Both markers
+#:    above are proven.
+#: 5. The locking bullet says an ordinary read already under way gets up
+#:    to five seconds and is cancelled if it does not land in them
+#:    (decision 34 a); it used to promise only that an ARRIVED reply was
+#:    waited for.
+SECTION_DIGEST = "ff0c850d14ef823bb8b2c9d2afbf29ef24729adc917d5bc95dc8574233c4b2cd"
 
 
 def _section() -> str:

@@ -246,15 +246,31 @@ class TestInstructionCardHoldsTheModelsOwnQuotes:
                 (held["id"],)).fetchone()[0]
         assert target == old["id"]
 
-    def test_positive_control_the_same_note_retires_without_instructions(
+    def test_positive_control_the_readers_quote_retires_on_the_same_card(
             self, client) -> None:
+        """Same card, same target: only whose words it quotes changes."""
+        chat_id = chat_for(client, system_prompt="Stay in character.")
+        old = notebook.create_entry(chat_id, "The ferry leaves at noon.",
+                                    provenance=notebook.PROV_MODEL)
+        out = commit(chat_id, [fact(CHAT_QUOTE, role="user",
+                                    supersedes=0)],
+                     existing_ids=[old["id"]])
+        assert out["retired"] == 1
+
+    def test_the_models_own_quote_never_retires_even_without_instructions(
+            self, client) -> None:
+        """The review gate holds the model quoting itself to retire a note
+        on every card, so the card guard never has to."""
         chat_id = chat_for(client)
         old = notebook.create_entry(chat_id, "The ferry leaves at noon.",
                                     provenance=notebook.PROV_MODEL)
         out = commit(chat_id, [fact(CHAT_QUOTE_2, role="assistant",
                                     supersedes=0)],
                      existing_ids=[old["id"]])
-        assert out["retired"] == 1
+        assert out["retired"] == 0
+        rows = notebook.list_entries(chat_id)
+        held = next(e for e in rows if e["evidence"] == CHAT_QUOTE_2)
+        assert held["status"] == notebook.STATUS_PROPOSED
 
     def test_review_mode_is_unchanged(self, client) -> None:
         import config

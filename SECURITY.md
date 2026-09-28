@@ -155,19 +155,55 @@ deliberately leaves those files alone - and turns the screen-capture exclusion
 back off. A file it could not remove is named either way: the answer to a Lock
 you pressed carries the whole list, and the log names the first five however
 the lock was triggered. Read "The key in memory", below, for how far the
-overwrite goes and how far it does not. Idle means nothing in flight and
-nothing finished recently, so a reply that is still streaming holds the vault
-open however long it takes. Change the delay or turn it off in the Security
-tab.
+overwrite goes and how far it does not. Idle means nothing in flight, nothing
+finished recently, and no real input for the whole period. Real input is a
+click, a key, a wheel, a touch, focus arriving, or the pointer moving or
+hovering over the focused, visible window at least ten pixels from the last
+point that counted; the window reports it at most once every thirty seconds
+and only after such an event, and a reply that is still streaming holds the
+vault open however long it takes. Two things this cannot tell from a person,
+and does not claim to: a hand or an arm resting on the mouse while the window
+is focused, and software that moves the cursor over the focused window by
+more than ten pixels. The only signal that would separate injected input from
+a hand is the operating system's injected-input flag, which needs a global
+input hook, and this app will not install one. Movement over another
+application's window never reaches this one, and nothing counts while the
+window is unfocused or the vault is locked. A `focus()` call made from script
+also fires the trusted focus event that counts; every such call in this app
+today happens on a user action or when the request that action started
+settles, at which instant the clock was already reset by that request, and a
+`focus()` driven by a timer with nobody present would be a new hole. There is
+no server-side limit on the activity ping this turn; the client's
+thirty-second gap is the only limit, and a page that can send the ping can
+already send every request that counts. Change the delay or turn it off in
+the Security tab.
 
 One thing deliberately does **not** hold it open: the notebook's background
 reader. It runs while you are reading something else, so counting it as
 activity would mean the vault never locked on a busy chat. Instead the lock
 cancels its planning loop and empties its queue. Work still queued and never
 sent costs nothing, so a later run reads it exactly as if the lock had not
-happened. What restarts it is the next message in that chat, or the sweep you
-press yourself, so a conversation you walked away from and did not go back to
-is not read again on its own.
+happened. What restarts it is the next message in that chat, or a read you
+start yourself from the Notebook panel, so a conversation you walked away from
+and did not go back to is not read again on its own. A read the reader had
+already begun is not cut off at once: it is given up to five seconds to
+finish, so a reply that lands inside them is written and its notes kept. A
+read you started is
+stood down the same way, and with the same limit: the next call does not
+start, whatever is already in flight is waited for up to five seconds so a
+reply that lands inside them can still be written, and the job is stopped
+with a reason rather than left saying it is still reading. Up to five seconds
+is the whole of that wait and not the first part of it: standing the read down,
+waiting out the reader's own loop, waiting for its read and waiting for an
+in-flight step to finish all spend one deadline between them, so no step
+adds five seconds of its own. A request may take two minutes, so a call still open when
+that wait runs out was paid for and its notes are lost. The reader's
+own read is then cancelled, which closes its request rather than leaving it
+open after the key is gone, and its messages count as read so they are not
+paid for a second time. That is the
+same wait of up to five seconds the paragraph below describes, and it is the reason a long
+read is worth starting when you are at the machine rather than on your way
+out.
 
 One thing the lock does **not** cancel: an extraction whose reply has already
 ARRIVED. Once a reply is in hand it has been paid for, so the lock waits up to
@@ -179,7 +215,7 @@ on is the whole in-flight step, so on the path that sends and parses in one
 task the five seconds can cover a request that is still on the wire. It is a
 bounded wait either way.
 
-A call already on the wire when the lock lands is the other case, and it is a
+A call still on the wire when that wait ends is the other case, and it is a
 promise problem before it is a billing one. The lock is supposed to mean the
 conversation is closed, and for this one path it does not: the request carries
 decrypted chat text, it has already left the machine, and nothing the lock
@@ -193,8 +229,9 @@ particular messages are never read into a note at all.
 
 That covers the call in flight when the app stopped, and only that one. A
 reply that **arrives** and then fails to be parsed, or fails to be written to
-disk, does not move the notebook's cursor, so the same range is planned again
-on the next threshold and paid for again. The circuit breaker caps how far
+disk, does not move the notebook's cursor, so that stretch is planned again
+at the very next reply in that chat, in a piece the failure has halved, and
+paid for again. The circuit breaker caps how far
 that can run - five consecutive failures put it to sleep and twenty failures
 since the last reset stop it, which are two different counters, and the daily
 ceiling holds above both. For the failures this paragraph is about, both
@@ -490,29 +527,71 @@ and have nothing to force.
 **Two things send your conversation there, not one.** The reply you asked for,
 and the notebook's note reader - a second model, which you choose, sent
 excerpts of the same conversation automatically every twenty turns while you
-are not watching. Read "turns" as stored messages rather than exchanges: one
-exchange writes two of them, so in practice this is about every ten times you
-press send. Both go to the same single host under the same locked policy. The
-reader is off entirely until you pick a model, it is its own sender, and it
-spends your credits: what it did and what it cost is in the Notes tab. The
-ceiling is sixty calls a day, a block rather than a warning, overridable from
-the environment (`ELYSIUM_NOTEBOOK_DAILY_CALLS`) and from no screen in the
-app. What an interruption costs is under Idle auto-lock, above.
+are not watching, and the whole of a chat, or a stretch of it you choose,
+when you ask for that from the Notebook panel. A chat that has no notes yet
+is no exception to the first: it is read the same way, twenty messages at a
+time, from its first message while it holds forty unread messages or fewer
+and from its newest twenty when it holds more, and anything older only when
+you ask. Nothing reads a whole history without you. Read "turns" as stored
+messages rather than exchanges: one exchange writes two of them, so in
+practice this is about every ten times you press send. Both go to the same
+single host under the same locked policy. The reader is off entirely until
+you pick a model, it is its own sender, and it spends your credits: what it
+did and what it cost is in the Notes tab. The ceiling is sixty calls a day,
+a block rather than a warning, overridable from the environment
+(`ELYSIUM_NOTEBOOK_DAILY_CALLS`) and from no screen in the app. A read you
+ask for takes its calls from that same ceiling, minus a reserve of ten
+(`ELYSIUM_NOTEBOOK_LIVE_RESERVE`) that stays for the day's conversations,
+and it stops by itself when it reaches that line; the panel says how many
+calls it will take before you start it. What an interruption costs is under
+Idle auto-lock, above.
 
-Twenty turns is the healthy figure. Consecutive failures halve it, up to three
-times, down to a floor of two, and one success puts it back; this is the same
-breaker described under Idle auto-lock, seen from the other side. What that
-actually changes is how much goes out per call rather than how often a call
-happens: the trigger halves alongside the batch and was measured to make no
-difference, because an ordinary failure, one that was not recorded as spent,
-leaves the cursor where it was, so the backlog waiting at the gate is already
-past the unhalved figure every time the halved one is consulted. Under
-pressure the reader sends less each time. It does not send less overall:
-against a provider failing half the time the halving costs about 1.9 times the
-calls for smaller reads, and at four failures to one landing about 1.3 times,
-which is the case the code sums up as paying more and doing less. Both figures
-were measured once by hand and neither is pinned by a test; what a test does
-hold is a ceiling, that the halving may not cost more than twice the calls.
+If you tell the note reader to use whatever model you are chatting with,
+that model was picked for conversation and nothing checked that it can
+write notes at all. So before the first call of such a read, the app asks
+the provider which models can answer in the strict form notes need - a
+public list that costs nothing and sends none of your words - and if the
+model you are chatting with is not among them, the read is refused with
+that reason instead of paid for. If that list cannot be reached, the read
+is still refused rather than guessed at. The refusal is written down so
+the Notes tab can say, about the chat on screen, why its notes stopped:
+once for each chat and model while that model keeps being refused, not once
+a message, and again after a turn that checked the chat's model and found
+it works, whether or not that turn read anything (a turn stopped before
+that check, by a reading job on the chat, a paused reader or no note model,
+does not count), after a restart, or once many other chats and models have
+pushed it out of what the app remembers.
+A list that could not be reached is written down as exactly that, not as
+the model being unable to write notes. A note model you picked yourself
+came off that same filtered list when you picked it, so an unreachable
+list does not hold it back; it is refused then only if what the app already
+knows of that model says it cannot answer in the strict form, and that is
+written down as the model being unable to write notes.
+
+Twenty turns holds in a failing period too. Consecutive failures do not
+lower it; they halve how much one call reads, up to three times, down to a
+floor of two messages, and one success puts it back; this is the same breaker
+described under Idle auto-lock, seen from the other side. So no chat is
+read on fewer than twenty new messages because another chat's calls are
+failing. The chat whose own read failed is the one that is read sooner: the
+stretch that read did not cover stays unread and is tried again at that
+chat's very next reply, until five failures in a row pause the chat. Under
+pressure the reader sends less each time. It does not send less overall.
+Measured with the halving on against off, through reading jobs of the next
+unread stretch, whose calls stop at fifty a day (the ceiling of sixty less
+the reserve of ten), on the same fixed run of provider answers over a
+backlog of 180 messages: with every call landing the two cost
+the same; one failure and then success costs 1.10 times the calls, three
+failures 1.08 times; a provider failing half the time costs 1.94 to 2.00
+times, depending on whether its first call lands; and at four failures to
+one landing 1.11 times, because those fifty calls run out first, and the
+halved run has then read 20 of the 180 messages where the other read them
+all. That last case is the one the code sums up as paying
+more and doing less. A test measures every one of these figures and holds
+it within 0.01 (from `backend/`, `python -m pytest
+tests/test_notebook_planner_budget.py -k TheFiguresTheDocumentsQuote -s`
+prints them), and another holds the ceiling: the halving may not cost more
+than twice the calls.
 
 Four other paths on the same host carry none of your conversation, reached
 from five places in the code, counting the lines that build a request, of
@@ -976,11 +1055,12 @@ so you can find the one you care about.
   not encryption in transit to a third party you chose to use.
 - **A SECOND model reads them too, if you let it.** The notebook's note reader
   is a model you choose separately, and once chosen it is sent excerpts of the
-  conversation automatically, in the background, on your own API key - see
-  "Where it connects" for how often and what stops it. The same policy is
-  forced on it and the list only offers endpoints that keep no copy, but it is
-  another party reading your words, and it starts reading without asking again
-  each time.
+  conversation automatically, in the background, on your own API key - and,
+  when you ask it to from the Notebook panel, a chat's whole history or a
+  stretch of it you pick - see "Where it connects" for how often and what
+  stops it. The same policy is forced on it and the list only offers
+  endpoints that keep no copy, but it is another party reading your words,
+  and it starts reading without asking again each time.
 - **What it writes goes into your prompts unreviewed, by default.** A note the
   model wrote is sent with every later message in that chat. "Keep suggestions
   without asking" is ON out of the box - the panel announces each note once
@@ -1002,6 +1082,27 @@ so you can find the one you care about.
   replies, so a line it was talked into writing can be quoted back as evidence
   on the next pass. None of that makes a model immune to being talked to. Do
   not treat the notebook as a security control.
+- **Where the notebook sits in the request is a choice I made, and the risk
+  is accepted here rather than fixed.** The two notebook blocks travel apart.
+  What you wrote rides in the one `system` message, with the card and your
+  persona. What a model wrote rides in the last `user` message, after your own
+  text, under a header that calls it unverified notes with less authority than
+  anything you wrote (C3 a, 26 Sep 2026, which replaced KARAR-V2-13's
+  `system` placement for that half). In the system message those notes would
+  come back every turn with the authority of the app; in your turn they carry
+  no more weight than you do, and the header tells the model that if a note
+  contradicts you, you are right. The earlier placement was kept because
+  moving notes into the user turn was measured to flatten the roleplay
+  register and break the asterisk formatting; that cost is now taken for the
+  model's half and is not measured again here. The model's notes also sit at
+  the END of the payload (KARAR-V2-14; only the layer's short reminder, when
+  it is on, comes after them), which for text nobody vetted is the
+  position where a planted instruction lands hardest; I keep them there
+  because the middle is measured to be the worst place for recall and the
+  front belongs to the card, and the risk that the last thing the model reads
+  is a note stays. Both placements are pinned by a test that reads the
+  payload itself, so a silent change goes red; they are written down here
+  because the risk is in the decision, not in the wiring.
 - **A limit is told to the model, not enforced in code.** The limits list is
   the strongest-worded block in the payload and it is still a block in a
   payload. `on_violation` and `rating_ceiling` are told to the model in the

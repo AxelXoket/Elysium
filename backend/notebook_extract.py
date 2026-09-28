@@ -535,6 +535,16 @@ def build_user_message(*, card: str, existing: list[str],
         for name, body in sections)
 
 
+#: What every request's user message carries whatever is in it: the fence
+#: rule, the four fenced section labels with their tags, and the "(none)"
+#: placeholders. Measured off the builder itself rather than counted by
+#: hand, so it cannot drift from what is sent. The tag is random, but its
+#: length is fixed. The reading job's price preview adds it to every call
+#: (3.17); it is part of what is billed and it was left out.
+SCAFFOLD_CHARS = len(build_user_message(card="", existing=[], recent=[],
+                                        new=[]))
+
+
 #: The marker a fence is built from. Written as a codepoint expression rather
 #: than three literal backticks so that this file, which is read in a markdown
 #: viewer as often as in an editor, cannot end up with the marker opening a
@@ -804,6 +814,11 @@ def _is_anchored(text: str, anchors: list[str]) -> bool:
         return True
     folded = _fold(text).translate(_ASCII_FOLD)
     return any(anchor.translate(_ASCII_FOLD) in folded for anchor in anchors)
+
+
+#: The languages the extraction instructions can be written in, the only
+#: values `config.SETTING_NOTEBOOK_PROMPT_LANG` accepts.
+PROMPT_LANGUAGES: tuple[str, ...] = ("en", "tr")
 
 
 def work_key(chat_id: int, from_id: int, to_id: int, model: str,
@@ -1080,8 +1095,40 @@ def usage_of(reply: dict) -> dict:
     }
 
 
-def extract_model() -> str | None:
-    """The model the USER chose. None means extraction does not run.
+#: The one value of the extraction-model setting that is not a model id.
+#:
+#: Stored VERBATIM when the reader picks "use the model I am chatting
+#: with", and resolved on EVERY read to whatever the chat's current model
+#: is at that moment - never resolved once at save time and frozen, because
+#: the reader's intent is a binding, not a snapshot: change the chat model
+#: and the next extraction follows it. The shape satisfies the routes'
+#: `author/slug` check on purpose, so the same setting route accepts it
+#: without a second door, and the author segment is one no provider owns.
+#: Tests import this name rather than retyping the string; the frontend's
+#: copy is pinned to it through shared/notebook_chat_model_binding.json.
+CHAT_MODEL_BINDING = "elysium-internal/chat-model"
+
+
+def extract_model_setting() -> str | None:
+    """The setting as STORED: a model id, the binding marker, or None.
+
+    Separate from `extract_model` because the two questions differ: the
+    settings route reports what the reader chose, the worker needs what to
+    send. Conflating them is how a binding would be reported as whichever
+    model it happened to resolve to today.
+    """
+    from database import get_setting
+    return get_setting(config.SETTING_NOTEBOOK_MODEL) or None
+
+
+def extract_model(chat_id: int | None = None) -> str | None:
+    """The model the USER chose, resolved. None means extraction does not run.
+
+    When the stored choice is `CHAT_MODEL_BINDING`, the answer is THAT
+    chat's current model - `chats.model_id`, which every completion route
+    rewrites with the model it just used - read fresh each time, and None
+    while the chat has no model yet or no chat was named, which keeps the
+    meaning of None intact: nothing to send with.
 
     No default and no automatic pick. A background job spending somebody's own
     API credits on a model they never selected is not a convenience.
@@ -1102,5 +1149,16 @@ def extract_model() -> str | None:
     the real exception through keeps its own class name, which says more than
     any wrapper this function could invent.
     """
-    from database import get_setting
-    return get_setting(config.SETTING_NOTEBOOK_MODEL) or None
+    from database import get_db, get_setting
+    chosen = get_setting(config.SETTING_NOTEBOOK_MODEL) or None
+    if chosen != CHAT_MODEL_BINDING:
+        return chosen
+    if chat_id is None:
+        return None
+    # Resolved HERE, on every call. Resolving at save time would turn the
+    # binding into a one-time assignment, which is the opposite of what
+    # choosing it means.
+    with get_db() as con:
+        row = con.execute("SELECT model_id FROM chats WHERE id = ?",
+                          (chat_id,)).fetchone()
+    return (row[0] or "").strip() or None if row else None

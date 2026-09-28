@@ -121,6 +121,119 @@ export const ExtractSettingsSchema = z.object({
   prompt_language: z.string().default("en"),
 });
 
+/** The one value of `model_id` that is not a model: "use the model I am
+ *  chatting with". Stored verbatim and resolved by the backend on EVERY
+ *  read to the chat's current model, so changing the chat model moves the
+ *  extractor with it - a binding, not a one-time pick. The twin of
+ *  `notebook_extract.CHAT_MODEL_BINDING`; both are pinned to
+ *  shared/notebook_chat_model_binding.json by their own suites, because two
+ *  copies of one string on two sides of a wall drift. */
+export const CHAT_MODEL_BINDING = "elysium-internal/chat-model";
+
+/** What the extractor reads before a run is started, from
+ *  `GET /notebook/extract/plan/{chat_id}`. Spends nothing.
+ *
+ *  `cost_estimate` is null when the price is unknown, and null is what the
+ *  strip renders as "unknown": a call whose price nobody knows is not a
+ *  free call, and a screen that rounds unknown down to $0 says the
+ *  opposite of the truth.
+ *
+ *  THREE NUMBERS, THREE NAMES, and no two of them are interchangeable:
+ *  `daily_cap` is the day's ceiling, `live_reserve` is the slice of it held
+ *  back for the conversations you are having, and `backfill_cap` is what is
+ *  left for a job - the one `fits_today` is computed against. Each field
+ *  below says which it is. This paragraph used to call `daily_cap` the job's
+ *  ceiling, which is the bug that made two numbers share one name. */
+export const BackfillPlanSchema = z.object({
+  ready: z.boolean(),
+  blocked_by: z.array(z.string()),
+  /** The backend's own `Scope = Literal["next", "all", "range"]`, as an enum
+   *  rather than as a free string. `planProse` branches on `range` to say
+   *  "messages in that range" instead of "unread messages", so a value that
+   *  drifted would describe a deliberate re-read as unread material. */
+  scope: z.enum(["next", "all", "range"]),
+  messages_total: z.number(),
+  messages_unread: z.number(),
+  chunks: z.number(),
+  calls_planned: z.number(),
+  /** The day's ceiling, the same number `GET /notebook/worker` reports. */
+  daily_cap: z.number(),
+  /** What a JOB may claim: the day's ceiling minus the live reader's
+   *  reserve. This is the one `fits_today` is computed against and the one
+   *  the strip's sentences count towards. */
+  backfill_cap: z.number(),
+  /** What the day's ceiling keeps back for the conversations you are
+   *  having. Read by `capProse` when nothing fits: "50 of 60 used" and a
+   *  refusal are contradictory on their face, and this is the number that
+   *  reconciles them. */
+  live_reserve: z.number(),
+  calls_spent_today: z.number(),
+  fits_today: z.boolean(),
+  prompt_price: z.number().nullable(),
+  cost_estimate: z.number().nullable(),
+  model_id: z.string().nullable(),
+  model_is_chat_bind: z.boolean(),
+});
+export type BackfillPlan = z.infer<typeof BackfillPlanSchema>;
+
+/** `POST /notebook/extract/run/{chat_id}`. `started` false with a reason is
+ *  the ordinary answer, not an error; the reason is one of the backend's
+ *  refusal tokens and WorkerPanel's SWEEP_PROSE has a sentence for each. */
+export const BackfillRunSchema = z.object({
+  started: z.boolean(),
+  job_id: z.number().optional(),
+  calls_planned: z.number().optional(),
+  reason: z.string().optional(),
+});
+export type BackfillRun = z.infer<typeof BackfillRunSchema>;
+
+/** `POST /notebook/extract/stop/{chat_id}`. `nothing_running` is a refusal
+ *  like the others. */
+export const BackfillStopSchema = z.object({
+  stopped: z.boolean(),
+  job_id: z.number().optional(),
+  calls_spent: z.number().optional(),
+  reason: z.string().optional(),
+});
+
+/** `POST /notebook/extract/undo/{job_id}?chat_id=`. The two `kept_*`
+ *  counts are the notes the reader made theirs since - pinned or edited -
+ *  which undo leaves alone and says so. */
+export const BackfillUndoSchema = z.object({
+  job_id: z.number(),
+  removed: z.number(),
+  kept_pinned: z.number(),
+  kept_edited: z.number(),
+});
+export type BackfillUndo = z.infer<typeof BackfillUndoSchema>;
+
+/** One backfill job as `GET /notebook/worker` reports it: the chat's newest
+ *  when a chat was asked about, the one in flight otherwise. The five
+ *  states are the table's own CHECK. */
+export const BackfillStatusSchema = z.object({
+  job_id: z.number(),
+  chat_id: z.number(),
+  /** The table's own CHECK, as an enum rather than as a docstring. The
+   *  strip treats `planned` as "still reading", so a backend typo read as
+   *  a finished run for a job that had not started. */
+  state: z.enum(["planned", "running", "stopped", "done", "failed"]),
+  /** The same three words the API takes, and for the same reason as the
+   *  enum above: a name outside the set is a request the backend refuses. */
+  scope: z.enum(["next", "all", "range"]),
+  calls_planned: z.number(),
+  calls_spent: z.number(),
+  notes_written: z.number(),
+  messages_left: z.number(),
+  /** NULLABLE, not nullish. The worker builds this block as a dict literal
+   *  in which the key is always present, so `.nullish()` defends against a
+   *  shape the backend cannot send while letting a real contract break
+   *  through: a dropped key arrives as undefined, falls past every `case`
+   *  in `outcomeProse`, and a run that stopped at today's limit is read out
+   *  as a bare "Stopped" with no word about coming back tomorrow. */
+  last_error: z.string().nullable(),
+});
+export type BackfillStatus = z.infer<typeof BackfillStatusSchema>;
+
 /** What the background extractor has done, and whether it may keep going.
  *
  *  A47: a refused extraction is not silent. Without these counters, "the
@@ -221,8 +334,9 @@ export const WorkerStatusSchema = z.object({
     settled_empty: z.number().default(0),
     /** What the parser refused, by reason. Empty is the healthy answer. */
     dropped: z.record(z.string(), z.number()).default({}),
-    /** True while a reader-requested sweep of a chat's unread history is in
-     *  flight, so the button can be disabled rather than refused. */
+    /** True while a reading job someone started is in flight (the name is
+     *  the one-press sweep's, whose route is gone), so the button can be
+     *  disabled rather than refused. */
     sweeping: z.boolean().default(false),
     /** What nobody has read, counted once at unlock. Reported, never acted
      *  on: an automatic catch-up scan would spend the reader's own credits
@@ -255,21 +369,25 @@ export const WorkerStatusSchema = z.object({
       batch_size: z.number().default(0),
       trigger_threshold: z.number().default(0),
     }).nullish(),
+    /** The backfill job block: REQUIRED and nullable, never optional. z.object
+     *  strips a key it was not told about, so an optional block would let a
+     *  backend that stopped sending it look exactly like "no job" - and the
+     *  one thing the strip must not do is show a finished run for one that
+     *  is still reading. Null is the honest "none"; absent is a contract
+     *  break and fails the parse. */
+    backfill: BackfillStatusSchema.nullable(),
   }),
   daily_cap: z.number(),
+  /** The one skip reason that is about the SELECTED chat's note model
+   *  (`model_not_extractable`), or null. The backend sends it only while a
+   *  refusal of this chat newer than its last read names the model the chat
+   *  uses now; `stats` stays install-wide, so its
+   *  count of these rows is never shown as this chat's. `.nullish()` so an
+   *  older backend that does not send it reads as "nothing to say". */
+  chat_refusal: z.string().nullish(),
 });
 
 export type WorkerStatus = z.infer<typeof WorkerStatusSchema>;
-
-/** POST /notebook/sweep/{chat_id}. `started` false with a reason is the
- *  ordinary answer, not an error: there may be nothing unread, or a sweep
- *  may already be running. */
-export const SweepSchema = z.object({
-  started: z.boolean(),
-  reason: z.string().optional(),
-  after_id: z.number().optional(),
-});
-export type SweepResult = z.infer<typeof SweepSchema>;
 
 /** `enabled` is the GLOBAL setting - what the switch writes. `effective` is
  *  what the chat in question will actually do, which is a different answer

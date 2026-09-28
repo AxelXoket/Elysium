@@ -338,6 +338,17 @@ CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "tests/test_vault_reset.py::TestTheFullWipe"
         "::test_every_ground_truth_artefact_is_destroyed",
     )),
+    # KARAR-V2-13 and KARAR-V2-14, accepted rather than fixed (IP-10 item 8,
+    # landed with IP-01's locked package), and KARAR-V2-13 as I
+    # changed it on 26 Sep 2026 (C3 a, Q-126): the user's notes ride in the
+    # system message, the model's in the last user turn after the user's
+    # text. Both halves are measured on the payload itself.
+    ("Where the notebook sits in the request is a choice I made", (
+        "tests/test_notebook_context.py::TestWhatReachesTheModel"
+        "::test_user_notes_ride_in_system_and_model_notes_in_the_user_turn",
+        "tests/test_notebook_context.py::TestWhatReachesTheModel"
+        "::test_the_two_provenances_land_in_different_places",
+    )),
 )
 
 
@@ -452,7 +463,263 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "tests/test_prompt_request_guards.py"
         "::test_d1_positive_control_a_set_sampler_is_sent",
     )),
-
+    # ── The idle definition, rewritten when the activity tracker landed ──
+    #
+    # One marker per promise rather than one per paragraph, and the reason
+    # is not the parser. `_promise_lines()` emits bullets and table rows and
+    # never a prose paragraph, so NOTHING here forces a paragraph's
+    # sentences to be registered at all - the digest is the only thing that
+    # notices one changing. That makes the split a discipline rather than a
+    # rule the gate enforces, and the discipline is the whole value: a
+    # single entry against the first sentence of a five-promise paragraph
+    # reads, in the table below, as though all five were proven.
+    ("Idle means nothing in flight, nothing", (
+        "tests/test_activity_ping.py::TestThePingMovesTheClock"
+        "::test_it_answers_204_with_no_body_and_resets_the_idle_clock",
+    )),
+    # The half a reader would most want enforced: a locked vault, and a
+    # window nobody is looking at, do not hold the vault open.
+    ("nothing counts while the", (
+        "tests/test_activity_ping.py::TestALockedVaultIsNotKeptAwake"
+        "::test_it_answers_423_and_the_clock_does_not_move",
+    )),
+    # The three numbers in the same sentence, each against the test that
+    # measures that number. They rode into the document on a rewrite whose
+    # only marker proved the streaming claim at the end of it, which is a
+    # different promise and measures none of these.
+    ("focused, visible window at least ten pixels", (
+        "frontend/src/test/lib/activityTracker.test.ts"
+        "::a move under MOVE_THRESHOLD_PX does not count; one at it does",
+        "frontend/src/test/lib/activityTracker.test.ts"
+        "::without focus, a big move and a hover count for nothing and ping nothing",
+        "frontend/src/test/lib/activityTracker.test.ts"
+        "::a hidden page rejects a gated move even when nobody announced the change",
+    )),
+    ("at most once every thirty seconds", (
+        "frontend/src/test/lib/activityTracker.test.ts"
+        "::POSITIVE: one event, then a full gap, sends exactly one ping",
+        "frontend/src/test/lib/activityTracker.test.ts"
+        "::GROUND: a full gap with no event sends nothing",
+    )),
+    # ── The reading job, and what a lock does to one ─────────────────────
+    #
+    # Three promises in one paragraph, and the third is the one that costs
+    # money, so it is registered against the test that holds a call open
+    # across the lock rather than against the one that locks after the
+    # reply has landed.
+    ("A read you started is", (
+        "tests/test_notebook_backfill.py::TestTheVaultLocksMidJob"
+        "::test_quiesce_waits_and_the_paid_reply_lands",
+    )),
+    ("a call still open when that wait runs out was paid for", (
+        "tests/test_notebook_backfill.py::TestTheVaultLocksMidJob"
+        "::test_a_lock_while_the_call_is_open_does_not_discard_it",
+        "tests/test_notebook_backfill.py"
+        "::TestTheLockDoesNotWaitForAJobThatWillNotGo"
+        "::test_a_job_that_swallows_its_cancel_does_not_hold_the_lock",
+    )),
+    # The promise the sentence gained when the stand-down was bounded, and
+    # the reason it needed its own marker: "five seconds" was true of the
+    # first of three steps and of nothing else, so a reader counting on the
+    # number was counting on fifteen. The three tests measure the total, the
+    # number itself, and the step that used to have no bound at all.
+    ("Up to five seconds is the whole of that wait and not the first part of it", (
+        "tests/test_notebook_backfill.py"
+        "::TestTheStandDownSpendsOneGraceInTotal"
+        "::test_the_grace_is_the_five_seconds_the_documents_state",
+        "tests/test_notebook_backfill.py"
+        "::TestTheStandDownSpendsOneGraceInTotal"
+        "::test_a_reader_loop_that_swallows_its_cancel_is_left_behind",
+        "tests/test_notebook_backfill.py"
+        "::TestTheStandDownSpendsOneGraceInTotal"
+        "::test_two_wedged_steps_still_share_the_one_deadline",
+    )),
+    # -- The reading decisions (27 Sep 2026), first renewal -------------
+    #
+    # 34 a: an ordinary read already under way gets the lock's up to five
+    # seconds, is written if it lands, and is cancelled - request closed,
+    # range not bought twice - if it does not.
+    ("A read the reader had\nalready begun is not cut off at once", (
+        "tests/test_notebook_shutdown_defects.py"
+        "::TestDecision34aANormalReadGetsUpToFiveSeconds"
+        "::test_a_normal_read_that_answers_inside_the_locks_grace_is_written",
+        "tests/test_notebook_shutdown_defects.py"
+        "::TestDecision34aANormalReadGetsUpToFiveSeconds"
+        "::test_GROUND_the_same_read_without_a_lock_is_written",
+    )),
+    ("The reader's\nown read is then cancelled, which closes its request", (
+        "tests/test_notebook_shutdown_defects.py"
+        "::TestDecision34aANormalReadGetsUpToFiveSeconds"
+        "::test_a_normal_read_still_open_when_the_grace_runs_out_is_cancelled_and_not_paid_twice",
+        "tests/test_notebook_shutdown_defects.py"
+        "::TestDecision34aANormalReadGetsUpToFiveSeconds"
+        "::test_the_cancel_reaches_the_normal_read_and_nothing_else",
+    )),
+    # 33 a: a failed read is tried again at the very next reply, not
+    # twenty messages later; the breaker is what bounds it.
+    ("at the very next reply in that chat, in a piece the failure has halved", (
+        "tests/test_notebook_worker.py::TestAFailedReadIsTriedOnTheNextReply"
+        "::test_a_failed_read_is_tried_again_on_the_very_next_reply",
+        "tests/test_notebook_worker.py::TestAFailedReadIsTriedOnTheNextReply"
+        "::test_the_retry_reads_a_piece_the_failure_has_halved",
+        "tests/test_notebook_worker.py::TestAFailedReadIsTriedOnTheNextReply"
+        "::test_GROUND_after_a_success_one_new_message_is_not_a_read",
+        "tests/test_notebook_worker.py::TestAFailedReadIsTriedOnTheNextReply"
+        "::test_five_failures_in_a_row_pause_the_retries",
+    )),
+    # 30 a and 31 a: no automatic whole-chat read. A chat with no notes is
+    # read like any other, from its start while short, from its newest
+    # twenty when long.
+    ("A chat that has no notes yet\nis no exception to the first", (
+        "tests/test_notebook_backfill.py::TestModeOneIsGone"
+        "::test_a_new_noteless_chat_is_read_by_the_ordinary_reader_at_twenty",
+        "tests/test_notebook_backfill.py::TestModeOneIsGone"
+        "::test_forty_unread_reads_from_the_start_and_forty_one_reads_the_newest_twenty",
+    )),
+    ("Nothing reads a whole history without you", (
+        "tests/test_notebook_backfill.py::TestModeOneIsGone"
+        "::test_a_long_noteless_chat_starts_no_job_by_itself",
+        "tests/test_notebook_sweep.py::TestTheOldSweepRouteIsGone"
+        "::test_the_old_sweep_route_is_gone",
+    )),
+    # 3.8: the refusal of a model that cannot write notes is named once per
+    # (chat, model) pair while that model keeps being refused, again after
+    # a turn that checked the chat's model and found it fit (read or not)
+    # or once the bounded memory lets the pair go,
+    # and the Notes tab says it about the chat on screen only (3.8).
+    ("once for each chat and model while that model keeps being refused", (
+        "tests/test_notebook_backfill.py::TestAModelThatCannotAnswerInSchema"
+        "::test_the_refusal_is_named_once_per_chat_and_model",
+        "tests/test_notebook_backfill.py::TestAModelThatCannotAnswerInSchema"
+        "::test_the_pair_is_said_again_after_the_model_was_fit",
+        "tests/test_notebook_backfill.py::TestAModelThatCannotAnswerInSchema"
+        "::test_a_turn_on_a_fit_model_that_reads_nothing_still_forgets",
+        "tests/test_notebook_backfill.py::TestAModelThatCannotAnswerInSchema"
+        "::test_a_fit_turn_with_too_few_new_messages_still_forgets",
+        "tests/test_notebook_backfill.py::TestAModelThatCannotAnswerInSchema"
+        "::test_two_unfit_models_alternated_are_two_rows_not_six",
+        "tests/test_notebook_backfill.py::TestAModelThatCannotAnswerInSchema"
+        "::test_the_memory_of_what_was_said_is_bounded",
+    )),
+    # Which turns count. A turn stopped before the model is checked
+    # forgets nothing, and the test's positive control is a fit turn that
+    # does reach the check.
+    ("(a turn stopped before\nthat check, by a reading job on the chat", (
+        "tests/test_notebook_backfill.py::TestAModelThatCannotAnswerInSchema"
+        "::test_a_turn_stopped_before_the_check_forgets_nothing",
+    )),
+    ("so the Notes tab can say, about the chat on screen, why its notes "
+     "stopped", (
+        "tests/test_notebook_backfill.py::TestTheCardSaysItAboutTheChatOnScreen"
+        "::test_another_chats_refusal_says_nothing_here",
+        "tests/test_notebook_backfill.py::TestTheCardSaysItAboutTheChatOnScreen"
+        "::test_a_chat_that_switched_to_a_working_model_says_nothing",
+        "tests/test_notebook_backfill.py::TestTheCardSaysItAboutTheChatOnScreen"
+        "::test_going_back_to_a_model_already_refused_still_says_it",
+        "tests/test_notebook_backfill.py::TestTheCardSaysItAboutTheChatOnScreen"
+        "::test_a_read_with_the_same_model_once_it_is_fit_clears_it",
+        "tests/test_notebook_backfill.py::TestTheCardSaysItAboutTheChatOnScreen"
+        "::test_two_refused_chats_each_say_their_own",
+    )),
+    # A list nobody could fetch is not the model's fault, and is not
+    # written down as if it were.
+    ("A list that could not be reached is written down as exactly that", (
+        "tests/test_notebook_backfill.py::TestAModelThatCannotAnswerInSchema"
+        "::test_a_list_that_cannot_be_fetched_is_not_blamed_on_the_model",
+        "tests/test_notebook_backfill.py"
+        "::TestAListOutageBlamesOnlyWhatNobodyVetted"
+        "::test_every_door_gives_the_same_reason",
+    )),
+    # A picked model with the list out of reach: let through unless the
+    # catalogue says it cannot answer in schema, and then named as the
+    # model's own refusal, not as the list.
+    ("so an unreachable list does not hold it back", (
+        "tests/test_notebook_backfill.py"
+        "::TestAListOutageBlamesOnlyWhatNobodyVetted"
+        "::test_GROUND_a_picked_model_nothing_refuses_is_read_with_the_list_down",
+        "tests/test_notebook_backfill.py"
+        "::TestAListOutageBlamesOnlyWhatNobodyVetted"
+        "::test_every_door_gives_the_same_reason",
+    )),
+    # 28 a: the threshold does not halve; only what one call reads does.
+    ("Twenty turns holds in a failing period too", (
+        "tests/test_notebook_pressure.py::TestOnlyTheBatchMovesUnderPressure"
+        "::test_the_threshold_stays_twenty_while_the_batch_shrinks",
+        "tests/test_notebook_pressure.py::TestOnlyTheBatchMovesUnderPressure"
+        "::test_a_failing_chat_does_not_make_another_chat_read_sooner",
+    )),
+    # 33 a seen from the halving paragraph: the failing chat itself IS read
+    # sooner, at its very next reply, in a halved piece, until its breaker
+    # pauses it at five. The paragraph used to say "never how often a chat
+    # is read", which this contradicted.
+    ("The chat whose own read failed is the one that is read sooner", (
+        "tests/test_notebook_worker.py::TestAFailedReadIsTriedOnTheNextReply"
+        "::test_a_failed_read_is_tried_again_on_the_very_next_reply",
+        "tests/test_notebook_worker.py::TestAFailedReadIsTriedOnTheNextReply"
+        "::test_five_failures_in_a_row_pause_the_retries",
+    )),
+    # The figures, measured by the tree's own harness through reading jobs
+    # and held within 0.01; they used to be "measured once by hand".
+    ("Measured with the halving on against off", (
+        "tests/test_notebook_planner_budget.py::TestTheFiguresTheDocumentsQuote"
+        "::test_the_call_ratio_is_the_one_quoted",
+        "tests/test_notebook_planner_budget.py::TestTheFiguresTheDocumentsQuote"
+        "::test_the_four_to_one_shortfall_is_the_one_quoted",
+    )),
+    # ── The reserve, which is the whole of KARAR-K on this page ──────────
+    #
+    # The ground control is the half that matters: the test drives a job to
+    # its own ceiling and then proves the LIVE reader still gets a call, so
+    # "a reserve that stays for the day's conversations" is measured rather
+    # than asserted.
+    ("A read you ask for takes its calls from that same ceiling", (
+        "tests/test_notebook_backfill.py::TestTheJobsOwnCeiling"
+        "::test_the_job_stops_at_its_own_cap_and_the_preview_said_so",
+    )),
+    ("says how many calls it will take before you start it", (
+        "tests/test_notebook_backfill.py"
+        "::TestThePreviewSaysTheNumberBeforeAnythingIsSent"
+        "::test_the_plan_route_reports_it_and_spends_nothing",
+    )),
+    # ── The model the notes would be written by ──────────────────────────
+    #
+    # Three sentences, three markers, because they are three different
+    # promises and one test cannot hold all of them: that the list is
+    # ASKED FOR before the decision, that an unlisted bound model is
+    # refused rather than paid for, and that a list nobody can reach still
+    # refuses rather than guesses. The last is the one the page is on the
+    # hook for, and it is the one that used to be false: the gate let
+    # anything it had not heard of through, and after a restart that is
+    # every model there is.
+    # The second proof under each of the first two sentences is the path
+    # that used to make them false: the general catalogue and the filtered
+    # list are independent caches, so after any restart in which somebody
+    # chatted the catalogue knew the chat model, the list did not, and the
+    # gate answered off the catalogue without ever asking.
+    ("the app asks\nthe provider which models can answer in the strict form", (
+        "tests/test_notebook_backfill.py"
+        "::TestAColdProcessKnowsNothingAndSpendsNothing"
+        "::test_the_list_is_fetched_before_the_gate_decides",
+        "tests/test_notebook_backfill.py"
+        "::TestTheCatalogueDoesNotAnswerForABoundModel"
+        "::test_every_door_refuses_a_bound_model_the_catalogue_knows",
+    )),
+    ("the read is refused with\nthat reason instead of paid for", (
+        "tests/test_notebook_backfill.py"
+        "::TestAColdProcessKnowsNothingAndSpendsNothing"
+        "::test_a_bound_model_the_list_does_not_carry_is_refused",
+        "tests/test_notebook_backfill.py"
+        "::TestTheCatalogueDoesNotAnswerForABoundModel"
+        "::test_every_door_refuses_a_bound_model_the_catalogue_knows",
+    )),
+    ("If that list cannot be reached, the read\nis still refused", (
+        "tests/test_notebook_backfill.py"
+        "::TestAColdProcessKnowsNothingAndSpendsNothing"
+        "::test_a_bound_model_nothing_knows_is_refused_without_a_call",
+        "tests/test_notebook_backfill.py"
+        "::TestAColdProcessKnowsNothingAndSpendsNothing"
+        "::test_GROUND_the_same_cold_process_reads_a_model_that_was_picked",
+    )),
     # The half of the failover paragraph that is about this app rather than
     # about OpenRouter: the body never names a second model.
     ("no request carries a\n`models` list", (
@@ -1092,6 +1359,24 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
 ACKNOWLEDGED_UNTESTABLE: tuple[
     tuple[str, ReasonCategory, str, str | None, str | None], ...
 ] = (
+    ("Two things this cannot tell from a person", ReasonCategory.OS_GUARANTEE,
+     "A hand resting on a mouse and a script nudging the cursor produce the "
+     "same trusted events this app is allowed to see. The one signal that "
+     "separates them is the operating system's injected-input flag, which "
+     "needs a global input hook - a thing this app refuses to install, and "
+     "the refusal is the decision, not an omission. Nothing in a test can "
+     "tell the two apart either, for exactly the same reason, so a proof "
+     "here would be a proof of the harness rather than of the app.",
+     None, None),
+    ("There is\nno server-side limit on the activity ping this turn",
+     ReasonCategory.DEFINITIONAL,
+     "The sentence says what is NOT there. A page that can reach this route "
+     "can already reach every route that resets the clock as a side effect, "
+     "so a limit here would move the hole rather than close it; the client's "
+     "thirty-second gap is described as the only limit because it is. There "
+     "is no behaviour to assert: the absence of a limiter cannot be measured "
+     "without asserting the absence of code, which this file refuses.",
+     None, None),
     ("The first two are filters: OpenRouter routes only to endpoints with a zero",
      ReasonCategory.THIRD_PARTY,
      "What zdr and data_collection do once a request arrives is OpenRouter's "
@@ -1707,7 +1992,101 @@ def _acknowledged_problems(
 #: sample - so this covers all of it. Updating this constant is the
 #: deliberate act that means a human decided what a change claims and
 #: registered a proof for it.
-DOCUMENT_DIGEST = "2029c5809fbf527d43e15d9b41fc63eef9d8cc8a41ef8dca99b259368059f5aa"
+#:
+#: Renewed once, for the package IP-01 carries, and recorded only after the
+#: document was final. Renewing it before that would have locked in prose
+#: that was still moving, which is the exact failure this constant exists to
+#: catch. What this value covers:
+#:
+#: 1. The idle definition and the reading-job paragraphs, both registered
+#:    above with behavioural proofs.
+#: 2. The stand-down sentence, corrected to the five seconds the code
+#:    actually bounds: it is the whole wait now rather than the first of
+#:    three, and a call still open when those seconds run out was paid for
+#:    and is waited for rather than discarded.
+#: 3. The notebook block placement, which the document said was unmeasured
+#:    and which this commit measures (in test_notebook_context.py; the test
+#:    was renamed on the rebase below when the placement itself changed).
+#: 4. "Where it connects" says how a chat with no notes is read. I
+#:    first wrote a third sender here, mode 1's whole-chat read with nobody
+#:    asking; decisions 30 a and 31 a removed that read in this same
+#:    package, so the paragraph says there is none (see 9 below).
+#: 5. The same paragraph now says what happens before the first call of a
+#:    read that uses the chat's own model: the filtered model list is asked
+#:    for, an unlisted model is refused with that reason rather than paid
+#:    for, and a list that cannot be reached is still a refusal and not a
+#:    guess. Three sentences, three markers, registered above.
+#:
+#: Previous value, the one in git history at 3ba546c, which is the document
+#: this commit started from, and the line this commit removes:
+#: 016dee86c93350a6ec3d17783440785a7c936c606727df2f90dc2011f642c80b
+#: `git show 3ba546c:backend/tests/test_security_contract.py` is the whole
+#: of the check, and it is the point of writing the value down at all.
+#: No intermediate value is recorded, deliberately: a hash taken from a
+#: working tree that was never committed cannot be checked against history
+#: by anybody, which makes it worse than no note at all.
+#:
+#: Rebased onto prompt-layer (5fd50ee), 27 Sep 2026. That branch renewed
+#: this constant for its own paragraphs (Q-121's one retry and the
+#: zero-retention list, prompt modules, the salt line, the key scrub, the
+#: refused web-search models, `reasoning` and the samplers), all registered
+#: in PROSE_CLAIMS above beside the notebook's entries. The same rebase rewrites the notebook
+#: placement bullet to my C3 a (Q-126): the model's notes left the
+#: system role for the last user turn, which KARAR-V2-13 had said they would
+#: not, and the test that pins it was renamed to say so.
+#: Value at 5fd50ee, the base this rebase starts from:
+#: a9891bd7e4168df5542aba02b2b9778a0cef78beacd4067a535b613fe4502e1d
+#:
+#: The reading decisions (asked 23 September, answered 27
+#: September) land in this same package, and decision 61 b makes this the
+#: FIRST of two renewals: only sentences whose behaviour lands here are
+#: written, and the release commit writes the rest. Each is registered in
+#: PROSE_CLAIMS above under "The reading decisions".
+#:
+#: 6. Idle auto-lock: an ordinary read already under way gets up to five
+#:    seconds and is cancelled after them, its request closed and its
+#:    stretch not bought twice (34 a). The stand-down's one deadline now
+#:    covers that wait too.
+#: 7. A reply that arrives and cannot be used is retried at the very next
+#:    reply in that chat, not "on the next threshold" (33 a, 3.29).
+#: 8. The halving paragraph: twenty holds in a failing period, only the
+#:    batch shrinks, and another chat's failures do not make a chat read
+#:    sooner (28 a, 3.24). The old text said the threshold halved too and
+#:    that this was measured to make no difference.
+#: 9. "Where it connects": no read of a whole history happens without you
+#:    (30 a, 31 a; 3.20, 3.21, 3.22, 3.28, 3.30), and a model that cannot
+#:    write notes is refused and the refusal named once per chat and model
+#:    while it keeps being refused, said about the chat on screen, and not
+#:    blamed on the model when the list could not be reached (3.8).
+#: 10. The halving paragraph, second pass inside the same package: the
+#:    failing chat itself is retried at its next reply (it said "never how
+#:    often a chat is read"), and the call figures are re-measured by
+#:    `TestTheFiguresTheDocumentsQuote` under 28 a and 69 a instead of the
+#:    old hand-measured 1.9x and 1.3x.
+#: 11. Third pass, same package: "at most once for each chat and model
+#:    while the app runs" was untrue (a fit read in between, or the bounded
+#:    memory, says a pair again), so the sentence says when it is written;
+#:    a picked model the catalogue refuses is named as the model's refusal
+#:    even with the list out of reach; the figures say they were measured
+#:    through reading jobs with their fifty-call day and are held within
+#:    0.01; the lock paragraph's wait is "up to five seconds" throughout.
+#: 12. Fourth pass, same package and still the one renewal: point 11's "a
+#:    fit read in between" was narrower than the code, which forgets the
+#:    pair on any turn whose model passes the gate, before planning, the
+#:    cap or a call. The sentence now says "after a turn on a model that
+#:    works in between, whether or not that turn read anything", proven by
+#:    test_a_turn_on_a_fit_model_that_reads_nothing_still_forgets.
+#: 13. Fifth pass, same package and still the one renewal: "a turn on a
+#:    model that works" did not say which turns. It now says a turn that
+#:    checked the chat's model and found it works, and that a turn stopped
+#:    before that check (a job holding the chat, a paused reader, no note
+#:    model) does not count, proven by
+#:    test_a_turn_stopped_before_the_check_forgets_nothing; the plan-less
+#:    arm by test_a_fit_turn_with_too_few_new_messages_still_forgets.
+#: 14. Not a sentence of this package: the base under it moved to bdc2776,
+#:    whose log gate counts 91 files where 5fd50ee counted 90. Value at
+#:    bdc2776: 2029c5809fbf527d43e15d9b41fc63eef9d8cc8a41ef8dca99b259368059f5aa
+DOCUMENT_DIGEST = "333c09bf114503394c5db5341126f4d2b51a538a789796d7f6c571b8a1d70e7e"
 
 
 class TestEveryProvenClaimHasAProof:

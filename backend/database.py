@@ -467,9 +467,9 @@ _AMNESTY_SAFE_LABELS = (_EVER_REASON_BACKFILL_WIDE,)
 #:   * clearing a flag that was RIGHT: the planner jumps to the present once
 #:     and steps over the backlog under the cursor. No row is deleted and
 #:     nothing is billed at that moment. Reaching those messages again costs
-#:     one sweep press per batch of twenty - about nine presses and NINE
-#:     BILLED CALLS on a two hundred message chat, not a free undo, and only
-#:     if the reader finds the sweep control and knows to keep pressing.
+#:     one call per batch of twenty from a reading job the reader starts on
+#:     the reading strip - about NINE BILLED CALLS on a two hundred message
+#:     chat, not a free undo, and only if the reader asks for that read.
 #:   * leaving a flag that was WRONG: about one billed call per twenty
 #:     messages, from the oldest end, with no way back at all.
 #:
@@ -1025,6 +1025,94 @@ CREATE TABLE IF NOT EXISTS notebook_spend_calls (
           created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
         )
     """)
+
+    # THE BACKFILL JOB TABLE AND ITS TWO COLUMNS, ONE GATE EACH, NO BUMP.
+    #
+    # A backfill job is a reader asking for a whole chat or a chosen stretch
+    # of it to be read now, through the same worker door an ordinary turn
+    # uses. The job row is what makes that undoable ("remove what this run
+    # wrote") and what the panel reads its progress from. Three additions
+    # land here in ONE migration, on purpose: the table, the `job_id` that
+    # ties a note to the run that wrote it, and `unmarked_in_source`, which
+    # arrives empty and stays empty until the extraction work that fills it
+    # is written. Splitting the column off into a later migration was the
+    # option refused; a one-way gate is crossed once.
+    #
+    # Every one of the three is guarded by PRAGMA table_info and NOT by the
+    # version stamp. `_SCHEMA_VERSION` stays at 6: the guard is what makes a
+    # second launch a no-op, and an `ADD COLUMN` that ran unguarded would
+    # crash that second launch. The table's CREATE is deliberately not
+    # `IF NOT EXISTS`, so the guard is the ONLY thing standing between the
+    # DDL and a database that already has it - tests/test_notebook_schema.py
+    # runs the migration twice and watches that no DDL fires the second
+    # time, for all three.
+    #
+    # ROLLBACK, written down because the shape ships before anyone needs it
+    # (S-5's second half): each guard holds exactly one addition, so a
+    # migration that stops halfway leaves at most the additions ABOVE the
+    # break, and re-running it finishes the rest without touching them. To
+    # undo by hand, go in the opposite order to the one below - drop the
+    # `unmarked_in_source` column, then the `job_id` column, then the
+    # `notebook_backfill_jobs` table - and the three guards read the file as
+    # never migrated on the next launch. Nothing below stamps a version, so
+    # there is no stamp to lower.
+    #
+    # THAT ORDER IS NOT A PREFERENCE, and the other one is silent. Drop the
+    # table first and then let the app launch: guard 1 re-creates it with a
+    # fresh AUTOINCREMENT counter, the next job is issued id 1 again, and the
+    # notes the OLD job 1 wrote still carry `job_id = 1` - so "undo this run"
+    # on a job that read three messages deletes a stranger's notes as well.
+    # Nothing reports it: an INSERT carrying a `job_id` whose parent table
+    # has been dropped succeeds even with `PRAGMA foreign_keys = ON`, and
+    # `foreign_key_check` finds nothing to complain about. Drop the two
+    # columns first, and do not launch the app between the halves of an undo.
+    #
+    # One precondition, written down because the day it stops holding is the
+    # day the paragraph above is wrong: `ALTER TABLE ... DROP COLUMN` refuses
+    # an INDEXED column. There is no index on `job_id` today, which is the
+    # only reason step two works. `delete_job_notes` selects by that column
+    # and nothing else, over the whole of `notebook_entries`, so an index
+    # there is a natural optimisation; whoever adds one drops the index
+    # before the column.
+    job_cols = {r[1] for r in con.execute(
+        "PRAGMA table_info(notebook_backfill_jobs)").fetchall()}
+    if not job_cols:
+        con.execute("""
+CREATE TABLE notebook_backfill_jobs (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          chat_id         INTEGER NOT NULL REFERENCES chats(id),
+          scope           TEXT    NOT NULL
+                          CHECK (scope IN ('next','all','range')),
+          from_message_id INTEGER,
+          to_message_id   INTEGER,
+          state           TEXT    NOT NULL
+                          CHECK (state IN ('planned','running','stopped',
+                                           'done','failed')),
+          planned_calls   INTEGER NOT NULL DEFAULT 0,
+          spent_calls     INTEGER NOT NULL DEFAULT 0,
+          notes_written   INTEGER NOT NULL DEFAULT 0,
+          started_at      TEXT,
+          finished_at     TEXT,
+          last_error      TEXT
+        )
+        """)
+    entry_cols = {r[1] for r in
+                  con.execute("PRAGMA table_info(notebook_entries)").fetchall()}
+    if "job_id" not in entry_cols:
+        # Which backfill job wrote this note, or NULL for every other writer.
+        # The undo route deletes by this column and nothing else, so a note
+        # the turn-driven reader wrote can never be swept up by "undo that
+        # run". Nullable, no default: the ordinary path has no job.
+        con.execute(
+            "ALTER TABLE notebook_entries ADD COLUMN job_id INTEGER "
+            "REFERENCES notebook_backfill_jobs(id)")
+    if "unmarked_in_source" not in entry_cols:
+        # Reserved for the extraction work that will record which part of a
+        # note the source did NOT mark. Lands now, empty, because the job
+        # table and this column were decided as one migration; its writer is
+        # a separate piece of work and this build writes nothing here.
+        con.execute(
+            "ALTER TABLE notebook_entries ADD COLUMN unmarked_in_source TEXT")
 
     chat_cols = {r[1] for r in con.execute("PRAGMA table_info(chats)").fetchall()}
     if "notebook_extracted_ever" not in chat_cols:

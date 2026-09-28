@@ -411,8 +411,10 @@ class TestEverySenderCarriesTheSamePolicy:
     async def test_the_note_reader_sends_the_policy_and_its_model_alone(
         self, anyio_backend, client, wire,
     ) -> None:
-        """The reader sends stored conversation on a timer, with nobody
-        watching, so it is the sender this guarantee matters most for."""
+        """The reader sends stored conversation by itself, whenever a chat
+        has twenty messages it has not read, with nobody watching - so it is
+        the sender this guarantee matters most for. (This said "on a timer";
+        there is no timer, 3.19.)"""
         import config
         import notebook_worker
         from database import get_db, set_setting

@@ -3,6 +3,8 @@
   "_shape": "reasons: every token any backend writer may store in notebook_extractions.skip_reason. Sorted, no duplicates. Adding one here without a sentence in SKIP_PROSE fails the frontend gate; adding one to SKIP_REASONS without a record here fails the backend gate.",
   "reasons": [
     "api_key_not_set",
+    "model_list_unavailable",
+    "model_not_extractable",
     "notebook_daily_cap_reached",
     "plan_invalidated",
     "proxy_gate",

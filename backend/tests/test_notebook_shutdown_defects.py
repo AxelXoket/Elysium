@@ -57,6 +57,11 @@ from database import get_db
 from tests.test_notebook_worker import fact
 
 TEST_VAULT_KEY = bytes(range(32))
+#: How early in its grace a read still open may be cut. The stand-down takes
+#: its unwind headroom out of the grace, so the cut lands a little before
+#: the deadline; half a second is room for that headroom and a loaded
+#: machine, and far short of a read cut a second into its wait.
+CUT_NO_EARLIER_THAN_S = 0.5
 
 
 @pytest.fixture
@@ -294,6 +299,266 @@ class TestDefect1APaidReplySurvivesQuiesce:
                 "a clean cancellation was reported as a crashed loop")
         finally:
             await notebook_worker.stop()
+
+
+class TestDecision34aANormalReadGetsUpToFiveSeconds:
+    """Decision 34 a.
+
+    A lock used to cancel the ordinary reader's loop and, with it, a read
+    whose request was already out: the range was counted read, paid for,
+    and never produced a note. A reading job's unit had up to five seconds;
+    this reader had none. Now the ordinary read runs as its own shielded
+    task, the lock waits for it for what is left of the same up to five
+    seconds (the read is cancelled `READ_CANCEL_UNWIND_S` before the end,
+    so the lock still returns inside them), and a read still open then is
+    CANCELLED by name - its request closes, the range is closed out as
+    abandoned, and it is not bought twice.
+
+    Driven through the real loop and the real `quiesce()`, on the test's
+    own event loop, like Defect 1 above. The grace is the shipped
+    `SETTLE_GRACE_S`, imported, not a shortened copy.
+    """
+
+    @staticmethod
+    def _provider(monkeypatch, *, answer_after: float | None):
+        """`answer_after` seconds after the call arrives the reply comes
+        back; None means never. Records the call and whether it was
+        cancelled while open."""
+        import openrouter
+
+        state = {"calls": 0, "cancelled": False,
+                 "entered": asyncio.Event()}
+
+        async def reply(*a, **kw):
+            state["calls"] += 1
+            state["entered"].set()
+            try:
+                if answer_after is None:
+                    await asyncio.Event().wait()
+                await asyncio.sleep(answer_after)
+            except asyncio.CancelledError:
+                state["cancelled"] = True
+                raise
+            return {"id": "gen-34a", "choices": [{
+                "finish_reason": "stop",
+                "message": {"content": json.dumps({"facts": [fact()]})}}],
+                "usage": {"tokens_in": 10, "tokens_out": 5, "cost": 0.0001}}
+
+        monkeypatch.setattr(openrouter, "complete", reply)
+        return state
+
+    @staticmethod
+    def _rows(chat_id: int) -> list[tuple]:
+        with get_db() as con:
+            return [tuple(r) for r in con.execute(
+                "SELECT status, error_type FROM notebook_extractions "
+                "WHERE chat_id = ?", (chat_id,)).fetchall()]
+
+    @pytest.mark.anyio
+    async def test_GROUND_the_same_read_without_a_lock_is_written(
+            self, db, monkeypatch) -> None:
+        import database
+
+        chat_id = _seed(30)
+        database.set_setting(config.SETTING_NOTEBOOK_MODEL, "vendor/cheap")
+        state = self._provider(monkeypatch, answer_after=1.0)
+
+        notebook_worker.start()
+        try:
+            notebook_worker.worker.offer(chat_id)
+            for _ in range(400):
+                if [r[0] for r in self._rows(chat_id)] == ["done"]:
+                    break
+                await asyncio.sleep(0.01)
+            assert [r[0] for r in self._rows(chat_id)] == ["done"]
+            assert notebook.list_entries(chat_id)
+            assert state["calls"] == 1 and not state["cancelled"]
+        finally:
+            await notebook_worker.stop()
+
+    @pytest.mark.anyio
+    async def test_a_normal_read_that_answers_inside_the_locks_grace_is_written(
+            self, db, monkeypatch) -> None:
+        import database
+
+        chat_id = _seed(30)
+        database.set_setting(config.SETTING_NOTEBOOK_MODEL, "vendor/cheap")
+        state = self._provider(monkeypatch, answer_after=1.0)
+
+        notebook_worker.start()
+        try:
+            notebook_worker.worker.offer(chat_id)
+            await asyncio.wait_for(state["entered"].wait(), 5)
+
+            started = time.monotonic()
+            await notebook_worker.quiesce()
+            elapsed = time.monotonic() - started
+
+            assert [r[0] for r in self._rows(chat_id)] == ["done"], (
+                "a read that answered one second into the lock was not "
+                "written")
+            assert notebook.list_entries(chat_id), "and its note is missing"
+            assert state["calls"] == 1 and not state["cancelled"]
+            assert elapsed < notebook_worker.SETTLE_GRACE_S, (
+                f"the lock waited {elapsed:.2f}s for a read that answered "
+                "in one")
+        finally:
+            await notebook_worker.stop()
+
+    @pytest.mark.anyio
+    async def test_a_normal_read_still_open_when_the_grace_runs_out_is_cancelled_and_not_paid_twice(
+            self, db, monkeypatch) -> None:
+        import database
+
+        chat_id = _seed(30)
+        database.set_setting(config.SETTING_NOTEBOOK_MODEL, "vendor/cheap")
+        state = self._provider(monkeypatch, answer_after=None)
+
+        notebook_worker.start()
+        try:
+            notebook_worker.worker.offer(chat_id)
+            await asyncio.wait_for(state["entered"].wait(), 5)
+            unit = notebook_worker.worker._reading
+            assert unit is not None and not unit.done(), (
+                "ground: the read is open as the reader's own task")
+
+            started = time.monotonic()
+            await notebook_worker.quiesce()
+            elapsed = time.monotonic() - started
+
+            # INSIDE the one grace, not after it: the read is cancelled
+            # `READ_CANCEL_UNWIND_S` before the deadline precisely so its
+            # unwind does not push the lock past the up to five seconds the
+            # documents state. Cancelling at the deadline itself would
+            # return just after it, and this bound goes red.
+            #
+            # AND NOT EARLY: the read gets (up to) the grace, not a slice of
+            # it. The lower bound is on the grace itself, not on the grace
+            # less READ_CANCEL_UNWIND_S, so a headroom grown large enough to
+            # cut a read a second into its wait goes red here.
+            grace = notebook_worker.SETTLE_GRACE_S
+            assert grace - CUT_NO_EARLIER_THAN_S <= elapsed < grace, (
+                f"the lock returned after {elapsed:.2f}s, not inside the "
+                f"last {CUT_NO_EARLIER_THAN_S}s of its grace")
+            assert unit.cancelled(), (
+                "the open read was left running after the grace ran out")
+            assert state["cancelled"], "and its request was never closed"
+            assert notebook.list_entries(chat_id) == []
+
+            # NOT PAID TWICE: the next offer closes the range out as
+            # abandoned and does not send it again. Ten messages are left
+            # after the abandoned twenty, under the threshold, so no call.
+            notebook_worker.worker.offer(chat_id)
+            for _ in range(200):
+                if notebook_worker.worker.queue.empty() and (
+                        notebook_worker.worker._reading is None):
+                    break
+                await asyncio.sleep(0.01)
+            await asyncio.sleep(0.05)
+            assert state["calls"] == 1, "the abandoned range was sent again"
+            assert self._rows(chat_id) == [
+                ("failed", notebook.ABANDONED_IN_FLIGHT)], (
+                "POSITIVE CONTROL: the range is recorded as abandoned in "
+                "flight, which is what keeps it from being bought twice")
+        finally:
+            await notebook_worker.stop()
+
+    @pytest.mark.anyio
+    async def test_a_lock_torn_down_mid_grace_leaves_the_reader_running(
+            self, db, monkeypatch) -> None:
+        """A lock request cancelled while it waits out the grace (the
+        request torn down mid-flight) used to leave the notebook dead:
+        `quiesce()` had already taken the loop task and cancelled it, and
+        the line that starts it again was never reached. The queue stayed
+        live with nobody draining it and the open read stayed on the wire.
+        The cancel still travels to the caller; the loop is started again
+        and the read is cancelled as the end of the grace would have."""
+        import database
+
+        chat_id = _seed(30)
+        database.set_setting(config.SETTING_NOTEBOOK_MODEL, "vendor/cheap")
+        state = self._provider(monkeypatch, answer_after=None)
+
+        notebook_worker.start()
+        try:
+            notebook_worker.worker.offer(chat_id)
+            await asyncio.wait_for(state["entered"].wait(), 5)
+            lock = asyncio.create_task(notebook_worker.quiesce())
+            await asyncio.sleep(1.0)
+            assert not lock.done(), "ground: the lock is inside its grace"
+
+            lock.cancel()
+            (outcome,) = await asyncio.gather(lock, return_exceptions=True)
+            assert isinstance(outcome, asyncio.CancelledError), (
+                "the cancel aimed at the lock was swallowed")
+
+            w = notebook_worker.worker
+            assert w.task is not None and not w.task.done(), (
+                "the torn-down lock left the reader loop dead")
+            await asyncio.sleep(0.05)
+            assert state["cancelled"], "and the open read's request open"
+
+            # POSITIVE CONTROL: the restarted loop really drains its queue.
+            w.offer(chat_id)
+            for _ in range(200):
+                if w.queue.empty() and w._reading is None:
+                    break
+                await asyncio.sleep(0.01)
+            assert w.queue.empty(), "the restarted loop took nothing"
+        finally:
+            await notebook_worker.stop()
+
+    @pytest.mark.anyio
+    async def test_the_cancel_reaches_the_normal_read_and_nothing_else(
+            self, db) -> None:
+        """The control decision 34 a needs. A reading job's unit and a paid
+        reply's settle, open at the same moment, are separate tasks that
+        the stand-down neither waits on nor cancels here; only the reader's
+        own unit is cancelled when its grace runs out."""
+        loop = asyncio.get_running_loop()
+        w = notebook_worker.worker
+        hung_read = loop.create_task(asyncio.Event().wait())
+        job_unit = loop.create_task(asyncio.Event().wait())
+        settle = loop.create_task(asyncio.Event().wait())
+        w._reading = hung_read
+        w._track(job_unit)
+        w.settling = settle
+        try:
+            await notebook_worker._stand_down_reading(loop.time() + 0.5)
+            await asyncio.sleep(0)
+            assert hung_read.cancelled(), "ground: the read was cancelled"
+            assert not job_unit.done(), "a job's unit was cancelled with it"
+            assert not settle.done(), "a paid settle was cancelled with it"
+        finally:
+            for t in (hung_read, job_unit, settle):
+                t.cancel()
+            await asyncio.gather(hung_read, job_unit, settle,
+                                 return_exceptions=True)
+            w._reading = None
+            w.settling = None
+
+    @pytest.mark.anyio
+    async def test_closing_the_window_still_cuts_the_read_at_once(
+            self, db, monkeypatch) -> None:
+        """`stop()` is unchanged by 34 a: the up to five seconds are the lock's,
+        and closing the app cuts an open read immediately, as before."""
+        import database
+
+        chat_id = _seed(30)
+        database.set_setting(config.SETTING_NOTEBOOK_MODEL, "vendor/cheap")
+        state = self._provider(monkeypatch, answer_after=None)
+
+        notebook_worker.start()
+        notebook_worker.worker.offer(chat_id)
+        await asyncio.wait_for(state["entered"].wait(), 5)
+        unit = notebook_worker.worker._reading
+
+        started = time.monotonic()
+        await notebook_worker.stop()
+        elapsed = time.monotonic() - started
+
+        assert unit.cancelled() and state["cancelled"]
+        assert elapsed < 1.0, f"stop() waited {elapsed:.2f}s for an open read"
 
 
 class TestDefect2AttemptOwnership:

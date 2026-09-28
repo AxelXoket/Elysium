@@ -50,11 +50,26 @@ FINGERPRINTS: dict[int, str] = {
     # gate printed when it went red on the bump, not computed by hand - the
     # whole value of the row is that it came from the database the build
     # actually creates. The row for 5 is untouched.
-    # 6 also carries the two prompt module tables (CREATE IF NOT EXISTS in
-    # _SCHEMA, no bump, by the coordinator's ruling beside wave2's own re-record
-    # of this row). Re-recorded from what this gate printed; the value before
-    # was 9aa437cf4bc57a9b75e89f8aaeccfb9585c413ae8a741f7e6b940a77ab7893b7.
-    6: "5ed3469c28534b54d7c7a87b409014ed6b2b4d4b2668dbbcd27c7baaf65c4605",
+    # 6 also carries the backfill job table and the two `notebook_entries`
+    # columns beside it (`job_id`, `unmarked_in_source`), and this row is
+    # the ONE deliberate exception to the rule three lines up. I re-recorded
+    # it from the value this gate printed when it went red, not by hand,
+    # and the version stayed at 6 on purpose: KARAR-V2-10 puts the three
+    # additions in one migration behind PRAGMA table_info guards and
+    # refuses a bump, and S-5 says the same - a guarded ADD COLUMN is
+    # gated by the column's absence, not by the stamp. What that costs is
+    # named: version 6 now describes two shapes on shipped builds, the way
+    # version 3 once did, and a 6-build that predates the additions opens
+    # this file and leaves the job table and both nullable columns alone.
+    # The row for 5 is untouched, and the earlier value of this row was
+    # 9aa437cf4bc57a9b75e89f8aaeccfb9585c413ae8a741f7e6b940a77ab7893b7.
+    # Rebased onto prompt-layer (27 Sep 2026): 6 now carries BOTH additions,
+    # the two prompt module tables that branch added (CREATE IF NOT EXISTS,
+    # no bump, recorded there as 5ed3469c28534b54d7c7a87b409014ed6b2b4d4b2668dbbcd27c7baaf65c4605)
+    # and the backfill job table with its two columns above (recorded alone
+    # as 24cdb902209f5c588c261fed602f668981bdb2798f0ff75fc53478bfed5f0cb7).
+    # The combined value is the one this gate printed on the merged schema.
+    6: "de6cdc00c46e97550c1124532deda3813a4072f0f6f26a1d0a56027fb4c10be1",
 }
 
 
@@ -141,6 +156,17 @@ class TestTheStampDescribesTheShape:
         assert stamped > 4, (
             "all three exist, so a build that understands only 4 must be "
             "refused - and it is only refused if the stamp is above 4")
+        # And the three that landed under 6 WITHOUT a bump (KARAR-V2-10):
+        # positive controls for the re-recorded row, so a fingerprint that
+        # matched by accident with one of them missing would still fail.
+        assert "notebook_backfill_jobs" in tables, (
+            "the backfill job table is gone; a run cannot be undone without it")
+        assert "job_id" in entry_cols, (
+            "notebook_entries.job_id is gone; undo would have nothing to "
+            "select by")
+        assert "unmarked_in_source" in entry_cols, (
+            "notebook_entries.unmarked_in_source is gone; it lands with the "
+            "job table in one migration")
 
     def test_the_fingerprint_notices_a_new_column(self, db) -> None:
         """The gate can go red.

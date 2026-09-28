@@ -31,5 +31,15 @@ export const keys = {
   notebookEntries: (chatId: number) => ["notebook", "entries", chatId] as const,
   notebookBoundaries: (chatId: number | null) =>
     ["notebook", "boundaries", chatId] as const,
+  // The extraction worker's own namespace, OUTSIDE `notebook` on purpose: a
+  // note mutation must not drag a status poll or a preview along with it.
+  // The worker key is spelled in query/notebook.ts's hooks with the chat
+  // appended; this prefix is what the backfill mutations invalidate.
+  extractionWorker: () => ["extraction", "worker"] as const,
+  extractionBackfill: () => ["extraction", "backfill"] as const,
+  extractionBackfillPlan: (
+    chatId: number | null, scope: string,
+    from: number | null, to: number | null,
+  ) => ["extraction", "backfill", chatId, scope, from, to] as const,
   vault: () => ["vault"] as const,
 };

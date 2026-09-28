@@ -422,6 +422,22 @@ SETTING_SAFEWORD = "notebook_safeword"
 NOTEBOOK_DAILY_CALL_CAP = int(os.environ.get(
     "ELYSIUM_NOTEBOOK_DAILY_CALLS", "60"))
 
+#: How much of that ceiling a backfill job leaves for the live reader.
+#:
+#: A backfill job - a reader asking for a whole chat or a chosen stretch of
+#: it to be read now - takes its calls from the SAME daily counter the
+#: turn-driven reader uses; there is no second bucket, no second refund path
+#: and no second midnight. What it gets instead is a LOWER ceiling: the loop
+#: claims against NOTEBOOK_DAILY_CALL_CAP minus this number, and stops with
+#: `daily_cap_reached` when it gets there, while the live reader goes on
+#: claiming against the whole ceiling. A twenty-call read of an old chat
+#: therefore cannot leave every other conversation unread for the rest of
+#: the day. Raising this LOWERS what a backfill may spend; it never raises
+#: anything. Floored at zero so a negative value cannot hand a job more than
+#: the day allows.
+NOTEBOOK_LIVE_RESERVE = max(0, int(os.environ.get(
+    "ELYSIUM_NOTEBOOK_LIVE_RESERVE", "10")))
+
 #: What one extraction prompt may carry, per section. The DEFAULTS are a
 #: ceiling rather than a suggestion, and their reason is the one written on the
 #: daily cap right above: the largest documented runaway in this space was not

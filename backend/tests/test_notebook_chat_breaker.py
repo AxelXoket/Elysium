@@ -396,20 +396,36 @@ class TestTheStatusRouteSaysWhichChatIsStopped:
         assert b in w.chat_breakers, "it reset more than it was asked to"
 
 
-class TestTheSweepButtonSaysWhyItRefused:
-    """`sweep()` refused with three reasons and the panel translated them with
+class TestTheReadButtonSaysWhyItRefused:
+    """The refusals the old sweep button gave, asked of the door that is left.
+
+    `sweep()` refused with three reasons and the panel translated them with
     an inline ternary whose last arm is a catch-all: "It is already reading."
     A paused chat answered by that arm tells the reader the opposite of what
-    is happening."""
+    is happening. The sweep route and method are gone (decision 69 a); the
+    reading strip's `next` job is the one-press read now, and it refuses a
+    paused or stopped chat by the same two names, before a job row exists."""
+
+    @staticmethod
+    def _ready(chat_id: int) -> None:
+        """A chat model and a note model, so the only thing that can refuse
+        a healthy chat is the breaker these tests are about."""
+        from database import get_db, set_setting
+
+        set_setting(config.SETTING_NOTEBOOK_MODEL, "vendor/cheap")
+        with get_db() as con:
+            con.execute("UPDATE chats SET model_id = ? WHERE id = ?",
+                        ("vendor/cheap", chat_id))
 
     @pytest.mark.anyio
     async def test_a_paused_chat_says_so(self, client, worker) -> None:
         now = asyncio.get_running_loop().time()
         chat_id = seed(client, 30)
+        self._ready(chat_id)
         for _ in range(notebook_worker.TRIP_AFTER):
             worker._fail_chat(chat_id, now)
 
-        out = await worker.sweep(chat_id)
+        out = await worker.backfill(chat_id, "next")
         assert out == {"started": False, "reason": "chat_paused"}
         assert out["reason"] in notebook_worker.SWEEP_REFUSALS
 
@@ -417,19 +433,24 @@ class TestTheSweepButtonSaysWhyItRefused:
     async def test_a_stopped_chat_says_so(self, client, worker) -> None:
         now = asyncio.get_running_loop().time()
         chat_id = seed(client, 30)
+        self._ready(chat_id)
         for _ in range(notebook_worker.STOP_AFTER):
             worker._fail_chat(chat_id, now)
 
-        out = await worker.sweep(chat_id)
+        out = await worker.backfill(chat_id, "next")
         assert out == {"started": False, "reason": "chat_stopped"}
 
     @pytest.mark.anyio
     async def test_a_healthy_chat_is_not_refused(self, client, worker) -> None:
-        """GROUND. Without it the two above are satisfied by a sweep that
+        """GROUND. Without it the two above are satisfied by a door that
         refuses everything."""
         chat_id = seed(client, 30)
-        out = await worker.sweep(chat_id)
-        assert out["started"] is True
+        self._ready(chat_id)
+        out = await worker.backfill(chat_id, "next")
+        try:
+            assert out["started"] is True, out
+        finally:
+            await worker.wait_for_backfill()
 
     def test_every_refusal_the_sweep_can_return_is_declared(self) -> None:
         """The vocabulary gate, the same shape as SKIP_REASONS: a reason with

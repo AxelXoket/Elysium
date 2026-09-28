@@ -128,7 +128,42 @@ ALL_CODES: frozenset[str] = frozenset({
     "chat_not_found",
     "boundary_not_found",
     "imported_chat_always_reviews",
+    # The three real HTTP failures of the backfill routes. A refusal such as
+    # `not_ready` or `daily_cap_reached` is NOT here and never will be: it
+    # answers 200 with `{started: false, reason}` and lives in
+    # notebook_worker.SWEEP_REFUSALS. These three are failures of the
+    # request itself - a job that is not this chat's, a job still running
+    # under an undo, a range that is not inside the chat.
+    "notebook_job_not_found",
+    "notebook_backfill_running",
+    "notebook_range_invalid",
 })
+
+#: A backfill job's life, in the order it is lived. `planned` is the row the
+#: run route writes before the loop starts, `running` while it reads,
+#: `done` when nothing unread is left, `stopped` when the reader, the daily
+#: ceiling or the chat's own breaker halted it, `failed` when a unit could
+#: not land. The table's CHECK carries the same five.
+JOB_STATES = ("planned", "running", "stopped", "done", "failed")
+
+#: Everything `notebook_backfill_jobs.last_error` may hold, besides NULL.
+#:
+#: A THIRD VOCABULARY NEEDS A THIRD TABLE. The panel reads this column and
+#: prints anything it does not recognise in brackets, so an unbounded value
+#: here reaches a person as a token they cannot act on - which is the exact
+#: shape `SKIP_REASONS` and `ALL_CODES` exist to stop, in a column neither
+#: of them covers. Three kinds of thing land here and all three are named:
+#: the refusals a running loop can stop on, the one error code a vault lock
+#: writes, and `interrupted`, which is not a failure at all - it is what a
+#: row says when the process driving it stopped existing.
+JOB_LAST_ERRORS = frozenset({
+    "daily_cap_reached", "chat_paused", "chat_stopped",
+    "proxy_gate", "api_key_not_set",
+    "refused", "failed", "settled",
+    "vault_locked",
+    "interrupted",
+})
+JOB_SCOPES = ("next", "all", "range")
 
 
 class NotebookError(ValueError):
@@ -268,6 +303,13 @@ def update_entry(entry_id: int, chat_id: int | None = None, **fields) -> dict:
         fields["pinned"] = 1 if fields["pinned"] else 0
 
     sets = ", ".join(f"{k} = ?" for k in fields)
+    # `updated_at` is stamped AT LEAST one second past `created_at`, not
+    # merely "now". Both default to the same second-resolution clock, so an
+    # edit inside the second a note was written in left the two equal and
+    # the note read as never touched - which is the one fact "undo this
+    # run" needs from this row: a note the reader edited is theirs and is
+    # not removed. One second of slack on a timestamp nobody reads to the
+    # second is the whole cost.
     with get_db() as con:
         if chat_id is not None and not _in_chat(con, entry_id, chat_id):
             # BEFORE the update and before the read. Refusing after either
@@ -282,7 +324,8 @@ def update_entry(entry_id: int, chat_id: int | None = None, **fields) -> dict:
             # answers this way for the identical situation.
             raise NotebookError("notebook_entry_not_found")
         con.execute(
-            f"UPDATE notebook_entries SET {sets}, updated_at = datetime('now') "
+            f"UPDATE notebook_entries SET {sets}, updated_at = "
+            "MAX(datetime('now'), datetime(created_at, '+1 second')) "
             "WHERE id = ?", (*fields.values(), entry_id))
         row = con.execute(
             "SELECT * FROM notebook_entries WHERE id = ?", (entry_id,)).fetchone()
@@ -369,6 +412,15 @@ def delete_entry(entry_id: int, chat_id: int | None = None) -> bool:
 #:     them). Seeing them means being able to name them, and naming one in
 #:     `supersedes` would have retired a suggestion the reader had not looked
 #:     at yet. The narrowing goes in first for exactly that reason.
+#:
+#: NOT among them, deliberately: the source message. A note whose message
+#: is gone carries `source_message_id = NULL`, and whether a given READ may
+#: name it is a question about that read's range rather than about the
+#: note - so it is asked in `notebook_worker._plan_work`, which is the only
+#: place the range is known, and a read that stops short of the present
+#: never sees such a note at all. Asking it here instead would make the
+#: note unretirable by every read including the ones that can see the whole
+#: chat, and would change a rule four other surfaces depend on.
 _SUPERSEDABLE = (
     "retired_at IS NULL AND provenance = ? AND pinned = 0 AND status = ?")
 
@@ -398,9 +450,21 @@ def retire_superseded(con, chat_id: int, target_id: int,
     a list it was shown, and the guard is what makes the guess safe to act
     on.
     """
+    # `updated_at` IS DELIBERATELY NOT STAMPED HERE.
+    #
+    # That column is the only signal anything has for "the reader made this
+    # note theirs": `update_entry` stamps it, `reorder` stamps it, and
+    # `delete_job_notes` reads it to decide what an undo may remove. This
+    # function is the APP retiring a note on a model's word, which is not
+    # the reader doing anything. While it stamped the column, every note a
+    # job wrote and a later unit of the same job replaced came back from
+    # `delete_job_notes` as `kept_edited`: the undo left it in place, the
+    # repair cleared its `retired_at`, and the reader was told they had
+    # edited a note they had never touched. `retired_at` already records
+    # when this happened, so nothing is lost by leaving `updated_at` alone.
     return con.execute(
         "UPDATE notebook_entries SET retired_at = datetime('now'), "
-        "superseded_by = ?, updated_at = datetime('now') "
+        "superseded_by = ? "
         f"WHERE id = ? AND chat_id = ? AND {_SUPERSEDABLE}",
         (superseded_by, target_id, chat_id,
          PROV_MODEL, STATUS_ACCEPTED)).rowcount
@@ -438,10 +502,73 @@ def retire_entry(entry_id: int, superseded_by: int | None = None) -> bool:
     with get_db() as con:
         cur = con.execute(
             "UPDATE notebook_entries "
-            "SET retired_at = datetime('now'), superseded_by = ?, "
-            "    updated_at = datetime('now') "
+            "SET retired_at = datetime('now'), superseded_by = ? "
             "WHERE id = ? AND retired_at IS NULL", (superseded_by, entry_id))
     return cur.rowcount > 0
+
+
+def delete_job_notes(con, job_id: int) -> dict:
+    """Undo one backfill job: remove exactly the notes it wrote.
+
+    By `job_id` and nothing else. A note the turn-driven reader wrote carries
+    no job, so "undo that run" cannot reach it; a note an EARLIER job wrote
+    carries that job's id, so it cannot reach that either.
+
+    Two classes are kept and counted rather than removed, because the
+    reader has since made them theirs: a note they PINNED, and a note they
+    EDITED (`updated_at` moved past `created_at` - an edit, an accept, a pin
+    toggle and a reorder all stamp it, and all four are the reader's hand).
+    A pinned note is counted under `kept_pinned` even when it was edited
+    too, so the two counts add up to what was kept.
+
+    A hard delete, like `delete_entry`, and with the same repair first:
+    anything that pointed at a doomed row stops pointing AND stops being
+    retired, so a note this job superseded comes back into the prompt when
+    the note that replaced it is gone. Leaving `retired_at` set on the
+    strength of a row that no longer exists is the contradiction
+    `delete_entry` names, and it is the same one here.
+
+    The caller opens the transaction, like `commit_extraction`.
+    """
+    rows = con.execute(
+        "SELECT id, pinned, retired_at, created_at, updated_at "
+        "FROM notebook_entries WHERE job_id = ?", (job_id,)).fetchall()
+    doomed: list[int] = []
+    kept_pinned = 0
+    kept_edited = 0
+    for row in rows:
+        # EDITED BEFORE RETIRED, and the order is the promise: being retired
+        # is a thing the app did to a note afterwards, having been edited is
+        # a thing the reader did to it, and the reader's action wins. That
+        # order is only safe because `retire_superseded` no longer stamps
+        # `updated_at` - see the comment there. While it did, this arm
+        # caught every note the job wrote and the job itself replaced, the
+        # undo kept them, the repair below un-retired them back into the
+        # prompt, and the reader was told they had made them theirs.
+        if row["pinned"]:
+            kept_pinned += 1
+        elif row["updated_at"] != row["created_at"]:
+            kept_edited += 1
+        else:
+            # Either retired by a later unit of this same job, or untouched
+            # since it was written. Both are the job's own work and both go.
+            doomed.append(row["id"])
+    for chunk in iter_chunks(doomed):
+        marks = ",".join("?" * len(chunk))
+        # Same reasoning as `retire_superseded`: un-retiring a note
+        # because the row that replaced it is being deleted is the app
+        # tidying up after itself, not the reader editing anything, so
+        # `updated_at` is left where it was. Otherwise undoing one job
+        # would make an EARLIER job's notes read as reader-edited and a
+        # later undo would refuse to remove them.
+        con.execute(
+            f"UPDATE notebook_entries SET superseded_by = NULL, "
+            f"retired_at = NULL "
+            f"WHERE superseded_by IN ({marks})", chunk)
+        con.execute(
+            f"DELETE FROM notebook_entries WHERE id IN ({marks})", chunk)
+    return {"job_id": job_id, "removed": len(doomed),
+            "kept_pinned": kept_pinned, "kept_edited": kept_edited}
 
 
 def reorder(chat_id: int, ordered_ids: list[int]) -> None:
@@ -472,9 +599,18 @@ def reorder(chat_id: int, ordered_ids: list[int]) -> None:
                 "WHERE id = ? AND chat_id = ?",
                 (-1 - offset, entry_id, chat_id))
         for offset, entry_id in enumerate(ordered_ids):
+            # THE SAME STAMP `update_entry` USES, and for its reason. A bare
+            # `datetime('now')` leaves the column equal to `created_at` for
+            # a note dragged inside the second it was written in, and that
+            # column has exactly one reader: "undo this run" asks it whether
+            # the reader made this note theirs. So a drag in that second was
+            # not counted while an edit in the same second was, which is two
+            # answers to one question.
             con.execute(
                 "UPDATE notebook_entries SET position = ?, "
-                "updated_at = datetime('now') WHERE id = ? AND chat_id = ?",
+                "updated_at = MAX(datetime('now'), "
+                "               datetime(created_at, '+1 second')) "
+                "WHERE id = ? AND chat_id = ?",
                 (offset, entry_id, chat_id))
 
 
@@ -735,6 +871,13 @@ def delete_for_chats(con, chat_ids) -> None:
             f"DELETE FROM notebook_entries WHERE chat_id IN ({marks})", chunk)
         con.execute(
             f"DELETE FROM notebook_extractions WHERE chat_id IN ({marks})",
+            chunk)
+        # AFTER the entries, because `notebook_entries.job_id` points here
+        # and the foreign key is enforced on this connection. Same reason
+        # the whole function exists: a row left behind makes the chat
+        # undeletable rather than orphaned.
+        con.execute(
+            f"DELETE FROM notebook_backfill_jobs WHERE chat_id IN ({marks})",
             chunk)
         con.execute(
             f"DELETE FROM boundaries WHERE scope = 'chat' "
@@ -1044,8 +1187,12 @@ def build_notebook_blocks(chat_id: int, available_chars: int,
     """The two note blocks, the boundary block, and what was left out.
 
     Two blocks, not one, because provenance decides placement: what the user
-    wrote sits with the persona in the system channel; what the model wrote
-    sits at the tail, next to the post-history instruction. Same table, same
+    wrote sits with the persona in the system message; what the model wrote
+    rides in the last user turn, after the user's own text, under its own
+    "unverified notes" header (C3 a, which replaced KARAR-V2-13's
+    system-role placement; see `routers/completions._system_and_tail`). In
+    the system message it would come back every turn with the authority of
+    the app. Same table, same
     ceiling, different authority - and the split is only meaningful if nothing
     can relabel a row on its way here, which is why `provenance` is immutable
     at the storage layer rather than filtered for at this one.
@@ -1372,6 +1519,217 @@ def unread_backlog(con) -> dict:
     return {"chats": len(rows), "messages": sum(r[1] for r in rows)}
 
 
+def unread_count(con, chat_id: int,
+                 from_id: int | None = None,
+                 to_id: int | None = None) -> int:
+    """How many of ONE chat's messages nobody has read, optionally within a
+    range of ids.
+
+    The per-chat form of `unread_backlog`, with the same predicate, so the
+    two cannot disagree about what "read" means: a message is read when a
+    `done` range covers it, or a range whose call was made and abandoned in
+    flight does. Bounded to `[from_id, to_id]` when both are given, which is
+    what a range job's progress line needs.
+    """
+    args: list = [chat_id]
+    bound = ""
+    if from_id is not None and to_id is not None:
+        bound = " AND m.id BETWEEN ? AND ?"
+        args += [from_id, to_id]
+    args.append(ABANDONED_IN_FLIGHT)
+    return con.execute(
+        "SELECT COUNT(*) FROM messages m "
+        f"WHERE m.chat_id = ? AND m.active = 1{bound} AND NOT EXISTS ("
+        "  SELECT 1 FROM notebook_extractions e "
+        "  WHERE e.chat_id = m.chat_id "
+        "    AND (e.status = 'done' "
+        "         OR (e.status = 'failed' AND e.error_type = ?)) "
+        "    AND m.id BETWEEN e.from_message_id AND e.to_message_id)",
+        args).fetchone()[0]
+
+
+def message_span(con, chat_id: int) -> tuple[int | None, int | None]:
+    """The lowest and highest active message id in a chat, or (None, None).
+
+    What a range request is checked against: `from` and `to` have to fall
+    inside this span, in order, or the request is not describing anything
+    this chat holds.
+    """
+    row = con.execute(
+        "SELECT MIN(id), MAX(id) FROM messages WHERE chat_id = ? "
+        "AND active = 1", (chat_id,)).fetchone()
+    return (row[0], row[1]) if row else (None, None)
+
+
+# ── Backfill jobs ──────────────────────────────────────────────────────────
+#
+# One row per run a reader asked for. WHO WRITES WHAT is fixed, and it is
+# fixed here rather than at the call sites: `planned_calls` is written by
+# `create_job` and never again; `spent_calls` and `notes_written` move only
+# through `advance_job`, and only from inside `commit_extraction`'s own
+# transaction, so the counters and the notes they count land together or
+# not at all; `state`, `finished_at` and `last_error` move only through
+# `advance_job` (into `running`) and `stop_job` (into a terminal state).
+# Passing a `job_id` to a writer increments nothing by itself.
+
+def _job_row(row) -> dict | None:
+    return None if row is None else dict(row)
+
+
+def create_job(con, chat_id: int, scope: str, *,
+               from_id: int | None = None, to_id: int | None = None,
+               planned_calls: int) -> dict:
+    """The `planned` row, written before the loop starts."""
+    if scope not in JOB_SCOPES:
+        raise NotebookError("notebook_range_invalid")
+    cur = con.execute(
+        "INSERT INTO notebook_backfill_jobs "
+        "(chat_id, scope, from_message_id, to_message_id, state, "
+        " planned_calls) VALUES (?,?,?,?,'planned',?)",
+        (chat_id, scope, from_id, to_id, int(planned_calls)))
+    return job_row(con, cur.lastrowid)
+
+
+def job_row(con, job_id: int) -> dict | None:
+    return _job_row(con.execute(
+        "SELECT * FROM notebook_backfill_jobs WHERE id = ?",
+        (job_id,)).fetchone())
+
+
+def job_for_chat(con, chat_id: int) -> dict | None:
+    """The newest job this chat has, whatever its state, or None.
+
+    Newest rather than "the running one": the panel needs to offer undo on a
+    job that has just finished, and a stopped job is the one whose reason
+    the reader is looking for.
+    """
+    return _job_row(con.execute(
+        "SELECT * FROM notebook_backfill_jobs WHERE chat_id = ? "
+        "ORDER BY id DESC LIMIT 1", (chat_id,)).fetchone())
+
+
+def advance_job(con, job_id: int, *, calls: int = 0, notes: int = 0,
+                running: bool = False) -> None:
+    """Move the counters, and optionally the state to `running`.
+
+    `running=True` is the loop's first act and stamps `started_at` once;
+    a job already past `running` is left where it is, so a late advance
+    from a unit that settled after the stop cannot resurrect it.
+    """
+    if calls or notes:
+        con.execute(
+            "UPDATE notebook_backfill_jobs SET spent_calls = spent_calls + ?, "
+            "notes_written = notes_written + ? WHERE id = ?",
+            (int(calls), int(notes), job_id))
+    if running:
+        con.execute(
+            "UPDATE notebook_backfill_jobs SET state = 'running', "
+            "started_at = COALESCE(started_at, datetime('now')) "
+            "WHERE id = ? AND state = 'planned'", (job_id,))
+
+
+def stop_job(con, job_id: int, state: str,
+             last_error: str | None = None) -> None:
+    """Close a job out. `state` is one of the three terminal states."""
+    if state not in ("stopped", "done", "failed"):
+        raise ValueError(f"not a terminal job state: {state}")
+    con.execute(
+        "UPDATE notebook_backfill_jobs SET state = ?, last_error = ?, "
+        "finished_at = datetime('now') WHERE id = ? "
+        "AND state IN ('planned', 'running')",
+        (state, last_error, job_id))
+
+
+#: What an orphaned job's row says happened to it. Not a refusal token and
+#: not an error code: no request failed, the process that was driving this
+#: row simply stopped existing. Named here so the panel's sentence and this
+#: writer cannot drift apart.
+JOB_INTERRUPTED = "interrupted"
+
+
+def orphaned_job_ids(con) -> list[int]:
+    """Every job row that still says `planned` or `running`, ids only.
+
+    READ THIS FIRST, then ask who is driving. Never the other way round.
+
+    A job row is committed before the loop task that drives it exists, so
+    a driver id read BEFORE this select can be stale by exactly one job -
+    the one created in between - and that job is then closed out as
+    interrupted while it runs, which nothing moves it back out of. Taking
+    the set first makes it a set that cannot contain a row created after
+    the question was asked, whatever the answer turns out to be.
+
+    DEFENCE IN DEPTH, AND SAID SO PLAINLY, because a reader deserves to
+    know which sentence is load-bearing. The guard that actually closes
+    this hole is in `_create`: `self._backfill` is claimed inside the same
+    transaction that writes the row, so by the time a row exists at all
+    `active_job_id()` already names it and cannot be stale by a job. The
+    ordering here costs nothing and holds if that ever stops being true -
+    but no test can turn red on it while it is true, and a comment that
+    reads as the only guard sends the next reader to defend the wrong
+    line.
+    """
+    return [r[0] for r in con.execute(
+        "SELECT id FROM notebook_backfill_jobs "
+        "WHERE state IN ('planned', 'running') ORDER BY id").fetchall()]
+
+
+def settle_orphaned_jobs(con, ids: list[int], keep: int | None = None) -> int:
+    """Close out the job rows in `ids` that no process is driving.
+
+    The app killed with its window, or the vault locked before the loop
+    could write its own stop, leaves a job that says it is running while
+    nothing is. `ids` comes from `orphaned_job_ids`; `keep` is the one job
+    this process IS driving right now, read AFTER that select. Closed out
+    through `stop_job`, which is the only writer of `state`, `finished_at`
+    and `last_error` - a second UPDATE here would be a second write path
+    for the same three columns and its own terminal-state rule.
+    """
+    stale = [i for i in ids if i != keep]
+    if not stale:
+        return 0
+    # THE ONLY WRITE THIS PATH EVER MAKES, and it takes the lock the way
+    # every other writer in this feature does. The ordinary poll never gets
+    # here - `stale` is empty, which is what keeps a progress tick a pure
+    # read - but when it does get here it is a read-modify-write on a route
+    # the panel repeats, racing the loop's own `_write`.
+    #
+    # ONLY IF THE CALLER HAS NOT ALREADY TAKEN IT. The undo route opens its
+    # own `BEGIN IMMEDIATE` and then calls this on the same connection, so
+    # an unconditional BEGIN here raised "cannot start a transaction within
+    # a transaction" and answered 500 - on exactly the case this path
+    # exists for, a job left `running` by a process that died. The write
+    # lock is the same lock either way; what matters is that somebody holds
+    # it, not that this function is the one who took it.
+    if not con.in_transaction:
+        con.execute("BEGIN IMMEDIATE")
+    for job_id in stale:
+        stop_job(con, job_id, "stopped", JOB_INTERRUPTED)
+    return len(stale)
+
+
+def forget_readings_in_range(con, chat_id: int, from_id: int,
+                             to_id: int) -> int:
+    """Roll the reading record back over one chosen range, so a range job
+    can read it again.
+
+    Re-reading is the whole of scope `range`: the reader picked a stretch
+    that HAS been read and wants its notes regenerated. The planner refuses
+    a range it has already answered (`already_done`, and `commit_extraction`
+    treats a `done` row under the same key as a duplicate), so the record of
+    having read it has to go first. This is the mechanism an edit already
+    uses (`forget_proposals_from_messages`), narrowed: only ranges lying
+    ENTIRELY inside the chosen one go, a range that merely overlaps is left,
+    and - unlike the edit path - the NOTES stay, because the model retiring
+    them through `supersedes` is the way they are renewed. The money those
+    rows recorded is untouched: it lives in `notebook_spend`.
+    """
+    return con.execute(
+        "DELETE FROM notebook_extractions WHERE chat_id = ? "
+        "AND from_message_id >= ? AND to_message_id <= ? "
+        "AND status <> 'running'", (chat_id, from_id, to_id)).rowcount
+
+
 def spend_today(con, day: str | None = None) -> dict:
     """Calls and cost recorded for one local day. Defaults to the current one.
 
@@ -1653,6 +2011,23 @@ SKIP_REASONS: frozenset[str] = frozenset({
     # neither egress nor spend, so this is a skip with a name rather than a
     # claim with a failure.
     "api_key_not_set",
+    # The note model this chat resolves to cannot answer in the strict form
+    # notes need, or is not on the zero-retention list - in practice the
+    # chat's own model under "use the model I am chatting with". Nothing is
+    # sent and nothing is claimed. Written once per chat and model while
+    # that model keeps being refused, not per turn, and again after a turn
+    # that checked the chat's model and found it fit, read or not (a turn
+    # stopped before that check by a job, a breaker or no model does not
+    # count), or a restart (notebook_worker `_prepare`); before it existed
+    # the refusal was silent everywhere
+    # but the reading strip's preview (3.8).
+    "model_not_extractable",
+    # The same gate with NO evidence either way: the provider's list of
+    # models that can write notes could not be fetched, so a model bound to
+    # the chat is refused rather than paid for. Its own token because it is
+    # not the model's fault, and the Notes tab must not say it is. Same
+    # once-per-pair rule as the one above.
+    "model_list_unavailable",
 })
 
 def _is_imported(con, chat_id: int) -> bool:
@@ -1846,8 +2221,15 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
                       error_type: str | None = None,
                       require_trace: bool = False,
                       attempt_token: str | None = None,
-                      claim_day: str | None = None) -> dict:
+                      claim_day: str | None = None,
+                      job_id: int | None = None) -> dict:
     """Write the whole outcome of one extraction. Returns what was done.
+
+    `job_id` names the backfill job this call belongs to, or None for the
+    turn-driven path. It does two things and only inside this transaction:
+    every note written below carries it, and the job's own counters move
+    through `advance_job` - one call for a reply the provider billed, and
+    the notes that landed. Nothing else moves them.
 
     A duplicate work key is NOT an error: it means this exact range, under this
     exact prompt version and model and language, has already been answered.
@@ -1883,6 +2265,17 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
         # with no charge, which is the reading `cost_unknown` exists to make
         # impossible.
         record_usage(con, usage, attempt_token, day=claim_day)
+    # The job's own spent count moves with the CLAIM'S TRACE - the `running`
+    # row written between the claim and the request - and nowhere else, so
+    # it reads the same as `notebook_spend.calls` at every instant while a
+    # call is out, which is what the stop route reports. What this does not
+    # follow is a refund: a request that never left the machine gives the
+    # day its slot back through `release_call`, and this counter keeps it,
+    # because the only writer allowed here is this function. A job's
+    # `calls_spent` can therefore run one above the day's counter per
+    # request that never left, never below it.
+    if job_id is not None and status == "running":
+        advance_job(con, job_id, calls=1)
 
     # AND THEN NOTHING ELSE, if the chat it was about is gone. `chat_id` on
     # `notebook_extractions` is a foreign key and `PRAGMA foreign_keys` is
@@ -2150,6 +2543,21 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
         proposals = kept
 
     accept = auto_accept_for(con, chat_id) if proposals else False
+    # THE REVIEW QUEUE GATE. Automatic acceptance stays ON by default and
+    # the turn-driven path is unchanged for the ordinary proposal; what
+    # changes is that four classes of proposal are held as `proposed` even
+    # when the switch is on, in every mode alike, because passing them
+    # unread is where the damage is: (1) one that names a note the READER
+    # wrote as the thing it replaces, (2) one that names a PINNED note,
+    # (3) a reply whose proposals together retire three or more notes at
+    # once, (4) one quoting the model's OWN reply as evidence while
+    # retiring an existing note - a note distilled from the model's own
+    # words is the class that can be invented, and here it would be
+    # removing something rather than adding something the panel can mark.
+    # A held proposal keeps its `supersedes_id`, so accepting it later
+    # applies the intent through the same guard; retirement is not applied
+    # here for it, exactly as in review mode.
+    held = _proposals_to_hold(con, proposals, existing_ids) if accept else set()
     # The message the notes came from may have been deleted or edited away
     # during the provider call, and `source_message_id` is a foreign key: a
     # stale id aborts the whole transaction on the third proposal of six,
@@ -2170,7 +2578,7 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
     written = 0
     retired = 0
     duplicates = 0
-    for fact in proposals:
+    for idx, fact in enumerate(proposals):
         key = _dedup_key(_flat(fact["text"]))
         if key in seen:
             duplicates += 1
@@ -2179,12 +2587,13 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
         nxt = con.execute(
             "SELECT COALESCE(MAX(position), -1) + 1 FROM notebook_entries "
             "WHERE chat_id = ?", (chat_id,)).fetchone()[0]
+        accepted_here = accept and idx not in held
         cur = con.execute(
             "INSERT INTO notebook_entries "
             "(chat_id, position, kind, text, evidence, durability, importance,"
             " pinned, status, provenance, source_message_id, evidence_role, "
-            " supersedes_id) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " supersedes_id, job_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (chat_id, nxt, fact["kind"], _flat(fact["text"]),
              fact.get("evidence"), fact["durability"],
              # Clamped BELOW a user's default of 2. The model rates its own
@@ -2193,7 +2602,7 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
              # while the model's own survived the ceiling.
              min(2, int(fact["importance"])),
              0,
-             STATUS_ACCEPTED if accept else STATUS_PROPOSED,
+             STATUS_ACCEPTED if accepted_here else STATUS_PROPOSED,
              # Set at INSERT and by nothing else, ever. If any update path
              # could write it, `provenance='model'` would have no live rows to
              # describe and its guard would pass by describing an empty set.
@@ -2212,7 +2621,10 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
             # away with the action, so accepting the proposal an hour later
             # left the note it replaces in the prompt forever, and both
             # statements went out together.
-            _supersedes_target(fact, existing_ids)))
+            _supersedes_target(fact, existing_ids),
+            # The run that wrote it, or NULL. The undo route deletes by
+            # this and nothing else.
+            job_id))
         written += 1
 
         # C2, held: written as accepted above, turned back to proposed here
@@ -2231,16 +2643,64 @@ def commit_extraction(con, *, work_key: str, chat_id: int,
         # suggestion nobody has looked at removes a note the user approved,
         # in favour of one they have not seen - and it leaves an accepted row
         # holding a foreign key to a `proposed` one, which then makes the
-        # source message undeletable.
-        if not accept:
+        # source message undeletable. A proposal the gate above held is a
+        # suggestion nobody has looked at, so it takes this branch too.
+        if not accepted_here:
             continue
         target = _supersedes_target(fact, existing_ids)
         if target is None:
             continue
         retired += retire_superseded(con, chat_id, target, cur.lastrowid)
 
+    # The notes this job wrote, counted where they were written and in the
+    # same transaction, so the counter can never say more than the table.
+    if job_id is not None and written:
+        advance_job(con, job_id, notes=written)
+
     return {"duplicate": False, "written": written, "retired": retired,
-            "accepted": accept, "duplicates": duplicates}
+            "accepted": accept, "duplicates": duplicates,
+            "held": len(held)}
+
+
+#: How many notes one reply may retire together before the whole batch of
+#: retiring proposals is held for review. Two is a correction; three is a
+#: rewrite of the notebook on one reply's say-so.
+BULK_CONFLICT_MIN = 3
+
+
+def _proposals_to_hold(con, proposals: list[dict],
+                       existing_ids: list[int]) -> set[int]:
+    """Indexes into `proposals` that the review gate holds as `proposed`.
+
+    Read from the rows the proposals name, on the caller's connection, so
+    the answer is about the notebook as it is at commit time. Only
+    proposals that NAME an existing note can be held: a proposal that
+    replaces nothing removes nothing, and the panel already marks the one
+    thing worth marking about it (whose words it quotes).
+    """
+    held: set[int] = set()
+    targets: dict[int, int] = {}
+    for idx, fact in enumerate(proposals):
+        target = _supersedes_target(fact, existing_ids)
+        if target is None:
+            continue
+        targets[idx] = target
+        row = con.execute(
+            "SELECT provenance, pinned FROM notebook_entries WHERE id = ?",
+            (target,)).fetchone()
+        if row is None:
+            continue
+        # (1) the reader's own note, (2) a pinned one.
+        if row["provenance"] == PROV_USER or row["pinned"]:
+            held.add(idx)
+        # (4) the model quoting itself to retire something.
+        if fact.get("evidence_role") == "assistant":
+            held.add(idx)
+    # (3) a bulk conflict: this one reply retires three or more distinct
+    # notes, so every retiring proposal in it waits together.
+    if len(set(targets.values())) >= BULK_CONFLICT_MIN:
+        held |= set(targets)
+    return held
 
 
 ABANDONED_IN_FLIGHT = "abandoned_in_flight"
@@ -2264,11 +2724,13 @@ def settle_orphaned_running(con, chat_id: int, keep=()) -> int:
     The argument used to read: "safe because the worker is ONE task draining
     one chat at a time, so a `running` row seen at the top of a cycle cannot
     belong to a call that is still in flight - there is no such call."
-    `sweep()` created one. It runs `_handle` from the HTTP request task,
-    concurrently with the loop's own, and `_plan_work` calls this function
-    before it plans anything. So pressing the sweep button while the loop
-    was mid-call marked the loop's live, paid, in-flight row `failed`, and
-    the cursor moved past a range whose answer was still on its way.
+    The one-press sweep created one, and a reading job still does: a job
+    unit runs `_handle` concurrently with the loop's own read, and
+    `_plan_work` calls this function before it plans anything. So a unit
+    planned while the other door was mid-call marked that live, paid,
+    in-flight row `failed`, and the cursor moved past a range whose answer
+    was still on its way. (The sweep route itself is gone, decision 69 a;
+    the job took its place and its concurrency.)
 
     A key in `keep` is therefore left alone: this process is holding it, the
     money for it is in the air, and the task that owns it will settle it
@@ -2306,7 +2768,7 @@ def settle_orphaned_running(con, chat_id: int, keep=()) -> int:
             (ABANDONED_IN_FLIGHT, chat_id)).rowcount
     # Never chunked, and it does not need to be: `keep` holds the work keys
     # ONE process has in flight, and this process runs at most two `_handle`
-    # coroutines at a time - the loop's and the sweep button's.
+    # coroutines at a time - the ordinary reader's and a reading job's unit.
     holes = ",".join("?" * len(keep))
     return con.execute(
         "UPDATE notebook_extractions SET status = 'failed', error_type = ? "

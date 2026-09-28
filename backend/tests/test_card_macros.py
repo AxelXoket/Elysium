@@ -107,17 +107,43 @@ def _best_time(text, ctx, reps=5):
     return best
 
 
+#: Doubling the input may cost at most this many times the time. Linear is
+#: about 2, the quadratic scans these vectors guard against 4 in theory
+#: and about 3.3 as measured (see `RATIO_ATTEMPTS`).
+LINEAR_CEILING = 2.5
+#: How many independent ratio measurements a verdict may take. One was
+#: flaky under a full-suite run (2.64 on a linear scan: the machine was
+#: busy during the full-size half of that one measurement). Noise only
+#: ever ADDS time, to either side at random: on the full side it raises
+#: the ratio, on the half side it lowers it. So the lowest of a few ratios
+#: leans toward a pass, and that is the price of a gate that is not flaky.
+#: The margin that price leaves: a quadratic scan measured about 3.3 here
+#: (the memo dropped from `card_macros`, lowest of three, round c4-r4),
+#: against the ceiling of 2.5, so a busy half-size run would have to take
+#: about a third longer than a quiet one to carry it under.
+RATIO_ATTEMPTS = 3
+
+
 def _growth(vec_id):
     """Render the vector's repeated unit at half its count and at its full
     count; return (full / half time, full output). The gate asserts the RATIO,
     not milliseconds: a ratio does not go red because the machine is busy,
-    and a quadratic scan still shows as about 4."""
+    and a quadratic scan still shows well above the ceiling (about 3.3).
+
+    The ratio is the lowest of up to `RATIO_ATTEMPTS` measurements, each
+    already the best of five runs per side, and it stops at the first one
+    under `LINEAR_CEILING`, so a linear scan on a quiet machine pays for
+    one measurement as before."""
     vec = next(v for v in RENDER if v["id"] == vec_id)
     (part,) = vec["text"]
     ctx = _ctx(vec)
     half = part["repeat"] * (part["times"] // 2)
     full = part["repeat"] * part["times"]
-    ratio = _best_time(full, ctx) / _best_time(half, ctx)
+    ratio = float("inf")
+    for _ in range(RATIO_ATTEMPTS):
+        ratio = min(ratio, _best_time(full, ctx) / _best_time(half, ctx))
+        if ratio < LINEAR_CEILING:
+            break
     return ratio, render_macros(full, **ctx), vec
 
 
@@ -125,7 +151,7 @@ def test_rendering_grows_linearly_with_the_macro_count():
     """MV18 shape (100k macros): doubling the input at most 2.5x the time."""
     ratio, out, vec = _growth("MV18")
     assert out == _decode(vec["expect"])
-    assert ratio < 2.5, ratio
+    assert ratio < LINEAR_CEILING, ratio
 
 
 def test_a_refused_field_is_refused_before_it_is_built():
@@ -160,7 +186,7 @@ def test_many_unclosed_comments_stay_linear():
     closer from every opener is quadratic here (ratio about 4)."""
     ratio, out, vec = _growth("MV34")
     assert out == _decode(vec["expect"])
-    assert ratio < 2.5, ratio
+    assert ratio < LINEAR_CEILING, ratio
 
 
 # -- split --------------------------------------------------------------------

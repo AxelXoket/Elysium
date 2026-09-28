@@ -24,10 +24,44 @@ function olderBackendBody() {
     worker: {
       state: "closed", failures: 0, total_failures: 0,
       queued: 0, dropped_offers: 0, runs: 3, batch_size: 20,
+      // The one block that is REQUIRED rather than defaulted, on purpose:
+      // see "the backfill block" below.
+      backfill: null,
     },
     daily_cap: 60,
   };
 }
+
+describe("the backfill block", () => {
+  it("null parses as no job", () => {
+    const parsed = WorkerStatusSchema.parse(olderBackendBody());
+    expect(parsed.worker.backfill).toBeNull();
+  });
+
+  it("is REQUIRED: a body without it fails the parse rather than reading as no job", () => {
+    // The one block that is not defaulted, on purpose. z.object strips a
+    // key it was not told about, so an optional block would let a backend
+    // that stopped sending it look exactly like "no job is running" - and
+    // the strip would show a finished run for one that is still reading.
+    const body = olderBackendBody();
+    const { backfill: _dropped, ...worker } = body.worker;
+    void _dropped;
+    expect(() => WorkerStatusSchema.parse({ ...body, worker })).toThrow();
+  });
+
+  it("GROUND: a full block keeps every key", () => {
+    const body = olderBackendBody();
+    const block = {
+      job_id: 17, chat_id: 4, state: "running", scope: "all",
+      calls_planned: 21, calls_spent: 8, notes_written: 14,
+      messages_left: 240, last_error: null,
+    };
+    const parsed = WorkerStatusSchema.parse({
+      ...body, worker: { ...body.worker, backfill: block },
+    });
+    expect(parsed.worker.backfill).toEqual(block);
+  });
+});
 
 describe("the worker status a backend without the failure census sends", () => {
   it("still parses", () => {

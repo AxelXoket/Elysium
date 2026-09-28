@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 /**
  * WorkerPanel - what the background extractor has been doing with your money.
  *
@@ -14,12 +14,13 @@ import { useEffect, useRef, useState } from "react";
  * Surface: `.glass-right`, the app's one LIGHT island. Heading and controls
  * follow the vocabulary its siblings use, not the dark settings dialog's.
  */
-import { BookOpen, RotateCcw } from "lucide-react";
+import { RotateCcw } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { useUiStore } from "@/lib/store/uiStore";
 import { SwitchRow } from "@/components/settings/SwitchRow";
+import { useHeldValue } from "@/components/settings/useHeldValue";
 import { SlideIn } from "@/components/motion/SlideIn";
 import { Collapse } from "@/components/motion/Collapse";
 import { FadeIn } from "@/components/motion/FadeIn";
@@ -35,7 +36,6 @@ import {
   useResetWorker,
   useAutoAccept,
   useSetAutoAccept,
-  useSweepChat,
   useSetChatAutoAccept,
 } from "@/lib/query/notebook";
 
@@ -100,6 +100,30 @@ export const SKIP_PROSE: Record<string, string> = {
     "no API key is set, so nothing could be sent. This costs you nothing "
     + "and no call was made - add a key in Settings and it picks up again",
   proxy_gate: "your proxy was required and not healthy",
+  // NOT a line in the install-wide list below (3.8). The count of these rows
+  // is every chat's, and the sentence is about one chat's model, so it is
+  // said only through `chat_refusal`: the backend sends it while a refusal
+  // of the selected chat, newer than that chat's last read, names the model
+  // the chat uses now. Before this, the refusal was silent
+  // everywhere but the reading strip's preview, and the notes just stopped.
+  model_not_extractable:
+    "the note model this chat uses cannot write notes in the strict form "
+    + "they need, so nothing was sent and nothing was spent. This is usually "
+    + "the chat's own model under \"Use the model I am chatting with\"; pick "
+    + "a note model above and the next reply is read",
+  // The gate had no evidence either way: the provider's list of models that
+  // can write notes could not be fetched, so a chat whose note model is its
+  // own chat model was not read at that time. It says nothing about the
+  // model, so this sentence does not either, and it is an install-wide line
+  // like the rest: counted, over every chat, and in the past tense, because
+  // the rows stay after the list comes back. It promises no read: once the
+  // list is fetched the model is checked again, and a model the list does
+  // not carry is then refused as `model_not_extractable`.
+  model_list_unavailable:
+    "the list of models that can write notes could not be fetched from the "
+    + "provider at the time, so chats whose note model is their chat model "
+    + "were not read then. Nothing was sent and nothing was spent, and the "
+    + "model is checked again once the list can be fetched",
   // Written by a different path from the others - commit_extraction's
   // require_trace branch, not the worker's own SKIP_REASONS - so the gate
   // that keeps this table complete never covered it, and the panel printed
@@ -121,6 +145,16 @@ export const SKIP_PROSE: Record<string, string> = {
     + "still paid for; whatever survives of that stretch is read again, the "
     + "removed messages never are",
 };
+
+/** The skip reasons the card never counts in its install-wide list, because
+ *  their sentence is about one chat. Each reaches the screen only through
+ *  the status body's `chat_refusal`, which the backend scopes to the chat on
+ *  screen. Exported so the test that walks every reason can take the right
+ *  road for these. */
+// eslint-disable-next-line react-refresh/only-export-components -- same boundary as SKIP_PROSE
+export const CHAT_SCOPED_SKIPS: ReadonlySet<string> = new Set([
+  "model_not_extractable",
+]);
 
 /** What a reason with no sentence reads as. A snake_case token is the one
  *  thing this whole table exists to keep off the screen, and the fallback
@@ -398,13 +432,21 @@ export const CHAT_STATE_PROSE: Record<string, string> = {
     + " keep running; this one will not try again until you say so.",
 };
 
-/** Why the "read the earlier part" button refused, said plainly.
+/** Why a reading job refused to start (or to stop), said plainly.
  *
  *  This was three arms of an inline ternary whose last one was a catch-all
  *  reading "It is already reading. Give it a moment." The moment the worker
  *  learned to refuse a paused chat, that arm told the reader the exact
  *  opposite of what was happening. A table with a named fallback cannot do
- *  that quietly, and a test can walk it against the backend's own set. */
+ *  that quietly, and a test can walk it against the backend's own set.
+ *
+ *  TEN keys, one per token in the backend's SWEEP_REFUSALS: the five the
+ *  sweep always had, the four a backfill job adds (`not_ready`,
+ *  `daily_cap_reached`, `model_not_extractable`, `model_list_unavailable`)
+ *  and the stop route's `nothing_running`. The strip that reads this table lives in
+ *  NotebookPanel (BackfillStrip.tsx); the table stays here because this is
+ *  the file every reason-to-sentence table lives in, and the test that
+ *  walks it imports it from here. */
 // eslint-disable-next-line react-refresh/only-export-components -- same boundary as STATE_PROSE
 export const SWEEP_PROSE: Record<string, string> = {
   nothing_unread: "Nothing here is unread - it has all been looked at.",
@@ -414,6 +456,22 @@ export const SWEEP_PROSE: Record<string, string> = {
     + " was sent. Other chats are unaffected.",
   chat_stopped: "This chat is stopped after too many failures here, so"
     + " nothing was sent. Use the button below to try this chat again.",
+  not_ready: "It cannot start yet: this chat needs a character, a model it"
+    + " is chatting with, and a model to write notes with, all chosen first.",
+  daily_cap_reached: "Today's calls for reading history are used up, so"
+    + " nothing was sent. It can start again tomorrow, and nothing was lost.",
+  model_not_extractable: "The model this chat uses is not one notes can be"
+    + " written with - either it cannot answer in the strict form they need,"
+    + " or it is not on the list of endpoints that keep no copy of your"
+    + " words - so nothing was sent. Pick a note model from the list, or"
+    + " chat with a model that is on it.",
+  model_list_unavailable: "The list of models that can write notes could not"
+    + " be fetched from the provider, and this chat's note model is its chat"
+    + " model, which only that list can vouch for - so nothing was sent. It"
+    + " can be checked, and reading can start, only once that list is fetched"
+    + " again, so try again when the provider can be reached.",
+  nothing_running: "Nothing is reading right now, so there is nothing to"
+    + " stop.",
 };
 
 /** What a refusal with no sentence reads as. Same shape and same reason as
@@ -432,8 +490,6 @@ export function WorkerPanel() {
   // per-chat breaker is only reported for the chat that was asked about.
   const status = useWorkerStatus(chatId);
   const reset = useResetWorker();
-  const sweep = useSweepChat();
-  const [swept, setSwept] = useState<string | null>(null);
   const auto = useAutoAccept(chatId);
   const setAuto = useSetAutoAccept();
   const setChatAuto = useSetChatAutoAccept();
@@ -445,7 +501,16 @@ export function WorkerPanel() {
   // a healthy chat holds no breaker at all, and "no record" is exactly
   // "nothing to report".
   const chatState = body?.worker.chat?.state;
-  const skips = body?.stats.skip_reasons ?? {};
+  // Every reason except the chat-scoped ones: a count over every chat must
+  // not read as a sentence about the chat on screen.
+  const skips = Object.fromEntries(
+    Object.entries(body?.stats.skip_reasons ?? {})
+      .filter(([why]) => !CHAT_SCOPED_SKIPS.has(why)));
+  const chatRefusal = body?.chat_refusal ?? null;
+  // The line closes through its Collapse, so it keeps the last reason it
+  // said while the height animates down (KURAL 5.5); the Collapse takes it
+  // away from readers the moment it starts closing.
+  const heldRefusal = useHeldValue(chatRefusal);
   const failures = body?.stats.error_types ?? {};
   const drops = body?.worker.dropped ?? {};
   // Only when that value is describing THIS line's event. See isEmptySettle.
@@ -510,24 +575,6 @@ export function WorkerPanel() {
     }
   }
 
-  async function readTheRest() {
-    if (chatId == null) return;
-    setSwept(null);
-    try {
-      const out = await sweep.mutateAsync([chatId]);
-      // The two ordinary refusals are not errors and must not read as one.
-      // "There is nothing unread" is the answer somebody pressing this
-      // button most often gets, and a toast would make it look like a fault.
-      setSwept(
-        out.started
-          ? "Reading the earlier part of this chat now."
-          : sweepProse(out.reason),
-      );
-    } catch (err) {
-      pushError(err, "error");
-    }
-  }
-
   async function overrideForThisChat(next: boolean | null) {
     if (chatId == null) return;
     try {
@@ -587,12 +634,22 @@ export function WorkerPanel() {
             And the reason it is a control rather than a label: the import
             signal cannot see somebody pasting a downloaded card's fields
             into the form by hand. Nothing in the application can. The reader
-            can, so this is where they say so. */}
-        <Collapse open={chatId != null && auto.isSuccess}>
+            can, so this is where they say so.
+
+            THE WORDS WRAP. "Keep this chat's suggestions without asking" is
+            274 px on one line and this block's column, the section's, is
+            250 px at the panel's 300 px floor, so a label held to one line
+            ran past the column and the whole tab scrolled sideways. The
+            button's height follows its lines, from the 28 px of one. The
+            Collapse hands its inner a minimum width of 0 as well: the inner
+            is a grid item, whose automatic minimum is its content's own
+            width, so a wide child also pushed the sentence above it past the
+            column. */}
+        <Collapse open={chatId != null && auto.isSuccess} className="min-w-0">
           {auto.data && (
             <div className="space-y-1" data-testid="chat-auto-accept">
               <p className="text-label leading-relaxed text-muted-foreground">
-                In this chat, suggestions are{" "}
+                In this chat, most suggestions are{" "}
                 {auto.data.effective ?? auto.data.enabled
                   ? "kept without asking"
                   : "held for review"}
@@ -610,7 +667,7 @@ export function WorkerPanel() {
                   auto.data.overridden
                     ? null
                     : !(auto.data.effective ?? auto.data.enabled))}
-                className="persona-ghost-action h-7 px-2 text-label"
+                className="persona-ghost-action h-auto min-h-7 whitespace-normal px-2 py-1 text-left text-ui"
               >
                 {auto.data.overridden
                   ? "Follow the setting above"
@@ -622,7 +679,7 @@ export function WorkerPanel() {
           )}
         </Collapse>
 
-        <Collapse open={body != null}>
+        <Collapse open={body != null} className="min-w-0">
           {body && (
             <div className="persona-card space-y-1" data-testid="worker-status">
               <p className="text-label leading-relaxed text-muted-foreground">
@@ -634,7 +691,7 @@ export function WorkerPanel() {
                   chat in front of the reader, and it exists because a chat
                   stopped on its own is otherwise a panel reading "Running."
                   over a conversation nothing will ever read. */}
-              <Collapse open={!!chatState && chatState !== "closed"}>
+              <Collapse open={!!chatState && chatState !== "closed"} className="min-w-0">
                 <p
                   className="text-label leading-relaxed text-muted-foreground"
                   data-testid="worker-chat-state"
@@ -643,15 +700,20 @@ export function WorkerPanel() {
                 </p>
               </Collapse>
               <p className="text-label leading-relaxed text-muted-foreground">
-                {body.stats.done} runs · {body.spend.calls} of {body.daily_cap}{" "}
-                calls today · {body.spend.cost.toFixed(5)} credits{" "}
-                {/* Same line as today's count - "beside", not below - but
-                    dimmed with the app's existing secondary-text idiom
-                    (opacity-70, as ModelPanel's "Selected:" label and
-                    ImageOutputSetting's hint text already use) and named
-                    "lifetime" rather than positioned next to "today" with no
-                    label of its own. Today's number is the one that governs
-                    the cap, so it keeps full weight; this one does not.
+                {body.stats.done} run{body.stats.done === 1 ? "" : "s"}{" \u00b7 "}
+                {body.spend.calls} of {body.daily_cap}{" "}
+                call{body.daily_cap === 1 ? "" : "s"} today{" \u00b7 "}
+                {body.spend.cost.toFixed(5)} credits{" "}
+                {/* Same line as today's count - "beside", not below - and
+                    named "lifetime" rather than positioned next to "today"
+                    with no label of its own. It is not dimmed. It sat at 70%
+                    opacity once, the secondary-text idiom the dark
+                    surfaces use, and on this panel that took the muted ink to
+                    2.7:1 with the opacity applied (KURAL 2.4b), under the
+                    4.5:1 its words need. The muted ink is already the
+                    quieter of the panel's two tiers and the floor of the
+                    two: nothing quieter reads. The parentheses and the word
+                    "lifetime" set it apart from today's count.
 
                     The docstring on spend_lifetime (notebook_store.py) argues
                     that filtering the lifetime SUM would hide "real spend that
@@ -664,9 +726,10 @@ export function WorkerPanel() {
                     screen. Both numbers now use the same "N unit" words the
                     line above already uses for today ("calls" / "credits"),
                     not a bare number - the units are what mark this as a
-                    different KIND of figure, not just its dimmer position. */}
-                <span className="opacity-70">
-                  ({body.spend_lifetime.calls} calls,{" "}
+                    different KIND of figure, not just its position. */}
+                <span>
+                  ({body.spend_lifetime.calls}{" "}
+                  call{body.spend_lifetime.calls === 1 ? "" : "s"},{" "}
                   {body.spend_lifetime.cost.toFixed(5)} credits lifetime)
                 </span>
               </p>
@@ -682,14 +745,15 @@ export function WorkerPanel() {
 
                   Only when there is something to say: a provider that prices
                   everything never sees this line. */}
-              <Collapse open={body.spend.cost_unknown > 0}>
+              <Collapse open={body.spend.cost_unknown > 0} className="min-w-0">
                 <p
                   className="text-label leading-relaxed text-muted-foreground"
                   data-testid="worker-cost-unknown"
                 >
                   {body.spend.cost_unknown} of the calls made today came back with
-                  no price - the credit figure above leaves them out rather than
-                  counting them as free.
+                  no price - the credit figure above leaves{" "}
+                  {body.spend.cost_unknown === 1 ? "it" : "them"} out rather than
+                  counting {body.spend.cost_unknown === 1 ? "it" : "them"} as free.
                 </p>
               </Collapse>
 
@@ -707,22 +771,29 @@ export function WorkerPanel() {
                   `write_*` failure happens AFTER the reply has been sent,
                   generated and billed, and it was landing on the "nothing was
                   lost" side of this subtraction. */}
-              <Collapse open={body.stats.failed - body.stats.paid_and_lost > 0}>
+              <Collapse open={body.stats.failed - body.stats.paid_and_lost > 0} className="min-w-0">
                 <p className="text-label leading-relaxed text-muted-foreground">
-                  {body.stats.failed - body.stats.paid_and_lost} runs failed.
-                  Nothing was lost - the messages they could not read stay
-                  unread, not skipped.
+                  {body.stats.failed - body.stats.paid_and_lost === 1
+                    ? "1 run failed. Nothing was lost - the messages it could not"
+                    : `${body.stats.failed - body.stats.paid_and_lost} runs failed. Nothing`
+                      + " was lost - the messages they could not"}{" "}
+                  read stay unread, not skipped.
                 </p>
               </Collapse>
 
-              <Collapse open={body.stats.abandoned > 0}>
+              <Collapse open={body.stats.abandoned > 0} className="min-w-0">
                 <p
                   className="text-label leading-relaxed text-muted-foreground"
                   data-testid="worker-abandoned"
                 >
-                  {body.stats.abandoned} runs were cut off after the request had
-                  already been sent, so they were paid for. Elysium does not
-                  send those stretches again, which is why the notes for them
+                  {body.stats.abandoned === 1
+                    ? "1 run was cut off after the request had already been sent,"
+                      + " so it was paid for. Elysium does not send that stretch"
+                      + " again, which is why the notes for it"
+                    : `${body.stats.abandoned} runs were cut off after the request`
+                      + " had already been sent, so they were paid for. Elysium does"
+                      + " not send those stretches again, which is why the notes for"
+                      + " them"}{" "}
                   are missing rather than duplicated.
                 </p>
               </Collapse>
@@ -760,7 +831,8 @@ export function WorkerPanel() {
                       no way to tell which number was wrong. Naming the total
                       here makes the lines reconcile in front of them, and it
                       is the only place `failed` itself is legible. */}
-                  {n} of {body.stats.failed} failures: {failureProse(why)}
+                  {n} of {body.stats.failed}{" "}
+                  failure{body.stats.failed === 1 ? "" : "s"}: {failureProse(why)}
                 </p>
               ))}
 
@@ -773,10 +845,27 @@ export function WorkerPanel() {
                 </p>
               ))}
 
+              {/* About THIS chat and nothing else, with no count: the backend
+                  sends it only while the refusal still names the model this
+                  chat uses (3.8). It changes the card's height, so it
+                  arrives and leaves through a Collapse like the lines
+                  around it: picking a working model closes it, and it used
+                  to vanish in one frame. */}
+              <Collapse open={chatRefusal != null} className="min-w-0">
+                <p
+                  className="text-label leading-relaxed text-muted-foreground"
+                  data-testid="worker-chat-refusal"
+                >
+                  {heldRefusal
+                    ? <>Not read in this chat: {skipProse(heldRefusal)}.</>
+                    : null}
+                </p>
+              </Collapse>
+
               {/* The worker died. Everything else on this card describes a
                   worker that is running; without this line the card describes
                   one that is not, in the same words. */}
-              <Collapse open={!body.worker.alive}>
+              <Collapse open={!body.worker.alive} className="min-w-0">
                 <p className="persona-local-error" role="alert">
                   The background reader has stopped
                   {body.worker.died ? ` (${body.worker.died})` : ""}. Restart
@@ -785,12 +874,13 @@ export function WorkerPanel() {
                 </p>
               </Collapse>
 
-              <Collapse open={body.worker.unhandled > 0}>
+              <Collapse open={body.worker.unhandled > 0} className="min-w-0">
                 <p
                   className="text-label leading-relaxed text-muted-foreground"
                   data-testid="worker-unhandled"
                 >
-                  {body.worker.unhandled} runs ended in an unexpected error
+                  {body.worker.unhandled} run{body.worker.unhandled === 1 ? "" : "s"}{" "}
+                  ended in an unexpected error
                   {/* The value is shared with the empty-settle line above, and
                       it holds whichever event happened LAST. Printed here
                       unconditionally it put that line's token in this line's
@@ -813,7 +903,7 @@ export function WorkerPanel() {
                   do. The three ways in are named because they call for
                   different things: two of them are races that fix themselves,
                   the third is the reader's own edit. */}
-              <Collapse open={body.worker.settled_empty > 0}>
+              <Collapse open={body.worker.settled_empty > 0} className="min-w-0">
                 <p
                   className="text-label leading-relaxed text-muted-foreground"
                   data-testid="worker-settled-empty"
@@ -858,10 +948,13 @@ export function WorkerPanel() {
                 </p>
               ))}
 
-              <Collapse open={body.worker.refused_by_breaker > 0}>
+              <Collapse open={body.worker.refused_by_breaker > 0} className="min-w-0">
                 <p className="text-label leading-relaxed text-muted-foreground">
-                  {body.worker.refused_by_breaker} turns were passed over while
-                  it was cooling down. Their messages are still unread.
+                  {body.worker.refused_by_breaker}{" "}
+                  {body.worker.refused_by_breaker === 1 ? "turn was" : "turns were"}{" "}
+                  passed over while it was cooling down.{" "}
+                  {body.worker.refused_by_breaker === 1 ? "Its" : "Their"} messages
+                  are still unread.
                 </p>
               </Collapse>
 
@@ -869,87 +962,38 @@ export function WorkerPanel() {
                   together, "the provider is down" and "these conversations are
                   broken" read as one number, and only one of them means the
                   rest of the notebook is working. */}
-              <Collapse open={body.worker.refused_by_chat_breaker > 0}>
+              <Collapse open={body.worker.refused_by_chat_breaker > 0} className="min-w-0">
                 <p className="text-label leading-relaxed text-muted-foreground">
-                  {body.worker.refused_by_chat_breaker} turns were passed over
-                  in chats that keep failing on their own
+                  {body.worker.refused_by_chat_breaker}{" "}
+                  {body.worker.refused_by_chat_breaker === 1
+                    ? "turn was passed over in a chat that keeps failing on its own"
+                    : "turns were passed over in chats that keep failing on their own"}
                   {body.worker.tripped_chats > 0
-                    ? ` (${body.worker.tripped_chats} of them right now)`
+                    ? ` (${body.worker.tripped_chats} ${body.worker.tripped_chats === 1
+                      ? "chat is" : "chats are"} failing right now)`
                     : ""}
                   . Every other chat kept running.
                 </p>
               </Collapse>
 
-              <Collapse open={body.worker.dropped_offers > 0}>
+              <Collapse open={body.worker.dropped_offers > 0} className="min-w-0">
                 <p className="text-label leading-relaxed text-muted-foreground">
-                  {body.worker.dropped_offers} turns went unqueued while it was
-                  behind. Their messages are still unread, so a later run picks
-                  them up.
+                  {body.worker.dropped_offers}{" "}
+                  {body.worker.dropped_offers === 1 ? "turn" : "turns"} went unqueued
+                  while it was behind.{" "}
+                  {body.worker.dropped_offers === 1 ? "Its" : "Their"} messages are
+                  still unread, so a later run picks them up.
                 </p>
               </Collapse>
             </div>
           )}
         </Collapse>
 
-        {/* THE WAY BACK.
-            The worker only ever moves forward: its cursor is a maximum, and
-            the first read of a chat that already had a long history starts
-            at the PRESENT on purpose - a notebook describing a conversation
-            four hundred messages ago is worse than an empty one. That was a
-            decision with no undo, and this is the undo. One call per press,
-            against the same daily limit as an ordinary turn.
-
-            Only with a chat open, because there is nothing to read
-            otherwise. */}
-        <Collapse open={chatId != null}>
-          <div className="space-y-1">
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              disabled={sweep.isPending || (body?.worker.sweeping ?? false)}
-              onClick={() => void readTheRest()}
-              data-testid="worker-sweep"
-              className="persona-ghost-action h-7 gap-1.5 px-2 text-label"
-            >
-              <BookOpen size={12} className="size-3" />
-              Read the earlier messages here
-            </Button>
-            {/* The data gate inside the Collapse is not decoration and not a
-                second condition on the same thing. Collapse keeps its
-                content mounted, so without it the paragraph is in the tree
-                before the query resolves and `body!` throws; with the reads
-                written as optional instead, the tree carries a sentence with
-                two blanks in it from first paint, and the case that waits
-                for this paragraph to ARRIVE (WorkerPanel.test.tsx, "offers
-                the backlog rather than reading it") resolves on the blank
-                one. Measured both ways; this is the one that keeps the
-                paragraph a thing that appears when it has something to say. */}
-            <Collapse open={(body?.worker.backlog.messages ?? 0) > 0}>
-              {body && (
-                <p
-                  className="text-label leading-relaxed text-muted-foreground"
-                  data-testid="worker-backlog"
-                >
-                  {body!.worker.backlog.chats} chat
-                  {body!.worker.backlog.chats === 1 ? "" : "s"} have{" "}
-                  {body!.worker.backlog.messages} unread messages. Nothing is
-                  read without you asking - reading them costs calls.
-                </p>
-              )}
-            </Collapse>
-
-            <Collapse open={!!swept}>
-              <p
-                className="text-label leading-relaxed text-muted-foreground"
-                role="status"
-                data-testid="worker-sweep-said"
-              >
-                {swept}
-              </p>
-            </Collapse>
-          </div>
-        </Collapse>
+        {/* The way back to a chat's earlier messages is not on this card any
+            more. One job at a time means one door: the strip at the top of
+            the Notebook panel (BackfillStrip.tsx) previews, starts, stops
+            and undoes a reading job, and it carries the unread-backlog line
+            that used to sit here, with the same sentence. */}
 
         {/* Only when it means something. A reset button that is always there
             invites pressing it at random; one that appears when the thing is
@@ -966,7 +1010,7 @@ export function WorkerPanel() {
               variant="ghost"
               disabled={reset.isPending}
               onClick={() => void unstick()}
-              className="persona-ghost-action h-7 gap-1.5 px-2 text-label"
+              className="persona-ghost-action h-7 gap-1.5 px-2 text-ui"
             >
               <RotateCcw size={12} className="size-3" />
               Try again now
@@ -986,7 +1030,7 @@ export function WorkerPanel() {
               variant="ghost"
               disabled={reset.isPending}
               onClick={() => void unstick(chatId)}
-              className="persona-ghost-action h-7 gap-1.5 px-2 text-label"
+              className="persona-ghost-action h-7 gap-1.5 px-2 text-ui"
             >
               <RotateCcw size={12} className="size-3" />
               Try this chat again

@@ -197,23 +197,29 @@ class TestOneRangeIsClaimedOnce:
         The gate inside `_prepare` cannot write a row - `commit_extraction`
         is keyed on the work key and the live `running` row already holds it
         - so a reason recorded there is a reason dropped on the floor. The
-        reader who needs it is the one pressing Sweep, and that route
-        already answers with a reason the panel renders.
+        reader who needs it is the one pressing the reading strip's button,
+        and that route already answers with a reason the panel renders. It
+        was the sweep route until decision 69 a removed it; the `next` job
+        is the same one press, through the door that is left.
         """
         chat_id = _seed(client)
         database.set_setting(config.SETTING_NOTEBOOK_MODEL, "vendor/cheap")
+        with database.get_db() as con:
+            con.execute("UPDATE chats SET model_id = ? WHERE id = ?",
+                        ("vendor/cheap", chat_id))
 
         w = notebook_worker.Worker()
         w.queue = asyncio.Queue(maxsize=8)
 
         # GROUND CONTROL: with nothing in flight the button is answered on
         # its merits, not by this gate.
-        assert (await w.sweep(chat_id))["started"] is True
+        assert (await w.backfill(chat_id, "next"))["started"] is True
+        await w.wait_for_backfill()
 
         held = await w._prepare(chat_id)
         assert held is not None, "ground: the loop is now inside this chat"
 
-        out = await w.sweep(chat_id)
+        out = await w.backfill(chat_id, "next")
         assert out == {"started": False, "reason": "already_in_flight"}, (
             "the button went quiet while the loop was reading the same "
             "range, or worse, paid for it again")

@@ -28,15 +28,14 @@ import { useEffect, useRef, useState } from "react";
 import {
   Pin, PinOff, Plus, Trash2, X, Check, Loader2, Undo2, Search,
 } from "lucide-react";
-import { AnimatePresence, motion as m } from "motion/react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { BackfillStrip } from "@/components/notebook/BackfillStrip";
 import { SlideIn } from "@/components/motion/SlideIn";
 import { Collapse } from "@/components/motion/Collapse";
+import { CrossFade } from "@/components/motion/CrossFade";
 import { FadeIn } from "@/components/motion/FadeIn";
-import { useReducedMotion } from "@/components/motion/ReducedMotion";
-import { durationSeconds, easeValues } from "@/lib/theme/tokens";
 import { useUiStore } from "@/lib/store/uiStore";
 import {
   PANEL_DRAFT_KEYS,
@@ -156,6 +155,9 @@ function noteState(
   return "live";
 }
 
+/** What the empty field asks for; its placeholder and its title. */
+const NEW_NOTE_PROMPT = "Something this story has established...";
+
 export function NotebookPanel() {
   const chatId = useUiStore((s) => s.selectedChatId);
   const { data, isLoading, isError } = useNotebook(chatId);
@@ -165,30 +167,11 @@ export function NotebookPanel() {
   const accept = useAcceptNote();
   const pushError = useErrorStore((s) => s.pushError);
 
-  // The two swaps below are the one motion shape `components/motion/` has no
-  // primitive for: a REPLACEMENT rather than an arrival. `AnimatePresence`
-  // with `mode="wait"` is used directly for it, so the outgoing pane finishes
-  // its exit before the incoming one mounts and the two never overlap. Under
-  // reduced motion both halves take no time, which is the plain instant swap
-  // the ternary always was.
-  //
-  // VariantCarousel and VaultGate say in their own comments that they avoid
-  // AnimatePresence, and they still do: the hazard they record is a POPPED
-  // pane lingering under StrictMode, which is a problem of lists of panes.
-  // There is no list here. Each swap has exactly one keyed child and
-  // `mode="wait"`, and the panel's tests WAIT for the incoming pane rather
-  // than assuming it, so a pane that failed to leave turns up as a red test
-  // instead of on screen.
-  const reduced = useReducedMotion();
-  const crossFade = {
-    initial: { opacity: 0 },
-    animate: { opacity: 1 },
-    exit: { opacity: 0 },
-    transition: {
-      duration: reduced ? 0 : durationSeconds.exit,
-      ease: easeValues.exit,
-    },
-  };
+  // The two swaps below go through `CrossFade`, the house primitive for a
+  // REPLACEMENT rather than an arrival. It lived inline here until the
+  // backfill strip needed the same gesture; the duration, the easing, the
+  // reduced-motion collapse and the `data-slot`/`data-pane` the tests ask
+  // through are all in the one component now.
 
   // The note being written outlives this panel, because this panel does not
   // outlive a click on a neighbouring tab. Same store as the composer's
@@ -240,8 +223,8 @@ export function NotebookPanel() {
   //
   // `confirmUndo` has no such excuse and IS reset. It is a bare boolean, so
   // it carries into the next chat and arms a strip nobody armed: the reader
-  // opens chat B and its Undo row is already asking "Confirm deleting N
-  // notes" about a set they have never seen. That is the same unconfirmed
+  // opens chat B and its Undo row is already offering "Remove all N"
+  // about a set they have never seen. That is the same unconfirmed
   // bulk delete this pair exists to prevent, one chat over.
   const [filterChatId, setFilterChatId] = useState(chatId);
   if (chatId !== filterChatId) {
@@ -398,6 +381,12 @@ export function NotebookPanel() {
           </span>
         </div>
 
+        {/* THE WAY BACK, at the top, where the notes are written. Reading
+            a chat's earlier messages is a job with a price, a preview, a
+            stop and an undo, and it lives here rather than on the worker
+            card so there is one door to it and one screen of progress. */}
+        <BackfillStrip chatId={chatId} />
+
         {/* A35. With auto-accept ON there is no review step, so a note the
             model wrote reaches the prompt having been seen by nobody - and
             "the write was invisible" is the complaint every shipped version
@@ -410,89 +399,83 @@ export function NotebookPanel() {
             into their prompt. Silent for a sighted user is the complaint this
             strip answers; silent for a screen reader is the same complaint
             with nothing left to answer it. */}
-        <Collapse open={justSaved.length > 0}>
+        <Collapse open={justSaved.length > 0} className="min-w-0">
           <div
             className="persona-card space-y-2"
             data-testid="just-saved"
             role="status"
           >
-            <p className="text-label leading-relaxed text-muted-foreground">
+            {/* Breaks inside a word, as the note's own row below does: a note
+                that is one long word quoted here otherwise ran past the card
+                and was cut by its clip. */}
+            <p className="break-words text-label leading-relaxed text-muted-foreground">
               Saved {justSaved.length === 1 ? "a note" : `${justSaved.length} notes`}{" "}
               the model wrote{justSaved.length === 1
                 ? `: "${justSaved[0].text}"`
                 : "."}
             </p>
-            {/* `initial={false}` keeps the first mount still: the pair is
-                already there, it has nothing to arrive from. */}
-            <AnimatePresence mode="wait" initial={false}>
-              <m.div
-                key={confirmUndo ? "confirm" : "undo"}
-                data-slot="cross-fade"
-                data-pane={confirmUndo ? "confirm" : "undo"}
-                className="flex items-center gap-2"
-                {...crossFade}
-              >
-                {confirmUndo ? (
-                  <>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      disabled={busy}
-                      onClick={() => void handleUndo()}
-                      aria-label={justSaved.length === 1
-                        ? "Confirm delete"
-                        : `Confirm deleting ${justSaved.length} notes`}
-                      className="persona-danger-action h-7 gap-1.5 px-2 text-label"
-                    >
-                      <Check size={12} className="size-3" />
-                      Delete {justSaved.length === 1
-                        ? "it" : `all ${justSaved.length}`}
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      disabled={busy}
-                      onClick={() => setConfirmUndo(false)}
-                      aria-label="Keep note"
-                      className="persona-ghost-action h-7 px-2 text-label"
-                    >
-                      Cancel
-                    </Button>
-                  </>
-                ) : (
-                  <>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      disabled={busy}
-                      onClick={() => setConfirmUndo(true)}
-                      className="persona-danger-action h-7 gap-1.5 px-2 text-label"
-                    >
-                      <Undo2 size={12} className="size-3" />
-                      Undo
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      onClick={acknowledge}
-                      className="persona-ghost-action h-7 px-2 text-label"
-                    >
-                      Keep {justSaved.length === 1 ? "it" : "them"}
-                    </Button>
-                  </>
-                )}
-              </m.div>
-            </AnimatePresence>
+            <CrossFade
+              pane={confirmUndo ? "confirm" : "undo"}
+              className="flex items-center gap-2"
+            >
+              {confirmUndo ? (
+                <>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    disabled={busy}
+                    onClick={() => void handleUndo()}
+                    className="persona-danger-action h-7 gap-1.5 px-2 text-ui"
+                  >
+                    <Check size={12} className="size-3" />
+                    {/* The strip's own words for its undo, so the two
+                        confirms in this tab read alike. */}
+                    Remove {justSaved.length === 1
+                      ? "it" : `all ${justSaved.length}`}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    disabled={busy}
+                    onClick={() => setConfirmUndo(false)}
+                    className="persona-ghost-action h-7 px-2 text-ui"
+                  >
+                    Cancel
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    disabled={busy}
+                    onClick={() => setConfirmUndo(true)}
+                    className="persona-danger-action h-7 gap-1.5 px-2 text-ui"
+                  >
+                    <Undo2 size={12} className="size-3" />
+                    Undo
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={acknowledge}
+                    className="persona-ghost-action h-7 px-2 text-ui"
+                  >
+                    Keep {justSaved.length === 1 ? "it" : "them"}
+                  </Button>
+                </>
+              )}
+            </CrossFade>
           </div>
         </Collapse>
 
         {/* Only once there are enough notes for the eye to lose one. A search
             box over four rows is furniture. */}
-        <Collapse open={all.length > 5}>
+        <Collapse open={all.length > 5} className="min-w-0">
           <div className="relative">
             <Search
               size={12}
@@ -503,6 +486,7 @@ export function NotebookPanel() {
             <Input
               value={query}
               placeholder="Search notes..."
+              title="Search notes..."
               aria-label="Search notes"
               onChange={(e) => setQuery(e.target.value)}
               className="persona-field pl-7 text-label"
@@ -528,7 +512,8 @@ export function NotebookPanel() {
           <Input
             value={draft}
             maxLength={ENTRY_MAX_CHARS}
-            placeholder="Something this story has established..."
+            placeholder={NEW_NOTE_PROMPT}
+            title={NEW_NOTE_PROMPT}
             // The placeholder is a prompt, not a name. It is the only thing
             // that named this box, and a placeholder stops being read out the
             // moment there is a value - so the control announced itself by
@@ -559,25 +544,21 @@ export function NotebookPanel() {
           >
             {/* A span, not a div: this sits inside a button's label, which
                 is phrasing content. */}
-            <AnimatePresence mode="wait" initial={false}>
-              <m.span
-                key={create.isPending ? "busy" : "idle"}
-                data-slot="cross-fade"
-                data-pane={create.isPending ? "busy" : "idle"}
-                className="inline-flex"
-                {...crossFade}
-              >
-                {create.isPending ? (
-                  <Loader2 size={12} className="size-3 animate-spin" />
-                ) : (
-                  <Plus size={12} className="size-3" />
-                )}
-              </m.span>
-            </AnimatePresence>
+            <CrossFade
+              as="span"
+              pane={create.isPending ? "busy" : "idle"}
+              className="inline-flex"
+            >
+              {create.isPending ? (
+                <Loader2 size={12} className="size-3 animate-spin" />
+              ) : (
+                <Plus size={12} className="size-3" />
+              )}
+            </CrossFade>
           </Button>
         </div>
 
-        <Collapse open={isLoading}>
+        <Collapse open={isLoading} className="min-w-0">
           <p className="text-label leading-relaxed text-muted-foreground">Loading...</p>
         </Collapse>
 
@@ -592,7 +573,7 @@ export function NotebookPanel() {
 
             First in the chain, so the two branches below can stay the pair
             they are rather than being taught about a third case each. */}
-        <Collapse open={!isLoading && isError}>
+        <Collapse open={!isLoading && isError} className="min-w-0">
           <p
             className="text-label leading-relaxed text-muted-foreground"
             role="status"
@@ -609,7 +590,7 @@ export function NotebookPanel() {
             here." The two contradict each other, and one of them is telling
             the reader their notes are gone. The filter decides which is
             true. */}
-        <Collapse open={!isLoading && !isError && entries.length === 0 && query === ""}>
+        <Collapse open={!isLoading && !isError && entries.length === 0 && query === ""} className="min-w-0">
           <p className="text-label leading-relaxed text-muted-foreground">
             Nothing yet. Notes are sent with every message, so the character
             stops forgetting what you write here.
@@ -619,13 +600,13 @@ export function NotebookPanel() {
         {/* `role="status"`: the list empties out under the reader's own
             typing, and for anyone not watching the rows the count is the only
             evidence that the notes are still there and only hidden. */}
-        <Collapse open={!isLoading && !isError && entries.length === 0 && query !== ""}>
+        <Collapse open={!isLoading && !isError && entries.length === 0 && query !== ""} className="min-w-0">
           <p
             className="text-label leading-relaxed text-muted-foreground"
             role="status"
           >
-            No note matches that. {all.length} are still here - the search
-            covers the note and the words it was taken from.
+            No note matches that. {all.length} {all.length === 1 ? "is" : "are"} still
+            here - the search covers the note and the words it was taken from.
           </p>
         </Collapse>
 
@@ -735,7 +716,15 @@ function NoteRow({
       data-state={state}
     >
       <div className="min-w-0 flex-1">
-        <p className="break-words text-ui font-semibold">{entry.text}</p>
+        {/* The panel's own ink, named here: a line with none inherits the
+            body's, which is the dark theme's text, and on this light panel
+            that measured 1.02 to 1.07:1. */}
+        <p
+          className="break-words text-ui font-semibold"
+          style={{ color: "var(--color-es-text-light)" }}
+        >
+          {entry.text}
+        </p>
         {/* The two ways a note stops being sent read the same in a plain list
             and are not the same thing, so each says which it is. */}
         {state === "retired" && (

@@ -11,6 +11,18 @@ Routes:
     POST   /notebook/boundaries                - add a limit (global or chat)
     DELETE /notebook/boundaries/{id}           - remove a limit
     POST   /notebook/{chat_id}/use-global      - follow the global set, or not
+    GET    /notebook/extract/plan/{chat_id}    - preview a backfill job, spends nothing
+    POST   /notebook/extract/run/{chat_id}     - start one (next | all | range)
+    POST   /notebook/extract/stop/{chat_id}    - stop it after the unit in flight
+    POST   /notebook/extract/undo/{job_id}     - remove exactly what one job wrote
+
+Two namespaces, and they never mix. A REFUSAL answers 200 with
+`{started: false, reason}` and its token is one of
+`notebook_worker.SWEEP_REFUSALS`; it is the ordinary answer to a button and
+is not in the error catalogue. An ERROR CODE answers 4xx with `{detail}`,
+is `notebook_`-prefixed, and lives in `notebook_store.ALL_CODES`, the
+catalogue and errorMessages.ts alike. The backfill routes add three of the
+second kind and none of the first to the catalogue.
 
 Privacy invariants:
     - Note and boundary TEXT is never logged, at any level. Ids and counts
@@ -38,6 +50,8 @@ import logging
 import re
 
 import anyio.to_thread
+from typing import Literal
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -121,8 +135,11 @@ class UseGlobalBody(BaseModel):
 #: raising it: `:160` has always answered 404 for that code directly,
 #: so leaving it out here would have given ONE code two statuses again -
 #: the exact contract this set exists to close.
+#: `notebook_job_not_found` is here for the same reason: the undo route
+#: answers it for a job that does not exist AND for one that is not this
+#: chat's, on purpose, and both are a missing thing.
 _NOT_FOUND_CODES = frozenset({"chat_not_found", "notebook_entry_not_found",
-                              "boundary_not_found"})
+                              "boundary_not_found", "notebook_job_not_found"})
 
 
 def _refuse(exc: notebook.NotebookError):
@@ -189,11 +206,34 @@ async def worker_status(chat_id: int | None = None) -> dict:
     nothing this week" and "the notebook has refused sixty times for a reason
     nobody can see" the same screen. Every refusal carries its reason here.
 
-    `chat_id` is optional and ADDITIVE: it fills the `worker.chat` block for
-    the conversation on screen and changes nothing else, so a panel with no
-    chat selected asks the same question it always did.
+    `chat_id` is optional and ADDITIVE: it fills the `worker.chat` block and
+    `chat_refusal` for the conversation on screen and changes nothing else,
+    so a panel with no chat selected asks the same question it always did.
+
+    `stats` stays install-wide on purpose: it is every chat's history. The
+    one sentence about THIS chat's note model is `chat_refusal`, scoped
+    three ways by `notebook_worker.standing_refusal`: the refusal rows are
+    this chat's, only those newer than its last read count, and one of them
+    names the model the chat uses now. If that check fails, the field is
+    null and the rest of the body is answered as usual. A count over every
+    chat shown as a fact about the chat on screen is what it replaced (3.8).
     """
     import notebook_worker
+
+    def _chat_refusal(con) -> str | None:
+        """The one sentence about the chat on screen, or None. A failure
+        here (the model setting unreadable, say) costs that sentence and
+        nothing else: the rest of the card is every chat's counters, and a
+        500 over one optional field would blank all of them. Logged by
+        exception type and chat id only; no text leaves the vault."""
+        if chat_id is None:
+            return None
+        try:
+            return notebook_worker.standing_refusal(con, chat_id)
+        except Exception as exc:  # noqa: BLE001 - degrade, never fail the poll
+            logger.warning("chat_refusal unavailable for chat %d: %s",
+                           chat_id, type(exc).__name__)
+            return None
 
     def _read() -> dict:
         from database import get_db
@@ -206,10 +246,19 @@ async def worker_status(chat_id: int | None = None) -> dict:
                 # SUM over the whole table is the cheap answer here, not the
                 # expensive one.
                 "spend_lifetime": notebook.spend_lifetime(con),
+                # The backfill job block, read on this same connection and
+                # handed to `status()`, which has no database in reach. It
+                # rides this route rather than one of its own because
+                # `main._IDLE_EXEMPT` matches paths exactly: a progress
+                # poll on a route of its own would reset the idle clock for
+                # as long as a job ran.
+                "backfill": notebook_worker.worker.backfill_block(con, chat_id),
+                "chat_refusal": _chat_refusal(con),
             }
 
     body = await anyio.to_thread.run_sync(_read)
-    body["worker"] = notebook_worker.worker.status(chat_id=chat_id)
+    body["worker"] = notebook_worker.worker.status(
+        chat_id=chat_id, backfill=body.pop("backfill"))
     body["daily_cap"] = config.NOTEBOOK_DAILY_CALL_CAP
     return body
 
@@ -426,32 +475,6 @@ async def accept_entry(entry_id: int, chat_id: int) -> dict:
         _refuse(exc)
     logger.info("Notebook proposal accepted: id=%d", entry_id)
     return entry
-
-
-# ABOVE `/{chat_id}`, and it has to stay there. FastAPI matches in
-# declaration order, so a single-segment literal declared BELOW a
-# single-segment parameter never matches: the parameter wins and answers 422
-# for a path that is not a number. Every literal route in this file sits
-# above that line for the same reason.
-@router.post("/sweep/{chat_id}")
-async def sweep_chat(chat_id: int) -> dict:
-    """Read the part of this chat nobody has read.
-
-    The ordinary worker only ever moves forward. A chat that met this feature
-    with a long history behind it deliberately starts at the PRESENT - a
-    notebook describing a conversation four hundred messages ago is worse
-    than an empty one - and until now that decision was permanent, because
-    the cursor is a maximum and could never look under itself again.
-
-    This is the way back. One work unit per press, through the worker's own
-    door, claimed against the same daily cap and recorded in the same table.
-    """
-    import notebook_worker
-
-    result = await notebook_worker.worker.sweep(chat_id)
-    logger.info("Notebook sweep for a chat: %s",
-                "started" if result.get("started") else result.get("reason"))
-    return result
 
 
 @router.get("/{chat_id}")
@@ -712,12 +735,20 @@ async def list_extraction_models() -> dict:
 @router.get("/extract/settings")
 async def get_extract_settings() -> dict:
     def _read() -> dict:
+        import notebook_extract
         from database import get_setting
         return {
             # None means extraction never runs. There is deliberately no
             # default: a background job spending somebody's credits on a model
             # they never chose is not a convenience.
-            "model_id": get_setting(config.SETTING_NOTEBOOK_MODEL) or None,
+            #
+            # `extract_model_setting`, not `extract_model`: this route reports
+            # what the reader CHOSE, and the binding marker is a choice. The
+            # resolving one would answer with whichever model the chat happens
+            # to use today, and the picker would then show that model as the
+            # selection - silently turning a standing choice into a fixed one
+            # the first time this route was read.
+            "model_id": notebook_extract.extract_model_setting(),
             "prompt_language":
                 get_setting(config.SETTING_NOTEBOOK_PROMPT_LANG) or "en",
         }
@@ -738,7 +769,9 @@ MODEL_ID_MAX_CHARS = 128
 
 @router.post("/extract/settings")
 async def set_extract_settings(body: ExtractSettingsBody) -> dict:
-    if body.prompt_language is not None and body.prompt_language not in ("en", "tr"):
+    import notebook_extract
+    if body.prompt_language is not None and body.prompt_language not in (
+            notebook_extract.PROMPT_LANGUAGES):
         raise HTTPException(400, "notebook_language_unknown")
     if body.model_id:
         if len(body.model_id) > MODEL_ID_MAX_CHARS:
@@ -763,4 +796,160 @@ async def set_extract_settings(body: ExtractSettingsBody) -> dict:
     # matters in the log is that the choice changed.
     logger.info("Notebook extraction settings updated.")
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Backfill jobs - reading a chat whole, or a chosen stretch of it, on request
+# ---------------------------------------------------------------------------
+#
+# Multi-segment paths, so the `/{chat_id}` route above cannot swallow them
+# (it takes one segment); kept beside the other `/extract/*` routes because
+# that is the family they belong to. None of the four is idle-exempt: a
+# button press is a person.
+
+Scope = Literal["next", "all", "range"]
+
+
+class ExtractRunBody(BaseModel):
+    scope: Scope
+    from_message_id: int | None = None
+    to_message_id: int | None = None
+
+
+def _chat_exists(chat_id: int) -> None:
+    """404 `chat_not_found` before anything else, on every job route."""
+    from database import get_db
+    with get_db() as con:
+        if con.execute("SELECT 1 FROM chats WHERE id = ?",
+                       (chat_id,)).fetchone() is None:
+            raise notebook.NotebookError("chat_not_found")
+
+
+@router.get("/extract/plan/{chat_id}")
+async def plan_backfill(chat_id: int, scope: Scope,
+                        from_message_id: int | None = None,
+                        to_message_id: int | None = None) -> dict:
+    """The preview. Spends nothing; says what the run would do and why it
+    would refuse, BEFORE the button is pressed - including that the day's
+    ceiling would be hit, which is the sentence a reader needs first.
+
+    `scope` is required (422 without it). A range that is not inside the
+    chat, or runs backwards, is 400 `notebook_range_invalid`; only the
+    `range` scope reads the two ids. `cost_estimate` is null when the
+    price is unknown, never zero: a call whose price nobody knows is not a
+    free call.
+    """
+    import notebook_worker
+
+    try:
+        await anyio.to_thread.run_sync(_chat_exists, chat_id)
+        if scope == "range":
+            _check_range(from_message_id, to_message_id)
+        return await notebook_worker.worker.plan_backfill(
+            chat_id, scope, from_message_id, to_message_id)
+    except notebook.NotebookError as exc:
+        _refuse(exc)
+
+
+def _check_range(from_id: int | None, to_id: int | None) -> None:
+    # A literal raise for the census: this code has a status of its own.
+    if from_id is None or to_id is None or from_id > to_id:
+        raise HTTPException(400, "notebook_range_invalid")
+
+
+@router.post("/extract/run/{chat_id}")
+async def run_backfill(chat_id: int, body: ExtractRunBody) -> dict:
+    """Start a job. `{started: true, job_id, calls_planned}`, or
+    `{started: false, reason}` with one of `SWEEP_REFUSALS` - a refusal is
+    200, not an error.
+
+    `next` is ONE unit, `calls_planned` 1, and a job row so it can be
+    undone. It is also the only door left for the old one-press read: the
+    route that used to do that without a preview or the reserve
+    (`POST /notebook/sweep/{chat_id}`) was removed by decision 69 a.
+
+    `all` loops until nothing is unread up to the message that was newest
+    when the job started (3.13), or a stop arrives, re-asking the day's
+    ceiling every turn; what arrives later is the ordinary reader's.
+    `range` reads the chosen stretch again, read or not: its earlier notes
+    are renewed by the model retiring them, never deleted by hand.
+    """
+    import notebook_worker
+
+    try:
+        await anyio.to_thread.run_sync(_chat_exists, chat_id)
+        if body.scope == "range":
+            _check_range(body.from_message_id, body.to_message_id)
+        result = await notebook_worker.worker.backfill(
+            chat_id, body.scope, body.from_message_id, body.to_message_id)
+    except notebook.NotebookError as exc:
+        _refuse(exc)
+    logger.info("Notebook backfill for a chat: %s",
+                "started" if result.get("started") else result.get("reason"))
+    return result
+
+
+@router.post("/extract/stop/{chat_id}")
+async def stop_backfill(chat_id: int) -> dict:
+    """Stop after the unit in flight. `{stopped: true, job_id, calls_spent}`
+    or `{stopped: false, reason: "nothing_running"}` - the tenth refusal,
+    not an error."""
+    import notebook_worker
+
+    try:
+        await anyio.to_thread.run_sync(_chat_exists, chat_id)
+    except notebook.NotebookError as exc:
+        _refuse(exc)
+    result = await notebook_worker.worker.stop_backfill(chat_id)
+    logger.info("Notebook backfill stop for a chat: %s",
+                "stopped" if result.get("stopped") else result.get("reason"))
+    return result
+
+
+@router.post("/extract/undo/{job_id}")
+async def undo_backfill(job_id: int, chat_id: int) -> dict:
+    """Remove exactly what one job wrote. `chat_id` is REQUIRED and is the
+    cross-chat gate, the same one every note write route carries: a job
+    that is not this chat's answers 404 `notebook_job_not_found`, the same
+    answer as a job that does not exist, so job ids cannot be enumerated
+    from another chat. A job still running answers 409
+    `notebook_backfill_running`: stop first, then undo.
+
+    Notes the reader has since pinned or edited are theirs and are left
+    alone, counted back as `kept_pinned` and `kept_edited`.
+    """
+    import notebook_worker
+
+    worker = notebook_worker.worker
+
+    def _undo() -> dict:
+        from database import get_db
+        with get_db() as con:
+            con.execute("BEGIN IMMEDIATE")
+            row = notebook.job_row(con, job_id)
+            if row is None or row["chat_id"] != chat_id:
+                return {"missing": True}
+            if row["state"] in ("planned", "running"):
+                if worker.active_job_id() == job_id:
+                    return {"running": True}
+                # Nobody is driving it: the process that was died. Closed
+                # out here so the reader is not told to stop a job that
+                # nothing can stop.
+                stale = notebook.orphaned_job_ids(con)
+                if stale:
+                    notebook.settle_orphaned_jobs(
+                        con, stale, keep=worker.active_job_id())
+            return notebook.delete_job_notes(con, job_id)
+
+    result = await anyio.to_thread.run_sync(_undo)
+    # Literal raises, for the census and for the reader of this file: a
+    # job that is not there and a job that is not this chat's answer the
+    # same 404 on purpose; a job still being driven answers 409.
+    if result.get("missing"):
+        raise HTTPException(404, "notebook_job_not_found")
+    if result.get("running"):
+        raise HTTPException(409, "notebook_backfill_running")
+    logger.info("Notebook backfill undone: job=%d removed=%d", job_id,
+                result["removed"])
+    return result
 

@@ -59,9 +59,12 @@
 | POST | /notebook/{chat_id}/use-global | Whether this chat follows the global limits | FAZ 1 (notebook) |
 | GET | /notebook/safeword | The phrase that stops the turn being sent. Empty means off | Since 1.1.5 (notebook) |
 | POST | /notebook/safeword | Set or clear it. **The only limit in this app enforced in code**, and it has two halves. The message BEING SENT is matched before the provider is called, and when it matches nothing is sent and nothing is stored (`400 safeword_triggered` from every completion route). That includes the stored message a regenerate re-sends, so arming a word can refuse regenerates on chats that already contain it. The same word ANYWHERE ELSE in an outgoing body - older history, a note, a character card, a `stop` sequence - does NOT stop the turn: `safeword_filter.scrub` removes it in both payload builders in `openrouter.py`, a message the cut empties is dropped from `messages`, an emptied `stop` entry is dropped, and the rest of the body goes. Model ids, provider policy, response schemas, modality lists and `data:` URIs are scanned and left alone. Neither half rewrites the vault: the word stays in the stored row, in the note, and on screen | Since 1.1.5 (notebook) |
-| GET | /notebook/worker | What the background extractor has done. Optional `?chat_id=` is purely additive: it fills `worker.chat` and changes nothing else, so a panel with no chat selected asks the same question it always did. See "The extraction worker's status" below for the response shape | FAZ 5 (notebook) |
+| GET | /notebook/worker | What the background extractor has done. Optional `?chat_id=` is purely additive: it fills `worker.chat` and the top-level `chat_refusal` and changes nothing else, so a panel with no chat selected asks the same question it always did. `stats` is install-wide. `chat_refusal` is `"model_not_extractable"` only while such a refusal of that chat stands: among the chat's refusal rows newer than its last read (`done`, `failed` or `running`), at most `STANDING_REFUSAL_ROWS` of them, newest first, any one names the model the chat resolves to now (the row's work key is recomputed with the current model). So a chat that went back to a model it was already refused on is still told. Otherwise, with no `chat_id`, or if that check itself fails (logged, the rest of the body answered as usual), it is null. The Background notes card says the unfit-model sentence from this field only and never from the install-wide `stats.skip_reasons` count. See "The extraction worker's status" below for the response shape | FAZ 5 (notebook) |
 | POST | /notebook/worker/reset | Lift a tripped or stopped circuit breaker by hand. No body means the global button: the process-wide refusal is lifted AND every per-chat one is dropped. `{"chat_id": N}` unsticks exactly that conversation and leaves the rest refusing. Answers `{ok: true, worker}` with the same `worker` block `GET /notebook/worker` serves. Without this route, recovering from a provider outage means restarting the whole application | FAZ 5 (notebook) |
-| POST | /notebook/sweep/{chat_id} | Read the part of this chat nobody has read. The extractor's cursor only moves forward, and the first read of a chat that already had a long history starts at the PRESENT on purpose - a notebook describing a conversation four hundred messages ago is worse than an empty one - so everything under that point was unreachable by any route. This is the way back: ONE unit of work per press, through the worker's own door, claimed against the same daily call cap and recorded in the same table as an ordinary turn. Ordinary refusals answer `{started: false, reason}` rather than an error; the five reasons are listed below. Nothing on this path runs by itself - `worker.backlog` reports what is unread and the reader decides | FAZ 3 (notebook) |
+| GET | /notebook/extract/plan/{chat_id} | The preview of a reading job, and it spends nothing. Query `scope` (`next` / `all` / `range`, required, 422 without it) and, for `range`, `from_message_id` and `to_message_id` (400 `notebook_range_invalid` when they run backwards or fall outside the chat; 404 `chat_not_found` when the chat is not there). Answers `ready`, `blocked_by`, the counts, `calls_planned`, `daily_cap` (the day's ceiling, the same number `GET /notebook/worker` reports), `backfill_cap` (what a job may claim: the day's ceiling minus `ELYSIUM_NOTEBOOK_LIVE_RESERVE`), `live_reserve`, `calls_spent_today`, `fits_today`, `prompt_price`, `cost_estimate` (null when the price is unknown, never a fake zero), `model_id` and `model_is_chat_bind`. See "Reading a chat on request" below | IP-01 (notebook) |
+| POST | /notebook/extract/run/{chat_id} | Start a reading job. Body `{scope, from_message_id?, to_message_id?}`. `{started: true, job_id, calls_planned}` and the job runs on as its own task; or `{started: false, reason}` - a refusal, HTTP 200, never an error, with one of the ten reasons below. `next` reads ONE unit and writes a job row so it can be undone (it is the one-press read the removed sweep route used to be, decision 69 a); `all` loops until nothing is unread up to the last message present when the job started (3.13), or a stop lands, re-asking the ceiling every turn - a message written during the job is left to the ordinary reader; `range` reads the chosen stretch again, read or not. 404 `chat_not_found`, 400 `notebook_range_invalid` | IP-01 (notebook) |
+| POST | /notebook/extract/stop/{chat_id} | Stop the running job after the unit in flight. `{stopped: true, job_id, calls_spent}` or `{stopped: false, reason: "nothing_running"}`, which is the tenth refusal, not an error. 404 `chat_not_found` | IP-01 (notebook) |
+| POST | /notebook/extract/undo/{job_id} | Remove exactly the notes one job wrote. `chat_id` is a REQUIRED query parameter and the cross-chat gate: a job that is not this chat's answers 404 `notebook_job_not_found`, the same answer as a job that does not exist. A job still running answers 409 `notebook_backfill_running`. Notes the reader has since pinned or edited are left alone and counted back: `{job_id, removed, kept_pinned, kept_edited}` | IP-01 (notebook) |
 | POST | /notebook/{chat_id}/auto-accept | Decide whether THIS chat keeps model-written notes without asking, or hand the decision back to the global switch with `enabled: null`. The column behind it had exactly one writer for most of its life - the chat INSERT, which sets it to 0 for a chat opened from an imported card - so until now a chat that was wrongly trusted stayed trusted for its whole life. It matters most for the case the import signal cannot see: somebody who pastes a downloaded card's fields into the form by hand leaves no record that the text came from outside, and no signal in the application can know that. `GET /notebook/auto-accept?chat_id=` reports the same decision back as `effective`, with `overridden` saying whether the chat or the global switch decided it | FAZ 3 (notebook) |
 | GET | /notebook/auto-accept | Whether proposals are accepted without review. **Unset is ON** - the default, not "off" | FAZ 5 (notebook) |
 | POST | /notebook/auto-accept | Turn review on or off. A chat opened from an imported card overrides this to OFF for itself, whatever the global says | FAZ 5 (notebook) |
@@ -345,6 +348,10 @@ shield like every other data route.
 | 400 | notebook_language_unknown | Instruction language outside `en`/`tr` | Not one of the two available. |
 | 400 | notebook_model_id_invalid | Not shaped like an OpenRouter model id (`author/slug`) | Pick one from the list. |
 | 400 | notebook_model_id_too_long | Over 128 characters | Pick one from the list. |
+| 404 | notebook_job_not_found | `POST /notebook/extract/undo/{job_id}`: no such job, or a job that belongs to another chat than the `chat_id` given - answered the same way on purpose, so job ids cannot be counted from another chat | That run is not here to undo. |
+| 409 | notebook_backfill_running | The job an undo names is still being driven by this process. Stop first, then undo | Say it is still reading; offer Stop. |
+| 400 | notebook_range_invalid | A `range` request whose ids run backwards or fall outside the chat's active messages, on the preview or the run | Ask for a first and a last message that are both in the chat. |
+| - | model_not_extractable | Not an error code: a `blocked_by` token on the preview, a refusal reason on the run route, and a skip reason on the turn-driven reader, written once per chat and model while that model keeps being refused rather than once per turn, and again after a turn that checked the chat's model and found it fit, whether or not that turn read anything (a turn stopped before that check, by a job holding the chat, an open breaker or no model, does not count), after a restart, or once the pair has aged out of the reader's bounded memory (3.8), so it reaches `stats.skip_reasons` (install-wide, not rendered for this reason) and, for the chat on screen, `chat_refusal` on `GET /notebook/worker`, which is what the Background notes card says. A bound model refused because the list could not be fetched at all is NOT this reason: that skip row, `blocked_by` token and run refusal is `model_list_unavailable`, with its own sentence that does not blame the model. A model the reader PICKED is never `model_list_unavailable`: with the list out of reach it is refused only when the catalogue says it lacks `structured_outputs`, and that is `model_not_extractable`. It is answered from the extraction model list, which the backend now FETCHES before it decides rather than waiting for the picker to have been opened - that list is public, costs no model tokens and is the same one `GET /notebook/extract/models` serves. For the chat's own model under the binding that list is the ONLY evidence taken: the general model catalogue is a separate cache answering a weaker question (`structured_outputs` alone, where the list is zero-retention AND `structured_outputs`), so a bound model the list does not carry is refused even when the catalogue has heard of it, and a bound model is refused while the list cannot be reached at all, because nothing vetted that one. A model the reader picked came off the filtered list when they picked it, so it is let through and the catalogue stays its fallback. A CLOSED PROXY GATE COUNTS AS UNREACHABLE: that fetch is an outbound request like any other and passes `enforce_proxy_gate` first, so with "require a proxy" armed and no healthy proxy it is not sent at all and a bound model stays unvetted. Nothing could have been sent in that state anyway, so what is given up is the reason code rather than a read. The panel can read this as checked | Say what the preview says. |
 | - | notebook_daily_cap_reached | The daily ceiling on extraction calls is spent. Claimed BEFORE the request, so no call was made. **No HTTP status**: the claim happens inside the worker, never on a request the client is waiting on, so it arrives as a `stats.skip_reasons` key on `GET /notebook/worker` rather than as a response code | It starts again tomorrow; nothing was lost. |
 | 400 | imported_chat_always_reviews | `POST /notebook/{chat_id}/auto-accept` tried to raise the review shield on a chat opened from an imported card. `enabled: null` is refused too - it hands the chat back to the global switch, whose default is ON, which lowers the shield just as surely | Do not offer the toggle on an imported chat; say why it is fixed. |
 | 400 | safeword_blank | The safeword was whitespace only. An empty string still means OFF; a space does not, and a field that shows a space while the stop is disarmed is the one silence this control cannot have | Say a space is not a safeword. |
@@ -670,17 +677,20 @@ Note: `context` (bare) is not a generation param and is never accepted.
 - Frontend-sent `zdr`, `data_collection`, `allow_fallbacks`
 - A `models` list: OpenRouter is never asked to try a model other than the one selected
 - `tools`, `tool_choice`
-- Three `system` blocks the backend adds that the frontend never sends and
-  cannot influence: the **limits** block (standing rules, counted into the
-  budget and never trimmed - if it does not fit, generation is refused with
-  `boundaries_do_not_fit` rather than degraded), the **notebook** block of
-  what the user wrote, placed beside the persona, and a second, separately
-  labelled notebook block of what the MODEL wrote, placed after the history
-  beside the post-history instruction. Both notebook blocks carry a random
+- Blocks the backend adds that the frontend never sends and cannot
+  influence: the **limits** block (a `system` block of standing rules,
+  counted into the budget and never trimmed - if it does not fit,
+  generation is refused with `boundaries_do_not_fit` rather than degraded),
+  the **notebook** block of what the user wrote, in the `system` message
+  beside the persona, and a second, separately labelled notebook block of
+  what the MODEL wrote, which rides in the last `user` message after the
+  user's own text, under a header that calls it unverified notes with less
+  authority than the user (C3 a, Q-126; it used to be a `system` block
+  beside the post-history instruction). Both notebook blocks carry a random
   per-payload tag in their open and close markers, and the header tells the
   model the block ends only at the line carrying that same tag
-- `response_format` **from the frontend** - it is sent on exactly two backend
-  call sites, both of them the notebook's note extractor, and only ever as a fixed schema defined
+- `response_format` **from the frontend** - it is sent on exactly one backend
+  call site, the notebook's note extractor, and only ever as a fixed schema defined
   in this repository. Nothing the frontend sends can add it to any request,
   and no request carrying a conversation to a chat model carries it. Until
   v1.2 nothing sent it at all and this list said so without the qualifier
@@ -909,6 +919,7 @@ GET /notebook/extract/models
 -> { "models": [ { "id": "vendor/slug",
                    "provider": "Name" | null,
                    "prompt_price": 0.06,          // USD per 1M prompt tokens
+                   "completion_price": 0.2,       // USD per 1M completion tokens
                    "context_length": 131072 | null,
                    "endpoints": 3 } ] }           // zero-retention structured-output endpoints
 ```
@@ -934,9 +945,107 @@ default: a background job spending somebody's credits on a model they never
 chose is not a convenience. A `model_id` is shape-checked (`author/slug`, at
 most 128 characters) - `notebook_model_id_invalid` / `_too_long`.
 
+`model_id` accepts one value that is not a model: `elysium-internal/chat-model`
+(`notebook_extract.CHAT_MODEL_BINDING`, mirrored by the frontend's
+`CHAT_MODEL_BINDING` and pinned by both suites to
+`shared/notebook_chat_model_binding.json`). Stored verbatim and reported
+verbatim by the GET; the worker resolves it on EVERY read to the chat's
+current model (`chats.model_id`), so changing the chat model moves the
+extractor with it. It is a binding, not a one-time pick, and it has to be
+chosen beside a price warning: a chat model is usually many times a cheap
+extractor's price.
+
 There is no route that runs an extraction and hands the raw reply back. The
 extraction happens in the worker; what the client sees of it is the counters
 below.
+
+
+### Reading a chat on request (IP-01)
+
+Two readers, one door. The turn-driven reader reads every chat by itself
+when it has twenty unread messages, a chat with no notes included: from its
+first message while it holds at most forty unread messages
+(`notebook_worker.from_start_edge()`), and from its newest twenty when it holds
+more, so the first automatic read of a long history deliberately starts at the
+present (3.27). Nothing reads a whole history by itself any more; the worker
+used to start a job on a chat's first offer, and decisions 30 a and 31 a
+removed that. The older history is read only by a job the reader starts from
+the Notebook panel, after the preview. Both go through the same `_handle` -
+one claim against the day, one running row, one settle - and a job adds its
+accounting: a `notebook_backfill_jobs` row, a lower ceiling, and undo. A job
+reads the chat as it stood when it started (3.13: it ends at the message that
+was newest then) and, over long messages, keeps the OLDEST lines of each batch
+that fit, so it walks forward rather than stepping over the start (3.11).
+While it runs the turn-driven reader leaves that chat alone (3.12). The
+one-press `POST /notebook/sweep/{chat_id}` is gone (decision 69 a); `scope:
+"next"` is that single unit, with a preview and the reserve.
+
+```
+GET /notebook/extract/plan/{chat_id}?scope=all
+-> { "ready": true, "blocked_by": [],
+     "scope": "all", "messages_total": 412, "messages_unread": 412,
+     "chunks": 21, "calls_planned": 21,
+     "daily_cap": 60,            // the day's ceiling, as GET /worker reports it
+     "backfill_cap": 50,         // what a JOB may claim: the day's minus the reserve
+     "live_reserve": 10, "calls_spent_today": 3, "fits_today": true,
+     "prompt_price": 0.06,       // USD per 1M prompt tokens, or null
+     "cost_estimate": 0.014,     // what is sent AND the reply allowance, per
+                                 // call (3.17); null when either price is
+                                 // unknown, never a fake zero
+     "model_id": "vendor/slug", "model_is_chat_bind": false }
+
+POST /notebook/extract/run/{chat_id}
+<- { "scope": "next" | "all" | "range", "from_message_id"?: 2, "to_message_id"?: 6 }
+-> { "started": true, "job_id": 17, "calls_planned": 21 }
+-> { "started": false, "reason": "<one of the ten>" }
+
+POST /notebook/extract/stop/{chat_id}
+-> { "stopped": true, "job_id": 17, "calls_spent": 8 }
+-> { "stopped": false, "reason": "nothing_running" }
+
+POST /notebook/extract/undo/{job_id}?chat_id=4
+-> { "job_id": 17, "removed": 12, "kept_pinned": 3, "kept_edited": 1 }
+```
+
+`blocked_by` carries `no_character`, `no_chat_model`, `no_extract_model`
+(the three the run refuses as `not_ready`), `model_not_extractable` (the
+model that would write the notes is not on the filtered list, or, for a
+model the reader picked, the catalogue says it cannot return a strict
+schema; refused BEFORE a call), `model_list_unavailable` (the model is the
+chat's own, under the binding, and the filtered list could not be reached
+at all, so nothing vetted it; the model is not blamed, and the run refuses
+with the same word) and, for `next` and `all` only, `nothing_unread` -
+`range` is the re-read mode and does not ask. The six are the whole
+vocabulary and the order above is the order the run answers in: the first
+match becomes the refusal's `reason`.
+
+**`backfill_cap` and `live_reserve` are on this body and are not in the
+plan's section 5.** They are there because `daily_cap` has to keep meaning
+one thing on the two routes the panel renders side by side: `daily_cap` is
+the day's ceiling, the same number `GET /notebook/worker` reports, and
+`backfill_cap` is the lower one a reading job may claim against
+(`daily_cap` minus `live_reserve`, never less than one). Without both
+numbers the strip cannot reconcile "50 of 60 used" on one card with a
+refusal on the other, so `live_reserve` is what its sentence names.
+`fits_today` is computed against `backfill_cap` as served, which is the
+ceiling the loop claims against - and the job claims against it at the
+moment of the claim, not only at the top of the turn, so a live call
+landing in between cannot take the reserve. The job stops with
+`daily_cap_reached` when it gets there, and the preview says so first.
+
+`scope: "range"` rolls the reading record back over ranges lying entirely
+inside the chosen stretch and reads it again; the notes it made before are
+renewed by the model naming them in `supersedes`, never deleted by hand.
+Pinned notes are never retired in any mode. A read that ends at message N is
+shown only the notes distilled from messages up to N, so reading the past
+cannot retire the future; the reader's own notes (no source message) stay on
+the list in every mode and cannot be retired by the model in any.
+
+A refusal is HTTP 200 with a reason token from `notebook_worker.SWEEP_REFUSALS`
+and is NOT in the error catalogue; WorkerPanel's `SWEEP_PROSE` has a sentence
+for each of the ten. The three real errors of these routes are
+`notebook_job_not_found` (404), `notebook_backfill_running` (409) and
+`notebook_range_invalid` (400), in the catalogue like every other code.
 
 
 ### The extraction worker's status
@@ -948,8 +1057,13 @@ GET /notebook/worker            optional ?chat_id=
      "spend":          today's calls and cost,
      "spend_lifetime": the same shape summed over every day,
      "daily_cap":      NOTEBOOK_DAILY_CALL_CAP,
+     "chat_refusal":   null | "model_not_extractable",
      "worker":         { ... } }
 ```
+
+`stats` counts every chat. `chat_refusal` is about the `?chat_id=` chat only
+(null without one): the unfit-model refusal while it still stands there, see
+the `GET /notebook/worker` row above.
 
 `spend_lifetime` never gates anything; `spend` alone governs the daily cap.
 `abandoned` counts calls whose row was still `error_type: abandoned_in_flight`
@@ -963,17 +1077,44 @@ The `worker` block carries the breaker state (`state`, `failures`,
 `refused_by_chat_breaker`), the loop's health (`alive`, `died`, `runs`,
 `settled_empty`, `unhandled`, `last_error`, `abandoned_preambles`), the queue
 (`queued`, `dropped_offers`, `queue_overflows`, `offers_while_down`), the
-sweep's own lock (`sweeping`, `refused_in_flight`), what is unread
-(`backlog`), why suggestions were refused (`dropped`), and the two numbers
-that are one rule: `batch_size` and `trigger_threshold`. Both shrink together
-under the breaker, and a panel showing one without the other is where the
-belief that they were the same number came from.
+job lock (`sweeping`, the name it had when the one-press sweep shared it;
+and `refused_in_flight`), what is unread (`backlog`), why suggestions were
+refused (`dropped`), and the two numbers the breaker is about: `batch_size`,
+which shrinks under consecutive failures, and `trigger_threshold`, which does
+not (decision 28 a: it is the configured twenty whatever the breakers say).
 
 `chat` is always present and is `null` unless `?chat_id=` was passed AND that
 chat has a breaker record of its own. When it is there it holds `state`,
 `failures`, `total_failures`, `batch_size` and `trigger_threshold` for that
 one conversation. A key that appears and disappears is a key every client has
 to guess at, and zod strips what it was not told about.
+
+`backfill` is always present too, and it is REQUIRED on the client's schema
+(nullable, never optional): with `?chat_id=` it is that chat's newest reading
+job in any state, without it the one in flight, and `null` when there is
+none. It rides on this route rather than one of its own because
+`main._IDLE_EXEMPT` matches paths exactly and a progress poll on a route of
+its own would keep the vault open for as long as a job ran.
+
+```
+"backfill": null | {
+    "job_id":        17,        // notebook_backfill_jobs.id
+    "chat_id":       4,
+    "state":         "planned" | "running" | "stopped" | "done" | "failed",
+    "scope":         "next" | "all" | "range",
+    "calls_planned": 21,        // planned_calls, written once by the run route
+    "calls_spent":   8,         // spent_calls, moved by the claim's running row
+    "notes_written": 14,        // notes_written, moved as notes land
+    "messages_left": 240,       // derived: the chat's unread count, or the range's
+    "last_error":    null }     // why it stopped, or null. The whole vocabulary
+                                // is notebook_store.JOB_LAST_ERRORS, ten tokens:
+                                // daily_cap_reached, chat_paused, chat_stopped,
+                                // proxy_gate, api_key_not_set, refused, failed,
+                                // settled, vault_locked, interrupted. A panel
+                                // that has no sentence for one prints none of
+                                // it (WorkerPanel.echoable), so a new token is
+                                // safe on the wire and silent on screen
+```
 
 `skip_reasons` is keyed by reason string. `plan_invalidated` and
 `range_cleared` are the two keys for a reply that arrives after the work it
@@ -1002,14 +1143,23 @@ stretch of transcript that names no speaker. The first is the defence working;
 the other two say the span is not a quotation of any one thing anybody said,
 and a pile of them reads exactly like fabrication on this screen.
 
-`POST /notebook/sweep/{chat_id}` answers `{started: false, reason}` for five
-refusals, none of which is an error: `nothing_unread` (everything here has been
-covered), `already_running` (this button is already busy; pressing three times
-is one request), `already_in_flight` (the background loop is mid-call on this
-same chat, and letting the sweep plan the identical range would bill it twice),
-`chat_paused` (this chat's breaker is open and will retry by itself) and
-`chat_stopped` (it will not retry until the breaker is reset by hand). The last
-two are separate because only one of them asks the reader to do something.
+The reading job routes answer `{started: false, reason}` for ten refusals,
+none of which is an error, and the ten are `notebook_worker.SWEEP_REFUSALS`
+(the name is the old sweep route's, whose five reasons the job kept):
+`nothing_unread` (everything here has been covered), `already_running` (a job
+is already reading; pressing three times is one request), `already_in_flight`
+(the background loop is mid-call on this same chat, and letting a job plan
+the identical range would bill it twice), `chat_paused` (this chat's breaker
+is open and will retry by itself), `chat_stopped` (it will not retry until the
+breaker is reset by hand), `not_ready` (a chat, its model or a note model is
+not chosen yet - the preview's `blocked_by` says which), `daily_cap_reached`
+(the job's own ceiling is spent), `model_not_extractable` (the model that
+would write the notes cannot return a strict schema, refused before a call),
+`model_list_unavailable` (the chat's own model under the binding, with the
+provider's list out of reach, so nothing vetted it; not the model's fault)
+and, from the stop route, `nothing_running`. `chat_paused` and `chat_stopped`
+are separate because only one of them asks the reader to do something. Every
+one of the ten has a sentence in WorkerPanel's `SWEEP_PROSE`.
 
 Every note carries **`evidence_role`** on `GET /notebook/{chat_id}`: `"user"`,
 `"assistant"`, or `null` for a note somebody typed themselves. It records

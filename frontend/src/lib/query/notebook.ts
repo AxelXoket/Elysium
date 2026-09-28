@@ -7,7 +7,10 @@ import {
 import { keys } from "./keys";
 import {
   setChatAutoAccept,
-  sweepChat,
+  getBackfillPlan,
+  runBackfill,
+  stopBackfill,
+  undoBackfill,
   listNotebook,
   createNote,
   patchNote,
@@ -170,7 +173,7 @@ export const WORKER_POLL_MS = 20_000;
  *  something true about the wrong conversation. */
 export function useWorkerStatus(chatId?: number | null) {
   return useQuery({
-    queryKey: ["extraction", "worker", chatId ?? null] as const,
+    queryKey: [...keys.extractionWorker(), chatId ?? null] as const,
     queryFn: () => getWorkerStatus(chatId),
     // The worker runs on its own clock. A poll is the only way the panel
     // learns that a run happened while the user was reading something else.
@@ -183,24 +186,65 @@ export function useResetWorker() {
   return useMutation({
     mutationFn: (chatId?: number | null) => resetWorker(chatId),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["extraction", "worker"] });
+      void qc.invalidateQueries({ queryKey: keys.extractionWorker() });
     },
   });
 }
 
-export function useSweepChat() {
+// ── Backfill jobs ──────────────────────────────────────────────────────────
+
+/** The preview for one chat and scope. Keyed under `extraction`, outside
+ *  the `notebook` prefix, for the same reason the worker poll is: a note
+ *  mutation must not refetch a preview. It IS refetched by the three job
+ *  mutations below, because each of them changes what is unread. `enabled`
+ *  is the strip's: the preview is asked for when the reader opens the
+ *  strip, not on every mount of the notes tab. */
+export function useBackfillPlan(
+  chatId: number | null,
+  scope: Parameters<typeof getBackfillPlan>[1],
+  range: Parameters<typeof getBackfillPlan>[2],
+  enabled: boolean,
+) {
+  const from = range?.from_message_id ?? null;
+  const to = range?.to_message_id ?? null;
+  return useQuery({
+    queryKey: keys.extractionBackfillPlan(chatId ?? null, scope, from, to),
+    queryFn: () => getBackfillPlan(chatId as number, scope, range),
+    enabled: enabled && chatId != null
+      && (scope !== "range" || (from != null && to != null)),
+  });
+}
+
+/** After any of the three, the notebook namespace (notes were written or
+ *  removed), the worker poll (its `backfill` block is this job) and every
+ *  preview (what is unread changed) are all stale. Named here once. */
+function useBackfillMutation<TArgs extends unknown[], TResult>(
+  fn: (...args: TArgs) => Promise<TResult>,
+) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (args: [number]) => sweepChat(...args),
+    mutationFn: (args: TArgs) => fn(...args),
     onSuccess: () => {
-      // The whole namespace, the same as every other notebook mutation: a
-      // sweep writes notes AND moves the worker's counters, and naming one
-      // key is how the other goes stale.
       void qc.invalidateQueries({ queryKey: keys.notebook() });
-      void qc.invalidateQueries({ queryKey: ["extraction", "worker"] });
+      void qc.invalidateQueries({ queryKey: keys.extractionWorker() });
+      void qc.invalidateQueries({ queryKey: keys.extractionBackfill() });
     },
   });
 }
+
+export const useRunBackfill = () =>
+  useBackfillMutation(
+    (chatId: number, scope: Parameters<typeof runBackfill>[1],
+     range?: Parameters<typeof runBackfill>[2]) =>
+      runBackfill(chatId, scope, range),
+  );
+
+export const useStopBackfill = () =>
+  useBackfillMutation((chatId: number) => stopBackfill(chatId));
+
+export const useUndoBackfill = () =>
+  useBackfillMutation((jobId: number, chatId: number) =>
+    undoBackfill(jobId, chatId));
 
 export function useAutoAccept(chatId?: number | null) {
   return useQuery({

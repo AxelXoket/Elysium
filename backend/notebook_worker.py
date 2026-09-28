@@ -16,8 +16,10 @@ WHAT IT REFUSES TO DO
     httpx reads the body inside `send()`, so "the request never left" and "it
     was accepted, generated, BILLED and then cut off" raise the same
     exception. Re-sending the second pays for the answer twice. A failed
-    extraction is skipped and the next threshold tries again under a NEW work
-    key - which is a fresh question, not a retry of the old one.
+    extraction is skipped and, because a failure does not move the cursor,
+    the very next reply in that chat tries again, on a batch the failure
+    has halved and so under a NEW work key - which is a fresh question, not
+    a retry of the old one (decision 33 a).
 
     *Spend without a ceiling.* The daily cap is claimed BEFORE the request and
     is a block, not an alert. The largest documented runaway in this space was
@@ -144,13 +146,16 @@ STOP_AFTER = 20
 COOLDOWN_BASE_S = 60.0
 COOLDOWN_MAX_S = 3600.0
 
-#: What consecutive failures do to a number, and it is ONE function because
-#: there are TWO numbers: how much one call may READ (`batch_size`) and how
-#: much new material is worth a call at all (`trigger_threshold`). They used
-#: to be two rules - the batch halved, the threshold did not - so the same
-#: backlog was bought in more pieces and the fixed part of every prompt (the
-#: card, the existing notes, the instructions) was paid again in each of them.
-#: Two rules is how they drifted; one function is how they cannot.
+#: What consecutive failures do to how much one call may READ (`batch_size`).
+#:
+#: It used to shrink the trigger threshold too, and decision 28 a took that
+#: back. With the threshold halving, one chat's provider errors dropped EVERY
+#: chat's threshold to 10, 5 and then 2 messages, so the other conversations
+#: were read more often exactly while the provider was failing. The
+#: rule is twenty messages, and a fault somewhere else is no reason to break
+#: it here. So the threshold stays at `config.NOTEBOOK_EXTRACT_EVERY_TURNS`
+#: whatever the breakers say, and only the batch shrinks: a failing period
+#: reads less per call and does not read more often.
 PRESSURE_FLOOR = 2
 PRESSURE_STEPS = 3
 
@@ -160,6 +165,23 @@ PRESSURE_STEPS = 3
 #: entry. One `Breaker` is nine small fields, so the ceiling is about 64 KB
 #: and it does not grow with the number of chats.
 CHAT_BREAKERS_MAX = 256
+#: How many (chat, model) pairs the reader remembers having told "this model
+#: cannot write notes" (3.8). Bounded for the same reason as the breakers:
+#: both halves of the key come from the user, and a chat that cycles through
+#: models would otherwise grow the memory without end. The oldest pair is
+#: forgotten first, and a forgotten pair is only said once more.
+UNFIT_SAID_MAX = 256
+#: How many of a chat's refusal rows `standing_refusal` looks at, newest
+#: first, when it asks whether the card should still say the chat's model
+#: cannot write notes. Only rows newer than the chat's last read count. A
+#: row is written once per chat and model while that model keeps being
+#: refused; inside that window a pair is written again only after a turn
+#: that checked the chat's model, found it fit and read nothing, a restart,
+#: or the pair aging out of `UNFIT_SAID_MAX`, so a chat reaches this bound
+#: only by many model switches or restarts with no read between them. The
+#: bound keeps the status poll one small query whatever the table holds.
+#: Read at call time.
+STANDING_REFUSAL_ROWS = 64
 #: Twenty-four times the longest cooldown this module can impose. A chat that
 #: has not failed in a day is not carrying information any more, it is
 #: carrying stale data, and refusing on it costs a call nobody asked for.
@@ -171,15 +193,71 @@ CHAT_BREAKER_TTL_S = 86400.0
 #: daily cap is still underneath.
 CHAT_TRIP_FANOUT = 8
 
-#: Every reason `Worker.sweep` can refuse with. Exported for the same reason
+#: Every reason the job routes can refuse with (the start route through
+#: `Worker.backfill`, the stop route through `Worker.stop_backfill`). The
+#: name is older than the routes: it was the one-press sweep's list, and
+#: that route went with decision 69 a. Exported for the same reason
 #: SKIP_REASONS is: the panel turns each of these into a sentence, and a
 #: reason added without one reaches a reader as a snake_case token - or
 #: worse, falls into the panel's catch-all arm and tells a paused chat that
 #: it is "already reading", which is the opposite of what is happening.
+#:
+#: Ten, in three groups, and every one answers HTTP 200 with
+#: `{started: false, reason}` - a refusal is the ordinary answer to a
+#: button, not an error, so none of these is in the error catalogue. The
+#: five the sweep always had; the four a backfill job adds (`not_ready`
+#: is the precondition gate - chat, chat model and note model all chosen;
+#: `daily_cap_reached` is the job's own, lower ceiling already spent;
+#: `model_not_extractable` is a chat model that cannot return a strict
+#: schema, refused before a call is made; `model_list_unavailable` is a
+#: model bound to the chat while the provider's list of models that can
+#: write notes could not be fetched, which says nothing about the model);
+#: and the stop route's `nothing_running`.
 SWEEP_REFUSALS: frozenset[str] = frozenset({
     "already_running", "already_in_flight", "nothing_unread",
     "chat_paused", "chat_stopped",
+    "not_ready", "daily_cap_reached", "model_not_extractable",
+    "model_list_unavailable",
+    "nothing_running",
 })
+
+#: What a backfill job may claim of the day: the ceiling minus the reserve
+#: the live reader keeps. Read at call time, not import time, because both
+#: numbers are monkeypatched by tests and overridden by the environment.
+
+
+def _backfill_cap() -> int:
+    """What a job may claim: the day's ceiling minus the live reader's
+    reserve, and never less than one.
+
+    FLOORED AT ONE, because the reserve is floored at zero and the
+    difference was not. `ELYSIUM_NOTEBOOK_LIVE_RESERVE=60` against the
+    default ceiling of 60 made this return 0, every job refuse
+    `daily_cap_reached` before it began, and the panel say "today's calls
+    for reading history are used up" on a machine that had made none. One
+    typo, no error, and an answer indistinguishable from a spent day.
+    A reserve that would take the whole ceiling keeps all of it but one.
+    """
+    return max(1, config.NOTEBOOK_DAILY_CALL_CAP - config.NOTEBOOK_LIVE_RESERVE)
+
+
+class _Skipped:
+    """`_prepare`'s answer when it wrote a skip row and stopped.
+
+    `None` used to be the only way `_prepare` said "no call this turn", and
+    it said it for two different things: nothing to plan (breaker, no
+    model, no material, already answered) and a skip with a NAME - the
+    daily ceiling, the proxy gate, a missing key. The loop never needed
+    the difference; a backfill job does, because "the ceiling is spent" is
+    a reason to stop the job and say so, while "nothing planned" is a
+    reason to stop the job and say something else. The reason carried is
+    the same token the skip row was written with.
+    """
+
+    __slots__ = ("reason",)
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
 
 
 def _pressured(size: int, failures: int) -> int:
@@ -188,9 +266,8 @@ def _pressured(size: int, failures: int) -> int:
     `min(size, ...)` rather than the bare `max(PRESSURE_FLOOR, size // 2)`
     this replaces, and it is a defect being closed rather than a flourish: on
     a configured value of 1, `max(2, 1 // 2)` is 2, so halving moved the
-    number UPWARD. Harmless while only the batch read it; with the trigger
-    threshold on the same rule it would have fired half as often under
-    pressure as it does when healthy. Shrinking must never grow.
+    number UPWARD, so a failing provider was sent more per call than a
+    healthy one. Shrinking must never grow.
     """
     for _ in range(min(failures, PRESSURE_STEPS)):
         size = min(size, max(PRESSURE_FLOOR, size // 2))
@@ -255,6 +332,34 @@ def _fault_scope(error_type: str) -> str:
     if error_type.startswith(_CHAT_PREFIXES):
         return "chat"
     return "unknown"
+
+#: How many times the reading threshold a chat that has never been read may
+#: hold and still be read FROM ITS FIRST MESSAGE by the ordinary reader.
+#:
+#: Decisions 30 a and 31 a. There used to be a third reader here, mode 1:
+#: the first time a chat with no notes reached the threshold, the worker
+#: started a backfill job on its own and read the whole history, up to fifty
+#: calls with nobody asked. It is gone. A new chat with at most this many
+#: times twenty unread messages - forty - is read from its beginning by the
+#: ordinary reader, twenty at a time, one call per threshold, exactly like
+#: every later read; a longer one is read from the present (its newest
+#: twenty) and its history waits for the reader to start a read from the
+#: reading strip, after a preview that names the price. Nothing starts a job
+#: except that button.
+#:
+#: The edge is a fact about the conversation, so it is computed from the
+#: unpressured threshold (see `from_start_edge`) and never from a number the
+#: breakers move.
+FROM_START_EDGE_FACTOR = 2
+
+
+def from_start_edge() -> int:
+    """The unread count up to which a never-read chat is read from its
+    first message: `FROM_START_EDGE_FACTOR` times the threshold, forty by
+    default. Read at call time, because tests and the environment both
+    change the threshold."""
+    return FROM_START_EDGE_FACTOR * config.NOTEBOOK_EXTRACT_EVERY_TURNS
+
 
 #: How long `quiesce()`/`stop()` will wait for an ALREADY-PAID extraction to
 #: finish settling before locking anyway. What it is waiting for is one
@@ -469,14 +574,24 @@ class Worker:
         # before it. A worker failing every single turn could show a healthy
         # breaker and a rising run count forever.
         self.settled_empty = 0
-        # One sweep at a time. A reader pressing the button three times has
-        # asked for one thing, and three concurrent claims against the daily
-        # cap is not what they asked for.
+        # One reading job at a time. A reader pressing the button three
+        # times has asked for one thing, and three concurrent claims against
+        # the daily cap is not what they asked for. A backfill job holds
+        # this flag for its whole run. The name is the one-press sweep's,
+        # which shared the lock until decision 69 a removed it.
         self._sweeping = False
+        #: The backfill job this process is driving, or None. The row is in
+        #: the database; this is the loop's own view of it - the id, the
+        #: chat, the scope and the range - plus the stop flag the stop route
+        #: raises. Read by `status()` through `backfill_block`, cleared by
+        #: the loop task's done-callback.
+        self._backfill: dict | None = None
+        self._backfill_task: asyncio.Task | None = None
+        self._backfill_stop = False
         #: Work keys this process has CLAIMED and not yet settled.
         #
-        # Two coroutines can be inside `_handle` at once - the loop's and the
-        # sweep button's - and neither could see the other. `already_done`
+        # Two coroutines can be inside `_handle` at once - the loop's and a
+        # reading job's unit - and neither could see the other. `already_done`
         # answers only for `status='done'`, so the same range was planned
         # twice, claimed twice and billed twice for one answer; and
         # `_plan_work`'s opening `settle_orphaned_running` marked the other
@@ -488,11 +603,32 @@ class Worker:
         self._active: set[str] = set()
         #: The chats those keys belong to, for the button.
         #
-        # `sweep()` is asked about a CHAT and cannot know the work key until
-        # after it has planned - by which point the claim gate below has
-        # already refused it, silently, with nobody to tell. This is the same
-        # fact indexed the way the route needs to ask it.
+        # `backfill()` is asked about a CHAT and cannot know the work key
+        # until after it has planned - by which point the claim gate below
+        # has already refused it, silently, with nobody to tell. This is the
+        # same fact indexed the way the route needs to ask it.
         self._active_chats: set[int] = set()
+        #: The ordinary reader's current unit, as its own task, or None.
+        #
+        # Decision 34 a. `run()` used to await `_handle` inline, so the lock
+        # cancelling the loop cancelled a read whose request was already on
+        # the wire, and the range was then counted read with no note from
+        # it. The unit now runs as a task of its own, shielded from the
+        # loop's cancellation, and `quiesce()` gives it the same up to five
+        # seconds a reading job's unit gets. When they run out it is
+        # cancelled by name (`_stand_down_reading`), so its request does not
+        # stay open after the key is gone.
+        self._reading: asyncio.Task | None = None
+        #: The (chat, model) pairs already told why the model is refused,
+        #: newest last, each with the reason it was told. See `_prepare`'s
+        #: gate: the refusal is written as a named skip row ONCE per pair
+        #: while this process runs, not once per turn, because it is a
+        #: standing condition of the chat's model rather than something that
+        #: happened this turn. Keyed on the PAIR, so two unfit models
+        #: alternated in one chat are two rows and not one row per switch.
+        #: Bounded by `UNFIT_SAID_MAX`: both halves of the key come from
+        #: the user.
+        self._unfit_said: "OrderedDict[tuple[int, str], str]" = OrderedDict()
         # What nobody has read, counted once at unlock. Never a trigger: see
         # notebook.unread_backlog for why this is an offer on a screen and
         # not a background job.
@@ -595,12 +731,31 @@ class Worker:
         while True:
             chat_id = await self.queue.get()
             try:
-                await self._handle(chat_id)
+                # ONE AUTOMATIC READER, and it is this one. There is no
+                # automatic whole-chat read any more (decisions 30 a and
+                # 31 a): a chat with no notes is read by this same path,
+                # from its first message when it holds at most
+                # `from_start_edge()` unread messages and from the present
+                # when it holds more.
+                #
+                # THE UNIT IS ITS OWN TASK, SHIELDED (decision 34 a). A lock
+                # cancels this loop; it must not cancel a read whose request
+                # is already out, or the range is counted read and paid for
+                # with no note from it. `quiesce()` waits for `_reading` up
+                # to what is left of the stand-down's up to five seconds
+                # and then cancels it by name; `stop()` cancels it at once,
+                # as before.
+                unit = asyncio.create_task(self._handle(chat_id),
+                                           name="notebook-read")
+                self._reading = unit
+                unit.add_done_callback(self._reading_finished)
+                await asyncio.shield(unit)
             except asyncio.CancelledError:
                 # The vault locked, or the process is going down. Neither is a
                 # failure of the model or of this code, and counting it as one
                 # would walk the breaker to "stopped" every time the user
-                # stepped away from their desk.
+                # stepped away from their desk. The unit is not cancelled
+                # here: see `quiesce()` and `stop()`.
                 raise
             except Exception as exc:
                 if isinstance(exc, vault_state.VaultLockedError):
@@ -625,14 +780,37 @@ class Worker:
                 self.queue.task_done()
 
     async def _prepare(self, chat_id: int, *, min_new: int | None = None,
-                       after_id: int | None = None):
+                       after_id: int | None = None,
+                       until_id: int | None = None, reread: bool = False,
+                       cap: int | None = None, job_id: int | None = None):
         """Everything up to and including the running row, or None.
 
         Split out of `_handle` so it can be waited for. Returns the three
         things the call itself needs - the plan, the model and the language -
-        or None when this turn is not going to make a call at all.
+        or None when this turn is not going to make a call at all, or a
+        `_Skipped` carrying the reason when it wrote a skip row.
+
+        `until_id`, `reread`, `cap` and `job_id` are the backfill job's
+        keywords, in the same spirit as `min_new` and `after_id` above: a
+        job reads through this door and no other. `cap` is the job's own
+        lower ceiling for the claim; `job_id` rides on the plan so every
+        write this attempt makes carries it.
         """
         loop = asyncio.get_running_loop()
+
+        # A CHAT WHOSE HISTORY IS BEING READ BY A JOB IS THE JOB'S (3.12).
+        # The ordinary reader used to plan against the same chat between two
+        # of the job's units: it could take the stretch the job was about to
+        # read, the job's next unit then found nothing to plan and closed
+        # `failed (refused)`, and the notes the ordinary reader wrote carried
+        # no job id, so "undo this run" could not reach them. While a job
+        # holds this chat the turn is left alone; the job reads up to the
+        # message that was newest when it started (3.13), and everything
+        # after that is this reader's again as soon as the job ends - a
+        # skipped offer is not a lost message, because the next offer
+        # recounts what is unread.
+        if job_id is None and self._job_holds(chat_id):
+            return None
 
         # Before ANY database work. Planning decrypts every pending message,
         # and a stopped breaker that still did that would pay a
@@ -653,11 +831,93 @@ class Worker:
             self.refused_by_chat_breaker += 1
             return None
 
-        model_id = await anyio.to_thread.run_sync(notebook_extract.extract_model)
+        model_id = await anyio.to_thread.run_sync(
+            partial(notebook_extract.extract_model, chat_id))
         if not model_id:
             # A46: no model, no extraction. Not an error and not worth a row
             # every turn - the panel already says suggestions are off.
             return None
+
+        # THE GATE, AT THE POINT BOTH DOORS PASS THROUGH. R-5 says a model
+        # that cannot answer in the strict form notes need is refused
+        # "cagri yapmadan" - without a call - and until this line that was
+        # true of one door only: `_plan_backfill` asked the question, so a
+        # job was refused `model_not_extractable` before it spent anything,
+        # and the turn-driven reader beside it asked nothing and billed.
+        #
+        # That was survivable while the extraction model was a model the
+        # reader picked off a list of models that can all answer. This unit
+        # made it not: with `CHAT_MODEL_BINDING` stored, `extract_model`
+        # resolves to whatever the CHAT is using, which is chosen for
+        # conversation and never for this, and the same resolution feeds
+        # both doors. So the gate belongs here, one line under the
+        # resolution, rather than duplicated at each entry point where the
+        # next entry point would forget it.
+        #
+        # NO CALL, and one named row per chat and model rather than one per
+        # turn: see the refusal below, under the plan. The preview also
+        # names `model_not_extractable` in `blocked_by` and the run route
+        # refuses by that name.
+        #
+        # AND IT FAILS CLOSED FOR THE MODEL THIS UNIT DID NOT VET. The
+        # gate used to answer True for anything neither cache had heard of,
+        # which on a cold process is EVERY model - the ordinary state after
+        # a restart, because until `_learn_about` existed the filtered list
+        # was fetched by the settings picker and by nobody else. So the
+        # evidence is fetched first - no model tokens, the public policy
+        # list, and openrouter remembers the answer either way for
+        # `MODEL_LIST_TTL` so this asks once and not once a turn - and only
+        # then is the question asked. With no evidence a model reached through
+        # `CHAT_MODEL_BINDING` is refused rather than paid for; a model the
+        # reader picked came off the filtered list and the pick is its
+        # evidence. See `_model_is_extractable`.
+        bound = await anyio.to_thread.run_sync(
+            notebook_extract.extract_model_setting
+        ) == notebook_extract.CHAT_MODEL_BINDING
+        await _learn_about(model_id, bound=bound)
+        unfit = await anyio.to_thread.run_sync(
+            partial(_unfit_reason, model_id, bound=bound))
+        # NAMED ONCE PER (CHAT, MODEL), NOT SILENT AND NOT PER TURN (3.8).
+        #
+        # This refusal used to write nothing at all, on the reasoning above:
+        # a standing condition is not an event, and a row per turn would be
+        # an unbounded log of one fact. The first half of that was the
+        # defect. The only place the reason surfaced was the reading strip's
+        # preview, which a reader who never opens it never sees, so the
+        # notes simply stopped coming and the Background notes card said
+        # nothing about why.
+        #
+        # So it is written, as a skip row with its own reason, exactly once
+        # for each pair of this chat and this model: the first turn that
+        # would have read something writes it, and every later turn with
+        # the same model returns here, before planning decrypts anything.
+        # A different model is a different fact and is said again. A turn
+        # that checks the chat's model here and finds it fit forgets every
+        # pair of that chat, whether or not that turn then reads anything
+        # (the day's cap, or fewer than twenty new messages, can stop it
+        # before any call), so the next refusal is news and is said. A turn
+        # stopped before this check (a job holding the chat, an open
+        # breaker, no model) forgets nothing. The memory is this
+        # process's and holds `UNFIT_SAID_MAX` pairs; after a restart, or
+        # once a pair has aged out of it, the pair is said once more. So it
+        # is once for each chat and model while that model keeps being
+        # refused, and again after a turn that checked the chat's model and
+        # found it fit, read or not, a restart or the pair aging out. Going
+        # back to a model already said writes nothing; `standing_refusal`
+        # still finds that pair's older row.
+        #
+        # TWO REASONS, and only one of them blames the model. A
+        # bound model the provider's list does not carry is
+        # `model_not_extractable`. A list that could not be fetched at all
+        # says nothing about the model, so that refusal is
+        # `model_list_unavailable`, with its own sentence, and a later turn
+        # that gets the list and finds the model missing is a different
+        # reason for the same pair and is said.
+        if unfit is not None and self._unfit_already_said(chat_id, model_id,
+                                                          unfit):
+            return None
+        if unfit is None:
+            self._forget_unfit(chat_id)
 
         language = await anyio.to_thread.run_sync(_language)
         plan = await anyio.to_thread.run_sync(
@@ -665,24 +925,44 @@ class Worker:
                     self.trigger_threshold_for(chat_id),
                     self.batch_size_for(chat_id),
                     min_new=min_new, after_id=after_id,
+                    until_id=until_id, reread=reread,
                     # THE UNPRESSURED NUMBER, and the parameter exists only
                     # so it can be. The first-read branch asks "is this
                     # conversation meeting the feature for the first time",
-                    # which is a fact about the conversation - and both
-                    # numbers above now shrink when the provider is unwell,
-                    # so taking the edge off either of them would send a
-                    # twenty-message chat down the four-hundred-message
-                    # branch and leave eighteen of them permanently unread
-                    # with the breaker still CLOSED. That is H-14, and this
-                    # is the door it would have walked back in through.
-                    first_read_edge=config.NOTEBOOK_EXTRACT_EVERY_TURNS * 2,
+                    # which is a fact about the conversation - and the batch
+                    # above shrinks when the provider is unwell, so taking
+                    # the edge off it would send a twenty-message chat down
+                    # the long-history branch and leave eighteen of them
+                    # permanently unread with the breaker still CLOSED. That
+                    # is H-14, and this is the door it would have walked
+                    # back in through. Forty by default: decisions 30 a and
+                    # 31 a, see `from_start_edge`.
+                    first_read_edge=from_start_edge(),
+                    # A JOB WALKS FROM THE OLDEST END (3.11). See
+                    # `_plan_work`: the ordinary reader keeps the newest
+                    # lines that fit, a job keeps the oldest, so a job over
+                    # long messages moves forward through the chat instead
+                    # of stepping over its beginning.
+                    from_oldest=job_id is not None,
                     # What the OTHER entry point is holding. `_plan_work`
                     # opens by closing out `running` rows as orphans, and
-                    # without this the sweep button's first act was to fail
+                    # without this a job unit's first act could be to fail
                     # the loop's live call and move the cursor past it.
                     keep=frozenset(self._active)))
         if plan is None:
             return None
+        if unfit is not None:
+            # Something would have been read, so this is the turn the pair
+            # is said on. The row names the stretch that was not read, with
+            # no claim and no call behind it; a skipped row does not move
+            # the cursor, so that stretch is read the day a model that can
+            # write notes is chosen. Its work key is computed from this
+            # chat's model, which is how the status route later tells
+            # whether the refusal still names the model the chat uses
+            # (`standing_refusal`).
+            await _record_skip(chat_id, unfit, plan)
+            self._remember_unfit(chat_id, model_id, unfit)
+            return _Skipped(unfit)
         # The identity of THIS attempt, not of the range - work_key names the
         # range and is deterministic, so a re-plan of the identical range
         # reuses the same key. Carried through every write this attempt makes
@@ -694,6 +974,10 @@ class Worker:
         # that undoes an abandoned preamble is given. It had no way to say
         # which chat it was giving back.
         plan["chat_id"] = chat_id
+        # And the job, for the same reason: `_write` and `_record` are
+        # handed the plan and nothing else, and the notes and counters
+        # they write have to name the run they belong to.
+        plan["job_id"] = job_id
 
         # Before the gate, before the claim, before the money. The key was
         # computed and then never consulted: `already_done` had no caller in
@@ -722,8 +1006,9 @@ class Worker:
             # that is still out - so the reason was declared, given a
             # sentence, and dropped on the floor every time.
             #
-            # The person who needs to hear it is the one pressing Sweep, and
-            # `sweep()` refuses them by name before it gets this far. On the
+            # The person who needs to hear it is the one starting a read,
+            # and `backfill()` refuses them by name (`already_in_flight`)
+            # before it gets this far. On the
             # loop's side nobody is waiting for an answer, so this is a net
             # under a second claim and nothing else.
             self.refused_in_flight += 1
@@ -755,7 +1040,7 @@ class Worker:
                 await enforce_proxy_gate()
             except Exception:
                 await _record_skip(chat_id, "proxy_gate", plan)
-                return None
+                return _Skipped("proxy_gate")
 
             # BEFORE the claim, because the claim is the moment the day's budget
             # is spent and this is the question of whether anything can be sent
@@ -769,7 +1054,7 @@ class Worker:
             # needs to not happen.
             if not await anyio.to_thread.run_sync(_have_api_key):
                 await _record_skip(chat_id, "api_key_not_set", plan)
-                return None
+                return _Skipped("api_key_not_set")
 
             try:
                 # The day the claim is STAMPED WITH, carried on the plan.
@@ -779,10 +1064,15 @@ class Worker:
                 # touched: yesterday's phantom claim stayed, today's counter went
                 # down for a call today never made, and the ceiling passed one
                 # extra billed call.
-                plan["claim_day"] = await anyio.to_thread.run_sync(_claim_one)
+                # The job's own ceiling when there is a job, the whole
+                # ceiling otherwise. Called with no argument on the
+                # ordinary path so the function keeps the shape every
+                # existing caller and test hands it.
+                plan["claim_day"] = await anyio.to_thread.run_sync(
+                    _claim_one if cap is None else partial(_claim_one, cap))
             except notebook.NotebookError as exc:
                 await _record_skip(chat_id, exc.code, plan)
-                return None
+                return _Skipped(exc.code)
 
             # The claim commits in its OWN transaction, BEFORE the request, so from
             # this line on the day's budget is spent whatever happens next. That
@@ -791,7 +1081,7 @@ class Worker:
             # rather than defends against - unwinds through `raise` and recorded
             # NOTHING. `calls` was +1, the cost was never attributed to it, and
             # there was no extraction row of ANY status, so the identical work key
-            # was re-planned and re-billed at the next threshold.
+            # was re-planned and re-billed on the chat's next reply.
             #
             # The schema has carried `status = 'running'` and `started_at` for
             # exactly this since the table was written - "so a crash leaves a
@@ -831,7 +1121,19 @@ class Worker:
                 self._active_chats.discard(chat_id)
 
     async def _handle(self, chat_id: int, *, min_new: int | None = None,
-                      after_id: int | None = None) -> None:
+                      after_id: int | None = None,
+                      until_id: int | None = None, reread: bool = False,
+                      cap: int | None = None,
+                      job_id: int | None = None) -> str | None:
+        """One work unit, and a one-word account of it.
+
+        Returns None when nothing was planned, the skip reason when a skip
+        row was written, `"failed"` when the call could not be made or
+        came back unusable, and `"settled"` when a paid reply reached the
+        settle. The loop in `run` ignores the word; the backfill loop reads
+        it to decide whether to go round again and what to write on the
+        job when it does not.
+        """
         # THE PREAMBLE IS A TRACKED, SHIELDED TASK.
         #
         # Everything before the provider call touches the database from a
@@ -853,7 +1155,9 @@ class Worker:
         # and shielded from the caller's cancellation, exactly as the settle
         # tail already was. The grace period applies to it too.
         prep = asyncio.create_task(
-            self._prepare(chat_id, min_new=min_new, after_id=after_id),
+            self._prepare(chat_id, min_new=min_new, after_id=after_id,
+                          until_id=until_id, reread=reread, cap=cap,
+                          job_id=job_id),
             name="notebook-prepare")
         self._track(prep)
         try:
@@ -877,7 +1181,9 @@ class Worker:
             prep.add_done_callback(self._undo_abandoned_preamble)
             raise
         if ready is None:
-            return
+            return None
+        if isinstance(ready, _Skipped):
+            return ready.reason
         loop = asyncio.get_running_loop()
         plan, model_id, language = ready
         try:
@@ -912,7 +1218,7 @@ class Worker:
                 # the invariant would silently restore the bug.
                 await anyio.to_thread.run_sync(
                     _release_one, plan["claim_day"])
-                return
+                return "failed"
 
             try:
                 reply = await openrouter.complete(
@@ -971,7 +1277,7 @@ class Worker:
                     await anyio.to_thread.run_sync(
                         _release_one, plan["claim_day"])
                 await _record_failure(chat_id, plan, error_type)
-                return
+                return "failed"
 
             # Defect 1. From here the call has been sent, generated and BILLED -
             # `reply` is the proof. Everything left to do (parse it, write it or
@@ -1005,6 +1311,7 @@ class Worker:
             settle_task.add_done_callback(_clear_settling)
 
             await asyncio.shield(settle_task)
+            return "settled"
         finally:
             # THE RANGE IS FREE AGAIN, whatever happened to it.
             #
@@ -1149,46 +1456,39 @@ class Worker:
 
         Halving what is READ is the real thing for the token side: fewer
         tokens and a smaller window, and with the provider fully down it
-        really does send less - 0.84x the characters.
+        really does send fewer characters.
 
         IT IS NOT THE SAME NUMBER OF CALLS, and that half of this defence was
         false from ONE consecutive failure. `batch_size` halves;
         NOTEBOOK_EXTRACT_EVERY_TURNS does not, so the same backlog is bought
         in more pieces and the fixed part of the prompt is paid again in each
-        of them. Measured with halving ON against OFF under an identical
-        provider outcome sequence, indexed per call: every call landing,
-        1.00x; one failure then all landing, 1.00x; three failures then all
-        landing, 1.00x; a fifty percent flaky provider, about 1.9x calls;
-        four failures to one landing, about 1.3x calls.
+        of them. HOW MANY MORE is measured, not written here: SECURITY.md
+        quotes the call ratio of halving ON against OFF for each failure
+        pattern, measured through reading jobs over a fixed backlog, and
+        `TestTheFiguresTheDocumentsQuote` in
+        tests/test_notebook_planner_budget.py drives this code and holds
+        every quoted figure (from backend/, `python -m pytest
+        tests/test_notebook_planner_budget.py -k TheFiguresTheDocumentsQuote
+        -s` prints them). No copy of the numbers lives in this docstring, so
+        none can go stale here.
 
-        And the worse half of that last number is not the price, it is the
-        INVERSE PRODUCTIVITY: on four failures to one landing it pays about
-        1.3x and reads 24 messages where the unhalved run reads 180, which is
-        thirteen percent of the work. The day's calls run out on two-message
-        batches. In the degraded regime this mechanism exists for, it pays
-        more and does less.
+        And the worse half is not the price, it is the INVERSE
+        PRODUCTIVITY: when most calls fail, the job's calls for the day run
+        out on two-message batches, so the halved run reads a fraction of
+        what the unhalved run reads (the same test holds how much). In the
+        degraded regime this mechanism exists for, it pays more and does
+        less.
 
-        HALVING THE TRIGGER THRESHOLD ALONGSIDE IT DOES NOT MOVE ANY OF THAT,
-        and that was measured rather than argued. Under the same six outcome
-        sequences, at arrival rates from two messages a turn down to two
-        messages every twenty turns, a run in which
-        NOTEBOOK_EXTRACT_EVERY_TURNS halves with the batch produces the same
-        call count, the same characters and the same messages read: 1.00x on
-        every row. The reason is structural. The halved threshold is only in
-        force while `breaker.failures > 0`; a failed extraction does not
-        advance the cursor, because the cursor query counts `status='done'`
-        and `abandoned_in_flight` and nothing else. So the backlog standing
-        in front of the gate is already at or above the UNHALVED threshold
-        every time the halved one is consulted - 351 such decisions in the
-        sweep, none of them answered differently. The two come apart only in
-        a state the shipped code does not reach, a failure that DID advance
-        the cursor, and there the halved threshold buys 1.05x the coverage
-        for 1.14x the calls. It is the wrong lever: the thirteen percent
-        above comes from the batch, not from the threshold.
-
-        It halves anyway, for the one thing it does buy: the two numbers can
-        no longer drift apart, which is how the ten-fold spending bug at the
-        top of this docstring became possible in the first place.
+        THE TRIGGER THRESHOLD DOES NOT HALVE WITH IT (decision 28 a). It
+        used to, on the argument that two numbers on one rule cannot drift
+        apart, and a measurement that the halved threshold changed nothing
+        for the chat that was failing. It did change something for every
+        OTHER chat: the counter it read was the global one, so one chat's
+        timeouts dropped the whole install's threshold to 10, 5 and 2, and a
+        healthy conversation with twelve unread messages was read at once,
+        mid-outage, at a smaller batch. The rule is twenty messages
+        and it holds in a failing period too; only what each call reads
+        shrinks. `trigger_threshold` below is the constant, on purpose.
 
         The rest of the backlog is not lost either way: it stays unread and
         the next run picks it up.
@@ -1198,15 +1498,14 @@ class Worker:
 
     @property
     def trigger_threshold(self) -> int:
-        """How much new material is worth a call. Same rule, same floor.
+        """How much new material is worth a call: twenty messages, always.
 
-        ONE line, `_pressured`, and deliberately not `return self.batch_size`
-        either: an alias reads as "these happen to be equal today" where this
-        reads as "these are the same question asked of two names". Writing the
-        loop a second time is exactly how they came apart before.
+        Decision 28 a. Failures shrink the batch (`batch_size`) and never
+        this: a provider fault in one chat must not make every other chat
+        read more often. Read at call time, because tests and the
+        environment both set the constant.
         """
-        return _pressured(config.NOTEBOOK_EXTRACT_EVERY_TURNS,
-                          self.breaker.failures)
+        return config.NOTEBOOK_EXTRACT_EVERY_TURNS
 
     # ── the per-chat breakers ───────────────────────────────────────────
     def _pressure(self, chat_id: int | None) -> int:
@@ -1229,9 +1528,12 @@ class Worker:
                           self._pressure(chat_id))
 
     def trigger_threshold_for(self, chat_id: int) -> int:
-        """`trigger_threshold`, asked about one chat."""
-        return _pressured(config.NOTEBOOK_EXTRACT_EVERY_TURNS,
-                          self._pressure(chat_id))
+        """`trigger_threshold`, asked about one chat. The same twenty
+        whatever this chat's own breaker says: a chat that keeps failing
+        reads less per call (`batch_size_for`) and is retried on its very
+        next reply, because a failure does not move the cursor (decision
+        33 a) - it is not read on fewer messages."""
+        return config.NOTEBOOK_EXTRACT_EVERY_TURNS
 
     def _expire_chat_breakers(self, now: float | None) -> None:
         """Drop records whose last failure is older than the TTL.
@@ -1369,7 +1671,8 @@ class Worker:
             # already released what they took.
             return
         ready = task.result()
-        if ready is None:
+        if ready is None or isinstance(ready, _Skipped):
+            # Nothing claimed, or a skip already recorded and released.
             return
         plan, _model_id, _language = ready
         self.abandoned_preambles += 1
@@ -1422,6 +1725,57 @@ class Worker:
         except Exception:                                 # pragma: no cover
             pass
 
+    def _reading_finished(self, task: "asyncio.Task") -> None:
+        """The ordinary reader's unit is done: forget it, and read its
+        outcome so an exception that nobody awaited (the loop was cancelled
+        while the unit ran on) is not reported by asyncio as unretrieved.
+        `run()` has already counted it when it was there to see it."""
+        if self._reading is task:
+            self._reading = None
+        if not task.cancelled():
+            task.exception()
+
+    def _unfit_already_said(self, chat_id: int, model_id: str,
+                            reason: str) -> bool:
+        """Whether this chat was told this reason about this model and the
+        note of it is still held (3.8). It answers False once the note is
+        gone, even though the chat was told earlier: after a fit turn's
+        `_forget_unfit` for this chat, after the pair aged out past
+        `UNFIT_SAID_MAX`, and after a restart (the notes live in memory
+        only). A hit is touched, so the pairs a reader keeps meeting are
+        the last to age out."""
+        key = (chat_id, model_id)
+        if self._unfit_said.get(key) != reason:
+            return False
+        self._unfit_said.move_to_end(key)
+        return True
+
+    def _remember_unfit(self, chat_id: int, model_id: str,
+                        reason: str) -> None:
+        """Note that the pair was told, newest last, and forget the oldest
+        pairs past `UNFIT_SAID_MAX`. Read at call time, so a test or the
+        environment may set the bound."""
+        key = (chat_id, model_id)
+        self._unfit_said[key] = reason
+        self._unfit_said.move_to_end(key)
+        while len(self._unfit_said) > UNFIT_SAID_MAX:
+            self._unfit_said.popitem(last=False)
+
+    def _forget_unfit(self, chat_id: int) -> None:
+        """The chat's model is fit now: forget every pair of this chat, so
+        going back to an unfit model later is said again. One pass over at
+        most `UNFIT_SAID_MAX` keys, on every turn that checks the chat's
+        model and finds it fit, read or not; a turn stopped before that
+        check does not call this."""
+        for key in [k for k in self._unfit_said if k[0] == chat_id]:
+            del self._unfit_said[key]
+
+    def _job_holds(self, chat_id: int) -> bool:
+        """Whether a backfill job is reading this chat right now (3.12)."""
+        job = self._backfill
+        return (job is not None and job.get("chat_id") == chat_id
+                and self.active_job_id() is not None)
+
     def _track(self, task: "asyncio.Task") -> None:
         """Register a task `quiesce()` and `stop()` must wait for.
 
@@ -1457,87 +1811,588 @@ class Worker:
                            type(exc).__name__)
         return dict(self.backlog)
 
-    async def sweep(self, chat_id: int) -> dict:
-        """Read this chat's unread history, because somebody asked.
+    # -- backfill jobs -----------------------------------------------------
+    #
+    # A backfill job reads a chat's unread history, or a stretch of it, one
+    # unit per turn until there is nothing left or somebody says stop. It
+    # holds the `_sweeping` lock for its whole run, runs each unit as a
+    # tracked and shielded task, and reaches the provider through the same
+    # `_handle` door as the ordinary reader, so the same claim, running row
+    # and settle. What is its own is a row in `notebook_backfill_jobs`
+    # (progress, and the handle "undo this run" needs), a lower ceiling for
+    # the claim (the live reader keeps NOTEBOOK_LIVE_RESERVE of the day), and
+    # the three refusals a job adds. Only a person starts one, from the
+    # reading strip after its preview: the one-press route that read without
+    # a preview is gone (decision 69 a), and so is the job the worker used to
+    # start on its own for a chat with no notes (decisions 30 a and 31 a).
 
-        ONE work unit, through the SAME `_handle` the turn path uses - the
-        same claim against the daily cap, the same running row, the same
-        settle. A second entry point into the planner would mean two cursors
-        and two ways to bill for the same range, which is the failure this
-        module is mostly built against.
+    def active_job_id(self) -> int | None:
+        """The id of the job this process is driving right now, or None.
 
-        Refuses to run twice at once. Not a lock on the chat: a lock on this
-        button. A reader who presses it three times has asked for one thing.
+        THE ROW, NOT THE TASK, and that order is the whole point. `backfill`
+        commits the row on a worker thread, so it is visible to a status
+        poll while the coroutine that asked for it is still suspended and
+        the loop task does not exist yet. Reading the task first answered
+        None for that window, and the poll's own
+        `settle_orphaned_jobs(keep=None)` stamped the new row `interrupted`.
+        Nothing moves a row back out of that state - `advance_job` wants
+        `planned`, `stop_job` wants `planned` or `running` - so the job ran
+        to the end billing against a row that said it had stopped, and the
+        undo route, seeing a terminal state, skipped its 409 and deleted
+        notes while the loop was still writing them. `_backfill` is claimed
+        inside the creating transaction, so it is set before any reader can
+        see the row at all.
         """
+        if self._backfill is None:
+            return None
+        task = self._backfill_task
+        if task is not None and task.done():
+            return None
+        return self._backfill["id"]
+
+    async def wait_for_backfill(self) -> None:
+        """Wait for the running job's loop to finish. Tests and nothing else:
+        the routes answer at once and the panel polls."""
+        task = self._backfill_task
+        if task is not None and not task.done():
+            await asyncio.shield(task)
+
+    def _plan_backfill(self, chat_id: int, scope: str,
+                       from_id: int | None, to_id: int | None) -> dict:
+        """The preview: what a job would read, cost and be blocked by.
+
+        Spends nothing and starts nothing. On a worker thread: everything
+        it reads is in the vault. Raises `chat_not_found` for a chat that
+        is not there and `notebook_range_invalid` for a range that is not
+        inside it; every other refusal is a token in `blocked_by`, because
+        the preview's whole purpose is to say those BEFORE the button is
+        pressed.
+        """
+        from database import get_db, get_setting_con
+
+        with get_db() as con:
+            # Orphans first, so a job the last process died under does not
+            # keep this chat reporting "running" and refusing a new job.
+            stale = notebook.orphaned_job_ids(con)
+            if stale:
+                notebook.settle_orphaned_jobs(
+                    con, stale, keep=self.active_job_id())
+            chat = con.execute(
+                "SELECT ch.id, ch.model_id, c.id AS character_id "
+                "FROM chats ch LEFT JOIN characters c "
+                "ON c.id = ch.character_id WHERE ch.id = ?",
+                (chat_id,)).fetchone()
+            if chat is None:
+                raise notebook.NotebookError("chat_not_found")
+            blocked: list[str] = []
+            if chat["character_id"] is None:
+                blocked.append("no_character")
+            chat_model = (chat["model_id"] or "").strip()
+            if not chat_model:
+                blocked.append("no_chat_model")
+            stored = get_setting_con(con, config.SETTING_NOTEBOOK_MODEL) or None
+            bound = stored == notebook_extract.CHAT_MODEL_BINDING
+            model_id = (chat_model or None) if bound else stored
+            if not model_id:
+                blocked.append("no_extract_model")
+            else:
+                # The same question the turn gate asks, with the same two
+                # answers: a list that could not be fetched is not blamed on
+                # a model nobody examined (`_unfit_reason`).
+                unfit = _unfit_reason(model_id, bound=bound)
+                if unfit is not None:
+                    blocked.append(unfit)
+
+            lo, hi = notebook.message_span(con, chat_id)
+            total = con.execute(
+                "SELECT COUNT(*) FROM messages WHERE chat_id = ? "
+                "AND active = 1", (chat_id,)).fetchone()[0]
+            if scope == "range":
+                if (from_id is None or to_id is None or from_id > to_id
+                        or lo is None or from_id < lo or to_id > hi):
+                    raise notebook.NotebookError("notebook_range_invalid")
+                unread, chars = con.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(LENGTH(content)), 0) "
+                    "FROM messages WHERE chat_id = ? AND active = 1 "
+                    "AND id BETWEEN ? AND ?",
+                    (chat_id, from_id, to_id)).fetchone()
+            else:
+                unread = notebook.unread_count(con, chat_id)
+                chars = con.execute(
+                    "SELECT COALESCE(SUM(LENGTH(m.content)), 0) FROM messages m "
+                    "WHERE m.chat_id = ? AND m.active = 1 AND NOT EXISTS ("
+                    "  SELECT 1 FROM notebook_extractions e "
+                    "  WHERE e.chat_id = m.chat_id "
+                    "    AND (e.status = 'done' "
+                    "         OR (e.status = 'failed' AND e.error_type = ?)) "
+                    "    AND m.id BETWEEN e.from_message_id "
+                    "        AND e.to_message_id)",
+                    (chat_id, notebook.ABANDONED_IN_FLIGHT)).fetchone()[0]
+                if unread == 0:
+                    blocked.append("nothing_unread")
+            card_len = con.execute(
+                "SELECT COALESCE(LENGTH(c.description), 0) FROM chats ch "
+                "JOIN characters c ON c.id = ch.character_id WHERE ch.id = ?",
+                (chat_id,)).fetchone()
+            existing_len = con.execute(
+                "SELECT COALESCE(SUM(LENGTH(text) + 8), 0) FROM notebook_entries "
+                "WHERE chat_id = ? AND retired_at IS NULL",
+                (chat_id,)).fetchone()[0]
+            spent = notebook.spend_today(con)["calls"]
+            language = get_setting_con(
+                con, config.SETTING_NOTEBOOK_PROMPT_LANG) or "en"
+
+        batch = max(1, self.batch_size_for(chat_id))
+        chunks = 0 if unread == 0 else -(-unread // batch)
+        calls = min(1, chunks) if scope == "next" else chunks
+        cap = _backfill_cap()
+        # THE JOB'S OWN CEILING, not the day's. `fits_today` answers the
+        # question the run route will ask, and the run route claims
+        # against `cap`, so the two cannot disagree.
+        fits = spent + calls <= cap
+        price = _prompt_price(model_id) if model_id else None
+        reply_price = _completion_price(model_id) if model_id else None
+        # What the job costs: every call pays for what it SENDS and for what
+        # it gets BACK (3.17). This used to price the first half only, and
+        # only part of that, so the number the reader agreed to before
+        # pressing Start was lower than the bill.
+        #
+        # Sent, per call: the material (bounded per call by the turns
+        # ceiling), the card, the notes already kept, the instructions, and
+        # the fixed frame every request carries whatever is in it - the
+        # fence rule and the four fenced section labels, measured off the
+        # real builder as `notebook_extract.SCAFFOLD_CHARS`. Tokens are
+        # estimated the way the composer estimates them, from the same
+        # constant.
+        #
+        # Received, per call: the reply allowance, `MAX_TOKENS`, at the
+        # model's completion price. That is the most a reply can bill, so
+        # the estimate is an upper bound on that half rather than a guess
+        # at it, which is the safe direction for a number a person agrees
+        # to.
+        #
+        # Never a fake zero: an unknown price on either half is no number
+        # at all, because a total missing one of its halves is the same
+        # understatement this change is about.
+        fixed = (min(card_len[0] if card_len else 0, config.NOTEBOOK_CARD_MAX_CHARS)
+                 + min(existing_len, config.NOTEBOOK_EXISTING_MAX_CHARS)
+                 + len(notebook_extract.system_prompt(language))
+                 + notebook_extract.SCAFFOLD_CHARS)
+        material = min(chars, calls * config.NOTEBOOK_TURNS_MAX_CHARS)
+        est_tokens = (material + calls * fixed) / config.CHARS_PER_TOKEN_ESTIMATE
+        reply_tokens = calls * notebook_extract.MAX_TOKENS
+        cost = (None if price is None or reply_price is None
+                else round((price * est_tokens + reply_price * reply_tokens)
+                           / 1_000_000, 6))
+        return {
+            "ready": not blocked,
+            "blocked_by": blocked,
+            "scope": scope,
+            "messages_total": total,
+            "messages_unread": unread,
+            "chunks": chunks,
+            "calls_planned": calls,
+            # TWO NAMES BECAUSE THEY ARE TWO NUMBERS. `daily_cap` is the
+            # day's ceiling and means the same thing here as it does on
+            # `GET /notebook/worker` - one constant, one meaning, and the
+            # panel renders both routes at once, so a name that carried 50
+            # on one and 60 on the other put two different sentences about
+            # the same day side by side. `backfill_cap` is what a JOB may
+            # claim: the day's ceiling minus the reserve the live reader
+            # keeps. Everything this route says about fitting is about
+            # `backfill_cap`.
+            "daily_cap": config.NOTEBOOK_DAILY_CALL_CAP,
+            "backfill_cap": cap,
+            "live_reserve": config.NOTEBOOK_LIVE_RESERVE,
+            "calls_spent_today": spent,
+            "fits_today": fits,
+            "prompt_price": price,
+            "cost_estimate": cost,
+            "model_id": model_id,
+            "model_is_chat_bind": bound,
+        }
+
+    async def plan_backfill(self, chat_id: int, scope: str,
+                            from_id: int | None = None,
+                            to_id: int | None = None) -> dict:
+        if scope not in notebook.JOB_SCOPES:
+            raise notebook.NotebookError("notebook_range_invalid")
+        # THE PREVIEW LEARNS TOO, and `backfill` reaches this door before
+        # it writes a job row, so the run route learns with it. Without it
+        # the panel would print `model_not_extractable` on a cold process
+        # and the only thing that could clear it is a background turn -
+        # the reader would be looking at a blocked button with no way to
+        # unblock it. The model is resolved here only to say what to ask
+        # about; `_plan_backfill` resolves its own for the answer.
+        model_id = await anyio.to_thread.run_sync(
+            partial(notebook_extract.extract_model, chat_id))
+        if model_id:
+            bound = await anyio.to_thread.run_sync(
+                notebook_extract.extract_model_setting
+            ) == notebook_extract.CHAT_MODEL_BINDING
+            await _learn_about(model_id, bound=bound)
+        return await anyio.to_thread.run_sync(
+            partial(self._plan_backfill, chat_id, scope, from_id, to_id))
+
+    async def backfill(self, chat_id: int, scope: str,
+                       from_id: int | None = None,
+                       to_id: int | None = None) -> dict:
+        """Start a backfill job, or say why not. Answers at once.
+
+        `{started: True, job_id, calls_planned}` and the loop runs on as
+        its own task, progress on `GET /notebook/worker`; or
+        `{started: False, reason}` with one of SWEEP_REFUSALS. Raises
+        `chat_not_found` and `notebook_range_invalid` like the preview.
+
+        Refused BEFORE a job row is written, every time: a refused job has
+        nothing to undo, and a `planned` row for it would be an undo target
+        with nothing behind it.
+        """
+        if scope not in notebook.JOB_SCOPES:
+            raise notebook.NotebookError("notebook_range_invalid")
         if self._sweeping:
             return {"started": False, "reason": "already_running"}
-        # AND the other entry point counts too.
-        #
-        # `already_running` is a lock on this button. The loop reads the same
-        # chats from the other side, and a sweep that started while it was
-        # mid-call used to plan the identical range, pass `already_done` -
-        # which only answers for `status='done'` - and be billed a second
-        # time for one answer. Refused here rather than three hundred lines
-        # down, because here there is somebody to tell: the panel renders
-        # this as "It is already reading. Give it a moment."
         if chat_id in self._active_chats:
             return {"started": False, "reason": "already_in_flight"}
-        # AND this chat's own breaker, refused HERE rather than three hundred
-        # lines down inside `_prepare`, because here there is somebody to
-        # tell. `_prepare` would return None and the button would report
-        # "Reading the earlier part of this chat now" over a turn that never
-        # happened - the panel saying the opposite of what is going on, which
-        # is the one failure a status screen must not have.
-        #
-        # Two reasons, not one: "it will retry by itself in a while" and "it
-        # will not retry until you say so" are different answers, and only
-        # one of them asks the reader to do something.
         now = asyncio.get_running_loop().time()
         cb = self._chat_breaker(chat_id, now)
         if cb is not None and not cb.allows(now):
             self.refused_by_chat_breaker += 1
             return {"started": False,
                     "reason": "chat_stopped" if cb.stopped else "chat_paused"}
-        from database import get_db
 
-        def _where() -> int | None:
-            with get_db() as con:
-                return notebook.first_unread_message(con, chat_id)
-
-        after_id = await anyio.to_thread.run_sync(_where)
-        if after_id is None:
-            return {"started": False, "reason": "nothing_unread"}
-
+        # CLAIMED HERE, BEFORE THE FIRST AWAIT, and handed back below if
+        # this turns into a refusal.
+        #
+        # `self._sweeping` used to be set after the preview and after the
+        # row was written - two awaits below the check at the top of this
+        # method - and asyncio hands another coroutine the loop at each of
+        # them. Two presses landing together (a double click, or two
+        # panels) therefore BOTH read False and both started a loop. The damage is
+        # not just a double spend: the second loop's done callback clears
+        # `_backfill`, `_backfill_task` and this flag while the first is
+        # still billing, so the first becomes a job `stop_backfill` answers
+        # `nothing_running` for, that `active_job_id` cannot name, and that
+        # a third press can stack on top of. The window is those two
+        # awaits; the claim belongs before them, which is what every other
+        # reader of this flag already assumes has happened.
         self._sweeping = True
-        # A TRACKED TASK, not an inline await.
+        # AND THE STOP FLAG WITH IT, before the first await.
         #
-        # This runs on the HTTP request task, which `quiesce()` neither
-        # cancels nor waits for - it cancels `worker.task` and waits on
-        # `_inflight`, and an inline sweep was in neither. So a vault lock
-        # landing mid-sweep returned at once while the request went on
-        # carrying decrypted chat text to the provider, which is the one
-        # thing the quiesce exists to stop. The paid reply was then lost on
-        # a cleared key, and `_settle`'s write handler called
-        # `breaker.failed()` - so locking the vault walked the breaker
-        # toward `stopped`.
-        #
-        # Registered before it can do anything, exactly as `_track`'s own
-        # docstring requires, and awaited here so the route still answers
-        # only when the work is done.
-        task = asyncio.create_task(
-            # min_new=1: the reader has already decided this is worth a call,
-            # and it is also what keeps the planner's jump-to-the-present
-            # branch out of the way.
-            self._handle(chat_id, min_new=1, after_id=after_id))
-        self._track(task)
+        # This line used to sit after `_create` came back. `_create` claims
+        # `self._backfill` on its own thread, and from that instant
+        # `stop_backfill` passes its guard and can write True - so a stop
+        # landing anywhere in the handoff between the commit and this
+        # coroutine being rescheduled was written back to False here. The
+        # route had already answered `{"stopped": true}` and the panel had
+        # already said "stopping after this one", while the loop went on to
+        # bill every unit it had planned. Nothing raised, no counter moved,
+        # nothing reached a log. Cleared here, where the flag cannot have
+        # been set yet because `self._backfill` is not claimed until
+        # `_create` runs, there is no window at all.
+        self._backfill_stop = False
+        started = False
         try:
-            await asyncio.shield(task)
-        finally:
-            self._sweeping = False
-        return {"started": True, "after_id": after_id}
+            preview = await self.plan_backfill(chat_id, scope, from_id, to_id)
+            if preview["blocked_by"]:
+                return {"started": False,
+                        "reason": _refusal_for(preview["blocked_by"])}
+            if preview["calls_spent_today"] >= preview["backfill_cap"]:
+                # The job's ceiling is already spent. Said with the same
+                # word the loop uses when it gets there mid-run, and the
+                # preview said `fits_today: false` before the press.
+                return {"started": False, "reason": "daily_cap_reached"}
 
-    def status(self, now: float | None = None, chat_id: int | None = None) -> dict:
+            def _create() -> dict:
+                from database import get_db
+                with get_db() as con:
+                    con.execute("BEGIN IMMEDIATE")
+                    if scope == "range":
+                        # The reading record over the chosen stretch goes,
+                        # so the planner will read it again. See
+                        # notebook.forget_readings_in_range.
+                        notebook.forget_readings_in_range(
+                            con, chat_id, from_id, to_id)
+                    row = notebook.create_job(
+                        con, chat_id, scope, from_id=from_id, to_id=to_id,
+                        planned_calls=preview["calls_planned"])
+                    # WHERE THIS JOB STOPS, fixed now (3.13). A job used to
+                    # read "until nothing is unread", and the chat does not
+                    # stand still while it reads: every message written
+                    # during the job was read by the job too, each unit
+                    # paying a whole call for the one or two new messages
+                    # it found. The job reads the chat as it was when it
+                    # was started; what arrives after is the ordinary
+                    # reader's, once the job is done (3.12). A range job
+                    # keeps its own end.
+                    if scope != "range":
+                        row = dict(row)
+                        row["read_until"] = notebook.message_span(
+                            con, chat_id)[1]
+                    # INSIDE THE TRANSACTION THAT WRITES IT. The commit is
+                    # what makes this row visible to the status poll, and
+                    # the poll asks `active_job_id()` who is driving it -
+                    # so that answer has to exist before the commit does,
+                    # not after this coroutine is rescheduled. Claimed
+                    # here, the two are ordered by SQLite's write lock.
+                    self._backfill = dict(row)
+                    return row
+
+            job = await anyio.to_thread.run_sync(_create)
+            task = asyncio.create_task(self._run_backfill(dict(job)),
+                                       name="notebook-backfill")
+            self._backfill_task = task
+            task.add_done_callback(self._backfill_finished)
+            started = True
+            logger.info("Notebook backfill job started: scope=%s chat_id=%d",
+                        scope, chat_id)
+            return {"started": True, "job_id": job["id"],
+                    "calls_planned": preview["calls_planned"]}
+        finally:
+            # A refusal, or a raise from the preview (`chat_not_found`,
+            # `notebook_range_invalid`), leaves nothing running, so the
+            # claim goes back. Once the loop task exists the flag belongs
+            # to `_backfill_finished` and this must not touch it.
+            if not started:
+                self._sweeping = False
+                self._backfill = None
+
+    def _backfill_finished(self, task: "asyncio.Task") -> None:
+        if self._backfill_task is task:
+            self._backfill_task = None
+            self._backfill = None
+            self._sweeping = False
+
+    def _backfill_cursor(self, job: dict) -> int | None:
+        """Where the next unit starts, or None when the job is complete.
+
+        On a worker thread. For `all` and `next` it is the id before the
+        first unread message, and None once nothing unread is left at or
+        below `read_until` - the message that was newest when the job
+        started (3.13). For `range` it
+        is the top of what this job has read inside its stretch, or the
+        message before the stretch when it has read nothing yet, and None
+        once nothing is left in the stretch for a unit to plan.
+
+        COMPLETE IS NOT `top >= to_message_id`. The end of a range is an
+        id a reader typed, and an id is not a message: one that was edited
+        away or deleted leaves its id behind, inside the span a range is
+        checked against and carried by no row the planner will ever
+        select. A job ending on such an id reads everything it can,
+        records the last ACTIVE id below it, and never reaches the end it
+        was given - so the loop saw a cursor that had not moved and closed
+        the row `failed` / `refused` on a read that had in fact finished
+        and billed exactly what it planned. `JOB_STATES` says which word
+        that is: `done` when nothing unread is left inside what the job
+        reads (up to `read_until` for `all` and `next`).
+
+        So the question is the planner's own - is there an ACTIVE message
+        above the cursor and inside the stretch? - asked with the planner's
+        own predicate (`active = 1 AND id > ? AND id <= ?`, see
+        `_plan_work`), so the two cannot disagree about what is left to
+        read. The old condition is contained in this one: a `top` at or
+        past the end leaves nothing above the cursor either way.
+        """
+        from database import get_db
+        with get_db() as con:
+            if job["scope"] != "range":
+                cursor = notebook.first_unread_message(con, job["chat_id"])
+                bound = job.get("read_until")
+                if cursor is None or bound is None:
+                    return cursor
+                # The same question as the range arm below, with the
+                # job's own end: is there an ACTIVE message above the
+                # cursor and at or below the message that was newest when
+                # the job started? The first unread message may sit above
+                # that end - written during the job - and it is not the
+                # job's to read (3.13).
+                more = con.execute(
+                    "SELECT 1 FROM messages WHERE chat_id = ? AND active = 1 "
+                    "AND id > ? AND id <= ? LIMIT 1",
+                    (job["chat_id"], cursor, bound)).fetchone()
+                return cursor if more is not None else None
+            top = con.execute(
+                "SELECT MAX(to_message_id) FROM notebook_extractions "
+                "WHERE chat_id = ? AND from_message_id >= ? "
+                "AND to_message_id <= ? AND (status = 'done' "
+                "     OR (status = 'failed' AND error_type = ?))",
+                (job["chat_id"], job["from_message_id"], job["to_message_id"],
+                 notebook.ABANDONED_IN_FLIGHT)).fetchone()[0]
+            cursor = job["from_message_id"] - 1 if top is None else top
+            more = con.execute(
+                "SELECT 1 FROM messages WHERE chat_id = ? AND active = 1 "
+                "AND id > ? AND id <= ? LIMIT 1",
+                (job["chat_id"], cursor, job["to_message_id"])).fetchone()
+            return cursor if more is not None else None
+
+    async def _run_backfill(self, job: dict) -> None:
+        """The loop. One unit per turn through `_handle`, until it reaches the
+        last message that was there when the job started (3.13), or a stop,
+        or a reason to stop."""
+        chat_id, job_id, scope = job["chat_id"], job["id"], job["scope"]
+        loop = asyncio.get_running_loop()
+        state, why = "failed", None
+        try:
+            await anyio.to_thread.run_sync(
+                partial(_job_write, job_id, running=True))
+            while True:
+                # THE STOP FLAG IS READ AT THE TOP OF EVERY TURN. The unit
+                # in flight is never cancelled - it is paid for - but the
+                # next one does not start.
+                if self._backfill_stop:
+                    state, why = "stopped", None
+                    break
+                # The chat's own breaker, re-asked every turn: a chat that
+                # tripped mid-job stops the job, and says which way.
+                now = loop.time()
+                cb = self._chat_breaker(chat_id, now)
+                if cb is not None and not cb.allows(now):
+                    state = "stopped"
+                    why = "chat_stopped" if cb.stopped else "chat_paused"
+                    break
+                # THE CEILING IS RE-ASKED EVERY TURN, before planning, which
+                # decrypts the batch. The live reader may have spent
+                # between two units; the question is about now.
+                cap = _backfill_cap()
+                spent = await anyio.to_thread.run_sync(_calls_today)
+                if spent >= cap:
+                    state, why = "stopped", "daily_cap_reached"
+                    break
+                cursor = await anyio.to_thread.run_sync(
+                    partial(self._backfill_cursor, job))
+                if cursor is None:
+                    state = "done"
+                    break
+                # A TRACKED, SHIELDED TASK: `quiesce()` cancels THIS loop
+                # and then waits for the unit, so a call already paid for
+                # lands before the key is cleared. Removing either half
+                # loses a billed reply to the next vault lock.
+                unit = asyncio.create_task(self._handle(
+                    chat_id, min_new=1, after_id=cursor,
+                    until_id=(job["to_message_id"] if scope == "range"
+                              else job.get("read_until")),
+                    reread=(scope == "range"), cap=cap, job_id=job_id))
+                self._track(unit)
+                outcome = await asyncio.shield(unit)
+                after = await anyio.to_thread.run_sync(
+                    partial(self._backfill_cursor, job))
+                if after is not None and after <= cursor:
+                    # Nothing moved. Whatever `_handle` said is why, and
+                    # going round again would ask the same question of the
+                    # same range.
+                    if outcome == "notebook_daily_cap_reached":
+                        state, why = "stopped", "daily_cap_reached"
+                    elif outcome in ("proxy_gate", "api_key_not_set"):
+                        state, why = "stopped", outcome
+                    elif outcome in ("model_not_extractable",
+                                     "model_list_unavailable"):
+                        # The gate's two skip reasons are not in the job's
+                        # closed `JOB_LAST_ERRORS`, and the panel prints a
+                        # token it has no words for in brackets. The run
+                        # route refuses an unfit model up front by name, so
+                        # this is a model that turned unfit mid-job.
+                        state, why = "failed", "refused"
+                    else:
+                        state, why = "failed", outcome or "refused"
+                    break
+                if scope == "next":
+                    state = "done"
+                    break
+        except asyncio.CancelledError:
+            # The vault is locking (`quiesce`) or the app is stopping. The
+            # unit keeps running shielded; the job's row records why it
+            # stopped, through a tracked task so the stand-down waits for
+            # the write the same way it waits for the unit.
+            self._track(loop.create_task(anyio.to_thread.run_sync(
+                partial(_job_write, job_id, state="stopped",
+                        last_error="vault_locked"))))
+            raise
+        except Exception as exc:
+            # ONE TOKEN, NOT THE CLASS NAME. `last_error` is read by the
+            # panel, which prints what it does not recognise in brackets -
+            # so `KeyError` reaching a person in brackets is the shape
+            # section 5.0 was written to stop. The class name still goes to
+            # the log, where it is useful and where no reader meets it.
+            state, why = "failed", "failed"
+            logger.warning("Notebook backfill job ended in %s.",
+                           type(exc).__name__)
+        await anyio.to_thread.run_sync(
+            partial(_job_write, job_id, state=state, last_error=why))
+        logger.info("Notebook backfill job ended: %s%s", state,
+                    f" ({why})" if why else "")
+
+    async def stop_backfill(self, chat_id: int) -> dict:
+        """Ask the running job on this chat to stop after its current unit.
+
+        `{stopped: True, job_id, calls_spent}` or `{stopped: False,
+        reason: "nothing_running"}`, which is a refusal and not an error.
+        """
+        job = self._backfill
+        if (job is None or job["chat_id"] != chat_id
+                or self.active_job_id() is None):
+            return {"stopped": False, "reason": "nothing_running"}
+        self._backfill_stop = True
+
+        def _spent() -> int:
+            from database import get_db
+            with get_db() as con:
+                row = notebook.job_row(con, job["id"])
+            return int(row["spent_calls"]) if row else 0
+
+        return {"stopped": True, "job_id": job["id"],
+                "calls_spent": await anyio.to_thread.run_sync(_spent)}
+
+    def backfill_block(self, con, chat_id: int | None) -> dict | None:
+        """The `backfill` block of the status answer, on the route's
+        connection.
+
+        This chat's newest job when a chat was named, the one in flight
+        otherwise, None when there is none. Column names are mapped to the
+        wire names here and nowhere else.
+        """
+        # THE SELECT BEFORE THE DRIVER, and both before `active` is used
+        # for anything else: see `orphaned_job_ids`. Nothing is written at
+        # all on the ordinary poll, which is the common case by far - this
+        # runs on every progress tick.
+        stale = notebook.orphaned_job_ids(con)
+        active = self.active_job_id()
+        if stale:
+            notebook.settle_orphaned_jobs(con, stale, keep=active)
+        if chat_id is not None:
+            row = notebook.job_for_chat(con, chat_id)
+        else:
+            row = notebook.job_row(con, active) if active is not None else None
+        if row is None:
+            return None
+        if row["scope"] == "range":
+            left = (0 if row["state"] == "done" else notebook.unread_count(
+                con, row["chat_id"], row["from_message_id"],
+                row["to_message_id"]))
+        else:
+            left = notebook.unread_count(con, row["chat_id"])
+        return {
+            "job_id": row["id"],
+            "chat_id": row["chat_id"],
+            "state": row["state"],
+            "scope": row["scope"],
+            "calls_planned": row["planned_calls"],
+            "calls_spent": row["spent_calls"],
+            "notes_written": row["notes_written"],
+            "messages_left": left,
+            "last_error": row["last_error"],
+        }
+
+    def status(self, now: float | None = None, chat_id: int | None = None,
+               backfill: dict | None = None) -> dict:
         """What the panel reads.
+
+        `backfill` is the job block `backfill_block` built on the route's
+        own connection, or None; it is passed in because this method runs
+        on the loop with no database in reach, and the block needs the job
+        row. It rides on the same answer rather than on a route of its own
+        because `main._IDLE_EXEMPT` matches paths exactly, and a progress
+        poll that reset the idle clock would keep the vault open for as
+        long as a job ran.
 
         `now` so the breaker is asked about the present rather than about
         whenever the loop last dequeued something. Defaulted from the running
@@ -1613,6 +2468,10 @@ class Worker:
             # a key that appears and disappears is a key every client has to
             # guess at, and zod strips what it was not told about.
             "chat": self._chat_status(chat_id, now),
+            # The backfill job: this chat's newest when a chat was asked
+            # about, the one in flight otherwise, null when there is none.
+            # Always present, for the same reason as `chat`.
+            "backfill": backfill,
         }
 
     def _chat_status(self, chat_id: int | None, now: float | None) -> dict | None:
@@ -1664,6 +2523,18 @@ def start() -> asyncio.Task:
     worker._inflight = {t for t in worker._inflight if t.get_loop() is here}
     if worker.settling is not None and worker.settling.get_loop() is not here:
         worker.settling = None
+    # Same rule for the backfill loop: a job task from a closed loop is not
+    # running anything, and leaving it in place would keep `_sweeping`
+    # true for the life of the process.
+    bf = worker._backfill_task
+    if bf is not None and bf.get_loop() is not here:
+        worker._backfill_task = None
+        worker._backfill = None
+        worker._sweeping = False
+    # And the ordinary reader's unit, for the same reason.
+    rd = worker._reading
+    if rd is not None and rd.get_loop() is not here:
+        worker._reading = None
     worker.queue = asyncio.Queue(maxsize=QUEUE_MAXSIZE)
     worker.task = asyncio.create_task(worker.run(), name="notebook-worker")
     worker.task.add_done_callback(_note_death)
@@ -1686,7 +2557,24 @@ def _note_death(task: asyncio.Task) -> None:
         logger.warning("Notebook worker stopped: %s", worker.died)
 
 
-async def _await_settle() -> None:
+def _grace_left(deadline: float | None) -> float:
+    """How much of the stand-down's up to five seconds is left.
+
+    ONE DEADLINE FOR THE WHOLE STAND-DOWN, not one per step. `quiesce()`
+    does three bounded things in a row - stand the reading job down, wait
+    out the worker loop's cancellation, wait for an already-paid reply to
+    land - and each used to carry its own `SETTLE_GRACE_S`. Three graces in
+    a row is fifteen seconds, and SECURITY.md and README both say the wait
+    is five. The document is the promise; this is how it stays true however
+    many steps the stand-down grows. `None` means no deadline was set
+    (`stop()` at shutdown), and then each step keeps its own full grace.
+    """
+    if deadline is None:
+        return SETTLE_GRACE_S
+    return max(0.0, deadline - asyncio.get_running_loop().time())
+
+
+async def _await_settle(deadline: float | None = None) -> None:
     """Wait for every in-flight database step to finish, bounded.
 
     It used to wait for ONE thing: the tail that lands an already-paid reply.
@@ -1735,14 +2623,15 @@ async def _await_settle() -> None:
         # test that pins `elapsed < 1.0` exists because that is a tempting
         # and wrong way to write this.
         return
+    grace = _grace_left(deadline)
     try:
         await asyncio.wait_for(
             asyncio.shield(asyncio.gather(*pending, return_exceptions=True)),
-            timeout=SETTLE_GRACE_S)
+            timeout=grace)
     except asyncio.TimeoutError:
         logger.warning(
             "Notebook: %d in-flight extraction step(s) did not finish within "
-            "%.0fs; proceeding without them.", len(pending), SETTLE_GRACE_S)
+            "%.0fs; proceeding without them.", len(pending), grace)
     except asyncio.CancelledError:
         # OURS, and it travels. The `shield` above already protects the
         # gather - those tasks keep running whatever happens here - so
@@ -1767,6 +2656,72 @@ async def quiesce() -> None:
     that was already paid for and received, discarded mid-write because the
     key was cleared out from under the thread writing it.
     """
+    # ONE DEADLINE, OPENED HERE, SPENT BY ALL THREE STEPS BELOW.
+    #
+    # `lock_vault_now` clears the vault key on the line after this function
+    # returns, so everything between here and that line is time the key
+    # spends in memory with decrypted material beside it. SECURITY.md and
+    # README both say that wait is up to five seconds. Three steps each
+    # carrying their own five made the real bound fifteen, and one of them - the
+    # worker loop's cancellation - carried no bound at all and could hold
+    # the lock open forever. The deadline is what makes the sentence true.
+    deadline = asyncio.get_running_loop().time() + SETTLE_GRACE_S
+    try:
+        await _stand_down(deadline)
+    except asyncio.CancelledError:
+        # THE LOCK REQUEST ITSELF WAS TORN DOWN MID-GRACE. The cancel is
+        # ours and it travels - a caller bounding this function must get its
+        # answer - but not before the notebook is put back on its feet. The
+        # loop task was already taken and cancelled, and nothing else would
+        # ever start it again: the queue stayed live with nobody draining it
+        # and the panel said "stopped" until the app was restarted. The open
+        # read is cancelled as the end of the grace would have cancelled it,
+        # so its request does not stay open either.
+        rd = worker._reading
+        took_the_loop = worker.task is None or worker.task.done()
+        if took_the_loop and rd is not None and not rd.done():
+            rd.cancel()
+        _back_on_its_feet()
+        raise
+    _back_on_its_feet()
+
+
+def _back_on_its_feet() -> None:
+    """Drop the queue and start the loop again, unless a loop is still
+    running (a stand-down cancelled before it took the loop down).
+
+    The queue is nulled and drained only AFTER the cancellation has fully
+    unwound - not before. Nulling it first left `run()`'s own
+    `finally: self.queue.task_done()` reading `self.queue` as None while
+    the CancelledError it was supposed to let through was still in flight,
+    replacing that CancelledError with an AttributeError and reporting the
+    loop as died rather than cleanly cancelled. See `stop()`'s docstring,
+    which already carries this fix.
+    """
+    if worker.task is not None and not worker.task.done():
+        return
+    queue, worker.queue = worker.queue, None
+    if queue is not None:
+        while True:
+            try:
+                queue.get_nowait()
+                queue.task_done()
+            except asyncio.QueueEmpty:
+                break
+    # Back on its feet for the next unlock. A worker that stayed down after
+    # the first auto-lock would look exactly like a feature that stopped
+    # working for no reason.
+    start()
+
+
+async def _stand_down(deadline: float) -> None:
+    """The three bounded steps of `quiesce()`, on its one deadline."""
+    # THE BACKFILL LOOP FIRST. It is a reader-started task that would go
+    # on planning the next unit against a vault about to lose its key. The
+    # unit it is inside is tracked and shielded, so
+    # cancelling the loop does not cancel a paid call: `_await_settle`
+    # below waits for that unit, and for the loop's own stop-row write.
+    await _cancel_backfill(deadline)
     task, worker.task = worker.task, None
     if task is not None and not task.done():
         task.cancel()
@@ -1799,8 +2754,25 @@ async def quiesce() -> None:
         # its own loop will run that cancellation. There is nothing this loop
         # can usefully wait for, and `_await_settle` below filters foreign
         # tasks out of the grace period for the same reason.
+        #
+        # BOUNDED, like everything else between here and the cleared key.
+        # This wait had no timeout: a loop task that swallows its own
+        # cancellation - wedged on a thread, or on a foreign lock - held
+        # the vault open for as long as it liked, one statement after the
+        # bound that was added for exactly that hazard on the line above.
+        # Measured before this line changed: no return in fifteen seconds.
         if task.get_loop() is asyncio.get_running_loop():
-            await asyncio.wait({task})
+            left = _grace_left(deadline)
+            done, still = await asyncio.wait({task}, timeout=left)
+            if still:
+                logger.warning(
+                    "Notebook: the reader loop did not stand down within "
+                    "%.0fs; locking without it.", left)
+
+    # THE ORDINARY READER'S UNIT, which the cancellation above did not
+    # reach: it runs shielded from the loop (decision 34 a). It gets what is
+    # left of the same up to five seconds, and then it is cancelled by name.
+    await _stand_down_reading(deadline)
 
     # Defect 1. The loop task above is cancelled and gone, but `_handle` may
     # have handed the tail of a PAID call to `self.settling` as its own
@@ -1810,33 +2782,95 @@ async def quiesce() -> None:
     # this function returns to `lock_vault_now` (which clears the key on its
     # very next line), is what lets that write actually land instead of
     # racing a cleared key in a detached thread.
-    await _await_settle()
+    await _await_settle(deadline)
 
-    # The queue is nulled and drained only AFTER the cancellation above has
-    # fully unwound - not before. Nulling it first left `run()`'s own
-    # `finally: self.queue.task_done()` reading `self.queue` as None while
-    # the CancelledError it was supposed to let through was still in flight,
-    # replacing that CancelledError with an AttributeError and reporting the
-    # loop as died rather than cleanly cancelled. See `stop()`'s docstring,
-    # which already carries this fix; this function had not caught up to it.
-    queue, worker.queue = worker.queue, None
-    if queue is not None:
-        while True:
-            try:
-                queue.get_nowait()
-                queue.task_done()
-            except asyncio.QueueEmpty:
-                break
-    # Back on its feet for the next unlock. A worker that stayed down after
-    # the first auto-lock would look exactly like a feature that stopped
-    # working for no reason.
-    start()
+
+#: How long the stand-down waits for a cancelled read to unwind. Taken out
+#: of the up to five seconds, not added to them: the read is cancelled this
+#: long before the deadline, so the lock still returns inside the one grace the
+#: documents state. Cancelling a coroutine that awaits a request takes one
+#: turn of the event loop, so this is headroom, not an estimate.
+READ_CANCEL_UNWIND_S = 0.25
+
+
+async def _stand_down_reading(deadline: float | None, *,
+                              grace: bool = True) -> None:
+    """Give the ordinary reader's open unit what is left of the up to five
+    seconds, then cancel it.
+
+    Decision 34 a. A read
+    that finishes inside the grace is written, exactly like a reading job's
+    unit. One that does not is CANCELLED, by name and on purpose: before
+    this, `_await_settle` just stopped waiting and the request stayed open
+    with the key already gone. Cancelling it closes the request, and its
+    `running` row is closed out as abandoned on the next plan, so that
+    stretch is not bought a second time - which is what decision 34 a
+    keeps from before for the read that does not make it.
+
+    A WAIT, NOT `wait_for`. `asyncio.wait` watches the unit without owning
+    it, so nothing here can cancel it early, and nothing else is touched:
+    the backfill loop, a job's unit and a paid reply's settle are all
+    separate tasks that this neither waits on nor cancels.
+
+    `grace=False` is `stop()`: the window closing cuts the read at once, as
+    it always did.
+    """
+    unit = worker._reading
+    if unit is None or unit.done():
+        return
+    if unit.get_loop() is not asyncio.get_running_loop():
+        # Another loop's task. It can be cancelled from here but not
+        # waited for; see `quiesce()` on waiting across loops.
+        unit.cancel()
+        return
+    if grace:
+        left = max(0.0, _grace_left(deadline) - READ_CANCEL_UNWIND_S)
+        done, _ = await asyncio.wait({unit}, timeout=left)
+        if done:
+            return
+        logger.info("Notebook: a read was still open when the lock's grace "
+                    "ran out; it is cancelled and that stretch is not read.")
+    unit.cancel()
+    await asyncio.wait({unit}, timeout=READ_CANCEL_UNWIND_S)
+
+
+async def _cancel_backfill(deadline: float | None = None) -> None:
+    """Stop the backfill loop, if one is running on THIS loop.
+
+    Shared by `quiesce()` and `stop()`. The loop's own cancellation handler
+    writes the job's stop row through a tracked task, and the unit it was
+    awaiting keeps running shielded; both are then waited for by
+    `_await_settle`.
+
+    BOUNDED BY THE SAME `SETTLE_GRACE_S` THE REST OF THE STAND-DOWN USES,
+    and that is not a formality. This is the FIRST thing `quiesce()` does,
+    so an open-ended wait here is an open-ended vault lock - the key sits
+    in memory with decrypted material beside it for as long as this task
+    takes, and `_await_settle`'s grace, which is the bound the whole design
+    is written around, is never even reached. SECURITY.md says the wait is
+    up to five seconds; this is where that has to be true. A loop that does
+    not unwind inside the grace is left running and the lock proceeds without
+    it: its job row is settled as an orphan on the next poll, which is
+    exactly what that path is for.
+    """
+    bf = worker._backfill_task
+    if bf is None or bf.done():
+        return
+    bf.cancel()
+    if bf.get_loop() is asyncio.get_running_loop():
+        grace = _grace_left(deadline)
+        done, pending = await asyncio.wait({bf}, timeout=grace)
+        if pending:
+            logger.warning(
+                "Notebook: the reading job did not stand down within %.0fs; "
+                "locking without it.", grace)
 
 
 async def stop() -> None:
     """Cancel the loop. Best effort by design: in the packaged exe this never
     runs at all - uvicorn is a daemon thread and the process dies with the
     window - so nothing may DEPEND on it having run."""
+    await _cancel_backfill()
     task = worker.task
     if task is not None and not task.done():
         task.cancel()
@@ -1847,6 +2881,10 @@ async def stop() -> None:
         # this site was not red too.
         if task.get_loop() is asyncio.get_running_loop():
             await asyncio.wait({task})
+    # The ordinary reader's unit is cancelled at once here, with no grace:
+    # closing the app cuts an open read exactly as it did before decision
+    # 34 a, which gave the up to five seconds to the LOCK only.
+    await _stand_down_reading(None, grace=False)
     # Defect 1, same fix as `quiesce()`: give an already-paid call the chance
     # to actually land before this function returns. Best-effort like the
     # rest of this path - the packaged exe never reaches here at all - but a
@@ -1875,17 +2913,363 @@ def _already_done(work_key: str) -> bool:
         return notebook.already_done(con, work_key)
 
 
-def _claim_one() -> str:
+def _calls_today() -> int:
+    from database import get_db
+    with get_db() as con:
+        return notebook.spend_today(con)["calls"]
+
+
+def _job_write(job_id: int, *, running: bool = False,
+               state: str | None = None,
+               last_error: str | None = None) -> None:
+    """One write to the job row, on a worker thread. Never raises: the
+    usual reason a stop row cannot be written is that the vault locked
+    first, and the next process closes the job out as an orphan."""
+    from database import get_db
+    try:
+        with get_db() as con:
+            con.execute("BEGIN IMMEDIATE")
+            if running:
+                notebook.advance_job(con, job_id, running=True)
+            if state is not None:
+                notebook.stop_job(con, job_id, state, last_error)
+    except vault_state.VaultLockedError:
+        logger.info("Notebook: a backfill job's state could not be written "
+                    "because the vault locked first.")
+    except Exception:
+        logger.warning("Notebook: a backfill job's state could not be written.")
+
+
+#: What each `blocked_by` token of the preview refuses the run with. Three
+#: of the six collapse into `not_ready` - the precondition gate - because
+#: the panel says which one from the preview, and the refusal only has to
+#: be one word a sentence exists for. `model_list_unavailable` keeps its own
+#: word: it is the provider's list out of reach, not the model's fault.
+_BLOCKER_REFUSALS = (
+    ("no_character", "not_ready"),
+    ("no_chat_model", "not_ready"),
+    ("no_extract_model", "not_ready"),
+    ("model_not_extractable", "model_not_extractable"),
+    ("model_list_unavailable", "model_list_unavailable"),
+    ("nothing_unread", "nothing_unread"),
+)
+
+
+def _refusal_for(blocked_by: list[str]) -> str:
+    for token, reason in _BLOCKER_REFUSALS:
+        if token in blocked_by:
+            return reason
+    return "not_ready"
+
+
+#: "The caller did not read the list; read it here." A sentinel and not
+#: None, because None is a real answer: the list could not be fetched.
+_LIST_NOT_READ = object()
+
+
+def _model_is_extractable(model_id: str, *, bound: bool,
+                          listed=_LIST_NOT_READ) -> bool:
+    """Whether a model can return the strict schema the reader sends.
+
+    Answered from what this process knows, without a call: the extraction
+    model list, when it has been fetched, is exactly the set of models that
+    can; failing that, the catalogue's own metadata for the model says
+    whether it advertises `structured_outputs` - `response_format` alone is
+    not it.
+
+    THE UNKNOWN ARM, and `bound` is the whole of it. R-5 names the risk
+    about one model in particular: "Sohbet modeli kati JSON sema
+    tasimayabilir. `GET /extract/models` listesi bu yuzden suzuluyor." A
+    model the reader PICKED came off that filtered list, so the pick itself
+    is the evidence and an unknown answer here is a cold cache rather than
+    an unexamined model. A model reached through `CHAT_MODEL_BINDING` was
+    chosen for conversation and vetted by nothing, and that is the one this
+    unit created - so with no evidence either way it is refused, and money
+    is not spent on a question nobody has answered.
+
+    THE CATALOGUE DOES NOT ANSWER FOR A BOUND MODEL, and that arm is what
+    made the locked sentence false. `get_cached_model_metadata` reads
+    `_model_cache`, which the chat model picker fills; the filtered list
+    lives in `_zdr_cache`, and openrouter's own comment calls them "a
+    second, independent cache". So after any ordinary restart in which
+    somebody chatted, the catalogue knew the model, the filtered list did
+    not, and this answered off `supported_parameters` alone. That is the
+    WEAKER question: the list is zero-retention AND `structured_outputs`,
+    the catalogue arm is `structured_outputs` by itself, so a bound model
+    the list does not carry was read while SECURITY.md said it was refused.
+    For a bound model the filtered list is the only evidence now, and until
+    it is known the answer is no. Nothing about a picked model changed: its
+    pick is its evidence and the catalogue stays its fallback.
+
+    `bound` is a keyword and has no default deliberately: a caller that
+    forgets it is a TypeError at import-time coverage rather than a silent
+    return to the arm this closed.
+
+    The evidence is not waited for passively - `_learn_about` goes and
+    gets the list before either door asks - so "unknown" here means the
+    provider could not be reached at all, and nothing can be sent under
+    that condition either.
+
+    `listed` is the list as the caller already read it. `_unfit_reason`
+    reads it once and hands it down, so the yes-or-no and the reason are
+    answered from the same snapshot (see there).
+    """
+    import openrouter
+
+    if listed is _LIST_NOT_READ:
+        listed = openrouter.cached_extraction_models()
+    if listed is not None:
+        return any(m.get("id") == model_id for m in listed)
+    if bound:
+        return False
+    meta = openrouter.get_cached_model_metadata(model_id)
+    if meta is None:
+        return True
+    return "structured_outputs" in (meta.get("supported_parameters") or [])
+
+
+def _unfit_reason(model_id: str, *, bound: bool) -> str | None:
+    """Why the gate refuses this model, or None when it may be read.
+
+    `_model_is_extractable` answers yes or no, and a no has two causes that
+    must not be told the same way. The provider's list was fetched and does
+    not carry the model: `model_not_extractable`, which is a fact about the
+    model. The list could not be fetched at all and the model is bound to
+    the chat: `model_list_unavailable`, which is a fact about the network
+    and says nothing about the model. Telling the second as the first put a
+    sentence on the Notes tab blaming a model for a connection that dropped.
+
+    ONLY A BOUND MODEL can be refused for want of the list. A model the
+    reader picked is refused with the list out of reach only when the
+    catalogue says it lacks `structured_outputs`, which is the model
+    examined and found unfit: that stays `model_not_extractable`. The turn
+    gate, the preview's `blocked_by` and the run route all ask this one
+    function, so none of them tells the two apart differently.
+
+    ONE READ OF THE LIST. It used to be read twice, once inside
+    `_model_is_extractable` and once for the reason. Another task's
+    `_learn_about` can fill the cache between the two, and then a bound
+    model the list carries was refused (the first read found no list) and
+    blamed as `model_not_extractable` (the second found the list). Both
+    answers now come from the same snapshot.
+    """
+    import openrouter
+
+    listed = openrouter.cached_extraction_models()
+    if _model_is_extractable(model_id, bound=bound, listed=listed):
+        return None
+    if bound and listed is None:
+        return "model_list_unavailable"
+    return "model_not_extractable"
+
+
+def standing_refusal(con, chat_id: int) -> str | None:
+    """`model_not_extractable` when that refusal is still true of this chat
+    right now, else None. What the Background notes card says about the
+    chat on screen, and nothing else (3.8).
+
+    WHAT THE QUERY CHECKS. It takes this chat's `model_not_extractable`
+    rows (`WHERE chat_id = ?`) that are newer than this chat's last read,
+    the newest `done`, `failed` or `running` row of the same chat; a row
+    older than a read is history, because a model was called here since.
+    The refusal stands when ANY of those rows names the model this chat
+    resolves to NOW. The table has no model column, and a schema change is
+    not in this package, but a row's work key is
+    `work_key(chat, from, to, model, language)`, so it is recomputed with
+    the chat's current model and compared. A chat that switched to a
+    working model matches none of them and says nothing.
+
+    ANY, NOT THE NEWEST. The reader writes a refusal once for each chat and
+    model it keeps meeting, so a chat that went nojson -> nojson2 -> nojson
+    has two rows and the newest names nojson2. Reading only that one left
+    the card silent while the chat's model still could not write notes.
+
+    At most `STANDING_REFUSAL_ROWS` rows are looked at, newest first, so a
+    chat that piled up refusals over many restarts costs one bounded
+    query. Every language the reader can be set to is tried, so switching
+    the instructions' language does not hide a refusal that still stands.
+    Reads only; runs on the status route's connection plus one settings
+    read for the model.
+    """
+    rows = con.execute(
+        "SELECT work_key, from_message_id, to_message_id "
+        "FROM notebook_extractions WHERE chat_id = ? AND status = 'skipped' "
+        "AND skip_reason = 'model_not_extractable' AND rowid > COALESCE(("
+        "SELECT MAX(rowid) FROM notebook_extractions WHERE chat_id = ? "
+        "AND status IN ('done', 'failed', 'running')), 0) "
+        "ORDER BY rowid DESC LIMIT ?",
+        (chat_id, chat_id, STANDING_REFUSAL_ROWS)).fetchall()
+    if not rows:
+        return None
+    model_id = notebook_extract.extract_model(chat_id)
+    if not model_id:
+        return None
+    languages = tuple(dict.fromkeys(
+        (_language(), *notebook_extract.PROMPT_LANGUAGES)))
+    for key, lo, hi in rows:
+        for language in languages:
+            if notebook_extract.work_key(chat_id, lo, hi, model_id,
+                                         language) == key:
+                return "model_not_extractable"
+    return None
+
+
+_list_fetch_in_flight = False
+
+
+async def _learn_about(model_id: str, *, bound: bool) -> None:
+    """Go and get the evidence the gate needs, once, before it decides.
+
+    `GET /extract/models` is the filtered list - zero-retention endpoints
+    that advertise `structured_outputs` - and it is the only thing that can
+    turn "nothing here has heard of this model" into an answer BEFORE a
+    call is paid for. It costs no model tokens: the policy list is public,
+    the picker already reads it, and openrouter caches it for
+    `MODEL_LIST_TTL`.
+
+    Until this existed, the list was fetched by exactly one caller, the
+    settings picker, so a process that had never had that panel opened
+    knew nothing about any model and the gate had nothing to decide with.
+    That is the cold process, and it is the ordinary state after every
+    restart rather than an edge case.
+
+    BEST EFFORT, and quiet. A provider this cannot reach is a provider
+    nothing can be sent to either, so a failure here is not a second
+    refusal to explain to anybody; the gate then answers from `bound`.
+
+    THE CATALOGUE IS NOT A REASON TO SKIP THE LIST for a bound model. The
+    general model cache and the filtered list are two independent caches,
+    so "the catalogue has heard of this model" said nothing about the
+    question `_model_is_extractable` asks of a bound model, and skipping
+    the fetch on it meant the ordinary post-restart path never asked. For
+    a model the reader picked the catalogue is still evidence, and its own
+    pick is more, so that skip stays where it was.
+
+    ONCE PER PROCESS WHILE THE ANSWER IS UNKNOWN, then not again. A
+    success is cached by openrouter for `MODEL_LIST_TTL` and the first
+    line here reads it, so a known answer costs nothing. A FAILURE is now
+    remembered for the same window (`note_extraction_list_unreachable`),
+    because without that a provider that is down turned every door and
+    every turn into another outbound GET: measured at two attempts per
+    refused turn. The plan's rule for a refused turn is money, not
+    traffic - "Sohbet modeli kati JSON sema desteklemiyorsa is **cagri
+    yapmadan** reddedilir" - and no billed call is made either way; this
+    keeps the free request honest as well. `invalidate_model_cache` drops
+    that memory, so a key or proxy change is asked again at once.
+
+    ONE AT A TIME. Two doors opened together would otherwise each start
+    their own fetch. The second does not wait for the first: it returns
+    and lets the gate decide with what is known, which for a bound model
+    is a refusal that costs nothing and that the next turn clears.
+
+    AND IT PASSES THE PROXY GATE, like every other outbound path. This is
+    a request the reader never asked for, made from five doors that had no
+    gate of their own: the preview, the run route and the turn-driven
+    reader (the one-press sweep and the automatic first offer were two
+    more, and both are gone: decisions 69 a, 30 a and 31 a). With
+    `proxy_required` armed and no proxy URL stored - `proxy_missing`, the
+    state every other path refuses outright - it went to the provider on a
+    direct client carrying the stored key, so the key and the reader's
+    real IP left the machine from a door they only pressed to see a
+    preview. `GET /extract/models` fetches this same list and has called
+    the gate since it was written; its comment says why. A refusal here is
+    the provider being unreachable and is treated as exactly that: nothing
+    is sent, the failure is remembered like any other, and a bound model
+    stays unknown, which the gate turns into a refusal that costs nothing.
+    Under an armed gate no call could have been made anyway, so the only
+    thing given up is a reason code, and `invalidate_model_cache` runs on
+    every proxy change, so fixing the proxy clears this at once rather
+    than after `MODEL_LIST_TTL`.
+    """
+    import openrouter
+
+    global _list_fetch_in_flight
+
+    if openrouter.cached_extraction_models() is not None:
+        return
+    if not bound and openrouter.get_cached_model_metadata(model_id) is not None:
+        return
+    if openrouter.extraction_list_recently_unreachable():
+        return
+    if _list_fetch_in_flight:
+        return
+    _list_fetch_in_flight = True
+    try:
+        from proxy_health import enforce_proxy_gate
+        try:
+            # BEFORE anything reaches the network, and inside the in-flight
+            # guard so the gate's own health probe is bounded with the
+            # fetch it protects.
+            await enforce_proxy_gate()
+        except Exception:
+            openrouter.note_extraction_list_unreachable()
+            logger.info("Notebook: the proxy gate is closed, so the model "
+                        "list was not asked for and a model nothing here "
+                        "knows stays unknown.")
+            return
+        await openrouter.fetch_extraction_models()
+    except Exception as exc:
+        openrouter.note_extraction_list_unreachable()
+        logger.info("Notebook: the model list could not be read (%s), so a "
+                    "model nothing here knows stays unknown.",
+                    type(exc).__name__)
+    finally:
+        _list_fetch_in_flight = False
+
+
+def _prompt_price(model_id: str) -> float | None:
+    """USD per million prompt tokens, from the extraction list, or None.
+
+    FALSY, NOT `is None`, and that is the whole point of this function.
+    `openrouter.fetch_extraction_models` normalises a price it could not
+    read - absent `pricing`, a string that will not parse - to `0.0` rather
+    than to None, at the one place the wire unit is known. Passing that
+    through made the preview say "about $0.00000" for a model whose price
+    is simply unknown, which is the fake zero this route is required never
+    to show; the caller renders None as "the price is not known", which is
+    the true sentence. A genuinely free model reads as unknown too, and
+    that is the safe direction: `:free` variants are dropped from the list
+    upstream, so the case is theoretical and the cost of being wrong about
+    it is a sentence rather than a bill.
+    """
+    import openrouter
+
+    for m in openrouter.cached_extraction_models() or []:
+        if m.get("id") == model_id:
+            return float(m.get("prompt_price") or 0) or None
+    return None
+
+
+def _completion_price(model_id: str) -> float | None:
+    """USD per million completion tokens, from the extraction list, or
+    None. Falsy is unknown, for the reason `_prompt_price` gives."""
+    import openrouter
+
+    for m in openrouter.cached_extraction_models() or []:
+        if m.get("id") == model_id:
+            return float(m.get("completion_price") or 0) or None
+    return None
+
+
+def _claim_one(cap: int | None = None) -> str:
     """Reserve one call and RETURN THE DAY it was reserved against.
 
     The day travels with the plan so the refund can name the same row. See
     `notebook_store.release_call`: deriving it twice, hours apart, is how a
     claim at 23:59 was refunded out of the first of January.
+
+    `cap` is the ceiling to claim against: the whole daily ceiling by
+    default, the lower one a backfill job passes. One counter either way -
+    the same row, the same statement - so a job cannot spend what the live
+    reader has already spent, and the live reader cannot spend what a job
+    has.
     """
     from database import get_db
     with get_db() as con:
         day = notebook.spend_day(con)
-        notebook.claim_call(con, config.NOTEBOOK_DAILY_CALL_CAP, day=day)
+        notebook.claim_call(
+            con, config.NOTEBOOK_DAILY_CALL_CAP if cap is None else cap,
+            day=day)
         return day
 
 
@@ -2038,7 +3422,10 @@ def _plan_work(chat_id: int, model_id: str, language: str,
                threshold: int, limit: int, *,
                min_new: int | None = None,
                after_id: int | None = None,
+               until_id: int | None = None,
+               reread: bool = False,
                first_read_edge: int | None = None,
+               from_oldest: bool = False,
                keep=()) -> dict | None:
     """Decide whether there is enough new material, and gather it.
 
@@ -2051,26 +3438,25 @@ def _plan_work(chat_id: int, model_id: str, language: str,
     ten-fold spending bug - see Worker.batch_size.
 
     TWO CALLERS, ONE DOOR. The ordinary turn-driven path passes neither
-    keyword and behaves exactly as before. The sweep - a reader asking for a
-    chat's unread history to be read - passes both, and they are what make it
-    a different question rather than a different function:
+    keyword and behaves exactly as before. A reading job's unit - a reader
+    asking for a chat's unread history to be read - passes both, and they
+    are what make it a different question rather than a different function:
 
       * `min_new` says "one message is enough", because a person asking for
         this has already decided it is worth a call. It also CLOSES the
         upgrading-user branch below: that branch exists to spare somebody the
         cost of reading four hundred old messages they did not ask for, and
         it must not fire for somebody who did ask.
-      * `after_id` names where to read from, so a sweep can fill a hole the
+      * `after_id` names where to read from, so a job can fill a hole the
         ordinary cursor has already passed. The cursor is a MAX and can only
         move forward; a range that was skipped is below it forever.
 
     `first_read_edge` is the backlog above which a never-extracted chat is
     read from the PRESENT instead of from the beginning, and it defaults to
     `threshold * 2` so every caller that does not care behaves exactly as
-    before. It is a parameter at all because `threshold` is no longer a
-    constant: `Worker.trigger_threshold` shrinks under the breaker's
-    consecutive failures, alongside the batch, and an edge derived from a
-    number the breaker has moved is H-14 - a twenty-message chat read as a
+    before. It is a parameter because an edge derived from a number the
+    breaker moves (the batch halves; the threshold did too until decision
+    28 a) is H-14 - a twenty-message chat read as a
     four-hundred-message backlog, eighteen of them abandoned under a cursor
     that only moves forward, with the breaker still CLOSED and nothing else
     refusing work. Whether a conversation is meeting this feature for the
@@ -2081,6 +3467,17 @@ def _plan_work(chat_id: int, model_id: str, language: str,
     module refuses elsewhere, so this is a keyword pair on the existing
     planner rather than a second planner - one cursor, one claim, one
     accounting.
+
+    `until_id` and `reread` are the range job's two words, on the same
+    principle: `until_id` bounds the batch to the chosen stretch so the
+    last unit does not run past it, and `reread` skips the coverage walk,
+    because re-reading a stretch that has been read is the whole of what a
+    range job is for (its reading record was rolled back when the job was
+    made, so the work key is free again).
+
+    `from_oldest` is the job's third word (3.11): when the batch is longer
+    than the character ceiling, keep the OLDEST lines that fit rather than
+    the newest. See the budget below for why a job needs the other end.
     """
     from database import get_db
 
@@ -2104,7 +3501,7 @@ def _plan_work(chat_id: int, model_id: str, language: str,
             "     OR (status = 'failed' AND error_type = ?))",
             (chat_id, notebook.ABANDONED_IN_FLIGHT)).fetchone()[0]
         if after_id is not None:
-            # The sweep reads from where it was TOLD to, not from the high
+            # A job reads from where it was TOLD to, not from the high
             # water mark. `last` is a MAX and only moves forward, so a range
             # the ordinary path stepped over - a budget that dropped the
             # oldest lines of a batch, an upgrading chat that started at the
@@ -2156,11 +3553,13 @@ def _plan_work(chat_id: int, model_id: str, language: str,
         # is not an open breaker (TRIP_AFTER is 5), so nothing else was
         # refusing work at the time and the loss was silent.
         #
-        # `threshold` was the fix, and it stopped being safe the day
-        # `Worker.trigger_threshold` started halving alongside the batch: the
-        # identical bug, through the other argument. So the edge is its own
-        # parameter now, the worker passes the UNPRESSURED constant, and
-        # every other caller gets `threshold * 2` and the old behaviour.
+        # `threshold` was the fix, and it stopped being safe while
+        # `Worker.trigger_threshold` halved alongside the batch (it no longer
+        # does, decision 28 a): the identical bug, through the other
+        # argument. So the edge is its own parameter, the worker passes
+        # `from_start_edge()` - forty, the line decisions 30 a and 31 a draw
+        # between a chat read from its start and one read from the present -
+        # and every other caller gets `threshold * 2`.
         edge = first_read_edge if first_read_edge is not None else threshold * 2
         if (min_new is None and last == 0 and pending > edge
                 and not ever_extracted):
@@ -2183,8 +3582,8 @@ def _plan_work(chat_id: int, model_id: str, language: str,
             # And it is now a trade the reader can UNDO. This branch used to
             # be the end of the story: the cursor sat at the newest message
             # and the `AND id > ?` branch below could never look under it
-            # again, so the whole history was unreachable by any route. The
-            # sweep passes `min_new`, which is what keeps it out of here.
+            # again, so the whole history was unreachable by any route. A
+            # job passes `min_new`, which is what keeps it out of here.
             rows = con.execute(
                 "SELECT id, role, content FROM messages "
                 "WHERE chat_id = ? AND active = 1 "
@@ -2192,16 +3591,18 @@ def _plan_work(chat_id: int, model_id: str, language: str,
                 (chat_id, max(1, limit))).fetchall()
             rows = list(reversed(rows))
         else:
+            bound = "" if until_id is None else " AND id <= ?"
+            args = ([chat_id, last] + ([] if until_id is None else [until_id])
+                    + [max(1, limit)])
             rows = con.execute(
                 "SELECT id, role, content FROM messages "
-                "WHERE chat_id = ? AND active = 1 AND id > ? ORDER BY id "
-                "LIMIT ?",
-                (chat_id, last, max(1, limit))).fetchall()
+                f"WHERE chat_id = ? AND active = 1 AND id > ?{bound} "
+                "ORDER BY id LIMIT ?", args).fetchall()
 
-        if after_id is not None and rows:
+        if after_id is not None and rows and not reread:
             # WHERE THE HOLE ENDS.
             #
-            # A sweep is told where to START and was never told where to
+            # A job unit is told where to START and was never told where to
             # stop: the walk above is a plain LIMIT, and `after_id` names the
             # bottom of a hole, not its top. So a four-message hole sitting
             # under a stretch of forty that had already been read was planned
@@ -2258,9 +3659,18 @@ def _plan_work(chat_id: int, model_id: str, language: str,
         # `BEGIN IMMEDIATE`, the inner connection waits out the busy timeout
         # and fails. Reading it here costs one query and removes the trap.
         entries = [dict(r) for r in con.execute(
-            "SELECT id, text, status, provenance FROM notebook_entries "
+            "SELECT id, text, status, provenance, source_message_id "
+            "FROM notebook_entries "
             "WHERE chat_id = ? AND retired_at IS NULL ORDER BY position, id",
             (chat_id,)).fetchall()]
+        # The newest ACTIVE message, read on this connection for the same
+        # reason `entries` is. It is what tells a read that reaches the
+        # present from one that stops short, and that is the only question
+        # the source filter below actually asks.
+        newest_row = con.execute(
+            "SELECT MAX(id) FROM messages WHERE chat_id = ? AND active = 1",
+            (chat_id,)).fetchone()
+        newest_id = newest_row[0] if newest_row else None
 
     # WHAT ENTERS THE PROMPT IS WHAT GETS MARKED READ.
     #
@@ -2314,8 +3724,25 @@ def _plan_work(chat_id: int, model_id: str, language: str,
     # costs the material nothing and a long one cannot be starved by it.
     reserve = min(RECENT_RESERVE_CHARS,
                   sum(len(line) + 1 for line in recent))
-    kept = notebook_extract.budget_pairs(
-        lines, notebook_extract.TURNS_MAX_CHARS - reserve)
+    # WHICH END IS KEPT depends on who is reading.
+    #
+    # The ordinary reader keeps the NEWEST lines that fit
+    # (`budget_pairs`): it reads the present, and on a long-message chat the
+    # stretch it steps over is the part the next reader would have to walk
+    # back for. Decision 68 a moves that to a later commit.
+    #
+    # A job keeps the OLDEST (3.11). Its whole purpose is the history, and
+    # keeping the newest did the opposite of that. Measured on twenty
+    # messages of about a thousand characters: the first unit read the
+    # newest of them, the job's cursor then still pointed at the chat's
+    # first message, the loop saw no progress and closed the job `failed`
+    # after that one call - with the first message never read.
+    # Keeping the oldest, each unit reads forward from where the last one
+    # stopped, and whatever did not fit stays above the cursor for the next
+    # unit, which is the same job. Nothing is stepped over.
+    ceiling = notebook_extract.TURNS_MAX_CHARS - reserve
+    kept = (_budget_from_oldest(lines, ceiling) if from_oldest
+            else notebook_extract.budget_pairs(lines, ceiling))
     if not kept:
         # Even one line does not fit. Reading nothing is right; marking the
         # range read would be the silent loss this whole block is about.
@@ -2343,6 +3770,47 @@ def _plan_work(chat_id: int, model_id: str, language: str,
             if e["status"] == notebook.STATUS_ACCEPTED
             or (e["status"] == notebook.STATUS_PROPOSED
                 and e["provenance"] == notebook.PROV_MODEL)]
+    # WHAT THIS READ MAY NAME. A read that ends at message N is shown only
+    # the notes that came from messages up to N. Shown a note distilled
+    # from message 13 while reading 2 to 4, the model saw a "fact" the
+    # transcript in front of it did not contain, called it stale, and
+    # named it in `supersedes` - so reading the past deleted the future.
+    # Measured five times out of five before this line existed. A note
+    # with no source message is handled by the second clause below.
+    #
+    # THE READER'S OWN NOTES stay on the list in every mode: they carry no
+    # source, the model is shown them so it does not re-propose them, and
+    # `retire_superseded` refuses anything whose provenance is not the
+    # model's, so being visible costs nothing.
+    #
+    # A MODEL NOTE WITH NO SOURCE is not the same thing, and reading NULL as
+    # "the reader wrote it" is what left Q-44 half open. `commit_extraction`
+    # writes NULL for a model note whose message was deleted or edited away
+    # during the provider call - a stale foreign key would abort the whole
+    # transaction - and the provenance guard does not cover such a row. On a
+    # read that stops short of the present it is exactly the hazard this
+    # filter exists for: a note the transcript in front of the model does
+    # not account for, nameable in `supersedes`, and this time with nothing
+    # to compare it against at all. So it is dropped from a read that stops
+    # short and kept by a read that reaches the present, which is the same
+    # rule the first clause applies, asked the only way it can be asked of a
+    # note with no source of its own.
+    to_id = rows[-1]["id"]
+    reaches_the_present = newest_id is not None and to_id >= newest_id
+    live = [e for e in live
+            if (e["source_message_id"] is None
+                and (e["provenance"] != notebook.PROV_MODEL
+                     or reaches_the_present))
+            or (e["source_message_id"] is not None
+                and e["source_message_id"] <= to_id)]
+    # C-7, DISCHARGED IN WRITING. This unit changes what this planner puts
+    # in `existing`, which is one of the three sections `_budget` trims, so
+    # C-7 asks for `notebook_extract._budget`'s queue selection to be read
+    # in the same change and its constancy recorded. Read: it still takes
+    # `keep="tail"` for the turns and the head for the rest, and neither
+    # the parameter nor the branch that uses it moved. Nothing here asks it
+    # for a different end of the queue, and the prune above happens before
+    # `budget_pairs` is applied rather than inside it.
     # Bounded HERE, where the ids and the text are still side by side, so the
     # numbered list the model sees and the list its answers are resolved
     # against are the same list. Budgeting one and not the other shifted every
@@ -2373,16 +3841,37 @@ def _plan_work(chat_id: int, model_id: str, language: str,
         # after turn, and a `supersedes` naming one of the reader's notes
         # looked exactly like naming one of its own.
         #
-        # The order and the LENGTH are untouched, and that is not a style
-        # choice: `parse_reply` bounds-checks against `len(existing)` and
-        # `commit_extraction` resolves `existing_ids[idx]`, so the two lists
-        # have to stay index-for-index aligned. Adding a prefix is safe;
-        # dropping, sorting or trimming an entry is not.
+        # THE ONE CONDITION: both lists are built from the SAME `live`, in
+        # the SAME order, and nothing touches one without the other.
+        # `parse_reply` bounds-checks against `len(existing)` and
+        # `commit_extraction` resolves `existing_ids[idx]`, so an index
+        # into one must be the same note in the other. Pruning is allowed -
+        # the source filter and the character budget above both prune -
+        # because they act on `live` before either list is derived; a
+        # prefix on a line changes neither length nor order. What is not
+        # allowed is dropping, sorting or trimming ONE of the two lists,
+        # which retires the note at the wrong index.
         "existing": [_existing_line(e) for e in live],
         "existing_ids": [e["id"] for e in live],
         "work_key": notebook_extract.work_key(
             chat_id, rows[0]["id"], rows[-1]["id"], model_id, language),
     }
+
+
+def _budget_from_oldest(pairs, ceiling):
+    """`notebook_extract.budget_pairs` from the other end: the longest
+    run of whole lines, from the FIRST, that fits the ceiling. Same cost per
+    line (its length and a newline), so the two agree about what fits and
+    differ only in which end is kept. See `_plan_work` (3.11)."""
+    out = []
+    spent = 0
+    for pair in pairs:
+        cost = len(pair[1]) + 1
+        if spent + cost > ceiling:
+            break
+        out.append(pair)
+        spent += cost
+    return out
 
 
 def _write(chat_id: int, plan: dict, proposals: list[dict],
@@ -2403,7 +3892,10 @@ def _write(chat_id: int, plan: dict, proposals: list[dict],
             # is stale and must not overwrite it - see commit_extraction's
             # ownership check, Defect 2.
             attempt_token=plan.get("attempt_token"),
-            claim_day=plan.get("claim_day"))
+            claim_day=plan.get("claim_day"),
+            # The run these notes belong to, or None. What makes "undo
+            # this run" reach exactly these rows and no others.
+            job_id=plan.get("job_id"))
 
 
 async def _record_running(chat_id: int, plan: dict) -> bool:
@@ -2479,7 +3971,8 @@ def _record(chat_id: int, plan: dict, status: str, *,
                 usage=usage, status=status, skip_reason=skip_reason,
                 error_type=error_type,
                 attempt_token=plan.get("attempt_token"),
-                claim_day=plan.get("claim_day"))
+                claim_day=plan.get("claim_day"),
+                job_id=plan.get("job_id"))
             if status == "running":
                 # In the same transaction as the row it stamps.
                 # `commit_extraction` does not set `started_at`, and it is the

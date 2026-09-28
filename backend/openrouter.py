@@ -443,10 +443,61 @@ def invalidate_model_cache() -> None:
     previous egress path is reused, and a cache this function did not know
     about walked straight through that for five minutes.
     """
-    global _zdr_cache
+    global _zdr_cache, _zdr_unreachable_at
     _model_cache.clear()
     _forget_zdr_index()  # F4-15: the chat's per-endpoint view, same reason
     _zdr_cache = None
+    # The memory of a FAILED fetch is cleared here for the same reason the
+    # caches are: it is the cached provider view too, and holding it across
+    # a key or proxy change would make the next question answer itself out
+    # of the old egress path.
+    _zdr_unreachable_at = None
+
+
+def note_extraction_list_unreachable() -> None:
+    """Remember that the filtered list could not be fetched, just now.
+
+    `_zdr_cache` remembers a success for `MODEL_LIST_TTL`; without this
+    nothing remembered a failure, so a caller that asks before deciding
+    asked again on every door and every turn while a provider was down.
+    Nothing is billed by that - the policy list is public and free - but
+    it is one outbound GET per press, and the docstring on the notebook's
+    `_learn_about` claims the opposite ("asks once and not once a turn").
+    A failure is remembered for exactly as long as a success is.
+    """
+    global _zdr_unreachable_at
+    _zdr_unreachable_at = time.monotonic()
+
+
+def extraction_list_recently_unreachable() -> bool:
+    """Whether the last attempt at the filtered list failed, recently.
+
+    Recently is `MODEL_LIST_TTL`, the window a success gets. After it the
+    next caller tries again, so a provider that comes back is noticed
+    without a restart; `invalidate_model_cache` drops the memory outright
+    for the two moments the whole provider view changes underneath it.
+    """
+    return (_zdr_unreachable_at is not None
+            and (time.monotonic() - _zdr_unreachable_at) < MODEL_LIST_TTL)
+
+
+def cached_extraction_models() -> list[dict] | None:
+    """The extraction model list as last fetched, or None if never fetched.
+
+    Pure read, no network, no TTL check: a stale answer to "which models
+    can return a strict schema" is still the best answer this process has
+    without going out, and the caller that wants a fresh one calls
+    `fetch_extraction_models`. Rows are what that function returns.
+
+    It exists for one sentence. The notebook's risk R-5 says a chat model
+    that cannot answer in a strict schema is refused "cagri yapmadan" -
+    without a call - and the filtered list this returns is the only thing
+    that answers that question without making one. A gate that had to
+    await a fetch to decide would be a gate that spends a request on every
+    turn; a gate that reads this decides for free and asks for the fetch
+    only when this answers None.
+    """
+    return None if _zdr_cache is None else list(_zdr_cache[1])
 
 
 def get_cached_model_metadata(model_id: str) -> dict | None:
@@ -1452,6 +1503,10 @@ async def complete_stream(
 _ZDR_ENDPOINTS_PATH = "/endpoints/zdr"
 
 _zdr_cache: tuple[float, list[dict]] | None = None
+# When the last attempt to fetch the list above failed, monotonic. Read by
+# `extraction_list_recently_unreachable`, cleared by a success below and by
+# `invalidate_model_cache`.
+_zdr_unreachable_at: float | None = None
 
 
 async def fetch_extraction_models(refresh: bool = False) -> list[dict]:
@@ -1470,7 +1525,7 @@ async def fetch_extraction_models(refresh: bool = False) -> list[dict]:
     the picker is a list of models and the cheapest is the one a background job
     should default to.
     """
-    global _zdr_cache
+    global _zdr_cache, _zdr_unreachable_at
     now = time.monotonic()
     if not refresh and _zdr_cache and now - _zdr_cache[0] < MODEL_LIST_TTL:
         return _zdr_cache[1]
@@ -1503,10 +1558,18 @@ async def fetch_extraction_models(refresh: bool = False) -> list[dict]:
             price = float(pricing.get("prompt") or 0) * 1_000_000
         except (TypeError, ValueError):
             price = 0.0
+        # The reply's half of the bill, in the same unit and with the same
+        # fallback. The reading job's preview prices both halves; before it
+        # read this, it priced what a call sends and nothing it gets back.
+        try:
+            reply_price = float(pricing.get("completion") or 0) * 1_000_000
+        except (TypeError, ValueError):
+            reply_price = 0.0
         row = {
             "id": model_id,
             "provider": endpoint.get("provider_name"),
             "prompt_price": price,   # USD per million prompt tokens
+            "completion_price": reply_price,   # per million completion tokens
             "context_length": endpoint.get("context_length"),
             # How many rows on the zero-retention endpoint list advertise
             # structured outputs for it; two endpoints of one provider count
@@ -1523,10 +1586,12 @@ async def fetch_extraction_models(refresh: bool = False) -> list[dict]:
             seen["endpoints"] += 1
             if price < seen["prompt_price"]:
                 seen.update({k: row[k] for k in
-                             ("provider", "prompt_price", "context_length")})
+                             ("provider", "prompt_price", "completion_price",
+                              "context_length")})
 
     models = sorted(best.values(), key=lambda m: (m["prompt_price"], m["id"]))
     _zdr_cache = (now, models)
+    _zdr_unreachable_at = None
     return models
 
 

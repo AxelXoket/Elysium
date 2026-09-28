@@ -40,6 +40,29 @@ import {
   useExtractSettings,
   useSaveExtractSettings,
 } from "@/lib/query/notebook";
+import { CHAT_MODEL_BINDING } from "@/lib/schemas/notebook";
+
+/** The sentence for "use the model I am chatting with". Exported so the
+ *  test asserts the sentence the reader sees rather than a paraphrase of
+ *  it. Mandatory, and mandatory BEFORE the choice: a chat model is usually
+ *  many times a cheap extractor's price per token, the choice follows every
+ *  change of chat model, and picking it in the list saves it immediately -
+ *  so a sentence that appeared only once it was chosen would arrive after
+ *  the decision it is about. The option lives inside a popup that closes on
+ *  the choice, so nothing can sit beside it there: the sentence names the
+ *  option, stays on screen whatever is chosen, and is the picker's own
+ *  accessible description so a reader meets it before opening the list. */
+export const CHAT_MODEL_PRICE_WARNING =
+  "\"Use the model I am chatting with\" reads with whatever model the chat "
+  + "is using at the time, at that model's price - usually many times a "
+  + "cheap extractor's, on every read, and it follows every change of chat "
+  + "model.";
+
+/** The id the picker points at with `aria-describedby`. Exported for the
+ *  same reason the sentence is: the test asks the accessible DESCRIPTION of
+ *  the control rather than looking for a paragraph somewhere on the page,
+ *  and an id typed out in two places is an id that goes stale in one. */
+export const CHAT_MODEL_PRICE_WARNING_ID = "extract-chat-model-price";
 
 export function ExtractionSettings() {
   const modelLabelId = useId();
@@ -60,9 +83,19 @@ export function ExtractionSettings() {
 
   // The trigger shows the label of whatever is chosen, so every value the
   // select can hold has to have one, the empty choice included.
+  // Insertion order is render order: the empty choice, then the standing
+  // choice, then the models. The middle one is not a model - the backend
+  // resolves it on every read to whatever the chat is using then - and it
+  // comes before the list so it is met as a choice about the chat rather
+  // than as an odd entry among vendor slugs. The price warning below is
+  // not optional and is this picker's accessible description.
   const modelLabels: Record<string, string> = {
     "": loaded ? "Not chosen - suggestions are off" : "Loading...",
+    [CHAT_MODEL_BINDING]: "Use the model I am chatting with",
   };
+  // Price first, then the id: at the panel's 300px floor the tail of a long
+  // vendor slug is what gets cut, and the price and the single-provider
+  // warning are the two things this line exists to say.
   for (const m of models.data?.models ?? []) {
     modelLabels[m.id] =
       `$${m.prompt_price.toFixed(3)}/M` +
@@ -115,6 +148,7 @@ export function ExtractionSettings() {
           >
             <SelectTrigger
               aria-labelledby={modelLabelId}
+              aria-describedby={CHAT_MODEL_PRICE_WARNING_ID}
               className="persona-field h-8 w-full min-w-0 rounded-md px-2 text-ui"
             >
               <SelectValue />
@@ -128,6 +162,18 @@ export function ExtractionSettings() {
             </SelectContent>
           </Select>
         </label>
+
+        {/* The picker's own description, carried by `aria-describedby`
+            rather than left as a paragraph a reader meets only by walking
+            past the control. The plan marks this warning mandatory; a
+            warning announced after the choice was made is not one. */}
+        <p
+          id={CHAT_MODEL_PRICE_WARNING_ID}
+          className="text-label leading-relaxed text-muted-foreground"
+          data-testid="chat-model-price-warning"
+        >
+          {CHAT_MODEL_PRICE_WARNING}
+        </p>
 
         {/* A silent empty picker cannot be told apart from "no model
             qualifies", and those mean opposite things. */}

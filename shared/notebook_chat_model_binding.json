@@ -1,0 +1,4 @@
+{
+  "_why": "The extraction-model setting has exactly one value that is not a model id: the marker for 'use the model I am chatting with'. The backend resolves it on every read (notebook_extract.CHAT_MODEL_BINDING) and the frontend has to send that same string when the reader picks the option (lib/schemas/notebook.ts CHAT_MODEL_BINDING). Two copies of one string on two sides of a wall drift; this file is the copy both suites assert their own constant against, the same arrangement shared/notebook_skip_reasons.json makes for the skip vocabulary.",
+  "model_id": "elysium-internal/chat-model"
+}

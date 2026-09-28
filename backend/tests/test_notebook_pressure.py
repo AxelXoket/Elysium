@@ -1,17 +1,20 @@
-"""H-16: the trigger threshold and the batch move together, or not at all.
+"""Decision 28 a: under failures the batch shrinks and the threshold does not.
 
-The batch halved under the breaker's consecutive failures and the trigger
-threshold did not, so the same backlog was bought in more pieces and the fixed
-part of every prompt - the card, the existing notes, the instructions - was
-paid again in each of them. Closing that means ONE function answers both
-questions, and one floor holds both.
+H-16 put the trigger threshold on the same halving rule as the batch, so that
+the two numbers could not drift apart. Decision 28 a took the threshold back
+off it. The halving read the GLOBAL counter, so one chat's provider errors
+dropped every chat's threshold to 10, 5 and 2 messages: the other
+conversations were read more often, on smaller batches, exactly while the
+provider was failing. The rule is twenty messages, and it holds in a
+failing period too. Only what one call reads shrinks.
 
-It also means the first-read edge has to be taken off the UNPRESSURED number.
-H-14 was the same shape with the batch: an edge computed from a number the
-breaker had halved sent a short chat down the branch built for a
-four-hundred-message backlog, and everything under the newest few went
-permanently unread with the breaker still CLOSED. Putting the threshold on the
-same rule reopens that door unless the edge is passed in explicitly.
+These tests were written for H-16 and asserted the opposite. They are updated
+here, and every changed assertion names 28 a, because the behaviour changed by
+decision and not because a defect was patched over.
+
+The first-read edge is still taken off the UNPRESSURED number (H-14): the
+batch still halves, and an edge computed from it would send a short chat down
+the branch built for a long history. That half is unchanged.
 
 Behavioural throughout. Nothing here reads source text, and every constant is
 imported from the module that owns it.
@@ -23,7 +26,7 @@ import pytest
 import config
 import notebook_worker
 
-from tests.test_notebook_planner_budget import MODEL, message_ids
+from tests.test_notebook_planner_budget import MODEL, add_messages, message_ids
 from tests.test_notebook_worker import seed
 
 
@@ -32,37 +35,47 @@ def anyio_backend():
     return "asyncio"
 
 
-class TestPressureMovesBothNumbersTogether:
-    def test_the_trigger_threshold_and_the_batch_halve_together(self) -> None:
-        """M1. One rule, two properties. The defect this closes is that they
-        were two rules and drifted apart from ONE consecutive failure."""
+class TestOnlyTheBatchMovesUnderPressure:
+    def test_the_threshold_stays_twenty_while_the_batch_shrinks(self) -> None:
+        """Rewritten for decision 28 a. From zero to five consecutive
+        failures the threshold is the configured twenty every time, while
+        the batch really does shrink to the floor - so the constancy is not
+        a pair of numbers that never move."""
         w = notebook_worker.Worker()
 
-        assert w.trigger_threshold == config.NOTEBOOK_EXTRACT_EVERY_TURNS, (
-            "ground: with nothing failing the threshold is the configured one")
-        assert w.batch_size == config.NOTEBOOK_EXTRACT_EVERY_TURNS, (
-            "ground: and so is the batch")
-
-        seen = []
-        for failures in range(0, 5):
+        thresholds, batches = [], []
+        for failures in range(0, 6):
             w.breaker.failures = failures
-            assert w.trigger_threshold == w.batch_size, (
-                f"{w.trigger_threshold} != {w.batch_size} at "
-                f"{failures} failures")
-            seen.append(w.batch_size)
+            thresholds.append(w.trigger_threshold)
+            batches.append(w.batch_size)
 
-        assert seen[0] > seen[1] > seen[-1], (
-            "ground: pressure really does move the number, so the equality "
-            "above is not satisfied by a pair that never changes")
-        assert seen[-1] == notebook_worker.PRESSURE_FLOOR, (
-            "ground: and it lands on the shared floor")
+        assert thresholds == [config.NOTEBOOK_EXTRACT_EVERY_TURNS] * 6, (
+            f"the threshold moved under failures: {thresholds}")
+        # GROUND: the pressure is real. The batch starts at the configured
+        # number, strictly shrinks, and lands on the floor.
+        assert batches[0] == config.NOTEBOOK_EXTRACT_EVERY_TURNS
+        assert batches[0] > batches[1] > batches[2] > batches[3]
+        assert batches[-1] == notebook_worker.PRESSURE_FLOOR
+
+    def test_a_chats_own_failures_do_not_lower_its_threshold(self) -> None:
+        """The per-chat accessor, which is the one `_prepare` asks. A chat
+        whose own breaker holds three failures reads a smaller batch and
+        keeps the twenty."""
+        w = notebook_worker.Worker()
+        w._fail_chat(7, 0.0)
+        w._fail_chat(7, 0.0)
+        w._fail_chat(7, 0.0)
+
+        assert w.batch_size_for(7) < config.NOTEBOOK_EXTRACT_EVERY_TURNS, (
+            "ground: the chat's own failures really do reach its batch")
+        assert w.trigger_threshold_for(7) == config.NOTEBOOK_EXTRACT_EVERY_TURNS
 
     @pytest.mark.anyio
-    async def test_the_planner_is_asked_with_the_halved_threshold(
+    async def test_the_planner_is_asked_with_twenty_and_the_halved_batch(
             self, client, monkeypatch) -> None:
-        """M2. The property is not the contract; what the planner is ASKED
-        is. The worker used to hand it `NOTEBOOK_EXTRACT_EVERY_TURNS` as the
-        threshold and a halved number as the limit, in the same call."""
+        """Rewritten for decision 28 a. What the planner is ASKED is the
+        contract: under three failures, the configured threshold beside the
+        pressured batch, and the first-read edge off the unpressured number."""
         import database
 
         chat_id = seed(client, count=4)
@@ -79,21 +92,68 @@ class TestPressureMovesBothNumbersTogether:
         w = notebook_worker.Worker()
         await w._prepare(chat_id)
         assert seen, "ground: the planner was reached at all"
-        assert seen[-1][0] == config.NOTEBOOK_EXTRACT_EVERY_TURNS, (
-            "ground: an unpressured worker asks with the configured number")
-        assert seen[-1][1] == seen[-1][0], "ground: and the batch matches it"
+        assert seen[-1][:2] == (config.NOTEBOOK_EXTRACT_EVERY_TURNS,
+                                config.NOTEBOOK_EXTRACT_EVERY_TURNS), (
+            "ground: an unpressured worker asks with the configured numbers")
 
         w.breaker.failures = 3
         await w._prepare(chat_id)
         threshold, limit, edge = seen[-1]
 
-        assert limit == w.batch_size_for(chat_id), (
+        assert limit == w.batch_size_for(chat_id) < threshold, (
             "ground: the pressured batch really did reach the planner")
-        assert threshold == limit, (
-            f"the planner was asked with threshold={threshold} while the "
-            f"batch was {limit}")
-        assert edge == config.NOTEBOOK_EXTRACT_EVERY_TURNS * 2, (
+        assert threshold == config.NOTEBOOK_EXTRACT_EVERY_TURNS, (
+            f"the planner was asked with threshold={threshold} under "
+            "pressure; decision 28 a keeps it at the configured number")
+        assert edge == notebook_worker.from_start_edge(), (
             "the first-read edge was taken off the pressured number")
+
+    @pytest.mark.anyio
+    async def test_a_failing_chat_does_not_make_another_chat_read_sooner(
+            self, client, monkeypatch) -> None:
+        """The case decision 28 a is about. Chat A's provider errors move the
+        GLOBAL counter to three. Chat B, which never failed, is not read on
+        nineteen unread messages - which H-16 did, at a threshold of two -
+        and is read on its twentieth: the positive control that the same
+        worker, under the same pressure, does read B at twenty."""
+        import database
+
+        database.set_setting(config.SETTING_NOTEBOOK_MODEL, MODEL)
+        w = notebook_worker.Worker()
+        # Three provider faults, the kind `_fault_scope` counts globally,
+        # all of them chat A's.
+        for _ in range(3):
+            w._note_failure(1, 0.0, "OpenRouterError:openrouter_timeout")
+        assert w.breaker.failures == 3, "ground: the global counter moved"
+        assert w.breaker.allows(0.0), (
+            "ground: three is not an open breaker, so nothing else refuses")
+
+        real = notebook_worker._plan_work
+        plans: list = []
+
+        def spy(*a, **kw):
+            plan = real(*a, **kw)
+            plans.append(plan)
+            return plan
+
+        monkeypatch.setattr(notebook_worker, "_plan_work", spy)
+
+        # The unread count is read back rather than assumed from `count`.
+        chat_b = seed(client, count=config.NOTEBOOK_EXTRACT_EVERY_TURNS - 2)
+        assert len(message_ids(chat_b)) == (
+            config.NOTEBOOK_EXTRACT_EVERY_TURNS - 1), "ground: nineteen unread"
+        await w._prepare(chat_b)
+        assert plans and plans[-1] is None, (
+            "chat B was planned on nineteen messages while chat A was failing")
+
+        add_messages(chat_b, ["the twentieth"], role="assistant")
+        assert len(message_ids(chat_b)) == config.NOTEBOOK_EXTRACT_EVERY_TURNS
+        await w._prepare(chat_b)
+        assert plans[-1] is not None, (
+            "POSITIVE CONTROL: on its twentieth message chat B is planned")
+        assert len(plans[-1]["new"]) == w.batch_size_for(chat_b), (
+            "and it reads the pressured batch, which is the half that "
+            "still shrinks")
 
     @pytest.mark.anyio
     async def test_a_pressured_trigger_does_not_reopen_the_first_read_branch(
@@ -162,14 +222,11 @@ class TestPressureMovesBothNumbersTogether:
         assert seen[-1]["from_id"] == ids[-w.batch_size_for(chat_id)], (
             "and it read exactly the pressured batch off the newest end")
 
-    def test_the_floor_never_lets_the_trigger_rise(self, monkeypatch) -> None:
-        """M4, a defect in the shipped line rather than a new risk.
-
-        `max(2, size // 2)` on a configured value of 1 returns 2: halving
-        moved the number UPWARD. Harmless while only the batch read it; with
-        the threshold on the same rule it would fire HALF as often under
-        pressure as when healthy.
-        """
+    def test_the_floor_never_lets_the_batch_rise(self, monkeypatch) -> None:
+        """`max(2, size // 2)` on a configured value of 1 returns 2:
+        halving moved the number UPWARD. `min(size, ...)` is what stops it.
+        Since decision 28 a the threshold is not on this rule at all, so it
+        is asserted as the configured value rather than as "not above"."""
         monkeypatch.setattr(config, "NOTEBOOK_EXTRACT_EVERY_TURNS", 1)
         w = notebook_worker.Worker()
 
@@ -177,16 +234,15 @@ class TestPressureMovesBothNumbersTogether:
             "ground: an unpressured worker reads the configured 1")
 
         w.breaker.failures = 3
-        assert w.trigger_threshold <= 1, (
-            f"a configured threshold of 1 became {w.trigger_threshold} under "
-            "pressure: halving moved it upward")
         assert w.batch_size <= 1, (
             f"a configured batch of 1 became {w.batch_size} under pressure")
+        assert w.trigger_threshold == 1
 
     def test_the_floor_is_where_an_ordinary_value_lands(self) -> None:
         """GROUND for the test above: `min(size, ...)` must not stop an
-        ordinary value from reaching the floor."""
+        ordinary value from reaching the floor. Decision 28 a: only the
+        batch goes there; the threshold stays at the configured number."""
         w = notebook_worker.Worker()
         w.breaker.failures = notebook_worker.PRESSURE_STEPS + 2
         assert w.batch_size == notebook_worker.PRESSURE_FLOOR
-        assert w.trigger_threshold == notebook_worker.PRESSURE_FLOOR
+        assert w.trigger_threshold == config.NOTEBOOK_EXTRACT_EVERY_TURNS

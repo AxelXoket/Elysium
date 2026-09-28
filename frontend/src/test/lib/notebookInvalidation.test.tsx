@@ -20,7 +20,13 @@ import {
   createTestQueryClient,
   renderHookWithQueryClient,
 } from "@/test/helpers/renderWithQueryClient";
-import { useSetAutoAccept, useCreateNote } from "@/lib/query/notebook";
+import {
+  useSetAutoAccept,
+  useCreateNote,
+  useRunBackfill,
+  useStopBackfill,
+  useUndoBackfill,
+} from "@/lib/query/notebook";
 import { keys } from "@/lib/query/keys";
 import { mockFetch } from "../mocks/api";
 
@@ -29,6 +35,57 @@ function invalidated(spy: ReturnType<typeof vi.spyOn>): string[] {
   return (spy.mock.calls as unknown[][]).map((call) =>
     JSON.stringify((call[0] as { queryKey?: unknown })?.queryKey));
 }
+
+describe("the backfill job mutations", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  /** The three keys every job mutation must sweep. A job writes or
+   *  removes notes (the notebook namespace), moves the worker's
+   *  `backfill` block (the worker key), and changes what is unread
+   *  (every preview). Naming one is how the others go stale. */
+  const expected = [
+    JSON.stringify(keys.notebook()),
+    JSON.stringify(keys.extractionWorker()),
+    JSON.stringify(keys.extractionBackfill()),
+  ];
+
+  it("useRunBackfill invalidates the notes, the worker poll and every preview", async () => {
+    const qc = createTestQueryClient();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    mockFetch({ "POST /notebook/extract/run/7": {
+      body: { started: true, job_id: 1, calls_planned: 2 } } });
+    const { result } = renderHookWithQueryClient(() => useRunBackfill(), { client: qc });
+    await result.current.mutateAsync([7, "all", null]);
+    await waitFor(() => {
+      for (const key of expected) expect(invalidated(spy)).toContain(key);
+    });
+  });
+
+  it("useStopBackfill invalidates the same three", async () => {
+    const qc = createTestQueryClient();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    mockFetch({ "POST /notebook/extract/stop/7": {
+      body: { stopped: true, job_id: 1, calls_spent: 1 } } });
+    const { result } = renderHookWithQueryClient(() => useStopBackfill(), { client: qc });
+    await result.current.mutateAsync([7]);
+    await waitFor(() => {
+      for (const key of expected) expect(invalidated(spy)).toContain(key);
+    });
+  });
+
+  it("useUndoBackfill invalidates the same three", async () => {
+    const qc = createTestQueryClient();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    mockFetch({ "POST /notebook/extract/undo/1": {
+      body: { job_id: 1, removed: 2, kept_pinned: 0, kept_edited: 0 } } });
+    const { result } = renderHookWithQueryClient(() => useUndoBackfill(), { client: qc });
+    await result.current.mutateAsync([1, 7]);
+    await waitFor(() => {
+      for (const key of expected) expect(invalidated(spy)).toContain(key);
+    });
+  });
+});
 
 describe("useSetAutoAccept", () => {
   beforeEach(() => vi.restoreAllMocks());

@@ -595,13 +595,47 @@ export function infiniteAnimations(root: Root, table: Map<string, string>): stri
   return [...out].sort();
 }
 
-/** One `duration-*` utility as the compiled sheet emits it. */
+/** One hand-written duration as the compiled sheet emits it: a `duration-*`
+ *  utility, or an arbitrary property that sets a transition or an animation. */
 export interface DurationUtility {
   /** The class as an author writes it, unescaped: the bare-number form, the
-   *  bracketed arbitrary form, or `duration-(--duration-fast)`. */
+   *  bracketed arbitrary form, `duration-(--duration-fast)`, or an arbitrary
+   *  property, a property and its value in square brackets as one class.
+   *  None is spelled out whole here: this file is scanned as source, and a
+   *  whole spelling would put that rule into the sheet it reads. */
   className: string;
-  /** The `transition-duration` the utility sets, as written. */
+  /** The property it sets: `transition-duration` for a `duration-*`
+   *  utility, the arbitrary property's own for the other kind, Tailwind's
+   *  duration variable included. */
+  prop: string;
+  /** The value it sets, as written. */
   value: string;
+}
+
+/** Tailwind's own duration variable. Every transition utility reads it
+ *  (`var(--tw-duration, ...)`), so an arbitrary property that sets it is a
+ *  hand-written duration for whatever transition the element also wears,
+ *  even though it is not itself one of the properties `kindOf` reads. */
+export const TW_DURATION = "--tw-duration";
+
+/** An arbitrary property that carries a duration: one of the four
+ *  properties `kindOf` reads, or Tailwind's duration variable, written as a
+ *  class of its own. */
+const ARBITRARY_DURATION = /^\[(?:(?:transition|animation)(?:-duration)?|--tw-duration):/;
+
+/** A class without its variants and its `!`: cut after the last colon that
+ *  sits outside brackets and parentheses, where Tailwind ends a variant. A
+ *  colon inside brackets is an arbitrary property's own and stays. */
+export function utilityOf(cls: string): string {
+  let depth = 0;
+  let cut = 0;
+  for (let i = 0; i < cls.length; i += 1) {
+    const c = cls[i];
+    if (c === "[" || c === "(") depth += 1;
+    else if (c === "]" || c === ")") depth -= 1;
+    else if (c === ":" && depth === 0) cut = i + 1;
+  }
+  return cls.slice(cut).replace(/^!|!$/g, "");
 }
 
 /*
@@ -622,6 +656,17 @@ export interface DurationUtility {
  * tree, arrived at through the real pipeline rather than through a grep over
  * source text. A component that ships an arbitrary bracketed duration puts
  * that utility in here, where the test can see it is not one of the tokens.
+ *
+ * Two spellings used to be invisible here, so a component could carry a
+ * hand-written duration with this whole net green. An arbitrary PROPERTY
+ * (`transition-duration` and a time in square brackets, as one class) emits
+ * its rule under a class that does not start with `duration-`. And a
+ * VARIANT (`hover:` in front of a `duration-` utility) puts its name before
+ * the utility's and nests its declarations under `&:hover` and a media
+ * query, where a rule's own nodes do not reach. Both are read now: the class
+ * is taken without its variants, and the declarations are walked. A third
+ * spelling sets only Tailwind's duration variable, which the transition
+ * utilities read: it is read as the variable it sets.
  */
 export function durationUtilities(root: Root): DurationUtility[] {
   const out: DurationUtility[] = [];
@@ -631,20 +676,25 @@ export function durationUtilities(root: Root): DurationUtility[] {
     for (const selector of resolvedSelectors(rule)) {
       for (const match of selector.matchAll(/\.((?:\\.|[A-Za-z0-9_-])+)/g)) {
         const cls = match[1].replace(/\\(.)/g, "$1");
-        if (cls.startsWith("duration-")) names.add(cls);
+        const utility = utilityOf(cls);
+        if (utility.startsWith("duration-") || ARBITRARY_DURATION.test(utility)) {
+          names.add(cls);
+        }
       }
     }
     if (names.size === 0) return;
-    const decls = rule.nodes.filter(
-      (n): n is Declaration => n.type === "decl" && n.prop === "transition-duration",
-    );
+    const decls: Declaration[] = [];
+    rule.walkDecls((decl) => {
+      if (kindOf(decl.prop) !== null || decl.prop === TW_DURATION) decls.push(decl);
+    });
     if (decls.length === 0) return;
+    const { prop } = decls[decls.length - 1];
     const value = decls[decls.length - 1].value.trim();
     for (const className of names) {
-      const key = `${className}=${value}`;
+      const key = `${className}=${prop}:${value}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      out.push({ className, value });
+      out.push({ className, prop, value });
     }
   });
   return out;
@@ -989,6 +1039,84 @@ export interface Candidate {
   order: number;
 }
 
+/** How the cascade readers treat a declaration under a condition.
+ *  `includeConditional` takes every one, read as "could reach". `viewportPx`
+ *  takes the ones whose every enclosing `@media` holds in a window that
+ *  wide, which is how a breakpoint variant is asked about. */
+export interface CascadeOptions {
+  includeConditional?: boolean;
+  viewportPx?: number;
+  /** Takes a declaration whose only conditions are `@supports` blocks as
+   *  holding. The app runs in one engine, Chromium's, and the `@supports`
+   *  blocks this sheet carries are Tailwind's own, around the colour-mix an
+   *  opacity modifier (a /40 on a text colour, say) compiles to, which that
+   *  engine satisfies. Read without them, a dimmed ink is its full-strength
+   *  fallback. */
+  supports?: boolean;
+}
+
+/** What one `rem` or `em` is worth INSIDE a media query: the initial font
+ *  size, whatever the root declares, because a query is evaluated before
+ *  any rule applies. */
+const MEDIA_EM_PX = 16;
+
+/** Tailwind's `md` breakpoint as a window width, which is 48rem in the
+ *  queries the compiler writes. The rows that read a size on either side of
+ *  it take it from here, and the size they read on each side is what holds
+ *  it to the sheet. */
+export const MD_FROM_PX = 48 * MEDIA_EM_PX;
+
+/** A length inside a media query, in px, or null for one this cannot read. */
+function mediaLengthPx(text: string): number | null {
+  const m = /^(\d+(?:\.\d+)?)(px|rem|em)$/.exec(text.trim());
+  if (!m) return null;
+  return m[2] === "px" ? Number(m[1]) : Number(m[1]) * MEDIA_EM_PX;
+}
+
+/** Whether one parenthesised media feature holds in a window `widthPx`
+ *  wide. Only the width is read, in the range forms the compiler writes and
+ *  the `min-`/`max-` forms written by hand; any other feature does not hold,
+ *  so a rule under one is not a candidate for a width question. */
+function widthFeatureHolds(feature: string, widthPx: number): boolean {
+  const text = feature.trim().replace(/^\(|\)$/g, "").trim();
+  const range = /^width\s*(>=|<=|>|<)\s*(.+)$/.exec(text);
+  if (range) {
+    const px = mediaLengthPx(range[2]);
+    if (px === null) return false;
+    return range[1] === ">=" ? widthPx >= px : range[1] === "<=" ? widthPx <= px
+      : range[1] === ">" ? widthPx > px : widthPx < px;
+  }
+  const minMax = /^(min|max)-width\s*:\s*(.+)$/.exec(text);
+  if (minMax) {
+    const px = mediaLengthPx(minMax[2]);
+    if (px === null) return false;
+    return minMax[1] === "min" ? widthPx >= px : widthPx <= px;
+  }
+  return false;
+}
+
+/** Whether every condition around `node` holds in a window `widthPx` wide:
+ *  each enclosing `@media` has one query in its list whose features all
+ *  hold. `@supports` and container queries are not evaluated and never
+ *  hold. */
+function holdsAtWidth(node: ChildNode, widthPx: number): boolean {
+  let p: Container | undefined = node.parent as Container | undefined;
+  while (p && p.type !== "root") {
+    if (p.type === "atrule") {
+      const at = p as AtRule;
+      if (at.name === "media") {
+        const anyQuery = splitTopLevel(at.params, ",").some((query) =>
+          query.split(/\s+and\s+/).every((feature) => widthFeatureHolds(feature, widthPx)));
+        if (!anyQuery) return false;
+      } else if (at.name !== "layer") {
+        return false;
+      }
+    }
+    p = p.parent as Container | undefined;
+  }
+  return true;
+}
+
 /**
  * Every unconditional declaration of `prop` whose rule matches `el`, one
  * entry per matching selector, in source order. Whether a selector matches
@@ -1007,14 +1135,16 @@ export function candidatesFor(
   root: Root,
   el: Element,
   prop: RegExp,
-  options: { includeConditional?: boolean } = {},
+  options: CascadeOptions = {},
 ): Candidate[] {
   const out: Candidate[] = [];
   let order = 0;
   root.walkDecls(prop, (decl) => {
     order += 1;
     if (inKeyframes(decl)) return;
-    if (conditional(decl) && options.includeConditional !== true) return;
+    if (conditional(decl) && options.includeConditional !== true
+      && !(options.viewportPx !== undefined && holdsAtWidth(decl, options.viewportPx))
+      && !(options.supports === true && onlyUnderSupports(decl))) return;
     // The rule this declaration belongs to, which is NOT always its parent:
     // `.warm-canvas { @media (...) { scrollbar-color: ... } }` is kept
     // verbatim by the compiler, and there the parent is the at-rule. Reading
@@ -1075,10 +1205,11 @@ export function winningDeclaration(
   root: Root,
   el: Element,
   prop: RegExp,
+  options: CascadeOptions = {},
 ): Candidate | null {
   const layers = layerOrder(root);
   let best: Candidate | null = null;
-  for (const c of candidatesFor(root, el, prop)) {
+  for (const c of candidatesFor(root, el, prop, options)) {
     if (best === null || cascadeCompare(c, best, layers) > 0) best = c;
   }
   return best;
@@ -1339,6 +1470,523 @@ export function lengthPx(value: string, rem: number): number {
     if (rightNumber !== null && leftNumber === null) return lengthPx(left, rem) * rightNumber;
   }
   throw new Error(`"${value}" is a length this reader cannot turn into pixels`);
+}
+
+/** `font-size`, and the `font` shorthand that competes with it. */
+const FONT_SIZE_OR_SHORTHAND = /^font(-size)?$/;
+
+/**
+ * The size `el`'s words render at, in px: the cascade on the element, and
+ * inheritance when it declares none.
+ *
+ * `font-size` inherits, so the winning declaration is looked for on the
+ * element first and then on each ancestor in turn. `inherit` passes the
+ * question to the parent, and so does the `font` shorthand written as
+ * `inherit` - which is how the preflight hands a button its parent's size;
+ * any other shorthand value is refused rather than parsed. `em` and `%` are
+ * taken against the parent's size, the way the engine takes them. A tree that
+ * declares nothing all the way up is at the root size.
+ *
+ * An inline `style` is part of the cascade too: its `font-size` outranks
+ * every sheet rule that is not `!important`, so a word sized inline is read
+ * at that size, and an inline `font` shorthand is refused like a sheet one.
+ *
+ * Built for sweeps: a row that asks "is any button in this tab below 13"
+ * needs an answer for every button, whichever of these ways it gets its
+ * size, and a reader that skipped the ones it could not resolve would report
+ * a clean tab over the ones it never read.
+ *
+ * With `viewportPx` the size is the one a window that wide gets: a
+ * breakpoint variant's `@media` rule competes when its width holds, and
+ * with no width a conditional rule never does.
+ */
+export function fontSizePx(
+  root: Root,
+  table: Map<string, string>,
+  rem: number,
+  el: Element,
+  options: { viewportPx?: number } = {},
+): number {
+  const won = winningDeclaration(root, el, FONT_SIZE_OR_SHORTHAND, options);
+  const parent = (): number =>
+    el.parentElement ? fontSizePx(root, table, rem, el.parentElement, options) : rem;
+  const inline = won?.important === true ? new Map<string, string>() : inlineDeclarations(el);
+  if (inline.has("font")) {
+    throw new Error(
+      `an inline style sets the font shorthand to "${inline.get("font")}", which this ` +
+        "reader does not take apart; teach it that value before trusting a size",
+    );
+  }
+  const inlineSize = inline.get("font-size");
+  if (won === null && inlineSize === undefined) return parent();
+  const value = resolveVars(inlineSize ?? won!.value, table).trim();
+  if (value === "inherit") return parent();
+  if (inlineSize === undefined && won!.prop === "font") {
+    throw new Error(
+      `${won!.selector} sets the font shorthand to "${value}", which this reader ` +
+        "does not take apart; teach it that value before trusting a size",
+    );
+  }
+  const em = /^(\d+(?:\.\d+)?)em$/.exec(value);
+  if (em) return Number(em[1]) * parent();
+  const percent = /^(\d+(?:\.\d+)?)%$/.exec(value);
+  if (percent) return (Number(percent[1]) / 100) * parent();
+  return lengthPx(value, rem);
+}
+
+/* ------------------------------------------------------------------
+ * The ink words are painted in.
+ *
+ * `color` inherits as a COMPUTED value: an element that declares none gets
+ * the colour its parent already resolved, and a `var()` inside it was
+ * substituted at the element that declared it. That is the whole of the
+ * trap on the right panel: the body resolves `var(--foreground)` against
+ * the root's dark-theme value, the panel redefines `--foreground` further
+ * down, and a line with no colour of its own inherits the body's result,
+ * which the redefinition can never reach. A reader that resolved `var()`
+ * against the root table alone, or against the element being read, would
+ * report either the defect everywhere or nowhere, so these resolve every
+ * reference where the engine does.
+ * ------------------------------------------------------------------ */
+
+/** Where an element's words get their colour. */
+export interface Ink {
+  /** The colour as the winning declaration writes it, every `var()`
+   *  resolved. `canvastext`, the initial value, when nothing up the tree
+   *  declares one. */
+  colour: string;
+  /** The element whose declaration decided it, null for the initial value. */
+  from: Element | null;
+  /** That declaration's value as written, before any `var()` in it is
+   *  resolved: a token reference follows whichever surface resolves it, a
+   *  literal is the same colour everywhere. null for the initial value. */
+  written: string | null;
+}
+
+const escapeForRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const NON_INHERITING = new WeakMap<Root, Map<string, string | null>>();
+
+/** Custom properties registered with `@property` and `inherits: false`, with
+ *  their initial value (null when none is given). Tailwind registers its own
+ *  bookkeeping properties this way; such a property set on an ancestor never
+ *  reaches a descendant. */
+function nonInheriting(root: Root): Map<string, string | null> {
+  const known = NON_INHERITING.get(root);
+  if (known) return known;
+  const out = new Map<string, string | null>();
+  root.walkAtRules("property", (at) => {
+    let inherits = true;
+    let initial: string | null = null;
+    at.each((node) => {
+      if (node.type !== "decl") return;
+      if (node.prop === "inherits") inherits = node.value.trim() !== "false";
+      if (node.prop === "initial-value") initial = node.value.trim();
+    });
+    if (!inherits) out.set(at.params.trim(), initial);
+  });
+  NON_INHERITING.set(root, out);
+  return out;
+}
+
+/** What `el` itself specifies for `prop`: its inline style over the sheet,
+ *  unless the sheet's winner is important. undefined when neither says. */
+function specifiedOn(
+  root: Root,
+  el: Element,
+  prop: string,
+  options: CascadeOptions = {},
+): string | undefined {
+  const won = winningDeclaration(root, el, new RegExp(`^${escapeForRegExp(prop)}$`), options);
+  if (won?.important === true) return won.value;
+  return inlineDeclarations(el).get(prop) ?? won?.value;
+}
+
+/** The first comma outside every parenthesis, or -1. */
+function firstTopLevelComma(text: string): number {
+  let depth = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === "(") depth += 1;
+    else if (text[i] === ")") depth -= 1;
+    else if (text[i] === "," && depth === 0) return i;
+  }
+  return -1;
+}
+
+/**
+ * The computed value of the custom property `name` at `el`: its own
+ * declaration or the nearest ancestor's, with every `var()` inside it
+ * substituted at the element that declares it. null is the guaranteed
+ * invalid value: nothing up the tree declares it (or the references form a
+ * loop).
+ */
+export function customPropertyAt(
+  root: Root,
+  el: Element,
+  name: string,
+  resolving: ReadonlySet<string> = new Set(),
+): string | null {
+  const inherits = !nonInheriting(root).has(name);
+  for (let node: Element | null = el; node; node = node.parentElement) {
+    const own = specifiedOn(root, node, name);
+    if (own !== undefined) {
+      if (resolving.has(name)) return null;
+      return substituteAt(root, node, own, new Set([...resolving, name]));
+    }
+    if (!inherits) break;
+  }
+  return nonInheriting(root).get(name) ?? null;
+}
+
+/**
+ * Every `var(--name, fallback)` in `value`, substituted at `el`. null when a
+ * reference resolves to nothing and carries no fallback, which makes the
+ * whole declaration invalid at computed-value time.
+ */
+export function substituteAt(
+  root: Root,
+  el: Element,
+  value: string,
+  resolving: ReadonlySet<string> = new Set(),
+): string | null {
+  let out = "";
+  let i = 0;
+  while (i < value.length) {
+    const at = value.indexOf("var(", i);
+    if (at < 0) {
+      out += value.slice(i);
+      break;
+    }
+    out += value.slice(i, at);
+    let depth = 0;
+    let end = at + 3;
+    for (; end < value.length; end += 1) {
+      if (value[end] === "(") depth += 1;
+      else if (value[end] === ")") {
+        depth -= 1;
+        if (depth === 0) break;
+      }
+    }
+    if (end >= value.length) throw new Error(`an unclosed var() in "${value}"`);
+    const inner = value.slice(at + 4, end);
+    const comma = firstTopLevelComma(inner);
+    const name = (comma < 0 ? inner : inner.slice(0, comma)).trim();
+    let replacement = customPropertyAt(root, el, name, resolving);
+    if (replacement === null && comma >= 0) {
+      replacement = substituteAt(root, el, inner.slice(comma + 1).trim(), resolving);
+    }
+    if (replacement === null) return null;
+    out += replacement;
+    i = end + 1;
+  }
+  return out.trim();
+}
+
+/**
+ * The colour `el`'s words are painted in, and the element that decided it.
+ *
+ * The cascade on the element first, its inline style included (it outranks
+ * every sheet rule that is not important). No declaration, `inherit`,
+ * `unset`, `currentcolor`, or a value made invalid by a `var()` that
+ * resolves to nothing: the question passes to the parent, which is how
+ * `color` inherits. Nothing all the way up is the initial value. `initial`
+ * and the two `revert` keywords are refused rather than guessed at. The
+ * `@supports` blocks the engine satisfies are read with the rest, so an ink
+ * dimmed with an opacity modifier is the mix the screen shows, not the
+ * fallback written before it.
+ *
+ * Pass one `memo` across a sweep: every text node in a tab shares most of
+ * its ancestors, and each ancestor is read once.
+ */
+export function inkOf(root: Root, el: Element, memo?: Map<Element, Ink>): Ink {
+  const known = memo?.get(el);
+  if (known) return known;
+  const inherited = (): Ink =>
+    el.parentElement
+      ? inkOf(root, el.parentElement, memo)
+      : { colour: "canvastext", from: null, written: null };
+  const own = specifiedOn(root, el, "color", { supports: true });
+  let ink: Ink;
+  if (own === undefined) {
+    ink = inherited();
+  } else {
+    const value = substituteAt(root, el, own);
+    if (value === null || /^(inherit|unset|currentcolor)$/i.test(value)) {
+      ink = inherited();
+    } else if (/^(initial|revert|revert-layer)$/i.test(value)) {
+      throw new Error(
+        `the colour on this element is "${value}", which this reader does not ` +
+          "resolve; teach it that keyword before trusting an ink",
+      );
+    } else {
+      ink = { colour: value, from: el, written: own.trim() };
+    }
+  }
+  memo?.set(el, ink);
+  return ink;
+}
+
+/** Whether every condition around `decl` is an `@supports` (or a layer).
+ *  The app runs in one engine, Chromium's, and every `@supports` block this
+ *  sheet puts around a `::placeholder` rule (Tailwind's own, for the colour
+ *  it gives every placeholder) is one that engine satisfies; a `@media` or
+ *  a container query is a question about the window, and is not taken. */
+function onlyUnderSupports(decl: ChildNode): boolean {
+  for (let p = decl.parent as Container | undefined; p; p = p.parent as Container | undefined) {
+    if (p.type !== "atrule") continue;
+    const name = (p as AtRule).name;
+    if (name !== "supports" && name !== "layer") return false;
+  }
+  return true;
+}
+
+/** The winning declaration of `prop` among the `::placeholder` rules whose
+ *  host matches `field`, `@supports` blocks included. */
+function placeholderWinner(root: Root, field: Element, prop: RegExp): Candidate | null {
+  const layers = layerOrder(root);
+  let best: Candidate | null = null;
+  let order = 0;
+  root.walkDecls(prop, (decl) => {
+    order += 1;
+    if (inKeyframes(decl) || !onlyUnderSupports(decl)) return;
+    let rule: Container | undefined = decl.parent as Container | undefined;
+    while (rule && rule.type === "atrule") rule = rule.parent as Container | undefined;
+    if (!rule || rule.type !== "rule") return;
+    for (const selector of resolvedSelectors(rule as Rule)) {
+      if (!selector.endsWith("::placeholder")) continue;
+      const host = selector.slice(0, -"::placeholder".length).trim();
+      let hit: boolean;
+      try {
+        hit = host === "" ? true : field.matches(host);
+      } catch (error) {
+        throw new Error(`the selector engine could not read "${host}"`, { cause: error });
+      }
+      if (!hit) continue;
+      const candidate: Candidate = {
+        selector,
+        prop: decl.prop,
+        value: decl.value.replace(/\s+/g, " ").trim(),
+        important: decl.important === true,
+        layer: layerOf(decl),
+        specificity: specificity(selector),
+        order,
+      };
+      if (best === null || cascadeCompare(candidate, best, layers) > 0) best = candidate;
+    }
+  });
+  return best;
+}
+
+/**
+ * The colour a text field's placeholder is painted in, and the field that
+ * decided it. A `::placeholder` rule is read at its host: the part before
+ * the pseudo-element has to match the field, and the cascade between such
+ * rules is the ordinary one, with the `@supports` blocks the engine
+ * satisfies taken in. `currentcolor` in it is the field's own ink, which is
+ * what Tailwind's preflight mixes at half strength for every placeholder
+ * that names no colour of its own. An opacity on the placeholder is laid
+ * into the colour, so the ink a ratio is taken from is the ink on screen.
+ * With no rule at all the placeholder follows the field's own colour.
+ */
+export function placeholderInkOf(root: Root, field: Element): Ink {
+  const colour = placeholderWinner(root, field, /^color$/);
+  const own = inkOf(root, field);
+  let ink: Ink = own;
+  if (colour !== null) {
+    const value = substituteAt(root, field, colour.value);
+    if (value !== null && !/^(inherit|unset)$/i.test(value)) {
+      ink = {
+        colour: value.replace(/currentcolor/gi, own.colour),
+        from: field,
+        written: colour.value,
+      };
+    }
+  }
+  const opacity = placeholderWinner(root, field, OPACITY_PROP);
+  const faded = opacity === null ? 1 : parseOpacity(substituteAt(root, field, opacity.value) ?? "1");
+  if (faded < 1) {
+    ink = { ...ink, colour: `color-mix(in srgb, ${ink.colour} ${faded * 100}%, transparent)` };
+  }
+  return ink;
+}
+
+/* ------------------------------------------------------------------
+ * What a line's ink is laid over, and how much of it reaches the eye.
+ *
+ * KURAL 2.4b measures a text colour with its opacity applied against the
+ * ground under it. Two things stand between the ink the cascade names and
+ * the pixel on screen, and a reader that skips either certifies a line
+ * nobody can read: the opacity of the element and of every ancestor (an
+ * `opacity-70` span, a disabled button's 50%), which the engine applies to
+ * everything that element paints; and the paint of every element between
+ * the surface and the words (a card, a tinted notice, a button's fill).
+ * These read both; glassSurfaceCss.ts's `wordsOverStack` composites them.
+ * ------------------------------------------------------------------ */
+
+/** An opacity as written, a number or a percentage, clamped to 0..1 the way
+ *  the engine clamps it. Anything else throws rather than reading as 1. */
+export function parseOpacity(value: string): number {
+  const text = value.trim();
+  const m = /^(-?\d*\.?\d+)(%?)$/.exec(text);
+  if (!m) throw new Error(`"${value}" is not an opacity this reader can read`);
+  const n = Number(m[1]) / (m[2] === "%" ? 100 : 1);
+  return Math.min(1, Math.max(0, n));
+}
+
+/** What `el` itself writes for a family of properties, and which member
+ *  of the family wrote it: its inline style over the sheet's winner, unless
+ *  that winner is important. The inline declaration written last is the one
+ *  that stands. null when neither says anything. */
+export function ownDeclaration(
+  root: Root,
+  el: Element,
+  family: RegExp,
+): { prop: string; value: string } | null {
+  const won = winningDeclaration(root, el, family);
+  if (won?.important === true) return { prop: won.prop, value: won.value };
+  const inline = [...inlineDeclarations(el).entries()].filter(([prop]) => family.test(prop));
+  if (inline.length > 0) {
+    const [prop, value] = inline[inline.length - 1];
+    return { prop, value };
+  }
+  return won === null ? null : { prop: won.prop, value: won.value };
+}
+
+/** The value `ownDeclaration` finds, on its own. */
+function ownValueOf(root: Root, el: Element, family: RegExp): string | null {
+  return ownDeclaration(root, el, family)?.value ?? null;
+}
+
+/** The opacity `el` itself is painted at, 1 when nothing sets one. A `var()`
+ *  in it is resolved at `el`. */
+export function ownOpacity(root: Root, el: Element): number {
+  const written = ownValueOf(root, el, OPACITY_PROP);
+  if (written === null) return 1;
+  const value = substituteAt(root, el, written);
+  if (value === null || /^(initial|unset|inherit|revert|revert-layer)$/i.test(value)) return 1;
+  return parseOpacity(value);
+}
+
+const NAMED_PAINT: Record<string, string> = {
+  transparent: "rgba(0, 0, 0, 0)",
+  white: "#FFFFFF",
+  black: "#000000",
+};
+
+/** The words a background layer or a gradient can carry that are not a
+ *  colour: repeats, positions, sizes, boxes, attachments, a gradient's
+ *  direction and shape, and the colour space it interpolates in. */
+const NOT_A_COLOUR = new Set([
+  "repeat", "repeat-x", "repeat-y", "no-repeat", "space", "round",
+  "center", "top", "bottom", "left", "right", "auto", "cover", "contain",
+  "scroll", "fixed", "local", "border-box", "padding-box", "content-box", "text", "none",
+  "to", "at", "circle", "ellipse", "closest-side", "closest-corner", "farthest-side",
+  "farthest-corner", "from", "in", "srgb", "srgb-linear", "display-p3", "lab", "lch",
+  "oklab", "oklch", "hsl", "hwb", "xyz", "xyz-d50", "xyz-d65", "shorter", "longer",
+  "increasing", "decreasing", "hue",
+]);
+
+/** A token of a background layer that is a colour, or null for one that is
+ *  not (a position, a size, `no-repeat`). `currentcolor` comes back as the
+ *  `ink` given, which is the element's own text colour. Any other bare word
+ *  is a named colour this does not know, and throws: dropped, it would be a
+ *  ground left out. */
+function colourToken(token: string, ink: () => string): string | null {
+  const t = token.trim();
+  if (/^(#[0-9a-fA-F]{3,8}|rgba?\(.*\)|color-mix\(.*\))$/.test(t)) return t;
+  const word = t.toLowerCase();
+  const named = NAMED_PAINT[word];
+  if (named !== undefined) return named;
+  if (word === "currentcolor") return ink();
+  if (/^[a-z][a-z-]*$/.test(word) && !NOT_A_COLOUR.has(word)) {
+    throw new Error(`"${t}" is a colour name this reader does not know; teach it the value`);
+  }
+  return null;
+}
+
+/**
+ * Every colour `el` itself can put under its words: its winning `background`
+ * or `background-color`, its inline style included, every `var()` resolved
+ * at `el`. [] when it paints nothing; one colour for a flat fill; for a
+ * gradient each of its stops, because a line can sit over any of them.
+ * `currentcolor` is the element's own ink. An image, a colour syntax this
+ * does not read, or a colour name it does not know throws: a ground left
+ * out is a green reading of a line that was never measured.
+ */
+export function ownPaints(root: Root, el: Element): string[] {
+  const written = ownValueOf(root, el, PAINT_PROP);
+  if (written === null) return [];
+  const value = substituteAt(root, el, written);
+  if (value === null || /^(none|initial|unset|inherit|transparent)$/i.test(value.trim())) return [];
+  const out: string[] = [];
+  const ink = (): string => inkOf(root, el).colour;
+  for (const layer of splitTopLevel(value, ",")) {
+    for (const token of tokensOf(layer.trim())) {
+      if (/^url\(/i.test(token) || /^image-set\(/i.test(token)) {
+        throw new Error(`"${value}" paints an image, which this reader cannot put a colour to`);
+      }
+      const gradient = /^(repeating-)?(linear|radial|conic)-gradient\((.*)\)$/i.exec(token);
+      if (gradient) {
+        for (const part of splitTopLevel(gradient[3], ",")) {
+          for (const bit of tokensOf(part.trim())) {
+            const colour = colourToken(bit, ink);
+            if (colour !== null) out.push(colour);
+          }
+        }
+        continue;
+      }
+      const colour = colourToken(token, ink);
+      if (colour !== null) out.push(colour);
+      else if (/^[a-z-]+\(/i.test(token)) {
+        throw new Error(`"${token}" in "${value}" is a paint this reader cannot read`);
+      }
+    }
+  }
+  return out;
+}
+
+/** One element between a surface and a line of words, as the engine paints
+ *  it: its own opacity, and the colours it can lay under the words. */
+export interface StackStep {
+  element: Element;
+  opacity: number;
+  paints: string[];
+}
+
+/**
+ * The elements from the first one inside `surface` down to `el`, outermost
+ * first, each with its own opacity and its paint. The surface's own paint is
+ * the ground this stack sits on, which KURAL 2.4b defines, so it is not a
+ * step; a surface that is itself translucent, or sits in one, is not a
+ * ground that definition covers, and throws.
+ *
+ * Pass one `memo` across a sweep, as with `inkOf`: every line in a tab
+ * shares most of its ancestors, and each is read once.
+ */
+export function stackOf(
+  root: Root,
+  surface: Element,
+  el: Element,
+  memo?: Map<Element, StackStep>,
+): StackStep[] {
+  if (!surface.contains(el)) throw new Error("stackOf was given an element outside its surface");
+  for (let node: Element | null = surface; node; node = node.parentElement) {
+    const opacity = ownOpacity(root, node);
+    if (opacity !== 1) {
+      throw new Error(`the surface is painted at opacity ${opacity} by <${node.tagName.toLowerCase()}>, `
+        + "which the two-stop ground does not model");
+    }
+  }
+  const steps: StackStep[] = [];
+  for (let node: Element | null = el; node && node !== surface; node = node.parentElement) {
+    let step = memo?.get(node);
+    if (!step) {
+      step = { element: node, opacity: ownOpacity(root, node), paints: ownPaints(root, node) };
+      memo?.set(node, step);
+    }
+    steps.unshift(step);
+  }
+  return steps;
 }
 
 /** The side of a box shorthand that faces right, for a value written with
