@@ -713,3 +713,131 @@ export function layerPaintOver(
   }
   return { stops: out, canBeAbsent };
 }
+
+/* ------------------------------------------------------------------
+ * Words over a stack of painted elements, the way the engine draws them.
+ *
+ * KURAL 2.4b's ground is the panel's two gradient stops over the frame, and
+ * its step 3 measures the text colour with its opacity applied. Between the
+ * panel and a line of words there can be more than nothing: a card, a
+ * tinted notice, a button's fill, and any of them, or the line itself, can
+ * be translucent. The engine paints each element's background, then its
+ * content, into a group, and lays the whole group over what is below at
+ * that element's opacity. That is premultiplied arithmetic, and it is done
+ * here in full, so an `opacity-70` span, a 50% disabled button and a card
+ * at 34% white all reach the ratio the way they reach the screen.
+ * ------------------------------------------------------------------ */
+
+/** A colour's channels and its alpha: hex, `rgb()`, `rgba()`, `transparent`,
+ *  or a colour mixed with `transparent`, which is what Tailwind's opacity
+ *  modifier compiles to (`color-mix(in oklab, <colour> 85%, transparent)`).
+ *  Mixed with transparent the colour keeps its channels whatever the space,
+ *  and its alpha is scaled by the percentage. Any other mix throws. */
+export function paintChannels(value: string): { rgb: Rgb; a: number } {
+  const text = value.trim();
+  if (/^transparent$/i.test(text)) return { rgb: { r: 0, g: 0, b: 0 }, a: 0 };
+  const mix = /^color-mix\((.*)\)$/i.exec(text);
+  if (!mix) return { rgb: parseRgbColour(text), a: alphaOf(text) };
+  const parts = splitTopLevel(mix[1], ",").map((p) => p.trim());
+  if (parts.length !== 3 || !/^in\s+[a-z-]+$/i.test(parts[0])) {
+    throw new Error(`"${text}" is a colour-mix this reader cannot read`);
+  }
+  const side = (part: string): { colour: string; pct: number | null } => {
+    const m = /^(.*?)(?:\s+(\d*\.?\d+)%)?$/.exec(part)!;
+    return { colour: m[1].trim(), pct: m[2] === undefined ? null : Number(m[2]) };
+  };
+  const [one, two] = [side(parts[1]), side(parts[2])];
+  const clear = (c: string) => /^transparent$/i.test(c);
+  if (clear(one.colour) === clear(two.colour)) {
+    throw new Error(`"${text}" does not mix one colour with transparent, which is the one mix read here`);
+  }
+  const [paint, other] = clear(two.colour) ? [one, two] : [two, one];
+  const share = paint.pct ?? (other.pct === null ? 50 : 100 - other.pct);
+  const base = paintChannels(paint.colour);
+  return { rgb: base.rgb, a: base.a * (share / 100) };
+}
+
+type Premultiplied = { r: number; g: number; b: number; a: number };
+
+const premultiply = ({ rgb, a }: { rgb: Rgb; a: number }): Premultiplied =>
+  ({ r: rgb.r * a, g: rgb.g * a, b: rgb.b * a, a });
+const overPremultiplied = (src: Premultiplied, dst: Premultiplied): Premultiplied => ({
+  r: src.r + dst.r * (1 - src.a),
+  g: src.g + dst.g * (1 - src.a),
+  b: src.b + dst.b * (1 - src.a),
+  a: src.a + dst.a * (1 - src.a),
+});
+const faded = (p: Premultiplied, opacity: number): Premultiplied =>
+  ({ r: p.r * opacity, g: p.g * opacity, b: p.b * opacity, a: p.a * opacity });
+
+/** One element of the stack: its own opacity and the one paint it lays
+ *  under the words, null when it paints nothing. Outermost first. */
+export interface StackLayer {
+  opacity: number;
+  paint: string | null;
+}
+
+/** The pixel under a line of words in `ink`, with the words and without,
+ *  over `steps` over an opaque `base`: each element's paint and then its
+ *  content in one group, the group laid down at the element's opacity, the
+ *  words painted last inside the innermost. Rounded to eight bits, which is
+ *  what the frame buffer holds. */
+export function wordsOverStack(
+  ink: string,
+  steps: readonly StackLayer[],
+  base: Rgb,
+): { words: Rgb; ground: Rgb } {
+  let words = premultiply(paintChannels(ink));
+  let ground: Premultiplied = { r: 0, g: 0, b: 0, a: 0 };
+  for (let i = steps.length - 1; i >= 0; i -= 1) {
+    const { opacity, paint } = steps[i];
+    const under = paint === null ? { r: 0, g: 0, b: 0, a: 0 } : premultiply(paintChannels(paint));
+    words = faded(overPremultiplied(words, under), opacity);
+    ground = faded(overPremultiplied(ground, under), opacity);
+  }
+  const floor = premultiply({ rgb: base, a: 1 });
+  const flat = (p: Premultiplied): Rgb => {
+    const out = overPremultiplied(p, floor);
+    return { r: Math.round(out.r), g: Math.round(out.g), b: Math.round(out.b) };
+  };
+  return { words: flat(words), ground: flat(ground) };
+}
+
+/** Every combination is tried; past this many the stack is not one a line
+ *  of words sits in, and the reading stops rather than sampling. */
+const MAX_GROUND_COMBINATIONS = 4096;
+
+/**
+ * The lowest ratio a line in `ink` reaches over a stack whose elements can
+ * each lay down any one of several paints (a gradient's stops), over each
+ * of `bases`. Returns the combination that produced it, so a failure can say
+ * what it was measured on.
+ */
+export function worstRatioOverStack(
+  ink: string,
+  steps: readonly { opacity: number; paints: readonly string[] }[],
+  bases: readonly Rgb[],
+): { ratio: number; words: Rgb; ground: Rgb } {
+  const choices = steps.map((s) => (s.paints.length > 0 ? [...s.paints] : [null]));
+  const combinations = choices.reduce((n, c) => n * c.length, bases.length);
+  if (combinations > MAX_GROUND_COMBINATIONS) {
+    throw new Error(`${combinations} grounds under one line: a stack this deep is not read`);
+  }
+  const worst = { ratio: Infinity, words: { r: 0, g: 0, b: 0 }, ground: { r: 0, g: 0, b: 0 } };
+  const at = choices.map(() => 0);
+  for (let n = 0; n < combinations / bases.length; n += 1) {
+    const picked = choices.map((c, i) => ({ opacity: steps[i].opacity, paint: c[at[i]] }));
+    for (const base of bases) {
+      const { words, ground } = wordsOverStack(ink, picked, base);
+      const ratio = contrastRatio(words, ground);
+      if (ratio < worst.ratio) Object.assign(worst, { ratio, words, ground });
+    }
+    for (let i = at.length - 1; i >= 0; i -= 1) {
+      at[i] += 1;
+      if (at[i] < choices[i].length) break;
+      at[i] = 0;
+    }
+  }
+  if (!Number.isFinite(worst.ratio)) throw new Error("no ground was given to read the line on");
+  return worst;
+}

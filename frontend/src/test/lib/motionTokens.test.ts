@@ -39,10 +39,12 @@ import {
   NAMED_REDUCED_MOTION_EXCEPTIONS,
   POPUP_SLOTS,
   REDUCED_TRANSPARENCY,
+  TW_DURATION,
   UNIVERSAL_RESET,
   UNIVERSAL_RESET_SELECTORS,
   declarationsFor,
   durationUtilities,
+  type DurationUtility,
   inMedia,
   infiniteAnimations,
   isNeutralised,
@@ -203,7 +205,20 @@ describe("no component writes its own duration either (FIX 1, the .tsx half)", (
    * same mechanism is why no file in this suite spells a numeric duration
    * class out: the scanner would emit it and the guard would be watching
    * its own text.
+   *
+   * Two more spellings emit a hand-written duration, and both are read: an
+   * arbitrary property (the `transition-duration` longhand, or the
+   * `transition` shorthand with a time in it, in square brackets as one
+   * class) and any of them behind a variant (`hover:`, `data-[state=open]:`).
+   * A shorthand reads a token when the token is its only time. The same
+   * mechanism as above is why none is spelled out whole in this file.
    */
+  /** Whether a scanned utility's duration is a `--duration-*` token. */
+  const readsToken = (u: DurationUtility): boolean => u.prop.endsWith("-duration")
+    ? /^var\(--duration-[a-z-]+\)$/.test(u.value)
+    : /var\(--duration-[a-z-]+\)/.test(u.value)
+      && tokensOf(u.value).every((t) => timeMs(t) === null);
+
   it("every duration-* utility in the sheet reads a --duration-* token", () => {
     const utilities = durationUtilities(root);
     // GROUND: the reader found the utilities at all, and found the SHAPE the
@@ -227,13 +242,62 @@ describe("no component writes its own duration either (FIX 1, the .tsx half)", (
     // the token now, and an empty list is the only shape this assertion has
     // that a new hand-written duration cannot slip through.
     const offenders = utilities
-      .filter((u) => !/^var\(--duration-[a-z-]+\)$/.test(u.value))
+      .filter((u) => !readsToken(u))
       .map((u) => `${u.className} -> ${u.value}`)
       .sort();
     expect(
       offenders,
       "a component writes its own duration instead of reading a token",
     ).toEqual([]);
+  });
+
+  it("POSITIVE CONTROL: each spelling of a hand-written duration is caught", () => {
+    // Rules shaped the way the compiler emits them, appended to the shipped
+    // sheet: an arbitrary property, the shorthand with a time, a variant
+    // nesting its declaration under `&:hover` and a media query, and a
+    // variant on an arbitrary property. Class names are assembled, so that
+    // this file does not emit them into the sheet it reads.
+    const escape = (cls: string) => cls.replace(/[[\]:()=!,.]/g, "\\$&");
+    const arbitrary = "[transition-" + "duration:120ms]";
+    const shorthand = "[transition:" + "opacity_120ms]";
+    const hovered = "hover:" + "duration-" + "75";
+    const openedArbitrary = "data-[state=open]:" + arbitrary;
+    // A shorthand that names the token AND a time of its own: the token is
+    // not its only time, and this is the entry the every-time-is-a-token
+    // half of `readsToken` is the only thing to catch. Once in milliseconds
+    // and once in seconds, which is the other unit a time is written in.
+    const tokenAndTime = "[transition:" + "opacity_var(--duration-fast)_120ms]";
+    const tokenAndSeconds = "[transition:" + "opacity_var(--duration-fast)_0.12s]";
+    // Tailwind's duration variable, set by hand: every transition utility on
+    // the element reads it.
+    const variable = "[" + TW_DURATION + ":200ms]";
+    const token = "[transition-" + "duration:var(--duration-fast)]";
+    const variableToken = "[" + TW_DURATION + ":var(--duration-fast)]";
+    const appended = [
+      `.${escape(arbitrary)} { transition-duration: 120ms; }`,
+      `.${escape(shorthand)} { transition: opacity 120ms; }`,
+      `.${escape(hovered)} { &:hover { @media (hover: hover) { --tw-duration: 75ms; `
+        + "transition-duration: 75ms; } } }",
+      `.${escape(openedArbitrary)} { &[data-state="open"] { transition-duration: 120ms; } }`,
+      `.${escape(tokenAndTime)} { transition: opacity var(--duration-fast) 120ms; }`,
+      `.${escape(tokenAndSeconds)} { transition: opacity var(--duration-fast) 0.12s; }`,
+      `.${escape(variable)} { ${TW_DURATION}: 200ms; }`,
+      `.${escape(token)} { transition-duration: var(--duration-fast); }`,
+      `.${escape(variableToken)} { ${TW_DURATION}: var(--duration-fast); }`,
+    ].join("\n");
+    const found = durationUtilities(parseSheet(`${css}\n${appended}`));
+    const caught = found.filter((u) => !readsToken(u)).map((u) => u.className);
+    for (const cls of [
+      arbitrary, shorthand, hovered, openedArbitrary, tokenAndTime, tokenAndSeconds, variable,
+    ]) {
+      expect(caught, `the scan did not catch ${cls}`).toContain(cls);
+    }
+    // And a token passes in both arbitrary spellings too, so the ones above
+    // are caught for their numbers and not for their shape.
+    for (const cls of [token, variableToken]) {
+      expect(found.map((u) => u.className), `the scan did not read ${cls}`).toContain(cls);
+      expect(caught, `a token-valued arbitrary property was reported: ${cls}`).not.toContain(cls);
+    }
   });
 });
 

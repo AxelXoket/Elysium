@@ -73,9 +73,14 @@ export function SettingsPanel() {
           role="note"
           aria-label="Privacy note"
           className="flex items-start gap-2 rounded-xl px-3 py-2.5 text-label leading-relaxed"
+          // The island's ghost ink, one step deeper than the muted tier. On
+          // this notice's own tint, where the mist runs darkest, the muted
+          // ink reads 4.36:1, under the 4.5:1 text needs (KURAL 2.4), and
+          // the ghost ink reads 4.70:1 (5.61:1 at the panel's bottom stop
+          // with the mist off).
           style={{
             backgroundColor: "rgba(62, 114, 176, 0.07)",
-            color: "var(--color-es-text-muted)",
+            color: "var(--es-island-ghost-ink)",
             border: "1px solid rgba(62, 114, 176, 0.14)",
           }}
         >

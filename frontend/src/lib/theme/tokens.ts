@@ -173,10 +173,10 @@ export interface TypeScaleDeviation {
  * yazilir." The role rule is "metin bir kontrolun icindeyse veya bir kontrolu
  * adlandiriyorsa `--text-ui` (13) alir; her diger durumda `--text-label` (12)
  * alir", and it wins - but the difference has to be written down by name, and
- * this is where. Thirteen rows, measured selector by selector and call site
- * by call site against the base commit rather than remembered.
+ * this is where. Fourteen rows, measured selector by selector and call site
+ * by call site rather than remembered.
  *
- * Fourteenth, and it is not a row because it is not a declaration: REF 3.5's
+ * One more, and it is not a row because it is not a declaration: KURAL 3.5's
  * weight column writes 400 for `--text-control` and `--text-body`, and
  * neither step declares one. They inherit on purpose - see the weights note
  * on `typeScale` below - so chrome comes out 400 or 600 by the call site
@@ -190,7 +190,7 @@ export const TYPE_SCALE_DEVIATIONS: ReadonlyArray<TypeScaleDeviation> = [
     fromPx: 12,
     step: "micro",
     why:
-      "the monogram inside a 28x28 avatar circle, so REF 3.5's micro row " +
+      "the monogram inside a 28x28 avatar circle, so KURAL 3.5's micro row " +
       "(badge, counter, timestamp, never prose) reads it as a badge glyph " +
       "rather than as a label. The role rule's own two outcomes are 13 and " +
       "12; this is the one place a third is right, and it moves 12 to 11",
@@ -200,7 +200,7 @@ export const TYPE_SCALE_DEVIATIONS: ReadonlyArray<TypeScaleDeviation> = [
     fromPx: 11,
     step: "micro",
     why:
-      "the same monogram, in the chat list, and REF 3.5's micro row is what " +
+      "the same monogram, in the chat list, and KURAL 3.5's micro row is what " +
       "allows it: 'rozet, sayac, zaman damgasi. Duz yazi ASLA' - a glyph in " +
       "a circle is a badge and never prose. The role rule would have offered " +
       "13 or 12; 11 is the third answer and it is this row that grants it. " +
@@ -211,7 +211,7 @@ export const TYPE_SCALE_DEVIATIONS: ReadonlyArray<TypeScaleDeviation> = [
     fromPx: 15,
     step: "title",
     why:
-      "the lock screen's own h1, and REF 3.5's title row is 'panel ve dialog " +
+      "the lock screen's own h1, and KURAL 3.5's title row is 'panel ve dialog " +
       "basligi'. 15 is on the scale as --text-body, so nothing forced the " +
       "move; a screen title is a title",
   },
@@ -245,26 +245,28 @@ export const TYPE_SCALE_DEVIATIONS: ReadonlyArray<TypeScaleDeviation> = [
     step: "ui",
     why:
       "chrome prose on the crash screen. 14 is the nearest step and is also " +
-      "closed to new call sites (REF 3.5: only a components/ui/ primitive's " +
+      "closed to new call sites (KURAL 3.5: only a components/ui/ primitive's " +
       "base string and dialog body text), so the role rule's 13 takes it and " +
       "it matches the button beneath it",
   },
   {
     where:
-      "ten " + "text-" + "xs call sites that name a control: " +
+      "twelve " + "text-" + "xs call sites that name a control: " +
       "settings/SwitchRow.tsx's shared span at its four call sites, " +
       "notebook/BoundaryPanel.tsx's shared qualifier TRIGGER at its four, " +
-      "and notebook/ExtractionSettings.tsx's two triggers",
+      "and notebook/ExtractionSettings.tsx's two triggers and the two " +
+      "labels that name them",
     fromPx: 12,
     step: "ui",
     why:
-      "REF 3.5's " + "text-" + "xs row is conditional - " +
+      "KURAL 3.5's " + "text-" + "xs row is conditional - " +
       "'rol etiket ise burada kalir' - " +
       "and these name controls rather than labelling content, so they take " +
-      "the chrome base. Ten call sites on four source lines: the span and " +
-      "the trigger are each written once and rendered four times. The other " +
-      "panels' fields are NOT in this group - they label content and took " +
-      "the table's own 12",
+      "the chrome base. Twelve call sites on six source lines: the span and " +
+      "the trigger are each written once and rendered four times, and the " +
+      "extraction panel writes its two labels and its two triggers out. " +
+      "The other panels' fields are NOT in this group - they label content " +
+      "and took the table's own 12",
   },
   {
     where: "notebook/BoundaryPanel.tsx's four qualifier LABELS",
@@ -282,7 +284,7 @@ export const TYPE_SCALE_DEVIATIONS: ReadonlyArray<TypeScaleDeviation> = [
     fromPx: 16,
     step: "control",
     why:
-      "REF 3.5's transition table sends " + "text-" + "base to " +
+      "KURAL 3.5's transition table sends " + "text-" + "base to " +
       "--text-title (16), " +
       "which would be absurd for a form field. --text-control's own usage " +
       "column is 'components/ui/ ilkellerinin taban puntosu', which is " +
@@ -296,19 +298,37 @@ export const TYPE_SCALE_DEVIATIONS: ReadonlyArray<TypeScaleDeviation> = [
     fromPx: 16,
     step: "display",
     why:
-      "REF 3.5's display row reads 'bos durum, nadir' and this is the empty " +
+      "KURAL 3.5's display row reads 'bos durum, nadir' and this is the empty " +
       "state. The reference's two sentences disagree here and the usage " +
       "column is the more specific one; 16 becomes 20",
+  },
+  {
+    where:
+      "sixteen " + "text-" + "xs call sites in the notebook panels that " +
+      "name a control: fourteen buttons across notebook/BackfillStrip.tsx, " +
+      "notebook/NotebookPanel.tsx and notebook/WorkerPanel.tsx, the scope " +
+      "Select's trigger and the span that names it",
+    fromPx: 12,
+    step: "ui",
+    why:
+      "the same conditional " + "text-" + "xs row, applied to the strip, " +
+      "the saved-notes block and the worker card: 'rol etiket ise burada " +
+      "kalir', and a button's own words, a trigger's value and the span a " +
+      "trigger is named by are chrome rather than a label on content. The " +
+      "three blocks render in the same tab and their buttons are the same " +
+      "buttons, so they take one step between them. The strip's TWO range " +
+      "fields are deliberately not here - a field labels content, so they " +
+      "took the table's own 12 beside the notebook's search box",
   },
   {
     where: "components/ui/button.tsx size.sm",
     fromPx: 12.8,
     step: "ui",
     why:
-      "an arbitrary rem size the plan's forty missed, so no table row names " +
-      "it at all. A button's own text is chrome, which is 13. The size is " +
-      "not spelled here: Tailwind scans this file as text and emits a rule " +
-      "for an arbitrary size the moment it reads one",
+      "an arbitrary rem size the transition table's forty rows missed, so " +
+      "no row names it at all. A button's own text is chrome, which is 13. " +
+      "The size is not spelled here: Tailwind scans this file as text and " +
+      "emits a rule for an arbitrary size the moment it reads one",
   },
 ];
 
@@ -330,6 +350,36 @@ export const fontWeights = [400, 600, 700] as const;
  * by test/css-contract.test.ts (T-88).
  */
 export const SYSTEM_FONT_GENERIC = "system-ui";
+
+/**
+ * How wide Chromium draws a `scrollbar-width: thin` bar, in CSS pixels.
+ *
+ * A MEASUREMENT, not a declaration, and it cannot be otherwise: `thin` is a
+ * keyword and the engine chooses the thickness. Measured headless off the
+ * scroller's own box, on a scroller named the way the app names them, the
+ * bar is 10 CSS px at 100 percent and 10.4 at 125 percent, which is 13
+ * device pixels (10 again at 150 and 200 percent, 10.29 at 175). The thumb
+ * is painted inside that track. `offsetWidth - clientWidth` rounds every
+ * one of those to 10, so an integer reading cannot tell them apart. This is
+ * the 100 percent value: at 125 percent a band set from it is 0.4 px short
+ * on the inboard side.
+ *
+ * It is deliberately NOT read back from the `::-webkit-scrollbar` width in
+ * `@layer base`. Chromium drops that whole family for any element whose
+ * computed `scrollbar-width` is not `auto`, which is every scroller the app
+ * names, so that declaration is inert on all of them: it says 5 while the
+ * engine draws 10, and a reader that trusted it would leave half of every
+ * bar unmeasured.
+ *
+ * It lives here rather than in a test because it is a fact about the surface
+ * the app paints, and two kinds of work need it: the scrollbar contrast
+ * guard, which composites everything painted behind the bar over exactly
+ * this column, and anything that reserves room for a bar. Nothing in the
+ * stylesheet pins a width - `scrollbar-width: thin` is what is written, on
+ * purpose, because pinning one switches the webkit family back off for the
+ * fields that still need it.
+ */
+export const SCROLLBAR_THIN_PX = 10;
 
 /** A cubic-bezier as motion takes it: the four control values. */
 export type Bezier = readonly [number, number, number, number];

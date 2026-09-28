@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeAll } from "vitest";
 import { screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
@@ -7,6 +7,9 @@ import { characterFixture } from "@/test/mocks/fixtures";
 import { CharacterImportDialog } from "@/components/characters/CharacterImportDialog";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { fontSizePx, MD_FROM_PX, parseSheet, remPx, rootTokens } from "@/test/helpers/compiledSheet";
+import { loadGlassRightCss } from "@/test/helpers/glassSurfaceCss";
+import { typeScale } from "@/lib/theme/tokens";
 
 function wrapper({ children }: { children: React.ReactNode }) {
   return (
@@ -207,5 +210,31 @@ describe("Character Import Dialog Tests", () => {
 
     fireEvent.change(box, { target: { value: '{"name":"Real"}' } });
     expect(submit()).toBeEnabled();
+  });
+});
+
+describe("the JSON field keeps the size it drew before (KURAL 3.5)", () => {
+  // Master's field base carried a breakpoint size that beat the smaller one
+  // this call site sets from 768 px on, so the field drew at the label step
+  // in a narrow window and at the control step in a wide one. The base
+  // carries no breakpoint size now, and the call site says both. Read
+  // through the compiled sheet on either side of the breakpoint.
+  let sizeAt: (el: Element, widthPx: number) => number;
+  beforeAll(async () => {
+    const root = parseSheet(await loadGlassRightCss());
+    const table = rootTokens(root);
+    const rem = remPx(root);
+    sizeAt = (el, widthPx) => fontSizePx(root, table, rem, el, { viewportPx: widthPx });
+  }, 60_000);
+  afterEach(() => vi.restoreAllMocks());
+
+  it("Character JSON input: the label step below 768 px, the control step from there on", async () => {
+    mockFetch({});
+    const user = userEvent.setup();
+    renderWithQueryClient(<CharacterImportDialog trigger={<Button>Import</Button>} />, { wrapper });
+    await user.click(screen.getByRole("button", { name: /import/i }));
+    const field = await screen.findByLabelText("Character JSON input");
+    expect(sizeAt(field, MD_FROM_PX - 1), "in a narrow window").toBe(typeScale.label.px);
+    expect(sizeAt(field, MD_FROM_PX), "in a wide window").toBe(typeScale.control.px);
   });
 });

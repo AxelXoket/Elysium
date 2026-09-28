@@ -438,7 +438,9 @@ export function ProxySection() {
           value={urlInput}
           onChange={(e) => setUrlInput(e.target.value)}
           disabled={busy}
-          className="text-label"
+          // The label step, and the control step from 768 px on: what this field
+          // drew before the base lost its own breakpoint size.
+          className="text-label md:text-control"
           aria-label="Proxy URL input"
         />
         <Input
@@ -448,7 +450,9 @@ export function ProxySection() {
           // No dirty flag to raise: writing the buffer IS what raises it.
           onChange={(e) => setAliasInput(e.target.value)}
           disabled={busy}
-          className="text-label"
+          // The label step, and the control step from 768 px on: what this field
+          // drew before the base lost its own breakpoint size.
+          className="text-label md:text-control"
           aria-label="Proxy alias input"
         />
         {/* Named by the words beside it, and only by them. This row used to
@@ -515,8 +519,9 @@ export function ProxySection() {
           size="sm"
           disabled={busy}
           onClick={handleDelete}
-          className="gap-1 text-label"
-          style={{ color: "var(--color-es-danger)" }}
+          // Bare, like the key's "Remove API key", in the island's danger
+          // ink: the same form as every other ghost action in this tab.
+          className="gap-1 text-label security-danger-action"
         >
           {deleteProxy.isPending ? (
             <Loader2 size={12} className="animate-spin" />

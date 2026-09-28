@@ -115,6 +115,7 @@ export function GenerationSettingsDialog({
     displayedSettings.context_budget_tokens !== defaults.context_budget_tokens ||
     displayedSettings.seed.trim().length > 0 ||
     stopSequences.length > 0;
+  const summary = isCustom ? "Custom sampling and context" : "Default sampling and context";
 
   const supportedCount = supportKnown
     ? SUPPORT_KEYS.filter((key) => isParamSupportedByModel(key, selectedModel))
@@ -150,8 +151,11 @@ export function GenerationSettingsDialog({
                   <SlidersHorizontal size={13} />
                   Generation Settings
                 </span>
-                <span className="mt-1 block truncate text-micro">
-                  {isCustom ? "Custom sampling and context" : "Default sampling and context"}
+                {/* Cut with an ellipsis at the panel's 300 px floor while the
+                    pill beside it says "unknown", so the whole of it is kept
+                    as a title (KURAL 4.4). */}
+                <span className="mt-1 block truncate text-micro" title={summary}>
+                  {summary}
                 </span>
               </div>
               <span className="generation-trigger-pill">
@@ -639,7 +643,9 @@ function StopSequencesSetting({
           disabled={atCap}
           maxLength={STOP_SEQUENCE_MAX_LENGTH}
           placeholder={atCap ? "Limit reached" : "Add a sequence"}
-          className="sidebar-dialog-field h-8 flex-1 text-label"
+          // The label step, and the control step from 768 px on: what this field
+          // drew before the base lost its own breakpoint size.
+          className="sidebar-dialog-field h-8 flex-1 text-label md:text-control"
           onChange={(event) => setDraft(event.currentTarget.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter") {

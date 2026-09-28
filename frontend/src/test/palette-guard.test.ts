@@ -138,7 +138,10 @@ const ALLOWED: Record<string, string> = {
 /** Hex literals that are deliberate. */
 const ALLOWED_HEX = new Set([
   "#c36a72", // --color-es-danger, the one warm token
-  "#96424e", // deepened danger for the persona destructive action
+  "#8d3e49", // deepened danger for the persona destructive action, and for
+             // danger words on the right panel with the mist on
+  "#7c3740", // that danger a step darker, for the Security tab's bare danger
+             // actions on the ghost hover fill, where #8d3e49 read 4.24:1
   "#af4650", // --color-es-danger, redefined inside .glass-right so danger
              // text clears 4.5:1 on the app's one light surface
 ]);

@@ -26,6 +26,8 @@ import {
 import { mockFetch } from "@/test/mocks/api";
 import { modelFixture, modelListFixture } from "@/test/mocks/fixtures";
 import { useErrorStore } from "@/lib/errors";
+import { loadGlassRightCss } from "@/test/helpers/glassSurfaceCss";
+import { parseSheet, resolvedSelectors } from "@/test/helpers/compiledSheet";
 import type { Model } from "@/lib/schemas/models";
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -174,6 +176,47 @@ describe("the capability filter row", () => {
     );
     expect(screen.getByText("Plain Text Model")).toBeInTheDocument();
   });
+
+  it("Clear answers a hover, and keeps its ink doing it", async () => {
+    // Clear was dimmed at rest and lit on hover. The dimming had to go (its
+    // word read 2.3:1), and the hover went with it, so the control had no
+    // hover state at all. Asked of the compiled sheet: the rules that reach
+    // the button when it is hovered, from `:hover` in their selectors.
+    const root = parseSheet(await loadGlassRightCss());
+    const hovered = (el: Element): string[] => {
+      const out: string[] = [];
+      root.walkRules((rule) => {
+        for (const selector of resolvedSelectors(rule)) {
+          if (!selector.includes(":hover")) continue;
+          let hit: boolean;
+          try {
+            hit = el.matches(selector.replace(/:hover/g, ""));
+          } catch {
+            // A selector the engine cannot read once its hover is taken out
+            // (a pseudo-element, say) is not one that reaches this button.
+            hit = false;
+          }
+          if (!hit) continue;
+          rule.walkDecls((decl) => {
+            out.push(`${decl.prop}: ${decl.value}`);
+          });
+        }
+      });
+      return out;
+    };
+    await open();
+    await userEvent.click(screen.getByRole("checkbox", { name: /read image/i }));
+    const clear = screen.getByRole("button", { name: /clear capability filters/i });
+    const onHover = hovered(clear);
+    expect(onHover, "Clear has no hover state").toContain("text-decoration-line: underline");
+    // It keeps its ink: nothing on hover dims it or moves its colour.
+    expect(onHover.filter((d) => /^(opacity|color):/.test(d))).toEqual([]);
+    // POSITIVE CONTROL: the count beside it, which has no hover of its own,
+    // reads none.
+    expect(hovered(screen.getByText("2 models"))).toEqual([]);
+    // A limit of its own: compiling the sheet took up to 3.9 s of the
+    // default 5 s in a full run.
+  }, 30_000);
 
   it("combines with the search box rather than replacing it", async () => {
     await open();

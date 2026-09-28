@@ -147,7 +147,13 @@ function SelectItem({
       )}
       {...props}
     >
-      <SelectPrimitive.ItemText className="flex flex-1 shrink-0 gap-2 whitespace-nowrap">
+      {/* A minimum width of zero, so an option's words can be cut: a flex
+          item's automatic minimum is its content's own width, and the
+          list's ceiling (KURAL 7.5) is narrower than the longest note
+          model's id. Words the call site puts in a box that truncates then
+          end in an ellipsis inside the item's padding, before the check
+          mark. Words that fit, and plain text, lay out exactly as before. */}
+      <SelectPrimitive.ItemText className="flex min-w-0 flex-1 shrink-0 gap-2 whitespace-nowrap">
         {children}
       </SelectPrimitive.ItemText>
       <SelectPrimitive.ItemIndicator

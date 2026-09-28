@@ -220,7 +220,7 @@
        thing a quiet label must not be. The 13/14/15 steps carry no weight
        of their own, so an element keeps what it inherits; that is the
        chrome steps saying "400 or 600 by the call site", and it is the one
-       place this scale does not do what REF 3.5's weight column writes.
+       place this scale does not do what KURAL 3.5's weight column writes.
        The difference is in the deviation inventory in lib/theme/tokens.ts.
        --text-ui is the chrome base (sidebar, tabs, buttons, menu items,
        controls); --text-control is the ui/ primitives' base and dialog
@@ -391,8 +391,9 @@
     --es-glass-right-top: rgba(252, 253, 255, 0.98);
     --es-island-accent: #3A587A;
     --es-island-action-ink: #1B2A3C;
-    --es-island-danger-ink: #96424E;
-    --es-island-ghost-ink: #596674;
+    --es-island-danger-ink: #8D3E49;
+    --es-island-danger-ink-hover: #7C3740;
+    --es-island-ghost-ink: #4E5866;
     --es-menu-from: rgba(17, 24, 33, 0.96);
     --es-menu-item-ink: rgba(228, 235, 243, 0.85);
     --es-menu-item-ink-active: rgba(159, 192, 232, 0.98);
@@ -1073,13 +1074,37 @@
      at /75 against the strip's own rgba(28,38,50,0.06) fill this ink reads
      3.69:1, under the floor. /85 reads 4.70:1, and the active label at full
      strength reads 6.88:1, so the strip keeps a visible active state and
-     both states clear AA. */
+     both states clear AA.
+
+     They are at /90 now, with the mist on and off alike, and the mist is
+     why. Over the mist's veil where the fog runs darkest, /85 on the
+     strip's fill read 4.17:1; /90 reads 4.64:1 there and 5.22:1 at the
+     veil's top, and the active label keeps its own fill and full strength. */
   --foreground: #3A4A5C;
-  --muted-foreground: #5E6B7A;
+  /* The muted ink, measured with the mist on. The mist is on by default,
+     and with it on an opaque fog canvas sits inside this panel under the
+     veil `.panel-mist-right .panel-mist-veil`, so the words sit on the veil
+     over the fog, not on the gradient above. Where the fog runs darkest the
+     veil's bottom stop composites to about rgb(208, 217, 226), and #5E6B7A
+     read 3.81:1 there (3.85 to 4.49:1 on screen, on every tab). #525D6B is
+     the same hue and saturation a notch darker: 4.69:1 on that ground,
+     6.30:1 and 5.68:1 on the gradient's two stops with the mist off. The
+     same value goes to --color-es-text-muted below; the two are one tier. */
+  --muted-foreground: #525D6B;
   --background: rgba(250, 252, 255, 0.86);
   --muted: rgba(30, 45, 62, 0.10);
   --border: rgba(30, 45, 62, 0.16);
   --input: rgba(30, 45, 62, 0.14);
+  /* The body's own rule, declared again here. `color` inherits as a finished
+     colour: the body resolves var(--foreground) against the root's value,
+     the dark theme's #EAEEF3, and the redefinition above never reaches a
+     colour that is already resolved. So every line in this panel that
+     named no ink of its own drew the dark theme's text on the app's one
+     light surface, 1.00 to 1.09:1 on screen: what is typed into the API key
+     and both proxy fields, and "Test stored key". Declared here, the same
+     rule resolves against this panel's value instead, and a line with no
+     colour of its own gets the panel's primary ink. */
+  color: var(--foreground);
   /* Softened from #1C2632 on 21 August 2026. That value put this panel's
      entire primary tier at 12.2 to 14.2:1 against the panel's own gradient,
      which is near-black on near-white: louder than the panel's OWN body
@@ -1103,6 +1128,11 @@
      rather than by tone. That is the app's own mechanism elsewhere and it
      is why the floor below is a SEPARATION floor as well as a contrast one.
      Anything softer than this and the two tiers stop being two tiers.
+     That was written at 1.67:1. Darkening the muted ink for the mist
+     (#525D6B, below) took the gap to 1.36:1, measured, and the two tiers
+     are now held apart by weight, semibold headings over regular lines,
+     and by order: the muted ink stays the lighter of the two on every
+     ground, which right-panel-readability.test.ts holds.
 
      Eight tests read this token through the live cascade (AutoLockControl,
      EmptyStubNotice, RotationBackupNotice, ScreenPrivacySection,
@@ -1110,7 +1140,7 @@
      SAME value the panel declares rather than a literal, which is exactly
      why moving the value here is safe and hardcoding one anywhere is not. */
   --color-es-text-light: #3A4A5C;
-  --color-es-text-muted: #5E6B7A;
+  --color-es-text-muted: #525D6B;
 
   /* The context meter's middle tier was #B9D4F0, chosen at index.css:79-83
      to sit about 3.2:1 against the NORMAL fill. Nobody measured it against
@@ -1285,9 +1315,14 @@
   color: var(--es-island-accent);
 }
 
+/* The island's danger ink, not the panel's --color-es-danger: every user of
+   these classes is on the right panel, and on this 8% tint over the mist at
+   its darkest the panel's #AF4650 read 3.59:1. The island ink reads 4.69:1
+   there. --color-es-danger stays what the meter's danger fill is measured
+   against. */
 .persona-error,
 .persona-local-error {
-  color: var(--color-es-danger);
+  color: var(--es-island-danger-ink);
   background: var(--es-danger-08);
   border-color: var(--es-danger-16);
 }
@@ -1313,6 +1348,14 @@
     border-color var(--duration-fast) var(--ease-smooth),
     background-color var(--duration-fast) var(--ease-smooth),
     box-shadow var(--duration-fast) var(--ease-smooth);
+}
+
+/* A field's words, typed or its placeholder, end in an ellipsis where the
+   field cuts them, and the field carries the placeholder whole as its title:
+   at the panel's 300 px floor "Something to keep out of the story..." was
+   cut mid-word with nothing left to read it by (KURAL 4.4). */
+input.persona-field {
+  text-overflow: ellipsis;
 }
 
 .persona-field:focus {
@@ -1381,6 +1424,14 @@
  * that mattered and it was never measured until now: 5.03:1 / 4.37:1 before,
  * 5.12:1 / 4.61:1 after, so the raise is what closed that one.
  *
+ * None of those figures had the mist in them. With the mist on, the default,
+ * the words sit on its veil over the fog, and where the fog runs darkest
+ * #596674 read 4.11:1 bare and 4.32:1 on this fill. The ink moved with the
+ * muted token (index.css, `.glass-right`, now #525D6B) and is still that
+ * colour scaled 0.95 toward black, #4E5866: 5.05:1 on the same ground. The
+ * island's danger ink moved with it, #96424E to #8D3E49 (the same scale,
+ * 0.94), because on the refusal tint over that ground #96424E read 4.29:1.
+ *
  * Still visibly lighter than `--color-es-text-light`, so the panel keeps its
  * two ink tiers. */
 .persona-ghost-action {
@@ -1389,6 +1440,23 @@
 
 .persona-danger-action {
   color: var(--es-island-danger-ink) !important;
+}
+
+/* The Security tab's danger actions ("Remove API key", its "Remove" and
+ * "Remove proxy") are bare ghost buttons, like "Test stored key" beside
+ * them, so they take the ghost variant's hover fill (--muted) as it does.
+ * At rest the island's danger ink reads 5.04:1 on the mist's darkest
+ * ground; under that fill it read 4.24:1, under AA. So on hover, and on
+ * keyboard focus, the ink steps down the same rose to #7C3740, which
+ * holds 5.00:1 on the fill there (5.94:1 on focus, which lays no fill). Unlayered, so it beats the ghost variant's
+ * hover:text-foreground in @layer utilities without !important. */
+.security-danger-action {
+  color: var(--es-island-danger-ink);
+}
+
+.security-danger-action:hover:not(:disabled),
+.security-danger-action:focus-visible {
+  color: var(--es-island-danger-ink-hover);
 }
 
 .persona-select-action:hover:not(:disabled),
@@ -1688,8 +1756,9 @@
    Four tiers, and everything that sits above the page belongs to one of
    them. The numbers are here and nowhere else: a component that sets
    `style={{ zIndex }}` competes with this table without appearing in it,
-   which is how the chat action menu came to paint over every surface but
-   the lock. The one inline value still allowed is written down in
+   which is where the chat action menu's 40 sat, written at its two call
+   sites where no reader of this table could see it. The one inline value
+   still allowed is written down in
    lib/theme/layers.ts and orders children INSIDE a context its parent
    already opened.
 
@@ -1786,6 +1855,10 @@
   box-shadow: 0 26px 80px rgba(0, 0, 0, 0.44);
   --color-es-text-light: #EAEEF3;
   --color-es-text-muted: #9DAAB8;
+  /* The step between the two: the text ink at 85%, for a line that has to
+     clear 4.5:1 where this dialog runs lightest and still sit under the
+     labels' own ink. The muted ink above does not clear it there. */
+  --color-es-text-soft: rgba(234, 238, 243, 0.85);
 }
 
 .sidebar-dialog::before {
@@ -1896,11 +1969,13 @@
   transform: translateY(0) scale(0.99);
 }
 
+/* Its words in the muted tier: rgba(30, 38, 48, 0.62) read 4.25:1 on the
+   pill at the panel's bottom stop, and 4.31:1 on screen (KURAL 2.4). */
 .generation-trigger-pill {
   border-radius: 999px;
   border: 1px solid rgba(28, 38, 50,0.13);
   background: rgba(255,255,255,0.22);
-  color: rgba(30, 38, 48,0.62);
+  color: var(--color-es-text-muted);
   padding: 0.15rem 0.45rem;
   font-size: var(--text-micro);
   line-height: 1;
@@ -2067,8 +2142,11 @@
   line-height: 1.45;
 }
 
+/* The muted tier, not a dimmed near-black: rgba(31, 39, 49, 0.58) read
+   3.75:1 on the generation card at the panel's bottom stop, under the 4.5:1
+   text needs (KURAL 2.4). The two dark dialogs keep their own below. */
 .generation-support-note {
-  color: rgba(31, 39, 49, 0.58);
+  color: var(--color-es-text-muted);
   font-size: var(--text-label);
   line-height: 1.35;
 }
@@ -2076,6 +2154,21 @@
 .generation-dialog .generation-support-note {
   margin-top: 0.35rem;
   color: rgba(214, 224, 236, 0.58);
+}
+
+/* The same class on the settings dialog ("Contrast and tint have no effect
+   without an image."). There it took the dialog's own muted ink, #9DAAB8,
+   which read 2.80:1 where the dialog runs lightest: its gradient's last
+   stop, both of its highlights and its sheen, over the lightest page
+   behind its backdrop. The dark shell's quiet inks stay under 4.5:1 there
+   too (at 80% it reads 3.45:1). The dialog's text ink at full strength
+   reads 5.69:1 there, but a footnote in it read louder than the labels
+   above it, whose own ink is that colour at 88%. So the note takes the
+   dialog's step between the two, that ink at 85%: 4.63:1 there, under the
+   labels' ink. While the note shows, the controls above it are switched
+   off and dimmed, and it is the line that says why. */
+.settings-dialog .generation-support-note {
+  color: var(--color-es-text-soft);
 }
 
 /* Membership in the standard scrollbar look is by NAME in this list, not by
@@ -3230,11 +3323,17 @@
      has not grown yet. `allow-discrete` makes the flip schedulable, the zero
      duration keeps it a single step, and the delay on the open rule holds
      that step until the row has finished growing. The closed state carries no
-     delay, so shutting clips again on the first frame. */
+     delay, so shutting clips again on the first frame.
+
+     The open rule names the Collapse's OWN inner, with a child combinator.
+     Written as a descendant selector it also reached the inner of every
+     Collapse nested anywhere under an open one, closed or not, and a closed
+     one is a 0px row: with its clip taken away its content painted over the
+     lines below it (the strip's cost preview, the worker card). */
   overflow: hidden;
   transition: overflow 0s allow-discrete;
 }
-.es-collapse[data-open="true"] .es-collapse-inner {
+.es-collapse[data-open="true"] > .es-collapse-inner {
   overflow: visible;
   transition: overflow 0s var(--duration-normal) allow-discrete;
 }
@@ -3620,7 +3719,7 @@
 
 /* 13 and not 14: the crash screen's paragraph is chrome prose on a
    full-screen fallback, and --text-control is closed to everything but a
-   components/ui/ primitive's base string and dialog body text (REF 3.5).
+   components/ui/ primitive's base string and dialog body text (KURAL 3.5).
    The button below it is already on 13, so the two now read as one block. */
 .error-fallback-text {
   font-size: var(--text-ui);
@@ -4821,13 +4920,13 @@ div.settings-toggle-row:active {
     opacity: 0.55;
   }
   /* The collapse inner's overflow flip is DELAYED by the row's duration on
-     the open rule (.es-collapse[data-open="true"] .es-collapse-inner), and a
-     delay survives a 1ms duration. With the height snapping there is
+     the open rule (.es-collapse[data-open="true"] > .es-collapse-inner), and
+     a delay survives a 1ms duration. With the height snapping there is
      nothing to wait for, and holding the clip would only delay the focus
      ring, so the flip is immediate. The open selector is repeated so this
      outranks the delay it removes. */
   .es-collapse-inner,
-  .es-collapse[data-open="true"] .es-collapse-inner {
+  .es-collapse[data-open="true"] > .es-collapse-inner {
     transition: none;
   }
 }

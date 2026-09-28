@@ -40,11 +40,14 @@
  * the same commit, and it never comes back up. A commit that tokenises
  * nothing cannot go green by lowering it, because the guard measures.
  *
- * Measured, in order:
- *   416 direct / 107 tokenised   before this work (audit OLCUM item 3)
+ * Measured, in order, ON INDEX.CSS - one substrate, so the lines can be
+ * subtracted from each other:
+ *   416 direct / 107 tokenised   before any of this (audit OLCUM item 3)
  *   269 direct / 189 tokenised   after the three heaviest families moved
  *   268 direct / 191 tokenised   once the scrollbar rules were rewritten
  *   262 direct / 191 tokenised   once the webkit families were deleted
+ *   260 direct / 191 tokenised   once the generation card's pill and its
+ *                                support note took the panel's muted token
  *
  * The compiled sheet reads one token higher than the last two lines, 192
  * rather than 191, and that difference is `--color-black` and nothing else:
@@ -90,7 +93,7 @@
  */
 
 /** The most direct colour literals the sheet may carry. Goes down, never up. */
-export const LITERAL_CEILING = 262;
+export const LITERAL_CEILING = 260;
 
 /**
  * The fewest literals that must sit INSIDE a token definition.

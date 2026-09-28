@@ -350,7 +350,9 @@ export function ApiKeySection() {
           value={keyInput}
           onChange={(e) => setKeyInput(e.target.value)}
           disabled={busy}
-          className="flex-1 text-label"
+          // The label step, and the control step from 768 px on: what this field
+          // drew before the base lost its own breakpoint size.
+          className="flex-1 text-label md:text-control"
           aria-label="API key input"
           // Keep the browser password manager out: this is an API key field,
           // not a login - no fill offers, no save-password prompts.
@@ -421,8 +423,13 @@ export function ApiKeySection() {
           size="sm"
           disabled={busy}
           onClick={() => setConfirmDelete(true)}
-          className="gap-1 text-label"
-          style={{ color: "var(--color-es-danger)" }}
+          // The island's danger ink on the bare ghost form "Test stored key"
+          // above has: 5.04:1 at rest on the panel's darkest ground, the
+          // mist's veil over the fog, and 5.00:1 on hover, where a darker
+          // step of it (index.css, .security-danger-action) sits on the ghost
+          // hover fill. Not persona-danger-action, whose border and fill are
+          // the Notes island's button box, which no neighbour here has.
+          className="gap-1 text-label security-danger-action"
         >
           <Trash2 size={12} />
           Remove API key
@@ -446,8 +453,8 @@ export function ApiKeySection() {
             size="sm"
             disabled={busy}
             onClick={handleDelete}
-            className="gap-1 text-label"
-            style={{ color: "var(--color-es-danger)" }}
+            // Bare, like "Cancel" beside it, in the island's danger ink.
+            className="gap-1 text-label security-danger-action"
           >
             {deleteApiKey.isPending ? (
               <Loader2 size={12} className="animate-spin" />

@@ -131,10 +131,13 @@ export function ExtractionSettings() {
               accessible name, through aria-labelledby on the trigger. The
               trigger used to carry an aria-label saying something else, so
               the screen and a screen reader named the same control two
-              different ways and voice control could reach it by neither. */}
+              different ways and voice control could reach it by neither.
+              Words that name a control are chrome, so this span and the
+              language picker's below take the chrome step (13), the same as
+              the boundary panel's four labels and the triggers they name. */}
           <span
             id={modelLabelId}
-            className="text-label leading-relaxed text-muted-foreground"
+            className="text-ui leading-relaxed text-muted-foreground"
           >
             Model
           </span>
@@ -151,12 +154,31 @@ export function ExtractionSettings() {
               aria-describedby={CHAT_MODEL_PRICE_WARNING_ID}
               className="persona-field h-8 w-full min-w-0 rounded-md px-2 text-ui"
             >
-              <SelectValue />
+              {/* The words sit in a span that truncates and carries the whole
+                  label as its title, as the qualifiers and the strip's scope
+                  field do. A vendor id runs past any width this panel has: at
+                  the 300 px floor the field holds about 210 px of words and
+                  one label here is 361, and it was cut mid-word with nothing
+                  left to read it by (KURAL 4.4). The value is itself a flex
+                  box, and text inside a flex box cannot end in an ellipsis,
+                  so the span is what can. */}
+              <SelectValue>
+                {(value: string) => (
+                  <span className="truncate" title={modelLabels[value] ?? value}>
+                    {modelLabels[value] ?? value}
+                  </span>
+                )}
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
+              {/* The same in each row of the list: the list stops at 20rem
+                  (KURAL 7.5), or at its field's own width where the field is
+                  wider (the list's minimum is the field's width, and a
+                  minimum outranks a maximum), so the longest id is cut there,
+                  and before the check mark rather than under it. */}
               {Object.entries(modelLabels).map(([value, label]) => (
                 <SelectItem key={value} value={value}>
-                  {label}
+                  <span className="truncate" title={label}>{label}</span>
                 </SelectItem>
               ))}
             </SelectContent>
@@ -190,7 +212,7 @@ export function ExtractionSettings() {
           </p>
         )}
 
-        <Collapse open={settings.isError}>
+        <Collapse open={settings.isError} className="min-w-0">
           <p className="persona-local-error" role="alert">
             Your saved choice could not be read, so this panel does not know
             whether suggestions are on. Nothing was changed.
@@ -200,7 +222,7 @@ export function ExtractionSettings() {
         <label className="block space-y-1">
           <span
             id={languageLabelId}
-            className="text-label leading-relaxed text-muted-foreground"
+            className="text-ui leading-relaxed text-muted-foreground"
           >
             Instructions written in
           </span>

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
@@ -22,6 +22,9 @@ import { settingsFixture } from "@/test/mocks/fixtures";
 import { modelFixture } from "@/test/mocks/fixtures";
 import type { ModelList, Model } from "@/lib/schemas/models";
 import type { ReactNode } from "react";
+import { fontSizePx, MD_FROM_PX, parseSheet, remPx, rootTokens } from "@/test/helpers/compiledSheet";
+import { loadGlassRightCss } from "@/test/helpers/glassSurfaceCss";
+import { typeScale } from "@/lib/theme/tokens";
 
 const allSupported = [
   "temperature",
@@ -1430,5 +1433,33 @@ describe("Generation Settings unset samplers (D1)", () => {
     // Out of range still clamps, as before.
     useUiStore.getState().setGenSettings({ genTopP: 7 });
     expect(useUiStore.getState().genTopP).toBe(1);
+  });
+});
+
+describe("the stop sequence field keeps the size it drew before (KURAL 3.5)", () => {
+  // Master's field base carried a breakpoint size that beat the smaller one
+  // this call site sets from 768 px on, so the field drew at the label step
+  // in a narrow window and at the control step in a wide one. The base
+  // carries no breakpoint size now, and the call site says both. Read
+  // through the compiled sheet on either side of the breakpoint.
+  let sizeAt: (el: Element, widthPx: number) => number;
+  beforeAll(async () => {
+    const root = parseSheet(await loadGlassRightCss());
+    const table = rootTokens(root);
+    const rem = remPx(root);
+    sizeAt = (el, widthPx) => fontSizePx(root, table, rem, el, { viewportPx: widthPx });
+  }, 60_000);
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({ selectedModelId: null, selectedChatId: null, selectedCharacterId: null });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("Stop sequence: the label step below 768 px, the control step from there on", async () => {
+    await renderWithModelAndApi(stopModel);
+    await openDialog();
+    const field = screen.getByLabelText("Stop sequence");
+    expect(sizeAt(field, MD_FROM_PX - 1), "in a narrow window").toBe(typeScale.label.px);
+    expect(sizeAt(field, MD_FROM_PX), "in a wide window").toBe(typeScale.control.px);
   });
 });

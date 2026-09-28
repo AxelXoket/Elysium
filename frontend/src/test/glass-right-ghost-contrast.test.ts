@@ -1,8 +1,8 @@
 /**
  * glass-right-ghost-contrast.test.ts - the right panel's quiet buttons.
  *
- * Twenty `variant="ghost"` buttons live in the right panel and every one of
- * them carries `.persona-ghost-action` or `.persona-danger-action`. Those
+ * The quiet buttons of the Notes island, the persona card and the notice
+ * cards carry `.persona-ghost-action` or `.persona-danger-action`. Those
  * classes declare border, background and colour with `!important` from an
  * UNLAYERED rule, so the cva `ghost` variant never reaches the screen here -
  * `index.css` beats `@layer utilities` whatever the specificity says. The
@@ -41,6 +41,8 @@ import {
   over,
   parseRgbColour,
 } from "@/test/helpers/glassSurfaceCss";
+import { parseSheet } from "@/test/helpers/compiledSheet";
+import { panelMistGrounds } from "@/test/helpers/fogGround";
 
 /** How far past AA a fix has to land.
  *
@@ -88,6 +90,16 @@ function panelToken(name: string): string {
  * --color-es-background reaches the eye through them, and with a lighter frame
  * the ink would clear AA on its own. */
 const panelStops = (): [Rgb, Rgb] => glassRightStops(css);
+
+/** Every ground the buttons can sit on: the two stops, which show with the
+ *  mist off, and the mist's veil over the darkest pixel its fog can paint,
+ *  which is what shows with the mist on, the default. */
+const panelGrounds = (): Rgb[] => [...panelStops(), ...panelMistGrounds(parseSheet(css), "right")];
+
+/** The ghost ink the panel shipped before the mist was measured, which
+ *  cleared AA on the stops. The ground control for the mist: it has to
+ *  fail there, or the mist is not in the grounds. */
+const INK_BEFORE_THE_MIST = "#596674";
 
 /**
  * A declaration from the rule that governs `.persona-ghost-action`.
@@ -150,6 +162,15 @@ function resolveValue(raw: string): string {
 /** A colour that may be a hex, an rgb()/rgba() list, or a var() reference. */
 function resolve(raw: string): Rgb {
   return parseRgbColour(resolveValue(raw));
+}
+
+/** The button's own fill, over each ground. Two compositing steps, not
+ *  one: the fill is translucent over a panel that is itself translucent. */
+function fillGrounds(): Rgb[] {
+  const raw = ghostDeclaration("background");
+  expect(raw, "the ghost action declares no background").not.toBeNull();
+  const fill = resolveValue(raw!);
+  return panelGrounds().map((ground) => composite(fill, ground));
 }
 
 /** The button's own fill, over each panel stop. Two compositing steps, not
@@ -222,15 +243,28 @@ describe("the right panel's ghost buttons", () => {
       .toBeGreaterThanOrEqual(AA_NON_TEXT);
   });
 
-  it("the ink clears AA at the BOTTOM stop, where the panel is darkest", () => {
-    // Only the bottom. The top stop reads 5.08:1 and passes; even t=0.90
-    // reads 4.54:1 and passes. The miss is confined to the last few percent
-    // of the gradient, and the claim is written no wider than that.
+  it("the ink clears AA on its fill over every ground, the mist at its darkest among them", () => {
+    // The panel is darkest under the mist, not at its bottom stop: the veil
+    // over the darkest pixel the fog can paint. That is where the margin is
+    // asked for; every other ground reads higher.
     const ink = resolve(ghostDeclaration("color", { own: true })!);
-    const [, fillBottom] = fillStops();
+    const grounds = fillGrounds();
+    // GROUND: the mist is in the grounds, and it is the darkest of them.
+    expect(grounds.length, "the mist is not in the grounds").toBeGreaterThan(2);
+    const darkest = Math.min(...grounds.map(luminance));
+    expect(darkest, "the mist is not darker than the stops")
+      .toBeLessThan(Math.min(...fillStops().map(luminance)));
 
-    expect(contrastRatio(ink, fillBottom))
-      .toBeGreaterThanOrEqual(AA_NORMAL + MARGIN);
+    for (const ground of grounds) {
+      expect(contrastRatio(ink, ground), `on rgb(${ground.r}, ${ground.g}, ${ground.b})`)
+        .toBeGreaterThanOrEqual(AA_NORMAL + MARGIN);
+    }
+    // POSITIVE CONTROL: the ink before the mist was measured clears AA on
+    // the stops and fails on the mist, so the reading above is the mist's.
+    const before = parseRgbColour(INK_BEFORE_THE_MIST);
+    expect(Math.min(...fillStops().map((g) => contrastRatio(before, g))))
+      .toBeGreaterThanOrEqual(AA_NORMAL);
+    expect(Math.min(...grounds.map((g) => contrastRatio(before, g)))).toBeLessThan(AA_NORMAL);
   });
 
   it("and does not become the primary ink while doing it", () => {

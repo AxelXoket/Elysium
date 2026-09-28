@@ -56,6 +56,7 @@ export const ModelCard = memo(function ModelCard({ model }: ModelCardProps) {
             <span
               className="truncate text-ui font-semibold"
               style={{ color: "var(--color-es-text-light)" }}
+              title={model.name}
             >
               {model.name}
             </span>
@@ -63,6 +64,7 @@ export const ModelCard = memo(function ModelCard({ model }: ModelCardProps) {
           <p
             className="mt-0.5 truncate text-micro"
             style={{ color: "var(--color-es-text-muted)" }}
+            title={model.id}
           >
             {model.id}
           </p>

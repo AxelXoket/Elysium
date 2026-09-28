@@ -37,6 +37,8 @@ import {
   rawGlassRightStops,
   resolveColour,
 } from "@/test/helpers/glassSurfaceCss";
+import { parseSheet } from "@/test/helpers/compiledSheet";
+import { panelMistGrounds } from "@/test/helpers/fogGround";
 
 import {
   AA_NON_TEXT,
@@ -96,6 +98,10 @@ describe("glass-right danger token - contrast", () => {
    *  which is what this file did until 5 September 2026, measures a surface
    *  that is never painted. */
   const stops = (): [Rgb, Rgb] => glassRightStops(compiledCss);
+
+  /** The mist's veil over the darkest pixel its fog can paint: what the
+   *  words sit on with the mist on, the default. Darker than either stop. */
+  const mistGrounds = (): Rgb[] => panelMistGrounds(parseSheet(compiledCss), "right");
 
   /** The value :root declares for --color-es-danger, read from source text
    *  rather than the DOM: jsdom does not resolve :root-only custom
@@ -281,7 +287,8 @@ describe("glass-right danger token - contrast", () => {
     expect(occurrences, "expected exactly the :root declaration plus one override").toHaveLength(2);
   });
 
-  it("FIX: .glass-right redefines the token to clear AA text contrast on this surface", () => {
+  it("FIX: .glass-right redefines the token to clear AA text contrast on the panel's gradient, "
+     + "with the mist off", () => {
     const glassRight = wrapInGlassRight();
     const resolved = surfaceToken(glassRight, "--color-es-danger");
     expect(resolved, "the override did not resolve through the real cascade").not.toBe("");
@@ -300,6 +307,45 @@ describe("glass-right danger token - contrast", () => {
     expect(luminance(darkened)).toBeGreaterThan(0.05);
 
     glassRight.remove();
+  });
+
+  it("with the mist on the token falls under AA, and the words the panel paints in danger take "
+     + "the island's danger ink, which clears it", () => {
+    // The token's own reading is the one above, on the gradient. With the
+    // mist on the words sit on its veil over the fog, and there the token
+    // is under the floor; so no words on this panel are painted in it
+    // straight on the mist (the Security tab's error feedback is, on a light
+    // wash of its own), and the island's danger ink carries the rest.
+    const glassRight = wrapInGlassRight();
+    const token = parseRgbColour(surfaceToken(glassRight, "--color-es-danger"));
+    glassRight.remove();
+    const island = parseRgbColour(panelResolve("var(--es-island-danger-ink)"));
+    const grounds = mistGrounds();
+    // GROUND: both stops of the veil are read, and both are darker than the
+    // gradient's darker stop.
+    expect(grounds.length, "the veil's stops were not read").toBe(2);
+    for (const ground of grounds) {
+      expect(luminance(ground), "the mist is not darker than the gradient")
+        .toBeLessThan(luminance(stops()[1]));
+    }
+    expect(Math.min(...grounds.map((g) => contrastRatio(token, g))),
+      "the token clears AA on the mist too; the island's ink is no longer needed")
+      .toBeLessThan(AA_TEXT_THRESHOLD);
+    // On the panel, and on the refusal tint the error lines lay under
+    // their words (.persona-error's own background), over every ground.
+    const idx = compiledCss.indexOf(".persona-error,");
+    expect(idx, "the persona-error rule moved").toBeGreaterThan(-1);
+    const block = compiledCss.slice(idx, compiledCss.indexOf("}", idx));
+    const tintDecl = /background:\s*([^;]+)/.exec(block);
+    expect(tintDecl, "persona-error declares no background").not.toBeNull();
+    const tint = panelResolve(tintDecl![1].trim());
+    for (const ground of [...stops(), ...grounds]) {
+      const at = `rgb(${ground.r}, ${ground.g}, ${ground.b})`;
+      expect(contrastRatio(island, ground), `the island's ink on ${at}`)
+        .toBeGreaterThanOrEqual(AA_TEXT_THRESHOLD);
+      expect(contrastRatio(island, composite(tint, ground)), `the island's ink on the tint over ${at}`)
+        .toBeGreaterThanOrEqual(AA_TEXT_THRESHOLD);
+    }
   });
 
   it("every descendant of .glass-right inherits the SAME darkened token (the whole family moves together)", () => {
@@ -386,6 +432,7 @@ describe("glass-right danger token - contrast", () => {
 
     const ink = parseRgbColour(panelResolve(own!));
     const [top, bottom] = stops();
+    const grounds = [top, bottom, ...mistGrounds()];
     // The class paints a white wash over the panel, so the ink sits on that
     // rather than on the panel directly - and the panel underneath is itself
     // a composite, so this is two compositing steps, not one. The WASH IS
@@ -411,10 +458,12 @@ describe("glass-right danger token - contrast", () => {
     expect(alpha, "the wash stopped being a wash").toBeGreaterThan(0);
     expect(alpha, "the wash went opaque and the panel no longer shows through")
       .toBeLessThan(1);
-    expect(contrastRatio(ink, composite(wash, top)), "top-stop")
-      .toBeGreaterThanOrEqual(AA_TEXT_THRESHOLD);
-    expect(contrastRatio(ink, composite(wash, bottom)), "bottom-stop")
-      .toBeGreaterThanOrEqual(AA_TEXT_THRESHOLD);
+    // Every ground: both stops, and the mist's veil over the fog at its
+    // darkest, which is the lowest reading of the four.
+    for (const ground of grounds) {
+      expect(contrastRatio(ink, composite(wash, ground)),
+        `on rgb(${ground.r}, ${ground.g}, ${ground.b})`).toBeGreaterThanOrEqual(AA_TEXT_THRESHOLD);
+    }
     // GROUND, and the discriminating half: the rose this replaced must FAIL
     // the same measurement, or the assertion above proves nothing about the
     // value actually chosen.

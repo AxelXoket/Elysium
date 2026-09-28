@@ -22,6 +22,8 @@ import {
   chooseOption,
   expectClosed,
   expectKeyboardContract,
+  expectOptionsOnTheOptionStep,
+  expectPlacedCollisionPadding,
   openPositioner,
   openSelect,
 } from "../helpers/select";
@@ -1340,6 +1342,11 @@ describe("the voice page's two dropdowns are the same Select (T-18, T-75)", () =
       const listbox = await openSelect(user, trigger);
       expect(openPositioner()!.getAttribute("data-collision-padding"))
         .toBe(String(POPUP_COLLISION_PADDING));
+      // And against what Base UI placed the popup with, which the attribute
+      // alone cannot vouch for: the prop can be lost on the way while the
+      // attribute stays, and a padding can fall back to the library's own.
+      await expectPlacedCollisionPadding(listbox, trigger.id);
+      expectOptionsOnTheOptionStep(listbox, trigger.id);
       await user.keyboard("{Escape}");
       await expectClosed(listbox);
     }

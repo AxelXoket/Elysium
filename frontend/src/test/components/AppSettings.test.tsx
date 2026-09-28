@@ -24,6 +24,23 @@ import {
 } from "@/lib/store/uiStore";
 import { mockFetch } from "../mocks/api";
 import { settingsFixture } from "../mocks/fixtures";
+import { AA_NORMAL, contrastRatio, type Rgb } from "@/lib/appearance/contrast";
+import {
+  backgroundLayers,
+  declarationOnSelector,
+  inkOf,
+  ownPaints,
+  parseSheet,
+  resolveVars,
+  rootTokens,
+} from "@/test/helpers/compiledSheet";
+import {
+  colourAtParam,
+  loadGlassRightCss,
+  over,
+  paintChannels,
+  parseLayer,
+} from "@/test/helpers/glassSurfaceCss";
 import type { ReactNode } from "react";
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -415,4 +432,93 @@ describe("Reader variables on the chat canvas", () => {
       expect(s.className).not.toContain("msg-contrast");
     });
   });
+});
+
+describe("the chat background note on the dark settings dialog", () => {
+  // "Contrast and tint have no effect without an image." shares its class
+  // with the generation card's support note, which takes the right panel's
+  // muted ink. On this dark dialog the class resolved to the dialog's own
+  // muted ink, and where the dialog's gradient runs lightest, over the
+  // lightest page it can sit on, that read under 4.5:1. Moved to the
+  // dialog's text ink at full strength, it outranked the labels above it.
+  // The ground is built from the sheet: every layer of the dialog's
+  // background at its strongest, the dialog's sheen at the same place,
+  // over white under the dialog's own backdrop.
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({ settingsOpen: false, settingsInitialPage: null, chatBgOn: false });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("reads 4.5:1 wherever on the dialog it can sit, a step under the dialog's text ink",
+    async () => {
+    const root = parseSheet(await loadGlassRightCss());
+    const table = rootTokens(root);
+    const user = userEvent.setup();
+    mockFetch({});
+    renderWithQueryClient(<SidebarFooter />, { wrapper });
+    await openSettings(user);
+    await user.click(screen.getByText("Chat background"));
+    const note = await screen.findByText(/^contrast and tint have no effect without an image\.$/i);
+    // GROUND: the note is on the dark dialog, under its backdrop.
+    const dialog = note.closest(".sidebar-dialog");
+    expect(dialog, "the note is not on the settings dialog").not.toBeNull();
+    const backdrop = document.querySelector('[data-slot="dialog-overlay"]');
+    expect(backdrop, "the dialog has no backdrop").not.toBeNull();
+
+    /** The lightest page behind the dialog: white, under the backdrop. */
+    const behind = ownPaints(root, backdrop!).reduce<Rgb>((under, paint) => {
+      const { rgb, a } = paintChannels(paint);
+      return over(rgb, under, a);
+    }, { r: 255, g: 255, b: 255 });
+    const surface = declarationOnSelector(root, ".sidebar-dialog", /^background$/);
+    const sheen = declarationOnSelector(root, ".sidebar-dialog::before", /^background$/);
+    expect(surface, "the dialog paints no background").not.toBeNull();
+    expect(sheen, "the dialog's sheen paints nothing").not.toBeNull();
+    const layers = backgroundLayers(surface!, table).map(parseLayer);
+    const glow = parseLayer(resolveVars(sheen!, table));
+    const linear = layers.find((l) => l.shape.kind === "linear");
+    expect(linear, "the dialog's gradient did not parse").toBeDefined();
+    /** The ground at each stop of the dialog's own gradient: that stop over
+     *  the page, every radial highlight at its strongest over that, and
+     *  the sheen at the same place. */
+    const grounds = linear!.stops.map(({ pos }) => {
+      let ground = behind;
+      for (const layer of layers) {
+        const paint = layer === linear ? colourAtParam(layer.stops, pos) : layer.stops[0].colour;
+        const { rgb, a } = paintChannels(paint);
+        ground = over(rgb, ground, a);
+      }
+      const lit = paintChannels(colourAtParam(glow.stops, pos));
+      return over(lit.rgb, ground, lit.a);
+    });
+    expect(grounds.length, "the dialog's gradient has fewer than two stops").toBeGreaterThan(1);
+    /** An ink, its alpha laid over the ground, against that ground. */
+    const ratioOn = (colour: string, ground: Rgb): number => {
+      const { rgb, a } = paintChannels(colour);
+      return contrastRatio(over(rgb, ground, a), ground);
+    };
+    const ink = inkOf(root, note);
+    // GROUND: the ink is decided inside the dialog, not above it.
+    expect(dialog!.contains(ink.from), "the note's ink is decided above the dialog").toBe(true);
+    for (const ground of grounds) {
+      expect(ratioOn(ink.colour, ground), `on rgb(${ground.r}, ${ground.g}, ${ground.b})`)
+        .toBeGreaterThanOrEqual(AA_NORMAL);
+    }
+    // POSITIVE CONTROL: the dialog's muted ink, which the note took before,
+    // is under the floor on at least one of those grounds.
+    const muted = declarationOnSelector(root, ".sidebar-dialog", /^--color-es-text-muted$/);
+    expect(muted, "the dialog declares no muted ink").not.toBeNull();
+    expect(Math.min(...grounds.map((g) => ratioOn(muted!, g)))).toBeLessThan(AA_NORMAL);
+    // And it is a step under the dialog's text ink on every one of them, so
+    // a footnote does not read louder than the labels it sits under.
+    const text = declarationOnSelector(root, ".sidebar-dialog", /^--color-es-text-light$/);
+    expect(text, "the dialog declares no text ink").not.toBeNull();
+    const quieter = (colour: string): boolean =>
+      grounds.every((g) => ratioOn(colour, g) < ratioOn(text!, g));
+    expect(quieter(ink.colour), `the note's ${ink.colour} is not under the dialog's text ink`)
+      .toBe(true);
+    // POSITIVE CONTROL: the text ink itself is not read as quieter.
+    expect(quieter(text!), "the dialog's own text ink read as quieter than itself").toBe(false);
+  }, 30_000);
 });

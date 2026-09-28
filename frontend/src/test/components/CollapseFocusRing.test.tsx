@@ -19,16 +19,22 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { render } from "@testing-library/react";
+import type { Root } from "postcss";
 
 import { Collapse } from "@/components/motion/Collapse";
+import { hiddenFromReaders } from "@/test/helpers/accessibility";
+import { parseSheet, winningDeclaration } from "@/test/helpers/compiledSheet";
 import { injectCss, loadGlassRightCss } from "@/test/helpers/glassSurfaceCss";
 
 let sheet: HTMLStyleElement;
 let css = "";
+/** The same compiled sheet, parsed, for the rows that ask which rule wins. */
+let parsed: Root;
 
 beforeAll(async () => {
   css = await loadGlassRightCss();
   sheet = injectCss(css);
+  parsed = parseSheet(css);
 }, 60_000);
 
 afterAll(() => sheet.remove());
@@ -101,6 +107,69 @@ describe("a collapsible that is open", () => {
     expect(getComputedStyle(section(false).inner).transition).not.toContain(
       duration,
     );
+  });
+});
+
+describe("a closed collapsible inside an open one", () => {
+  // The open rule takes the clip off a collapsible's OWN inner and nothing
+  // else. Written as a descendant selector it reached the inner of every
+  // collapsible nested anywhere under an open one, closed ones included, and
+  // a closed one is a 0px row: with its clip gone, its content painted over
+  // the lines below it. Asked of the parsed compiled sheet, the cascade
+  // decided per element by the DOM's own selector matching.
+
+  /** An open collapsible holding a second one, open or closed. */
+  function nested(innerOpen: boolean) {
+    const { container } = render(
+      <Collapse open>
+        <p>the line above</p>
+        <Collapse open={innerOpen}>
+          <p data-testid="nested-line">the nested line</p>
+        </Collapse>
+        <p>the line below</p>
+      </Collapse>,
+    );
+    const [outer, inner] = [...container.querySelectorAll<HTMLElement>(".es-collapse")];
+    const innerOf = (c: HTMLElement) =>
+      c.querySelector<HTMLElement>(":scope > .es-collapse-inner")!;
+    return {
+      outerInner: innerOf(outer),
+      inner,
+      innerInner: innerOf(inner),
+      line: container.querySelector<HTMLElement>('[data-testid="nested-line"]')!,
+    };
+  }
+
+  /** The value the cascade gives `prop` on `el`, or null when nothing does. */
+  const winning = (el: Element, prop: RegExp) =>
+    winningDeclaration(parsed, el, prop)?.value ?? null;
+
+  it("keeps its content clipped and out of reach", () => {
+    const { outerInner, inner, innerInner, line } = nested(false);
+    // GROUND: the open collapsible around it really dropped its own clip, so
+    // the rule this row scopes is present and reaching what it should.
+    expect(winning(outerInner, /^overflow$/), "the open rule no longer reaches the "
+      + "open collapsible's own inner").toBe("visible");
+    // The closed one is a row of no height...
+    expect(winning(inner, /^grid-template-rows$/)).toBe("0fr");
+    // ...that still clips what is in it, so nothing of it paints.
+    expect(winning(innerInner, /^overflow$/), "a closed collapsible inside an open "
+      + "one stopped clipping, so its content paints over the lines below it")
+      .toBe("hidden");
+    // And its content is out of the reader's reach: inert, and hidden from
+    // the accessibility tree, by the closed collapsible itself.
+    expect(line.closest("[inert]"), "the nested line is not inside an inert box")
+      .toBe(inner);
+    expect(hiddenFromReaders(line), "the nested line can still be reached").toBe(true);
+  });
+
+  it("POSITIVE CONTROL: an open collapsible inside an open one does stop clipping", () => {
+    // The rule is scoped, not deleted: a nested collapsible that is itself
+    // open is reached through its own parent, and its content is reachable.
+    const { inner, innerInner, line } = nested(true);
+    expect(winning(inner, /^grid-template-rows$/)).toBe("1fr");
+    expect(winning(innerInner, /^overflow$/)).toBe("visible");
+    expect(hiddenFromReaders(line)).toBe(false);
   });
 });
 

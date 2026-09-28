@@ -110,7 +110,9 @@ export function CharacterImportDialog({ trigger }: CharacterImportDialogProps) {
             placeholder='{"name": "Character", "description": "...", ...}'
             disabled={importChar.isPending}
             rows={10}
-            className="sidebar-dialog-field resize-none font-mono text-label leading-relaxed"
+            // The label step, and the control step from 768 px on: what this field
+            // drew before the base lost its own breakpoint size.
+            className="sidebar-dialog-field resize-none font-mono text-label leading-relaxed md:text-control"
             aria-label="Character JSON input"
           />
 

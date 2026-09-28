@@ -25,8 +25,12 @@ export const POPUP_COLLISION_PADDING = 8;
  *
  * Written down because the number above is only defensible against it: "8"
  * on its own is a number somebody liked, "twice the side offset and more
- * than the library's default" is a decision. The guard holds the three to
- * each other rather than retyping any of them.
+ * than the library's default" is a decision. BoundaryPanel.test.tsx pins
+ * the padding to T-75's 8 in one row and holds the side offset to it by
+ * that relation, and it measures this one off Base UI's own positioner,
+ * handed no padding, rather than taking the library's documentation for it.
+ * The placement check every popup row runs refuses a popup placed with this
+ * number: at it, a prop that arrived and a prop that was lost read the same.
  */
 export const BASE_UI_COLLISION_PADDING = 5;
 
@@ -42,16 +46,30 @@ export const POPUP_SIDE_OFFSET = 4;
  * test that read the attribute could not tell whether the positioner still
  * got the prop - deleting that one line left the attribute in place and the
  * assertion green, comparing a variable with itself. Returned together, the
- * only way to stop the positioner receiving the padding is to change this
- * function, which its own assertion catches.
+ * prop cannot be dropped while the attribute goes on reporting it except by
+ * changing this function. A change here is caught by a unit row that asserts
+ * both keys come back. A positioner that stops spreading what it returns, or
+ * writes its own padding after the spread, keeps the attribute and is
+ * caught by the placement check instead, which reads the padding Base UI
+ * really placed the popup with and does not depend on the attribute at all.
+ * Every Select popup row runs that check, and so does a row that opens the
+ * tooltip, which spreads the same value.
  *
- * The `data-` attribute SHIPS, and that is a decision rather than an
- * oversight. Base UI keeps `collisionPadding` to itself: it goes to the
- * positioning middleware and is never written to the DOM, so the number a
- * popup was actually placed with is otherwise unreadable from outside the
- * library. An attribute added only under test would make the shipped path a
- * different path from the measured one, which is worth less than this costs -
- * one data attribute, no behaviour, no style, nothing to paint.
+ * That second reading is possible because of what Base UI does and does not
+ * write. The padding itself goes to the positioning middleware and is never
+ * written to the DOM; what comes back is the room the middleware left,
+ * `--available-width` on the positioner, which is the width it clips against
+ * with the padding taken off both sides. The tests recover the padding from
+ * that, so the number a popup was placed with is read from the library's own
+ * output rather than from anything this module says about it.
+ *
+ * The `data-` attribute SHIPS anyway, and that is a decision rather than an
+ * oversight: it names the number the positioner was given without anybody
+ * redoing that arithmetic, and the tests hold it to the recovered number so
+ * it cannot report a padding the popup was not placed with. An attribute
+ * added only under test would make the shipped path a different path from
+ * the measured one, which is worth less than this costs - one data
+ * attribute, no behaviour, no style, nothing to paint.
  */
 export function popupCollisionProps(
   padding: SelectPrimitive.Positioner.Props["collisionPadding"] =

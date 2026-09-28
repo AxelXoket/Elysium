@@ -337,7 +337,7 @@ export function PersonaPanel() {
 
         {activePersona ? (
           <div>
-            <p className="truncate text-ui font-semibold">
+            <p className="truncate text-ui font-semibold" title={activePersona.display_name}>
               {activePersona.display_name}
             </p>
             <p className="mt-1 line-clamp-2 text-label leading-relaxed text-muted-foreground">
@@ -494,7 +494,7 @@ function PersonaListItem({
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <p className="truncate text-ui font-semibold">
+                <p className="truncate text-ui font-semibold" title={persona.display_name}>
                   {persona.display_name}
                 </p>
                 {persona.is_active && <ActiveBadge />}

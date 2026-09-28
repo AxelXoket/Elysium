@@ -35,13 +35,19 @@
  * opened for real: css-contract.test.ts's dialog geometry block runs the
  * same predicate over each one's rendered tree.
  *
+ * The right panel's Notes tab is the other surface the shell does not open.
+ * The last block below opens it, with every panel in it showing its buttons,
+ * and holds each button's words to the chrome step through the size the
+ * compiled sheet gives them.
+ *
  * Nothing is typed here: the allowed sets are derived from `typeScale` and
  * `fontWeights` in lib/theme/tokens.ts, which tokens-sync.test.ts holds
  * equal to index.css in both directions.
  */
 import { createElement } from "react";
 import { render, screen } from "@testing-library/react";
-import { beforeAll, describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { AppShell } from "@/components/layout/AppShell";
 import { Providers } from "@/app/providers";
@@ -65,8 +71,19 @@ import {
 import { characterFixture } from "@/test/mocks/fixtures";
 import { loadGlassRightCss } from "@/test/helpers/glassSurfaceCss";
 import {
+  NOTES_TAB_BLOCKS,
+  NOTES_TAB_CONFIRMS,
+  armNotesTabConfirms,
+  closeNotesTab,
+  mountNotesTab,
+  notesTabBlockOf,
+  settleNotesTab,
+} from "@/test/helpers/notesTab";
+import {
+  fontSizePx,
   inAtRule,
   parseSheet,
+  remPx,
   resolveVars,
   rootTokens,
 } from "@/test/helpers/compiledSheet";
@@ -384,7 +401,7 @@ describe("the deviation inventory describes the sheet it claims to", () => {
     // above only walks the rows that are there, so a deviation disarms
     // itself the moment somebody deletes its row.
     expect(TYPE_SCALE_DEVIATIONS, "a row left the inventory, or arrived in it")
-      .toHaveLength(13);
+      .toHaveLength(14);
     // And every reason is an argument rather than a rubber stamp. The length
     // is the same floor testsAreBehavioural.ts holds its own exemptions to,
     // for the same reason: a one-word reason is a stamp.
@@ -410,7 +427,7 @@ describe("the message body default is the scale's body step", () => {
     // scale whose body step had drifted.
     expect(MSG_FONT_DEFAULT, "the body default left the type scale")
       .toBe(typeScale.body.px);
-    expect(MSG_FONT_DEFAULT, "the body step is no longer the plan's 15").toBe(15);
+    expect(MSG_FONT_DEFAULT, "the body step is no longer 15").toBe(15);
     expect(MSG_FONT_DEFAULT, "the default is below the reader's own minimum")
       .toBeGreaterThanOrEqual(MSG_FONT_MIN);
     expect(MSG_FONT_DEFAULT, "the default is above the reader's own maximum")
@@ -557,4 +574,154 @@ describe("what actually renders stays on both scales", () => {
     expect(kept.filter(isOffScaleSize)).toEqual([]);
     expect(kept.filter(isOffScaleWeight)).toEqual([]);
   });
+});
+
+describe("every button in the Notes tab is on the chrome step", () => {
+  // IP-05's role rule over a whole tab: the words on a button are chrome,
+  // and chrome is the ui step. The tab stacks four panels - the notebook,
+  // with the backfill strip and the saved-notes block inside it, the
+  // limits, the extraction settings and the worker card - and each block's
+  // own rows hold only that block, which is how the worker card kept the
+  // same ghost button a step below the two blocks above it. This row opens
+  // the tab the way RightPanel composes it (test/helpers/notesTab.ts), so a
+  // button added to any of the four, or a fifth panel, is read without
+  // being named here, as long as one of the three states below renders it.
+  //
+  // What it covers, exactly: every `<button>` in the tab panel in three
+  // states - at rest, with every confirm armed, and with a search typed.
+  // Buttons are taken by tag, so the ones inside a shut Collapse are read
+  // too. Two buttons exist only behind a state, and the fixture carries
+  // both: "Keep suggestion" is on a proposed note, which the fixture lists,
+  // and "Clear search" appears once a query is typed, which the third state
+  // does.
+  //
+  // What is read is the size of the WORDS, not of the button: each text
+  // node inside a button, at the element that holds it, through the
+  // compiled sheet's cascade and inheritance. A label wrapped in a span of
+  // its own size is read at that span; a button with no words, an icon, is
+  // read at itself. And the size has to be the chrome step exactly: words
+  // above it are off the role rule as surely as words below it.
+  afterEach(() => closeNotesTab());
+
+  /** The chrome step, as a key of the imported scale. */
+  const CHROME: keyof typeof typeScale = "ui";
+
+  /** Where each piece of a button's words gets its size: the element that
+   *  holds each text node, or the button itself when it has no words. */
+  function wordsOf(button: Element): { at: Element; words: string }[] {
+    const out: { at: Element; words: string }[] = [];
+    const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const words = (node.textContent ?? "").trim();
+      if (words !== "" && node.parentElement) out.push({ at: node.parentElement, words });
+    }
+    return out.length > 0 ? out : [{ at: button, words: "" }];
+  }
+
+  it("sizes every button's words at it, at rest, with every confirm armed and "
+     + "with a search typed", async () => {
+    const root = parseSheet(sheet);
+    const tokenTable = rootTokens(root);
+    const rem = remPx(root);
+    const chrome = typeScale[CHROME].px;
+    const { fetchMock } = mountNotesTab();
+    const user = userEvent.setup();
+    // Settled: each wait is a button only its own block renders.
+    await settleNotesTab();
+    const panel = screen.getByRole("tabpanel");
+
+    const nameOf = (b: Element): string =>
+      (b.getAttribute("aria-label") ?? "").trim() || (b.textContent ?? "").trim()
+        || `the button named by ${b.getAttribute("aria-labelledby")}`;
+    const sweep = (when: string) => [...panel.querySelectorAll("button")].flatMap((b) =>
+      wordsOf(b).map(({ at, words }) => ({
+        when, block: notesTabBlockOf(b), name: nameOf(b), words, nested: at !== b,
+        px: fontSizePx(root, tokenTable, rem, at),
+      })));
+
+    const atRest = sweep("at rest");
+    // GROUND: every block of the tab put buttons in the sweep, and the
+    // worker card's three - the ones this row was written for - are there.
+    expect([...new Set(atRest.map((b) => b.block))],
+      "a block of the tab rendered no button to read")
+      .toEqual(expect.arrayContaining([...NOTES_TAB_BLOCKS]));
+    for (const name of [/^try again now$/i, /^try this chat again$/i,
+                        /^hold this chat's suggestions for review$/i]) {
+      expect(atRest.some((b) => b.block === "Background notes" && name.test(b.name)),
+        `the worker card's ${name} was not swept`).toBe(true);
+    }
+    // And words really were read where they sit, not at their button: the
+    // strip's scope field holds its words in a span of their own.
+    expect(atRest.some((b) => b.block === "the strip" && b.nested && b.words !== ""),
+      "no button's words were read at an element inside it").toBe(true);
+
+    // Every confirm in the tab armed, so the buttons that only exist behind
+    // a first press are read as well.
+    await armNotesTabConfirms(user);
+    const armed = sweep("with every confirm armed");
+    // GROUND for the second pass: the confirms really are in it.
+    for (const name of Object.values(NOTES_TAB_CONFIRMS)) {
+      expect(armed.some((b) => name.test(b.name)), `${name} was not swept`).toBe(true);
+    }
+
+    // A search typed, which is the one state "Clear search" exists in. The
+    // query matches every note, so the rows stay on screen with it.
+    await user.type(screen.getByRole("textbox", { name: /search notes/i }), "note");
+    await screen.findByRole("button", { name: /^clear search$/i });
+    const searching = sweep("with a search typed");
+    // GROUND for the third pass, and for the two buttons only a state shows.
+    for (const name of [/^clear search$/i, /^keep suggestion$/i]) {
+      expect(searching.some((b) => name.test(b.name)), `${name} was not swept`).toBe(true);
+    }
+
+    const offStep = (px: number) => px !== chrome;
+    expect([...atRest, ...armed, ...searching].filter((b) => offStep(b.px))
+      .map((b) => `${b.when}: ${b.block}: ${b.name}${b.words && b.words !== b.name
+        ? ` ("${b.words}")` : ""} -> ${b.px}px`),
+      "a button in the Notes tab sets its words off the chrome step")
+      .toEqual([]);
+
+    // POSITIVE CONTROL: the same reader, on the same tab, reports a size
+    // off the chrome step where there is one - the worker card's prose is
+    // on the label step - so the empty list above is a reading.
+    const prose = screen.getByText(/a suggestion waits in the list until you keep it/i);
+    expect(fontSizePx(root, tokenTable, rem, prose),
+      "the reader did not see the label step on the worker card's prose")
+      .toBe(typeScale.label.px);
+    // POSITIVE CONTROL for reading the words rather than the button: a
+    // button on the chrome step whose label sits in a span a step below, and
+    // one a step above, are each reported by the same two functions, at the
+    // span. Every class is a step's own, taken off the imported scale.
+    for (const step of ["label", "control"] as const) {
+      const probe = document.createElement("button");
+      probe.className = `text-${CHROME}`;
+      const span = document.createElement("span");
+      span.className = `text-${step}`;
+      span.textContent = "words";
+      probe.appendChild(span);
+      document.body.appendChild(probe);
+      try {
+        const read = wordsOf(probe).map(({ at }) => fontSizePx(root, tokenTable, rem, at));
+        expect(read, `the words reader did not read the ${step} span`)
+          .toEqual([typeScale[step].px]);
+        expect(read.filter(offStep), `the check passed words on the ${step} step`)
+          .toHaveLength(1);
+        expect(fontSizePx(root, tokenTable, rem, probe), "the probe button is not on the chrome step")
+          .toBe(chrome);
+      } finally {
+        probe.remove();
+      }
+    }
+
+    // GROUND for the fixture: every request the tab made was answered. A
+    // route left to 404 puts its panel in an error state, and that panel
+    // then shows fewer buttons to read without anything here saying so.
+    const responses = await Promise.all(
+      fetchMock.mock.results.map((r) => r.value as Promise<Response>));
+    expect(responses.length, "the tab made no requests at all").toBeGreaterThan(0);
+    expect(responses
+      .map((res, i) => ({ status: res.status, url: String(fetchMock.mock.calls[i][0]) }))
+      .filter((call) => call.status === 404),
+      "the tab asked for a route the fixture does not answer").toEqual([]);
+  }, 60_000);
 });

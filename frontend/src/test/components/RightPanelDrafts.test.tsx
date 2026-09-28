@@ -1425,8 +1425,17 @@ describe("panel buffer accounting", () => {
  * ground for the second.
  */
 describe("one scrollbar across the right panel's tabs (T-21)", () => {
-  /** Every tab, by the label on its trigger and the value the store keeps. */
-  const TABS = ["Models", "Security", "Persona", "Notes"];
+  /** The fewest tabs this panel can have and still be the panel.
+   *
+   *  The list itself is READ OFF the rendered triggers rather than typed
+   *  here, and that is the whole difference: a fifth tab added to
+   *  `RightPanel.tsx` was simply never visited by a typed list, so it could
+   *  hand its scrolling to a wrapper of its own and every case below stayed
+   *  green. Derived, the walk grows with the panel and a tab that scrolls
+   *  differently from the rest is a red case on the day it lands. The floor
+   *  is what stops the other direction: a derivation that found nothing
+   *  would make every `toEqual(tabs)` an empty-list comparison. */
+  const MIN_TABS = 4;
 
   let root: Root;
 
@@ -1505,15 +1514,21 @@ describe("one scrollbar across the right panel's tabs (T-21)", () => {
     ...new Set(candidatesFor(root, el, prop).map((c) => c.selector)),
   ];
 
-  /** Walk all four tabs and hand each one's scroller to `look`. */
+  /** Walk every tab the panel renders and hand each one's scroller to
+   *  `look`. Returns the tabs it walked, in the order the panel offers
+   *  them, so a caller compares against what is really there. */
   async function eachTab(
     look: (tab: string, scroller: HTMLElement) => void,
-  ): Promise<void> {
+  ): Promise<string[]> {
     const user = userEvent.setup();
     mockPanelApi();
     renderInPage();
     await screen.findByRole("textbox", { name: "Search models" });
-    for (const tab of TABS) {
+    const tabs = screen.getAllByRole("tab")
+      .map((t) => (t.textContent ?? "").trim());
+    expect(tabs.length, "the panel rendered fewer tabs than it has")
+      .toBeGreaterThanOrEqual(MIN_TABS);
+    for (const tab of tabs) {
       await openTab(user, tab);
       await waitFor(() => {
         expect(screen.getByRole("tab", { name: tab })).toHaveAttribute(
@@ -1523,13 +1538,14 @@ describe("one scrollbar across the right panel's tabs (T-21)", () => {
       });
       look(tab, scrollerOfOpenTab());
     }
+    return tabs;
   }
 
   it("all four tabs scroll on an element the sheet draws the same way", async () => {
     const widths = new Map<string, string | undefined>();
     const selectors = new Map<string, string>();
     const overflowing: string[] = [];
-    await eachTab((tab, scroller) => {
+    const tabs = await eachTab((tab, scroller) => {
       // More content than view, so this is an element that would really show
       // a bar. T-21z below is the ground for this line.
       give(scroller, 2000, 600);
@@ -1538,14 +1554,14 @@ describe("one scrollbar across the right panel's tabs (T-21)", () => {
       selectors.set(tab, cover(scroller, WIDTH).sort().join(" | "));
     });
 
-    // GROUND: all four were found, and all four had something to scroll.
+    // GROUND: every tab was found, and every one had something to scroll.
     expect(overflowing, "a tab's scroller does not overflow, so it would show no bar")
-      .toEqual(TABS);
+      .toEqual(tabs);
     // The claim. One value, and it is a real one.
     const values = [...new Set(widths.values())];
     expect(
       values,
-      `the four tabs are drawn with ${[...widths].map(([t, w]) => `${t}=${w}`).join(", ")}`,
+      `the tabs are drawn with ${[...widths].map(([t, w]) => `${t}=${w}`).join(", ")}`,
     ).toHaveLength(1);
     expect(values[0], "no rule in the sheet draws these scrollers at all").toBeDefined();
     // And they get it the same WAY, not by four different routes that happen
@@ -1569,11 +1585,11 @@ describe("one scrollbar across the right panel's tabs (T-21)", () => {
     // Without this, "all four overflow" above would pass on a reader that
     // said yes to everything, and the case would be about nothing.
     const quiet: string[] = [];
-    await eachTab((tab, scroller) => {
+    const tabs = await eachTab((tab, scroller) => {
       give(scroller, 400, 600);
       if (!overflows(scroller)) quiet.push(tab);
     });
-    expect(quiet, "a tab reported an overflow with less content than view").toEqual(TABS);
+    expect(quiet, "a tab reported an overflow with less content than view").toEqual(tabs);
   }, 40_000);
 
   it("no tab renders a ScrollArea viewport (M-06-4)", async () => {
@@ -1582,14 +1598,14 @@ describe("one scrollbar across the right panel's tabs (T-21)", () => {
     // wrapper that came back anywhere in the panel is found here.
     const found: string[] = [];
     const tabsRendered: string[] = [];
-    await eachTab((tab) => {
+    const tabs = await eachTab((tab) => {
       if (document.querySelector('[data-slot="scroll-area-viewport"]')) found.push(tab);
       // GROUND for the query itself: the same kind of search, for a slot the
       // panel really does render, comes back with something.
       if (document.querySelector('[data-slot="tabs-content"]')) tabsRendered.push(tab);
     });
     expect(tabsRendered, "the slot query found nothing at all, so the absence proves nothing")
-      .toEqual(TABS);
+      .toEqual(tabs);
     expect(found, "a tab still hands its scrolling to a ScrollArea").toEqual([]);
   }, 40_000);
 

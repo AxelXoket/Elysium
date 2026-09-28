@@ -26,6 +26,14 @@ interface CollapseProps {
  * prompt. `inert` removes it from focus, hit-testing and the accessibility
  * tree in one attribute; `aria-hidden` covers browsers that do not have it
  * yet, which is the whole reason both are here.
+ *
+ * `className` lands on the INNER box, and that box is a grid item. A grid
+ * item's automatic minimum width is its content's own width, so one child
+ * that cannot wrap (a nowrap button, a select trigger) widens the whole
+ * section past the card around it and everything in it lays out at that
+ * width. `min-w-0` gives it a minimum of 0. Every Collapse in the right
+ * panel's Notes tab passes it: that column is 250 px at the panel's 300 px
+ * floor, and a button there once reached 274.
  */
 export function Collapse({ open, children, className }: CollapseProps) {
   return (

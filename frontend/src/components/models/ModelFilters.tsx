@@ -51,14 +51,19 @@ function Chip({
         border: `1px solid ${
           active ? "rgba(62, 114, 176, 0.38)" : "var(--color-es-glass-border-dark)"
         }`,
+        // An active chip's words sit on its own blue tint: the accent read
+        // 3.30:1 there at the panel's bottom stop, its deep step reads 5.54:1.
         color: active
-          ? "var(--color-es-primary-sage)"
+          ? "var(--color-es-primary-sage-deep)"
           : "var(--color-es-text-muted)",
       }}
     >
       <Arrow size={10} style={{ opacity: 0.8 }} />
       {label}
-      <span style={{ opacity: 0.6 }}>{count}</span>
+      {/* The count at the chip's own ink: dimmed to 0.6 it read 2.30:1 with
+          the opacity applied (KURAL 2.4b). The label beside it is what sets
+          the two apart. */}
+      <span>{count}</span>
     </button>
   );
 }
@@ -152,7 +157,12 @@ export function ModelFilters({
             type="button"
             onClick={() => onFilterChange(EMPTY_FILTER)}
             aria-label="Clear capability filters"
-            className="ml-auto flex shrink-0 items-center gap-1 text-micro opacity-60 transition-opacity hover:opacity-100"
+            // Not dimmed at rest: at 0.6 the word read 2.3:1 with the opacity
+            // applied (KURAL 2.4b), and a control that has to be found by
+            // hovering it is not one anybody can read. Hovered, it is
+            // underlined, the link idiom the house buttons use, so the
+            // pointer still gets an answer without the word losing ink.
+            className="ml-auto flex shrink-0 items-center gap-1 text-micro hover:underline"
             style={{ color: "var(--color-es-text-muted)" }}
           >
             <X size={10} />
@@ -191,9 +201,11 @@ export function ModelFilters({
                 ? "rgba(62, 114, 176, 0.38)"
                 : "var(--color-es-glass-border-dark)"
             }`,
+            // On, its words sit on the same blue tint as an active chip, and
+            // take the same deep step: the accent read 3.49:1 there.
             color:
               sort === "capable"
-                ? "var(--color-es-primary-sage)"
+                ? "var(--color-es-primary-sage-deep)"
                 : "var(--color-es-text-muted)",
           }}
         >

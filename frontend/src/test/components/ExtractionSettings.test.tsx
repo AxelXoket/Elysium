@@ -20,6 +20,8 @@ import {
   chooseOption,
   expectClosed,
   expectKeyboardContract,
+  expectOptionsOnTheOptionStep,
+  expectPlacedCollisionPadding,
   openPositioner,
   openSelect,
 } from "@/test/helpers/select";
@@ -31,6 +33,17 @@ import {
 import { INSTRUCTION_LANGUAGE_LABELS } from "@/lib/notebook/labels";
 import { CHAT_MODEL_BINDING } from "@/lib/schemas/notebook";
 import { POPUP_COLLISION_PADDING } from "@/lib/theme/popupPositioning";
+import { typeScale } from "@/lib/theme/tokens";
+import { loadGlassRightCss } from "@/test/helpers/glassSurfaceCss";
+import {
+  fontSizePx,
+  lengthPx,
+  parseSheet,
+  remPx,
+  resolveVars,
+  rootTokens,
+  ownDeclaration,
+} from "@/test/helpers/compiledSheet";
 import { mockFetch } from "../mocks/api";
 import { useUiStore } from "@/lib/store/uiStore";
 // The one string that is not a model id, as both suites agree on it: the
@@ -463,6 +476,42 @@ describe("the language select spells the Turkish option as its speakers do (T-20
     }
   }, 30_000);
 
+  it("the words that name each dropdown are on the chrome step, as the trigger is",
+     async () => {
+    // IP-03 FIX 6 and T-76: a visible label that names a control is chrome,
+    // so the role rule (IP-05 FIX 1) puts it on the ui step beside the
+    // trigger it names, not on the label step a line of prose takes. The
+    // boundary panel's four labels are held to that where they render; these
+    // two are held here. Read as the size the compiled sheet gives each node,
+    // through the cascade and inheritance, not as the class it wears.
+    const root = parseSheet(await loadGlassRightCss());
+    const tokenTable = rootTokens(root);
+    const rem = remPx(root);
+    const size = (el: Element) => fontSizePx(root, tokenTable, rem, el);
+    mount();
+    for (const name of [/instructions written in/i, /^Model$/]) {
+      const trigger = await screen.findByLabelText(name);
+      const label = document.getElementById(String(trigger.getAttribute("aria-labelledby")));
+      // GROUND: this is the node that names the trigger, and it has the words.
+      expect(label, `${String(name)} is named by no node on the page`).not.toBeNull();
+      expect(label!.textContent ?? "", `${String(name)}'s label has no words`)
+        .toMatch(name);
+      expect(size(trigger), `${String(name)}'s trigger is off the chrome step`)
+        .toBe(typeScale.ui.px);
+      expect(size(label!),
+        `the words naming ${String(name)} are off the chrome step, though they name a control`)
+        .toBe(typeScale.ui.px);
+    }
+    // POSITIVE CONTROL: the price warning DESCRIBES the model picker rather
+    // than naming it, and the same reader finds it on the label step - so the
+    // two readings above are the labels' own and not a reader that answers
+    // one size for the whole panel.
+    const warning = document.getElementById(CHAT_MODEL_PRICE_WARNING_ID);
+    expect(warning, "the price warning is not on the page").not.toBeNull();
+    expect(size(warning!), "the reader did not see the label step on the warning")
+      .toBe(typeScale.label.px);
+  }, 60_000);
+
   it("both popups keep the shared collision padding (T-75, the notebook's two call sites)", async () => {
     const user = userEvent.setup();
     mount();
@@ -472,8 +521,156 @@ describe("the language select spells the Turkish option as its speakers do (T-20
       const listbox = await openSelect(user, trigger);
       expect(openPositioner()!.getAttribute("data-collision-padding"))
         .toBe(String(POPUP_COLLISION_PADDING));
+      // And against what Base UI placed the popup with, which the attribute
+      // alone cannot vouch for: the prop can be lost on the way while the
+      // attribute stays, and a padding can fall back to the library's own.
+      await expectPlacedCollisionPadding(listbox, String(name));
+      expectOptionsOnTheOptionStep(listbox, String(name));
       await user.keyboard("{Escape}");
       await expectClosed(listbox);
     }
+  }, 30_000);
+});
+
+describe("a long note-model id is cut with an ellipsis and kept whole as a title (KURAL 4.4)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({ selectedChatId: 7 });
   });
+  afterEach(() => vi.restoreAllMocks());
+
+  /** A real vendor id of the length that was cut: its label is 361 px of
+   *  words where the field has about 210 at the panel's 300 px floor, and
+   *  past the list's 20rem ceiling. */
+  const LONG = {
+    id: "mistralai/mistral-small-3.2-24b-instruct-2506", provider: "Mistral",
+    prompt_price: 0.05, context_length: 131000, endpoints: 1,
+  };
+
+  it("in the field and in every row of its list", async () => {
+    // jsdom lays nothing out, so the chain of boxes the words sit in is
+    // asked of the compiled sheet, as the qualifiers' row does: the value
+    // clips, the words are a box of their own that ends in an ellipsis, and
+    // that box carries the whole label as its title. In the list, the box
+    // each option's words sit in can also shrink below them.
+    const root = parseSheet(await loadGlassRightCss());
+    const table = rootTokens(root);
+    const rem = remPx(root);
+    // The element's own style is read with the sheet, and outranks it: an
+    // inline `white-space: normal` on the words wraps them inside the
+    // clipped field with no ellipsis.
+    const won = (el: Element, prop: RegExp): string | null => {
+      const w = ownDeclaration(root, el, prop);
+      return w === null ? null : resolveVars(w.value, table).trim();
+    };
+    /** What keeps `words` from being cut with an ellipsis and read whole. */
+    const faultsOf = (box: Element | null, words: string): string[] => {
+      if (box === null || box.textContent !== words) return ["its words are not a box of their own"];
+      const faults: string[] = [];
+      if (won(box, /^text-overflow$/) !== "ellipsis") faults.push("no ellipsis");
+      if (won(box, /^white-space$/) !== "nowrap") faults.push("not held to one line");
+      if (won(box, /^overflow$/) !== "hidden") faults.push("not clipped");
+      if (box.getAttribute("title") !== words) faults.push("no title with the whole of it");
+      return faults;
+    };
+    const user = userEvent.setup();
+    mockFetch({
+      "/notebook/extract/models": { body: { models: [...MODELS.models, LONG] } },
+      "/notebook/extract/settings": { body: { model_id: LONG.id, prompt_language: "en" } },
+    });
+    renderWithQueryClient(<ExtractionSettings />);
+    const trigger = screen.getByLabelText(/^Model$/);
+    await waitFor(() => expect(trigger).toHaveTextContent(LONG.id));
+    const value = trigger.querySelector('[data-slot="select-value"]');
+    expect(value, "the field shows no value node").not.toBeNull();
+    const shown = (value!.textContent ?? "").trim();
+    // GROUND: the field holds the long id's own label.
+    expect(shown.endsWith(LONG.id), "the field does not hold the long id").toBe(true);
+    expect(won(value!, /^overflow$/), "the field's value does not clip").toBe("hidden");
+    expect(faultsOf(value!.firstElementChild, shown), "the field").toEqual([]);
+
+    const listbox = await openSelect(user, trigger);
+    const options = within(listbox).getAllByRole("option");
+    // GROUND: the list offers every model it was given and the two choices
+    // that are not a model, the long one among them.
+    expect(options.length).toBe(MODELS.models.length + 1 + 2);
+    expect(options.some((o) => (o.textContent ?? "").trim() === shown)).toBe(true);
+    for (const option of options) {
+      const words = (option.textContent ?? "").trim();
+      const itemText = option.firstElementChild!;
+      expect(itemText.textContent?.trim(), "the option's first box is not its words").toBe(words);
+      const minimum = won(itemText, /^min-width$/);
+      expect(minimum === null ? null : lengthPx(minimum, rem),
+        `"${words}" keeps its whole width as its minimum`).toBe(0);
+      expect(faultsOf(itemText.firstElementChild, words), `"${words}"`).toEqual([]);
+    }
+    // POSITIVE CONTROL: a box of words with nothing that cuts them is
+    // reported on every count the reader asks, so each question is asked.
+    const bare = document.createElement("span");
+    bare.textContent = "bare words";
+    listbox.appendChild(bare);
+    try {
+      expect(faultsOf(bare, "bare words")).toEqual([
+        "no ellipsis", "not held to one line", "not clipped", "no title with the whole of it",
+      ]);
+    } finally {
+      bare.remove();
+    }
+    // And the element's own style is read: the field's words told inline to
+    // wrap are no longer held to one line.
+    const fieldWords = value!.firstElementChild!;
+    const wordsOwn = fieldWords.getAttribute("style");
+    fieldWords.setAttribute("style", "white-space: normal");
+    try {
+      expect(faultsOf(fieldWords, shown), "an inline wrap on the field's words was not read")
+        .toEqual(["not held to one line"]);
+    } finally {
+      if (wordsOwn === null) fieldWords.removeAttribute("style");
+      else fieldWords.setAttribute("style", wordsOwn);
+    }
+    const titled = document.createElement("span");
+    titled.className = "truncate";
+    titled.textContent = "bare words";
+    listbox.appendChild(titled);
+    try {
+      expect(faultsOf(titled, "bare words"), "a truncating box with no title read as whole")
+        .toEqual(["no title with the whole of it"]);
+    } finally {
+      titled.remove();
+    }
+  }, 60_000);
+});
+
+describe("the one count the note-model picker says, at 0, 1 and 2", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({ selectedChatId: 7 });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("names a lone provider, and only a lone one", async () => {
+    // "(1 provider)" is the warning that a model has no backup; at 0 or 2
+    // there is no such warning to give, and no count is said at all.
+    const user = userEvent.setup();
+    const models = [0, 1, 2].map((n) => ({
+      id: `vendor/with-${n}-endpoints`, provider: "V", prompt_price: 0.05,
+      context_length: 131000, endpoints: n,
+    }));
+    mockFetch({
+      "/notebook/extract/models": { body: { models } },
+      "/notebook/extract/settings": { body: { model_id: null, prompt_language: "en" } },
+    });
+    renderWithQueryClient(<ExtractionSettings />);
+    const trigger = screen.getByLabelText(/^Model$/);
+    await waitFor(() => expect(trigger).toHaveTextContent(/suggestions are off/i));
+    const listbox = await openSelect(user, trigger);
+    const said = models.map((m) => within(listbox).getAllByRole("option")
+      .map((o) => (o.textContent ?? "").trim())
+      .find((t) => t.endsWith(m.id)));
+    expect(said).toEqual([
+      "$0.050/M - vendor/with-0-endpoints",
+      "$0.050/M (1 provider) - vendor/with-1-endpoints",
+      "$0.050/M - vendor/with-2-endpoints",
+    ]);
+  }, 30_000);
 });

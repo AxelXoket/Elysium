@@ -26,6 +26,13 @@ import userEvent from "@testing-library/user-event";
 import type { Root } from "postcss";
 import { renderWithQueryClient } from "./helpers/renderWithQueryClient";
 import {
+  AUTO_ACCEPT,
+  NOTES_TAB_BLOCKS,
+  closeNotesTab,
+  mountNotesTab,
+  notesTabBlockOf,
+} from "./helpers/notesTab";
+import {
   mockFetch,
   apiEscapes,
   guardAgainstApiEscapes,
@@ -60,8 +67,10 @@ import {
   clipsAndMasksOn,
   declarationOnSelector,
   conditional,
+  fontSizePx,
   insetRightPx,
   layerOf,
+  lengthPx,
   nearestDeclaration,
   paintedStops,
   paintLayersBehind,
@@ -71,6 +80,7 @@ import {
   resolveVars,
   rootTokens,
   scrollbarWidthPx,
+  splitTopLevel,
   tokensOf,
   winningDeclaration,
   type PaintLayer,
@@ -82,7 +92,13 @@ import {
   type Rgb,
 } from "@/lib/appearance/contrast";
 import { CHAT_BG_DARK_CHROME_BELOW } from "@/lib/appearance/chatBackground";
-import { tokens, SYSTEM_FONT_GENERIC, TYPE_SCALE_STEPS } from "@/lib/theme/tokens";
+import {
+  tokens,
+  SCROLLBAR_THIN_PX,
+  SYSTEM_FONT_GENERIC,
+  TYPE_SCALE_STEPS,
+  typeScale,
+} from "@/lib/theme/tokens";
 import { Providers } from "@/app/providers";
 import { AppShell } from "@/components/layout/AppShell";
 import { PanelMist } from "@/components/backdrop/MistCanvas";
@@ -114,6 +130,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
+import { Collapse } from "@/components/motion/Collapse";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { queryClient } from "@/lib/query/queryClient";
 import { useUiStore } from "@/lib/store/uiStore";
@@ -138,6 +155,7 @@ import {
   PERSISTENT_STACKING_CONTEXTS,
   UTILITY_STACKING_CONTEXTS,
 } from "./helpers/stackingContexts";
+import { fogCeiling, fogRamp } from "./helpers/fogGround";
 import { API_BASE } from "@/lib/api/base";
 
 // The whole-file escape net, registered once: this file mounts the app shell
@@ -833,26 +851,12 @@ describe("the scrollbar look is granted by name, not by page scope (T-89)", () =
    * failure message names the band.
    */
 
-  /**
-   * How wide Chromium draws a `scrollbar-width: thin` bar, in CSS pixels.
-   *
-   * This is a MEASUREMENT, not a declaration, and it cannot be otherwise:
-   * `thin` is a keyword and the engine chooses the thickness. Rendered
-   * headless over the six surfaces of this suite at device scales 1, 1.25,
-   * 1.5 and 2, `offsetWidth - clientWidth` came back 10.00 CSS px on every
-   * one of them at every scale, with the thumb painted inside that track.
-   *
-   * It is deliberately NOT read from `::-webkit-scrollbar { width }`.
-   * Chromium drops the whole webkit family for any element whose computed
-   * `scrollbar-width` is not `auto`, which after this rule split is every
-   * scroller measured here, so that declaration is inert on all of them -
-   * it sized the band at 8.80 px while the engine drew 10.00, leaving the
-   * inboard 1.20 px of every bar unmeasured. ADIM 2 deletes the rule
-   * outright, at which point the same reader would have returned the 5 px
-   * the base layer declares and moved this band again without a word. ADIM 2
-   * pins its own bar width to this constant for the same reason.
-   */
-  const SCROLLBAR_THIN_PX = 10;
+  /* The bar's drawn width is IMPORTED, never retyped here. It is a fact
+   * about what Chromium paints - see lib/theme/tokens.ts for the method and
+   * the reason the sheet's own 5px webkit declaration cannot answer it - and
+   * a number a test invents is a number nothing else can disagree with. The
+   * leg below asserts the two really are different, so importing it does not
+   * quietly make this reader agree with the sheet. */
 
   /** The bands of the bar's travel, named so a failure says where. They
    *  TILE it: the bar runs the whole height of its scroller, so leaving a
@@ -1189,66 +1193,6 @@ describe("the scrollbar look is granted by name, not by page scope (T-89)", () =
    *  panel's background and BELOW its glow and its sheen. */
   const PANEL_MIST_LIFT = /^z-index$/;
   const BACKGROUND = /^background$/;
-
-  /** `smoothstep` as GLSL defines it, which is what the fog's ramp and its
-   *  lift are both written in. */
-  function smoothstep(lo: number, hi: number, t: number): number {
-    const x = Math.min(Math.max((t - lo) / (hi - lo), 0), 1);
-    return x * x * (3 - 2 * x);
-  }
-
-  /** The shader's `ramp()`, evaluated from the table the module exports.
-   *  Not a copy of the numbers: the colours and the thresholds are its own,
-   *  and the case below proves they are the ones the GLSL it generates
-   *  really carries. */
-  function fogRamp(t: number): Rgb {
-    const clamped = Math.min(Math.max(t, 0), 1);
-    let c = [...FOG_RAMP_BASE] as number[];
-    for (const step of FOG_RAMP_STEPS) {
-      const f = smoothstep(step.lo, step.hi, clamped);
-      c = c.map((channel, i) => channel + (step.colour[i] - channel) * f);
-    }
-    return { r: c[0] * 255, g: c[1] * 255, b: c[2] * 255 };
-  }
-
-  /** The lightest pixel one panel's fog can paint, swept from the shader's
-   *  own constants over every value its three free inputs can take.
-   *
-   *  `d` is a diagonal tendency moved by the weather cell, `v` is the
-   *  normalised fog density, and both the base colour and the billow lift
-   *  are `ramp()` of those. All three inputs are `smoothstep`ed to [0, 1]
-   *  before they get here, so a grid over the unit cube is the whole of
-   *  their range and the maximum over it is the ceiling. */
-  function fogCeiling(band: readonly [number, number], steps = 60): Rgb {
-    const [lo, hi] = band;
-    const span = hi - lo;
-    let brightest: Rgb | null = null;
-    for (let i = 0; i <= steps; i += 1) {
-      const diag = i / steps;
-      for (let j = 0; j <= steps; j += 1) {
-        const w3 = j / steps;
-        const d = lo + span * (0.5 + (diag - 0.5) * RAMP_COMPRESS + (w3 - 0.5) * WEATHER_AMOUNT);
-        for (let k = 0; k <= steps; k += 1) {
-          const v = k / steps;
-          const base = fogRamp(d + (v - 0.5) * HUE_TRAVEL * span);
-          const lifted = fogRamp(Math.min(d + LIFT_REACH * span, hi));
-          const weight = smoothstep(LIFT_LO, LIFT_HI, v) * LIFT;
-          const mixed: Rgb = {
-            r: base.r + (lifted.r - base.r) * weight,
-            g: base.g + (lifted.g - base.g) * weight,
-            b: base.b + (lifted.b - base.b) * weight,
-          };
-          if (!brightest || luminance(mixed) > luminance(brightest)) brightest = mixed;
-        }
-      }
-    }
-    if (!brightest) throw new Error("the fog sweep produced nothing");
-    return {
-      r: Math.round(brightest.r),
-      g: Math.round(brightest.g),
-      b: Math.round(brightest.b),
-    };
-  }
 
   /** The lightest pixel the LEFT panel's fog can paint. `PanelMist` clamps
    *  each side to a sub-band of the shader's colour ramp, and the left one
@@ -2369,12 +2313,42 @@ describe("the scrollbar look is granted by name, not by page scope (T-89)", () =
         "in the business of sizing a bar the engine has already sized",
     ).toEqual([]);
     const declaredBar = scrollbarWidthPx(root, rem);
+    // STRICT on the half that CAN be derived here, and honest about the
+    // half that cannot. `toBeGreaterThan(declaredBar)` alone said only "the
+    // band is wider than the sheet's number", which stays green with the
+    // sheet's number at 1px or at 9.99 - and the sheet's number is the one
+    // thing in this pair that lives in a file somebody edits.
+    //
+    // So it is PINNED. The drawn width the band models is not derivable in
+    // jsdom at all (it is a headless Chromium measurement, recorded on
+    // SCROLLBAR_THIN_PX with its method), but the base layer's bar is right
+    // here in the sheet, and a base rule that crept up to the drawn width
+    // would make the two agree and quietly retire the reason this leg
+    // exists.
+    expect(
+      declaredBar,
+      `the only ::-webkit-scrollbar rule left declares ${declaredBar}px; this leg ` +
+        "was measured against the base layer's 5px bar and is now about a " +
+        "different rule",
+    ).toBe(5);
     expect(
       SCROLLBAR_THIN_PX,
-      `the band is ${SCROLLBAR_THIN_PX}px and the only ::-webkit-scrollbar rule left ` +
-        `declares ${declaredBar}px; sizing the band from the sheet would leave the ` +
-        `inboard ${(SCROLLBAR_THIN_PX - declaredBar).toFixed(2)}px of every bar unmeasured`,
+      `sizing the band from the sheet would leave the inboard ` +
+        `${(SCROLLBAR_THIN_PX - declaredBar).toFixed(2)}px of every bar unmeasured`,
     ).toBeGreaterThan(declaredBar);
+    // And the drawn width itself is PINNED to what was measured, for the
+    // mirror of the reason above. Every ratio in this file is taken over a
+    // band whose x-range is a function of this number, so editing it moves
+    // every one of them at once - and moving it DOWN moves the band off the
+    // inboard strip the panel lights, which is the direction that reports a
+    // better contrast without anything going red. Written out rather than
+    // compared with itself: the claim is the recorded measurement, and an
+    // assertion against the constant's own value would accept any number.
+    expect(
+      SCROLLBAR_THIN_PX,
+      "the drawn bar width moved; every band in this file is measured over it, " +
+        "so re-measure headless before changing it",
+    ).toBe(10);
 
     /* SENSITIVITY, on a probe tree: the band is a function of the padding,
      * not a number this file chose. The same three classes the sidebar uses,
@@ -3312,6 +3286,20 @@ describe("the scrollbar look is granted by name, not by page scope (T-89)", () =
     mountShell();
     await screen.findAllByText(characterFixture.name);
     visit("the shell");
+    // AND THE SHELL OVER A DARK WALLPAPER. It is a shipped configuration
+    // reached by a user toggle, not a hypothetical: `.chat-bg-dark` is put
+    // on the chat scroller by the gate in `useChatBackground`, and a sweep
+    // that never turns it on reports every rule naming that class as
+    // reaching nothing. Same shell, the hook's switch on, and the switch is
+    // put back whatever happens so no later case inherits it.
+    cleanup();
+    queryClient.clear();
+    try {
+      await darkChatScroller();
+      visit("the shell over a dark wallpaper");
+    } finally {
+      wallpaper.dark = false;
+    }
   }
 
   it("every container that scrolls is drawn thin, portalled ones included (M-06-2)", async () => {
@@ -3456,25 +3444,44 @@ describe("the scrollbar look is granted by name, not by page scope (T-89)", () =
      * thin or reserves a gutter has to reach an element some surface of the
      * app really renders.
      *
-     * Width and gutter only, and the omission is deliberate rather than
-     * convenient. The colour family includes the field rule, which is
-     * DEFENSIVE by design - it names `select` inside a popup that renders no
-     * field precisely so the question cannot come back - and holding a
-     * deliberate guard to "something matches me today" would delete it. */
+     * ALL THREE families, colour included. Width and gutter alone left the
+     * longest list of the three unwatched, and it is the list the deleted
+     * viewport name appeared in twice.
+     *
+     * One kind of colour selector is exempt, by shape and not by name: the
+     * FIELD rule, `<surface> :where(textarea, input, select)`, which pins a
+     * field back to `auto` inside a surface that colours its scrollers. It
+     * is DEFENSIVE - it names a tag no surface has to render today,
+     * precisely so the question cannot come back - and holding a deliberate
+     * guard to "something matches me now" would delete it. The exemption is
+     * asserted to be small and asserted to be real, below, so it cannot
+     * quietly grow into an amnesty for the whole colour list. */
     const drawn = selectorsDeclaring(WIDTH);
     const reserved = selectorsDeclaring(GUTTER);
+    const FIELD_RULE = /:where\(textarea, ?input, ?select\)/;
+    const coloured = selectorsDeclaring(COLOUR).filter((sel) => !FIELD_RULE.test(sel));
+    const defensive = selectorsDeclaring(COLOUR).filter((sel) => FIELD_RULE.test(sel));
     // GROUND: the sheet has rules for this to be about at all.
     expect(drawn.length, "no rule in the sheet draws a bar thin").toBeGreaterThan(0);
     expect(reserved.length, "no rule in the sheet reserves a gutter").toBeGreaterThan(0);
+    expect(coloured.length, "no rule in the sheet colours a thumb").toBeGreaterThan(0);
+    // The exemption is the field rule and nothing else: it is smaller than
+    // what it exempts from, and every member really is a field rule. An
+    // exemption that swallowed the list would satisfy the case for free.
+    expect(defensive.length, "nothing matched the field rule, so the exemption is stale")
+      .toBeGreaterThan(0);
+    expect(defensive.length, "the field-rule exemption now covers most of the colour list")
+      .toBeLessThan(coloured.length);
 
+    const watched = [...drawn, ...reserved, ...coloured];
     const live = new Set<string>();
     await overEverySurface(() => {
-      for (const selector of [...drawn, ...reserved]) {
+      for (const selector of watched) {
         if (!live.has(selector) && document.querySelector(selector)) live.add(selector);
       }
     });
 
-    const dead = [...drawn, ...reserved].filter((s) => !live.has(s));
+    const dead = watched.filter((s) => !live.has(s));
     expect(
       [...new Set(dead)],
       `${dead.join(", ")} draws or reserves a bar for an element no surface of the app ` +
@@ -3851,12 +3858,13 @@ describe("the layer table (T-51)", () => {
     expect(apiEscapes(), "the shell reached the real transport").toEqual([]);
   }, 30_000);
 
-  it("including the popup the defect was actually in", async () => {
+  it("including the two popups the defect was actually in", async () => {
     // The shell alone never opens the chat action menu, so the two values
     // this unit took out of ChatList sat outside the sweep above: putting
-    // one back left it green. The menu is opened here, and it is the one
-    // that portals to the body with its coordinates written inline - the
-    // exact shape the rule is about.
+    // one back left it green. Both are opened here, the menu and the confirm
+    // it hands over to, and both portal to the body with their coordinates
+    // written inline - the exact shape the rule is about. Opening the menu
+    // alone left the confirm's call site outside every sweep.
     const user = userEvent.setup();
     useUiStore.setState({ selectedCharacterId: 1, selectedChatId: null });
     mockFetch({ "/chats": { body: [chatFixture] } });
@@ -3871,6 +3879,14 @@ describe("the layer table (T-51)", () => {
     expect(menu.style.position, "the menu is not placed inline at all")
       .toBe("fixed");
     expect(inlineLayerOffenders(), "the chat action menu writes its own layer")
+      .toEqual([]);
+    // The confirm, which the menu's destructive item opens in its place.
+    await user.click(screen.getByRole("menuitem", { name: /^delete chat$/i }));
+    const confirm = await screen.findByRole("dialog", { name: /^confirm delete chat$/i });
+    // GROUND: the confirm is on the page, placed inline, the menu gone.
+    expect(confirm.style.position, "the confirm is not placed inline at all").toBe("fixed");
+    expect(screen.queryByRole("menu"), "the menu is still open beside the confirm").toBeNull();
+    expect(inlineLayerOffenders(), "the chat action confirm writes its own layer")
       .toEqual([]);
     expect(apiEscapes(), "the chat list reached the real transport").toEqual([]);
   }, 30_000);
@@ -4447,7 +4463,7 @@ describe("dialog geometry (T-85)", () => {
     return value;
   };
 
-  it("and the one height is the height REF 4.3 tabulates", () => {
+  it("and the one height is the height KURAL 4.3 tabulates", () => {
     // The presence assertions above hold every dialog to the SAME height and
     // cannot tell which height that is: moving the constant one step takes
     // all six with it and leaves them agreeing with each other. The class
@@ -4456,7 +4472,7 @@ describe("dialog geometry (T-85)", () => {
     const resolved = declOf(parseSheet(sheet), DIALOG_MAX_HEIGHT, "max-height");
     expect(resolved, `the sheet emits no max-height for ${DIALOG_MAX_HEIGHT}`)
       .not.toBeNull();
-    expect(resolved, `${DIALOG_MAX_HEIGHT} is not REF 4.3's one height`)
+    expect(resolved, `${DIALOG_MAX_HEIGHT} is not KURAL 4.3's one height`)
       .toBe(REF_MAX_HEIGHT);
     // GROUND: the same reader, over a probe carrying a DIFFERENT height, so
     // the match above is a reading rather than a function that agrees with
@@ -4472,7 +4488,7 @@ describe("dialog geometry (T-85)", () => {
     expect(declOf(probe, "probe-absent", "max-height")).toBeNull();
   }, 60_000);
 
-  it("and the four widths are the four widths REF 4.3 tabulates", () => {
+  it("and the four widths are the four widths KURAL 4.3 tabulates", () => {
     // The shape alone pins nothing: `medium` could move from 512 to 576 with
     // every assertion above still green, because a fifth width is impossible
     // while a WRONG width is free. Each class name is asked what it resolves
@@ -4487,7 +4503,7 @@ describe("dialog geometry (T-85)", () => {
       return Number(m![1]) * 16;
     };
     for (const [name, utility] of Object.entries(DIALOG_WIDTHS)) {
-      expect(widthOf(utility), `${name} (${utility}) is not REF 4.3's width`)
+      expect(widthOf(utility), `${name} (${utility}) is not KURAL 4.3's width`)
         .toBe(REF_WIDTH_PX[name as keyof typeof DIALOG_WIDTHS]);
     }
     // GROUND: the reader can report a number that is NOT on the table, so
@@ -4513,4 +4529,522 @@ describe("dialog geometry (T-85)", () => {
     const widths = [...content().classList].filter((c) => c.startsWith("sm:max-w-"));
     expect(widths).toEqual([DIALOG_WIDTHS.base]);
   }, 30_000);
+});
+
+describe("the utilities the suite names only in pieces stay out of the shipped sheet", () => {
+  // Tailwind scans every file under src as raw text, tests included, and
+  // emits a rule for each class name it recognises there. Two of the test
+  // files have to name a utility the app must not carry - the ellipsis one
+  // in the popup rows' list of clipping utilities, and the container-query
+  // one in the reader tests - and a whole spelling of either put that rule
+  // into the sheet that ships: a test writing into the product the very
+  // thing it forbids. The third is a property the 300 px floor rows below
+  // read, whose name is also a wrapping utility's: spelled whole, it put
+  // that utility into the sheet as a rule nothing uses. All three are
+  // assembled from fragments where they are named, and this is the row that
+  // notices a whole spelling coming back.
+  const ELLIPSIS_UTILITY = "text-" + "ellipsis";
+  const CONTAINER_UTILITY = "@" + "container";
+  const WRAP_UTILITY = "text-" + "wrap";
+  let root: Root;
+
+  beforeAll(async () => {
+    root = parseSheet(await loadGlassRightCss());
+  }, 60_000);
+
+  /** Every class some rule's selector names, escapes undone. */
+  function classesSelected(sheetRoot: Root): Set<string> {
+    const out = new Set<string>();
+    sheetRoot.walkRules((rule) => {
+      for (const selector of resolvedSelectors(rule)) {
+        for (const m of selector.matchAll(/\.((?:\\.|[\w-])+)/g)) {
+          out.add(m[1].replace(/\\(.)/g, "$1"));
+        }
+      }
+    });
+    return out;
+  }
+
+  /** The three utilities, whichever of them some rule selects. */
+  const leaked = (sheetRoot: Root) => {
+    const selected = classesSelected(sheetRoot);
+    return [ELLIPSIS_UTILITY, CONTAINER_UTILITY, WRAP_UTILITY]
+      .filter((c) => selected.has(c));
+  };
+
+  it("no rule in the compiled sheet selects any of them", () => {
+    // GROUND: the reader finds a class the sheet really carries, so the
+    // empty answer below is a reading of a sheet it can see into.
+    expect(classesSelected(root).has("text-ui"),
+      "the reader found no .text-ui in the compiled sheet").toBe(true);
+    expect(leaked(root),
+      "a utility the suite names only in pieces is in the shipped sheet, so a "
+        + "file spelled it whole again").toEqual([]);
+  });
+
+  it("POSITIVE CONTROL: the check fails on a sheet with any of the rules appended", () => {
+    const appended: [string, string][] = [
+      [WRAP_UTILITY, `.${WRAP_UTILITY} { ${WRAP_UTILITY}: wrap; }`],
+      [ELLIPSIS_UTILITY, `.${ELLIPSIS_UTILITY} { text-overflow: ellipsis; }`],
+      [CONTAINER_UTILITY, `.\\${CONTAINER_UTILITY} { container-type: inline-size; }`],
+    ];
+    for (const [utility, rule] of appended) {
+      expect(leaked(parseSheet(`${root.toString()}\n${rule}`)),
+        `the check did not see ${rule}`).toContain(utility);
+    }
+  });
+});
+
+describe("the Notes tab keeps to the panel's 300 px floor (KURAL 4.4)", () => {
+  // KURAL 4.4 designs a right-panel row at 300 px. Measured headless there,
+  // the worker card's per-chat button read "Keep this chat's suggestions
+  // without asking" on one line: 274 px in the section's 250 px column, 24 px
+  // past it, and the whole tab scrolled sideways. Two things let it. The
+  // Button base string holds a label to one line. And the Collapse around it
+  // left its inner, a grid item, with the automatic minimum, which is the
+  // content's own width, so the sentence above the button went as wide as
+  // the button did. jsdom lays nothing out, so these rows ask for the two
+  // things that keep a wide child inside its column, of the compiled sheet
+  // and of the tab as it renders (test/helpers/notesTab.ts).
+  let root: Root;
+  let table: Map<string, string>;
+  let rem: number;
+
+  beforeAll(async () => {
+    root = parseSheet(await loadGlassRightCss());
+    table = rootTokens(root);
+    rem = remPx(root);
+  }, 60_000);
+
+  afterEach(() => {
+    cleanup();
+    closeNotesTab();
+  });
+
+  /** The value the cascade gives `prop` on `el`, var() resolved, or null. */
+  const won = (el: Element, prop: RegExp): string | null => {
+    const w = winningDeclaration(root, el, prop);
+    return w === null ? null : resolveVars(w.value, table).trim();
+  };
+  /** Whether the cascade gives a Collapse inner a minimum width of 0. */
+  const shrinks = (inner: Element): boolean => {
+    const minimum = won(inner, /^min-width$/);
+    return minimum !== null && lengthPx(minimum, rem) === 0;
+  };
+
+  it("no Collapse in the tab keeps its content's width as its minimum", async () => {
+    const user = userEvent.setup();
+    mountNotesTab({ autoAccept: AUTO_ACCEPT.held });
+    // The wording that did not fit, and the strip's preview opened, so the
+    // Collapses that only a preview renders are in the sweep too.
+    const toggle = await screen.findByRole("button",
+      { name: /^keep this chat's suggestions without asking$/i });
+    await user.click(await screen.findByRole("button", { name: /^read the earlier messages$/i }));
+    await screen.findByTestId("backfill-plan");
+    const panel = screen.getByRole("tabpanel");
+    const inners = [...panel.querySelectorAll(".es-collapse-inner")];
+
+    // GROUND: each one is a Collapse's own inner, in a grid, so the minimum
+    // asked about is a grid item's. Every block of the tab that holds a
+    // Collapse put its Collapses in the sweep (the saved-notes block is
+    // itself the content of one and holds none). The one this row was
+    // written for is among them, around the button that did not fit, and so
+    // are two that exist only inside an open preview.
+    for (const inner of inners) {
+      expect(inner.parentElement?.getAttribute("data-slot"), "not a Collapse's inner")
+        .toBe("collapse");
+      expect(won(inner.parentElement!, /^display$/), "a Collapse that is not a grid")
+        .toBe("grid");
+    }
+    expect([...new Set(inners.map(notesTabBlockOf))], "a block's Collapses were not swept")
+      .toEqual(expect.arrayContaining(
+        NOTES_TAB_BLOCKS.filter((block) => block !== "the saved notes")));
+    const heldInner = screen.getByTestId("chat-auto-accept").parentElement!;
+    expect(inners, "the per-chat block's Collapse was not swept").toContain(heldInner);
+    expect(heldInner.contains(toggle)).toBe(true);
+    for (const testId of ["backfill-plan", "backfill-cap"]) {
+      expect(inners, `the preview's ${testId} Collapse was not swept`)
+        .toContain(screen.getByTestId(testId).closest(".es-collapse-inner"));
+    }
+
+    /** A Collapse named by its words, or by the first label or test id
+     *  inside it when it has none (the search box, an empty line). */
+    const nameOf = (inner: Element): string => {
+      const words = (inner.textContent ?? "").trim();
+      const tagged = inner.querySelector("[aria-label], [data-testid]");
+      return `${notesTabBlockOf(inner)}: ${words.slice(0, 60)
+        || tagged?.getAttribute("aria-label") || tagged?.getAttribute("data-testid")
+        || "(nothing inside)"}`;
+    };
+    expect(inners.filter((inner) => !shrinks(inner)).map(nameOf),
+      "a Collapse in the Notes tab keeps its content's width as its minimum").toEqual([]);
+
+    // POSITIVE CONTROL: a Collapse rendered with no class of its own is
+    // reported by the same reader, so the empty list above is a reading.
+    const { container } = render(createElement(Collapse, { open: true, children: "bare" }));
+    const bare = container.querySelector(".es-collapse-inner");
+    expect(bare, "the bare Collapse rendered no inner").not.toBeNull();
+    expect(shrinks(bare!), "the reader passed a Collapse inner with no minimum of its own")
+      .toBe(false);
+  }, 60_000);
+
+  /** An element's own inline declarations, in the order they are written. */
+  const inlineOf = (el: Element): [string, string][] =>
+    splitTopLevel(el.getAttribute("style") ?? "", ";").flatMap((part) => {
+      const at = part.indexOf(":");
+      return at < 0 ? [] : [[part.slice(0, at).trim().toLowerCase(), part.slice(at + 1).trim()]];
+    });
+  /** What `el` ends up with for a property `props` matches, as `prop:
+   *  value`: the sheet's winner, unless the inline style sets one of them,
+   *  which outranks every sheet rule that is not important (the last one
+   *  written, if it sets several). null when neither says anything. */
+  const effective = (el: Element, props: RegExp): string | null => {
+    const sheet = winningDeclaration(root, el, props);
+    const inline = inlineOf(el).filter(([prop]) => props.test(prop));
+    if (inline.length > 0 && sheet?.important !== true) {
+      const [prop, value] = inline[inline.length - 1];
+      return `${prop}: ${resolveVars(value, table).trim()}`;
+    }
+    return sheet === null ? null : `${sheet.prop}: ${resolveVars(sheet.value, table).trim()}`;
+  };
+  const valueOf = (decl: string): string => decl.slice(decl.indexOf(":") + 1).trim();
+  /** A width or a minimum width that leaves the words to their column:
+   *  none at all, `auto`, `none` or zero. Any other size is a size chosen
+   *  for one wording, and the column is narrower than the longest. */
+  const leavesTheWordsFree = (decl: string | null): boolean => {
+    if (decl === null) return true;
+    const value = valueOf(decl);
+    if (value === "auto" || value === "none") return true;
+    try {
+      return lengthPx(value, rem) === 0;
+    } catch {
+      return false;
+    }
+  };
+  /** A width or a minimum width on a box AROUND the button that leaves its
+   *  column alone: none at all, `auto`, `none`, zero, or a share of the
+   *  column that is not more than the whole of it. A length is a width of
+   *  its own, and past 250 px it is the column that moves. */
+  const leavesTheColumnFree = (decl: string | null): boolean => {
+    if (decl === null || leavesTheWordsFree(decl)) return true;
+    const share = /^(\d+(?:\.\d+)?)%$/.exec(valueOf(decl));
+    return share !== null && Number(share[1]) <= 100;
+  };
+  // Each size a box has along the line and across it, with its logical twin:
+  // in this writing mode `inline-size` is the width and `block-size` the
+  // height, Tailwind writes both spellings, and of the two the one the
+  // cascade puts last is the one that holds. Whether a line may break is
+  // one longhand, and three properties set it: `white-space`, the newer
+  // wrapping shorthand, and that longhand itself. The two newer names are
+  // assembled: one of them is also a utility's name, and this file is
+  // scanned as source.
+  const ALONG = /^(width|inline-size)$/;
+  const ALONG_FLOOR = /^(min-width|min-inline-size)$/;
+  const ACROSS = /^(height|block-size)$/;
+  const ACROSS_FLOOR = /^(min-height|min-block-size)$/;
+  const ACROSS_CAP = /^(max-height|max-block-size)$/;
+  const CLAMP = /^(-webkit-line-clamp|line-clamp)$/;
+  const wrap = "text-" + "wrap";
+  const WRAP_MODE = new RegExp(`^(white-space|${wrap}|${wrap}-mode)$`);
+  /** The wrapping modes that break a line: what a box inside the button may
+   *  set, since the button's own `normal` is what it inherits otherwise. */
+  const BREAKS_LINES = /^(normal|pre-wrap|pre-line|break-spaces|wrap|balance|pretty|stable|inherit)$/;
+  /** A clamp that shows every line: none written, or a word that means none. */
+  const unclamped = (decl: string | null): boolean =>
+    decl === null || /^(none|unset|initial)$/.test(valueOf(decl));
+  /** Every element between the button and a piece of its words. */
+  const boxesToWords = (button: Element): Element[] => {
+    const boxes = new Set<Element>();
+    const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if ((node.textContent ?? "").trim() === "") continue;
+      for (let box = node.parentElement; box && box !== button; box = box.parentElement) {
+        boxes.add(box);
+      }
+    }
+    return [...boxes];
+  };
+  /** Every element between the button and the column it sits in, the
+   *  column included: the section of the tab it is in, whose own width is
+   *  the column's, or up to the document's body for a button rendered on
+   *  its own. */
+  const wrappersToColumn = (button: Element): Element[] => {
+    const column = button.closest("section");
+    const out: Element[] = [];
+    for (let box = button.parentElement; box && box !== document.body; box = box.parentElement) {
+      out.push(box);
+      if (box === column) break;
+    }
+    return out;
+  };
+  /** The tracks and the basis a wrapper can lay its children out in. A
+   *  grid track or a flex basis given as a length is a width by another
+   *  name: one track 18rem wide puts the button in a 288 px track in a
+   *  column of 250 as surely as a width would. */
+  const TRACKS = /^(grid-template-columns|grid-template|grid|grid-auto-columns)$/;
+  const BASIS = /^(flex-basis|flex)$/;
+  /** What one of a length unit is worth at `el`, in px. The font-relative
+   *  units are read off the size `el` renders at: `ch` and `ex` at half of
+   *  it, the value CSS gives them when the font does not say, `lh` at the
+   *  usual line of 1.2. The viewport units are read off the window. A unit
+   *  this does not know throws: a track in it is a red reading, not a
+   *  length quietly left out. */
+  const unitPx = (unit: string, el: Element): number => {
+    const em = (): number => fontSizePx(root, table, rem, el);
+    const { innerWidth: vw, innerHeight: vh } = window;
+    const perUnit: Record<string, () => number> = {
+      px: () => 1, rem: () => rem, em, ch: () => em() / 2, ex: () => em() / 2,
+      lh: () => em() * 1.2, rlh: () => rem * 1.2,
+      vw: () => vw / 100, svw: () => vw / 100, lvw: () => vw / 100, dvw: () => vw / 100,
+      vi: () => vw / 100, vh: () => vh / 100, svh: () => vh / 100, lvh: () => vh / 100,
+      dvh: () => vh / 100, vb: () => vh / 100,
+      vmin: () => Math.min(vw, vh) / 100, vmax: () => Math.max(vw, vh) / 100,
+      in: () => 96, cm: () => 96 / 2.54, mm: () => 96 / 25.4, q: () => 96 / 101.6,
+      pt: () => 96 / 72, pc: () => 16,
+    };
+    const px = perUnit[unit];
+    if (px === undefined) throw new Error(`"${unit}" is a unit this reader cannot turn into px`);
+    return px();
+  };
+  /** The lengths written into a track list or a flex value at `el`, in px.
+   *  `fr` and a percentage are shares of the column, and `auto` and the
+   *  content keywords follow the content: none of them is a length. */
+  const lengthsIn = (decl: string | null, el: Element): number[] =>
+    decl === null ? [] : [...valueOf(decl).matchAll(/(-?\d*\.?\d+)([a-z]+|%)/gi)]
+      .filter((m) => !/^(fr|%)$/i.test(m[2]))
+      .map((m) => Number(m[1]) * unitPx(m[2].toLowerCase(), el));
+  /** Every way a button can be held to one line, each as the words that
+   *  name it. Empty when its words wrap and its box grows with them: on the
+   *  button, on every box between it and its words (a span of its own can
+   *  hold the words to one line, or clamp them, as surely as the button
+   *  can), and on every wrapper up to its column (a width there widens the
+   *  column itself). The inline style is read with the sheet: it outranks
+   *  the sheet. */
+  const oneLineFaults = (button: Element, oneLine: number): string[] => {
+    const faults: string[] = [];
+    const mode = effective(button, WRAP_MODE);
+    if (mode !== "white-space: normal") faults.push(`held to one line by ${mode ?? "nothing"}`);
+    for (const family of [ALONG, ALONG_FLOOR]) {
+      const decl = effective(button, family);
+      if (!leavesTheWordsFree(decl)) faults.push(`sized by ${decl}`);
+    }
+    const cap = effective(button, ACROSS_CAP);
+    if (cap !== null && valueOf(cap) !== "none") faults.push(`capped by ${cap}`);
+    const height = effective(button, ACROSS);
+    if (height === null || valueOf(height) !== "auto") {
+      faults.push(`a fixed height, ${height ?? "none declared"}`);
+    }
+    const floor = effective(button, ACROSS_FLOOR);
+    const floorPx = floor === null ? null : lengthPx(valueOf(floor), rem);
+    if (floorPx !== oneLine) {
+      faults.push(`a minimum height of ${floor ?? "nothing"}, not one line's ${oneLine}px`);
+    }
+    const clamp = effective(button, CLAMP);
+    if (!unclamped(clamp)) faults.push(`clamped to ${clamp}`);
+    for (const box of boxesToWords(button)) {
+      const at = `inside, <${box.tagName.toLowerCase()}>`;
+      const own = effective(box, WRAP_MODE);
+      if (own !== null && !BREAKS_LINES.test(valueOf(own))) faults.push(`${at} held to one line by ${own}`);
+      for (const family of [ALONG, ALONG_FLOOR]) {
+        const decl = effective(box, family);
+        if (!leavesTheWordsFree(decl)) faults.push(`${at} sized by ${decl}`);
+      }
+      const boxCap = effective(box, ACROSS_CAP);
+      if (boxCap !== null && valueOf(boxCap) !== "none") faults.push(`${at} capped by ${boxCap}`);
+      const boxHeight = effective(box, ACROSS);
+      if (boxHeight !== null && valueOf(boxHeight) !== "auto") {
+        faults.push(`${at} a fixed height, ${boxHeight}`);
+      }
+      const boxClamp = effective(box, CLAMP);
+      if (!unclamped(boxClamp)) faults.push(`${at} clamped to ${boxClamp}`);
+    }
+    for (const wrapper of wrappersToColumn(button)) {
+      const at = `the column is widened by <${wrapper.tagName.toLowerCase()}>'s`;
+      for (const family of [ALONG, ALONG_FLOOR]) {
+        const decl = effective(wrapper, family);
+        if (!leavesTheColumnFree(decl)) faults.push(`${at} ${decl}`);
+      }
+      for (const family of [TRACKS, BASIS]) {
+        const decl = effective(wrapper, family);
+        if (lengthsIn(decl, wrapper).some((px) => px > 0)) faults.push(`${at} ${decl}`);
+      }
+    }
+    return faults;
+  };
+
+  /** The size each piece of a button's words renders at, read at the
+   *  element that holds it. */
+  const wordSizes = (button: Element): number[] => {
+    const out: number[] = [];
+    const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if ((node.textContent ?? "").trim() !== "" && node.parentElement) {
+        out.push(fontSizePx(root, table, rem, node.parentElement));
+      }
+    }
+    return out;
+  };
+
+  it("the per-chat button's words wrap, and sit on the chrome step, in each of its three "
+     + "wordings", async () => {
+    // One line at 13 px, measured: 245 px for the first wording, 274 for the
+    // second, 163 for the third, in a column of 250.
+    //
+    // POSITIVE CONTROL first: the same reader sees the base string's
+    // one-line label and fixed height on a plain small house button, and
+    // that height is what one line of the per-chat button must keep.
+    const plainRender = render(createElement(Button, { size: "sm", children: "plain" }));
+    const plain = screen.getByRole("button", { name: "plain" });
+    expect(won(plain, /^white-space$/), "the reader did not see the base string's one line")
+      .toBe("nowrap");
+    const plainHeight = won(plain, /^height$/);
+    expect(plainHeight, "the small button has no height to compare with").not.toBeNull();
+    const oneLine = lengthPx(plainHeight!, rem);
+    expect(oneLine, "the small button measured no height").toBeGreaterThan(0);
+    const plainFaults = oneLineFaults(plain, oneLine);
+    expect(plainFaults.some((f) => f.startsWith("held to one line")),
+      "the check passed the base string's one line").toBe(true);
+    expect(plainFaults.some((f) => f.startsWith("a fixed height")),
+      "the check passed the base string's fixed height").toBe(true);
+    plainRender.unmount();
+    // And a sheet width reaches the check: a filled row is a width chosen for
+    // the row, not one that leaves the words to their column. Assembled, and
+    // a class production already carries, so nothing new lands in the sheet.
+    const filledRender = render(createElement(Button,
+      { size: "sm", className: "w-" + "full", children: "filled" }));
+    expect(oneLineFaults(screen.getByRole("button", { name: "filled" }), oneLine)
+      .some((f) => f.startsWith("sized by width")), "the check passed a width from the sheet")
+      .toBe(true);
+    filledRender.unmount();
+
+    let probed = false;
+    for (const [answer, wording] of [
+      [AUTO_ACCEPT.kept, /^hold this chat's suggestions for review$/i],
+      [AUTO_ACCEPT.held, /^keep this chat's suggestions without asking$/i],
+      [AUTO_ACCEPT.overridden, /^follow the setting above$/i],
+    ] as const) {
+      mountNotesTab({ autoAccept: answer });
+      const button = await screen.findByRole("button", { name: wording });
+      const words = (button.textContent ?? "").trim();
+      // GROUND: this is the per-chat button, in the card's own markup.
+      expect(button.getAttribute("data-testid"), `"${words}" is not the per-chat button`)
+        .toBe("chat-auto-accept-toggle");
+      expect(won(button, /^white-space$/), `"${words}" is held to one line`).toBe("normal");
+      expect(oneLineFaults(button, oneLine), `"${words}" can be held to one line`).toEqual([]);
+      // And its words are on the chrome step, read where they sit, in every
+      // wording: the chrome-step sweep in fontScale.test.ts renders only the
+      // first one, so a size set on one of the other two was read by nothing.
+      const sizes = wordSizes(button);
+      expect(sizes.length, `"${words}" showed no words to read`).toBeGreaterThan(0);
+      expect(sizes.filter((px) => px !== typeScale.ui.px), `"${words}" is off the chrome step`)
+        .toEqual([]);
+      if (!probed) {
+        // POSITIVE CONTROL for the size: words a step below, in a span of
+        // their own inside the button, are read at the span.
+        const below = document.createElement("span");
+        below.className = `text-${"label" satisfies keyof typeof typeScale}`;
+        below.textContent = "words";
+        button.appendChild(below);
+        expect(wordSizes(button), "the size reader did not read the span").toContain(typeScale.label.px);
+        below.remove();
+        // POSITIVE CONTROL on the button itself: each way back to one line,
+        // set in its style attribute, is reported, and the style is put back.
+        const own = button.getAttribute("style");
+        for (const [style, fault] of [
+          ["white-space: nowrap", "held to one line"],
+          ["width: 16rem", "sized by width"],
+          ["inline-size: 16rem", "sized by inline-size"],
+          ["min-width: 18rem", "sized by min-width"],
+          ["min-inline-size: 18rem", "sized by min-inline-size"],
+          ["max-height: 1.75rem", "capped by"],
+          ["max-block-size: 1.75rem", "capped by"],
+          ["height: 1.75rem", "a fixed height"],
+          ["block-size: 1.75rem", "a fixed height"],
+          ["-webkit-line-clamp: 1", "clamped to"],
+          ["line-clamp: 1", "clamped to"],
+        ] as const) {
+          button.setAttribute("style", style);
+          expect(oneLineFaults(button, oneLine).some((f) => f.startsWith(fault)),
+            `the check passed "${style}" on the button's own style`).toBe(true);
+        }
+        if (own === null) button.removeAttribute("style");
+        else button.setAttribute("style", own);
+        expect(oneLineFaults(button, oneLine), "the style was not put back").toEqual([]);
+        // POSITIVE CONTROL inside the button: words in a box of their own,
+        // held to one line or clamped by that box, by its style or by a
+        // class the sheet already carries, are reported at the box.
+        const inner = document.createElement("span");
+        inner.textContent = "words";
+        button.appendChild(inner);
+        for (const [style, className, fault] of [
+          ["white-space: nowrap", null, "inside, <span> held to one line"],
+          [null, "whitespace-" + "nowrap", "inside, <span> held to one line"],
+          ["-webkit-line-clamp: 1", null, "inside, <span> clamped to"],
+          ["display: inline-block; inline-size: 16rem", null, "inside, <span> sized by inline-size"],
+          ["display: inline-block; max-block-size: 1.75rem", null, "inside, <span> capped by"],
+        ] as const) {
+          inner.removeAttribute("style");
+          inner.removeAttribute("class");
+          if (style !== null) inner.setAttribute("style", style);
+          if (className !== null) inner.className = className;
+          expect(oneLineFaults(button, oneLine).some((f) => f.startsWith(fault)),
+            `the check passed words inside the button with "${style ?? className}"`).toBe(true);
+        }
+        inner.remove();
+        // POSITIVE CONTROL around the button: a width on its wrapper widens
+        // the column, and the same reader reports it at the wrapper.
+        const wrapper = screen.getByTestId("chat-auto-accept");
+        const wrapperOwn = wrapper.getAttribute("style");
+        for (const style of [
+          "min-width: 18rem", "min-inline-size: 18rem", "width: 18rem",
+          // A track or a basis of its own is a width by another name.
+          "display: grid; grid-template-columns: 18rem",
+          "display: grid; grid-template-columns: minmax(18rem, 1fr)",
+          "display: flex; flex: 0 0 18rem",
+          // In the font's own units and the window's, as surely as in rem.
+          "display: grid; grid-template-columns: 40ch",
+          "display: grid; grid-template-columns: 40ex",
+          "display: grid; grid-template-columns: 30vw",
+          "display: flex; flex: 0 0 20em",
+        ]) {
+          wrapper.setAttribute("style", style);
+          expect(oneLineFaults(button, oneLine)
+            .some((f) => f.startsWith("the column is widened by <div>")),
+          `the check passed "${style}" on the button's wrapper`).toBe(true);
+        }
+        // GROUND for the tracks: a share of the column is not a length.
+        for (const share of [
+          "display: grid; grid-template-columns: minmax(0, 1fr)",
+          "display: grid; grid-template-columns: repeat(2, minmax(0, 1fr))",
+          "display: flex; flex: 1 1 0%",
+        ]) {
+          wrapper.setAttribute("style", share);
+          expect(oneLineFaults(button, oneLine), `a track that shares the column was reported: `
+            + share).toEqual([]);
+        }
+        // And a unit the reader cannot turn into px is refused, not skipped.
+        wrapper.setAttribute("style", "display: grid; grid-template-columns: 40cqw");
+        expect(() => oneLineFaults(button, oneLine), "a track in cqw was read as no length")
+          .toThrow(/cqw/);
+        if (wrapperOwn === null) wrapper.removeAttribute("style");
+        else wrapper.setAttribute("style", wrapperOwn);
+        expect(oneLineFaults(button, oneLine), "the wrapper's style was not put back").toEqual([]);
+        // POSITIVE CONTROL at the column itself: the section the button sits
+        // in is the column, and a width on it is the column's own.
+        const column = button.closest("section")!;
+        const columnOwn = column.getAttribute("style");
+        column.setAttribute("style", "min-width: 20rem");
+        expect(oneLineFaults(button, oneLine)
+          .some((f) => f.startsWith("the column is widened by <section>")),
+        "the check passed a minimum width on the column itself").toBe(true);
+        if (columnOwn === null) column.removeAttribute("style");
+        else column.setAttribute("style", columnOwn);
+        expect(oneLineFaults(button, oneLine), "the column's style was not put back").toEqual([]);
+        probed = true;
+      }
+      cleanup();
+      closeNotesTab();
+    }
+    expect(probed, "no wording rendered the button to probe").toBe(true);
+  }, 60_000);
 });

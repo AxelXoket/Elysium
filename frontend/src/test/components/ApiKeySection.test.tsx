@@ -26,7 +26,7 @@
  * The ground underneath all of it: with nobody pressing anything, the app
  * never puts the stored key on the wire.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
@@ -39,6 +39,9 @@ import {
 } from "@/components/settings/ApiKeySection";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { getErrorMessage } from "@/lib/errors";
+import { fontSizePx, MD_FROM_PX, parseSheet, remPx, rootTokens } from "@/test/helpers/compiledSheet";
+import { loadGlassRightCss } from "@/test/helpers/glassSurfaceCss";
+import { typeScale } from "@/lib/theme/tokens";
 
 const CHECK_URL = "/settings/api-key/check";
 
@@ -494,5 +497,28 @@ describe("removing the stored key", () => {
     const back = await trigger();
     await waitFor(() => expect(document.activeElement).toBe(back));
     expect(document.activeElement).not.toBe(document.body);
+  });
+});
+
+describe("the key field keeps the size it drew before (KURAL 3.5)", () => {
+  // Master's field base carried a breakpoint size that beat the smaller one
+  // this call site sets from 768 px on, so the field drew at the label step
+  // in a narrow window and at the control step in a wide one. The base
+  // carries no breakpoint size now, and the call site says both. Read
+  // through the compiled sheet on either side of the breakpoint.
+  let sizeAt: (el: Element, widthPx: number) => number;
+  beforeAll(async () => {
+    const root = parseSheet(await loadGlassRightCss());
+    const table = rootTokens(root);
+    const rem = remPx(root);
+    sizeAt = (el, widthPx) => fontSizePx(root, table, rem, el, { viewportPx: widthPx });
+  }, 60_000);
+  afterEach(() => vi.restoreAllMocks());
+
+  it("API key input: the label step below 768 px, the control step from there on", async () => {
+    mount({ body: { ok: true } });
+    const field = await screen.findByLabelText("API key input");
+    expect(sizeAt(field, MD_FROM_PX - 1), "in a narrow window").toBe(typeScale.label.px);
+    expect(sizeAt(field, MD_FROM_PX), "in a wide window").toBe(typeScale.control.px);
   });
 });

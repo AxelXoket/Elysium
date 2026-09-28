@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeAll } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithQueryClient } from "@/test/helpers/renderWithQueryClient";
@@ -8,6 +8,9 @@ import { CharacterCreateDialog } from "@/components/characters/CharacterCreateDi
 import { useUiStore } from "@/lib/store/uiStore";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { fontSizePx, MD_FROM_PX, parseSheet, remPx, rootTokens } from "@/test/helpers/compiledSheet";
+import { loadGlassRightCss } from "@/test/helpers/glassSurfaceCss";
+import { typeScale } from "@/lib/theme/tokens";
 
 function wrapper({ children }: { children: React.ReactNode }) {
   return (
@@ -240,5 +243,30 @@ describe("Character Create Dialog Tests", () => {
     await waitFor(() => {
       expect(useUiStore.getState().selectedCharacterId).toBe(4242);
     });
+  });
+});
+
+describe("GROUND: a field whose size did not change keeps it at every width (KURAL 3.5)", () => {
+  // The ground for the rows that give five fields their wide size back. The
+  // name field sets the control step itself, which is the base's own step,
+  // and master drew it there in a narrow window and a wide one alike; the
+  // same reader, at the same two widths, answers the same size twice.
+  let sizeAt: (el: Element, widthPx: number) => number;
+  beforeAll(async () => {
+    const root = parseSheet(await loadGlassRightCss());
+    const table = rootTokens(root);
+    const rem = remPx(root);
+    sizeAt = (el, widthPx) => fontSizePx(root, table, rem, el, { viewportPx: widthPx });
+  }, 60_000);
+  afterEach(() => vi.restoreAllMocks());
+
+  it("Character name: the control step below 768 px and from there on", async () => {
+    mockFetch({ "/characters": { body: characterFixture } });
+    const user = userEvent.setup();
+    renderWithQueryClient(<CharacterCreateDialog trigger={<Button>Create</Button>} />, { wrapper });
+    await user.click(screen.getByRole("button", { name: /create/i }));
+    const field = await screen.findByPlaceholderText("Character name");
+    expect(sizeAt(field, MD_FROM_PX - 1), "in a narrow window").toBe(typeScale.control.px);
+    expect(sizeAt(field, MD_FROM_PX), "in a wide window").toBe(typeScale.control.px);
   });
 });

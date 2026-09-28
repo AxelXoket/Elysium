@@ -116,7 +116,21 @@ function LimitQualifier({
           aria-labelledby={labelId}
           className="persona-field h-8 w-full min-w-0 rounded-md px-2 text-ui"
         >
-          <SelectValue />
+          {/* The words sit in a span that truncates and carries the whole
+              wording as its title, the way the strip's scope field does. At
+              the 300px floor a qualifier's field has about 81px for its
+              words, and the longest action, "go back and take it another
+              way", is 184px of them: cut with no ellipsis and nothing left to
+              read it by (KURAL 4.4). The base string makes the value itself a
+              flex box, and text inside a flex box cannot end in an ellipsis,
+              so the span is what can. */}
+          <SelectValue>
+            {(chosen: string) => (
+              <span className="truncate" title={items[chosen] ?? chosen}>
+                {items[chosen] ?? chosen}
+              </span>
+            )}
+          </SelectValue>
         </SelectTrigger>
         <SelectContent>
           {Object.entries(items).map(([itemValue, itemLabel]) => (
@@ -129,6 +143,9 @@ function LimitQualifier({
     </label>
   );
 }
+
+/** What the empty field asks for; its placeholder and its title. */
+const NEW_LIMIT_PROMPT = "Something to keep out of the story...";
 
 export function BoundaryPanel() {
   const chatId = useUiStore((s) => s.selectedChatId);
@@ -324,6 +341,7 @@ export function BoundaryPanel() {
             value={shown}
             maxLength={64}
             placeholder="A word you would never write by accident..."
+            title="A word you would never write by accident..."
             disabled={busy || !safewordQuery.isSuccess}
             onChange={(e) => setSafeword(e.target.value)}
             onBlur={() => void saveSafeword()}
@@ -378,7 +396,7 @@ export function BoundaryPanel() {
           every other limit aside for one chat, which is a different kind of
           decision from writing one, and it read as a seventh control in the
           row before. */}
-      <Collapse open={chatId != null}>
+      <Collapse open={chatId != null} className="min-w-0">
         <div className="persona-card">
           <SwitchRow
             checked={useGlobal}
@@ -395,13 +413,22 @@ export function BoundaryPanel() {
           minimum and the longest option, "go back and take it another way",
           was clipped inside its own box. The words go on the first row with
           the add button, and the four qualifiers take a two-column grid
-          below, each under a visible label. */}
+          below, each under a visible label. A column of that grid is still
+          narrower than the longest action at the floor, so each qualifier's
+          words end in an ellipsis and keep their whole wording as a title
+          (LimitQualifier). At the floor "What to do if it happens" also wraps
+          to two lines where "Rating ceiling" beside it keeps one, and with
+          the cells laid from the top of their row the two fields sat 22 px
+          apart. The cells are laid against the end of their row instead:
+          the field is the last thing in each, all four are one height, so
+          the fields of a row line up whatever their labels do. */}
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <Input
             value={label}
             maxLength={BOUNDARY_MAX_CHARS}
-            placeholder="Something to keep out of the story..."
+            placeholder={NEW_LIMIT_PROMPT}
+            title={NEW_LIMIT_PROMPT}
             // The placeholder was the only thing naming this box, and a
             // placeholder stops being read out the moment there is a value -
             // so the one control on this island announced itself by its own
@@ -431,7 +458,7 @@ export function BoundaryPanel() {
             )}
           </Button>
         </div>
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-2 items-end gap-2">
           <LimitQualifier
             label={BOUNDARY_SELECT_LABELS.scope}
             value={scope}
@@ -468,7 +495,7 @@ export function BoundaryPanel() {
         </div>
       </div>
 
-      <Collapse open={failed}>
+      <Collapse open={failed} className="min-w-0">
         <p
           className="text-label leading-relaxed text-muted-foreground"
           role="status"
@@ -478,7 +505,7 @@ export function BoundaryPanel() {
         </p>
       </Collapse>
 
-      <Collapse open={!failed && rows.length === 0}>
+      <Collapse open={!failed && rows.length === 0} className="min-w-0">
         <p className="text-label leading-relaxed text-muted-foreground">No limits set.</p>
       </Collapse>
 
@@ -578,7 +605,14 @@ function BoundaryRow({
       className="persona-card flex items-start gap-2"
     >
       <div className="min-w-0 flex-1">
-        <p className="break-words text-ui font-semibold">{row.label}</p>
+        {/* The panel's own ink, as a note's words carry it: with none, the
+            label inherits the dark theme's text from the body. */}
+        <p
+          className="break-words text-ui font-semibold"
+          style={{ color: "var(--color-es-text-light)" }}
+        >
+          {row.label}
+        </p>
         <p className="text-label leading-relaxed text-muted-foreground">
           {BOUNDARY_SEVERITY_ITEMS[
             row.severity as keyof typeof BOUNDARY_SEVERITY_ITEMS

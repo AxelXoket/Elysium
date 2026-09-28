@@ -246,9 +246,12 @@ export function ModelPanel() {
               variant="outline"
               className="text-micro"
               data-testid="model-source-badge"
+              // Words in the border's own deep step. The accent read 4.20:1
+              // on the panel's bottom stop, under the 4.5:1 text needs
+              // (KURAL 2.4); the deep step reads 6.66:1.
               style={{
                 borderColor: "var(--color-es-primary-sage-deep)",
-                color: "var(--color-es-primary-sage)",
+                color: "var(--color-es-primary-sage-deep)",
               }}
             >
               {data.source}
@@ -362,6 +365,7 @@ export function ModelPanel() {
                     <p
                       className="truncate text-ui font-semibold"
                       style={{ color: "var(--color-es-text-light)" }}
+                      title={selectedModel?.id ?? "No model selected"}
                     >
                       {selectedModel?.id ?? "No model selected"}
                     </p>
@@ -475,7 +479,13 @@ export function ModelPanel() {
               // wins and the class silently deletes the only indicator a
               // keyboard user has for where they are in a list of hundreds.
               // Leaving the outline alone is what lets the house ring draw.
-              className="min-w-0 flex-1 bg-transparent text-label"
+              //
+              // The placeholder in the panel's muted ink, as the house Input
+              // gives every other field here. With no colour of its own it
+              // took the preflight's half-strength copy of the typed ink and
+              // read 2.4:1 on screen, under the 4.5:1 its words need
+              // (KURAL 2.4).
+              className="min-w-0 flex-1 bg-transparent text-label placeholder:text-muted-foreground"
               style={{ color: "var(--color-es-text-light)" }}
             />
             {search && (
@@ -507,14 +517,20 @@ export function ModelPanel() {
         {selectedIsFiltered && selectedModel && (
           <div
             className="flex items-center gap-2 rounded-lg px-3 py-2 text-label"
+            // The accent's deep step on this chip's tint, and "Selected:" at
+            // full strength: the accent read 3.9:1 here at the panel's bottom
+            // stop and the dimmed label 2.6:1 (KURAL 2.4, 2.4b). The name
+            // keeps its weight, which is what sets the two apart.
             style={{
               backgroundColor: "rgba(62, 114, 176, 0.08)",
-              color: "var(--color-es-primary-sage)",
+              color: "var(--color-es-primary-sage-deep)",
               border: "1px solid rgba(62, 114, 176, 0.18)",
             }}
           >
-            <span className="opacity-70">Selected:</span>
-            <span className="truncate font-semibold">{selectedModel.name}</span>
+            <span>Selected:</span>
+            <span className="truncate font-semibold" title={selectedModel.name}>
+              {selectedModel.name}
+            </span>
           </div>
         )}
 
@@ -537,7 +553,7 @@ export function ModelPanel() {
             className="flex items-center gap-2 rounded-lg px-3 py-2 text-label"
             style={{
               backgroundColor: "rgba(195, 106, 114, 0.08)",
-              color: "var(--color-es-danger)",
+              color: "var(--es-island-danger-ink)",
             }}
           >
             <AlertCircle size={12} />
@@ -699,13 +715,18 @@ function ContextUsageMeter({ usage }: { usage: ContextUsageEstimate }) {
        *
        * `role="status"`, not `alert`: this appears while the reader is
        * typing, and interrupting them mid-sentence is worse than saying it
-       * calmly. */}
+       * calmly.
+       *
+       * Words, so the island's danger ink rather than the bar's danger
+       * fill: the fill needs 3:1 against its neighbours, words need 4.5:1
+       * on the panel with the mist on, and the fill's #AF4650 reads 3.9:1
+       * there. */}
       {usage.willRefuse && (
         <p
           role="status"
           className="mt-1 text-micro"
           data-testid="context-usage-refusal"
-          style={{ color: METER_COLORS.danger }}
+          style={{ color: "var(--es-island-danger-ink)" }}
         >
           {"This will be refused as it stands: what has to be sent before "
             + "the conversation even starts is about "
@@ -731,6 +752,7 @@ function InfoRow({ label, value }: { label: string; value: string }) {
       <span
         className="truncate text-right"
         style={{ color: "var(--color-es-text-light)" }}
+        title={value}
       >
         {value}
       </span>
