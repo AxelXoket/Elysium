@@ -22,6 +22,10 @@ import {
   STATE_PROSE,
   WorkerPanel,
   echoable,
+  readCallsProse,
+  PARTS_PENDING_PROSE,
+  PARTS_FAILED_PROSE,
+  PARTS_UNREAD_PROSE,
 } from "@/components/notebook/WorkerPanel";
 import { getErrorMessage } from "@/lib/errors/errorMessages";
 import { mockFetch } from "../mocks/api";
@@ -55,6 +59,8 @@ function statusBody(over: Record<string, unknown> = {}) {
   return {
     ...(over.chat_refusal !== undefined
       ? { chat_refusal: over.chat_refusal } : {}),
+    ...(over.long_message !== undefined
+      ? { long_message: over.long_message } : {}),
     stats,
     spend: { calls: 3, tokens_in: 900, tokens_out: 40, cost: 0.0004,
              ...((over.spend as object) ?? {}) },
@@ -1294,4 +1300,114 @@ describe("every count the worker card shows, at 0, 1 and 2", () => {
       }
     }
   }, 30_000);
+});
+
+describe("WorkerPanel - a read that took several calls (68 a)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("says how many calls the last read of this chat took", async () => {
+    mount({ worker: { read_calls: 3 } });
+    const line = await screen.findByTestId("worker-read-calls");
+    expect(line.textContent).toBe(readCallsProse(3));
+    expect(line.textContent).toMatch(/3 calls/);
+    expect(readCallsProse(3).split(/\s+/).length).toBeLessThanOrEqual(12);
+  });
+
+  it("GROUND: says nothing for a read that took one call", async () => {
+    mount({ worker: { read_calls: 1 } });
+    await screen.findByTestId("worker-status");
+    expect(hiddenFromReaders(screen.queryByTestId("worker-read-calls"))).toBe(true);
+  });
+
+  it("GROUND: says nothing when the server does not say", async () => {
+    mount();
+    await screen.findByTestId("worker-status");
+    expect(hiddenFromReaders(screen.queryByTestId("worker-read-calls"))).toBe(true);
+  });
+});
+
+describe("WorkerPanel - a very long message read in parts (68 a)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("says the rest is read over the next replies", async () => {
+    mount({ long_message: { pending: 3, failed: 0 } });
+    const line = await screen.findByTestId("worker-parts-pending");
+    expect(line.textContent).toBe(PARTS_PENDING_PROSE);
+    await waitFor(() => expect(hiddenFromReaders(line)).toBe(false));
+    expect(PARTS_PENDING_PROSE.split(/\s+/).length).toBeLessThanOrEqual(12);
+    expect(hiddenFromReaders(screen.queryByTestId("worker-parts-failed"))).toBe(true);
+  });
+
+  it("says a part failed and is tried again", async () => {
+    mount({ long_message: { pending: 0, failed: 1 } });
+    const line = await screen.findByTestId("worker-parts-failed");
+    expect(line.textContent).toBe(PARTS_FAILED_PROSE);
+    await waitFor(() => expect(hiddenFromReaders(line)).toBe(false));
+    expect(PARTS_FAILED_PROSE.split(/\s+/).length).toBeLessThanOrEqual(12);
+  });
+
+  it("GROUND: says nothing during a read (the backend sends zeros)", async () => {
+    mount({ long_message: { pending: 0, failed: 0 } });
+    await screen.findByTestId("worker-status");
+    expect(hiddenFromReaders(screen.queryByTestId("worker-parts-pending"))).toBe(true);
+    expect(hiddenFromReaders(screen.queryByTestId("worker-parts-failed"))).toBe(true);
+  });
+
+  it("never counts the pending rows in the install-wide list", async () => {
+    mount({ stats: { done: 0, failed: 0, skipped: 2, abandoned: 0,
+                     skip_reasons: { message_part_pending: 1, proxy_gate: 1 } } });
+    const box = await screen.findByTestId("worker-status");
+    // GROUND: the install-wide list is rendered.
+    expect(box.textContent).toContain(SKIP_PROSE.proxy_gate);
+    expect(box.textContent).not.toContain(SKIP_PROSE.message_part_pending);
+  });
+});
+
+describe("WorkerPanel - no \"Nothing was lost\" over a failed part", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("does not say it while a part of this chat is failed and unread", async () => {
+    mount({ stats: { done: 3, failed: 1, skipped: 0, abandoned: 0,
+                     paid_and_lost: 0, skip_reasons: {} },
+            long_message: { pending: 1, failed: 1 } });
+    const box = await screen.findByTestId("worker-status");
+    await waitFor(() => expect(readableText(box)).toMatch(/1 run failed\./));
+    expect(readableText(box)).not.toMatch(/Nothing was lost/i);
+    expect(readableText(box)).toMatch(/tried again/i);
+  });
+
+  it("GROUND: says it when no part is failed", async () => {
+    mount({ stats: { done: 3, failed: 1, skipped: 0, abandoned: 0,
+                     paid_and_lost: 0, skip_reasons: {} },
+            long_message: { pending: 0, failed: 0 } });
+    const box = await screen.findByTestId("worker-status");
+    await waitFor(() => expect(readableText(box)).toMatch(/Nothing was lost/i));
+  });
+});
+
+describe("WorkerPanel - a part given up", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("says a part could not be read, and drops \"Nothing was lost\"", async () => {
+    mount({ stats: { done: 3, failed: 1, skipped: 0, abandoned: 0,
+                     paid_and_lost: 0, skip_reasons: {} },
+            long_message: { pending: 0, failed: 0, unread: 1 } });
+    const line = await screen.findByTestId("worker-parts-unread");
+    expect(line.textContent).toBe(PARTS_UNREAD_PROSE);
+    await waitFor(() => expect(hiddenFromReaders(line)).toBe(false));
+    expect(PARTS_UNREAD_PROSE.split(/\s+/).length).toBeLessThanOrEqual(12);
+    const box = await screen.findByTestId("worker-status");
+    expect(readableText(box)).not.toMatch(/Nothing was lost/i);
+    expect(readableText(box)).not.toMatch(/tried again/i);
+  });
+
+  it("GROUND: says nothing about it when no part is given up", async () => {
+    mount({ long_message: { pending: 0, failed: 0, unread: 0 } });
+    await screen.findByTestId("worker-status");
+    expect(hiddenFromReaders(screen.queryByTestId("worker-parts-unread"))).toBe(true);
+  });
 });

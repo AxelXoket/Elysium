@@ -385,6 +385,11 @@ export const WorkerStatusSchema = z.object({
      *  after a reply and refreshes the list once it turns false (58 a).
      *  `.nullish()` so an older backend reads as "not reading". */
     reading: z.boolean().nullish(),
+    /** How many calls the last ordinary read of the chat asked about took,
+     *  or null. More than one means its messages were too long for one
+     *  call and the read went on in the same turn instead of skipping them
+     *  (68 a). `.nullish()` so an older backend reads as nothing to say. */
+    read_calls: z.number().nullish(),
     /** The backfill job block: REQUIRED and nullable, never optional. z.object
      *  strips a key it was not told about, so an optional block would let a
      *  backend that stopped sending it look exactly like "no job" - and the
@@ -401,6 +406,16 @@ export const WorkerStatusSchema = z.object({
    *  count of these rows is never shown as this chat's. `.nullish()` so an
    *  older backend that does not send it reads as "nothing to say". */
   chat_refusal: z.string().nullish(),
+  /** 68 a: later parts of a very long message in the chat asked about,
+   *  still to be read (`pending`) or whose read failed (`failed`); both 0
+   *  while that chat is being read, null without a chat. `.nullish()` so
+   *  an older backend reads as nothing to say. */
+  long_message: z.object({
+    pending: z.number(),
+    failed: z.number(),
+    /** Later parts given up: final, said on the card. */
+    unread: z.number().default(0),
+  }).nullish(),
 });
 
 export type WorkerStatus = z.infer<typeof WorkerStatusSchema>;

@@ -171,6 +171,24 @@ CHAT_BREAKERS_MAX = 256
 #: models would otherwise grow the memory without end. The oldest pair is
 #: forgotten first, and a forgotten pair is only said once more.
 UNFIT_SAID_MAX = 256
+#: How many chats the panel's "the last read here took N calls" is kept
+#: for (68 a). Bounded like the two above; the oldest is forgotten first.
+READ_CALLS_KEPT = 256
+#: How many LATER parts of one message a single read may send, after the
+#: part that came with its stretch (68 a). The rest stay named
+#: `message_part_pending` and are read on later turns, a few at a time, so
+#: one long paste cannot take the day's calls in one go.
+PARTS_PER_READ = 4
+#: A read's further calls (the rest of a stretch, later parts) never take
+#: more than this share of the calls left today when the read began: one
+#: in FOLLOW_ON_SHARE, so a half. Other chats keep the rest.
+FOLLOW_ON_SHARE = 2
+#: How many times one later part of a message may fail at the provider
+#: before it is given up and named `message_part_unread`. A
+#: failure is retried on the next read like any failed read; a part that
+#: fails every time would otherwise hold the reader at it for good. The
+#: count is this process's: a restart gives the part as many tries again.
+PART_RETRIES_MAX = 3
 #: How many of a chat's refusal rows `standing_refusal` looks at, newest
 #: first, when it asks whether the card should still say the chat's model
 #: cannot write notes. Only rows newer than the chat's last read count. A
@@ -623,6 +641,24 @@ class Worker:
         #: as the dequeue (no await between them), and cleared with it, so
         #: `reading()` has no gap between the queue and the claim (58 a).
         self._reading_chat: int | None = None
+        #: Where the ordinary read's stretch ends, when its last call could
+        #: not fit all of it, by chat. Set by `_handle`, taken by
+        #: `_read_offer` (68 a).
+        self._follow_on: dict[int, int] = {}
+        #: How many calls the last ordinary read of each chat took, for the
+        #: panel. The newest READ_CALLS_KEPT chats only (68 a).
+        self._read_calls: dict[int, int] = {}
+        #: Requests the ORDINARY reader sent that reached the provider, by
+        #: chat, while `_read_offer` counts a read. What `read_calls` is
+        #: made of; a job's calls are never counted here.
+        self._reached: dict[int, int] = {}
+        #: Provider failures of each later part, by its work key, until it
+        #: reads or is given up at PART_RETRIES_MAX.
+        self._part_failures: dict[str, int] = {}
+        #: Work keys whose last failure never reached the provider (the
+        #: request never left: offline, the egress gate). Not the part's
+        #: fault whatever its error code, so not counted.
+        self._unsent_failures: set[str] = set()
         #: The (chat, model) pairs already told why the model is refused,
         #: newest last, each with the reason it was told. See `_prepare`'s
         #: gate: the refusal is written as a named skip row ONCE per pair
@@ -749,7 +785,7 @@ class Worker:
                 # to what is left of the stand-down's up to five seconds
                 # and then cancels it by name; `stop()` cancels it at once,
                 # as before.
-                unit = asyncio.create_task(self._handle(chat_id),
+                unit = asyncio.create_task(self._read_offer(chat_id),
                                            name="notebook-read")
                 self._reading = unit
                 self._reading_chat = chat_id
@@ -787,7 +823,10 @@ class Worker:
     async def _prepare(self, chat_id: int, *, min_new: int | None = None,
                        after_id: int | None = None,
                        until_id: int | None = None, reread: bool = False,
-                       cap: int | None = None, job_id: int | None = None):
+                       cap: int | None = None, job_id: int | None = None,
+                       follow_on_of: "asyncio.Task | None | bool" = False,
+                       part: int | None = None,
+                       part_key: str | None = None):
         """Everything up to and including the running row, or None.
 
         Split out of `_handle` so it can be waited for. Returns the three
@@ -943,18 +982,26 @@ class Worker:
                     # back in through. Forty by default: decisions 30 a and
                     # 31 a, see `from_start_edge`.
                     first_read_edge=from_start_edge(),
-                    # A JOB WALKS FROM THE OLDEST END (3.11). See
-                    # `_plan_work`: the ordinary reader keeps the newest
-                    # lines that fit, a job keeps the oldest, so a job over
-                    # long messages moves forward through the chat instead
-                    # of stepping over its beginning.
-                    from_oldest=job_id is not None,
+                    # BOTH DOORS WALK FROM THE OLDEST END: a job since
+                    # 3.11, the ordinary reader since 68 a. What does not
+                    # fit stays above the cursor for the next call instead
+                    # of being stepped over. See `_plan_work`.
+                    from_oldest=True,
+                    part=part, part_key=part_key,
                     # What the OTHER entry point is holding. `_plan_work`
                     # opens by closing out `running` rows as orphans, and
                     # without this a job unit's first act could be to fail
                     # the loop's live call and move the cursor past it.
                     keep=frozenset(self._active)))
         if plan is None:
+            if part_key is not None:
+                # A PART THAT NO LONGER PLANS: the message now
+                # splits another way (the ceiling changed across a restart)
+                # or it is gone. Named as not read, so it is said and never
+                # asked again, and the chat's newer messages go on being read.
+                await anyio.to_thread.run_sync(
+                    partial(_mark_part_unread, part_key))
+                return _Skipped(PART_UNREAD)
             return None
         if unfit is not None:
             # Something would have been read, so this is the turn the pair
@@ -1016,6 +1063,13 @@ class Worker:
         # finds an ordinary read already out waits for it instead of being
         # refused (`_run_backfill`).
         if job_id is None and self._job_holds(chat_id):
+            return None
+        # A FOLLOW-ON CALL (68 a) IS NOT STARTED INSIDE A STAND-DOWN. The
+        # loop that dispatched it is `follow_on_of`; a vault lock takes
+        # `self.task` first, and it can land during the awaits above. A
+        # call claimed now would be cancelled at the grace's end, closed
+        # `abandoned_in_flight` and counted read: paid for, never noted.
+        if follow_on_of is not False and self.task is not follow_on_of:
             return None
         work_key = plan["work_key"]
         if work_key in self._active or chat_id in self._active_chats:
@@ -1146,7 +1200,10 @@ class Worker:
                       after_id: int | None = None,
                       until_id: int | None = None, reread: bool = False,
                       cap: int | None = None,
-                      job_id: int | None = None) -> str | None:
+                      job_id: int | None = None,
+                      follow_on_of: "asyncio.Task | None | bool" = False,
+                      part: "tuple[int, int, str] | None" = None,
+                      ) -> str | None:
         """One work unit, and a one-word account of it.
 
         Returns None when nothing was planned, the skip reason when a skip
@@ -1176,10 +1233,19 @@ class Worker:
         # So the preamble runs as its own task, registered before it starts
         # and shielded from the caller's cancellation, exactly as the settle
         # tail already was. The grace period applies to it too.
+        part_no = part_key = None
+        if part is not None:
+            # A later part of one message read in parts (68 a): exactly
+            # that message, whatever the cursor says - it has already moved
+            # past it with the first part - under the key its pending row
+            # was written with, so reading it replaces that row.
+            message_id, part_no, part_key = part
+            min_new, after_id, until_id, reread = 1, message_id - 1, message_id, True
         prep = asyncio.create_task(
             self._prepare(chat_id, min_new=min_new, after_id=after_id,
                           until_id=until_id, reread=reread, cap=cap,
-                          job_id=job_id),
+                          job_id=job_id, follow_on_of=follow_on_of,
+                          part=part_no, part_key=part_key),
             name="notebook-prepare")
         self._track(prep)
         try:
@@ -1208,6 +1274,46 @@ class Worker:
             return ready.reason
         loop = asyncio.get_running_loop()
         plan, model_id, language = ready
+        in_parts = plan.get("part")
+        if job_id is None and part is None:
+            # 68 a: the budget kept the oldest lines and the stretch goes on
+            # past them. `_read_offer` reads on to its end once this settles.
+            # A later part leaves this alone: the stretch it belongs to is
+            # the first part's.
+            end = plan.get("chunk_end")
+            if end is not None and end > plan["to_id"]:
+                self._follow_on[chat_id] = end
+            else:
+                self._follow_on.pop(chat_id, None)
+        if in_parts is not None and in_parts[2] > 1 and in_parts[1] == 1:
+            # EVERY LATER PART IS NAMED BEFORE THE FIRST IS SENT. The cursor
+            # passes this message once the first part settles, so a part
+            # that is then never read - the day's ceiling, a lock, a crash -
+            # would be lost in silence. Written in ONE transaction, and the
+            # write is checked: a part with no row is the loss this is for,
+            # so no row means no call. `_next_pending_part`
+            # reads them on, this turn and later ones; each read overwrites
+            # its own row.
+            message_id, _k, n = in_parts
+            base = plan["work_key"].rsplit(":part", 1)[0]
+            keys = [_part_key(base, (message_id, later, n))
+                    for later in range(2, n + 1)]
+            try:
+                named = await anyio.to_thread.run_sync(
+                    partial(_record_pending_parts, chat_id, plan, keys))
+            except asyncio.CancelledError:
+                self._hand_back_later(plan)
+                raise
+            if not named:
+                await self._hand_back(plan)
+                return None
+        # THE LAST WORD BEFORE THE MONEY. The claim re-asked
+        # the stand-down, but the write above is an await of its own and a
+        # lock can land in it: a follow-on call sent now would be cancelled
+        # at the grace's end and counted read, paid, never noted.
+        if follow_on_of is not False and self.task is not follow_on_of:
+            await self._hand_back(plan)
+            return None
         try:
             import openrouter
             try:
@@ -1250,9 +1356,17 @@ class Worker:
                     dict(config.PROVIDER_POLICY),
                     response_format=notebook_extract.RESPONSE_FORMAT,
                 )
+                if job_id is None:
+                    self._reached[chat_id] = self._reached.get(chat_id, 0) + 1
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                # A call is a request that reached the provider; one refused
+                # before it left (`reached_provider` False) is not one, and
+                # the panel's "took N calls" does not count it.
+                if (job_id is None
+                        and getattr(exc, "reached_provider", True) is not False):
+                    self._reached[chat_id] = self._reached.get(chat_id, 0) + 1
                 # loop.time() NOW, not the `now` captured before the request.
                 # A provider that hangs burns COMPLETION_TIMEOUT (120s) per call,
                 # so `opened_at` would be stamped two minutes in the past against
@@ -1296,8 +1410,11 @@ class Worker:
                 # carries no such attribute, and `getattr(..., True)` keeps
                 # the old behaviour for it. Unknown still means billed.
                 if getattr(exc, "reached_provider", True) is False:
+                    self._unsent_failures.add(plan["work_key"])
                     await anyio.to_thread.run_sync(
                         _release_one, plan["claim_day"])
+                else:
+                    self._unsent_failures.discard(plan["work_key"])
                 await _record_failure(chat_id, plan, error_type)
                 return "failed"
 
@@ -1660,6 +1777,58 @@ class Worker:
         if scope in ("chat", "unknown"):
             self._fail_chat(chat_id, now)
 
+    async def _part_failed(self, key: str) -> bool:
+        """Count one failure OF a later part; at PART_RETRIES_MAX name it
+        `message_part_unread` and say so (True). Before that the failed row
+        is read again on a later read.
+
+        Only a failure that belongs to the part counts: a bad
+        reply, a parse failure, a refusal of that text (`_fault_scope`
+        "chat", or "unknown"). The account and the provider - no credit,
+        429, 5xx, a timeout, no connection - are not the part's fault; an
+        ordinary range is retried through them until it reads, and so is a
+        part, so after a top-up it is read."""
+        if key in self._unsent_failures:
+            # Nothing left this machine: not the part's failure.
+            self._unsent_failures.discard(key)
+            return False
+        found, error_type = await anyio.to_thread.run_sync(
+            partial(_part_error_type, key))
+        if not found:
+            # The row could not be read: an unknown is not counted
+            # against the part; it is asked again on a later failure.
+            return False
+        if error_type and _fault_scope(error_type) == "provider":
+            return False
+        n = self._part_failures.get(key, 0) + 1
+        if n < PART_RETRIES_MAX:
+            self._part_failures[key] = n
+            return False
+        self._part_failures.pop(key, None)
+        await anyio.to_thread.run_sync(partial(_mark_part_unread, key))
+        return True
+
+    async def _hand_back(self, plan: dict) -> None:
+        """Give back a claim whose call will not be sent (68 a): the
+        day's slot, the in-flight marks, and the `running` row - deleted,
+        or for a later part put back to `message_part_pending`, so the part
+        is still named and read on a later turn."""
+        self._active.discard(plan["work_key"])
+        self._active_chats.discard(plan["chat_id"])
+        await anyio.to_thread.run_sync(partial(_hand_back_sync, plan))
+
+    def _hand_back_later(self, plan: dict) -> None:
+        """`_hand_back` from a coroutine being cancelled, which may not
+        await: the same repair as a tracked task, like
+        `_undo_abandoned_preamble`."""
+        self._active.discard(plan["work_key"])
+        self._active_chats.discard(plan["chat_id"])
+        try:
+            self._track(asyncio.get_running_loop().create_task(
+                anyio.to_thread.run_sync(partial(_hand_back_sync, plan))))
+        except Exception:                                 # pragma: no cover
+            pass
+
     def _undo_abandoned_preamble(self, task: "asyncio.Task") -> None:
         """Give back what a preamble claimed for a turn that never happened.
 
@@ -1746,6 +1915,127 @@ class Worker:
                 anyio.to_thread.run_sync(_undo)))
         except Exception:                                 # pragma: no cover
             pass
+
+    async def _read_offer(self, chat_id: int) -> str | None:
+        """One offer of the ordinary reader: a read, and as many further
+        calls as it takes to finish that read's stretch (decision 68 a).
+
+        The first call is the ordinary one. When the budget could not fit
+        the whole stretch, the part that did not fit is still above the
+        cursor, and each further call reads on from the cursor to the
+        stretch's end: one message is enough (`min_new=1`), the end is
+        `until_id`, and every call is an ordinary call - claimed against
+        the day's sixty, halved under pressure like any other. It stops at
+        the end of the stretch, at the first call that does not settle
+        (the day's ceiling, a failure, a job taking the chat), and when the
+        vault stands the loop down: a new paid call must not start inside
+        the five seconds a lock grants the one already out. What it did not
+        reach stays unread, never marked read.
+        """
+        # A CHAT A JOB HOLDS IS THE JOB'S, FROM THE FIRST LINE
+        # (3.12). `_prepare` asks the same, but only after this
+        # method has started; nothing here may run for that chat meanwhile.
+        if self._job_holds(chat_id):
+            return None
+        origin = self.task
+        self._follow_on.pop(chat_id, None)
+        self._reached[chat_id] = 0
+        parts_read: dict[int, int] = {}
+        given_up: set[str] = set()
+        outcome = None
+        first = True
+        try:
+            # A read's further calls take at most a share of what is left
+            # of the day when it begins (FOLLOW_ON_SHARE), and at most
+            # PARTS_PER_READ later parts of any one message. What they do
+            # not reach stays named and is read on later turns.
+            left = max(0, config.NOTEBOOK_DAILY_CALL_CAP
+                       - await anyio.to_thread.run_sync(_calls_today))
+            allowed = max(1, left // FOLLOW_ON_SHARE)
+            while True:
+                if not first and (
+                        outcome != "settled" or self.task is not origin
+                        or self._job_holds(chat_id)
+                        or self._reached.get(chat_id, 0) >= allowed):
+                    break
+                # Later parts of a message already begun come first: they
+                # are older than anything the stretch goes on to.
+                pending = await anyio.to_thread.run_sync(partial(
+                    _next_pending_part, chat_id,
+                    skip=frozenset(m for m, c in parts_read.items()
+                                   if c >= PARTS_PER_READ),
+                    skip_keys=frozenset(given_up)))
+                if (pending is not None and parts_read.get(pending[0], 0)
+                        >= PARTS_PER_READ):
+                    pending = None
+                if pending is not None:
+                    parts_read[pending[0]] = parts_read.get(pending[0], 0) + 1
+                    outcome = await self._handle(
+                        chat_id, part=pending,
+                        follow_on_of=False if first else origin)
+                    failed_call = outcome == "failed"
+                    if failed_call and await self._part_failed(pending[2]):
+                        outcome = PART_UNREAD
+                    if outcome == PART_UNREAD:
+                        given_up.add(pending[2])
+                        if failed_call:
+                            # A paid call just failed: this offer stops, as
+                            # at any call that does not settle. The
+                            # part is named; the next reply reads on.
+                            break
+                        # No longer plannable, so nothing was sent: named,
+                        # and the read goes on with the rest of the chat.
+                        outcome = "settled"
+                        continue
+                elif first:
+                    outcome = await self._handle(chat_id)
+                else:
+                    end = self._follow_on.pop(chat_id, None)
+                    if end is None:
+                        break
+                    outcome = await self._handle(
+                        chat_id, min_new=1, until_id=end, follow_on_of=origin)
+                first = False
+        finally:
+            self._follow_on.pop(chat_id, None)
+            calls = self._reached.pop(chat_id, 0)
+        if calls:
+            self._read_calls.pop(chat_id, None)
+            self._read_calls[chat_id] = calls
+            while len(self._read_calls) > READ_CALLS_KEPT:
+                self._read_calls.pop(next(iter(self._read_calls)))
+        return outcome
+
+    def long_message_block(self, con, chat_id: int | None) -> dict | None:
+        """What the Notes tab says about a message read in parts (68 a),
+        or None without a chat: `pending` later parts still to be read on
+        later turns, `failed` parts whose read failed (tried again later).
+
+        Both are 0 while this chat is being read: parts named
+        ahead of a read in progress are not news, and a line saying part of
+        a message was not read must not show during a healthy read."""
+        if chat_id is None:
+            return None
+        # Zero while EITHER door reads this chat: a job's
+        # reading shows on the strip, and its parts are not news either.
+        if self.reading(chat_id) or self._job_holds(chat_id):
+            return {"pending": 0, "failed": 0, "unread": 0}
+        # Only parts of messages still in the chat: a long reply
+        # regenerated away is not the chat's any more, and neither are
+        # its parts. `failed` includes `abandoned_in_flight`, which is read
+        # again like any failed part, so "tried again" is true.
+        counts = {r[0]: r[1] for r in con.execute(
+            "SELECT CASE WHEN e.status = 'failed' THEN 'failed' "
+            "            ELSE e.skip_reason END, COUNT(*) "
+            "FROM notebook_extractions e "
+            "JOIN messages m ON m.id = e.from_message_id AND m.active = 1 "
+            "WHERE e.chat_id = ? AND e.work_key LIKE '%:part%of%' "
+            "AND (e.status = 'failed' OR (e.status = 'skipped' "
+            "     AND e.skip_reason IN (?, ?))) "
+            "GROUP BY 1", (chat_id, PART_PENDING, PART_UNREAD)).fetchall()}
+        return {"pending": counts.get(PART_PENDING, 0),
+                "failed": counts.get("failed", 0),
+                "unread": counts.get(PART_UNREAD, 0)}
 
     def reading(self, chat_id: int) -> bool:
         """Whether this chat has a read waiting or out right now (58 a).
@@ -2271,6 +2561,12 @@ class Worker:
         chat_id, job_id, scope = job["chat_id"], job["id"], job["scope"]
         loop = asyncio.get_running_loop()
         state, why = "failed", None
+        # Later parts this job has read, by message, and the part rows it
+        # has tried once (one that did not settle stays named and is left
+        # to the ordinary reader's later turns, not asked again here).
+        job_parts: dict[int, int] = {}
+        tried_parts: set[str] = set()
+        units_done = 0
         try:
             await anyio.to_thread.run_sync(
                 partial(_job_write, job_id, running=True))
@@ -2296,6 +2592,35 @@ class Worker:
                 spent = await anyio.to_thread.run_sync(_calls_today)
                 if spent >= cap:
                     state, why = "stopped", "daily_cap_reached"
+                    break
+                # THE REST OF A MESSAGE READ IN PARTS (68 a), before the
+                # cursor is asked: the first part already moved it past
+                # that message. At most PARTS_PER_READ later parts of one
+                # message per job, each tried once; the rest stay
+                # `message_part_pending`, named, and the ordinary reader
+                # reads them on later turns. So the job closes `done` with
+                # every part read or named, never stepped over.
+                pending = await anyio.to_thread.run_sync(partial(
+                    _next_pending_part, chat_id,
+                    skip=frozenset(m for m, c in job_parts.items()
+                                   if c >= PARTS_PER_READ),
+                    skip_keys=frozenset(tried_parts),
+                    until=job.get("to_message_id") if scope == "range"
+                    else job.get("read_until")))
+                if (pending is not None and job_parts.get(pending[0], 0)
+                        >= PARTS_PER_READ):
+                    pending = None
+                if pending is not None:
+                    tried_parts.add(pending[2])
+                    job_parts[pending[0]] = job_parts.get(pending[0], 0) + 1
+                    piece = asyncio.create_task(self._handle(
+                        chat_id, part=pending, cap=cap, job_id=job_id))
+                    self._track(piece)
+                    if await asyncio.shield(piece) == "failed":
+                        await self._part_failed(pending[2])
+                    continue
+                if scope == "next" and units_done:
+                    state = "done"
                     break
                 cursor = await anyio.to_thread.run_sync(
                     partial(self._backfill_cursor, job))
@@ -2350,9 +2675,7 @@ class Worker:
                     else:
                         state, why = "failed", outcome or "refused"
                     break
-                if scope == "next":
-                    state = "done"
-                    break
+                units_done += 1
         except asyncio.CancelledError:
             # The vault is locking (`quiesce`) or the app is stopping. The
             # unit keeps running shielded; the job's row records why it
@@ -2526,6 +2849,10 @@ class Worker:
             # Whether the chat asked about has a read waiting or out; None
             # without a chat. What the Notes tab's fast poll asks (58 a).
             "reading": None if chat_id is None else self.reading(chat_id),
+            # How many calls the last ordinary read of that chat took, or
+            # None. More than one means its messages were long (68 a).
+            "read_calls": (None if chat_id is None
+                           else self._read_calls.get(chat_id)),
             # The backfill job: this chat's newest when a chat was asked
             # about, the one in flight otherwise, null when there is none.
             # Always present, for the same reason as `chat`.
@@ -3485,6 +3812,8 @@ def _plan_work(chat_id: int, model_id: str, language: str,
                reread: bool = False,
                first_read_edge: int | None = None,
                from_oldest: bool = False,
+               part: int | None = None,
+               part_key: str | None = None,
                keep=()) -> dict | None:
     """Decide whether there is enough new material, and gather it.
 
@@ -3718,6 +4047,10 @@ def _plan_work(chat_id: int, model_id: str, language: str,
                 return None
             rows = uncovered
 
+        # Where this read's stretch ends, whatever the budget below keeps.
+        # A read that could not fit all of it goes on to here in the same
+        # offer (68 a); see `Worker._read_offer`.
+        chunk_end = rows[-1]["id"] if rows else None
         window = con.execute(
             "SELECT role, content FROM messages "
             "WHERE chat_id = ? AND active = 1 AND id <= ? "
@@ -3797,12 +4130,17 @@ def _plan_work(chat_id: int, model_id: str, language: str,
     # costs the material nothing and a long one cannot be starved by it.
     reserve = min(RECENT_RESERVE_CHARS,
                   sum(len(line) + 1 for line in recent))
-    # WHICH END IS KEPT depends on who is reading.
+    # WHICH END IS KEPT. Both readers the worker runs keep the OLDEST
+    # lines that fit (`from_oldest`); `budget_pairs`, which keeps the
+    # newest, is left for a caller that asks for the present.
     #
-    # The ordinary reader keeps the NEWEST lines that fit
-    # (`budget_pairs`): it reads the present, and on a long-message chat the
-    # stretch it steps over is the part the next reader would have to walk
-    # back for. Decision 68 a moves that to a later commit.
+    # The ordinary reader kept the newest until decision 68 a, and on a
+    # long-message chat that marked the older half of every stretch read
+    # without sending it: twenty messages of about a thousand characters,
+    # nine read and eleven stepped over for good, under a cursor that only
+    # moves forward. Keeping the oldest, what does not fit stays above the
+    # cursor and the same offer reads on to the end of the stretch
+    # (`chunk_end`, `Worker._read_offer`).
     #
     # A job keeps the OLDEST (3.11). Its whole purpose is the history, and
     # keeping the newest did the opposite of that. Measured on twenty
@@ -3816,6 +4154,28 @@ def _plan_work(chat_id: int, model_id: str, language: str,
     ceiling = notebook_extract.TURNS_MAX_CHARS - reserve
     kept = (_budget_from_oldest(lines, ceiling) if from_oldest
             else notebook_extract.budget_pairs(lines, ceiling))
+    part_of = None
+    if lines and (part is not None or (not kept and from_oldest)):
+        # ONE MESSAGE LONGER THAN THE WHOLE CEILING. Keeping the oldest, it
+        # would head every plan and fit none of them, and the chat would
+        # never be read again. It is read in PARTS instead, each cut to the
+        # ceiling and sent in its own call; the model and the grounding
+        # check see the same part, so a note from it still cites this
+        # message. This plan is part `part` (the first when not asked);
+        # `Worker._handle` names every later part as `message_part_pending`
+        # before the first is sent, and reads them on in the same turn.
+        first_id, first_line = lines[0]
+        role, body = parts[first_id]
+        room = ceiling - 1 - (len(first_line) - len(body))
+        if room <= 0:
+            return None
+        pieces = [body[i:i + room] for i in range(0, len(body), room)] or [""]
+        k = part or 1
+        if k > len(pieces):
+            return None
+        parts[first_id] = (role, pieces[k - 1])
+        kept = [(first_id, f"{role}: {pieces[k - 1]}")]
+        part_of = (first_id, k, len(pieces))
     if not kept:
         # Even one line does not fit. Reading nothing is right; marking the
         # range read would be the silent loss this whole block is about.
@@ -3900,6 +4260,10 @@ def _plan_work(chat_id: int, model_id: str, language: str,
     return {
         "from_id": rows[0]["id"],
         "to_id": rows[-1]["id"],
+        "chunk_end": chunk_end,
+        # (message id, this part, how many) when the one message in this
+        # plan is read in parts, else None. See the budget above.
+        "part": part_of,
         "new": new,
         "recent": recent,
         "chunk": "\n".join(new),
@@ -3926,9 +4290,144 @@ def _plan_work(chat_id: int, model_id: str, language: str,
         # which retires the note at the wrong index.
         "existing": [_existing_line(e) for e in live],
         "existing_ids": [e["id"] for e in live],
-        "work_key": notebook_extract.work_key(
+        "work_key": part_key or _part_key(notebook_extract.work_key(
             chat_id, rows[0]["id"], rows[-1]["id"], model_id, language),
+            part_of),
     }
+
+
+PART_PENDING = "message_part_pending"
+#: A later part given up: failed PART_RETRIES_MAX times, or no longer
+#: plannable (the message splits another way now). Said on the card.
+PART_UNREAD = "message_part_unread"
+
+
+def _part_error_type(key: str) -> tuple[bool, str | None]:
+    """(found, error type) for a failed later part's row. `found` is False
+    when there is no failed row or it could not be read, and the caller
+    then does not count the failure."""
+    from database import get_db
+    try:
+        with get_db() as con:
+            row = con.execute(
+                "SELECT error_type FROM notebook_extractions "
+                "WHERE work_key = ? AND status = 'failed'", (key,)).fetchone()
+    except Exception:
+        return False, None
+    return (True, row[0]) if row else (False, None)
+
+
+def _mark_part_unread(key: str) -> None:
+    """Name one later part as not read, final. Never raises."""
+    from database import get_db
+    try:
+        with get_db() as con:
+            con.execute(
+                "UPDATE notebook_extractions SET status = 'skipped', "
+                "skip_reason = ?, attempt_token = NULL "
+                "WHERE work_key = ? AND status IN ('skipped', 'failed')",
+                (PART_UNREAD, key))
+    except Exception:
+        logger.info("Notebook: a part given up could not be named; it is "
+                    "tried again on a later read.")
+
+
+def _hand_back_sync(plan: dict) -> None:
+    """See `Worker._hand_back`. Never raises: the usual reason to be here is
+    the vault locking."""
+    from database import get_db
+
+    _release_one(plan.get("claim_day"))
+    later = plan.get("part") is not None and plan["part"][1] > 1
+    try:
+        with get_db() as con:
+            if later:
+                con.execute(
+                    "UPDATE notebook_extractions SET status = 'skipped', "
+                    "skip_reason = ?, attempt_token = NULL "
+                    "WHERE work_key = ? AND status = 'running'",
+                    (PART_PENDING, plan["work_key"]))
+            else:
+                con.execute(
+                    "DELETE FROM notebook_extractions "
+                    "WHERE work_key = ? AND status = 'running'",
+                    (plan["work_key"],))
+    except Exception:
+        logger.info("Notebook: a claim given back before its call left a "
+                    "trace the next cycle closes out.")
+
+
+def _record_pending_parts(chat_id: int, plan: dict, keys: list[str]) -> bool:
+    """Name every later part of a message read in parts, in one
+    transaction, before its first part is sent. True only if all of them
+    were written. A row already there (a part named by an earlier try, or
+    read since) is left as it is."""
+    from database import get_db
+    try:
+        with get_db() as con:
+            con.execute("BEGIN IMMEDIATE")
+            for key in keys:
+                if con.execute(
+                        "SELECT 1 FROM notebook_extractions WHERE work_key = ?",
+                        (key,)).fetchone():
+                    continue
+                notebook.commit_extraction(
+                    con, work_key=key, chat_id=chat_id,
+                    from_id=plan["from_id"], to_id=plan["to_id"],
+                    status="skipped", skip_reason=PART_PENDING)
+        return True
+    except Exception:
+        logger.info("Notebook: the later parts of a long message could not "
+                    "be named, so its first part was not sent.")
+        return False
+
+
+def _next_pending_part(chat_id: int, *, skip=frozenset(), skip_keys=frozenset(),
+                       until: int | None = None):
+    """The oldest later part of a message read in parts that is still to be
+    read, as (message id, part, key), or None.
+
+    Only a message whose first part is already read (it is at or under the
+    cursor): a part must never be read before the part in front of it moved
+    the cursor, or the cursor would pass the first part unread. A part
+    whose row is `failed` is read again, like any failed read (33 a), and so
+    is one closed `abandoned_in_flight`: it was paid for and never
+    read, and for a part nothing else would ever read it. `skip` names
+    messages this read has taken its share of, `skip_keys` rows a job has
+    tried once."""
+    from database import get_db
+    with get_db() as con:
+        cursor = con.execute(
+            "SELECT COALESCE(MAX(to_message_id), 0) FROM notebook_extractions "
+            "WHERE chat_id = ? AND (status = 'done' "
+            "     OR (status = 'failed' AND error_type = ?))",
+            (chat_id, notebook.ABANDONED_IN_FLIGHT)).fetchone()[0]
+        rows = con.execute(
+            "SELECT e.work_key, e.from_message_id FROM notebook_extractions e "
+            "JOIN messages m ON m.id = e.from_message_id AND m.active = 1 "
+            "WHERE e.chat_id = ? AND e.work_key LIKE '%:part%of%' "
+            "AND e.from_message_id <= ? "
+            "AND ((e.status = 'skipped' AND e.skip_reason = ?) "
+            "     OR e.status = 'failed')",
+            (chat_id, cursor, PART_PENDING)).fetchall()
+    found = []
+    for key, message_id in rows:
+        if message_id in skip or key in skip_keys:
+            continue
+        if until is not None and message_id > until:
+            continue
+        k = int(key.rsplit(":part", 1)[1].split("of", 1)[0])
+        found.append((message_id, k, key))
+    return min(found) if found else None
+
+
+def _part_key(key: str, part_of) -> str:
+    """One row per part of a message read in parts. The range is the same
+    message every time, so the part rides on the key; a message that fits
+    keeps the plain key it always had."""
+    if part_of is None or part_of[2] == 1:
+        return key
+    return f"{key}:part{part_of[1]}of{part_of[2]}"
 
 
 def _greeting_is_unread(con, chat_id: int, last: int) -> bool:
@@ -4008,6 +4507,15 @@ async def _record_skip(chat_id: int, reason: str,
     same screen.
     """
     if plan is None:
+        return False
+    in_parts = plan.get("part")
+    if (in_parts is not None and in_parts[1] > 1
+            and reason != "message_part_pending"):
+        # A later part of a message read in parts already has its row, named
+        # `message_part_pending` before the first part was sent (68 a). A
+        # refusal of that part (the day's ceiling, the proxy) leaves it so:
+        # the sentence a reader needs is that part of the message was not
+        # read, and the refusal's own cause is on the card's other lines.
         return False
     # Declared or it does not ship. These reach a reader as sentences, so an
     # undeclared one is a snake_case token in prose - the same failure the

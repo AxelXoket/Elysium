@@ -235,6 +235,17 @@ async def worker_status(chat_id: int | None = None) -> dict:
                            chat_id, type(exc).__name__)
             return None
 
+    def _long_message(con) -> dict | None:
+        """Parts of a very long message still to be read, or that failed,
+        for the chat on screen (68 a). Degrades to None like the line
+        above: one optional field must not blank the card."""
+        try:
+            return notebook_worker.worker.long_message_block(con, chat_id)
+        except Exception as exc:  # noqa: BLE001 - degrade, never fail the poll
+            logger.warning("long_message unavailable for chat %s: %s",
+                           chat_id, type(exc).__name__)
+            return None
+
     def _read() -> dict:
         from database import get_db
         with get_db() as con:
@@ -254,6 +265,7 @@ async def worker_status(chat_id: int | None = None) -> dict:
                 # as long as a job ran.
                 "backfill": notebook_worker.worker.backfill_block(con, chat_id),
                 "chat_refusal": _chat_refusal(con),
+                "long_message": _long_message(con),
             }
 
     body = await anyio.to_thread.run_sync(_read)

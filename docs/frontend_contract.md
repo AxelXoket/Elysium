@@ -59,7 +59,7 @@
 | POST | /notebook/{chat_id}/use-global | Whether this chat follows the global limits | FAZ 1 (notebook) |
 | GET | /notebook/safeword | The phrase that stops the turn being sent. Empty means off | Since 1.1.5 (notebook) |
 | POST | /notebook/safeword | Set or clear it. **The only limit in this app enforced in code**, and it has two halves. The message BEING SENT is matched before the provider is called, and when it matches nothing is sent and nothing is stored (`400 safeword_triggered` from every completion route). That includes the stored message a regenerate re-sends, so arming a word can refuse regenerates on chats that already contain it. The same word ANYWHERE ELSE in an outgoing body - older history, a note, a character card, a `stop` sequence - does NOT stop the turn: `safeword_filter.scrub` removes it in both payload builders in `openrouter.py`, a message the cut empties is dropped from `messages`, an emptied `stop` entry is dropped, and the rest of the body goes. Model ids, provider policy, response schemas, modality lists and `data:` URIs are scanned and left alone. Neither half rewrites the vault: the word stays in the stored row, in the note, and on screen | Since 1.1.5 (notebook) |
-| GET | /notebook/worker | What the background extractor has done. Optional `?chat_id=` is purely additive: it fills `worker.chat`, `worker.reading` and the top-level `chat_refusal` and changes nothing else, so a panel with no chat selected asks the same question it always did. `stats` is install-wide. `chat_refusal` is `"model_not_extractable"` only while such a refusal of that chat stands: among the chat's refusal rows newer than its last read (`done`, `failed` or `running`), at most `STANDING_REFUSAL_ROWS` of them, newest first, any one names the model the chat resolves to now (the row's work key is recomputed with the current model). So a chat that went back to a model it was already refused on is still told. Otherwise, with no `chat_id`, or if that check itself fails (logged, the rest of the body answered as usual), it is null. The Background notes card says the unfit-model sentence from this field only and never from the install-wide `stats.skip_reasons` count. See "The extraction worker's status" below for the response shape | FAZ 5 (notebook) |
+| GET | /notebook/worker | What the background extractor has done. Optional `?chat_id=` is purely additive: it fills `worker.chat`, `worker.reading`, `worker.read_calls` and the top-level `chat_refusal` and changes nothing else, so a panel with no chat selected asks the same question it always did. `stats` is install-wide. `chat_refusal` is `"model_not_extractable"` only while such a refusal of that chat stands: among the chat's refusal rows newer than its last read (`done`, `failed` or `running`), at most `STANDING_REFUSAL_ROWS` of them, newest first, any one names the model the chat resolves to now (the row's work key is recomputed with the current model). So a chat that went back to a model it was already refused on is still told. Otherwise, with no `chat_id`, or if that check itself fails (logged, the rest of the body answered as usual), it is null. The Background notes card says the unfit-model sentence from this field only and never from the install-wide `stats.skip_reasons` count. See "The extraction worker's status" below for the response shape | FAZ 5 (notebook) |
 | POST | /notebook/worker/reset | Lift a tripped or stopped circuit breaker by hand. No body means the global button: the process-wide refusal is lifted AND every per-chat one is dropped. `{"chat_id": N}` unsticks exactly that conversation and leaves the rest refusing. Answers `{ok: true, worker}` with the same `worker` block `GET /notebook/worker` serves. Without this route, recovering from a provider outage means restarting the whole application | FAZ 5 (notebook) |
 | GET | /notebook/extract/plan/{chat_id} | The preview of a reading job, and it spends nothing. Query `scope` (`next` / `all` / `range`, required, 422 without it) and, for `range`, `from_message_id` and `to_message_id` (400 `notebook_range_invalid` when they run backwards or fall outside the chat; 404 `chat_not_found` when the chat is not there). Answers `ready`, `blocked_by`, the counts, `calls_planned`, `daily_cap` (the day's ceiling, the same number `GET /notebook/worker` reports), `backfill_cap` (what a job may claim: the day's ceiling minus `ELYSIUM_NOTEBOOK_LIVE_RESERVE`), `live_reserve`, `calls_spent_today`, `fits_today`, `prompt_price`, `cost_estimate` (null when the price is unknown, never a fake zero), `model_id` and `model_is_chat_bind`. See "Reading a chat on request" below | IP-01 (notebook) |
 | POST | /notebook/extract/run/{chat_id} | Start a reading job. Body `{scope, from_message_id?, to_message_id?}`. `{started: true, job_id, calls_planned}` and the job runs on as its own task; or `{started: false, reason}` - a refusal, HTTP 200, never an error, with one of the ten reasons below. `next` reads ONE unit and writes a job row so it can be undone (it is the one-press read the removed sweep route used to be, decision 69 a); `all` loops until nothing is unread up to the last message present when the job started (3.13), or a stop lands, re-asking the ceiling every turn - a message written during the job is left to the ordinary reader; `range` reads the chosen stretch again, read or not. 404 `chat_not_found`, 400 `notebook_range_invalid` | IP-01 (notebook) |
@@ -974,11 +974,28 @@ so that read ends on the reply rather than on the reader's message (29 a). Nothi
 used to start a job on a chat's first offer, and decisions 30 a and 31 a
 removed that. The older history is read only by a job the reader starts from
 the Notebook panel, after the preview. Both go through the same `_handle` -
-one claim against the day, one running row, one settle - and a job adds its
+each call one claim against the day, one running row, one settle - and a job adds its
 accounting: a `notebook_backfill_jobs` row, a lower ceiling, and undo. A job
 reads the chat as it stood when it started (3.13: it ends at the message that
 was newest then) and, over long messages, keeps the OLDEST lines of each batch
-that fit, so it walks forward rather than stepping over the start (3.11).
+that fit, so it walks forward rather than stepping over the start (3.11). The
+turn-driven reader does the same since decision 68 a: what one call cannot fit
+stays unread, above the cursor, and the same turn makes further calls from the
+cursor to the end of that read's stretch. Each is an ordinary call against the
+day's ceiling and halved under pressure; they stop at the ceiling, at the
+first call that does not settle, when a job takes the chat, and when a vault
+lock stands the loop down. A single message longer than the whole ceiling is read in
+parts, each cut to the ceiling and sent in its own call, and a note from any
+part cites that message. Every later part is written as the skip
+`message_part_pending` (one transaction, checked: no rows, no call) before the
+first is sent; reading a part replaces its row. A read takes at most
+`PARTS_PER_READ` later parts of one message, and its further calls never take
+more than one `FOLLOW_ON_SHARE` of the calls left today when it began; the
+rest are read first on later replies, oldest first, and only once the part in front of them is read. A job reads at most `PARTS_PER_READ` later parts of a
+message, each tried once, and leaves the rest named. The ordinary reader does
+nothing in a chat a job holds, and a follow-on call re-checks the vault
+stand-down after the part rows are written, right before the request. Part
+rows carry the message's work key with `:part<k>of<n>`.
 While it runs the turn-driven reader leaves that chat alone (3.12). The
 one-press `POST /notebook/sweep/{chat_id}` is gone (decision 69 a); `scope:
 "next"` is that single unit, with a preview and the reserve.
@@ -1093,6 +1110,30 @@ reply ends, an open Notes tab asks this route every `FAST_POLL_MS` (1.5 s),
 at most `FAST_POLL_MAX` times, and refreshes the note list once when it turns
 false; closing the tab or a failed ask (a locked vault) ends that poll. The
 route is idle-exempt, so the poll does not hold the vault open (58 a).
+
+`long_message` is `null` without `?chat_id=`, else `{pending, failed, unread}`: later
+parts of that chat's very long messages still to be read, and parts whose
+read failed. Both are 0 while that chat is being read. The card says
+"A very long message is read in parts over your next replies." and "Part of
+a very long message failed; it is tried again." from these; the
+`message_part_pending` skip count is never shown install-wide. A part whose read failed, or
+was closed `abandoned_in_flight`, is read again first on a later read, up to
+`PART_RETRIES_MAX` failures of the part itself (a bad reply or a refusal of
+its text; no credit, 429, 5xx, timeouts, no connection and any request that
+never reached the provider never count, and one
+offer stops at the first failed call; this process's count); then, or when the
+message no longer splits the way its rows were named, the part is given up as
+`message_part_unread`, counted in `unread`, the reader goes on with the chat,
+and the card says "Part of a very long message could not be read." Only parts
+of active messages are counted, and all three are 0 while either door reads
+the chat. While a part is failed or given up the failed-runs line does not say
+"Nothing was lost".
+
+`read_calls` is `null` without `?chat_id=` or before that chat's first
+ordinary read in this process; otherwise how many calls its last read took.
+A call is a request that reached the provider: one that failed before it was
+sent is not counted.
+The Background notes card says it when it is more than one (68 a).
 
 `chat` is always present and is `null` unless `?chat_id=` was passed AND that
 chat has a breaker record of its own. When it is there it holds `state`,

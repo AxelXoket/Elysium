@@ -109,6 +109,14 @@ export const SKIP_PROSE: Record<string, string> = {
     "no API key is set, so nothing could be sent. This costs you nothing "
     + "and no call was made - add a key in Settings and it picks up again",
   proxy_gate: "your proxy was required and not healthy",
+  // 68 a: one message longer than a whole call is read in parts; a later
+  // part still to be read is this row until it is. Chat-scoped: the card
+  // says it from `long_message`, the chat on screen, never from the
+  // install-wide count, which would read "not read" during a healthy read.
+  message_part_pending: "part of a very long message is still waiting to be read",
+  // 68 a: a later part given up. Chat-scoped like the one above; the
+  // card says it from `long_message.unread`.
+  message_part_unread: "part of a very long message could not be read",
   // NOT a line in the install-wide list below (3.8). The count of these rows
   // is every chat's, and the sentence is about one chat's model, so it is
   // said only through `chat_refusal`: the backend sends it while a refusal
@@ -163,6 +171,8 @@ export const SKIP_PROSE: Record<string, string> = {
 // eslint-disable-next-line react-refresh/only-export-components -- same boundary as SKIP_PROSE
 export const CHAT_SCOPED_SKIPS: ReadonlySet<string> = new Set([
   "model_not_extractable",
+  "message_part_pending",
+  "message_part_unread",
 ]);
 
 /** What a reason with no sentence reads as. A snake_case token is the one
@@ -492,6 +502,45 @@ export function sweepProse(reason: string | undefined): string {
   return SWEEP_PROSE[reason] ?? `It did not start (${reason}).`;
 }
 
+/** 68 a: the line for a read that took more than one call. */
+// eslint-disable-next-line react-refresh/only-export-components -- same boundary as STATE_PROSE
+export function readCallsProse(calls: number): string {
+  return `Long messages here: the last read took ${calls} calls.`;
+}
+
+/** 68 a: later parts of a very long message wait for later
+ *  replies, a few per reply, so one paste cannot spend the day. */
+export const PARTS_PENDING_PROSE =
+  "A very long message is read in parts over your next replies.";
+
+/** The failed-runs line. "Nothing was lost" is said only while no part of
+ *  a very long message in this chat is failed or given up. A
+ *  failed part is read again later ("tried again"); a part given up is
+ *  not read at all, so the line says that instead. */
+// eslint-disable-next-line react-refresh/only-export-components -- same boundary as STATE_PROSE
+export function failedRunsProse(
+  runs: number, parts: { failed: number; unread: number },
+): string {
+  const head = runs === 1 ? "1 run failed." : `${runs} runs failed.`;
+  const they = runs === 1 ? "it" : "they";
+  if (parts.unread > 0) {
+    return `${head} Some of what ${they} could not read stays unread.`;
+  }
+  return parts.failed > 0
+    ? `${head} What ${they} could not read stays unread and is tried again.`
+    : `${head} Nothing was lost - the messages ${they} could not read stay`
+      + " unread, not skipped.";
+}
+
+/** 68 a: a part given up (failed PART_RETRIES_MAX times, or no
+ *  longer plannable). Final; nothing reads it again. */
+export const PARTS_UNREAD_PROSE =
+  "Part of a very long message could not be read.";
+
+/** 68 a: a part whose read failed; it is tried again like any failed read. */
+export const PARTS_FAILED_PROSE =
+  "Part of a very long message failed; it is tried again.";
+
 export function WorkerPanel() {
   const chatId = useUiStore((s) => s.selectedChatId);
   const qc = useQueryClient();
@@ -526,6 +575,13 @@ export function WorkerPanel() {
   // said while the height animates down (KURAL 5.5); the Collapse takes it
   // away from readers the moment it starts closing.
   const heldRefusal = useHeldValue(chatRefusal);
+  // Held for the same reason: the line keeps its number while it closes.
+  const heldReadCalls = useHeldValue(body?.worker.read_calls ?? null);
+  // The backend reports both as 0 while this chat is being read, so
+  // neither line shows during a healthy read.
+  const partsPending = body?.long_message?.pending ?? 0;
+  const partsFailed = body?.long_message?.failed ?? 0;
+  const partsUnread = body?.long_message?.unread ?? 0;
   const failures = body?.stats.error_types ?? {};
   const drops = body?.worker.dropped ?? {};
   // Only when that value is describing THIS line's event. See isEmptySettle.
@@ -745,6 +801,42 @@ export function WorkerPanel() {
                   {CHAT_STATE_PROSE[chatState ?? ""] ?? chatState}
                 </p>
               </Collapse>
+              {/* 68 a: a read of long messages takes more than one call
+                  rather than skipping what did not fit, and each call is
+                  one of today's. Said only when it happened, about the chat
+                  on screen. */}
+              <Collapse open={(body.worker.read_calls ?? 0) > 1} className="min-w-0">
+                <p
+                  className="text-label leading-relaxed text-muted-foreground"
+                  data-testid="worker-read-calls"
+                >
+                  {readCallsProse(heldReadCalls ?? 0)}
+                </p>
+              </Collapse>
+              <Collapse open={partsPending > 0} className="min-w-0">
+                <p
+                  className="text-label leading-relaxed text-muted-foreground"
+                  data-testid="worker-parts-pending"
+                >
+                  {PARTS_PENDING_PROSE}
+                </p>
+              </Collapse>
+              <Collapse open={partsFailed > 0} className="min-w-0">
+                <p
+                  className="text-label leading-relaxed text-muted-foreground"
+                  data-testid="worker-parts-failed"
+                >
+                  {PARTS_FAILED_PROSE}
+                </p>
+              </Collapse>
+              <Collapse open={partsUnread > 0} className="min-w-0">
+                <p
+                  className="text-label leading-relaxed text-muted-foreground"
+                  data-testid="worker-parts-unread"
+                >
+                  {PARTS_UNREAD_PROSE}
+                </p>
+              </Collapse>
               <p className="text-label leading-relaxed text-muted-foreground">
                 {body.stats.done} run{body.stats.done === 1 ? "" : "s"}{" \u00b7 "}
                 {body.spend.calls} of {body.daily_cap}{" "}
@@ -819,11 +911,8 @@ export function WorkerPanel() {
                   lost" side of this subtraction. */}
               <Collapse open={body.stats.failed - body.stats.paid_and_lost > 0} className="min-w-0">
                 <p className="text-label leading-relaxed text-muted-foreground">
-                  {body.stats.failed - body.stats.paid_and_lost === 1
-                    ? "1 run failed. Nothing was lost - the messages it could not"
-                    : `${body.stats.failed - body.stats.paid_and_lost} runs failed. Nothing`
-                      + " was lost - the messages they could not"}{" "}
-                  read stay unread, not skipped.
+                  {failedRunsProse(body.stats.failed - body.stats.paid_and_lost,
+                                   { failed: partsFailed, unread: partsUnread })}
                 </p>
               </Collapse>
 

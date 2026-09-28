@@ -402,7 +402,8 @@ SETTING_NOTEBOOK_PROMPT_LANG = "notebook_prompt_language"
 #: source stamp become load-bearing.
 SETTING_NOTEBOOK_AUTO_ACCEPT = "notebook_auto_accept"
 
-#: Turns between extractions.
+#: New messages between two reads of a chat. A read of long messages can
+#: take several calls to get through them all (decision 68 a).
 NOTEBOOK_EXTRACT_EVERY_TURNS = int(os.environ.get(
     "ELYSIUM_NOTEBOOK_EVERY_TURNS", "20"))
 

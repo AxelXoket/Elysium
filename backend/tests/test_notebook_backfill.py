@@ -3145,22 +3145,24 @@ class TestAJobWalksFromTheOldestEnd:
             e["text"] for e in notebook.list_entries(chat_id)], (
             "and no note came from it")
 
-    @pytest.mark.anyio
-    async def test_GROUND_the_ordinary_reader_keeps_the_newest_end(
-            self, client, monkeypatch) -> None:
-        """The same chat, the ordinary reader, one call: it keeps the newest
-        lines (decision 68 a, which would change that, is a later heading),
-        so the first message is not in its read. The row above is therefore
-        about the job's end, not about a chat where everything fits."""
-        prompts = self._provider(monkeypatch)
+    def test_GROUND_the_newest_end_would_not_hold_the_first_message(
+            self, client) -> None:
+        """Decision 68 a moved the ordinary reader to the oldest end too, so
+        the ground this row used to take from it is now taken from the
+        planner itself: over the same chat, keeping the NEWEST lines that
+        fit leaves the first message out, and keeping the oldest holds it.
+        The job row above is therefore about which end is kept, and wiring
+        the job back to the newest end turns it red."""
         chat_id = self._long_chat()
-        first = message_ids_of(chat_id)[0]
 
-        await notebook_worker.Worker()._handle(chat_id)
+        newest = notebook_worker._plan_work(
+            chat_id, "vendor/cheap", "en", BATCH, BATCH, from_oldest=False)
+        oldest = notebook_worker._plan_work(
+            chat_id, "vendor/cheap", "en", BATCH, BATCH, from_oldest=True)
 
-        assert len(prompts) == 1 and self.FIRST not in prompts[0]
-        with get_db() as con:
-            assert notebook.unread_count(con, chat_id, first, first) == 1
+        assert newest is not None and oldest is not None
+        assert self.FIRST not in newest["chunk"]
+        assert self.FIRST in oldest["chunk"], "POSITIVE: the other end holds it"
 
 
 class TestAJobHasTheChatToItself:

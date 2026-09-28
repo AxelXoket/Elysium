@@ -2185,6 +2185,16 @@ SKIP_REASONS: frozenset[str] = frozenset({
     # not the model's fault, and the Notes tab must not say it is. Same
     # once-per-pair rule as the one above.
     "model_list_unavailable",
+    # One message longer than a whole call's ceiling is read in parts, one
+    # call each (68 a). Every part after the first is written as this skip
+    # BEFORE the first part is sent, and each part that is then read
+    # overwrites its own row. A row that stays is a part still to be read:
+    # the reader takes a few per turn (PARTS_PER_READ) until none is left.
+    "message_part_pending",
+    # A later part given up (68 a): it failed at the provider
+    # PART_RETRIES_MAX times, or the message no longer splits the way its
+    # rows were named. Final, and said on the Notes tab.
+    "message_part_unread",
 })
 
 def _is_imported(con, chat_id: int) -> bool:

@@ -260,4 +260,51 @@ describe("the Notes tab after a reply (58 a)", () => {
     await waitFor(() =>
       expect(callsTo("/notebook/worker")).toBe(first + 1));
   });
+
+  // An ask already out when the tab closes or the panel collapses.
+  // Its answer must do nothing: not ask again ("still reading") and not
+  // refresh the list ("read over") for a panel nobody is looking at.
+  async function askHeldOpen(
+    close: (view: { unmount: () => void }) => void, readingAfter: boolean) {
+    const { worker, callsTo } = server();
+    const view = openTheNotesTab();
+    await advance(0);
+    await screen.findByText(FIRST);
+    const base = globalThis.fetch;
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    let holding = false;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (holding && String(input).includes("/notebook/worker")) await held;
+      return base(input, init);
+    }) as typeof fetch;
+    const asks = callsTo("/notebook/worker");
+    const lists = callsTo(`/notebook/${CHAT}`);
+    holding = true;
+    replyFinished();
+    await advance(FAST_POLL_MS);            // the ask leaves and is held
+    close(view);
+    worker.worker.reading = readingAfter;
+    release();
+    await advance(FAST_POLL_MS * 5);
+    return { asks: callsTo("/notebook/worker") - asks,
+             lists: callsTo(`/notebook/${CHAT}`) - lists };
+  }
+
+  it("an ask in flight when the tab closes asks no more", async () => {
+    const out = await askHeldOpen((view) => view.unmount(), true);
+    expect(out.asks).toBe(1);
+  });
+
+  it("an ask in flight when the panel collapses does not refresh the list", async () => {
+    const out = await askHeldOpen(() =>
+      act(() => useUiStore.setState({ rightPanelCollapsed: true })), false);
+    expect(out.asks).toBe(1);
+    expect(out.lists).toBe(0);
+  });
+
+  it("POSITIVE: the same held ask, nothing closed, refreshes the list", async () => {
+    const out = await askHeldOpen(() => {}, false);
+    expect(out.lists).toBe(1);
+  });
 });
