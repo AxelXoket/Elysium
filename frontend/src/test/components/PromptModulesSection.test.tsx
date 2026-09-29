@@ -1418,7 +1418,7 @@ function statefulServer(rows: Row[]): StatefulServer {
       status,
       headers: { "Content-Type": "application/json" },
     });
-  const snapshot = () =>
+  const snapshot = (): Row[] =>
     rows.map((r) => ({
       ...r,
       enabled: state.get(r.id as number),
