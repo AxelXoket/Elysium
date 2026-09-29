@@ -144,3 +144,39 @@ def test_the_backstop_is_a_ceiling_not_a_schedule(client, voice, monkeypatch):
                       json={"text": "First one. Second one."})
     events = _events(res)
     assert events[-1]["type"] == "voice_done", [e["type"] for e in events]
+
+
+# ---------------------------------------------------------------------------
+# the history cleanup worker, started from the exe itself
+# ---------------------------------------------------------------------------
+
+def test_the_selftest_runs_the_regex_worker_end_to_end():
+    """The worker is the exe started again. Here, in the dev tree, the same
+    check must say yes, or a frozen "no" could not be told from a broken
+    check."""
+    import run_app
+
+    ok, detail = run_app._selftest_regex_worker()
+    assert ok, detail
+
+
+def test_an_untied_worker_fails_the_selftest(monkeypatch):
+    """A worker that answers but would outlive the app is the bug the tie
+    exists for, so it is a failure, not a pass."""
+    import run_app
+    from prompt_modules import st_regex
+
+    monkeypatch.setattr(st_regex, "_kill_with_parent", lambda pid: None)
+    ok, detail = run_app._selftest_regex_worker()
+    assert ok is False
+    assert "tied=False" in detail
+
+
+def test_a_worker_that_never_starts_is_reported(monkeypatch):
+    import run_app
+    from prompt_modules import st_regex
+
+    monkeypatch.setattr(st_regex._Worker, "_start", lambda self: None)
+    ok, detail = run_app._selftest_regex_worker()
+    assert ok is False
+    assert detail == "did not start"

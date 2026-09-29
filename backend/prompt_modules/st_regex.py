@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import logging
 import re
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -291,102 +292,31 @@ def _worker_main(conn) -> None:  # pragma: no cover - runs in the child
 
 
 def _kill_with_parent(pid: int):
-    """Tie the child's life to this process: a Windows job object that kills
-    its members when its last handle closes. The handle is only ever held
-    here, so when this process ends in any way (a crash, a kill from the Task
-    Manager) the OS closes it and the child goes too. Without this, a child
-    stuck in a runaway pattern when the app died kept a CPU core busy
-    forever, because it never reads the closed pipe.
+    """Tie the child's life to this process with the kill-on-close job object
+    the voice worker already uses. The handle is only ever held here, so when
+    this process ends in any way (a crash, a kill from the Task Manager) the
+    OS closes it and the child goes too. Without this, a child stuck in a
+    runaway pattern when the app died kept a CPU core busy forever, because
+    it never reads the closed pipe.
 
-    Returns the job handle, which the caller keeps for the child's life, or
-    None where it cannot be set up (not Windows, or the call failed); then
-    the child still stops on the closed pipe once its current job ends.
+    Returns the job, which the caller keeps for the child's life, or None
+    where it cannot be set up; then the child still stops on the closed pipe
+    once its current job ends.
     """
-    import sys
+    from tts.worker_client import _JobObject
 
-    if sys.platform != "win32":
-        return None
-    import ctypes
-    from ctypes import wintypes
-
-    class _Basic(ctypes.Structure):
-        _fields_ = [
-            ("PerProcessUserTimeLimit", ctypes.c_int64),
-            ("PerJobUserTimeLimit", ctypes.c_int64),
-            ("LimitFlags", wintypes.DWORD),
-            ("MinimumWorkingSetSize", ctypes.c_size_t),
-            ("MaximumWorkingSetSize", ctypes.c_size_t),
-            ("ActiveProcessLimit", wintypes.DWORD),
-            ("Affinity", ctypes.c_size_t),
-            ("PriorityClass", wintypes.DWORD),
-            ("SchedulingClass", wintypes.DWORD),
-        ]
-
-    class _Io(ctypes.Structure):
-        _fields_ = [(n, ctypes.c_uint64) for n in (
-            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
-            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
-
-    class _Extended(ctypes.Structure):
-        _fields_ = [
-            ("BasicLimitInformation", _Basic),
-            ("IoInfo", _Io),
-            ("ProcessMemoryLimit", ctypes.c_size_t),
-            ("JobMemoryLimit", ctypes.c_size_t),
-            ("PeakProcessMemoryUsed", ctypes.c_size_t),
-            ("PeakJobMemoryUsed", ctypes.c_size_t),
-        ]
-
-    kill_on_job_close = 0x2000
-    extended_limit_information = 9
-    process_set_quota, process_terminate = 0x0100, 0x0001
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
-    kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
-    kernel32.SetInformationJobObject.restype = wintypes.BOOL
-    kernel32.SetInformationJobObject.argtypes = [
-        wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
-    kernel32.OpenProcess.restype = wintypes.HANDLE
-    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
-    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-
-    job = kernel32.CreateJobObjectW(None, None)
-    if not job:
-        return None
-    info = _Extended()
-    info.BasicLimitInformation.LimitFlags = kill_on_job_close
-    proc = None
-    try:
-        if not kernel32.SetInformationJobObject(
-                job, extended_limit_information, ctypes.byref(info),
-                ctypes.sizeof(info)):
-            raise OSError(ctypes.get_last_error())
-        proc = kernel32.OpenProcess(process_set_quota | process_terminate,
-                                    False, pid)
-        if not proc or not kernel32.AssignProcessToJobObject(job, proc):
-            raise OSError(ctypes.get_last_error())
-    except OSError:
-        kernel32.CloseHandle(job)
+    job = _JobObject()
+    if job.assign(pid):
+        return job
+    job.close()
+    if sys.platform == "win32":
         logger.warning("The history cleanup worker is not tied to the app.")
-        return None
-    finally:
-        if proc:
-            kernel32.CloseHandle(proc)
-    return job
+    return None
 
 
-def _close_handle(handle) -> None:
-    if handle is None:
-        return
-    import ctypes
-    from ctypes import wintypes
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel32.CloseHandle(handle)
+def _close_handle(job) -> None:
+    if job is not None:
+        job.close()
 
 
 #: How long the child may take to start. Not charged to any pattern: a slow

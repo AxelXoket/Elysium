@@ -527,15 +527,46 @@ def _selftest(base: str) -> None:
     # test_tts_packaging.py ever looked at a real output. Both gates could be
     # green on an exe that cannot speak.
     voice_ok, voice_detail = _selftest_voice_payload()
+    regex_ok, regex_detail = _selftest_regex_worker()
 
     print(
         f"SELFTEST healthz={healthz} root_serves_spa={root_ok} "
-        f"voice_payload={voice_ok} status={status}",
+        f"voice_payload={voice_ok} regex_worker={regex_ok} status={status}",
         flush=True,
     )
     if not voice_ok:
         print(f"SELFTEST_FAIL missing from the bundle: {voice_detail}", flush=True)
-    sys.exit(0 if (healthz and root_ok and voice_ok) else 1)
+    if not regex_ok:
+        print(f"SELFTEST_FAIL history cleanup worker: {regex_detail}", flush=True)
+    sys.exit(0 if (healthz and root_ok and voice_ok and regex_ok) else 1)
+
+
+def _selftest_regex_worker() -> tuple[bool, str]:
+    """Does the history cleanup child start from the frozen exe, answer one
+    job, stay tied to this process, and stop?
+
+    The child is this same exe started again, and only a frozen build can
+    show that it comes up as a worker rather than as a second app. Never
+    raises, for the reason _selftest_voice_payload gives.
+    """
+    try:
+        from prompt_modules import st_regex
+
+        worker = st_regex._Worker()
+        try:
+            if worker._start() is None:
+                return False, "did not start"
+            tied = worker._job is not None
+            worker._conn.send(("b", 0, True, False, "x", [], "abcb"))
+            if not worker._conn.poll(10):
+                return False, "no answer"
+            status, value = worker._conn.recv()
+            ok = status == "ok" and value == "axcx" and tied
+            return ok, f"status={status} tied={tied}"
+        finally:
+            worker.stop()
+    except Exception as exc:                             # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"
 
 
 def _selftest_voice_payload() -> tuple[bool, str]:
