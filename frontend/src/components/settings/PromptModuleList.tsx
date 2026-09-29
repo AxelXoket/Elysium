@@ -2,8 +2,10 @@
  * The module list: one switch per module, and rename, move and delete.
  *
  * Modules are global: a module that is on goes to every
- * character on every message, in the order shown here, at the very top of the
- * system message. The entries of one SillyTavern preset stay together as a
+ * character on every message, in the order shown here. Plain files go at the
+ * top of the system message; a SillyTavern preset's entries go where the
+ * preset puts them (before or after the chat, or inside it at a depth, each
+ * with its own role). The entries of one SillyTavern preset stay together as a
  * group under the file's name, with the preset's placeholders (chat history
  * and the like) shown as plain lines so the "went after the chat history"
  * note has something to point at, and with the one button that turns on what
@@ -38,6 +40,7 @@ import { isOverBudgetError } from "@/lib/api/promptModules";
 import { formatCount } from "@/lib/formatCount";
 import type {
   PromptModule,
+  PromptModuleImportRow,
   PromptModulesOverBudget,
 } from "@/lib/schemas/promptModules";
 import { getErrorMessage } from "@/lib/errors";
@@ -46,13 +49,26 @@ import { ModuleBadges } from "./PromptModuleBadges";
 import { OverBudgetNotice } from "./PromptModuleOverBudget";
 import { PresetDefaultsButton } from "./PromptModulePresetButton";
 import { charsToTokens, moduleChars } from "./promptModuleCost";
-import { PROMPT_MODULE_LIMITS, placeholderLine } from "./promptModuleText";
 import {
+  CLEAR_VARIABLES_DONE,
+  CLEAR_VARIABLES_HINT,
+  CLEAR_VARIABLES_LABEL,
+  HISTORY_CLEANUP_HINT,
+  HISTORY_CLEANUP_LABEL,
+  NOT_IN_ORDER_NOTE,
+  PROMPT_MODULE_LIMITS,
+  placeholderLine,
+} from "./promptModuleText";
+import { useUiStore } from "@/lib/store/uiStore";
+
+import {
+  useClearChatVariables,
   useDeletePromptModule,
   useLatestPromptModule,
   usePatchPromptModule,
   useIsPromptModuleWriting,
   usePromptModuleWriting,
+  usePatchPromptModuleImport,
 } from "./promptModuleQueries";
 import { useHeldValue } from "./useHeldValue";
 
@@ -62,12 +78,19 @@ const BLOCKED: Record<string, string> = {
   over_char_cap: "Cannot be turned on: longer than one module may be.",
   empty_content: "Cannot be turned on: it has no text.",
 };
+/** An in-chat entry with no depth or role: never sent, in either app. */
+const BLOCKED_IN_CHAT = "Cannot be turned on: SillyTavern never sent it.";
+
+function blockedLine(module: PromptModule): string | null {
+  if (module.badges.includes("in_chat_not_sent")) return BLOCKED_IN_CHAT;
+  return module.blocked_reason ? (BLOCKED[module.blocked_reason] ?? null) : null;
+}
 
 function stStateLine(module: PromptModule): string | null {
   if (!module.source_type.startsWith("st_")) return null;
   if (module.st_enabled === true) return "SillyTavern: on";
   if (module.st_enabled === false) return "SillyTavern: off";
-  return "Not in the SillyTavern order";
+  return NOT_IN_ORDER_NOTE;
 }
 
 /** Consecutive rows of one import form a block; everything else is alone. */
@@ -89,7 +112,124 @@ function blocks(rows: PromptModule[]): PromptModule[][] {
   return out;
 }
 
-export function PromptModuleList({ modules }: { modules: PromptModule[] }) {
+/**
+ * Forget the open chat's SillyTavern macro variables. The way out when a
+ * preset's variables grew until its modules no longer fit; shown only while
+ * a chat is open and a SillyTavern module is in the list.
+ */
+export function ChatVariablesRow({ modules }: { modules: PromptModule[] }) {
+  const chatId = useUiStore((s) => s.selectedChatId);
+  const clear = useClearChatVariables();
+  const [error, setError] = useState<string | null>(null);
+  const shownError = useHeldValue(error);
+  const id = useId();
+  const hasPreset = modules.some(
+    (m) => m.kind === "module" && m.source_type.startsWith("st_"),
+  );
+  if (chatId == null || !hasPreset) return null;
+  return (
+    <div>
+      <div className="settings-voice-row">
+        <span className="min-w-0 flex-1 text-left">
+          <span className="settings-label" id={`${id}-label`}>
+            {CLEAR_VARIABLES_LABEL}
+          </span>
+          <span className="settings-category-desc" id={`${id}-hint`}>
+            {clear.isSuccess ? CLEAR_VARIABLES_DONE : CLEAR_VARIABLES_HINT}
+          </span>
+        </span>
+        <button
+          type="button"
+          className="settings-voice-button is-quiet"
+          aria-labelledby={`${id}-label`}
+          aria-describedby={`${id}-hint`}
+          disabled={clear.isPending}
+          onClick={() => {
+            setError(null);
+            clear.mutate(chatId, {
+              onError: (err) =>
+                setError(getErrorMessage(isApiError(err) ? err.detail : null)),
+            });
+          }}
+        >
+          <Trash2 size={13} />
+          Clear
+        </button>
+      </div>
+      <Collapse open={error != null}>
+        {shownError && (
+          <p className="settings-error" role="alert">
+            {shownError}
+          </p>
+        )}
+      </Collapse>
+    </div>
+  );
+}
+
+/**
+ * History cleanup for one preset: its prompt-only regex scripts run on the
+ * copy of the chat that is sent. Off until turned on; the saved messages
+ * never change. The switch row is the Roleplay layer's.
+ */
+function HistoryCleanupSwitch({ imp }: { imp: PromptModuleImportRow }) {
+  const save = usePatchPromptModuleImport();
+  const [error, setError] = useState<string | null>(null);
+  const shownError = useHeldValue(error);
+  const id = useId();
+  const on = imp.history_cleanup;
+  return (
+    <div>
+      <button
+        type="button"
+        className="settings-toggle-row"
+        role="switch"
+        aria-checked={on}
+        aria-labelledby={`${id}-label`}
+        aria-describedby={`${id}-hint`}
+        disabled={save.isPending}
+        data-history-cleanup={imp.id}
+        onClick={() => {
+          setError(null);
+          save.mutate(
+            { id: imp.id, historyCleanup: !on },
+            {
+              onError: (err) =>
+                setError(getErrorMessage(isApiError(err) ? err.detail : null)),
+            },
+          );
+        }}
+      >
+        <span className="min-w-0 flex-1 text-left">
+          <span className="settings-label" id={`${id}-label`}>
+            {HISTORY_CLEANUP_LABEL}
+          </span>
+          <span className="settings-category-desc" id={`${id}-hint`}>
+            {HISTORY_CLEANUP_HINT}
+          </span>
+        </span>
+        <span className="settings-switch" data-on={on ? "true" : "false"}>
+          <span className="settings-switch-thumb" />
+        </span>
+      </button>
+      <Collapse open={error != null}>
+        {shownError && (
+          <p className="settings-error" role="alert">
+            {shownError}
+          </p>
+        )}
+      </Collapse>
+    </div>
+  );
+}
+
+export function PromptModuleList({
+  modules,
+  imports = [],
+}: {
+  modules: PromptModule[];
+  imports?: PromptModuleImportRow[];
+}) {
   const patch = usePatchPromptModule();
   const latest = useLatestPromptModule();
   const writing = usePromptModuleWriting();
@@ -161,6 +301,7 @@ export function PromptModuleList({ modules }: { modules: PromptModule[] }) {
             (m) => m.kind === "module" && m.st_enabled === true && m.can_enable,
           );
           const source = head.source_filename ?? "a SillyTavern file";
+          const imp = imports.find((i) => i.id === head.import_id);
           return (
             <li
               key={`${head.import_id ?? "m"}-${head.id}`}
@@ -174,6 +315,7 @@ export function PromptModuleList({ modules }: { modules: PromptModule[] }) {
                   {head.import_id != null && stOn.length > 0 && (
                     <PresetDefaultsButton importId={head.import_id} count={stOn.length} />
                   )}
+                  {imp && imp.cleanup_scripts > 0 && <HistoryCleanupSwitch imp={imp} />}
                 </div>
               )}
               <ul className="space-y-1.5">
@@ -557,9 +699,9 @@ function ModuleRow({
 
       <ModuleBadges badges={module.badges} placement={module} />
 
-      {blocked && module.blocked_reason && BLOCKED[module.blocked_reason] && (
+      {blocked && blockedLine(module) && (
         <span className="settings-hint" id={`${actionsId}-blocked`}>
-          {BLOCKED[module.blocked_reason]}
+          {blockedLine(module)}
         </span>
       )}
     </div>

@@ -1,0 +1,617 @@
+{
+ "about": "SillyTavern regexFromString and its replace callback, run in node v24.11.1; js null = the RegExp fails and the script does not run",
+ "vectors": [
+  {
+   "find": "/\\bTime\\b/g",
+   "replace": "X",
+   "text": "\u00e7Time",
+   "js": "\u00e7X"
+  },
+  {
+   "find": "/\\w+/g",
+   "replace": "X",
+   "text": "\u015fey",
+   "js": "\u015fX"
+  },
+  {
+   "find": "/\\d/g",
+   "replace": "X",
+   "text": "\u0663",
+   "js": "\u0663"
+  },
+  {
+   "find": "/a.b/g",
+   "replace": "X",
+   "text": "a\rb",
+   "js": "a\rb"
+  },
+  {
+   "find": "/\\s/g",
+   "replace": "X",
+   "text": "\u001c",
+   "js": "\u001c"
+  },
+  {
+   "find": "/\\s/g",
+   "replace": "X",
+   "text": "\ufeff",
+   "js": "X"
+  },
+  {
+   "find": "/a$/g",
+   "replace": "X",
+   "text": "a\n",
+   "js": "a\n"
+  },
+  {
+   "find": "/\u017f/i",
+   "replace": "X",
+   "text": "s",
+   "js": "s"
+  },
+  {
+   "find": "/s/i",
+   "replace": "X",
+   "text": "\u017f",
+   "js": "\u017f"
+  },
+  {
+   "find": "/[a-z]/gi",
+   "replace": "X",
+   "text": "\u212a",
+   "js": "\u212a"
+  },
+  {
+   "find": "/a{,3}/g",
+   "replace": "X",
+   "text": "a{,3}aaa",
+   "js": "Xaaa"
+  },
+  {
+   "find": "/\\Z/g",
+   "replace": "X",
+   "text": "Z!",
+   "js": "X!"
+  },
+  {
+   "find": "/\\A/g",
+   "replace": "X",
+   "text": "A!",
+   "js": "X!"
+  },
+  {
+   "find": "/(?i)x/",
+   "replace": "X",
+   "text": "X",
+   "js": null
+  },
+  {
+   "find": "/(a)|b/g",
+   "replace": "[$1]",
+   "text": "ab",
+   "js": "[a][]"
+  },
+  {
+   "find": "/abc/d",
+   "replace": "X",
+   "text": "abc /abc/d",
+   "js": "abc X"
+  },
+  {
+   "find": "/abc/y",
+   "replace": "X",
+   "text": "abc /abc/y",
+   "js": "abc X"
+  },
+  {
+   "find": "/(?<n>a)/g",
+   "replace": "$<n>$<n>",
+   "text": "a",
+   "js": "aa"
+  },
+  {
+   "find": "/a/g",
+   "replace": "$&",
+   "text": "a",
+   "js": "$&"
+  },
+  {
+   "find": "/a/g",
+   "replace": "$$",
+   "text": "a",
+   "js": "$$"
+  },
+  {
+   "find": "/x/g",
+   "replace": "{{match}}{{MATCH}}",
+   "text": "x",
+   "js": "xx"
+  },
+  {
+   "find": "/a/g",
+   "replace": "$10",
+   "text": "a",
+   "js": ""
+  },
+  {
+   "find": "/[^]/g",
+   "replace": "X",
+   "text": "\n",
+   "js": "X"
+  },
+  {
+   "find": "/(a)/g",
+   "replace": "$01",
+   "text": "a",
+   "js": "a"
+  },
+  {
+   "find": "/\\u{41}/u",
+   "replace": "X",
+   "text": "A",
+   "js": "X"
+  },
+  {
+   "find": "/./gu",
+   "replace": "X",
+   "text": "\ud83d\ude00",
+   "js": "X"
+  },
+  {
+   "find": "/./g",
+   "replace": "X",
+   "text": "\ud83d\ude00",
+   "js": "XX"
+  },
+  {
+   "find": "/a\\/b/g",
+   "replace": "X",
+   "text": "a/b",
+   "js": "X"
+  },
+  {
+   "find": "/\\cA/g",
+   "replace": "X",
+   "text": "\u0001",
+   "js": "X"
+  },
+  {
+   "find": "/[\\b]/g",
+   "replace": "X",
+   "text": "\b",
+   "js": "X"
+  },
+  {
+   "find": "/\\0/g",
+   "replace": "X",
+   "text": "\u0000",
+   "js": "X"
+  },
+  {
+   "find": "/(?<=a)b/g",
+   "replace": "X",
+   "text": "ab",
+   "js": "aX"
+  },
+  {
+   "find": "/x*/g",
+   "replace": "-",
+   "text": "abc",
+   "js": "-a-b-c-"
+  },
+  {
+   "find": "/^/gm",
+   "replace": ">",
+   "text": "a\nb",
+   "js": ">a\n>b"
+  },
+  {
+   "find": "/$/gm",
+   "replace": "<",
+   "text": "a\r\nb",
+   "js": "a<\r<\nb<"
+  },
+  {
+   "find": "/\\h/g",
+   "replace": "X",
+   "text": "h",
+   "js": "X"
+  },
+  {
+   "find": "/a\\Rb/g",
+   "replace": "X",
+   "text": "aRb",
+   "js": "X"
+  },
+  {
+   "find": "/[]a]/g",
+   "replace": "X",
+   "text": "]a",
+   "js": "]a"
+  },
+  {
+   "find": "/a{2}/g",
+   "replace": "X",
+   "text": "aaa",
+   "js": "Xa"
+  },
+  {
+   "find": "/(a)(b)?/g",
+   "replace": "[$2]",
+   "text": "a",
+   "js": "[]"
+  },
+  {
+   "find": "/a/g",
+   "replace": "$0$0",
+   "text": "a",
+   "js": "aa"
+  },
+  {
+   "find": "/(?<x>a)/g",
+   "replace": "$<y>",
+   "text": "a",
+   "js": ""
+  },
+  {
+   "find": "/\u00e7/gi",
+   "replace": "X",
+   "text": "\u00c7\u00e7",
+   "js": "XX"
+  },
+  {
+   "find": "/i/gi",
+   "replace": "X",
+   "text": "\u0130\u0131Ii",
+   "js": "\u0130\u0131XX"
+  },
+  {
+   "find": "/\u0130/gi",
+   "replace": "X",
+   "text": "i\u0130",
+   "js": "iX"
+  },
+  {
+   "find": "/\u0131/gi",
+   "replace": "X",
+   "text": "I\u0131",
+   "js": "IX"
+  },
+  {
+   "find": "/[\u00e0-\u00f6]/gi",
+   "replace": "X",
+   "text": "\u00c0\u00d6\u00df",
+   "js": "XX\u00df"
+  },
+  {
+   "find": "/\u03c3/gi",
+   "replace": "X",
+   "text": "\u03a3\u03c3\u03c2",
+   "js": "XXX"
+  },
+  {
+   "find": "/k/gi",
+   "replace": "X",
+   "text": "kK\u212a",
+   "js": "XX\u212a"
+  },
+  {
+   "find": "/\\w/gi",
+   "replace": "X",
+   "text": "\u017f\u212as",
+   "js": "\u017f\u212aX"
+  },
+  {
+   "find": "/[\\W]/g",
+   "replace": "X",
+   "text": "a\u00e7_",
+   "js": "aX_"
+  },
+  {
+   "find": "/[\\S]/g",
+   "replace": "X",
+   "text": " a\u00a0",
+   "js": " X\u00a0"
+  },
+  {
+   "find": "/[\\s\\S]/g",
+   "replace": "X",
+   "text": "a\n",
+   "js": "XX"
+  },
+  {
+   "find": "/[^\\s]/g",
+   "replace": "X",
+   "text": "a \u2028",
+   "js": "X \u2028"
+  },
+  {
+   "find": "/\\S+/g",
+   "replace": "X",
+   "text": "ab\u3000cd",
+   "js": "X\u3000X"
+  },
+  {
+   "find": "/./g",
+   "replace": "X",
+   "text": "a\u2028b\u2029c\nd",
+   "js": "X\u2028X\u2029X\nX"
+  },
+  {
+   "find": "/./gs",
+   "replace": "X",
+   "text": "a\nb",
+   "js": "XXX"
+  },
+  {
+   "find": "/^a/g",
+   "replace": "X",
+   "text": "b\na",
+   "js": "b\na"
+  },
+  {
+   "find": "/^a/gm",
+   "replace": "X",
+   "text": "b\ra",
+   "js": "b\rX"
+  },
+  {
+   "find": "/a$/gm",
+   "replace": "X",
+   "text": "a\u2028",
+   "js": "X\u2028"
+  },
+  {
+   "find": "/a$/g",
+   "replace": "X",
+   "text": "a\u2028",
+   "js": "a\u2028"
+  },
+  {
+   "find": "/\\B/g",
+   "replace": "-",
+   "text": "ab c",
+   "js": "a-b c"
+  },
+  {
+   "find": "/\\b/g",
+   "replace": "|",
+   "text": "\u015fa b",
+   "js": "\u015f|a| |b|"
+  },
+  {
+   "find": "/[a-]/g",
+   "replace": "X",
+   "text": "a-b",
+   "js": "XXb"
+  },
+  {
+   "find": "/[\\d-z]/g",
+   "replace": "X",
+   "text": "1-z",
+   "js": "XXX"
+  },
+  {
+   "find": "/a{1,}b/g",
+   "replace": "X",
+   "text": "aab",
+   "js": "X"
+  },
+  {
+   "find": "/a{2,3}?/g",
+   "replace": "X",
+   "text": "aaaa",
+   "js": "XX"
+  },
+  {
+   "find": "/a}/g",
+   "replace": "X",
+   "text": "a}",
+   "js": "X"
+  },
+  {
+   "find": "/a]/g",
+   "replace": "X",
+   "text": "a]",
+   "js": "X"
+  },
+  {
+   "find": "/\\x41\\u0042/g",
+   "replace": "X",
+   "text": "AB",
+   "js": "X"
+  },
+  {
+   "find": "/\\xZ/g",
+   "replace": "X",
+   "text": "xZ",
+   "js": "X"
+  },
+  {
+   "find": "/\\uZZZZ/g",
+   "replace": "X",
+   "text": "uZZZZ",
+   "js": "X"
+  },
+  {
+   "find": "/\\c1/g",
+   "replace": "X",
+   "text": "\\c1",
+   "js": "X"
+  },
+  {
+   "find": "/\\k/g",
+   "replace": "X",
+   "text": "k",
+   "js": "X"
+  },
+  {
+   "find": "/(?<a>x)\\k<a>/g",
+   "replace": "X",
+   "text": "xx",
+   "js": "X"
+  },
+  {
+   "find": "/\\p{L}/u",
+   "replace": "X",
+   "text": "a",
+   "js": "X"
+  },
+  {
+   "find": "/(a)(?:b)(c)/g",
+   "replace": "$2$1",
+   "text": "abc",
+   "js": "ca"
+  },
+  {
+   "find": "/(a)/g",
+   "replace": "$2",
+   "text": "xa",
+   "js": "x1"
+  },
+  {
+   "find": "/(a)/g",
+   "replace": "$3",
+   "text": "xa",
+   "js": "xxa"
+  },
+  {
+   "find": "/b/g",
+   "replace": "$1",
+   "text": "ab",
+   "js": "a1"
+  },
+  {
+   "find": "/b/g",
+   "replace": "$2",
+   "text": "ab",
+   "js": "aab"
+  },
+  {
+   "find": "/\ud83d\ude00/g",
+   "replace": "X",
+   "text": "a\ud83d\ude00",
+   "js": "aX"
+  },
+  {
+   "find": "/[\ud83d\ude00]/g",
+   "replace": "X",
+   "text": "\ud83d\ude00",
+   "js": "XX"
+  },
+  {
+   "find": "/[\ud83d\ude00]/gu",
+   "replace": "X",
+   "text": "\ud83d\ude00",
+   "js": "X"
+  },
+  {
+   "find": "/\\ud83d\\ude00/g",
+   "replace": "X",
+   "text": "\ud83d\ude00",
+   "js": "X"
+  },
+  {
+   "find": "/\\ud83d\\ude00/gu",
+   "replace": "X",
+   "text": "\ud83d\ude00",
+   "js": "X"
+  },
+  {
+   "find": "/\\ud83d/g",
+   "replace": "X",
+   "text": "\ud83d\ude00",
+   "js": "X\ude00"
+  },
+  {
+   "find": "abc",
+   "replace": "X",
+   "text": "xabcx",
+   "js": "xXx"
+  },
+  {
+   "find": "/abc/gg",
+   "replace": "X",
+   "text": "/abc/gg abc",
+   "js": "X abc"
+  },
+  {
+   "find": "/abc/G",
+   "replace": "X",
+   "text": "abc /abc/G",
+   "js": "abc X"
+  },
+  {
+   "find": "/abc/gX",
+   "replace": "X",
+   "text": "abc",
+   "js": null
+  },
+  {
+   "find": "/abc/v",
+   "replace": "X",
+   "text": "abc /abc/v",
+   "js": "abc X"
+  },
+  {
+   "find": "/a/gim",
+   "replace": "X",
+   "text": "A\na",
+   "js": "X\nX"
+  },
+  {
+   "find": "/x/giu",
+   "replace": "X",
+   "text": "X",
+   "js": "X"
+  },
+  {
+   "find": "//",
+   "replace": "X",
+   "text": "a",
+   "js": "a"
+  },
+  {
+   "find": "/a\\/",
+   "replace": "X",
+   "text": "a/",
+   "js": null
+  },
+  {
+   "find": "/(?:a|b)+/g",
+   "replace": "X",
+   "text": "abab c",
+   "js": "X c"
+  },
+  {
+   "find": "/a|/g",
+   "replace": "-",
+   "text": "ab",
+   "js": "--b-"
+  },
+  {
+   "find": "/[\\-]/g",
+   "replace": "X",
+   "text": "-",
+   "js": "X"
+  },
+  {
+   "find": "/\\t\\n\\r\\v\\f/g",
+   "replace": "X",
+   "text": "\t\n\r\u000b\f",
+   "js": "X"
+  },
+  {
+   "find": "/[\\t-\\r]/g",
+   "replace": "X",
+   "text": "\n\u000b",
+   "js": "XX"
+  },
+  {
+   "find": "/<b>([^<]*)<\\/b>/g",
+   "replace": "*$1*",
+   "text": "<b>bold</b> <b></b>",
+   "js": "*bold* **"
+  }
+ ]
+}

@@ -17,6 +17,8 @@ import {
   importPromptModuleFile,
   listPromptModules,
   patchPromptModule,
+  patchPromptModuleImport,
+  clearChatVariables,
   putPromptModuleSettings,
   PROMPT_MODULE_LIST_KEY,
   type PromptModuleBudgetInputs,
@@ -156,6 +158,19 @@ export function useEnablePresetDefaults() {
     mutationFn: (importId: number) => enablePresetDefaults(importId, budget()),
     onSettled: () => invalidate(),
   });
+}
+
+export function usePatchPromptModuleImport() {
+  const invalidate = useInvalidateAll();
+  return useMutation({
+    mutationFn: ({ id, historyCleanup }: { id: number; historyCleanup: boolean }) =>
+      patchPromptModuleImport(id, { history_cleanup: historyCleanup }),
+    onSettled: () => void invalidate(),
+  });
+}
+
+export function useClearChatVariables() {
+  return useMutation({ mutationFn: (chatId: number) => clearChatVariables(chatId) });
 }
 
 export function useDeletePromptModule() {

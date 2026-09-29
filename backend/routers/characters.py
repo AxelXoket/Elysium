@@ -28,6 +28,7 @@ import anyio.to_thread
 
 import default_names
 import notebook_store as notebook
+from prompt_modules import variables as pm_variables
 from database import get_db, iter_chunks
 from attachments_service import delete_for_messages
 
@@ -578,6 +579,8 @@ def _delete_character_sync(character_id: int) -> list[int]:
             # is about to delete, and this is the path that orphans at scale -
             # deleting a character takes every chat it ever had.
             notebook.delete_for_chats(con, chunk)
+            for cid in chunk:
+                pm_variables.forget_chat(con, cid)
             con.execute(
                 f"DELETE FROM messages WHERE chat_id IN ({placeholders})", chunk,
             )

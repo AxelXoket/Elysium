@@ -28,6 +28,7 @@ from sqlcipher3 import dbapi2 as sqlite3
 import card_macros
 import default_names
 import notebook_store as notebook
+from prompt_modules import variables as pm_variables
 from database import get_db, get_setting_con, iter_chunks
 from attachments_service import (
     load_for_messages,
@@ -499,6 +500,8 @@ def _delete_chat_sync(chat_id: int) -> None:
         # UNDELETABLE, and the route 500s on a chat the user can then never
         # remove.
         notebook.delete_for_chats(con, [chat_id])
+        # The macro variables kept per reply go with the replies.
+        pm_variables.forget_chat(con, chat_id)
         con.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
         con.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
     _forget_spoken_audio(msg_ids)
@@ -543,6 +546,7 @@ def _clear_chat_sync(chat_id: int) -> int:
         # what it distilled from it" is the promise breaking quietly: derived
         # text outliving the source it was derived from.
         notebook.delete_for_chats(con, [chat_id])
+        pm_variables.forget_chat(con, chat_id)
         deleted = con.execute(
             "DELETE FROM messages WHERE chat_id = ?", (chat_id,)
         ).rowcount

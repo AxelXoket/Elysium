@@ -53,7 +53,13 @@ import {
   MODULE_COUNTER_CHECKING,
   MODULE_COUNTER_FAILED,
   PROMPT_MODULE_LIMITS,
+  CLEAR_VARIABLES_LABEL,
+  HISTORY_CLEANUP_HINT,
+  HISTORY_CLEANUP_LABEL,
+  NOT_IN_ORDER_NOTE,
   PROMPT_MODULE_WARNINGS,
+  REGEX_UNSUPPORTED,
+  badgeLabel,
   formatModuleCounter,
   placeholderLine,
   placeholderName,
@@ -63,6 +69,8 @@ import {
 } from "@/components/settings/promptModuleText";
 import {
   OVER_BUDGET_FIX,
+  OVER_BUDGET_FIX_VARIABLES,
+  overBudgetSentence,
   PROMPT_MODULE_FILENAME_HEADER,
   PROMPT_MODULE_LIST_KEY,
 } from "@/lib/api/promptModules";
@@ -515,7 +523,7 @@ describe("import report", () => {
     );
     expect(notMade).toHaveTextContent("ghost: named in the order list");
     expect(r.getByRole("list", { name: "Badge counts" })).toHaveTextContent(
-      "Went after the chat history in SillyTavern: 1",
+      `${badgeLabel("after_history")}: 1`,
     );
     expect(r.getByRole("list", { name: "Unprocessed macros" })).toHaveTextContent(
       "{{getvar::x}}: 2",
@@ -1736,5 +1744,171 @@ describe("the switch never acts on a stale list", () => {
     // POSITIVE: settled, the next press is sent.
     await user.keyboard("{Enter}");
     await waitFor(() => expect(s.presetCalls()).toBe(2));
+  });
+});
+
+
+describe("SillyTavern placement on the page", () => {
+  const presetRows = () => [
+    mod({ name: "Main", import_id: 9, source_type: "st_chat_preset", st_enabled: true,
+          source_filename: "preset.json" }),
+    mod({ name: "Loose", import_id: 9, source_type: "st_chat_preset", st_enabled: null,
+          source_filename: "preset.json", badges: ["not_in_order"] }),
+    mod({ name: "No depth", import_id: 9, source_type: "st_chat_preset", st_enabled: true,
+          source_filename: "preset.json", badges: ["in_chat_not_sent"], can_enable: false,
+          blocked_reason: "never_triggers", triggers: [] }),
+  ];
+  const importRow = (over: Row = {}) => ({
+    id: 9, source_type: "st_chat_preset", source_filename: "preset.json",
+    history_cleanup: false, cleanup_scripts: 2, ...over,
+  });
+  const listRoute = (imports: Row[]) => ({
+    "GET /prompt-modules": { body: { modules: presetRows(), imports, enabled_count: 0 } },
+  });
+
+  it("offers history cleanup off, and sends the switch to the import", async () => {
+    const user = userEvent.setup();
+    const { fetchMock } = renderPage({ extra: listRoute([importRow()]) });
+    const group = await screen.findByRole("group", { name: "From preset.json" });
+    const toggle = within(group).getByRole("switch", { name: HISTORY_CLEANUP_LABEL });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    expect(toggle).toHaveAccessibleDescription(HISTORY_CLEANUP_HINT);
+    await user.click(toggle);
+    await waitFor(() => expect(sent(fetchMock, "PATCH", "/prompt-modules/imports/9")).toHaveLength(1));
+    expect(bodyOf(sent(fetchMock, "PATCH", "/prompt-modules/imports/9")[0])).toEqual({
+      history_cleanup: true,
+    });
+  });
+
+  it("shows no cleanup switch for a preset without cleanup scripts", async () => {
+    renderPage({ extra: listRoute([importRow({ cleanup_scripts: 0 })]) });
+    const group = await screen.findByRole("group", { name: "From preset.json" });
+    expect(within(group).queryByRole("switch", { name: HISTORY_CLEANUP_LABEL })).toBeNull();
+    // Positive control: the module switches in the same group are there.
+    expect(within(group).getByRole("switch", { name: "Main" })).toBeInTheDocument();
+  });
+
+  it("says a part outside the order was not sent there, and can be turned on", async () => {
+    renderPage({ extra: listRoute([importRow()]) });
+    const loose = await screen.findByRole("switch", { name: "Loose" });
+    expect(loose).toBeEnabled();
+    const group = screen.getByRole("group", { name: "From preset.json" });
+    expect(within(group).getAllByText(NOT_IN_ORDER_NOTE).length).toBeGreaterThan(0);
+  });
+
+  it("names why an in-chat part with no depth cannot be turned on", async () => {
+    renderPage({ extra: listRoute([importRow()]) });
+    const sw = await screen.findByRole("switch", { name: "No depth" });
+    expect(sw).toBeDisabled();
+    expect(sw).toHaveAccessibleDescription("Cannot be turned on: SillyTavern never sent it.");
+    expect(screen.getByText(badgeLabel("in_chat_not_sent"))).toBeInTheDocument();
+  });
+
+  it("badges say where a part is sent now", () => {
+    expect(badgeLabel("role_user")).toBe("Sent as a user message");
+    expect(badgeLabel("in_chat_depth", { st_injection_depth: 0, st_injection_order: 100 }))
+      .toBe("Sent inside the chat at depth 0, order 100");
+    expect(badgeLabel("not_in_order")).toBe(NOT_IN_ORDER_NOTE);
+  });
+
+  it("lists what the preset does differently here in the report", async () => {
+    const report = {
+      ...ST_REPORT,
+      global_variables_per_chat: true,
+      trailing_assistant: ["tail_a"],
+      in_chat_not_sent: [{ identifier: "nodepth", reason: "no_depth" }],
+      regex_scripts: {
+        prompt_only: ["Strip old state"], display_only: ["Colors"],
+        edits_stored_message: ["Fix typos"], disabled: [],
+        unsupported: [{ name: "Odd one", reason: "may_be_slow" }],
+      },
+    };
+    const { user, report: region } = await importPreset({
+      "POST /prompt-modules/import": {
+        status: 201, body: { import_id: 9, modules: stModules(), report },
+      },
+    });
+    const r = within(region);
+    await user.click(r.getByRole("button", { name: /^Handled differently here, 6 entries$/ }));
+    const list = r.getByRole("list", { name: "Handled differently" });
+    expect(list).toHaveTextContent("Global variables: kept per chat here");
+    expect(list).toHaveTextContent("tail_a: sent as a user message");
+    expect(list).toHaveTextContent("Fix typos: would change saved messages, not applied");
+    expect(list).toHaveTextContent(`Odd one: ${REGEX_UNSUPPORTED.may_be_slow}, skipped`);
+    await user.click(r.getByRole("button", { name: /^Not made into modules/ }));
+    expect(r.getByRole("list", { name: "Entries not made into modules" }))
+      .toHaveTextContent("nodepth: no depth, so SillyTavern never sent it");
+  });
+
+  it("leaves the group out for a plain report", async () => {
+    const { report: region } = await importPreset();
+    expect(within(region).queryByRole("button", { name: /^Handled differently here/ })).toBeNull();
+  });
+});
+
+
+describe("a preset's macro variables", () => {
+  const presetRow = () =>
+    mod({ name: "Main", import_id: 9, source_type: "st_chat_preset", st_enabled: true });
+
+  afterEach(() => useUiStore.setState({ selectedChatId: null }));
+
+  it("clears the open chat's variables", async () => {
+    useUiStore.setState({ selectedChatId: 42 });
+    const user = userEvent.setup();
+    const { fetchMock } = renderPage({
+      modules: [presetRow()],
+      extra: { "DELETE /prompt-modules/variables/": { body: { ok: true, cleared: 3 } } },
+    });
+    const clear = await screen.findByRole("button", { name: CLEAR_VARIABLES_LABEL });
+    await user.click(clear);
+    await waitFor(() =>
+      expect(sent(fetchMock, "DELETE", "/prompt-modules/variables/42")).toHaveLength(1),
+    );
+    expect(await screen.findByText("Cleared.")).toBeInTheDocument();
+  });
+
+  it("offers no clear without an open chat", async () => {
+    renderPage({ modules: [presetRow()] });
+    await screen.findByRole("switch", { name: "Main" });
+    expect(screen.queryByRole("button", { name: CLEAR_VARIABLES_LABEL })).toBeNull();
+  });
+
+  it("offers no clear without a preset", async () => {
+    useUiStore.setState({ selectedChatId: 42 });
+    renderPage({ modules: [mod({ name: "Plain" })] });
+    await screen.findByRole("switch", { name: "Plain" });
+    expect(screen.queryByRole("button", { name: CLEAR_VARIABLES_LABEL })).toBeNull();
+  });
+
+  it("the refusal names clearing when the chat's variables may be what grew", () => {
+    const base = { detail: "prompt_modules_over_budget" as const,
+                   modules: [{ id: 1, name: "Main", tokens: 900 }] };
+    expect(overBudgetSentence(base)).toContain(OVER_BUDGET_FIX);
+    expect(overBudgetSentence({ ...base, chat_variables: true }))
+      .toContain(OVER_BUDGET_FIX_VARIABLES);
+    expect(OVER_BUDGET_FIX_VARIABLES.split(" ").length).toBeLessThanOrEqual(12);
+  });
+
+  it("the report says what the preset leaves to this app", async () => {
+    const report = {
+      ...ST_REPORT,
+      no_chat_history_marker: true,
+      role_sent_as_system: ["odd"],
+      in_chat_not_sent: [{ identifier: "deep", reason: "too_deep" }],
+    };
+    const { user, report: region } = await importPreset({
+      "POST /prompt-modules/import": {
+        status: 201, body: { import_id: 9, modules: stModules(), report },
+      },
+    });
+    const r = within(region);
+    await user.click(r.getByRole("button", { name: /^Handled differently here/ }));
+    const list = r.getByRole("list", { name: "Handled differently" });
+    expect(list).toHaveTextContent("No chat history placeholder: the chat is still sent here");
+    expect(list).toHaveTextContent("odd: unknown role, sent as a system message");
+    await user.click(r.getByRole("button", { name: /^Not made into modules/ }));
+    expect(r.getByRole("list", { name: "Entries not made into modules" }))
+      .toHaveTextContent("deep: deeper than 10000, so SillyTavern never sent it");
   });
 });

@@ -398,10 +398,25 @@ class TestStChatPreset:
         assert _by_ident(r)["extra"].raw_entry["custom_field"] == 1
 
     def test_unprocessed_macros_are_counted_by_name(self):
-        r = P.parse_upload("p.json", _j(_st_preset()))
+        """A SillyTavern preset's macros are counted by the variable macro
+        engine that runs them: getvar is run now, so it is not listed, and
+        what the engine itself calls unsupported is, by name and count."""
+        from prompt_modules import st_macros
+
+        doc = _st_preset()
+        # Twice in one entry and once in another: the report counts uses.
+        doc["prompts"][0]["content"] += " {{nosuchmacro}} {{nosuchmacro}}"
+        loose = next(p for p in doc["prompts"] if p["identifier"] == "loose")
+        loose["content"] += " {{nosuchmacro::x}}"
+        r = P.parse_upload("p.json", _j(doc))
         um = r.report["unprocessed_macros"]
-        assert um.get("getvar") == 2 and um.get("random") == 1
-        assert "char" not in um
+        assert um.get("nosuchmacro") == 3, "counted per use, twice in one entry"
+        assert "getvar" not in um and "char" not in um
+        expected: dict[str, int] = {}
+        for m in r.modules:
+            for name in st_macros.unsupported_macros(m.content, unique=False):
+                expected[name] = expected.get(name, 0) + 1
+        assert um == expected
 
     def test_over_cap_entry_is_stored_with_a_badge(self):
         doc = _st_preset()

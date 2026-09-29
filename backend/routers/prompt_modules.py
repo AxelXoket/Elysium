@@ -7,6 +7,9 @@ Routes (prefix /prompt-modules):
     PUT    "/settings"               both, replaced together
     POST   "/enable-preset-defaults" switch on what SillyTavern had on, all or none
     PATCH  "/{id}"                   enabled / sort_order / name
+    PATCH  "/imports/{id}"           history_cleanup (a preset's regex scripts
+                                     on the outgoing chat), on or off
+    DELETE "/variables/{chat_id}"    forget that chat's macro variables
     DELETE "/{id}"
 
 Privacy invariants:
@@ -139,7 +142,12 @@ def _prepared_chars(modules: list[dict]) -> int:
     import prompt_layer
 
     try:
-        texts = prompt_layer.module_texts(modules, **_NAME_STAND_IN)
+        # SillyTavern modules with their variable macros run, in order, on
+        # a scratch set of variables: a {{setvar}} is not text the model gets.
+        variables: dict = {}
+        texts = [t for t in (prompt_layer.st_module_text(
+            m, variables, _NAME_STAND_IN["name"], _NAME_STAND_IN["user_name"])
+            for m in modules) if t]
     except Exception:  # noqa: BLE001 - an estimate beats a failed list
         texts = [m["content"] for m in modules]
     return budget.module_addition_chars(texts)
@@ -312,9 +320,7 @@ def _patch_sync(module_id: int, body: dict) -> dict:
                 if reason is not None:
                     raise E.PromptModuleError(E.CANNOT_ENABLE, 409,
                                               reason=reason)
-                after = _enabled_worst_case(con) + [
-                    {"id": row["id"], "name": row["name"],
-                     "content": row["content"]}]
+                after = _enabled_worst_case(con) + [store.module_dict(row)]
                 _check_budget(con, after, b)
             if want != bool(row["enabled"]):
                 store.set_enabled(con, [module_id], want)
@@ -360,9 +366,8 @@ def _enable_defaults_sync(import_id: int, body: dict) -> dict:
             if not r["enabled"]:
                 take.append(r)
         if take:
-            after = _enabled_worst_case(con) + [
-                {"id": r["id"], "name": r["name"], "content": r["content"]}
-                for r in take]
+            after = _enabled_worst_case(con) + [store.module_dict(r)
+                                                for r in take]
             _check_budget(con, after, b)
             store.set_enabled(con, [r["id"] for r in take], True)
     logger.info("Prompt module preset defaults enabled: import_id=%d n=%d",
@@ -381,6 +386,48 @@ async def enable_preset_defaults(request: Request):
         return await anyio.to_thread.run_sync(_enable_defaults_sync, imp, body)
     except E.PromptModuleError as exc:
         return _refusal(exc)
+
+
+def _import_options_sync(import_id: int, body: dict) -> dict:
+    with get_db() as con:
+        con.execute("BEGIN IMMEDIATE")
+        store.set_history_cleanup(con, import_id, body["history_cleanup"])
+        imp = next(i for i in store.list_imports(con) if i["id"] == import_id)
+    logger.info("Prompt module import options updated: import_id=%d", import_id)
+    return imp
+
+
+@router.patch("/imports/{import_id}")
+async def patch_import(import_id: int, request: Request):
+    """History cleanup for one imported preset, on or off."""
+    try:
+        body = await _json_body(request)
+        if set(body) != {"history_cleanup"} \
+                or not isinstance(body["history_cleanup"], bool):
+            raise E.PromptModuleError(E.REQUEST_INVALID)
+        return await anyio.to_thread.run_sync(_import_options_sync,
+                                              import_id, body)
+    except E.PromptModuleError as exc:
+        return _refusal(exc)
+
+
+def _clear_variables_sync(chat_id: int) -> dict:
+    from prompt_modules import variables
+
+    with get_db() as con:
+        con.execute("BEGIN IMMEDIATE")
+        if con.execute("SELECT 1 FROM chats WHERE id = ?", (chat_id,)).fetchone() is None:
+            raise HTTPException(404, "chat_not_found")
+        n = variables.rows_for_chat(con, chat_id)
+        variables.forget_chat(con, chat_id)
+    logger.info("Prompt module variables cleared: chat_id=%d rows=%d", chat_id, n)
+    return {"ok": True, "cleared": n}
+
+
+@router.delete("/variables/{chat_id}")
+async def clear_chat_variables(chat_id: int):
+    """Forget one chat's macro variables: the next turn starts with none."""
+    return await anyio.to_thread.run_sync(_clear_variables_sync, chat_id)
 
 
 def _delete_sync(module_id: int) -> None:

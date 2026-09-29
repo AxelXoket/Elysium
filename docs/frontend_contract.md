@@ -849,6 +849,8 @@ code from `prompt_modules/errors.py`.
 | PATCH | /prompt-modules/{id} | Any of `enabled`, `sort_order` (0-based target position), `name`. Switching on runs the H4 size check; send the window with it: `chat_id`, `context_budget_tokens`, `max_tokens`, `model_id` (all optional) |
 | DELETE | /prompt-modules/{id} | Remove one row; the last module of an import takes the import with it |
 | POST | /prompt-modules/enable-preset-defaults | `{import_id, ...window}`: switch on every entry SillyTavern had on, all or none. Answers `{enabled_ids, left_out}` |
+| PATCH | /prompt-modules/imports/{id} | `{history_cleanup: bool}` and nothing else (else `400 prompt_module_request_invalid`); `404` for an unknown import. Answers the import row `{id, source_type, source_filename, created_at, history_cleanup, cleanup_scripts}`. On: the preset's prompt-only regex scripts run on the sent copy of the chat; stored messages never change |
+| DELETE | /prompt-modules/variables/{chat_id} | Forget that chat's SillyTavern macro variables (`{{setvar}}` and the like); the next turn starts with none. `404 chat_not_found`. Answers `{ok, cleared}` |
 | GET | /prompt-modules/settings | `{prompt_layer_enabled: bool, reply_length_words: 150 \| 300 \| null}` |
 | PUT | /prompt-modules/settings | Both keys, replaced together; anything else is `400 prompt_settings_invalid` |
 

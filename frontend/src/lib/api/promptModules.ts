@@ -94,6 +94,8 @@ const OverBudgetBodySchema = z.object({
   ),
   total_tokens: z.number().nullable().optional(),
   room_tokens: z.number().nullable().optional(),
+  /** The chat has macro variables, which can be what grew. */
+  chat_variables: z.boolean().optional(),
 });
 
 /**
@@ -134,6 +136,7 @@ export async function overBudgetFromBody(
     })),
     total_tokens: parsed.total_tokens ?? undefined,
     room_tokens: parsed.room_tokens ?? undefined,
+    chat_variables: parsed.chat_variables ?? undefined,
   };
 }
 
@@ -152,13 +155,18 @@ export function withOverBudget(
 export const OVER_BUDGET_FIX =
   "Turn a module off, or raise Context budget in Generation settings.";
 
+/** The same refusal when the chat's macro variables may be what grew. */
+export const OVER_BUDGET_FIX_VARIABLES =
+  "Turn a module off, or clear this chat's variables in Prompt modules.";
+
 /** The chat's sentence for a named refusal: which modules, what each costs,
  *  and the two things that fix it. */
 export function overBudgetSentence(overBudget: PromptModulesOverBudget): string {
   const list = overBudget.modules
     .map((m) => `${m.name} (about ${formatCount(m.tokens)} tokens)`)
     .join(", ");
-  return `These prompt modules do not fit this chat's Context budget: ${list}. ${OVER_BUDGET_FIX}`;
+  const fix = overBudget.chat_variables ? OVER_BUDGET_FIX_VARIABLES : OVER_BUDGET_FIX;
+  return `These prompt modules do not fit this chat's Context budget: ${list}. ${fix}`;
 }
 
 export function importPromptModuleFile(
@@ -222,6 +230,24 @@ export function enablePresetDefaults(
       body: JSON.stringify({ import_id: importId, ...budget }),
     },
   );
+}
+
+/** Forget one chat's macro variables. */
+export function clearChatVariables(chatId: number): Promise<unknown> {
+  return moduleWrite(`${PREFIX}/variables/${chatId}`, PromptModuleWriteSchema, {
+    method: "DELETE",
+  });
+}
+
+/** History cleanup for one imported preset, on or off. */
+export function patchPromptModuleImport(
+  importId: number,
+  body: { history_cleanup: boolean },
+): Promise<unknown> {
+  return moduleWrite(`${PREFIX}/imports/${importId}`, PromptModuleWriteSchema, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
 }
 
 export function deletePromptModule(id: number): Promise<unknown> {

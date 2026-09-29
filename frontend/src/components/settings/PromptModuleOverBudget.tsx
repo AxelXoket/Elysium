@@ -9,7 +9,7 @@
  * The alert role sits on a wrapper, not on the list: a role on the <ul>
  * replaces its list role and leaves the items with no list around them.
  */
-import { OVER_BUDGET_FIX } from "@/lib/api/promptModules";
+import { OVER_BUDGET_FIX, OVER_BUDGET_FIX_VARIABLES } from "@/lib/api/promptModules";
 import { formatCount } from "@/lib/formatCount";
 import type { PromptModulesOverBudget } from "@/lib/schemas/promptModules";
 
@@ -37,7 +37,7 @@ export function OverBudgetNotice({
         {overBudget.total_tokens != null && (
           <li>About {formatCount(overBudget.total_tokens)} tokens in all.</li>
         )}
-        <li>{OVER_BUDGET_FIX}</li>
+        <li>{overBudget.chat_variables ? OVER_BUDGET_FIX_VARIABLES : OVER_BUDGET_FIX}</li>
       </ul>
     </div>
   );

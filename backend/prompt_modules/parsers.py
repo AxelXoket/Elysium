@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import PurePath
 
 from . import errors as E
+from .placement import in_chat_problem
 from .limits import (
     FILENAME_MAX_CHARS,
     JSON_MAX_BYTES,
@@ -92,6 +93,9 @@ BADGE_SEND_ONLY = "trigger_send_only"
 BADGE_NEVER_TRIGGERS = "never_triggers"
 BADGE_OVER_CHAR_CAP = "over_char_cap"
 BADGE_EMPTY = "empty_content"
+#: An in-chat entry with no depth, or a role that is not system, user or
+#: assistant: SillyTavern never sent it, so it never fires here either.
+BADGE_IN_CHAT_NOT_SENT = "in_chat_not_sent"
 
 #: The warning-3 key ("this preset was written for SillyTavern").
 WARNING_ST_BEHAVIOUR = "st_preset_behaviour"
@@ -510,6 +514,18 @@ def _parse_plain(filename: str, p: dict) -> ImportResult:
 # SillyTavern chat completion preset and Prompt Manager export
 # ---------------------------------------------------------------------------
 
+def _number_int(v) -> int | None:
+    """A JSON number with an integer value, else None. SillyTavern compares
+    position and depth with ===, so the text "0" is not the number 0."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float) and v.is_integer():
+        return int(v)
+    return None
+
+
 def _as_int(v) -> int | None:
     if isinstance(v, bool):
         return None
@@ -628,6 +644,7 @@ def _parse_st_preset(filename: str, payload: dict, source_type: str) -> ImportRe
     modules: list[ParsedModule] = []
     unknown_entry_keys: list[dict] = []
     never_triggered: list[dict] = []
+    in_chat_not_sent: list[dict] = []
     badge_counts: dict[str, int] = {}
     for n, (ident, entry, st_enabled, in_order) in enumerate(sequence):
         after = history_at is not None and n > history_at
@@ -641,7 +658,14 @@ def _parse_st_preset(filename: str, payload: dict, source_type: str) -> ImportRe
         extra = sorted(k for k in entry if k not in _ST_PROMPT_FIELDS)
         if extra:
             unknown_entry_keys.append({"identifier": ident, "keys": extra})
-        if pm.kind == KIND_MODULE and not pm.triggers:
+        if pm.kind == KIND_MODULE and BADGE_IN_CHAT_NOT_SENT in pm.badges:
+            in_chat_not_sent.append({
+                "identifier": ident,
+                "reason": in_chat_problem({
+                    "st_injection_position": pm.st_injection_position,
+                    "st_injection_depth": pm.st_injection_depth,
+                    "st_role": pm.st_role})})
+        elif pm.kind == KIND_MODULE and not pm.triggers:
             never_triggered.append({"identifier": ident,
                                     "triggers": pm.st_injection_trigger or []})
         for b in pm.badges:
@@ -665,9 +689,28 @@ def _parse_st_preset(filename: str, payload: dict, source_type: str) -> ImportRe
         "duplicate_identifiers": duplicate_ids,
         "unknown_entry_keys": unknown_entry_keys,
         "preset_fields": _report_preset_fields(top_fields, removed),
-        "unprocessed_macros": count_unprocessed_macros(
+        "unprocessed_macros": count_unsupported_st_macros(
             [m.content for m in real]),
+        "in_chat_not_sent": in_chat_not_sent,
+        # Relative entries whose role is not system, user or assistant: sent
+        # here as system messages.
+        "role_sent_as_system": [
+            m.st_identifier for m in real
+            if m.st_injection_position != 1 and m.st_role is not None
+            and m.st_role not in ("system", "user", "assistant")],
+        # With no chatHistory placeholder SillyTavern sends no chat at all;
+        # this app still sends it, after the preset's parts.
+        "no_chat_history_marker": history_at is None,
+        "global_variables_per_chat": uses_global_variables(
+            [m.content for m in real]),
+        "trailing_assistant": _trailing_assistant(modules),
     })
+    ext = top_fields.get("extensions")
+    scripts = ext.get("regex_scripts") if isinstance(ext, dict) else None
+    if isinstance(scripts, list):
+        from .st_regex import report as regex_report
+        report["regex_scripts"] = regex_report(
+            [x for x in scripts if isinstance(x, dict)])
     if source_type == SOURCE_ST_PROMPT_MANAGER:
         report["export_envelope"] = {
             "version": clean.get("version"), "type": clean.get("type"),
@@ -698,8 +741,8 @@ def _entry_to_module(ident: str, entry: dict, st_enabled: bool | None,
         st_identifier=ident, st_enabled=st_enabled, st_role=role,
         st_system_prompt=_as_bool(entry.get("system_prompt")),
         st_marker=marker,
-        st_injection_position=_as_int(entry.get("injection_position")),
-        st_injection_depth=_as_int(entry.get("injection_depth")),
+        st_injection_position=_number_int(entry.get("injection_position")),
+        st_injection_depth=_number_int(entry.get("injection_depth")),
         st_injection_order=_as_int(entry.get("injection_order")),
         st_injection_trigger=trig_list,
         st_forbid_overrides=_as_bool(entry.get("forbid_overrides")),
@@ -713,6 +756,11 @@ def _entry_to_module(ident: str, entry: dict, st_enabled: bool | None,
         # placeholder in SillyTavern and never a module here.
         return pm
     b = pm.badges
+    if in_chat_problem({"st_injection_position": pm.st_injection_position,
+                        "st_injection_depth": pm.st_injection_depth,
+                        "st_role": role}) is not None:
+        pm.triggers = []
+        b.append(BADGE_IN_CHAT_NOT_SENT)
     if after:
         b.append(BADGE_AFTER_HISTORY)
     if pm.st_injection_position == 1:
@@ -725,7 +773,7 @@ def _entry_to_module(ident: str, entry: dict, st_enabled: bool | None,
         b.append(BADGE_EXTENSION)
     if not in_order:
         b.append(BADGE_NOT_IN_ORDER)
-    if not pm.triggers:
+    if not pm.triggers and BADGE_IN_CHAT_NOT_SENT not in b:
         b.append(BADGE_NEVER_TRIGGERS)
     elif pm.triggers == [GEN_REGENERATE]:
         b.append(BADGE_REGENERATE_ONLY)
@@ -906,3 +954,43 @@ def count_unprocessed_macros(texts: list[str]) -> dict[str, int]:
                 key = m.group(1).split("::", 1)[0].strip().lower() or "?"
                 counts[key] = counts.get(key, 0) + 1
     return counts
+
+
+def count_unsupported_st_macros(texts: list[str]) -> dict[str, int]:
+    """For SillyTavern presets: the macros the variable macro engine leaves
+    as written, asked of the engine itself."""
+    from .st_macros import unsupported_macros
+
+    counts: dict[str, int] = {}
+    for text in texts:
+        for name in unsupported_macros(text, unique=False):
+            counts[name] = counts.get(name, 0) + 1
+    return counts
+
+
+_GLOBAL_VAR_RE = re.compile(r"\{\{\s*(?:set|get|add|inc|dec|has|delete)globalvar\b",
+                            re.IGNORECASE)
+
+
+def uses_global_variables(texts: list[str]) -> bool:
+    """Whether the preset uses SillyTavern's global variables, which this
+    app keeps per chat."""
+    return any(_GLOBAL_VAR_RE.search(t or "") for t in texts)
+
+
+def _trailing_assistant(modules: list[ParsedModule]) -> list[str]:
+    """Assistant entries that can end the prompt: after the chat history, or
+    inside it at depth 0. On a model that refuses a prefill such an entry is
+    sent as a user message."""
+    from .placement import POSITION_IN_CHAT
+
+    out = []
+    for m in modules:
+        if m.kind != KIND_MODULE or m.st_role != "assistant":
+            continue
+        if m.st_injection_position == POSITION_IN_CHAT:
+            if m.st_injection_depth == 0:
+                out.append(m.st_identifier or m.name)
+        elif m.after_history:
+            out.append(m.st_identifier or m.name)
+    return out

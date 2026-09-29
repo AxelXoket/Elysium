@@ -36,6 +36,8 @@ export const PromptModuleSchema = z.object({
    *  order list, or the module did not come from SillyTavern. */
   st_enabled: z.boolean().nullable().default(null),
   st_role: z.string().nullable().default(null),
+  /** 0 before or after the chat, 1 inside the chat at a depth. */
+  st_injection_position: z.number().nullable().default(null),
   st_injection_depth: z.number().nullable().default(null),
   st_injection_order: z.number().nullable().default(null),
   st_injection_trigger: z.array(z.string()).nullable().default(null),
@@ -52,11 +54,25 @@ export const PromptModuleSchema = z.object({
 });
 export type PromptModule = z.infer<typeof PromptModuleSchema>;
 
+/** One imported file. `history_cleanup` is off until the user turns it
+ *  on; `cleanup_scripts` is how many of the preset's regex scripts it runs. */
+export const PromptModuleImportRowSchema = z.object({
+  id: z.number(),
+  source_type: z.string().default("txt"),
+  source_filename: z.string().nullable().default(null),
+  history_cleanup: z.boolean().default(false),
+  cleanup_scripts: z.number().default(0),
+});
+export type PromptModuleImportRow = z.infer<typeof PromptModuleImportRowSchema>;
+
 /** The list route may answer with the rows alone or wrapped; both parse to
  *  the wrapped shape so the page reads one thing. */
 export const PromptModuleListSchema = z.preprocess(
   (raw) => (Array.isArray(raw) ? { modules: raw } : raw),
-  z.object({ modules: z.array(PromptModuleSchema) }),
+  z.object({
+    modules: z.array(PromptModuleSchema),
+    imports: z.array(PromptModuleImportRowSchema).default([]),
+  }),
 );
 export type PromptModuleList = z.infer<typeof PromptModuleListSchema>;
 
@@ -119,6 +135,31 @@ export const PromptModuleImportReportSchema = z.object({
     .array(z.object({ section: z.string(), name: z.string() }))
     .default([]),
   unknown_keys: z.array(z.string()).default([]),
+  /** In-chat entries SillyTavern never sent: no depth, or an unknown role. */
+  in_chat_not_sent: z
+    .array(z.object({ identifier: z.string(), reason: z.string() }))
+    .default([]),
+  /** Relative entries with an unknown role, sent as system messages. */
+  role_sent_as_system: z.array(z.string()).default([]),
+  /** No chatHistory placeholder: SillyTavern sends no chat, this app does. */
+  no_chat_history_marker: z.boolean().default(false),
+  /** The preset uses SillyTavern's global variables; kept per chat here. */
+  global_variables_per_chat: z.boolean().default(false),
+  /** Assistant entries that can end the prompt (a prefill). */
+  trailing_assistant: z.array(z.string()).default([]),
+  /** The preset's regex scripts by kind, and the ones that cannot run. */
+  regex_scripts: z
+    .object({
+      prompt_only: z.array(z.string()).default([]),
+      display_only: z.array(z.string()).default([]),
+      edits_stored_message: z.array(z.string()).default([]),
+      disabled: z.array(z.string()).default([]),
+      unsupported: z
+        .array(z.object({ name: z.string(), reason: z.string() }))
+        .default([]),
+    })
+    .nullable()
+    .default(null),
   sysprompt_unknown_keys: z.array(z.string()).default([]),
   export_envelope: z
     .object({ unknown_keys: z.array(z.string()).default([]) })
@@ -180,6 +221,7 @@ export const PromptModulesOverBudgetSchema = z.object({
   ),
   total_tokens: z.number().optional(),
   room_tokens: z.number().optional(),
+  chat_variables: z.boolean().optional(),
 });
 export type PromptModulesOverBudget = z.infer<
   typeof PromptModulesOverBudgetSchema

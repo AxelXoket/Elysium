@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import re
 import secrets
 import threading
@@ -61,6 +62,8 @@ from dataclasses import dataclass, field
 import card_macros
 import prompt_sanitizer
 from prompt_sanitizer import sanitize_field, sanitize_name, shared_path
+
+logger = logging.getLogger(__name__)
 
 LAYER_FILE = "prompt_layer_text.txt"
 
@@ -153,6 +156,9 @@ def on_vault_lock() -> None:
             for i in range(len(old)):
                 old[i] = 0
     prompt_sanitizer.on_vault_lock()
+    # The regex worker last held chat text; it restarts on the next turn.
+    from prompt_modules import st_regex
+    st_regex.stop_worker()
 
 
 def on_vault_unlock() -> None:
@@ -219,6 +225,36 @@ def module_texts(modules: list[dict], name: str, user_name: str) -> list[str]:
         if text:
             out.append(text)
     return out
+
+
+def st_module_text(m: dict, variables: dict, name: str, user_name: str,
+                   *, strip: bool = True) -> str:
+    """One SillyTavern module as sent: its variable macros evaluated against
+    `variables` (which the evaluation updates), then the sanitizer. A plain
+    module keeps module_texts' card macros and leaves `variables` alone.
+    `strip` False keeps the text's own leading and trailing space (an in-chat
+    part, which is trimmed only after it is joined with its neighbours).
+
+    An engine failure sends the text with card macros only; it never fails
+    the turn. The one refusal that does is a field past its size ceiling."""
+    from prompt_modules import st_macros
+    from prompt_modules.parsers import ST_SOURCES
+
+    if m.get("source_type") not in ST_SOURCES:
+        texts = module_texts([m], name, user_name)
+        return texts[0] if texts else ""
+    raw = m.get("content") or ""
+    try:
+        text = st_macros.evaluate(raw, variables, char=name, user=user_name)
+    except card_macros.MacroOutputTooLarge:
+        raise
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        logger.warning("Macro evaluation failed: %s", type(exc).__name__)
+        return _field(raw, name, user_name)
+    if len(text) > card_macros.FIELD_MAX_CODE_POINTS:
+        raise card_macros.MacroOutputTooLarge()
+    text = sanitize_field(text)
+    return strip_space(text) if strip else text
 
 
 def module_cost(texts: list[str]) -> int:

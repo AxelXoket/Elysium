@@ -29,7 +29,7 @@ import { formatCount } from "@/lib/formatCount";
 import { moduleFires } from "@/lib/prompt/assembly";
 
 import { PromptModuleImport } from "./PromptModuleImport";
-import { PromptModuleList } from "./PromptModuleList";
+import { ChatVariablesRow, PromptModuleList } from "./PromptModuleList";
 import { moduleCounter } from "./promptModuleCost";
 import {
   usePromptModuleSettings,
@@ -105,7 +105,10 @@ export function PromptModulesSection() {
         ) : modules.isPending ? (
           <p className="settings-category-desc">Loading…</p>
         ) : (
-          <PromptModuleList modules={rows} />
+          <>
+            <PromptModuleList modules={rows} imports={modules.data?.imports ?? []} />
+            <ChatVariablesRow modules={rows} />
+          </>
         )}
       </section>
 

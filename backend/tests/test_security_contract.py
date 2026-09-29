@@ -1340,7 +1340,7 @@ PROSE_CLAIMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "::test_an_accepted_safeword_is_not_echoed_either",
     )),
     # And the file count in the same paragraph, for the same reason.
-    ("shipped tree - 91 files", (
+    ("shipped tree - 97 files", (
         "tests/test_locked_numbers.py::TestTheSweptTree"
         "::test_the_file_count_in_the_prose_is_the_one_the_gate_reads",
         "tests/test_locked_numbers.py::TestTheSweptTree"
@@ -2086,7 +2086,11 @@ def _acknowledged_problems(
 #: 14. Not a sentence of this package: the base under it moved to bdc2776,
 #:    whose log gate counts 91 files where 5fd50ee counted 90. Value at
 #:    bdc2776: 2029c5809fbf527d43e15d9b41fc63eef9d8cc8a41ef8dca99b259368059f5aa
-DOCUMENT_DIGEST = "333c09bf114503394c5db5341126f4d2b51a538a789796d7f6c571b8a1d70e7e"
+#: 15. The log gate's file count moves from 91 to 97: SillyTavern presets
+#:    brought six modules (placement, the layout builder, the macro engine,
+#:    variables, the regex runner and its JavaScript translation). Value at
+#:    fff6bff: 333c09bf114503394c5db5341126f4d2b51a538a789796d7f6c571b8a1d70e7e
+DOCUMENT_DIGEST = "003defbf4f57acd6a032d68c87dfae32de0b85d7de24b03cbaf806e24ca4a587"
 
 
 class TestEveryProvenClaimHasAProof:

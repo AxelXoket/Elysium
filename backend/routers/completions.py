@@ -64,6 +64,11 @@ import voice_tags
 from prompt_modules import budget as pm_budget
 from prompt_modules import errors as pm_errors
 from prompt_modules import store as pm_store
+from prompt_modules import placement as pm_place
+from prompt_modules import st_regex as pm_regex
+from prompt_modules import st_build as pm_st_build
+from prompt_modules import variables as pm_variables
+from prompt_modules.parsers import ST_SOURCES
 from database import get_db
 from typing import Annotated, Literal
 
@@ -505,6 +510,11 @@ def _assemble_messages(
     # and `sent` (whether its text is inside `system_block` this turn). H4
     # counts them all, worst case (dF 5.1); the trim counts the sent ones.
     modules: list[dict] | None = None,
+    # A SillyTavern preset's layout (prompt_modules.placement); None keeps
+    # the one system message below, byte for byte.
+    layout: pm_place.Layout | None = None,
+    # The model refuses a trailing assistant message (a prefill).
+    refuses_prefill: bool = False,
 ) -> list[dict]:
     """ONE system message, the history, and the user message with the tail.
 
@@ -527,6 +537,18 @@ def _assemble_messages(
       prompt_modules_over_budget  H4: the modules would take more than half
                                   of what the rest leaves for history
     """
+    if layout is not None:
+        return _assemble_st_messages(
+            layout, persona_block, history, user_message,
+            post_history_instruction, context_budget_chars, max_tokens_chars,
+            include_images=include_images,
+            pending_attachments=pending_attachments, image_blobs=image_blobs,
+            voice_block=voice_block, omitted_images=omitted_images,
+            boundary_block=boundary_block,
+            notebook_user_block=notebook_user_block,
+            notebook_model_block=notebook_model_block,
+            trimmed_out=trimmed_out, modules=modules,
+            refuses_prefill=refuses_prefill)
     system_text, tail = _system_and_tail(
         system_block, post_history_instruction, persona_block, boundary_block,
         notebook_user_block, voice_block, notebook_model_block, reminder_block)
@@ -627,8 +649,137 @@ def _system_and_tail(system_block: str, post_history_instruction: str,
     return system_text, tail
 
 
+def _st_parts(layout: pm_place.Layout, persona_block: str,
+              boundary_block: str, notebook_user_block: str, voice_block: str,
+              notebook_model_block: str):
+    """_system_and_tail for a SillyTavern layout: (head, post, tail).
+
+    The app's own parts go at the end of the head: the persona (unless the
+    preset has a persona placeholder), Limits, the user's notes and voice.
+    The card's post-history text is not among them: it takes the preset's
+    Post-History slot or, as in SillyTavern, is not sent. The model's notes
+    stay in the tail of the user's message. Consecutive system parts are
+    joined the way SillyTavern squashes them. The assembly and the
+    toggle-time budget check both measure what this returns."""
+    app: list[str] = []
+    if persona_block and not layout.persona_placed:
+        app.append(persona_block)
+    app += [p for p in (boundary_block, notebook_user_block, voice_block) if p]
+    head = pm_place.merge_system(
+        [*layout.head, *(pm_place.Part(pm_place.ROLE_SYSTEM, t, pm_place.SOURCE_APP)
+                         for t in app)])
+    post = pm_place.merge_system(layout.post)
+    tail = [notebook_model_block] if notebook_model_block else []
+    return head, post, tail
+
+
+def _st_fixed_chars(head: list, post: list, layout: pm_place.Layout) -> int:
+    """Everything a SillyTavern layout sends besides the chat. An in-chat
+    message counts one separator more than its text: it can end up joined to
+    a system part next to it, and a count may be high but never low."""
+    sep = len(pm_place.SYSTEM_JOIN)
+    inj = sum(len(p.text) + sep
+              for _depth, msgs in pm_place.injection_groups(layout.injections)
+              for p in msgs)
+    new_chat = len(layout.new_chat.text) if layout.new_chat is not None else 0
+    return (sum(len(p.text) for p in head) + sum(len(p.text) for p in post)
+            + inj + new_chat)
+
+
+def _assemble_st_messages(
+    layout: pm_place.Layout,
+    persona_block: str,
+    history: list[dict],
+    user_message: str,
+    post_history_instruction: str,
+    context_budget_chars: int,
+    max_tokens_chars: int,
+    *,
+    include_images: bool,
+    pending_attachments: list[dict] | None,
+    image_blobs: dict[str, bytes] | None,
+    voice_block: str,
+    omitted_images: list[int] | None,
+    boundary_block: str,
+    notebook_user_block: str,
+    notebook_model_block: str,
+    trimmed_out: list[int] | None,
+    modules: list[dict] | None,
+    refuses_prefill: bool,
+) -> list[dict]:
+    """_assemble_messages for a SillyTavern layout (prompt_modules.placement).
+
+    The same budget, the same refusals in the same order, the same trim. What
+    differs is the shape: the head as its own messages, the chat with the
+    in-chat parts inside it, then the parts listed after the chat. In-chat
+    parts are counted as fixed and never trimmed; the trim drops chat
+    messages only, oldest first, and a part deeper than what is left lands
+    before the oldest message kept.
+    """
+    head, post, tail = _st_parts(
+        layout, persona_block, boundary_block, notebook_user_block,
+        voice_block, notebook_model_block)
+    available = context_budget_chars - max_tokens_chars
+    user_msg_chars = (_entry_chars(user_message, pending_attachments,
+                                   include_images)
+                      + prompt_layer.tail_chars(tail))
+    fixed_chars = _st_fixed_chars(head, post, layout) + user_msg_chars
+    module_chars = pm_budget.module_addition_chars(
+        [m["content"] for m in modules or [] if m.get("sent", True)])
+
+    if fixed_chars - module_chars > available:
+        if boundary_block and len(boundary_block) + user_msg_chars > available:
+            raise HTTPException(400, "boundaries_do_not_fit")
+        raise HTTPException(400, "context_too_large")
+    if modules:
+        _check_module_budget(modules, available, fixed_chars - module_chars,
+                             chat_variables=layout.has_variables)
+    if fixed_chars > available:
+        raise HTTPException(400, "context_too_large")
+
+    remaining = available - fixed_chars
+    history_chars = sum(
+        _entry_chars(m["content"], m.get("attachments"), include_images,
+                     role=m["role"])
+        for m in history
+    )
+    trimmed = 0
+    while history_chars > remaining and history:
+        dropped = history.pop(0)
+        trimmed += 1
+        history_chars -= _entry_chars(
+            dropped["content"], dropped.get("attachments"), include_images,
+            role=dropped["role"],
+        )
+    if trimmed_out is not None:
+        trimmed_out.append(trimmed)
+
+    blobs = image_blobs or {}
+    chat = [pm_place.Part(msg["role"], _content_for(
+                msg["content"], msg.get("attachments"), include_images, blobs,
+                omitted_images, role=msg["role"]), pm_place.SOURCE_HISTORY)
+            for msg in history]
+    chat.append(pm_place.Part("user", prompt_layer.fold_tail(_content_for(
+        user_message.strip(), pending_attachments, include_images, blobs,
+        omitted_images,
+    ), tail), pm_place.SOURCE_USER))
+    parts = [*head, *([layout.new_chat] if layout.new_chat else []),
+             *pm_place.place_in_chat(chat, layout.injections), *post]
+    last = parts[-1]
+    if (refuses_prefill and last.role == pm_place.ROLE_ASSISTANT
+            and last.source not in (pm_place.SOURCE_HISTORY, pm_place.SOURCE_USER)):
+        # A trailing assistant part is a prefill, which this model refuses.
+        parts[-1] = pm_place.Part(pm_place.ROLE_USER, last.text, last.source,
+                                  last.module_id)
+    parts = pm_place.merge_system(parts)
+    return [{"role": p.role, "content": p.text,
+             **({"name": p.name} if p.name else {})} for p in parts
+            if p.text or p.source in (pm_place.SOURCE_HISTORY,
+                                      pm_place.SOURCE_USER)]
+
+
 def _check_module_budget(modules: list[dict], available: int,
-                         fixed_chars: int) -> None:
+                         fixed_chars: int, *, chat_variables: bool = False) -> None:
     """H4 with prompt_modules.budget, the rule's one definition. A refusal is
     prompt_modules.errors.PromptModuleError(OVER_BUDGET) carrying each
     module's id, name and token cost; main.py answers it with the same JSON
@@ -641,6 +792,10 @@ def _check_module_budget(modules: list[dict], available: int,
             # The card alone not fitting is checked before this call and
             # keeps its own name; nothing else is raised by the rule.
             raise HTTPException(400, "context_too_large") from None
+        if chat_variables:
+            # Macro variables can grow a module turn after turn; clearing
+            # them is the other way out, and the refusal says so.
+            exc.extra["chat_variables"] = True
         raise
 
 
@@ -692,6 +847,10 @@ def module_budget_check(con, chat_id: int | None, modules: list[dict],
         user_name = (persona_row["display_name"] or "").strip() or user_name
 
     card = prompt_layer.card_text(char_row, user_name)
+    if any(m.get("source_type") in ST_SOURCES for m in modules):
+        _st_budget_check(con, chat_id, modules, available_chars, char_row,
+                         card, user_name, persona_row, user_message_chars)
+        return
     prepared = []
     for m in modules:
         texts = prompt_layer.module_texts([m], card.name, user_name)
@@ -717,6 +876,50 @@ def module_budget_check(con, chat_id: int | None, modules: list[dict],
         raise HTTPException(400, "context_too_large")
     if prepared:
         _check_module_budget(prepared, available_chars, fixed)
+
+
+def _st_budget_check(con, chat_id: int | None, modules: list[dict],
+                     available_chars: int, char_row, card, user_name: str,
+                     persona_row, user_message_chars: int) -> None:
+    """module_budget_check for a SillyTavern preset: the layout a request
+    would build (prompt_modules.st_build), measured by the same two functions
+    (_st_parts, _st_fixed_chars). Every module counts as firing (worst
+    case). Macros run on a copy of the chat's variables, so a toggle never
+    changes them."""
+    import_ids = {m.get("import_id") for m in modules if m.get("import_id") is not None}
+    built = pm_st_build.build(
+        salt=prompt_layer.chat_salt(chat_id or 0), char_row=char_row,
+        persona_row=persona_row, user_name=user_name,
+        modules_enabled=modules, modules_sent=modules,
+        markers=pm_store.list_markers(con, import_ids),
+        variables=(pm_variables.pre_turn(con, chat_id, None)
+                   if chat_id is not None else {}),
+        preset_texts=pm_store.preset_texts(con, _preset_import(modules)))
+    layout = built.layout
+    persona_block = (_build_persona_block(persona_row)
+                     if persona_row is not None else "")
+    if chat_id is not None:
+        nb = notebook_store.build_notebook_blocks(chat_id, available_chars)
+    else:
+        nb = {"boundary_block": "", "user_block": "", "model_block": ""}
+    head, post, tail = _st_parts(
+        layout, persona_block, nb["boundary_block"], nb["user_block"],
+        voice_tags.voice_block(), nb["model_block"])
+    fixed = (_st_fixed_chars(head, post, layout) + prompt_layer.tail_chars(tail)
+             + user_message_chars
+             - pm_budget.module_addition_chars([m["content"] for m in built.modules]))
+    if fixed > available_chars:
+        raise HTTPException(400, "context_too_large")
+    if built.modules:
+        _check_module_budget(built.modules, available_chars, fixed,
+                             chat_variables=layout.has_variables)
+
+
+def _preset_import(modules: list[dict]) -> int | None:
+    """The import whose preset texts (new-chat lines, formats) are sent: the
+    first SillyTavern module's, in stored order."""
+    return next((m.get("import_id") for m in modules
+                 if m.get("source_type") in ST_SOURCES), None)
 
 
 def _reasoning_is_optional(model_id: str) -> bool:
@@ -992,6 +1195,17 @@ def _load_completion_context(
         modules_sent = pm_store.list_enabled(con, generation)
         layer_enabled = pm_store.layer_enabled(con)
         reply_length_words = pm_store.reply_length_words(con)
+        # A SillyTavern preset switched on builds the prompt the way
+        # SillyTavern does (_build_prompt). Its placeholders, the chat's
+        # macro variables as they stood before this turn, and the history
+        # cleanup scripts are read here, on the same connection.
+        st_active = any(m["source_type"] in ST_SOURCES for m in modules_enabled)
+        markers = pm_store.list_markers(con) if st_active else []
+        module_vars = (pm_variables.pre_turn(con, chat_id, history_before_id)
+                       if st_active else None)
+        cleanup_scripts = pm_store.cleanup_scripts(con) if st_active else []
+        preset_texts = (pm_store.preset_texts(con, _preset_import(modules_enabled))
+                        if st_active else {})
 
     history_att = load_for_messages([r["id"] for r in history_rows])
     history = [
@@ -1047,10 +1261,16 @@ def _load_completion_context(
         "modules_sent": modules_sent,
         "layer_enabled": layer_enabled,
         "reply_length_words": reply_length_words,
+        "st_active": st_active,
+        "markers": markers,
+        "module_vars": module_vars,
+        "cleanup_scripts": cleanup_scripts,
+        "preset_texts": preset_texts,
     }
 
 
-def _build_prompt(chat_id: int, ctx: dict, persona_row) -> dict:
+def _build_prompt(chat_id: int, ctx: dict, persona_row,
+                  user_text: str | None = None) -> dict:
     """Card, modules and greeting as SENT, and the head of the system message.
 
     Runs in a worker thread: macros and the sanitizer are linear but a 1 MiB
@@ -1062,6 +1282,8 @@ def _build_prompt(chat_id: int, ctx: dict, persona_row) -> dict:
     user_name = card_macros.DEFAULT_USER_NAME
     if persona_row is not None:
         user_name = (persona_row["display_name"] or "").strip() or user_name
+    if ctx.get("st_active"):
+        return _build_st_prompt(chat_id, ctx, persona_row, user_name, user_text)
     try:
         card = prompt_layer.card_text(_CardRow(ctx["char_row"]), user_name)
         sent_ids = {m["id"] for m in ctx["modules_sent"]}
@@ -1083,7 +1305,37 @@ def _build_prompt(chat_id: int, ctx: dict, persona_row) -> dict:
         layer_enabled=ctx["layer_enabled"],
         length_words=ctx["reply_length_words"],
     )
-    return {"head": head, "modules": modules}
+    return {"head": head, "modules": modules, "layout": None,
+            "user_text": user_text, "variables": None}
+
+
+def _build_st_prompt(chat_id: int, ctx: dict, persona_row, user_name: str,
+                     user_text: str | None) -> dict:
+    """_build_prompt for a SillyTavern preset: the layout instead of one
+    system message (prompt_modules.st_build), the macro variables this turn
+    leaves behind, and the history cleanup on the outgoing copy of the
+    chat."""
+    try:
+        built = pm_st_build.build(
+            salt=prompt_layer.chat_salt(chat_id), char_row=_CardRow(ctx["char_row"]),
+            persona_row=persona_row, user_name=user_name,
+            modules_enabled=ctx["modules_enabled"],
+            modules_sent=ctx["modules_sent"], markers=ctx["markers"],
+            variables=ctx["module_vars"], preset_texts=ctx["preset_texts"])
+        for msg in ctx["history"]:
+            if msg.get("id") == ctx["greeting_id"] and msg["role"] == "assistant":
+                msg["content"] = prompt_sanitizer.sanitize_field(msg["content"])
+    except (card_macros.MacroOutputTooLarge, prompt_sanitizer.PromptFieldTooLarge):
+        raise HTTPException(400, "prompt_field_too_large") from None
+    scripts = pm_regex.prepare(ctx["cleanup_scripts"])
+    if scripts and user_text is not None:
+        # The history dicts are this request's own copies; the stored rows
+        # are never written from here.
+        user_text = pm_regex.clean_chat(ctx["history"], user_text, scripts,
+                                        char=built.card_name, user=user_name)
+    head = prompt_layer.Head(prompt_layer.MODE_MODULES, "", "", "", 0)
+    return {"head": head, "modules": built.modules, "layout": built.layout,
+            "user_text": user_text, "variables": built.variables}
 
 
 async def _prepare_completion(
@@ -1307,14 +1559,34 @@ async def _prepare_completion(
     # and one slow disk must not stall every in-flight request (audit-2).
     voice_block = await anyio.to_thread.run_sync(voice_tags.voice_block)
 
+    # D3: thinking off where the model allows it, the lowest effort and no
+    # returned text where it does not; nothing when the catalogue says
+    # nothing. The Thinking switch only reaches models whose reasoning is
+    # optional (the ones that would otherwise get the disable). A mandatory or
+    # unknown model keeps its default above whatever the switch says.
+    # The per-model choice, when the request carries one, decides; without
+    # it the old switch reaches optional reasoning only, as before.
+    effort = generation_params.thinking_effort
+    if (effort is None and generation_params.thinking
+            and _reasoning_is_optional(model_id_stripped)):
+        effort = THINKING_DEFAULT
+    reasoning = reasoning_param(model_id_stripped, effort=effort)
+    # Whether a trailing assistant part may go out as a prefill. Thinking
+    # counts as on when this request asks for it.
+    refuses_prefill = pm_place.model_refuses_prefill(
+        model_id_stripped,
+        thinking=bool(reasoning) and reasoning.get("enabled") is not False)
+    turn_vars: list = []
+
     def _assemble() -> list[dict]:
-        prompt = _build_prompt(chat_id, ctx, persona_row)
+        prompt = _build_prompt(chat_id, ctx, persona_row, user_message_text)
         head = prompt["head"]
+        turn_vars.append(prompt["variables"])
         return _assemble_messages(
             head.text,
             persona_block,
             history,
-            user_message_text,
+            prompt["user_text"],
             head.final_note,
             context_budget_chars,
             max_tokens_chars,
@@ -1329,6 +1601,8 @@ async def _prepare_completion(
             trimmed_out=trimmed_out,
             reminder_block=head.reminder,
             modules=prompt["modules"],
+            layout=prompt["layout"],
+            refuses_prefill=refuses_prefill,
         )
 
     # The whole assembly, sanitizer included, in one worker-thread hop.
@@ -1359,19 +1633,6 @@ async def _prepare_completion(
         "notebook_total": notebook["total"],
         "history_trimmed": trimmed_out[0] if trimmed_out else 0,
     }
-
-    # D3: thinking off where the model allows it, the lowest effort and no
-    # returned text where it does not; nothing when the catalogue says
-    # nothing. The Thinking switch only reaches models whose reasoning is
-    # optional (the ones that would otherwise get the disable). A mandatory or
-    # unknown model keeps its default above whatever the switch says.
-    # The per-model choice, when the request carries one, decides; without
-    # it the old switch reaches optional reasoning only, as before.
-    effort = generation_params.thinking_effort
-    if (effort is None and generation_params.thinking
-            and _reasoning_is_optional(model_id_stripped)):
-        effort = THINKING_DEFAULT
-    reasoning = reasoning_param(model_id_stripped, effort=effort)
 
     stop_dropped = False
     reasoning_dropped = False
@@ -1445,8 +1706,12 @@ async def _prepare_completion(
         else None
     )
 
+    # `module_vars`: the macro variables this turn leaves behind, as the
+    # snapshot text the reply's insert stores with it (None: nothing to keep).
     return (messages, filtered_gen_params, provider_dict, notices,
-            modalities, context_notes, {"private_endpoints": eligible})
+            modalities, context_notes,
+            {"private_endpoints": eligible,
+             "module_vars": pm_variables.dump(turn_vars[0] if turn_vars else None)})
 
 
 def _with_refusals(notices: list[dict], refused: int) -> list[dict]:
@@ -1581,11 +1846,13 @@ async def _call_provider_for_chat(
     history_before_id: int | None = None,
     pending_attachments: list[dict] | None = None,
     generation: str = "send",
-) -> tuple[str, list[dict], list[tuple[bytes, str, int, int]], bool, int]:
+) -> tuple[str, list[dict], list[tuple[bytes, str, int, int]], bool, int,
+           str | None]:
     """Non-streaming provider call: prepare, call OpenRouter, parse.
 
     Returns (assistant_text, notices, generated_image_bytes, truncated,
-    retried) on success; `retried` is how many automatic retries it took
+    retried, module_vars) on success; `module_vars` is the snapshot the
+    reply's insert stores (see _prepare_completion); `retried` is how many automatic retries it took
     (see `_may_retry`). The notices ride back out to the caller for the same reason the
     SSE path emits them: this endpoint has a response body, so "the model
     never saw your picture" has somewhere to go here too, and the two paths
@@ -1682,7 +1949,7 @@ async def _call_provider_for_chat(
 
     notices.extend(image_notices)
     logger.info("Gen params keys: %s", list(filtered_gen_params.keys()))
-    return text, notices, generated, truncated, retried
+    return text, notices, generated, truncated, retried, routing["module_vars"]
 
 
 # ---------------------------------------------------------------------------
@@ -1694,6 +1961,7 @@ def _persist_exchange_sync(
     attachment_ids: list[int],
     generated_images: list[tuple[bytes, str, int, int]] | None = None,
     truncated: bool = False,
+    turn_vars: str | None = None,
 ) -> tuple[dict, dict, int, int, int]:
     """Worker-thread body for the non-streaming write. Both rows, one txn.
 
@@ -1740,6 +2008,8 @@ def _persist_exchange_sync(
             (chat_id, assistant_text, int(truncated)),
         )
         asst_msg_id = cur.lastrowid
+        # The macro variables this turn left, with the reply they belong to.
+        pm_variables.save(con, chat_id, asst_msg_id, turn_vars)
 
         # In THIS transaction, with the row that owns them. A picture without
         # its reply is unreachable; a reply that claims a picture it does not
@@ -1774,7 +2044,7 @@ async def complete_chat(chat_id: int, body: CompleteRequest) -> dict:
     pending_rows = _validate_request_attachments(body.attachments, body.model_id)
 
     (assistant_text, notices, generated, truncated,
-     retried) = await _call_provider_for_chat(
+     retried, turn_vars) = await _call_provider_for_chat(
         chat_id=chat_id,
         model_id=body.model_id,
         user_message_text=body.message,
@@ -1797,7 +2067,7 @@ async def complete_chat(chat_id: int, body: CompleteRequest) -> dict:
     def _persist_and_notify():
         result = _persist_exchange_sync(
             chat_id, body.model_id, body.message.strip(), assistant_text,
-            body.attachments, generated, truncated,
+            body.attachments, generated, truncated, turn_vars,
         )
         _notify_notebook_from_thread(loop, chat_id)
         return result
@@ -1901,6 +2171,7 @@ def _insert_assistant_message(
     busy_timeout_ms: int = 15000,
     generated_images: list[tuple[bytes, str, int, int]] | None = None,
     truncated: bool = False,
+    turn_vars: str | None = None,
 ) -> dict:
     """Insert an assistant message + bump the chat; return the API row dict.
 
@@ -1939,6 +2210,7 @@ def _insert_assistant_message(
             (chat_id, text, int(truncated)),
         )
         asst_msg_id = cur.lastrowid
+        pm_variables.save(con, chat_id, asst_msg_id, turn_vars)
         generated_rows, refused = _store_generated(con, generated_images,
                                                    asst_msg_id, chat_id)
         con.execute(
@@ -2021,6 +2293,7 @@ def _append_variant(
     chat_id: int, anchor: int, text: str, model_id: str, fallback_active_id: int,
     generated_images: list[tuple[bytes, str, int, int]] | None = None,
     truncated: bool = False,
+    turn_vars: str | None = None,
 ) -> dict:
     """Atomic variant append (v1.1 FB2b/I7): run in a WORKER THREAD, opening
     its own connection here. Guard + deactivate + insert + chat bump all live
@@ -2066,6 +2339,7 @@ def _append_variant(
             (chat_id, text, anchor, int(truncated)),
         )
         asst_msg_id = cur.lastrowid
+        pm_variables.save(con, chat_id, asst_msg_id, turn_vars)
         generated_rows, refused = _store_generated(con, generated_images,
                                                    asst_msg_id, chat_id)
         variant_count = con.execute(
@@ -2758,7 +3032,7 @@ async def complete_chat_stream(chat_id: int, body: CompleteRequest) -> Streaming
         def _insert_and_notify():
             row = _insert_assistant_message(
                 chat_id, model_id_stripped, full_text, user_msg_id, 15000,
-                generated, truncated,
+                generated, truncated, turn_vars=routing["module_vars"],
             )
             _notify_notebook_from_thread(finalize_loop, chat_id)
             return row
@@ -2800,6 +3074,7 @@ async def complete_chat_stream(chat_id: int, body: CompleteRequest) -> Streaming
                 _insert_assistant_message(
                     chat_id, model_id_stripped, partial, user_msg_id,
                     busy_timeout_ms=timeout, truncated=True,
+                    turn_vars=routing["module_vars"],
                 )
                 logger.info(
                     "Streaming completion ended early; partial persisted: "
@@ -2967,7 +3242,7 @@ async def regenerate_message(chat_id: int, message_id: int,
     # the new one exists. history_before_id excludes the user message (it is
     # re-appended as the current turn) and the whole target variant group.
     (assistant_text, notices, generated, truncated,
-     retried) = await _call_provider_for_chat(
+     retried, turn_vars) = await _call_provider_for_chat(
         chat_id=chat_id,
         model_id=body.model_id,
         user_message_text=user_text,
@@ -2989,7 +3264,7 @@ async def regenerate_message(chat_id: int, message_id: int,
     def _append_and_notify():
         result = _append_variant(
             chat_id, anchor, assistant_text, model_id_stripped, prev_active_id,
-            generated, truncated,
+            generated, truncated, turn_vars=turn_vars,
         )
         _notify_notebook_from_thread(loop, chat_id)
         return result
@@ -3092,7 +3367,7 @@ async def regenerate_message_stream(chat_id: int, message_id: int,
         def _append_and_notify():
             row = _append_variant(
                 chat_id, anchor, full_text, model_id_stripped, prev_active_id,
-                generated, truncated,
+                generated, truncated, turn_vars=routing["module_vars"],
             )
             _notify_notebook_from_thread(finalize_loop, chat_id)
             return row
@@ -3199,6 +3474,7 @@ def _finalize_edit(
     expected_tail_id: int,
     generated_images: list[tuple[bytes, str, int, int]] | None = None,
     truncated: bool = False,
+    turn_vars: str | None = None,
 ) -> dict:
     """Atomic edit swap. Runs in a WORKER THREAD and opens its own
     connection there (I7: a connection never crosses threads; guard + sweep +
@@ -3267,6 +3543,7 @@ def _finalize_edit(
             (chat_id, assistant_text, int(truncated)),
         )
         asst_msg_id = cur.lastrowid
+        pm_variables.save(con, chat_id, asst_msg_id, turn_vars)
         generated_rows, refused = _store_generated(con, generated_images,
                                                    asst_msg_id, chat_id)
         con.execute(
@@ -3325,7 +3602,7 @@ async def edit_message(chat_id: int, message_id: int, body: EditRequest) -> dict
     new_content = body.message.strip()
 
     (assistant_text, notices, generated, truncated,
-     retried) = await _call_provider_for_chat(
+     retried, turn_vars) = await _call_provider_for_chat(
         chat_id=chat_id,
         model_id=body.model_id,
         user_message_text=new_content,
@@ -3343,7 +3620,7 @@ async def edit_message(chat_id: int, message_id: int, body: EditRequest) -> dict
         row = _finalize_edit(
             chat_id, message_id, new_content, assistant_text, body.model_id,
             user_row["updated_at"], user_row["content"], tail_id, generated,
-            truncated,
+            truncated, turn_vars=turn_vars,
         )
         _notify_notebook_from_thread(loop, chat_id)
         return row
@@ -3424,7 +3701,7 @@ async def edit_message_stream(chat_id: int, message_id: int,
             row = _finalize_edit(
                 chat_id, message_id, new_content, full_text, model_id_stripped,
                 user_row["updated_at"], user_row["content"], tail_id, generated,
-                truncated,
+                truncated, turn_vars=routing["module_vars"],
             )
             _notify_notebook_from_thread(finalize_loop, chat_id)
             return row

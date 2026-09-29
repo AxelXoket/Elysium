@@ -32,6 +32,7 @@ import {
   PROMPT_MODULE_ACCEPT,
   PROMPT_MODULE_LIMITS,
   PROMPT_MODULE_WARNINGS,
+  REGEX_UNSUPPORTED,
   ST_WARNING_KEY,
   badgeLabel,
   byteCapFor,
@@ -372,6 +373,13 @@ function ReportGroup({
   );
 }
 
+/** Why an in-chat entry was never sent, by the server's key. */
+const IN_CHAT_REASONS: Record<string, string> = {
+  no_depth: "no depth",
+  bad_role: "no known role",
+  too_deep: "deeper than 10000",
+};
+
 function ImportReport({
   result,
   onClose,
@@ -401,6 +409,38 @@ function ImportReport({
     ),
     ...report.duplicate_identifiers.map(
       (id) => `${id}: appears twice, both kept`,
+    ),
+    ...report.in_chat_not_sent.map(
+      (entry) =>
+        `${entry.identifier}: ${IN_CHAT_REASONS[entry.reason] ?? entry.reason}, so SillyTavern never sent it`,
+    ),
+  ];
+  // What the preset asks for that this app does differently or not at all.
+  const regex = report.regex_scripts;
+  const differentLines = [
+    ...(report.no_chat_history_marker
+      ? ["No chat history placeholder: the chat is still sent here"]
+      : []),
+    ...report.role_sent_as_system.map(
+      (id) => `${id}: unknown role, sent as a system message`,
+    ),
+    ...(report.global_variables_per_chat
+      ? ["Global variables: kept per chat here, not across chats"]
+      : []),
+    ...report.trailing_assistant.map(
+      (id) => `${id}: sent as a user message to models that refuse it`,
+    ),
+    ...(regex?.prompt_only ?? []).map(
+      (name) => `${name}: runs on the sent chat when history cleanup is on`,
+    ),
+    ...(regex?.edits_stored_message ?? []).map(
+      (name) => `${name}: would change saved messages, not applied`,
+    ),
+    ...(regex?.display_only ?? []).map(
+      (name) => `${name}: display only, not applied`,
+    ),
+    ...(regex?.unsupported ?? []).map(
+      (entry) => `${entry.name}: ${REGEX_UNSUPPORTED[entry.reason] ?? entry.reason}, skipped`,
     ),
   ];
   const badgeLines = Object.entries(report.badges).map(
@@ -473,6 +513,13 @@ function ImportReport({
         label="Unprocessed macros"
         explain="This app does not run these, so they go to the model as written."
         lines={macroLines}
+      />
+
+      <ReportGroup
+        title="Handled differently here"
+        label="Handled differently"
+        explain="Preset parts this app runs differently, or skips."
+        lines={differentLines}
       />
 
       <ReportGroup

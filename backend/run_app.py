@@ -813,4 +813,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # First, before anything opens: in the one-file exe a child process
+    # (the regex worker, prompt_modules/st_regex.py) starts as this same exe,
+    # and this call is what turns that start into the child instead of a
+    # second app.
+    import multiprocessing
+    multiprocessing.freeze_support()
     main()

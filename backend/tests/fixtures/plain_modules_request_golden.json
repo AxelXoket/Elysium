@@ -1,0 +1,22 @@
+[
+ {
+  "role": "system",
+  "content": "SALT\n\nPlain rule one for Nova.\n{{setvar::x::y}}\n\n## Style\nShort lines.\n\n[Character: Mira]\n\n[Description]\nA keeper of Mira's light.\n\n[Personality]\nDry.\n\n[Scenario]\nA storm.\n\n[Example Dialogue]\nMira: Mind the steps.\n\n[System Prompt]\nSpeak plainly.\n\n[Character card: final note]\nStay brief.\n\n[User Persona: Nova]\nA sailor."
+ },
+ {
+  "role": "assistant",
+  "content": "Welcome, User."
+ },
+ {
+  "role": "user",
+  "content": "first question"
+ },
+ {
+  "role": "assistant",
+  "content": "first answer"
+ },
+ {
+  "role": "user",
+  "content": "second question"
+ }
+]

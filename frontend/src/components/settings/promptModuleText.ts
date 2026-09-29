@@ -104,25 +104,48 @@ export interface BadgePlacement {
   st_injection_trigger?: string[] | null;
 }
 
+/** A part the preset left out of its order list: it can be turned on here. */
+export const NOT_IN_ORDER_NOTE = "SillyTavern did not send this";
+
+/** History cleanup, one switch per preset that has cleanup scripts. */
+export const HISTORY_CLEANUP_LABEL = "Clean old messages with this preset's rules";
+export const HISTORY_CLEANUP_HINT =
+  "Only what is sent changes. Saved messages stay as they are.";
+
+/** The row that forgets the open chat's macro variables. */
+export const CLEAR_VARIABLES_LABEL = "Clear this chat's variables";
+export const CLEAR_VARIABLES_HINT = "The next message starts with none.";
+export const CLEAR_VARIABLES_DONE = "Cleared.";
+
+/** Why a regex script from the preset is not run, by the server's key. */
+export const REGEX_UNSUPPORTED: Record<string, string> = {
+  unsupported_syntax: "pattern not supported here",
+  unsupported_flags: "pattern flags not supported here",
+  may_be_slow: "pattern could run too long",
+  pattern_too_long: "pattern too long",
+};
+
 export function badgeLabel(code: string, placement?: BadgePlacement): string {
   switch (code) {
     case "after_history":
-      return "Went after the chat history in SillyTavern";
+      return "Sent after the chat history";
     case "in_chat_depth": {
       const depth = placement?.st_injection_depth;
       const order = placement?.st_injection_order;
       const at = depth != null ? ` at depth ${depth}` : "";
       const ord = order != null ? `, order ${order}` : "";
-      return `Went inside the chat${at}${ord} in SillyTavern`;
+      return `Sent inside the chat${at}${ord}`;
     }
     case "role_user":
-      return "Had the user role, sent here as system text";
+      return "Sent as a user message";
     case "role_assistant":
-      return "Had the assistant role, sent here as system text";
+      return "Sent as an assistant message";
+    case "in_chat_not_sent":
+      return "SillyTavern never sent this: no depth or role";
     case "extension":
       return "Added by a SillyTavern extension";
     case "not_in_order":
-      return "Not in the SillyTavern order, so it was not sent there";
+      return NOT_IN_ORDER_NOTE;
     case "trigger_regenerate_only":
       return "Only on regenerate";
     case "trigger_send_only":
