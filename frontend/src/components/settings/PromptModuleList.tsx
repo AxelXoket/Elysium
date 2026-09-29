@@ -49,7 +49,10 @@ import { charsToTokens, moduleChars } from "./promptModuleCost";
 import { PROMPT_MODULE_LIMITS, placeholderLine } from "./promptModuleText";
 import {
   useDeletePromptModule,
+  useLatestPromptModule,
   usePatchPromptModule,
+  useIsPromptModuleWriting,
+  usePromptModuleWriting,
 } from "./promptModuleQueries";
 import { useHeldValue } from "./useHeldValue";
 
@@ -88,6 +91,9 @@ function blocks(rows: PromptModule[]): PromptModule[][] {
 
 export function PromptModuleList({ modules }: { modules: PromptModule[] }) {
   const patch = usePatchPromptModule();
+  const latest = useLatestPromptModule();
+  const writing = usePromptModuleWriting();
+  const writingNow = useIsPromptModuleWriting();
   const [overBudget, setOverBudget] = useState<PromptModulesOverBudget | null>(null);
   const [error, setError] = useState<string | null>(null);
   const shownOverBudget = useHeldValue(overBudget);
@@ -107,6 +113,23 @@ export function PromptModuleList({ modules }: { modules: PromptModule[] }) {
         },
       },
     );
+  };
+
+  // The next value comes from the cache, not from the row this render drew:
+  // the two can differ for a moment after a write, and a click in that
+  // moment must not send the same intent again. Nothing goes out while a
+  // write is still settling, and nothing for a row the list no longer has.
+  const toggle = (row: PromptModule) => {
+    if (writingNow()) return;
+    const current = latest(row.id);
+    if (!current) return;
+    write(row.id, { enabled: !current.enabled });
+  };
+
+  // A move is a list write like a toggle, with the same two checks.
+  const move = (row: PromptModule, to: number) => {
+    if (writingNow() || !latest(row.id)) return;
+    write(row.id, { sort_order: to });
   };
 
   if (rows.every((row) => row.kind !== "module")) {
@@ -161,8 +184,10 @@ export function PromptModuleList({ modules }: { modules: PromptModule[] }) {
                         module={module}
                         position={rows.indexOf(module)}
                         last={rows.length - 1}
-                        busy={patch.isPending}
+                        busy={writing}
                         onWrite={write}
+                        onToggle={toggle}
+                        onMove={move}
                       />
                     ) : (
                       <div className="settings-voice-row border-dashed">
@@ -190,12 +215,16 @@ function ModuleRow({
   last,
   busy,
   onWrite,
+  onToggle,
+  onMove,
 }: {
   module: PromptModule;
   position: number;
   last: number;
   busy: boolean;
   onWrite: (id: number, body: { enabled?: boolean; sort_order?: number; name?: string }) => void;
+  onToggle: (module: PromptModule) => void;
+  onMove: (module: PromptModule, to: number) => void;
 }) {
   const remove = useDeletePromptModule();
   const [open, setOpen] = useState(false);
@@ -362,16 +391,20 @@ function ModuleRow({
               the Voice page does. While the name is being edited it and the
               disclosure step out of the tab order, so the first Tab after
               typing reaches Save name, not a control that drops the edit. */}
+          {/* While a write settles the switch is aria-disabled, not
+              disabled: a disabled button under the keyboard drops the focus
+              to the body, and the next Space would go nowhere. */}
           <button
             type="button"
             role="switch"
             aria-checked={module.enabled}
             aria-label={module.name}
             aria-describedby={blocked ? `${actionsId}-blocked` : undefined}
-            disabled={busy || blocked || renaming}
+            disabled={blocked || renaming}
+            aria-disabled={busy || undefined}
             data-module-switch=""
-            className="shrink-0 disabled:cursor-default"
-            onClick={() => onWrite(module.id, { enabled: !module.enabled })}
+            className="shrink-0 disabled:cursor-default aria-disabled:cursor-default"
+            onClick={() => onToggle(module)}
           >
             {/* A switch that cannot be turned on is dimmed the way a disabled
                 section is, and its reason sits under the row. */}
@@ -414,8 +447,9 @@ function ModuleRow({
                   type="button"
                   className="settings-voice-button is-quiet"
                   aria-label={`Move ${module.name} up`}
-                  disabled={busy || position <= 0}
-                  onClick={() => onWrite(module.id, { sort_order: position - 1 })}
+                  disabled={position <= 0}
+                  aria-disabled={busy || undefined}
+                  onClick={() => onMove(module, position - 1)}
                 >
                   <ArrowUp size={12} />
                   Up
@@ -424,8 +458,9 @@ function ModuleRow({
                   type="button"
                   className="settings-voice-button is-quiet"
                   aria-label={`Move ${module.name} down`}
-                  disabled={busy || position >= last}
-                  onClick={() => onWrite(module.id, { sort_order: position + 1 })}
+                  disabled={position >= last}
+                  aria-disabled={busy || undefined}
+                  onClick={() => onMove(module, position + 1)}
                 >
                   <ArrowDown size={12} />
                   Down

@@ -27,7 +27,7 @@
  */
 import { createHash } from "node:crypto";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect, type ReactNode } from "react";
 
@@ -64,6 +64,7 @@ import {
 import {
   OVER_BUDGET_FIX,
   PROMPT_MODULE_FILENAME_HEADER,
+  PROMPT_MODULE_LIST_KEY,
 } from "@/lib/api/promptModules";
 import { formatCount } from "@/lib/formatCount";
 import { hiddenFromReaders } from "@/test/helpers/accessibility";
@@ -1369,5 +1370,371 @@ describe("Settings dialog", () => {
     fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
     await waitFor(() => expect(onOpenChange).toHaveBeenCalled());
     expect(onOpenChange.mock.calls[0][0]).toBe(false);
+  });
+});
+
+// -- The switch against a server that remembers --
+//
+// The fixed routes above answer the same list every time. These tests need a
+// server that keeps what each PATCH set, and a list read that can be held, so
+// the moment between "the write is answered" and "the list is fresh" can be
+// looked at directly.
+
+interface StatefulServer {
+  /** What the server holds, by module id. */
+  state: Map<number, boolean>;
+  /** The `enabled` of every PATCH that carried one, in the order they arrived. */
+  patches: boolean[];
+  /** The `sort_order` of every PATCH that carried one. */
+  moves: number[];
+  /** How many preset calls arrived. */
+  presetCalls: () => number;
+  /** Makes the next list reads wait until `release` is called. */
+  holdList: () => void;
+  release: () => Promise<void>;
+  /** Makes list reads fail with a 500 while true. */
+  failList: (on: boolean) => void;
+  fetchMock: ReturnType<typeof vi.fn>;
+}
+
+function statefulServer(rows: Row[]): StatefulServer {
+  const state = new Map(rows.map((r) => [r.id as number, r.enabled as boolean]));
+  const patches: boolean[] = [];
+  const moves: number[] = [];
+  let presets = 0;
+  const order = rows.map((r) => r.id as number);
+  let held: Array<() => void> | null = null;
+  let failing = false;
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "Content-Type": "application/json" },
+    });
+  const snapshot = () =>
+    rows.map((r) => ({
+      ...r,
+      enabled: state.get(r.id as number),
+      sort_order: order.indexOf(r.id as number),
+    }));
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (url.includes("/vault/status")) return json({ initialized: true, unlocked: true });
+    if (url.includes("/prompt-modules/settings")) {
+      return json({ prompt_layer_enabled: false, reply_length_words: null });
+    }
+    if (method === "POST" && url.includes("/prompt-modules/enable-preset-defaults")) {
+      presets += 1;
+      const ids = rows.filter((r) => r.st_enabled === true).map((r) => r.id as number);
+      for (const id of ids) state.set(id, true);
+      return json({ enabled_ids: ids, left_out: [] });
+    }
+    const patch = method === "PATCH" ? url.match(/\/prompt-modules\/(\d+)/) : null;
+    if (patch) {
+      const id = Number(patch[1]);
+      const body = JSON.parse(String(init?.body));
+      if ("enabled" in body) {
+        patches.push(body.enabled);
+        state.set(id, body.enabled);
+      }
+      if ("sort_order" in body) {
+        moves.push(body.sort_order);
+        order.splice(order.indexOf(id), 1);
+        order.splice(body.sort_order, 0, id);
+      }
+      return json(snapshot().find((r) => r.id === id));
+    }
+    if (method === "GET" && url.includes("/prompt-modules")) {
+      // The list is read when the request arrives, as a database would.
+      const list = snapshot();
+      if (held) {
+        const queue = held;
+        await new Promise<void>((resolve) => queue.push(resolve));
+      }
+      if (failing) return json({ detail: "boom" }, 500);
+      return json({ modules: list, imports: [], enabled_count: 0 });
+    }
+    if (url.includes("/settings")) return json(settingsFixture);
+    return json({ detail: `No mock for ${method} ${url}` }, 404);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return {
+    state,
+    patches,
+    moves,
+    presetCalls: () => presets,
+    fetchMock,
+    holdList: () => {
+      held = [];
+    },
+    release: async () => {
+      const waiting = held ?? [];
+      held = null;
+      await act(async () => {
+        for (const go of waiting) go();
+      });
+    },
+    failList: (on) => {
+      failing = on;
+    },
+  };
+}
+
+function renderStateful(rows: Row[]) {
+  const server = statefulServer(rows);
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <GenerationSettingsProvider>{children}</GenerationSettingsProvider>
+  );
+  const { queryClient } = renderWithQueryClient(<PromptModulesSection />, { wrapper });
+  return { ...server, client: queryClient };
+}
+
+const listReads = (s: Pick<StatefulServer, "fetchMock">) =>
+  s.fetchMock.mock.calls.filter(([input, init]) => {
+    const url = String(input);
+    const method = ((init as RequestInit | undefined)?.method ?? "GET").toUpperCase();
+    return method === "GET" && /\/prompt-modules(\?|$)/.test(url);
+  }).length;
+
+describe("the switch never acts on a stale list", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("on then off from the keyboard ends off, and the focus stays on the switch", async () => {
+    const user = userEvent.setup();
+    const alpha = mod({ name: "Alpha" });
+    const s = renderStateful([alpha]);
+    const toggle = await screen.findByRole("switch", { name: "Alpha" });
+
+    // GROUND: nothing sent yet, the switch shows what the server holds.
+    expect(s.patches).toEqual([]);
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+
+    toggle.focus();
+    const readsBefore = listReads(s);
+    s.holdList();
+    await user.keyboard(" ");
+    await waitFor(() => expect(s.patches).toEqual([true]));
+    await waitFor(() => expect(listReads(s)).toBeGreaterThan(readsBefore));
+
+    // The PATCH is answered, the list read after it is still out. The switch
+    // already shows the server's answer, refuses a second press, and is not
+    // `disabled`, which in a browser would drop the focus to the body.
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
+    expect(toggle).toHaveAttribute("aria-disabled", "true");
+    expect(toggle).not.toBeDisabled();
+    expect(toggle).toHaveFocus();
+    await user.keyboard(" ");
+    expect(s.patches).toEqual([true]);
+
+    await s.release();
+    await waitFor(() => expect(toggle).not.toHaveAttribute("aria-disabled"));
+    expect(toggle).toHaveFocus();
+
+    // POSITIVE: the next press is the second flip, and it sends off.
+    await user.keyboard(" ");
+    await waitFor(() => expect(s.patches).toEqual([true, false]));
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "false"));
+    await waitFor(() => expect(toggle).not.toHaveAttribute("aria-disabled"));
+    expect(s.state.get(alpha.id as number)).toBe(false);
+    expect(toggle).toHaveFocus();
+  });
+
+  it("a fast double click sends one write, and the screen matches the server", async () => {
+    const alpha = mod({ name: "Alpha" });
+    const s = renderStateful([alpha]);
+    const toggle = await screen.findByRole("switch", { name: "Alpha" });
+    // Two clicks in one task, before the page renders again.
+    act(() => {
+      toggle.click();
+      toggle.click();
+    });
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
+    await waitFor(() => expect(toggle).not.toHaveAttribute("aria-disabled"));
+    expect(s.patches).toEqual([true]);
+    expect(s.state.get(alpha.id as number)).toBe(true);
+
+    // POSITIVE: once settled, the same double click again is one flip back.
+    act(() => {
+      toggle.click();
+      toggle.click();
+    });
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "false"));
+    await waitFor(() => expect(toggle).not.toHaveAttribute("aria-disabled"));
+    expect(s.patches).toEqual([true, false]);
+    expect(s.state.get(alpha.id as number)).toBe(false);
+  });
+
+  it("a click in the same moment a fresh list lands acts on the fresh list", async () => {
+    const alpha = mod({ name: "Alpha" });
+    const s = renderStateful([alpha]);
+    const toggle = await screen.findByRole("switch", { name: "Alpha" });
+    await waitFor(() => expect(toggle).not.toHaveAttribute("aria-disabled"));
+    // GROUND: the page and the server agree the module is off.
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+
+    // Another window turned it on; a list read brings that in. The cache has
+    // it at once, the page draws it a moment later, and the click falls in
+    // between. What the click sends must follow the list, not the old frame.
+    s.state.set(alpha.id as number, true);
+    act(() => {
+      s.client.setQueryData(PROMPT_MODULE_LIST_KEY, {
+        modules: [{ ...alpha, enabled: true }],
+      });
+      toggle.click();
+    });
+    await waitFor(() => expect(s.patches).toEqual([false]));
+    await waitFor(() => expect(toggle).not.toHaveAttribute("aria-disabled"));
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    expect(s.state.get(alpha.id as number)).toBe(false);
+  });
+
+  it("a list read that fails after a write leaves no old switch to click", async () => {
+    const user = userEvent.setup();
+    const alpha = mod({ name: "Alpha" });
+    const s = renderStateful([alpha]);
+    const toggle = await screen.findByRole("switch", { name: "Alpha" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+
+    s.failList(true);
+    await user.click(toggle);
+    await waitFor(() => expect(s.patches).toEqual([true]));
+    // The read after the write failed. The page says so and draws no switch,
+    // so nothing on screen can show the list from before the write.
+    await waitFor(() =>
+      expect(screen.getAllByRole("alert").map((a) => a.textContent)).toContain(
+        MODULE_LIST_UNREACHABLE,
+      ),
+    );
+    expect(screen.queryByRole("switch", { name: "Alpha" })).toBeNull();
+
+    // POSITIVE: the list is back, and it is the server's state, on.
+    s.failList(false);
+    await act(async () => {
+      await s.client.invalidateQueries({ queryKey: PROMPT_MODULE_LIST_KEY });
+    });
+    const back = await screen.findByRole("switch", { name: "Alpha" });
+    expect(back).toHaveAttribute("aria-checked", "true");
+    await user.click(back);
+    await waitFor(() => expect(s.patches).toEqual([true, false]));
+    await waitFor(() => expect(back).toHaveAttribute("aria-checked", "false"));
+    expect(s.state.get(alpha.id as number)).toBe(false);
+  });
+
+  it("while a preset's set is settling, no module switch sends anything", async () => {
+    const user = userEvent.setup();
+    const common = { import_id: 7, source_type: "st_preset", source_filename: "p.json" };
+    const on = mod({ ...common, name: "StOn", st_enabled: true });
+    const off = mod({ ...common, name: "StOff", st_enabled: false });
+    const s = renderStateful([on, off]);
+    const stOff = await screen.findByRole("switch", { name: "StOff" });
+    const stOn = screen.getByRole("switch", { name: "StOn" });
+    // GROUND: before the preset button, both switches take clicks.
+    expect(stOn).not.toHaveAttribute("aria-disabled");
+
+    s.holdList();
+    await user.click(screen.getByRole("button", { name: /Turn on entries enabled in SillyTavern/ }));
+    await waitFor(() => expect(s.state.get(on.id as number)).toBe(true));
+    await waitFor(() => expect(stOff).toHaveAttribute("aria-disabled", "true"));
+    expect(stOn).toHaveAttribute("aria-disabled", "true");
+    // The list on screen still says StOn is off; a click here would send on.
+    expect(stOn).toHaveAttribute("aria-checked", "false");
+    await user.click(stOn);
+    await user.click(stOff);
+    expect(s.patches).toEqual([]);
+
+    await s.release();
+    await waitFor(() => expect(stOn).toHaveAttribute("aria-checked", "true"));
+    await waitFor(() => expect(stOn).not.toHaveAttribute("aria-disabled"));
+
+    // POSITIVE: settled, a click on StOn turns it off.
+    await user.click(stOn);
+    await waitFor(() => expect(s.patches).toEqual([false]));
+    expect(s.state.get(on.id as number)).toBe(false);
+  });
+  it("a click on a row the list no longer has sends nothing", async () => {
+    const alpha = mod({ name: "Alpha" });
+    const beta = mod({ name: "Beta" });
+    const s = renderStateful([alpha, beta]);
+    const toggle = await screen.findByRole("switch", { name: "Alpha" });
+    await waitFor(() => expect(toggle).not.toHaveAttribute("aria-disabled"));
+
+    // Alpha was deleted elsewhere; the list without it is in the cache, and
+    // the click lands before the page draws that.
+    act(() => {
+      s.client.setQueryData(PROMPT_MODULE_LIST_KEY, { modules: [{ ...beta }] });
+      toggle.click();
+    });
+    await waitFor(() => expect(screen.queryByRole("switch", { name: "Alpha" })).toBeNull());
+    expect(s.patches).toEqual([]);
+
+    // POSITIVE: the same kind of click on a row the list still has is sent.
+    const betaSwitch = screen.getByRole("switch", { name: "Beta" });
+    act(() => {
+      s.client.setQueryData(PROMPT_MODULE_LIST_KEY, { modules: [{ ...beta }] });
+      betaSwitch.click();
+    });
+    await waitFor(() => expect(s.patches).toEqual([true]));
+  });
+
+  it("a move from the keyboard keeps the focus on the button while it settles", async () => {
+    const user = userEvent.setup();
+    const first = mod({ name: "First" });
+    const second = mod({ name: "Second" });
+    const s = renderStateful([first, second]);
+    await screen.findByRole("switch", { name: "Second" });
+    await openActions(user, "Second");
+    const up = screen.getByRole("button", { name: "Move Second up" });
+    // GROUND: nothing moved yet, and the button takes presses.
+    expect(s.moves).toEqual([]);
+    expect(up).not.toHaveAttribute("aria-disabled");
+
+    up.focus();
+    s.holdList();
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(s.moves).toEqual([0]));
+    await waitFor(() => expect(up).toHaveAttribute("aria-disabled", "true"));
+    expect(up).not.toBeDisabled();
+    expect(up).toHaveFocus();
+    // A second press while it settles sends nothing.
+    await user.keyboard("{Enter}");
+    expect(s.moves).toEqual([0]);
+
+    await s.release();
+    // Second is first now: Up is at its end and Down takes presses.
+    await waitFor(() => expect(up).toBeDisabled());
+    const down = screen.getByRole("button", { name: "Move Second down" });
+    await waitFor(() => expect(down).not.toHaveAttribute("aria-disabled"));
+    // POSITIVE: settled, Down is sent.
+    await user.click(down);
+    await waitFor(() => expect(s.moves).toEqual([0, 1]));
+  });
+
+  it("the preset button keeps the focus while its set settles", async () => {
+    const user = userEvent.setup();
+    const common = { import_id: 7, source_type: "st_preset", source_filename: "p.json" };
+    const on = mod({ ...common, name: "StOn", st_enabled: true });
+    const s = renderStateful([on, mod({ ...common, name: "StOff", st_enabled: false })]);
+    await screen.findByRole("switch", { name: "StOn" });
+    const preset = screen.getByRole("button", { name: /Turn on entries enabled in SillyTavern/ });
+    // GROUND: no call yet, the button takes presses.
+    expect(s.presetCalls()).toBe(0);
+    expect(preset).not.toHaveAttribute("aria-disabled");
+
+    preset.focus();
+    s.holdList();
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(s.presetCalls()).toBe(1));
+    await waitFor(() => expect(preset).toHaveAttribute("aria-disabled", "true"));
+    expect(preset).not.toBeDisabled();
+    expect(preset).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(s.presetCalls()).toBe(1);
+
+    await s.release();
+    await waitFor(() => expect(preset).not.toHaveAttribute("aria-disabled"));
+    expect(preset).toHaveFocus();
+    // POSITIVE: settled, the next press is sent.
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(s.presetCalls()).toBe(2));
   });
 });

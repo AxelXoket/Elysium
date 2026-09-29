@@ -6,7 +6,7 @@
  * list and the settings, and the vault lock clears them with the rest of the
  * cache.
  */
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useGenerationSettings } from "@/components/generation/GenerationSettingsContext";
 import { useUiStore } from "@/lib/store/uiStore";
@@ -22,12 +22,20 @@ import {
   type PromptModuleBudgetInputs,
   type PromptModulePatch,
 } from "@/lib/api/promptModules";
-import type { PromptModuleSettings } from "@/lib/schemas/promptModules";
+import {
+  PromptModuleSchema,
+  type PromptModule,
+  type PromptModuleList,
+  type PromptModuleSettings,
+} from "@/lib/schemas/promptModules";
 
 export const promptModuleKeys = {
   root: () => ["promptModules"] as const,
   list: () => PROMPT_MODULE_LIST_KEY,
   settings: () => ["promptModules", "settings"] as const,
+  /** Every write that changes the list carries this key, so one count says
+   *  whether any of them is still settling. */
+  write: () => ["promptModules", "write"] as const,
 };
 
 export function usePromptModules() {
@@ -51,8 +59,9 @@ function useInvalidateAll() {
 export function useImportPromptModule() {
   const invalidate = useInvalidateAll();
   return useMutation({
+    mutationKey: promptModuleKeys.write(),
     mutationFn: (file: File) => importPromptModuleFile(file),
-    onSuccess: () => void invalidate(),
+    onSuccess: () => invalidate(),
   });
 }
 
@@ -80,31 +89,81 @@ function useBudgetInputs(): () => PromptModuleBudgetInputs {
 }
 
 export function usePatchPromptModule() {
+  const qc = useQueryClient();
   const invalidate = useInvalidateAll();
   const budget = useBudgetInputs();
   return useMutation({
+    mutationKey: promptModuleKeys.write(),
     mutationFn: ({ id, patch }: { id: number; patch: PromptModulePatch }) =>
       patchPromptModule(id, patch, budget()),
+    // The answer is the row as the vault now holds it, so the list shows it
+    // at once. A move is left to the refetch: it renumbers the other rows too.
+    onSuccess: (answer, { patch }) => {
+      if (patch.sort_order !== undefined) return;
+      const row = PromptModuleSchema.safeParse(answer);
+      if (!row.success) return;
+      qc.setQueryData<PromptModuleList>(promptModuleKeys.list(), (old) =>
+        old
+          ? { ...old, modules: old.modules.map((m) => (m.id === row.data.id ? row.data : m)) }
+          : old,
+      );
+    },
     // Settled, not success: a refused toggle must put the switch back to what
-    // the vault holds, and the refetch is what does that.
-    onSettled: () => void invalidate(),
+    // the vault holds, and the refetch is what does that. The promise is
+    // returned so the write stays pending until the list is fresh, and a
+    // second click cannot land on the old list.
+    onSettled: () => invalidate(),
   });
+}
+
+/**
+ * True while any list write, or the refetch that follows it, is out: an
+ * import, a toggle, a move, a rename, a preset's set or a delete. A switch
+ * clicked in that time would act on a list that is about to change.
+ */
+export function usePromptModuleWriting(): boolean {
+  return useIsMutating({ mutationKey: promptModuleKeys.write() }) > 0;
+}
+
+/**
+ * The same question asked of the cache at this instant. The hook above
+ * answers from the last render, and two clicks can land before the next one;
+ * a write is in the cache from the moment it is started.
+ */
+export function useIsPromptModuleWriting(): () => boolean {
+  const qc = useQueryClient();
+  return () => qc.isMutating({ mutationKey: promptModuleKeys.write() }) > 0;
+}
+
+/**
+ * The row as the cache holds it now, not as the last render saw it. A click
+ * reads the switch's next value from here, so a render that lags the cache
+ * cannot send the same intent twice.
+ */
+export function useLatestPromptModule(): (id: number) => PromptModule | undefined {
+  const qc = useQueryClient();
+  return (id) =>
+    qc
+      .getQueryData<PromptModuleList>(promptModuleKeys.list())
+      ?.modules.find((m) => m.id === id);
 }
 
 export function useEnablePresetDefaults() {
   const invalidate = useInvalidateAll();
   const budget = useBudgetInputs();
   return useMutation({
+    mutationKey: promptModuleKeys.write(),
     mutationFn: (importId: number) => enablePresetDefaults(importId, budget()),
-    onSettled: () => void invalidate(),
+    onSettled: () => invalidate(),
   });
 }
 
 export function useDeletePromptModule() {
   const invalidate = useInvalidateAll();
   return useMutation({
+    mutationKey: promptModuleKeys.write(),
     mutationFn: (id: number) => deletePromptModule(id),
-    onSettled: () => void invalidate(),
+    onSettled: () => invalidate(),
   });
 }
 

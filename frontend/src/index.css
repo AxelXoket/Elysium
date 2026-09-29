@@ -4035,12 +4035,13 @@ input::-ms-clear {
     border-color var(--duration-fast) var(--ease-smooth);
 }
 
-.settings-voice-button:hover:not(:disabled) {
+.settings-voice-button:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--es-accent-28);
   border-color: var(--es-mist-50);
 }
 
-.settings-voice-button:disabled {
+.settings-voice-button:disabled,
+.settings-voice-button[aria-disabled="true"] {
   opacity: 0.5;
   cursor: default;
 }
@@ -4536,7 +4537,7 @@ div.settings-toggle-row:active {
   transform: translateY(0) scale(0.99);
 }
 
-.settings-voice-button:active:not(:disabled) {
+.settings-voice-button:active:not(:disabled):not([aria-disabled="true"]) {
   transform: translateY(0) scale(0.985);
 }
 

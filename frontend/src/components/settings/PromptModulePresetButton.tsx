@@ -20,7 +20,12 @@ import type {
 } from "@/lib/schemas/promptModules";
 import { getErrorMessage } from "@/lib/errors";
 
-import { promptModuleKeys, useEnablePresetDefaults } from "./promptModuleQueries";
+import {
+  promptModuleKeys,
+  useEnablePresetDefaults,
+  useIsPromptModuleWriting,
+  usePromptModuleWriting,
+} from "./promptModuleQueries";
 import { OverBudgetNotice } from "./PromptModuleOverBudget";
 import { useHeldValue } from "./useHeldValue";
 
@@ -42,8 +47,11 @@ export function PresetDefaultsButton({
   const [error, setError] = useState<string | null>(null);
   const [leftOut, setLeftOut] = useState<string[]>([]);
   const qc = useQueryClient();
+  const writing = usePromptModuleWriting();
+  const writingNow = useIsPromptModuleWriting();
 
   const run = () => {
+    if (writingNow()) return;
     setOverBudget(null);
     setError(null);
     setLeftOut([]);
@@ -75,10 +83,12 @@ export function PresetDefaultsButton({
   // drops its stack margin (index.css .es-collapse), so it takes no room.
   return (
     <div className="space-y-2">
+      {/* aria-disabled, not disabled, while a write settles: a disabled
+          button under the keyboard drops the focus to the body. */}
       <button
         type="button"
         className="settings-voice-button"
-        disabled={enable.isPending}
+        aria-disabled={writing || undefined}
         onClick={run}
       >
         {enable.isPending ? (
