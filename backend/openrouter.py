@@ -366,24 +366,84 @@ def model_id_blocked(model_id: str) -> bool:
 
 
 #: Reasoning effort words from least to most, as the models API spells them.
-#: `none` is not an effort a mandatory model accepts, so it is skipped.
-REASONING_EFFORT_ORDER = ("minimal", "low", "medium", "high", "xhigh")
+#: `none` is not an effort a mandatory model accepts, so it is skipped; on a
+#: model whose reasoning is optional, "off" covers it.
+REASONING_EFFORT_ORDER = ("minimal", "low", "medium", "high", "xhigh", "max")
+
+#: The thinking choice a request can carry besides a level: "off" is the
+#: disable (today's default on optional reasoning), "default" sends no
+#: `reasoning` field so the provider's own default applies.
+THINKING_OFF = "off"
+THINKING_DEFAULT = "default"
+THINKING_CHOICES = (THINKING_OFF, THINKING_DEFAULT, *REASONING_EFFORT_ORDER)
 
 
-def reasoning_param(model_id: str, *, thinking: bool = False) -> dict | None:
-    """The `reasoning` request field for this model, or None to send nothing (D3).
+def listed_efforts(info: dict | None) -> list[str]:
+    """The levels a reasoning object lists, in REASONING_EFFORT_ORDER.
+
+    Anything that is not a known level ("none", a misspelling, a non-string)
+    is left out, so a level is only ever offered or sent when the model lists
+    it by a name this app knows.
+    """
+    if not isinstance(info, dict):
+        return []
+    raw = info.get("supported_efforts")
+    if not isinstance(raw, list):
+        return []
+    return [e for e in REASONING_EFFORT_ORDER if e in raw]
+
+
+#: The levels the untouched mandatory request picks its lowest from. "max"
+#: is left out on purpose: before it was a known word, a model listing only
+#: "max" got no level at all, and an untouched request must stay what it was.
+UNTOUCHED_MANDATORY_ORDER = REASONING_EFFORT_ORDER[:-1]
+
+
+def untouched_mandatory_reasoning(info: dict) -> dict:
+    """What a mandatory model got before any choice existed, byte for byte.
+
+    `exclude`, plus the lowest level from UNTOUCHED_MANDATORY_ORDER that the
+    listing contains. The check is the plain `in` it always was, so a
+    listing that arrives as a string still matches by substring as before;
+    a listing `in` cannot search gets no level instead of an error.
+    """
+    raw = info.get("supported_efforts") or []
+    out: dict = {"exclude": True}
+    for level in UNTOUCHED_MANDATORY_ORDER:
+        try:
+            found = level in raw
+        except TypeError:
+            break
+        if found:
+            out["effort"] = level
+            break
+    return out
+
+
+def reasoning_param(model_id: str, *, thinking: bool = False,
+                    effort: str | None = None) -> dict | None:
+    """The `reasoning` request field for this model, or None to send nothing.
 
     Read from the cached model list, never fetched: no metadata, no field.
-    - `thinking` True: None, the provider default (the "Thinking" toggle).
+    - `thinking` True with no `effort`: None, the provider default (the old
+      on/off switch, still accepted).
     - the model does not list `reasoning` in its supported parameters, or the
       catalogue carries no reasoning object for it: None. Sending a disable
       to a model whose rules are unknown can be refused outright.
-    - mandatory reasoning: never a disable (the model rejects it); the lowest
-      effort it lists, and `exclude` so the text is not returned.
-    - optional reasoning: `{"enabled": False}`. Reasoning tokens count
-      against max_tokens and are billed even when the reply comes back empty.
+    - `effort` is the user's choice for this model: "off", "default" or a
+      level. A level is sent only when the model lists it; a level it does
+      not list, an unknown word, or no choice at all gives the behaviour
+      below, which is what every request got before the choice existed.
+    - mandatory reasoning: never a disable (the model rejects it), and always
+      `exclude`, since the text is never shown. The chosen level if listed;
+      "default" sends no level, so the provider picks; anything else gets
+      the untouched value (`untouched_mandatory_reasoning`).
+    - optional reasoning: "default" sends nothing, a listed level is sent
+      with `exclude`, and anything else is `{"enabled": False}`. Reasoning
+      tokens count against max_tokens and are billed even when the reply
+      comes back empty.
     """
-    if thinking:
+    if thinking and effort is None:
         return None
     meta = get_cached_model_metadata(model_id)
     if not meta or "reasoning" not in (meta.get("supported_parameters") or []):
@@ -391,14 +451,18 @@ def reasoning_param(model_id: str, *, thinking: bool = False) -> dict | None:
     info = meta.get("reasoning")
     if not isinstance(info, dict) or not info:
         return None
+    listed = listed_efforts(info)
+    chosen = effort if effort in listed else None
     if info.get("mandatory"):
-        listed = info.get("supported_efforts") or []
-        out: dict = {"exclude": True}
-        for effort in REASONING_EFFORT_ORDER:
-            if effort in listed:
-                out["effort"] = effort
-                break
-        return out
+        if chosen:
+            return {"exclude": True, "effort": chosen}
+        if effort == THINKING_DEFAULT:
+            return {"exclude": True}
+        return untouched_mandatory_reasoning(info)
+    if effort == THINKING_DEFAULT:
+        return None
+    if chosen:
+        return {"exclude": True, "effort": chosen}
     return {"enabled": False}
 
 

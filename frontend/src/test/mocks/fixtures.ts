@@ -21,6 +21,8 @@ export const settingsFixture: Settings = {
   // v1.2: which model is chosen, now vault-side (it used to be a localStorage
   // key - see uiStore.ts's version-3 migrate). Unselected by default.
   selected_model_id: null,
+  // No thinking choice stored for any model.
+  thinking_efforts: {},
 };
 
 export const proxyHealthFixture: ProxyHealth = {

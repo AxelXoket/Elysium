@@ -40,6 +40,10 @@ export const SettingsSchema = z.object({
    *  plaintext copy out of any existing install. Defaulted so a newer client
    *  against an older server still parses. */
   selected_model_id: z.string().nullable().default(null),
+  /** The thinking choice per model, {model id: choice}. Keyed by model id,
+   *  a name, so it is vault-stored like the selected model. Only models the
+   *  user set a choice for appear. Defaulted so an older server parses. */
+  thinking_efforts: z.record(z.string(), z.string()).default({}),
 });
 
 // Exact match of proxy_health.py check_proxy_health() return dict
@@ -117,6 +121,12 @@ export const ModelSelectionResponseSchema = z.object({
   selected_model_id: z.string().nullable(),
 });
 export type ModelSelectionResponse = z.infer<typeof ModelSelectionResponseSchema>;
+
+export const ThinkingEffortResponseSchema = z.object({
+  ok: z.boolean(),
+  thinking_efforts: z.record(z.string(), z.string()),
+});
+export type ThinkingEffortResponse = z.infer<typeof ThinkingEffortResponseSchema>;
 
 export type Settings = z.infer<typeof SettingsSchema>;
 export type StopSequencesResponse = z.infer<typeof StopSequencesResponseSchema>;

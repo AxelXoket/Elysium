@@ -7,6 +7,10 @@
  */
 
 import { NAME_MAX_CODE_POINTS } from "@/lib/characters/nameLimits";
+import {
+  MAX_NEW_TOKENS_LABEL,
+  THINKING_EFFORT_LABEL,
+} from "@/lib/generation/labels";
 
 const ERROR_MESSAGES: Record<string, string> = {
   // Auth / API key
@@ -69,7 +73,9 @@ const ERROR_MESSAGES: Record<string, string> = {
   openrouter_temporarily_unavailable:
     "The privacy-safe providers for this model are busy or down right now. This usually passes: wait a moment and send again.",
   reasoning_used_reply_budget:
-    "The model spent the whole reply length on thinking and wrote no answer. Raise Max tokens or turn Thinking off, then send again.",
+    // The two rows are named with the dialog's own labels. No "turn it off":
+    // a model that always thinks has no Off.
+    `Raise ${MAX_NEW_TOKENS_LABEL} or lower ${THINKING_EFFORT_LABEL}: thinking used the reply.`,
   openrouter_completion_error:
     "The provider returned an error. Please try again.",
   // This used to arrive as auth_failed, so a refused message read as "check
@@ -200,6 +206,10 @@ const ERROR_MESSAGES: Record<string, string> = {
   // privacy-safe provider for this model accepts them. Never silent.
   stop_not_sent_privately:
     "Your stop sequences were not sent: no privacy-safe provider for this model supports them, so the reply may run past where they would have cut it.",
+  // Same rule for the thinking choice: without the field the provider picks
+  // how much the model thinks, and that thinking is billed.
+  reasoning_not_sent_privately:
+    "Choose another model to use your thinking setting; it was not sent.",
   provider_frame_dropped:
     "Part of this reply did not arrive in a form Elysium could read, so a piece of it is missing. Nothing else was affected.",
   stream_ended_without_done:

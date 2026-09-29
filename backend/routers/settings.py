@@ -39,6 +39,8 @@ from urllib.parse import urlparse
 
 import anyio.to_thread
 from fastapi import APIRouter, HTTPException
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 import auto_lock
@@ -49,6 +51,8 @@ from config import (
     SECRET_PROXY_URL,
     SELECTED_MODEL_ID_MAX_CHARS,
     SETTING_SELECTED_MODEL_ID,
+    SETTING_THINKING_EFFORTS,
+    THINKING_EFFORTS_MAX_MODELS,
 )
 from database import get_db, set_setting
 from generated_images import set_image_output_enabled
@@ -59,7 +63,7 @@ from proxy_health import (
     enforce_proxy_gate,
     invalidate_health_cache,
 )
-from openrouter import invalidate_model_cache
+from openrouter import THINKING_CHOICES, invalidate_model_cache
 
 logger = logging.getLogger(__name__)
 
@@ -288,7 +292,8 @@ def _get_settings_sync() -> dict:
                 "WHERE key IN ('proxy_required', 'proxy_alias', "
                 "'selected_persona_id', 'stop_sequences', "
                 "'image_output_enabled', 'auto_lock_minutes', "
-                "'screen_privacy_enabled', 'selected_model_id')"
+                "'screen_privacy_enabled', 'selected_model_id', "
+                "'thinking_efforts')"
             ).fetchall()
         }
         api_key_set = get_secret(SECRET_API_KEY, conn=con) is not None
@@ -333,6 +338,9 @@ def _get_settings_sync() -> dict:
         # screen, not a number, so it lives here rather than in localStorage -
         # see config.SETTING_SELECTED_MODEL_ID.
         "selected_model_id": selected_model_id_raw if selected_model_id_raw else None,
+        # The thinking choice per model, keyed by model id (a NAME), which is
+        # why it is here and not in browser storage.
+        "thinking_efforts": _read_thinking_efforts(rows.get("thinking_efforts")),
     }
 
 
@@ -684,6 +692,77 @@ async def set_model_selection(body: ModelSelectionBody) -> dict:
     )
     logger.info("Selected model %s.", "set" if value else "cleared")
     return {"ok": True, "selected_model_id": value}
+
+
+# ---------------------------------------------------------------------------
+# POST /settings/thinking-effort
+# ---------------------------------------------------------------------------
+
+def _read_thinking_efforts(raw: str | None) -> dict[str, str]:
+    """Stored as a JSON object {model id: choice}. A corrupted row, or an
+    entry whose choice this build does not know, reads as "no choice", which
+    is the request every model got before the choice existed."""
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        logger.warning("Ignoring malformed thinking_efforts setting.")
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    return {
+        k: v for k, v in value.items()
+        if isinstance(k, str) and k and len(k) <= SELECTED_MODEL_ID_MAX_CHARS
+        and v in THINKING_CHOICES
+    }
+
+
+class ThinkingEffortBody(BaseModel):
+    # `forbid` for the reason ModelSelectionBody gives: a misspelt field must
+    # not read as "clear this model's choice".
+    model_config = ConfigDict(extra="forbid")
+
+    # At least one non-space character; the id is stripped before use.
+    model_id: str = Field(min_length=1, max_length=SELECTED_MODEL_ID_MAX_CHARS,
+                          pattern=r"\S")
+    # None clears the model's choice, so it goes back to the default request.
+    effort: Literal[THINKING_CHOICES] | None
+
+
+def _set_thinking_effort_sync(model_id: str, effort: str | None) -> dict[str, str]:
+    """Read, change one entry, write, in one transaction: two quick picks on
+    two models must both land, not the second overwriting the first."""
+    with get_db() as con:
+        con.execute("BEGIN IMMEDIATE")
+        row = con.execute("SELECT value FROM settings WHERE key = ?",
+                          (SETTING_THINKING_EFFORTS,)).fetchone()
+        current = _read_thinking_efforts(row["value"] if row else None)
+        current.pop(model_id, None)
+        if effort is not None:
+            # Re-inserted at the end, so the oldest-set entry is the first
+            # one the ceiling drops.
+            current[model_id] = effort
+        while len(current) > THINKING_EFFORTS_MAX_MODELS:
+            current.pop(next(iter(current)))
+        _set_setting_on(con, SETTING_THINKING_EFFORTS,
+                        json.dumps(current, ensure_ascii=False))
+    return current
+
+
+@router.post("/thinking-effort")
+async def set_thinking_effort(body: ThinkingEffortBody) -> dict:
+    """Keep the thinking choice for one model, in the vault.
+
+    Per model because the levels differ per model: a level one model lists
+    can mean nothing to the next. The server still checks the choice against
+    the selected model on every request (openrouter.reasoning_param).
+    """
+    model_id = body.model_id.strip()
+    efforts = await anyio.to_thread.run_sync(
+        _set_thinking_effort_sync, model_id, body.effort)
+    logger.info("Thinking choice %s.", "set" if body.effort else "cleared")
+    return {"ok": True, "thinking_efforts": efforts}
 
 
 # ---------------------------------------------------------------------------

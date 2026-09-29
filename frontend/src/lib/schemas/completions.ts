@@ -17,6 +17,10 @@ export const GenerationParamsSchema = z.object({
   // the sampler filters, only when true, and the backend reads it to choose
   // the `reasoning` field (it is never forwarded under this name).
   thinking: z.boolean().optional(),
+  // The thinking choice stored for the model: "off", "default" or a level.
+  // Same path as `thinking`: added after the filters, read by the backend,
+  // never forwarded under this name. Absent until something was picked.
+  thinking_effort: z.string().max(16).optional(),
 });
 
 export const CompletionRequestSchema = z.object({

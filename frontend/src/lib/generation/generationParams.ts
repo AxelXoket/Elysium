@@ -267,18 +267,24 @@ function applySpeak(payload: Record<string, unknown>, input: SpeakInput) {
 }
 
 /**
- * The Thinking switch (D3). The sampler filters above drop it (it is not a
- * sampler and no model lists it), so it is put back here, after them, and
- * only when it is on: off is the server default and adds nothing.
+ * The old Thinking switch and the stored thinking choice. The sampler
+ * filters above drop both (neither is a sampler and no model lists them), so
+ * they are put back here, after them, and only when set: absent is the
+ * server default and adds nothing.
  */
 function applyThinking(
   payload: Record<string, unknown>,
   params: GenerationParams | null | undefined,
 ) {
-  if (params?.thinking === true) {
+  const extra: GenerationParams = {};
+  if (params?.thinking === true) extra.thinking = true;
+  if (typeof params?.thinking_effort === "string") {
+    extra.thinking_effort = params.thinking_effort;
+  }
+  if (Object.keys(extra).length > 0) {
     payload.generation_params = {
       ...((payload.generation_params as GenerationParams | undefined) ?? {}),
-      thinking: true,
+      ...extra,
     };
   }
 }

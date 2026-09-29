@@ -14,13 +14,22 @@ import {
   getModelContextLength,
   getModelMaxCompletionTokens,
 } from "@/lib/models";
-import { useSettings, useSetStopSequences } from "@/lib/query/settings";
+import { useMutationState } from "@tanstack/react-query";
+import {
+  THINKING_EFFORT_MUTATION_KEY,
+  useSettings,
+  useSetStopSequences,
+  useSetThinkingEffort,
+  type ThinkingEffortVars,
+} from "@/lib/query/settings";
+import type { ThinkingChoice } from "@/lib/models/thinking";
 import { useErrorStore } from "@/lib/errors";
 import { useUiStore } from "@/lib/store/uiStore";
 import type { GenPersistedSettings } from "@/lib/store/uiStore";
 
 /** Stable empty list: a fresh `[]` each render would re-run every memo below. */
 const EMPTY_STOP: string[] = [];
+const EMPTY_EFFORTS: Record<string, string> = {};
 
 /**
  * The four samplers that may be left UNSET (D1). Unset is `null`, and an
@@ -99,10 +108,13 @@ interface GenerationSettingsContextValue {
   ) => void;
   stopSequences: string[];
   setStopSequences: (sequences: string[]) => void;
-  /** D3, the Thinking switch. Off by default and kept for this session
-   *  only; the server applies it to models whose reasoning is optional. */
-  thinking: boolean;
-  setThinking: (on: boolean) => void;
+  /** The thinking choice stored for the selected model, as stored (the
+   *  dialog resolves it against the model's levels), or null when none was
+   *  ever picked. Kept per model in the vault. */
+  thinkingChoice: string | null;
+  /** Store a choice for one model; null forgets it, so the model is back
+   *  to the request it got before anything was picked. */
+  setThinkingChoice: (modelId: string, choice: ThinkingChoice | null) => void;
   resetAll: (model?: Model | null) => void;
   getRequestSettings: () => {
     generationParams: GenerationParams;
@@ -226,7 +238,36 @@ export function GenerationSettingsProvider({
     [saveStop],
   );
 
-  const [thinking, setThinking] = useState(false);
+  // Per model, in the vault: the ids are names, so browser storage is closed
+  // to them, the same as the selected model.
+  const selectedModelId = useUiStore((s) => s.selectedModelId);
+  const readEfforts = settingsQuery.data?.thinking_efforts ?? EMPTY_EFFORTS;
+  // Saves still in flight, oldest first. A settings read that lands while
+  // one is pending does not know about it yet, so the pending choice is
+  // laid over the read until the save answers.
+  const pending = useMutationState({
+    filters: { mutationKey: THINKING_EFFORT_MUTATION_KEY, status: "pending" },
+    select: (m) => m.state.variables as ThinkingEffortVars | undefined,
+  });
+  const efforts = useMemo(() => {
+    if (pending.length === 0) return readEfforts;
+    const next = { ...readEfforts };
+    for (const vars of pending) {
+      if (!vars) continue;
+      if (vars.effort === null) delete next[vars.modelId];
+      else next[vars.modelId] = vars.effort;
+    }
+    return next;
+  }, [readEfforts, pending]);
+  const thinkingChoice =
+    selectedModelId != null ? (efforts[selectedModelId] ?? null) : null;
+  const saveThinking = useSetThinkingEffort().mutate;
+  const setThinkingChoice = useCallback(
+    (modelId: string, choice: ThinkingChoice | null) => {
+      saveThinking({ modelId, effort: choice });
+    },
+    [saveThinking],
+  );
 
   const setSetting = useCallback(
     <K extends keyof GenerationSettingsValues,>(
@@ -249,10 +290,14 @@ export function GenerationSettingsProvider({
       const defaults = getModelAwareGenerationDefaults(model);
       setSettings(defaults);
       setStopSequences([]);
-      setThinking(false);
+      // Reset forgets this model's thinking choice, so it is back to the
+      // request it got before anything was picked.
+      if (model?.id && efforts[model.id] != null) {
+        setThinkingChoice(model.id, null);
+      }
       useUiStore.getState().setGenSettings(toPersisted(defaults));
     },
-    [setStopSequences],
+    [setStopSequences, efforts, setThinkingChoice],
   );
 
   const getRequestSettings = useCallback(() => {
@@ -273,16 +318,18 @@ export function GenerationSettingsProvider({
     if (stopSequences.length > 0) {
       generationParams.stop = [...stopSequences];
     }
-    // Only when on: off is the server's default.
-    if (thinking) {
-      generationParams.thinking = true;
+    // Only once a choice was stored for this model. Untouched, the body is
+    // the one sent before the choice existed, and the server gives it the
+    // same reasoning field it always did.
+    if (thinkingChoice != null) {
+      generationParams.thinking_effort = thinkingChoice;
     }
 
     return {
       generationParams,
       contextBudgetTokens: settings.context_budget_tokens,
     };
-  }, [settings, stopSequences, thinking]);
+  }, [settings, stopSequences, thinkingChoice]);
 
   const value = useMemo(
     () => ({
@@ -290,8 +337,8 @@ export function GenerationSettingsProvider({
       setSetting,
       stopSequences,
       setStopSequences,
-      thinking,
-      setThinking,
+      thinkingChoice,
+      setThinkingChoice,
       resetAll,
       getRequestSettings,
     }),
@@ -300,7 +347,8 @@ export function GenerationSettingsProvider({
       setSetting,
       stopSequences,
       setStopSequences,
-      thinking,
+      thinkingChoice,
+      setThinkingChoice,
       resetAll,
       getRequestSettings,
     ],

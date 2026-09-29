@@ -377,6 +377,14 @@ SETTING_SELECTED_MODEL_ID = "selected_model_id"
 #: rejects - the same choice save_stop_sequences and the proxy alias make.
 SELECTED_MODEL_ID_MAX_CHARS = 200
 
+#: The thinking choice per model, a JSON object {model id: choice}. Keyed by
+#: model id, so it is a NAME map and lives in the vault for the same reason
+#: the selected model does. Only models the user set a choice for appear.
+SETTING_THINKING_EFFORTS = "thinking_efforts"
+#: How many models keep a choice. The oldest-set entry goes first past it;
+#: a ceiling against an unbounded row, far above what anyone picks by hand.
+THINKING_EFFORTS_MAX_MODELS = 256
+
 
 # ---------------------------------------------------------------------------
 # Notebook extraction (FAZ 4/5)

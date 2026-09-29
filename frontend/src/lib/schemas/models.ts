@@ -23,7 +23,16 @@ export const ModelSchema = z.object({
   reasoning: z
     .object({
       mandatory: z.boolean().optional(),
-      supported_efforts: z.array(z.string()).nullable().optional(),
+      // A listing that is not a list of words reads as no listing, so one odd
+      // model cannot fail the whole list's parse.
+      supported_efforts: z.array(z.string()).nullable().optional().catch(null),
+      // The catalogue's own word for the default level. Never shown as fact:
+      // it can disagree with what the vendor says.
+      default_effort: z.string().nullable().optional(),
+      default_enabled: z.boolean().nullable().optional(),
+      // Thinking is a token budget on this model, taken out of the reply's
+      // max tokens, so a small max output can leave no room for the reply.
+      supports_max_tokens: z.boolean().nullable().optional(),
     })
     .nullable()
     .optional(),

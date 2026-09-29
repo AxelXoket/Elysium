@@ -9,6 +9,7 @@ import {
   AutoLockResponseSchema,
   ImageOutputResponseSchema,
   ModelSelectionResponseSchema,
+  ThinkingEffortResponseSchema,
 } from "../schemas/settings";
 import type {
   Settings,
@@ -20,6 +21,7 @@ import type {
   AutoLockResponse,
   ImageOutputResponse,
   ModelSelectionResponse,
+  ThinkingEffortResponse,
 } from "../schemas/settings";
 
 export function getSettings(): Promise<Settings> {
@@ -138,6 +140,17 @@ export function setSelectedModel(
   return request("/settings/model-selection", ModelSelectionResponseSchema, {
     method: "POST",
     body: JSON.stringify({ selected_model_id: modelId }),
+  });
+}
+
+/** Keep the thinking choice for one model in the vault; null clears it. */
+export function setThinkingEffort(
+  modelId: string,
+  effort: string | null,
+): Promise<ThinkingEffortResponse> {
+  return request("/settings/thinking-effort", ThinkingEffortResponseSchema, {
+    method: "POST",
+    body: JSON.stringify({ model_id: modelId, effort }),
   });
 }
 

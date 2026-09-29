@@ -921,6 +921,13 @@
       ]
     },
     {
+      "code": "reasoning_not_sent_privately",
+      "statuses": [],
+      "channels": [
+        "notice"
+      ]
+    },
+    {
       "code": "reasoning_used_reply_budget",
       "statuses": [],
       "channels": [

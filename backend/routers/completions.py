@@ -44,7 +44,9 @@ import audio_sweep
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+from pydantic import (
+    BaseModel, ConfigDict, Field, StrictBool, StrictStr, field_validator,
+)
 
 from config import (
     SECRET_API_KEY,
@@ -105,6 +107,7 @@ from openrouter import (
     complete_stream,
     model_id_blocked,
     reasoning_param,
+    THINKING_DEFAULT,
 )
 from proxy_health import enforce_proxy_gate
 
@@ -195,6 +198,13 @@ class GenerationParams(BaseModel):
     # allow-list), and _prepare_completion reads it only to choose the
     # `reasoning` field. Strict, so "true" as a string is a 422, not a yes.
     thinking: StrictBool = False
+    # The thinking choice for the selected model: "off", "default" or an
+    # effort level (openrouter.THINKING_CHOICES). Like `thinking`, never
+    # forwarded under its own name; reasoning_param checks it against the
+    # model's listed levels, and a word it does not know, or a level the
+    # model does not list, gives the request it got before this field
+    # existed. Absent means exactly that too.
+    thinking_effort: StrictStr | None = Field(default=None, max_length=16)
 
     @field_validator(
         "temperature", "top_p", "top_k", "min_p", "top_a",
@@ -1355,11 +1365,16 @@ async def _prepare_completion(
     # nothing. The Thinking switch only reaches models whose reasoning is
     # optional (the ones that would otherwise get the disable). A mandatory or
     # unknown model keeps its default above whatever the switch says.
-    thinking = (generation_params.thinking
-                and _reasoning_is_optional(model_id_stripped))
-    reasoning = reasoning_param(model_id_stripped, thinking=thinking)
+    # The per-model choice, when the request carries one, decides; without
+    # it the old switch reaches optional reasoning only, as before.
+    effort = generation_params.thinking_effort
+    if (effort is None and generation_params.thinking
+            and _reasoning_is_optional(model_id_stripped)):
+        effort = THINKING_DEFAULT
+    reasoning = reasoning_param(model_id_stripped, effort=effort)
 
     stop_dropped = False
+    reasoning_dropped = False
     eligible: int | None = None
     if private_endpoints is not None:
         # Q-121: every key, `reasoning` included (D3: "only when the model's
@@ -1371,6 +1386,7 @@ async def _prepare_completion(
         filtered_gen_params, dropped, eligible = plan_private_params(
             private_endpoints, filtered_gen_params)
         stop_dropped = "stop" in dropped
+        reasoning_dropped = "reasoning" in dropped
     else:
         # The list is unknown. Today's rule, unchanged: the model-level list,
         # `stop` always kept, reasoning added after the samplers.
@@ -1401,6 +1417,11 @@ async def _prepare_completion(
         # Never silent: a reply that runs past where the user's stop sequence
         # would have cut it looks like the model ignoring them.
         notices.append({"type": "notice", "code": "stop_not_sent_privately"})
+    if reasoning_dropped:
+        # Same rule: without the field the provider picks the thinking, so
+        # "Off" or a chosen level did not apply to this reply.
+        notices.append({"type": "notice",
+                        "code": "reasoning_not_sent_privately"})
     if omitted_images:
         logger.warning(
             "Completion payload omitted %d image(s): chat_id=%d",

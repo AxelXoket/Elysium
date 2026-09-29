@@ -27,7 +27,7 @@ import { isParamSupportedByModel } from "@/lib/generation";
 import { getReasoningMode, hasOutputModality } from "@/lib/models/modelHelpers";
 import { useSettings, useSetImageOutput } from "@/lib/query/settings";
 import { ImageOutputSetting } from "./ImageOutputSetting";
-import { ThinkingSetting } from "./ThinkingSetting";
+import { MAX_NEW_TOKENS_LABEL, ThinkingSetting } from "./ThinkingSetting";
 import { FadeIn } from "@/components/motion/FadeIn";
 import type { Model } from "@/lib/schemas/models";
 import { SlidersHorizontal, X } from "lucide-react";
@@ -75,8 +75,8 @@ export function GenerationSettingsDialog({
     setSetting,
     stopSequences,
     setStopSequences,
-    thinking,
-    setThinking,
+    thinkingChoice,
+    setThinkingChoice,
     resetAll,
   } = useGenerationSettings();
   const reasoningMode = getReasoningMode(selectedModel);
@@ -267,7 +267,7 @@ export function GenerationSettingsDialog({
 
           <GenerationSection title="Output / Context">
             <RangeSetting
-              label="Max new tokens"
+              label={MAX_NEW_TOKENS_LABEL}
               value={displayedSettings.max_tokens}
               min={1}
               max={maxTokensMax}
@@ -301,14 +301,17 @@ export function GenerationSettingsDialog({
               the editor blocked a feature that works AND kept sending the
               chips it had greyed out - generation truncated at "Human:" on a
               model the UI had just said did not support stop. */}
-          {/* D3. Only models that list reasoning show it; the server applies
-              it to optional reasoning only. */}
+          {/* Only models that list reasoning show it. The choice is kept
+              per model; the server checks it against the model's levels. */}
           {reasoningMode !== "none" && (
             <GenerationSection title="Thinking">
               <ThinkingSetting
-                enabled={thinking}
-                mode={reasoningMode}
-                onChange={setThinking}
+                model={selectedModel}
+                stored={thinkingChoice}
+                maxTokens={displayedSettings.max_tokens}
+                onChange={(choice) => {
+                  if (selectedModel) setThinkingChoice(selectedModel.id, choice);
+                }}
               />
             </GenerationSection>
           )}

@@ -101,6 +101,9 @@ def test_get_settings_shape_unchanged(client):
         # two selections in that blob (chat, character) are bare ids and the
         # rule permits those to stay.
         "selected_model_id",
+        # Added deliberately: the thinking choice per model. Keyed by model
+        # id, a NAME, so it is vault-stored like the selected model.
+        "thinking_efforts",
     }
     # conftest seeds an api key in the vault.
     assert body["api_key_set"] is True

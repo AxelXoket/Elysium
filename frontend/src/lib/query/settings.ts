@@ -12,6 +12,7 @@ import {
   setScreenPrivacy,
   setImageOutput,
   setSelectedModel,
+  setThinkingEffort,
   deleteProxy,
   getProxyHealth,
 } from "../api/settings";
@@ -216,6 +217,82 @@ export function useSetSelectedModel() {
       qc.setQueryData<Settings>(keys.settings(), (prev) =>
         prev ? { ...prev, selected_model_id: data.selected_model_id } : prev,
       );
+    },
+  });
+}
+
+/** Names the thinking-choice save, so a reader can see which saves are
+ *  still in flight (useMutationState) and lay them over the settings read. */
+export const THINKING_EFFORT_MUTATION_KEY = ["settings", "thinking-effort"] as const;
+const THINKING_EFFORT_SCOPE = "settings-thinking-effort";
+
+export interface ThinkingEffortVars {
+  modelId: string;
+  effort: string | null;
+}
+
+function withEffort(
+  prev: Settings | undefined,
+  modelId: string,
+  effort: string | null,
+): Settings | undefined {
+  if (!prev) return prev;
+  const next = { ...prev.thinking_efforts };
+  if (effort === null) delete next[modelId];
+  else next[modelId] = effort;
+  return { ...prev, thinking_efforts: next };
+}
+
+/**
+ * Keep the thinking choice for one model, in the vault.
+ *
+ * - A settings read already in flight is cancelled first: it started before
+ *   this save, so its answer is older than the choice and must not land
+ *   over it.
+ * - The cache changes at once, so the select does not wait on the round
+ *   trip. A read that starts while the save is pending cannot undo it
+ *   either: GenerationSettingsContext lays pending saves over the read.
+ * - Saves run one at a time (the mutation scope), so answers come back in
+ *   the order the picks were made and the last pick is the one the vault
+ *   keeps. Each answer is written, then the settings are read again, so
+ *   the screen ends on what the vault holds.
+ * - A refused save puts back the value from before it and says why.
+ */
+export function useSetThinkingEffort() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationKey: THINKING_EFFORT_MUTATION_KEY,
+    // One save at a time: the next waits until the one before has answered,
+    // so the server applies them in the order they were picked. Two saves
+    // in flight together can commit in either order, and the vault would
+    // then keep the older pick.
+    scope: { id: THINKING_EFFORT_SCOPE },
+    mutationFn: (vars: ThinkingEffortVars) =>
+      setThinkingEffort(vars.modelId, vars.effort),
+    onMutate: async (vars) => {
+      await qc.cancelQueries({ queryKey: keys.settings() });
+      const before = qc.getQueryData<Settings>(keys.settings())
+        ?.thinking_efforts[vars.modelId];
+      qc.setQueryData<Settings>(keys.settings(), (prev) =>
+        withEffort(prev, vars.modelId, vars.effort),
+      );
+      return { before: before ?? null };
+    },
+    onSuccess: (data) => {
+      qc.setQueryData<Settings>(keys.settings(), (prev) =>
+        prev ? { ...prev, thinking_efforts: data.thinking_efforts } : prev,
+      );
+    },
+    onError: (err: unknown, vars, context) => {
+      if (context) {
+        qc.setQueryData<Settings>(keys.settings(), (prev) =>
+          withEffort(prev, vars.modelId, context.before),
+        );
+      }
+      useErrorStore.getState().pushError(err);
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: keys.settings() });
     },
   });
 }

@@ -2162,6 +2162,20 @@ input.persona-field {
   text-align: right;
 }
 
+/* The thinking effort select: the number box's height and field look, wide
+   enough for "Provider default". The open list is drawn by the platform, so
+   its rows take the dialog's own surface and text tokens. */
+.generation-select {
+  height: 1.9rem;
+  min-width: 9rem;
+  max-width: 60%;
+}
+
+.generation-select option {
+  background-color: var(--color-es-surface-elevated);
+  color: var(--color-es-text-light);
+}
+
 .generation-number-input::-webkit-outer-spin-button,
 .generation-number-input::-webkit-inner-spin-button {
   margin: 0;

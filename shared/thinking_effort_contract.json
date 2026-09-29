@@ -1,0 +1,30 @@
+{
+  "_why": "The thinking choice words, read from both sides. backend/openrouter.py REASONING_EFFORT_ORDER and THINKING_CHOICES are the authority; backend/tests/test_thinking_effort.py holds them equal to this file, and frontend/src/lib/models/thinking.ts keeps a mirror that frontend/src/test/components/ThinkingEffort.test.tsx holds equal to it. effort_order runs from least to most thinking; off and default are the two choices that are not a level. untouched_mandatory_order is where an untouched mandatory model takes its lowest level from; max is not in it, so a model listing only max keeps the request it always had.",
+  "effort_order": [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+  ],
+  "off": "off",
+  "default": "default",
+  "choices": [
+    "off",
+    "default",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+  ],
+  "untouched_mandatory_order": [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh"
+  ]
+}
