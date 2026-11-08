@@ -16,7 +16,10 @@ The gate scans this file like any other and must stay silent on it.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -596,6 +599,217 @@ class TestTheHookIsFoundWhereGitLooksForIt:
         git(repo, "config", "core.hooksPath", "my-hooks")
         assert hygiene.installed_hook_path().replace("\\", "/") \
             .endswith("my-hooks/pre-commit")
+
+
+def same_path(a: str | Path, b: str | Path) -> bool:
+    # Not Path ==, which ignores case on Windows and would hide a wrong path.
+    return os.path.normpath(str(a)) == os.path.normpath(str(b))
+
+
+class TestGitGuardsStubIsFollowedToTheRepositorysHook:
+    """git-guard gives every repository on this machine a global hooks folder.
+
+    Each hook there is a stub that hands the hook to git-guard's dispatcher,
+    and the dispatcher runs <git-common-dir>/hooks/<name>. Diffing the stub
+    refused every commit and told the reader to overwrite the shared stub with
+    this repository's hook. Both halves are pinned, the stub's exact text and
+    the dispatcher's sha256, and any other shape is not followed.
+    """
+
+    STUB = ('#!/bin/sh\n'
+            '# git-guard: hand this hook to the dispatcher (see ../dispatch.sh)\n'
+            'exec sh "{d}" {name} "$@"\n')
+    DISPATCHER = ('#!/bin/sh\nname="$1"; shift\n'
+                  'common="$(git rev-parse --git-common-dir 2>/dev/null)"\n'
+                  'own="$common/hooks/$name"\n'
+                  'if [ -x "$own" ]; then exec "$own" "$@"; fi\nexit 0\n')
+    HOOK = "#!/bin/sh\npython backend/verify/run_gates.py pre-commit\n"
+    NAMES = [label for _source, _rel, label in hygiene.HOOKS]
+
+    @pytest.fixture
+    def outside(self, tmp_path_factory, monkeypatch) -> Path:
+        # This test's dispatcher stands in for the git-guard one that was read.
+        digest = hashlib.sha256(self.DISPATCHER.encode()).hexdigest()
+        monkeypatch.setattr(hygiene, "KNOWN_DISPATCHERS", {digest: "test"})
+        return tmp_path_factory.mktemp("global-hooks")
+
+    def _install(self, repo: Path, outside: Path, name: str = "pre-commit",
+                 stub: str | bytes = STUB, dispatcher: str | None = DISPATCHER,
+                 shell_form: bool = False, crlf: bool = False) -> Path:
+        # write_bytes, so the line endings on disk are the ones each case asks
+        # for and not whatever write_text makes of them on Windows.
+        def lines(text: str) -> bytes:
+            return (text.replace("\n", "\r\n") if crlf else text).encode()
+
+        named = (outside / "dispatch.sh").as_posix()
+        if dispatcher is not None:
+            (outside / "dispatch.sh").write_bytes(lines(dispatcher))
+        if shell_form:
+            # The form git-guard writes: C:/x becomes /c/x.
+            named = f"/{named[0].lower()}{named[2:]}"
+        stub_path = outside / "hooks" / name
+        stub_path.parent.mkdir(exist_ok=True)
+        stub_path.write_bytes(stub if isinstance(stub, bytes)
+                              else lines(stub.format(d=named, name=name)))
+        git(repo, "config", "core.hooksPath", (outside / "hooks").as_posix())
+        write(repo, f"src/{name}", self.HOOK)
+        return stub_path
+
+    def _state(self, repo: Path, name: str = "pre-commit"):
+        return hygiene.hook_state(str(repo / "src" / name), None, name)
+
+    @pytest.mark.parametrize("name", NAMES)
+    @pytest.mark.parametrize("shell_form", [
+        False,
+        pytest.param(True, marks=pytest.mark.skipif(
+            sys.platform != "win32", reason="only git-guard on Windows")),
+    ])
+    @pytest.mark.parametrize("crlf", [False, True])
+    def test_the_stub_leads_to_the_repositorys_own_hook(
+            self, repo, outside, name, shell_form, crlf):
+        # CRLF too: core.autocrlf may hand either ending to the disk.
+        self._install(repo, outside, name, shell_form=shell_form, crlf=crlf)
+        write(repo, f".git/hooks/{name}", self.HOOK)
+        assert same_path(hygiene.installed_hook_path(name),
+                         repo / ".git" / "hooks" / name)
+        assert self._state(repo, name) \
+            == (True, f"{name} hook installed and current")
+
+    def test_a_linked_worktree_runs_the_shared_hooks(self, repo, outside,
+                                                     tmp_path_factory,
+                                                     monkeypatch):
+        # A worktree has its own --git-dir, but the dispatcher runs
+        # <git-common-dir>/hooks, the main repository's.
+        git(repo, "commit", "-q", "--allow-empty", "-m", "Chore : start")
+        tree = tmp_path_factory.mktemp("worktree") / "tree"
+        git(repo, "worktree", "add", "-q", "--detach", str(tree))
+        self._install(repo, outside)
+        monkeypatch.setattr(hygiene, "REPO_ROOT", str(tree))
+        assert same_path(hygiene.installed_hook_path(),
+                         repo / ".git" / "hooks" / "pre-commit")
+        # The shared git directory is this repository's own, so the message
+        # still says where to install, not that the folder is someone else's.
+        ok, message = self._state(repo)
+        assert ok is False
+        assert "no pre-commit hook is installed" in message
+
+    def test_a_missing_repository_hook_says_where_it_goes(self, repo,
+                                                          outside):
+        # Before the stub was followed the install line named the shared stub,
+        # and copying there would have put this repository's hook in front of
+        # every repository on the machine.
+        self._install(repo, outside)
+        ok, message = self._state(repo)
+        assert ok is False
+        assert "no pre-commit hook is installed" in message
+        assert "cp src/pre-commit .git/hooks/pre-commit" in message
+
+    def test_a_repository_hook_cut_to_exit_0_fails(self, repo, outside):
+        self._install(repo, outside)
+        write(repo, ".git/hooks/pre-commit", "#!/bin/sh\nexit 0\n")
+        ok, message = self._state(repo)
+        assert ok is False
+        assert "differs from the versioned one" in message
+        assert "cp src/pre-commit .git/hooks/pre-commit" in message
+
+    @pytest.mark.parametrize("stub, dispatcher", [
+        (STUB.replace("exec", "exit 0\nexec"), DISPATCHER),
+        (STUB.replace("exec", "exit 0; exec"), DISPATCHER),
+        (STUB.replace("{name}", "pre-push"), DISPATCHER),
+        (STUB.replace("{name}", "PRE-COMMIT"), DISPATCHER),
+        (STUB.replace("#!/bin/sh", "#!/bin/true"), DISPATCHER),
+        (STUB.replace("# git-guard: hand", "# hand"), DISPATCHER),
+        ("#!/bin/true\n" + STUB, DISPATCHER),
+        (STUB.replace("exec", "\x0b# ; exit 0\nexec"), DISPATCHER),
+        (STUB.replace('"{d}"', '"dispatch.sh"'), DISPATCHER),
+        (STUB.replace('"{d}"', '"{d}$x"'), DISPATCHER),
+        (STUB.replace('"{d}"', '"{d}`true`"'), DISPATCHER),
+        (STUB.replace('"{d}"', '"{d}."'), DISPATCHER),
+        (b"#!/bin/sh\n# \x97\nexec sh x pre-commit\n", DISPATCHER),
+        (STUB, DISPATCHER.replace('name="$1"; shift\n',
+                                  'name="$1"; shift\nexit 0\n')),
+        (STUB, DISPATCHER.replace("--git-common-dir", "--git-dir")),
+        (STUB, '#!/bin/sh\n# own="$common/hooks/$name"\n'
+               '# exec "$own" "$@"\nexit 0\n'),
+        (STUB, None),
+    ], ids=["stub-exits-first", "stub-exits-on-the-exec-line",
+            "stub-forwards-another-hook", "stub-name-in-capitals",
+            "stub-other-shebang", "stub-other-comment",
+            "stub-after-another-shebang",
+            "stub-extra-line-with-a-control-character",
+            "stub-relative-dispatcher", "stub-dollar-in-dispatcher",
+            "stub-backticks-in-dispatcher", "stub-trailing-dot-in-dispatcher",
+            "stub-not-utf8",
+            "dispatcher-exits-first", "dispatcher-uses-git-dir",
+            "dispatcher-lines-only-in-comments", "dispatcher-missing"])
+    def test_any_other_shape_is_not_followed(self, repo, outside, stub,
+                                             dispatcher, monkeypatch):
+        # Positive control: the repository's own hook is present and current,
+        # so a failure here can only come from refusing to follow the stub.
+        # The dispatcher also sits under the names Python would read and sh
+        # would not: a relative one in Python's working directory, and ones
+        # with the $x and `true` that sh expands. Windows itself reads
+        # dispatch.sh. as dispatch.sh.
+        monkeypatch.chdir(outside)
+        for odd in ("dispatch.sh$x", "dispatch.sh`true`"):
+            (outside / odd).write_bytes(self.DISPATCHER.encode())
+        stub_path = self._install(repo, outside, stub=stub,
+                                  dispatcher=dispatcher)
+        write(repo, ".git/hooks/pre-commit", self.HOOK)
+        assert same_path(hygiene.installed_hook_path(), stub_path)
+        ok, message = self._state(repo)
+        assert ok is False
+        # Outside the repository, so the message never says to copy there.
+        assert "outside this repository" in message
+        assert "cp " not in message
+
+    def test_a_sibling_folder_with_the_repositorys_name_is_outside(
+            self, repo, outside):
+        # <repo>-shared starts with the repository's path but is not in it.
+        sibling = repo.parent / f"{repo.name}-shared"
+        sibling.mkdir()
+        self._install(repo, sibling, stub=self.STUB.replace("exec",
+                                                            "exit 0\nexec"))
+        ok, message = self._state(repo)
+        assert ok is False
+        assert "outside this repository" in message
+        assert "cp " not in message
+
+    def test_a_shared_folder_without_the_hook_says_nothing_runs(self, repo,
+                                                               outside):
+        git(repo, "config", "core.hooksPath", (outside / "hooks").as_posix())
+        write(repo, "src/pre-commit", self.HOOK)
+        ok, message = self._state(repo)
+        assert ok is False
+        assert "finds nothing, so no pre-commit hook runs" in message
+        assert "cp " not in message
+
+    def test_a_hooks_folder_linked_into_a_shared_one_is_shared(self, repo,
+                                                               outside):
+        # .git/hooks as a junction (a symlink off Windows) into a shared
+        # folder: copying into it would write into the shared folder.
+        hooks = repo / ".git" / "hooks"
+        shutil.rmtree(hooks)
+        if sys.platform == "win32":
+            import _winapi
+            _winapi.CreateJunction(str(outside), str(hooks))
+        else:
+            os.symlink(outside, hooks, target_is_directory=True)
+        write(repo, "src/pre-commit", self.HOOK)
+        ok, message = self._state(repo)
+        assert ok is False
+        assert "outside this repository" in message
+        assert "cp " not in message
+
+    def test_a_hooks_folder_inside_the_repository_keeps_the_install_line(
+            self, repo):
+        # Ground control for the message above: a repo-local hooks folder,
+        # as Husky sets one, is this repository's to write.
+        git(repo, "config", "core.hooksPath", "my-hooks")
+        write(repo, "src/pre-commit", self.HOOK)
+        ok, message = self._state(repo)
+        assert ok is False
+        assert "cp src/pre-commit my-hooks/pre-commit" in message
 
 
 class TestTheHookEntersHistoryExecutable:

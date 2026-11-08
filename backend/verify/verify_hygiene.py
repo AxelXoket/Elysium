@@ -106,6 +106,7 @@ discovered later.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import subprocess
@@ -588,19 +589,107 @@ HOOKS = (
 
 
 def installed_hook_path(name: str = "pre-commit") -> str:
-    """Where git will ACTUALLY look for the hook.
+    """Where git will ACTUALLY look for the hook, or the hook git-guard runs.
 
     Not a hardcoded .git/hooks. `core.hooksPath` redirects the whole directory
     elsewhere and is set routinely by dotfile setups and by tooling like Husky
     or the pre-commit framework. With it set, a check that diffs .git/hooks is
     comparing a file git never consults, and it reports a healthy hook while
     the real one is missing. Asking git removes the guess.
+
+    One answer git gives is not the hook itself. git-guard, which this machine
+    runs over every repository, sets a global hooks directory of one-line
+    stubs. Each stub hands the hook to git-guard's dispatcher, and the
+    dispatcher runs <git-common-dir>/hooks/<name> after its own checks.
+    Diffing the stub refused every commit and told the reader to overwrite
+    the shared stub with this repository's hook, so git-guard's stub is
+    followed to the hook it really runs. Only git-guard's: see
+    _dispatched_hook.
     """
     try:
         out = _git("rev-parse", "--git-path", f"hooks/{name}").strip()
     except Exception:                                      # pragma: no cover
         return os.path.join(REPO_ROOT, ".git", "hooks", name)
-    return out if os.path.isabs(out) else os.path.join(REPO_ROOT, out)
+    path = out if os.path.isabs(out) else os.path.join(REPO_ROOT, out)
+    return _dispatched_hook(path, name) or path
+
+
+#: git-guard's stub, the whole file. A different shebang or comment, or one
+#: line more, and it is not followed.
+_GIT_GUARD_STUB = re.compile(
+    r'#!/bin/sh\n'
+    r'# git-guard: hand this hook to the dispatcher \(see \.\./dispatch\.sh\)\n'
+    r'exec sh "([^"\n]+)" ([a-z-]+) "\$@"\n')
+
+#: sha256, over LF line endings, of every git-guard dispatcher that was read
+#: and runs <git-common-dir>/hooks/<name> for each hook name. Any other
+#: dispatcher is not followed. Read a new one before adding its hash.
+KNOWN_DISPATCHERS = {
+    "27b5573c2010c54ba51dd0214d1926a275aa830075b05ec5b5136a373e1d423e":
+        "git-guard dispatch.sh, read 2026-11-08",
+}
+
+
+def _git_common_dir() -> str | None:
+    """The git directory all worktrees share; its hooks/ is the one they run."""
+    try:
+        common = _git("rev-parse", "--git-common-dir").strip()
+    except Exception:                                      # pragma: no cover
+        return None
+    return common if os.path.isabs(common) else os.path.join(REPO_ROOT, common)
+
+
+def _dispatched_hook(path: str, name: str) -> str | None:
+    """The repository hook git-guard's stub at `path` runs, or None.
+
+    Both halves are pinned, because a wrong yes here switches the check off
+    while it keeps printing PASS. The stub must be git-guard's exact text for
+    this very hook name. The dispatcher must hash to an entry of
+    KNOWN_DISPATCHERS. Looking for the two lines that run the hook was tried
+    first, and an `exit 0` above them, the same lines inside a comment, and
+    --git-dir in place of --git-common-dir all passed.
+
+    The stub must also name the dispatcher git-guard keeps next to its hooks
+    folder, character for character, in git's form or in Git Bash's /c/ form.
+    The path in the stub is compared, never opened: Windows drops a trailing
+    dot or space and reads "name:x" as a stream, sh does neither and expands
+    $ and backticks, so the two could read different files.
+    """
+    try:
+        with open(path, "rb") as handle:
+            stub = handle.read().replace(b"\r\n", b"\n").decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    match = _GIT_GUARD_STUB.fullmatch(stub)
+    if match is None or match.group(2) != name:
+        return None
+    dispatcher = os.path.join(os.path.dirname(os.path.dirname(path)),
+                              "dispatch.sh").replace("\\", "/")
+    shell_form = re.sub(r"^([A-Za-z]):/",
+                        lambda drive: f"/{drive.group(1).lower()}/", dispatcher)
+    if match.group(1) not in (dispatcher, shell_form):
+        return None
+    try:
+        with open(dispatcher, "rb") as handle:
+            body = handle.read().replace(b"\r\n", b"\n")
+    except OSError:
+        return None
+    if hashlib.sha256(body).hexdigest() not in KNOWN_DISPATCHERS:
+        return None
+    common = _git_common_dir()
+    return None if common is None else os.path.join(common, "hooks", name)
+
+
+def _inside_repository(path: str) -> bool:
+    """Is `path` in this working tree or in the git directory it shares?
+
+    Real paths, so a .git/hooks that is a junction into a shared folder counts
+    as the shared folder it really is.
+    """
+    here = os.path.normcase(os.path.realpath(path))
+    roots = [REPO_ROOT, _git_common_dir()]
+    return any(here.startswith(os.path.normcase(os.path.realpath(root)) + os.sep)
+               for root in roots if root)
 
 
 def hook_mode_state(rel_source: str = HOOK_SOURCE_REL) -> tuple[bool, str]:
@@ -649,8 +738,12 @@ def hook_state(source_path: str = HOOK_SOURCE,
     without this check one of them resets to off every time the repository is
     copied, and nothing says so.
     """
+    # Only a path asked of git can be a shared folder. A path the caller passes
+    # is the caller's own choice of destination.
+    shared = False
     if installed_path is None:
         installed_path = installed_hook_path(label)
+        shared = not _inside_repository(installed_path)
 
     def read(path: str) -> bytes | None:
         try:
@@ -674,6 +767,22 @@ def hook_state(source_path: str = HOOK_SOURCE,
     # The destination is whatever git said, not a hardcoded .git/hooks.
     rel_dest = os.path.relpath(installed_path, REPO_ROOT).replace("\\", "/")
     install = f"cp {rel_source} {rel_dest}"
+    if shared and have is None:
+        return False, (f"git looks for the {label} hook at {rel_dest}, outside "
+                       f"this repository, and finds nothing, so no {label} "
+                       f"hook runs.\n"
+                       f"        Do not install this repository's hook there: "
+                       f"other repositories may share that folder.")
+    if shared and have != want:
+        return False, (f"git takes the {label} hook from {rel_dest}, outside "
+                       f"this repository, and it is not git-guard's stub with "
+                       f"a dispatcher this check knows, so nothing shows that "
+                       f"this repository's hook runs.\n"
+                       f"        Do not copy the hook there: other "
+                       f"repositories may share that folder. Read it, and if "
+                       f"it hands {label} to a dispatcher that runs "
+                       f"<git-common-dir>/hooks/{label}, add the dispatcher's "
+                       f"sha256 to KNOWN_DISPATCHERS in verify_hygiene.py.")
     if have is None:
         return False, (f"no {label} hook is installed, so nothing checks a "
                        f"commit at the moment it is made.\n"
