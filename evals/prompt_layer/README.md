@@ -1,11 +1,11 @@
 # G3-lite: the prompt layer and prompt modules, measured for under $1
 
-A paid evaluation with a hard spend guard, a local judge and a blind owner
-calibration. Spec: audit decision file dF section 2 (with its cost script
+A paid evaluation with a hard spend guard, a local judge and a blind
+calibration of my own. Spec: audit decision file dF section 2 (with its cost script
 dF_eval_cost.py), Ek P of the prompt research, and d7 for the judge design.
 
 Nothing in this directory runs on its own. The only command that spends money
-is `run`, and it needs a key you put in the environment yourself.
+is `run`, and it needs a key I put in the environment myself.
 
 ## What it answers
 
@@ -81,7 +81,7 @@ process never inherits it.
 
 ## The judge
 
-Local Claude Code on your subscription, never a hosted API. Each judgment is
+Local Claude Code on my subscription, never a hosted API. Each judgment is
 a fresh `claude -p --model opus` from an empty temporary directory, with no
 tools, no MCP servers, hooks disabled through settings, only local settings,
 no session saved, CLAUDE.md and auto memory switched off, and
@@ -145,8 +145,8 @@ app. Every `--out` directory must be outside the repository.
 
        backend\.venv\Scripts\python.exe evals\prompt_layer\g3.py judge --out $out
 
-10. Your 20 blind pairs (about 15 minutes). The command prints a
-    `http://127.0.0.1:<port>/?t=<token>` address; open it yourself. Every
+10. My 20 blind pairs (about 15 minutes). The command prints a
+    `http://127.0.0.1:<port>/?t=<token>` address; I open it myself. Every
     click is saved. Ctrl+C when done.
 
         backend\.venv\Scripts\python.exe evals\prompt_layer\g3.py calibrate --out $out --port 8765
@@ -170,12 +170,12 @@ inside the repository).
   Fisher).
 * Module gate: MOD vs OFF limit violations, pooled alpha 0.025 and per model
   alpha 0.025/4.
-* Validity (a failure makes the run INCONCLUSIVE): V1 judge agrees with your
+* Validity (a failure makes the run INCONCLUSIVE): V1 judge agrees with my
   labels (15 of 20 non-tie), V2 A/A balanced, V3 the normal layer beats the
   sabotaged one, V4 order consistency >= 0.70, V5 at least 6/24 violations
   without the Limits block, V6 OFF violation rate <= 0.25.
 * Verdict: family and validity pass plus a significant secondary benefit =
-  recommend the layer default ON; pass without benefit = default OFF (your
+  recommend the layer default ON; pass without benefit = default OFF (my
   decision, Ek P); a failing layer gate = default OFF with the gate named.
 
 ## Where it differs from dF, and why

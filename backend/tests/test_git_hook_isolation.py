@@ -262,7 +262,7 @@ class TestTheHookLaneHoldsForATestThatForgets:
                          handed) -> tuple[Path, dict, Path]:
         stand_in = _stand_in(tmp_path)
         before = _fingerprint(stand_in)
-        # The child's git must not read the owner's config either. HOME and
+        # The child's git must not read my real git config either. HOME and
         # NOSYSTEM survive the lane's scrub, so setting them here reaches it.
         _git_env.isolate_process(monkeypatch)
         _point_hook_at(monkeypatch, stand_in, HOOK_SHAPES[shape])

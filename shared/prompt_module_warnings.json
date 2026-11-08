@@ -1,5 +1,5 @@
 {
-  "_why": "The three warnings the owner approved for prompt modules (synthesis 9A.4, English wording of 26 Sep 2026), byte for byte. The settings page shows these texts as they are through a mirror; a frontend test holds each one to a SHA-256 of the owner's wording and holds the rendered page to this file. In the counter, {n} stands for n (enabled modules) and {x} for x (tokens per message); nothing else in any text may change.",
+  "_why": "The three warnings I approved for prompt modules (synthesis 9A.4, English wording of 26 Sep 2026), byte for byte. The settings page shows these texts as they are through a mirror; a frontend test holds each one to a SHA-256 of my wording and holds the rendered page to this file. In the counter, {n} stands for n (enabled modules) and {x} for x (tokens per message); nothing else in any text may change.",
   "import_consent": "This file is sent to the model with every character and every message while it is on. You are responsible for its content; the app adds nothing on its own. The model provider's terms still apply, and any violation counts against your API key.",
   "counter": "Active modules: {n}, about {x} tokens per message.",
   "st_preset": "This preset was written for SillyTavern and may not behave exactly the same here."

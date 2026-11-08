@@ -221,7 +221,7 @@ class KeyVault:
         #: both already survive their own loss; the salt did not.
         #:
         #: NOT named to hide. A file called app.db.idx would fool a person for
-        #: about a minute and would fool the next maintainer into deleting it
+        #: about a minute and would fool the next reader into deleting it
         #: as a regenerable index, which is the opposite of the point. It is
         #: named for what it is, and the accepted limit is stated plainly: a
         #: person who reads this and removes both copies has removed both

@@ -8,7 +8,7 @@ frontend/src/lib/prompt/sanitizer.ts.
 WHAT IT IS NOT
 
 It is not a content filter. It never reads meaning and never blocks a word or
-a topic (owner, Ek O 5). It only breaks the FORMS that let third-party text
+a topic (Ek O 5). It only breaks the FORMS that let third-party text
 imitate the app: the app's own tags (`<craft>`, `</author_instructions_...>`),
 the Limits / notebook / persona block prefixes, OOC markers, the layer's
 placeholders, the voice block's header, and invisible characters used to

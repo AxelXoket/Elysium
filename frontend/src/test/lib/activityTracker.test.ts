@@ -220,7 +220,7 @@ describe("T-13: every listed event counts, and only when trusted", () => {
   });
 
   it("hover counts: a trusted pointerover past the threshold updates the stamp", () => {
-    // The owner's "hovering" half, and the one thing M-07-1 (pointerover
+    // My "hovering" half, and the one thing M-07-1 (pointerover
     // dropped from the list) turns red.
     anchorAt(0, 0);
     expect(stamps(() => far("pointerover"))).toBe(true);

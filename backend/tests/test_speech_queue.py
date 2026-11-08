@@ -167,7 +167,7 @@ def test_ready_stays_true_once_playback_has_begun():
     assert q.ready()                        # drained mid-reply, not un-ready
 
 
-# ── failure policy (user decision 5: stop, never skip silently) ──────────────
+# ── failure policy (my decision 5: stop, never skip silently) ──────────────
 
 def test_an_engine_failure_stops_the_whole_queue():
     def boom(text):

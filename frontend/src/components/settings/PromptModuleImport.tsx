@@ -2,7 +2,7 @@
  * Bringing a module file in, and the report of what came out of it.
  *
  * The import button stays off until two things are true: a file is chosen,
- * and the consent switch under the owner's warning is on (9A.4 warning 1,
+ * and the consent switch under my warning is on (9A.4 warning 1,
  * MT-10). The switch goes back off after every import, because the warning is about
  * THIS file going to every character on every message.
  *
@@ -73,7 +73,7 @@ function sizeError(file: File): string | null {
   return null;
 }
 
-/** The consent switch's own name; the owner's warning is its description. */
+/** The consent switch's own name; my warning is its description. */
 export const IMPORT_CONSENT_LABEL = "I understand";
 
 export function PromptModuleImport() {
@@ -200,7 +200,7 @@ export function PromptModuleImport() {
             params block, the way a Voice model card holds its switches: one
             hairline, flattened rows, no box inside the box.
 
-            The app's own switch row, not an OS checkbox: the owner's warning
+            The app's own switch row, not an OS checkbox: my warning
             is the row's text, and the switch beside it is the consent. */}
         <div className="settings-voice-params">
           <button

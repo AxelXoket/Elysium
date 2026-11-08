@@ -273,7 +273,7 @@
  {
   "id": "M28",
   "file": "evals/prompt_layer/g3lite/gates.py",
-  "what": "V1 owner agreement never fails",
+  "what": "V1 label agreement never fails",
   "original": "\"needed\": kmin, \"pass\": kmin is not None and agree >= kmin",
   "mutant": "\"needed\": kmin, \"pass\": True",
   "tests": [

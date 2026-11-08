@@ -1,5 +1,5 @@
-"""The frozen gates (dF 2.5): turn the ledger, the judge's verdicts and the
-owner's labels into PASS / FAIL / INCONCLUSIVE, with every number shown.
+"""The frozen gates (dF 2.5): turn the ledger, the judge's verdicts and my
+labels into PASS / FAIL / INCONCLUSIVE, with every number shown.
 
 Layer family (decides the layer's default): each gate FAILS only on evidence
 the layer is WORSE (one-sided, alpha 0.01 each):
@@ -248,7 +248,7 @@ def evaluate(out_dir: Path) -> dict:
                                  "needed": kmin, "pass": kmin is not None and agree >= kmin
                                  and len(labels) >= v["v1_owner_pairs"]}
     else:
-        rep["validity"]["V1"] = {"pass": False, "pending": "owner labels not collected yet"}
+        rep["validity"]["V1"] = {"pass": False, "pending": "my labels not collected yet"}
 
     aa = [(k, p) for k, p in pairs.items() if k[0] == "aa" and p["outcome"] not in (None, "tie")]
     first = sum(1 for (_, ctx, model), p in aa if p["outcome"].endswith("/OFF#1"))

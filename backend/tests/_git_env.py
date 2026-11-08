@@ -56,7 +56,7 @@ def _load_scrub() -> ModuleType:
 #: of it, so a test can swap the scrub for a no-op and watch what it prevents.
 scrub = _load_scrub()
 
-#: An empty folder that stands in for the owner's home for git's sake. Made
+#: An empty folder that stands in for my real home folder for git's sake. Made
 #: once, when conftest imports this module, and removed at exit.
 #:
 #: At import and not on first use, on purpose: by the time a test runs,

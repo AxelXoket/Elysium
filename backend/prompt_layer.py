@@ -267,7 +267,7 @@ def labelled_card_block(card: CardText, mode: str = MODE_PLAIN) -> str:
     """The labelled card block of modes a and c. The final note is NOT here:
     it is its own part (final_note_part), placed right after.
 
-    Two orders, both the owner's (Ek O 8, contract amendment A1):
+    Two orders, both mine (Ek O 8, contract amendment A1):
       mode c  today's order: [Character], [System Prompt], then the data
       mode a  the data first, then [System Prompt] (modules, card data, card
               system prompt)

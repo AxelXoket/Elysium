@@ -97,7 +97,7 @@ class Ceiling:
             f"usage worst ${self.usage:.4f}; worst fee "
             f"({config.FEE_RATE_WORST:.0%}) ${self.fee:.4f}",
             f"CEILING ${self.total:.4f} (refusal line ${config.BUDGET_USD:.2f}, "
-            f"owner cap ${config.HARD_CAP_USD:.2f}); key credit limit ${self.key_limit:.2f}",
+            f"hard cap ${config.HARD_CAP_USD:.2f}); key credit limit ${self.key_limit:.2f}",
         ]
 
 

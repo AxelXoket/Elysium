@@ -1,11 +1,11 @@
-"""Owner calibration (F3, V1): 20 LAYER-vs-OFF pairs, labelled blind.
+"""My blind calibration (F3, V1): 20 LAYER-vs-OFF pairs, labelled blind.
 
 The page is a plain HTML file served on 127.0.0.1 only. It carries the
 story and two replies per pair, labelled A and B at random; it never carries
 a model name, an arm name or a call id. Which side was which lives in
 calibration_key.json in the output directory, which the page never sees.
 
-Nothing here opens a browser: the URL is printed and the owner opens it.
+Nothing here opens a browser: the URL is printed and I open it.
 Writes are accepted only with the per-session token in the URL and only from
 a same-origin page on the loopback host (no other site can post labels).
 """

@@ -29,7 +29,7 @@ MODULE_NOTE_MAX_CHARS = 500
 PLAIN_JSON_MAX_MODULES = 100
 
 #: What sits between two enabled modules, and between the last one and the
-#: card data. There is no wrapper (H2 closed by the owner, Ek O 6).
+#: card data. There is no wrapper (H2 closed, Ek O 6).
 MODULE_SEPARATOR = "\n\n"
 
 #: H4: with at least one module on, modules plus separators may take at most

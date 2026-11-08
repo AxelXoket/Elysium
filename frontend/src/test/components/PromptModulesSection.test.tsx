@@ -6,7 +6,7 @@
  *
  *   MT-10  the import button stays off until a file is chosen AND the consent
  *          switch is on, and the line beside it says which is missing; the
- *          three warnings on screen are the owner's English text byte for
+ *          three warnings on screen are my English text byte for
  *          byte, from shared/prompt_module_warnings.json.
  *   9A.4   the counter "Active modules: {n}, about {x} tokens per message." is
  *          always on screen and counts only modules that are on, as the
@@ -82,12 +82,12 @@ import { getErrorMessage } from "@/lib/errors";
 import { mockFetch } from "../mocks/api";
 import { settingsFixture } from "../mocks/fixtures";
 
-// ── The owner's wording, as SHA-256 of the UTF-8 bytes ──────────────────
+// ── My wording, as SHA-256 of the UTF-8 bytes ──────────────────
 //
-// The owner's English wording of 26 Sep 2026, hashed by script, not by hand.
-// The owner wrote the counter with {n} and {x} in it, so its hash is of the
+// My English wording of 26 Sep 2026, hashed by script, not by hand.
+// I wrote the counter with {n} and {x} in it, so its hash is of the
 // template as the shared file carries it.
-const OWNER_SHA256 = {
+const WORDING_SHA256 = {
   import_consent: "2638e39eda15020c583da9b08544300c92f850f34bfb4dcb673d1e2402fe44c5",
   counter: "3eea151465a9672c3a329657eba717d199ba29d28ee74592eb2a3a4818a6bd05",
   st_preset: "7b118f294f702a7a58e930eff1a2c9fb59ec4c8da835c8570d0ef489ec838b6d",
@@ -235,20 +235,20 @@ afterEach(() => vi.restoreAllMocks());
 
 // ── The shared texts ────────────────────────────────────────────────────
 
-describe("the owner's warning texts", () => {
-  it("the shared file carries the owner's bytes, all three", () => {
-    expect(sha256(warningsJson.import_consent)).toBe(OWNER_SHA256.import_consent);
-    expect(sha256(warningsJson.counter)).toBe(OWNER_SHA256.counter);
-    expect(sha256(warningsJson.st_preset)).toBe(OWNER_SHA256.st_preset);
+describe("my warning texts", () => {
+  it("the shared file carries my bytes, all three", () => {
+    expect(sha256(warningsJson.import_consent)).toBe(WORDING_SHA256.import_consent);
+    expect(sha256(warningsJson.counter)).toBe(WORDING_SHA256.counter);
+    expect(sha256(warningsJson.st_preset)).toBe(WORDING_SHA256.st_preset);
   });
 
   it("GROUND: the same check rejects a one-character near miss", () => {
     // Without this, a hash comparison that always passed would read as proof.
     expect(sha256(dropLastChar(warningsJson.import_consent))).not.toBe(
-      OWNER_SHA256.import_consent,
+      WORDING_SHA256.import_consent,
     );
-    expect(sha256(dropLastChar(warningsJson.counter))).not.toBe(OWNER_SHA256.counter);
-    expect(sha256(dropLastChar(warningsJson.st_preset))).not.toBe(OWNER_SHA256.st_preset);
+    expect(sha256(dropLastChar(warningsJson.counter))).not.toBe(WORDING_SHA256.counter);
+    expect(sha256(dropLastChar(warningsJson.st_preset))).not.toBe(WORDING_SHA256.st_preset);
   });
 
   it("the texts are the English wording, not the Turkish they replaced", () => {
@@ -756,7 +756,7 @@ describe("counter (9A.4 warning 2)", () => {
     });
     await waitForList();
     expect(counter().textContent).toBe(formatModuleCounter(2, expectedTokens([on1, on2])));
-    // The template is the owner's with only the two numbers changed.
+    // The template is mine with only the two numbers changed.
     expect(counter().textContent).toBe(
       warningsJson.counter.replace("{n}", "2").replace("{x}", String(expectedTokens([on1, on2]))),
     );

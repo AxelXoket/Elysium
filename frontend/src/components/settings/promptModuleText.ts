@@ -1,14 +1,14 @@
 import { formatCount } from "@/lib/formatCount";
 
 /**
- * The owner-approved warnings for prompt modules, and the few numbers the
+ * The warnings I approved for prompt modules, and the few numbers the
  * page needs before it asks the server anything.
  *
  * The sources of truth are shared/prompt_module_warnings.json (texts) and
  * shared/prompt_module_limits.json (numbers). Frontend code does not import
  * from the shared folder (build contract A3), so this file is a mirror, and
  * PromptModulesSection.test.tsx holds it to both shared files byte for byte
- * and holds the shared texts to a SHA-256 of the owner's wording. A mirror
+ * and holds the shared texts to a SHA-256 of my wording. A mirror
  * that drifts, or a text that loses a word, is a red test.
  */
 
@@ -21,7 +21,7 @@ export const PROMPT_MODULE_WARNINGS = {
 } as const;
 
 /** The counter sentence with its two numbers in. Only the placeholders
- *  change; every other byte is the owner's. */
+ *  change; every other byte is mine. */
 export function formatModuleCounter(enabled: number, tokens: number): string {
   return PROMPT_MODULE_WARNINGS.counter
     .replace("{n}", formatCount(enabled))

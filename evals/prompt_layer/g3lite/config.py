@@ -2,10 +2,10 @@
 
 Source: audit decision file dF (section 2) and its cost script dF_eval_cost.py.
 The cost MODEL is reproduced in costs.py (nominal_ceiling), and a gate test
-checks that it still gives the $0.837 the owner approved. The spend guard does
+checks that it still gives the $0.837 I approved. The spend guard does
 not trust the nominal sizes: it counts the real prompts this harness builds.
 
-Money rules (owner, Ek O 4 and Ek P F/G):
+Money rules (Ek O 4 and Ek P F/G):
   * nothing paid may exceed $1.00;
   * the scripted worst case must be <= BUDGET_USD or the run refuses to start,
     and the run stops before a call that could take it past BUDGET_USD;
@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 # ---------------------------------------------------------------- money
 HARD_CAP_USD = 1.00
-#: The owner's refusal line for this harness, fee included. dF's scripted
+#: My refusal line for this harness, fee included. dF's scripted
 #: ceiling is $0.837; the guard refuses anything above $0.84.
 BUDGET_USD = 0.84
 #: $0.80 minimum fee on the $5 minimum top-up: the worst fee rate that can be

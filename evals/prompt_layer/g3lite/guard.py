@@ -10,7 +10,7 @@ Two refusals, both measured in worst-case dollars INCLUDING the worst fee:
               is charged at its worst case, never at zero.
 
 The budget is config.BUDGET_USD ($0.84) unless a smaller one is given; a
-larger one is refused outright, so no flag can lift the owner's line.
+larger one is refused outright, so no flag can lift my line.
 """
 
 from __future__ import annotations

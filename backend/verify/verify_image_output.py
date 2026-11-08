@@ -1,7 +1,7 @@
 """verify_image_output.py - the one question no document can answer.
 
-RUN THIS YOURSELF. It spends your OpenRouter credits and it uses the API key in
-your vault. Nothing else in the app calls it and no test imports it.
+I run this by hand. It spends my OpenRouter credits and it uses the API key in
+my vault. Nothing else in the app calls it and no test imports it.
 
     cd backend
     .venv\\Scripts\\python verify\\verify_image_output.py
@@ -136,7 +136,7 @@ async def main() -> int:
         #
         # So it unlocks itself. getpass keeps the passphrase off the screen,
         # out of the shell history and out of argv - and this is a script whose
-        # own docstring says RUN THIS YOURSELF, so a prompt is the right shape.
+        # own docstring says I run it by hand, so a prompt is the right shape.
         import getpass
         from pathlib import Path
 

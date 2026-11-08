@@ -1,6 +1,6 @@
 """One Enter, one answer, under zero data retention (Q-121, F4-15).
 
-The owner pressed Enter about five times per message before a reply came. The
+I pressed Enter about five times per message before a reply came. The
 chat sends `provider.zdr: true` and `require_parameters: true`, so OpenRouter
 keeps only private endpoints that accept every sent key. The app decided what
 to send from the MODEL-level parameter list, which also counts non-private

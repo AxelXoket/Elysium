@@ -12,7 +12,7 @@ Every judgment is one fresh `claude -p` process (d7 section 6):
   * ANTHROPIC_API_KEY and every other variable that would route the CLI to a
     hosted API on a key is REMOVED from the child's environment, and so is the
     OpenRouter key. `--bare` is NOT used: bare mode authenticates only with an
-    API key, which is exactly the hosted path the owner forbids.
+    API key, which is exactly the hosted path I forbid.
   * no window: CREATE_NO_WINDOW on Windows.
 
 The judge sees the card, the user's limits, the story and the replies. It
@@ -53,7 +53,7 @@ BASE_FLAGS: tuple[str, ...] = (
 )
 
 #: Removed from the child's environment: each would authenticate or route
-#: the CLI to a hosted API instead of the owner's local subscription login.
+#: the CLI to a hosted API instead of my local subscription login.
 STRIP_ENV: tuple[str, ...] = (
     "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
     "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
@@ -341,7 +341,7 @@ def isolation_probe(*, run=subprocess.run, parent_env=None) -> dict:
     """Ground: an isolated run must NOT see a marker planted in a CLAUDE.md in
     its working directory. Positive: the same run with the CLAUDE.md switch
     left on MUST see it, which proves the probe can detect a leak. Two judge
-    calls on the owner's subscription; no dollars."""
+    calls on my subscription; no dollars."""
     import secrets as _s
 
     parent_env = dict(os.environ if parent_env is None else parent_env)

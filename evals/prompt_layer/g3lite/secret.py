@@ -1,6 +1,6 @@
 """The OpenRouter key: read from one environment variable, never shown.
 
-Rules (owner):
+Rules:
   * the key comes ONLY from config.KEY_ENV; there is no flag, file or prompt;
   * it is never printed, logged or written. Every line this harness writes
     (stdout, stderr, status file, ledger, reports) passes through a Redactor

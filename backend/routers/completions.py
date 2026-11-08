@@ -250,7 +250,7 @@ class ProviderPolicy(BaseModel):
 class SpeakOptions(BaseModel):
     """Whether this reply should be SPOKEN while it is written, and how fast.
 
-    Off by default and on every request type: the user's rule was that voice
+    Off by default and on every request type: my rule was that voice
     changes nothing until they ask for it. `speak_rate` is clamped server-side
     (tts/speed.py) - a client is not trusted to keep the dial inside the range
     where the time-stretch still sounds like speech.
@@ -636,7 +636,7 @@ def _system_and_tail(system_block: str, post_history_instruction: str,
     (module_budget_check) both measure what this returns.
 
     The model's notes ride in the user channel, after the user's text, with
-    their own "unverified notes" header (C3 a; owner, 26 Sep 2026, which
+    their own "unverified notes" header (C3 a; 26 Sep 2026, which
     replaces KARAR-V2-13's system-role placement). In the system message
     they would come back every turn with the authority of the app.
     """
@@ -1106,7 +1106,7 @@ def _retry_delay(exc: OpenRouterError) -> float:
 def _provider_failure(exc: OpenRouterError) -> tuple[int, str]:
     """The (status, code) a provider failure reports, from its facts.
 
-    Two kinds the reader has to tell apart (owner, item 5):
+    Two kinds the reader has to tell apart (item 5):
     - NEVER for this model as it stands: an HTTP 404 from the completion
       endpoint is OpenRouter's empty candidate pool (no endpoint passed the
       privacy and parameter filters), the same answer every time. It gets the
